@@ -33,8 +33,6 @@ export interface ExecutionPanelViewState {
  itemSort:string;
  itemLimit:number;
  callsExpanded:boolean;
- showBundle:boolean;
- showFullOutput:boolean;
  technicalOpen?:boolean;
  inspectedStep?:BranchStepExecutionDto;
 }
@@ -53,7 +51,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const [inspectedStep,setInspectedStep]=useState<BranchStepExecutionDto|undefined>(savedView?.inspectedStep?.executionId===execution.id?savedView.inspectedStep:undefined);
  const [selected,setSelected]=useState(savedView?.selected??firstFailed?.stepId??'');
  const [selectedInvocation,setSelectedInvocation]=useState(savedView?.selectedInvocation??firstFailed?.id??'');
- const [showBundle,setShowBundle]=useState(savedView?.showBundle??false),[showFullOutput,setShowFullOutput]=useState(savedView?.showFullOutput??false),[showFullInput,setShowFullInput]=useState(false);
+ const [showFullInput,setShowFullInput]=useState(false);
  const [intervention,setIntervention]=useState<{action:BranchIntervention['action'];attemptId?:string;occurrenceId?:string;unknown?:boolean}>(),[updateApplied,setUpdateApplied]=useState<''|'applied'|'not_applied'>(''),[reason,setReason]=useState(''),[reconciled,setReconciled]=useState(false),[result,setResult]=useState(''),[failed,setFailed]=useState(false),[target,setTarget]=useState(''),[commandKey,setCommandKey]=useState(()=>createClientId());
  const [itemSearch,setItemSearch]=useState(savedView?.itemSearch??''),[itemFilter,setItemFilter]=useState(savedView?.itemFilter??'all'),[itemSort,setItemSort]=useState(savedView?.itemSort??'index'),[itemLimit,setItemLimit]=useState(savedView?.itemLimit??100),[gateSearch,setGateSearch]=useState(''),[itemEvidenceId,setItemEvidenceId]=useState('');
  const mergeTargets=useInfiniteQuery({queryKey:['branch-merge-targets',execution.branchId,execution.id],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchExecutionDto[]>('/api/branches/'+encodeURIComponent(execution.branchId)+'/executions?mergeFor='+encodeURIComponent(execution.id)+(pageParam?'&before='+encodeURIComponent(pageParam):'')),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,enabled:intervention?.action==='merge'});
@@ -61,9 +59,9 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const [callsExpanded,setCallsExpanded]=useState(savedView?.callsExpanded??detail.attempts.filter(attempt=>attempt.calledBranch||attempt.childExecutionId).length<=8);
  useLayoutEffect(()=>{
   viewStates.delete(execution.id);
-  viewStates.set(execution.id,{selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,showBundle,showFullOutput,technicalOpen,inspectedStep});
+  viewStates.set(execution.id,{selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,technicalOpen,inspectedStep});
   if(viewStates.size>25)viewStates.delete(viewStates.keys().next().value!);
- },[viewStates,execution.id,selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,showBundle,showFullOutput,technicalOpen,inspectedStep]);
+ },[viewStates,execution.id,selected,selectedInvocation,itemSearch,itemFilter,itemSort,itemLimit,callsExpanded,technicalOpen,inspectedStep]);
  useEffect(()=>{
   if(!savedView?.technicalOpen||!savedView.selectedInvocation)return;
   const frame=requestAnimationFrame(()=>document.getElementById(`branch-step-${savedView.selectedInvocation}`)?.scrollIntoView({block:'center'}));
@@ -72,7 +70,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const bundleReference=/^branch-result-bundle:([0-9a-f-]{36}):([0-9a-f-]{36})$/u.exec(execution.output??'');
  const bundleMatch=bundleReference?.[1]===execution.id?bundleReference:null;
  const operations=useQuery({queryKey:["branch-execution-operations",execution.id],queryFn:async()=>{const value=await requestJson<BranchOperationalSummaryDto>("/api/branch-executions/"+execution.id+"/operations");if(value.executionId!==execution.id)throw new Error("The operational status belongs to another run.");return value},refetchInterval:query=>shouldPollOperations(execution.state,query.state.data)?5000:false});
- const bundle=useQuery({queryKey:['branch-result-bundle',bundleMatch?.[1],bundleMatch?.[2]],queryFn:()=>requestJson<{content:string;contentHash:string}>(`/api/branch-executions/${bundleMatch![1]}/result-bundles/${bundleMatch![2]}`),enabled:Boolean(showBundle&&bundleMatch)});
+ const bundle=useQuery({queryKey:['branch-result-bundle',bundleMatch?.[1],bundleMatch?.[2]],queryFn:()=>requestJson<{content:string;contentHash:string}>(`/api/branch-executions/${bundleMatch![1]}/result-bundles/${bundleMatch![2]}`),enabled:Boolean(bundleMatch)});
  const stepEvidence=useQuery({queryKey:['branch-step-evidence',execution.id,selectedInvocation],queryFn:()=>requestJson<BranchStepEvidenceDto>(`/api/branch-executions/${execution.id}/steps/${selectedInvocation}/evidence`),enabled:Boolean(technicalOpen&&selectedInvocation)});
  const itemEvidence=useQuery({queryKey:['branch-map-item-evidence',execution.id,itemEvidenceId],queryFn:()=>requestJson<BranchMapItemDto>(`/api/branch-executions/${execution.id}/map-items/${encodeURIComponent(itemEvidenceId)}/evidence`),enabled:Boolean(itemEvidenceId)});
  const searchTooLong=itemSearch.trim().length>100;
@@ -80,7 +78,16 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const searchResults=searchedItems.error?undefined:searchedItems.data?.pages.flatMap(page=>page.items);
  const itemStepEvidence=useQuery({queryKey:['branch-map-item-step',execution.id,itemEvidence.data?.stepExecutionId],queryFn:()=>requestJson<BranchStepEvidenceDto>(`/api/branch-executions/${execution.id}/steps/${itemEvidence.data!.stepExecutionId}/evidence`),enabled:Boolean(itemEvidenceId&&itemEvidence.data?.stepExecutionId)});
  const selectedItemStatus=itemEvidence.data?mapItemStatus(itemEvidence.data,itemStepEvidence.data?.attempts??detail.attempts.filter(a=>a.stepExecutionId===itemEvidence.data?.stepExecutionId)):'';
- const fullOutput=useQuery({queryKey:['branch-execution-output',execution.id],queryFn:()=>requestJson<{output:string|null}>(`/api/branch-executions/${execution.id}/result`),enabled:Boolean(showFullOutput&&detail.executionOutputTruncated)});
+ const fullOutput=useQuery({queryKey:['branch-execution-output',execution.id],queryFn:async()=>{
+  const requestedRevision=execution.revision;
+  return {...await requestJson<{output:string|null}>(`/api/branch-executions/${execution.id}/result`),requestedRevision};
+ },enabled:Boolean(detail.executionOutputTruncated&&!bundleMatch)});
+ // Keep this Run's cached text mounted through refresh/errors, including shared
+ // long-message expansion. The query owns which revision it last requested.
+ useEffect(()=>{
+  if(detail.executionOutputTruncated&&!bundleMatch&&fullOutput.data&&fullOutput.data.requestedRevision!==execution.revision)
+   void client.invalidateQueries({queryKey:['branch-execution-output',execution.id],exact:true});
+ },[client,execution.id,execution.revision,detail.executionOutputTruncated,bundleMatch?.[2],fullOutput.data?.requestedRevision]);
  const fullInput=useQuery({queryKey:['branch-execution-input',execution.id],queryFn:()=>requestJson<{input:string}>(`/api/branch-executions/${execution.id}/input`),enabled:Boolean(technicalOpen&&showFullInput&&detail.executionInputTruncated)});
  const actionsKey=['branch-execution-actions',execution.id];
  const actions=useInfiniteQuery({queryKey:actionsKey,initialPageParam:undefined as string|undefined,queryFn:async({pageParam})=>{
@@ -145,7 +152,15 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   {waitingGates.filter(item=>!gateSearch.trim()||((item.gate.prompt+' '+(definition?.steps.find(node=>node.id===item.step.stepId)?.label??item.step.stepId)).toLowerCase().includes(gateSearch.trim().toLowerCase()))).map(({gate,step})=><Gate key={gate.id+':'+gate.revision} gate={gate} disabled={!actionsCurrent} label={definition?.steps.find(node=>node.id===step.stepId)?.label??step.stepId} onChanged={refresh}/>)}
   {attentionAttempts.map(({attempt,step,current})=>{const node=definition?.steps.find(node=>node.id===step.stepId),unknown=attempt.state==='outcome_unknown'||attempt.requestOutcomeUnknown;return <Paper key={attempt.id} variant="outlined" sx={{p:2,borderColor:unknown?'warning.main':'error.main'}}><Stack spacing={1}><Typography fontWeight={650}>{node?nodeName(node):step.stepId} · {unknown?'Outcome Needs Reconciliation':current?'Step Failed':'Earlier Step Failure'}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{attempt.error||(attempt.scriptEvidence?branchScriptFailureSummary(attempt.scriptEvidence.code,attempt.scriptEvidence.error):undefined)||attempt.result?.output||step.result?.output||(unknown?'The operation may already have changed files or external systems. Inspect and reconcile its effects before retrying.':'The Step did not complete successfully.')}</Typography>{attempt.retryBlockedReason&&<Typography variant="body2" color="text.secondary">{attempt.retryBlockedReason}</Typography>}{attempt.childExecutionId&&<Button sx={{alignSelf:'start'}} href={branchRoutePath({tab:'executions',executionId:attempt.childExecutionId})}>Open {attempt.calledBranch?.name??'Called Workflow'} Run</Button>}<Stack direction="row" gap={1} flexWrap="wrap"><Button onClick={()=>inspectStep(step)}>Inspect Details</Button>{current&&!attempt.retryBlockedReason&&<><Button disabled={!actionsCurrent} onClick={()=>open({action:'retry',attemptId:attempt.id,unknown})}>{unknown?'Retry Anyway':'Retry Step'}</Button>{node?.kind==='script'&&attempt.state==='outcome_unknown'&&<Button disabled={!actionsCurrent} onClick={()=>open({action:'resolve_script',attemptId:attempt.id,unknown:true})}>Mark Observed Result</Button>}</>}</Stack></Stack></Paper>})}
   {actions.hasNextPage&&<Button sx={{alignSelf:'start'}} disabled={actions.isFetchingNextPage} onClick={()=>void actions.fetchNextPage({cancelRefetch:false})}>{actions.isFetchingNextPage?'Loading…':'Load More Decisions And Failures'}</Button>}
-  {execution.output!==undefined&&<Paper variant="outlined" sx={{p:2}}><Typography fontWeight={650} mb={1}>{ongoing?'Output So Far':'Result'}</Typography>{bundleMatch?<Stack spacing={1}><Typography variant="body2">This joined result is larger than the inline preview. Open its full text here, or inspect individual items in Technical Details.</Typography><Button sx={{alignSelf:'start'}} onClick={()=>setShowBundle(value=>!value)}>{showBundle?'Hide full joined text':'Show full joined text'}</Button>{bundle.isPending&&showBundle&&<Typography>Loading result…</Typography>}{showBundle&&bundle.error&&<Alert severity="error">{bundle.error.message}</Alert>}{showBundle&&bundle.data&&<Box sx={{maxHeight:350,overflow:'auto'}}><ChatMessageBody text={bundle.data.content} collapseLongMessage={false}/></Box>}</Stack>:<Box sx={{maxHeight:350,overflow:'auto'}}><ChatMessageBody text={showFullOutput&&fullOutput.data?fullOutput.data.output??'(Empty result)':execution.output||'(Empty result)'} collapseLongMessage={false}/></Box>}{detail.executionOutputTruncated&&!bundleMatch&&<Stack direction="row" alignItems="center" gap={1}><Button onClick={()=>setShowFullOutput(value=>!value)}>{showFullOutput?'Show shorter result':'Show full result'}</Button>{showFullOutput&&fullOutput.isPending&&<Typography variant="caption">Loading…</Typography>}{showFullOutput&&fullOutput.error&&<Alert severity="error">{fullOutput.error.message}</Alert>}</Stack>}</Paper>}
+  {execution.output!==undefined&&<Paper variant="outlined" sx={{p:2}}><Typography fontWeight={650} mb={1}>{ongoing?'Output So Far':'Result'}</Typography>{bundleMatch?<>
+   {bundle.isPending&&!bundle.data&&<Typography role="status">Loading result…</Typography>}
+   {bundle.error&&<Alert severity="error" action={<Button onClick={()=>void bundle.refetch()}>Retry Result</Button>}>The joined result could not be loaded. {bundle.error.message}</Alert>}
+   {bundle.data&&<ChatMessageBody text={bundle.data.content}/>}
+  </>:<>
+   {detail.executionOutputTruncated&&(fullOutput.isPending||fullOutput.isFetching)&&<Typography role="status">{fullOutput.data?'Updating result…':'Loading complete result…'}</Typography>}
+   {detail.executionOutputTruncated&&fullOutput.error&&<Alert severity="error" action={<Button onClick={()=>void fullOutput.refetch()}>Retry Result</Button>}>{fullOutput.data?'Result could not refresh. Showing the last loaded text.':'The complete result could not be loaded; the preview is shown.'} {fullOutput.error.message}</Alert>}
+   <ChatMessageBody text={detail.executionOutputTruncated&&fullOutput.data?fullOutput.data.output??'(Empty result)':execution.output||'(Empty result)'} collapseLongMessage={false}/>
+  </>}</Paper>}
   <Box component="section" aria-label="Steps"><Typography variant="h6" mb={1}>Steps</Typography><Stack component="ol" spacing={0} sx={{listStyle:'none',m:0,p:0}}>{detail.steps.slice(-5).map(step=>{const node=definition?.steps.find(node=>node.id===step.stepId);return <Stack component="li" key={step.id} direction="row" gap={1} alignItems="center" sx={{py:1.25,borderBottom:'1px solid',borderColor:'divider'}}><Box sx={{flex:1,minWidth:0}}><Typography fontWeight={600} sx={{overflowWrap:'anywhere'}}>{node?nodeName(node):step.stepId}</Typography><Typography variant="caption" color="text.secondary">Visit {step.invocation}</Typography></Box><SemanticStatus status={step.state==='completed'?'completed':step.state==='failed'?'failed':step.state==='running'?'running':step.state==='outcome_unknown'?'needs_attention':'waiting'} label={step.state.replaceAll('_',' ')}/><Button size="small" onClick={()=>inspectStep(step)}>Details</Button></Stack>})}</Stack>{!detail.steps.length&&<Typography color="text.secondary">No Step activity has been recorded yet.</Typography>}{(detail.steps.length>5||detail.nextCursor)&&<Stack spacing={.5}><Typography variant="caption" color="text.secondary">Showing recent loaded Step activity. Full invocation evidence remains available in Technical Details.</Typography><Button sx={{alignSelf:'start'}} onClick={()=>{setTechnicalOpen(true);requestAnimationFrame(()=>technicalDetails.current?.scrollIntoView({block:'start'}))}}>Inspect All Step Activity</Button></Stack>}</Box>
   {ongoing&&<Stack direction="row" gap={1} flexWrap="wrap"><Button disabled={!actionsCurrent} onClick={()=>open({action:'skip'})}>Skip Run</Button><Button disabled={!actionsCurrent} onClick={()=>open({action:'merge'})}>Merge Into Another Run</Button></Stack>}
   {runLinks}
