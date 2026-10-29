@@ -45,3 +45,37 @@ canonical journal and disk scan. This is a real mounted row, not a full Agent-pa
 navigation test. No provider subscription, inference, credentials, installation,
 production service or full-suite claim is involved. Independent original-reviewer
 approval and integration qualification remain required.
+
+
+## Encoded-span correction after blocking review
+
+The first frozen implementation missed an encoded JSON object following ordinary
+prose. Independent review demonstrated that a known provider credential reached
+the journal, SQLite/WAL and API. Its earlier passing simpler fixtures remain
+historical evidence and do not qualify that case.
+
+The corrective inspector now scans JSON string/container spans anywhere in the
+diagnostic, recursively applies the same known-field policy to decoded values,
+and carries one 16 MiB inspection budget through every span and decoded layer.
+The existing 4 MiB input bound and depth limit still apply. Exhaustion yields the
+explicit omission message, with no uninspected text fallback. Safe surrounding
+prose, Unicode and tails remain exact; unchanged encoded spans retain their bytes.
+Plain structured export/import semantics remain unchanged and share the same
+inspection implementation, without enabling diagnostic scanning for history.
+
+The exact independent streamed-error expression, plus `api_key`, now has targeted
+canonical-journal/SQLite/API/reopen regressions. Helper cases cover prose-wrapped
+objects, double/triple-encoded strings, nested diagnostic strings, exact safe
+bytes, depth refusal and cumulative budget exhaustion across individually small
+spans. No wider-suite or full #14/#19 claim is added. This correction needs the
+original independent reviewer's approval at its exact head before integration.
+
+Governing standard: pinned Behavior Bible-2 attachment SHA256
+`ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
+The older workspace text is superseded. Emulators/simulators qualify; physical
+mobile hardware is not a mandatory blocker. Genuine human-only checks remain a
+separate handoff checklist. No #21 performance or #22 first-run trial is claimed
+or rerun here; their pinned mobile 4x CPU/eight fresh sessions/active-agent load
+and installer-downloaded/provider-signed-in boundaries remain governing. #32
+uses its finite pinned capability set. Exceptions require human approval and
+recorded scope/reason/test; resource delays are not permission changes.

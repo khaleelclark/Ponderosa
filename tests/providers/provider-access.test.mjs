@@ -523,3 +523,61 @@ test('unknown streamed cause survives canonical storage, bounded API and server 
     assert.equal(f.turns.length,count,'inspection/reopen does not replay provider work');await scan(f.dataDir);
   });
 });
+
+
+test('embedded encoded credential spans share one recursive budget and preserve surrounding prose', () => {
+  const prefix='HARMLESS_REVIEW_942 日本語 café 🦄 ',tail=' HARMLESS_EXACT_TAIL';
+  const value='SYNTHETIC_SECRET_INDEPENDENT_942';
+  for (const field of ['OPENAI_API_KEY','api_key']) {
+    const encode=JSON.stringify;
+    for (const body of [encode({[field]:value, safe:'雪'}),encode(encode({[field]:value,safe:'雪'})),
+      encode(encode(encode({[field]:value,safe:'雪'}))),
+      encode({message:'nested prose '+encode(encode({[field]:value})),safe:'雪'}),
+      encode(encode(field+'='+value))]) {
+      const input=prefix+body+tail,output=canonicalProviderFailureEvent({type:'error',code:'provider_error',message:input}).message;
+      assert.ok(!output.includes(value),output);assert.ok(output.includes(prefix));assert.ok(output.endsWith(tail));
+      assert.equal(canonicalProviderFailureEvent({type:'error',code:'provider_error',message:output}).message,output);
+    }
+    assert.equal(redactPortableDiagnostic(prefix+encode(encode({[field]:value,safe:'雪'}))+tail),prefix+encode(encode({safe:'雪'}))+tail);
+  }
+  const safe=prefix+JSON.stringify(JSON.stringify({safe:'雪'}))+tail;
+  assert.equal(redactPortableDiagnostic(safe),safe,'Unchanged encoded span/prose retains exact bytes');
+  const span=JSON.stringify(JSON.stringify(JSON.stringify({safe:'x'.repeat(500000)})));
+  assert.equal(redactPortableDiagnostic(prefix+span+tail),prefix+span+tail,'One span is below the inspection budget');
+  assert.match(redactPortableDiagnostic(prefix+Array(6).fill(span).join(' ')+tail),/omitted.*inspection limit/,'Separate spans cannot reset the shared budget');
+  assert.match(redactPortableDiagnostic(prefix+'['.repeat(66)+'0'+']'.repeat(66)+tail),/omitted.*inspection limit/);
+});
+
+test('encoded known provider fields after prose stay absent from canonical storage/API after reopen', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const marker='HARMLESS_REVIEW_942',value='SYNTHETIC_SECRET_INDEPENDENT_942';
+    const chat=await f.createChat('Embedded encoded provider cause'),agents=[];
+    for(const field of ['OPENAI_API_KEY','api_key']) {
+      const agent=await f.createIdleAgent(chat,'Controlled '+field),message=marker+' '+JSON.stringify(JSON.stringify({[field]:value}));
+      f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message})}]);
+      await f.send(agent.id,'Controlled error');
+      await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))},'encoded terminal');
+      agents.push(agent);
+    }
+    const inspect=async()=>{
+      for(const agent of agents){
+        const d=await f.detail(agent.id);const event=d.activity.find(row=>row.event.type==='error').event;
+        assert.ok(event.message.includes(marker));assert.equal(event.message,'Provider execution failed.\n'+marker+' '+JSON.stringify(JSON.stringify({})));
+        for(const suffix of ['', '/history/activity?limit=1','/history/runOutput','/history/runs','/runs','/history/workItems']){
+          const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+        }
+      }
+      const response=await f.api('GET','/api/conversations/'+chat.id);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+      let canonical=0,database=0;
+      const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+        const filename=path.join(dir,item.name);if(item.isDirectory())await scan(filename);else{
+          const bytes=await readFile(filename);assert.ok(!bytes.includes(Buffer.from(value)),filename);
+          if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))canonical++;
+          if(/\.(?:db|sqlite)(?:-wal)?$/.test(item.name))database++;
+        }
+      }};
+      await scan(f.dataDir);assert.equal(canonical,2);assert.ok(database>0,'Scan includes real SQLite/WAL files');
+    };
+    await inspect();const turns=f.turns.length;await f.reopen();await inspect();assert.equal(f.turns.length,turns,'No provider replay');
+  });
+});
