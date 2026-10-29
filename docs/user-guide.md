@@ -552,3 +552,22 @@ at larger browser zoom. Menu actions wait for the menu to close before opening t
 next dialog or popover.
 
 Detailed settings, package, browser and call behavior: [UI detail reference](ui-detail-reference.md).
+### Exported execution history
+
+Full Agent and organization exports include execution history as a saved JSON log
+file for each Agent with persisted execution events or Runs. The same applies to
+Agent packages inside Branches workflows. After import, open the log in the
+Agent's Files & Results. Re-export preserves its bytes. Template exports contain
+no history.
+
+The log records original source identities, normalized events, and Run status
+and times. A source Run marked running remains a historical observation; import
+does not start or resume it. Known credential fields are removed, but free-form
+history can contain sensitive text, as the full-export warning states.
+
+This does not yet migrate local memory, provider-native sessions, exact provider
+inputs or historical Branch execution Chats. Full machine-to-machine recreation
+remains incomplete. Execution logs share the existing 64 MiB managed-file and
+aggregate package artifact limits; export fails explicitly rather than dropping
+records when a limit is exceeded. Unsupported execution-archive versions and
+malformed envelopes are refused before destination Agents are created.

@@ -776,6 +776,14 @@
       "origin": "F02 organization guidance portability and durable round trips"
     },
     {
+      "path": "tests/organizations/execution-portability.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; disposable Fastify/SQLite fixture; no provider account",
+      "origin": "Phase2 historical execution archive fresh-instance portability"
+    },
+    {
       "path": "tests/installation-release/operator-proxy-shutdown.test.mjs",
       "feature": "installation-release",
       "lane": "server",

@@ -1,3 +1,4 @@
+import {executionArchive,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
@@ -52,6 +53,7 @@ import {
   encodePortableArtifact,
   parsePortablePackageFile,
   portablePackageJsonChunks,
+  portableBase64ByteLength,
   portableImportPayloadHash,
   withAgentImportAdmission,
 } from "../agent-package-codec.js";
@@ -698,6 +700,10 @@ export function registerAgentPackageRoutes(
         if (pendingArtifacts.length >= 128) await flushArtifacts();
       }
       await flushArtifacts();
+      if(mode === "full") {
+        const archive=executionArchive(store,agent.id,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes);
+        if(archive){reservedArtifactBytes+=portableBase64ByteLength(archive.dataBase64);artifacts.push(archive);}
+      }
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance
         ?? importedHistories.get(agent.id)?.initialInstructions;
@@ -1085,6 +1091,7 @@ export function registerAgentPackageRoutes(
               return reply.code(413).send({ error: `portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}` });
             }
             const { data, sha256 } = await decodePortableArtifact(artifact.dataBase64);
+            if(artifact.mediaType===EXECUTION_ARCHIVE_MEDIA_TYPE)validateExecutionArchive(data);
             artifactBytes += data.length;
             if (artifactBytes > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
               abandonMutationFreeOperation(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`);
