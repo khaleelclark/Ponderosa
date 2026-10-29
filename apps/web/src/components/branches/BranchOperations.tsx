@@ -23,7 +23,7 @@ export function BranchTriggerAudit({onNavigate,branchId,diagnostics=[]}:{diagnos
   <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="md" aria-labelledby="branch-trigger-events-title">
    <DialogTitle id="branch-trigger-events-title">Trigger Events</DialogTitle>
    <DialogContent>
-    <Typography variant="body2" color="text.secondary" sx={{mb:1}}>Schedule, webhook and file events for this Workflow. Activated means the event was accepted; it does not mean its Run completed.</Typography>
+    <Typography variant="body2" color="text.secondary" sx={{mb:1}}>Activated means accepted, not completed.</Typography>
     {diagnostics.map(item=><Alert severity="info" key={item.id}>{item.title}: {item.body}</Alert>)}
     {pages.isPending?<Typography role="status">Loading trigger events…</Typography>:pages.error?<Alert severity="error" action={<Button onClick={()=>void pages.refetch()}>Retry</Button>}>{pages.error.message}</Alert>:!occurrences.length?<Typography>No trigger events yet.</Typography>:occurrences.map(occurrence=><Stack key={occurrence.id}><OccurrenceAudit occurrence={occurrence} runTerminology/>{occurrence.branchExecutionId&&<Button onClick={()=>{if(onNavigate({branchId,tab:'executions',executionId:occurrence.branchExecutionId}))setOpen(false)}}>View Run</Button>}</Stack>)}
     {pages.hasNextPage&&<Button disabled={pages.isFetchingNextPage} onClick={()=>void pages.fetchNextPage()}>Load Older Events</Button>}

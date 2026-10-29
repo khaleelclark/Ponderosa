@@ -109,7 +109,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
   {chat&&project.error&&<Alert severity="error" action={<Button onClick={()=>void project.refetch()}>Retry Chat workspace</Button>}>The Chat workspace could not be loaded. {project.error.message}</Alert>}
   {chat&&preferences.error&&<Alert severity="error" action={<Button onClick={()=>void preferences.refetch()}>Retry preferences</Button>}>Workspace preferences could not be loaded. {preferences.error.message}</Alert>}
   {chats.isPending&&<Typography>Loading Chats…</Typography>}{chatId&&owner.isPending&&!listedChat&&<Typography>Locating Chat…</Typography>}
-  {chats.isSuccess&&!chats.data?.length&&<Typography color="text.secondary">{executionId?'No temporary Chats for this execution. Open Persistent Chats to inspect this workflow’s standing Agents.':'Create a Chat when this Branch needs persistent Agents. Script-only workflows do not need one.'}</Typography>}
+  {chats.isSuccess&&!chats.data?.length&&<Typography color="text.secondary">{executionId?'No temporary Chats. See Persistent Chats for standing Agents.':'No persistent Chats. Script-only workflows need none.'}</Typography>}
   {chats.isSuccess&&(chats.data?.length??0)>1&&!chatId&&<Typography color="text.secondary">Choose a Chat to inspect or work with its Agents.</Typography>}
   {owner.data?.branchId&&(owner.data.branchId!==branchId||(owner.data.executionId??undefined)!==(executionId??undefined))&&<Typography>Opening the Chat’s owning workflow execution…</Typography>}
   {chat&&project.data&&preferences.data&&<>

@@ -9,7 +9,7 @@ import {useMutationNotification} from '../MutationNotifications';
 import {useBranchDraftGuard} from './BranchNavigation';
 import {budgetPresentation,validBudgetNumber} from './budgetPresentation';
 
-const countedSources='Scheduled, webhook and filesystem executions, and incoming Branch Calls count when workflow work first starts. Direct manual runs and trigger Run once are exempt. Steps and retries within an execution do not count again.';
+const countedSources='Automatic executions and incoming Branch Calls count once when work starts. Manual runs and trigger Run once are exempt.';
 export function BranchExecutionBudget({branchId,settings=false,active=true}:{branchId:string;settings?:boolean;active?:boolean}):JSX.Element {
  const client=useQueryClient(),notify=useMutationNotification(),queryKey=['branch-execution-budget',branchId];
  const query=useQuery({queryKey,queryFn:()=>requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`),enabled:active,refetchInterval:active?5000:false});
@@ -40,9 +40,9 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
   {settings&&draft!==undefined&&<>
    <FormControlLabel label="Limit automatic executions" control={<Switch checked={draft!==null} disabled={policyLocked||unavailable} onChange={(_,enabled)=>{save.reset();setDraft(enabled?{limit:100,period:'month'}:null)}}/>}/>
    {draft&&<><TextField label="Executions per period" type="number" value={draft.limit} disabled={policyLocked} error={!valid} helperText="A whole number from 1 to 1,000,000,000." onChange={e=>{save.reset();setDraft({...draft,limit:Number(e.target.value)})}}/><TextField select label="Budget period" value={draft.period} disabled={policyLocked} onChange={e=>{save.reset();setDraft({...draft,period:e.target.value as BranchExecutionBudgetPolicy['period']})}}>{(['day','week','month','lifetime'] as const).map(period=><MenuItem key={period} value={period}>{period}</MenuItem>)}</TextField></>}
-   {epochChange&&<Alert severity="warning">Saving starts a new budget period with zero usage and extra allowance. Changing only the limit preserves usage and allowance.</Alert>}
-   {draft===null&&base?.policy&&<Alert severity="info">Removing this budget releases queued work. Adding a budget again starts a new period.</Alert>}
-   <Typography variant="body2">This local policy survives workflow and package updates. Enabling or disabling the Branch does not refill it.</Typography>
+   {epochChange&&<Alert severity="warning">Saving resets usage and extra allowance. Limit-only changes preserve both.</Alert>}
+   {draft===null&&base?.policy&&<Alert severity="info">Removing the budget releases waiting work. Re-adding starts a new period.</Alert>}
+   <Typography variant="body2">Workflow updates and Branch toggles do not reset this budget.</Typography>
    {save.error&&<Alert severity="error">{save.error.message}{policyAttempt.current?' Retry sends the same command safely.':' Refresh the budget and review your changes before saving again.'}</Alert>}
    <Button sx={{alignSelf:'start'}} variant="contained" disabled={save.isPending||(!policyAttempt.current&&(unavailable||!dirty||!valid||base?.revision!==query.data?.revision))} onClick={()=>save.mutate()}>{save.isPending?'Saving…':policyAttempt.current?'Retry budget save':epochChange?'Save and start new period':'Save budget'}</Button>
    {dirty&&base?.revision!==query.data?.revision&&<Alert severity="warning" action={<Button disabled={policyLocked} onClick={()=>{setBase(query.data);setDraft(query.data?.policy);save.reset()}}>Load current budget</Button>}>Budget changed. Load the current budget before saving.</Alert>}
@@ -50,7 +50,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
   {query.data?.policy&&<Button sx={{alignSelf:'start'}} disabled={unavailable} onClick={()=>{grant.reset();setGrantOpen(true)}}>Allow more executions</Button>}
   <Dialog open={grantOpen} onClose={()=>{if(!grant.isPending&&!grantAttempt.current)setGrantOpen(false)}} fullWidth maxWidth="sm"><DialogTitle>Allow more executions</DialogTitle><DialogContent><Stack component="form" id={`budget-grant-${branchId}`} onSubmit={e=>{e.preventDefault();if(!grant.isPending&&(grantAttempt.current||(!unavailable&&grantValid)))grant.mutate()}} spacing={2} mt={1}>
    <Typography>{budgetPresentation(query).message}. {query.data?.resetsAt?`Expires ${query.data.resetsAt}.`:query.data?.policy?.period==='lifetime'?"Lifetime allowance has no automatic expiry.":"Reset time unavailable."} Eligible waiting work may start immediately.</Typography>
-   <Typography>Extra allowance applies only to the current period and expires at rollover. Started or canceled executions are never refunded.</Typography>
+   <Typography>Extra allowance expires at rollover. Started or canceled executions are not refunded.</Typography>
    <TextField autoFocus label="Additional executions" type="number" value={additional} disabled={grant.isPending||Boolean(grantAttempt.current)} error={!grantValid} helperText="A positive whole number; base plus extra allowance may not exceed 1,000,000,000." onChange={e=>{setAdditional(e.target.value);grant.reset()}}/>
    {(grantAttempt.current||grantValid)&&query.data?.policy&&<Typography>Resulting effective limit: {grantAttempt.current?grantResultLimit.current:query.data.policy.limit+query.data.allowance+Number(additional)} executions.</Typography>}
    {grant.error&&<Alert severity="error">{grant.error.message}{grantAttempt.current?' Retry sends the same command safely.':' The current budget is being refreshed; review it before trying again.'}</Alert>}

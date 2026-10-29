@@ -120,3 +120,23 @@ The Run concurrency limit applies across Ponderosa immediately. Active Runs fini
 ## Error notices
 
 Filled notices select black or white text to keep at least 4.5:1 contrast for their severity background in both themes.
+
+## Branches authoring and execution
+
+- Saving starts a new budget period with zero usage and extra allowance. Changing only the limit preserves usage and allowance.
+- Removing this budget releases queued work. Adding a budget again starts a new period.
+- This local policy survives workflow and package updates. Enabling or disabling the Branch does not refill it.
+- Extra allowance applies only to the current period and expires at rollover. Started or canceled executions are never refunded.
+- Schedule, webhook and file events for this Workflow. Activated means the event was accepted; it does not mean its Run completed.
+- This applies a portable Branch package to the current workflow. The preview shows every change before confirmation. Matching logical Agents keep their local identity and history; removed resources drain before deletion.
+- Choose this installation’s working directories and Engines. Secret values are never part of the package.
+- Node.js receives the step input on stdin. Write the result to stdout; diagnostics go to stderr. Read installation parameters with
+- The previous Agent, Script or Decision returns one of these route names. An unrecognized answer follows Otherwise and is recorded for inspection.
+- Sends this Step’s input to the Branches Notifications inbox and to subscribed devices through Ponderosa browser notifications. It does not send email.
+- Define values for each installation. Path parameters name files or folders; file contents are never loaded automatically.
+- Engine-owned binding only. Secret values cannot be entered, exported, or interpolated into prompts.
+- No temporary Chats for this execution. Open Persistent Chats to inspect this workflow’s standing Agents.
+- Create a Chat when this Branch needs persistent Agents. Script-only workflows do not need one.
+- Scheduled, webhook and filesystem executions, and incoming Branch Calls count when workflow work first starts. Direct manual runs and trigger Run once are exempt. Steps and retries within an execution do not count again.
+
+Scripts read installation parameters using `JSON.parse(process.env.PONDEROSA_PARAMETERS ?? '{}')`. Script source is not text-interpolated. Trigger Events lists schedule, webhook and file events. Route names come from the preceding Agent, Script or Decision. Notifications send the step input through Ponderosa browser notifications, never email. Package updates preview every change before confirmation and preserve matching logical Agents’ local identities and histories.
