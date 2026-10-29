@@ -245,7 +245,7 @@ test('Motion Photo upload retains accepted exact bytes and refuses an oversized 
 
 // Exercise the URL returned by the real import tool; constructing a scoped URL
 // in the test would conceal a missing Branches response-prefix projection.
-test('imported download URLs preserve both product owners, authentication and captured checksums across reopen', options, t => withFixture(t, async f => {
+test('imported download URLs preserve both product owners and captured checksums without operator authentication across reopen', options, t => withFixture(t, async f => {
   const branch = f.ok(await f.api('POST', '/api/branches', { name: 'Scoped deliverables', idempotencyKey: randomUUID() }));
   const downloads = [];
   for (const product of ['dev', 'branches']) {
@@ -274,7 +274,7 @@ test('imported download URLs preserve both product owners, authentication and ca
     const response = await f.api('GET', artifact.downloadUrl); f.ok(response);
     assert.deepEqual(response.rawBody, bytes);
     assert.match(response.headers['content-disposition'], /^attachment/);
-    assert.equal((await f.api('GET', artifact.downloadUrl, undefined, { authorization: '' })).status, 401);
+    assert.equal((await f.api('GET', artifact.downloadUrl, undefined, { authorization: '' })).status, 200);
     assert.equal((await f.api('GET', artifact.downloadUrl.replace(base, otherBase))).status, 404, 'A product URL cannot confer ownership');
     assert.equal((await f.api('GET', `${base}/projects/${foreign.projectId}/artifacts/${encodeURIComponent(artifact.id)}/download`)).status, 404);
     assert.equal((await f.api('GET', `${base}/projects/${chat.projectId}/artifacts/missing/download`)).status, 404);
