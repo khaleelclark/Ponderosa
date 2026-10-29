@@ -550,3 +550,5 @@ is available anytime. Agents can attach PDF, DOCX and text files from their Chat
 Opening Rename from the Chat menu keeps keyboard focus in the name field, including
 at larger browser zoom. Menu actions wait for the menu to close before opening the
 next dialog or popover.
+
+Detailed settings, package, browser and call behavior: [UI detail reference](ui-detail-reference.md).

@@ -239,8 +239,7 @@ function AgentOrganizationDialog({
           </Select>
         </FormControl>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-          This changes which Agent delegates work to this Agent. Its Run and
-          message history remain attached to the same Agent.
+          History stays with this Agent.
         </Typography>
         {updateOrganization.isError ? (
           <Alert severity="error" sx={{ mt: 1 }}>

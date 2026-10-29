@@ -44,15 +44,15 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",
   const own=new Set(draft?.restricted??query.data.policy.restrictedCapabilityIds);
   const toggle=(id:string,allow:boolean)=>{if(writing.current||save.isPending||(immediateSave&&dirty))return;const policy=query.data!.policy,base=immediateSave||!draft?{restricted:policy.restrictedCapabilityIds,baseline:policy.restrictedCapabilityIds,revision:policy.revision}:draft,restricted=new Set(base.restricted);if(allow)restricted.delete(id);else restricted.add(id);const next={...base,restricted:[...restricted].sort()};setDraft(next);if(immediateSave){writing.current=true;save.mutate(next)}};
   return <Stack spacing={2} sx={{minWidth:0,containerType:"inline-size",containerName:"capabilities"}}>
-    <Box sx={{maxWidth:"75ch"}}><Typography variant="h6" fontWeight={800}>{title}</Typography><Typography variant="body2" color="text.secondary">{description??<>Available by default. Restrictions at a broader scope stay in effect, and {scopeKind==="product"?"these defaults":`this ${scopeKind}`} can narrow authority further.</>}</Typography></Box>
-    <Typography variant="body2" color="text.secondary" sx={{maxWidth:"75ch"}}>Ponderosa-hosted tools check current restrictions when called. Provider-native filesystem and connector changes apply on the next Run, using a fresh session when its tool contract changes. This does not cancel work already running or make other allowed tools read-only. Actual tool calls remain in Activity.</Typography>
+    <Box sx={{maxWidth:"75ch"}}><Typography variant="h6" component="h2" fontWeight={800}>{title}</Typography><Typography variant="body2" color="text.secondary">{description??<>Broader restrictions still apply.</>}</Typography></Box>
+    <Typography variant="body2" color="text.secondary" sx={{maxWidth:"75ch"}}>Provider-native changes: next Run · Tool calls: Activity</Typography>
     {query.data.catalogNotice&&<Alert severity="info">{query.data.catalogNotice}</Alert>}
     {conflict&&<Alert severity="warning" action={<Button disabled={save.isPending} color="inherit" onClick={()=>immediateSave?void reloadPolicy():setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Load latest</Button>}>Capability restrictions changed elsewhere. Load the latest policy, then reapply your edits.</Alert>}
     {save.error&&<Alert severity="error">{save.error.message}{immediateSave&&" Reload the current policy, review its state, then reapply your change if needed."} <Button disabled={save.isPending} onClick={()=>void reloadPolicy()}>Reload current policy</Button></Alert>}
     {immediateSave&&save.isPending&&<Typography role="status">Saving…</Typography>}
     <Box sx={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:2,alignItems:"start","@container capabilities (min-width:68.75rem)":{gridTemplateColumns:"repeat(2,minmax(0,1fr))"}}}>
     {groups.map(([label,items])=><Paper key={label} variant="outlined" sx={{overflow:"hidden"}}>
-      <Typography variant="subtitle2" fontWeight={800} sx={{px:2,py:1.25,bgcolor:"action.hover"}}>{label}</Typography>
+      <Typography variant="subtitle2" component="h3" fontWeight={800} sx={{px:2,py:1.25,bgcolor:"action.hover"}}>{label}</Typography>
       <Divider/>
       {items.map((item,index)=>{
         const source=query.data!.effective.restrictionSources[item.id];

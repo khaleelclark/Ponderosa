@@ -98,7 +98,7 @@ export function AddAgentsFlow({
             Import Agent package
           </Button>
           <Typography variant="body2" color="text.secondary">
-            Duplicate creates a separate Agent in a chat. Import accepts a portable JSON package.
+            Duplicate an Agent or import a JSON package.
           </Typography>
         </Stack>
       </DialogContent>
@@ -141,7 +141,7 @@ export function AddAgentsFlow({
           </Alert> : null}
           {sourceProjectId && agentsQuery.isSuccess && agents.length === 0 ? <Alert severity="info">No Agents to duplicate in this workspace.</Alert> : null}
           <Typography variant="body2" color="text.secondary">
-            Choose the source Agent here; the next step lets you select scope, contents, destination chat, and the new root name.
+            Select an Agent to duplicate.
           </Typography>
         </Stack>
       </DialogContent>

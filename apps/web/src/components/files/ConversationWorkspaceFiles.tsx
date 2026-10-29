@@ -27,7 +27,7 @@ export function ConversationWorkspaceFiles({ conversationId, projectId }: { conv
       <Typography fontWeight={700}>Workspace Files</Typography>
       <Button size="small" disabled={directory.isFetching} onClick={() => void directory.refetch()}>Refresh</Button>
     </Stack>
-    <Typography variant="caption" color="text.secondary">Live files in this chat’s folder. Browsing does not import files or add them to agent context.</Typography>
+    <Typography variant="caption" color="text.secondary">Chat folder · Browsing does not add Agent context.</Typography>
     <Stack direction="row" alignItems="center" spacing={1} sx={{ my: 1 }}>
       {path && <Button size="small" onClick={() => setPath(path.split("/").slice(0, -1).join("/"))}>Up</Button>}
       <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{path || "Chat folder"}</Typography>

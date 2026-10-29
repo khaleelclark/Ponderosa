@@ -1,4 +1,4 @@
-import { alpha, createTheme } from "@mui/material/styles";
+import { alpha, createTheme, getContrastRatio } from "@mui/material/styles";
 import type { Theme } from "@mui/material/styles";
 import { readBrowserStorage } from "./browserStorage";
 
@@ -195,6 +195,14 @@ export function createPonderosaTheme(mode: ColorMode) {
             backgroundColor: dark
               ? "rgba(124,191,138,.28)"
               : "rgba(92,138,101,.22)",
+          },
+        },
+      },
+      MuiAlert: {
+        styleOverrides: {
+          filled: ({ theme, ownerState }) => {
+            const background = theme.palette[ownerState.color ?? ownerState.severity ?? "success"][theme.palette.mode === "dark" ? "dark" : "main"];
+            return { color: getContrastRatio(background, "#FFFFFF") >= 4.5 ? "#FFFFFF" : "#000000" };
           },
         },
       },

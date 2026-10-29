@@ -71,7 +71,7 @@ export function ArtifactsPane({
   if (orderedArtifacts.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="info">No files or results yet. Generated files, diffs, and test reports appear here; command output is available in the Chat's Work log and Technical details.</Alert>
+        <Alert severity="info">No files or results yet.</Alert>
         <Button component="a" href={routeLinkPath({ kind: "agent", projectId, agentId, view: "technical" })}>Open {agentTitle}’s Technical details</Button>
       </Box>
     );

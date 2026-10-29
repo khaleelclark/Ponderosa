@@ -224,7 +224,7 @@ export function ConversationFilesResults({
         ) : null}
         {!artifacts.isLoading && !artifacts.isError && records.length === 0 ? (
           <Alert severity="info">
-            {search ? `No managed files or results match “${search}”.` : "No files or results yet. Anything created by an Agent in this Chat will appear here."}
+            {search ? `No managed files or results match “${search}”.` : "No files or results yet."}
           </Alert>
         ) : null}
         <Stack spacing={1.25}>

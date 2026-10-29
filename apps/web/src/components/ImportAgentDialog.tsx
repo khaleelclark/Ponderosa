@@ -296,7 +296,7 @@ export function ImportAgentForm({
   };
 
   return <Stack spacing={2}>
-      <Alert severity="info">Imported history remains private historical context and does not appear as new chat messages. Agent packages do not include credentials.</Alert>
+      <Alert severity="info">History stays private; credentials are excluded.</Alert>
       <Paper component="section" variant="outlined" aria-label="Import an external AI chat" sx={{ p: 1.5 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", sm: "center" }} justifyContent="space-between">
           <Stack spacing={0.25} sx={{ minWidth: 0 }}>

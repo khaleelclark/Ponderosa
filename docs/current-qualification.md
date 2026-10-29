@@ -52,3 +52,10 @@ Windows/macOS acceptance of current packages, physical speech/accessibility,
 signing/notarization and the [source-notice questions](../packaging/notices/SOURCE-REFERENCES.md)
 remain separate qualification or release-owner work. Local receipts and hosted
 CI are distinct; this index does not claim an ordinary PR CI run or release approval.
+
+
+## UI save and clipboard failure qualification
+
+After building the web app, run `QUALIFICATION_DIRECTORY=<owned output> AXE_CORE_PATH=<installed axe.min.js> node --import ./tests/shared/workspace-resolution.mjs tests/workspace-navigation/settings-failure-qualification.mjs`. It starts a disposable controlled-provider API and checks Core/Branches in both themes: oversize instruction rejection retains the exact dirty draft and saved revision, canceled reload protects that draft, corrected saving succeeds, and a visible rename outage retains the draft for an Enter retry. Complete Settings axe arrays and screenshots are saved. This does not run provider inference.
+
+`node --import ./tests/shared/workspace-resolution.mjs tests/chats/composer-clipboard-qualification.mjs` uses trusted clipboard paste on desktop and Android emulation. It checks exact draft/body/canonical equality, including known structural destination chips and canonical scope prefixes; CRLF normalizes to LF, and submission trims outer whitespace as documented by the shared composer. These checks do not qualify Safari, native IME, or the future integrated Assistant route.

@@ -13,7 +13,7 @@ export function parseAgentRunConcurrencyLimit(value: string): number | undefined
 export function RuntimeSettings({ value, onChange }: { value: string; onChange(value: string): void }): JSX.Element {
   const valid = parseAgentRunConcurrencyLimit(value) !== undefined;
   return <Stack spacing={1}>
-    <Typography variant="subtitle2">Runtime</Typography>
+    <Typography variant="subtitle2" component="h3">Runtime</Typography>
     <TextField
       label="Maximum concurrent Agent Runs"
       type="number"
@@ -21,13 +21,10 @@ export function RuntimeSettings({ value, onChange }: { value: string; onChange(v
       onChange={(event) => onChange(event.target.value)}
       error={!valid}
       helperText={valid
-        ? "Applies across Ponderosa immediately. Active Runs finish normally; queued work keeps its scheduler order."
+        ? "Applies immediately; active Runs finish normally."
         : `Enter a whole number from ${MIN_AGENT_RUN_CONCURRENCY} to ${MAX_AGENT_RUN_CONCURRENCY}.`}
       inputProps={{ min: MIN_AGENT_RUN_CONCURRENCY, max: MAX_AGENT_RUN_CONCURRENCY, step: 1 }}
       fullWidth
     />
-    <Typography variant="caption" color="text.secondary">
-      Technical byte, page, time, and process safety limits remain system-managed.
-    </Typography>
   </Stack>;
 }

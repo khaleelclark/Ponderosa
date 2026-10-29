@@ -685,7 +685,7 @@ test('shared permissions expose Included tools, friendly effective states and im
   {id:'unavailable',label:'Read memory',description:'Read granted memory',categoryLabel:'Memory',available:false,unavailableReason:'Local Memory is not configured',includedTools:[]},
  ];
  const endpoint='/api/conversations/normal/capabilities';client.setQueryData(['capability-policy',endpoint],{policy,effective:{restrictionSources:{ancestor:{scopeKind:'product',scopeId:'interactive',label:'Ponderosa defaults'}}},catalog});
- try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true}))));assert.ok(html.includes('<summary>Included tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save capabilities'),false);assert.ok(html.includes('Allow Import files'));
+ try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true}))));assert.ok(html.includes('<summary>Included tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save capabilities'),false);assert.ok(html.includes('Allow Import files'));assert.match(html,/<h3[^>]*>Files<\/h3>/,'Capability groups follow the section heading');
   const Probe=()=>React.useContext(ResourceSettingsContext).render('chat','normal');const ordinary=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(Probe))));assert.ok(ordinary.includes('Tool permissions')&&ordinary.includes('ponderosa_import_file'));assert.equal(ordinary.includes('Save capabilities'),false);
  }finally{client.clear()}
 });
@@ -1535,4 +1535,11 @@ test('shared confirmation fences async submissions until settlement without trap
  const saving=confirm(tree)(),before=confirmed;assert.equal(confirm(tree)(),undefined);assert.equal(confirmed,before);tree.props.onClose({},'backdropClick');assert.equal(canceled,2);assert.equal(latch.current,true);
  settle.reject(Error('Save failed'));await assert.rejects(saving,/Save failed/);assert.equal(latch.current,false);tree.props.onClose({},'escapeKeyDown');assert.equal(canceled,3);
  const retry=render({...props,onConfirm:()=>Promise.resolve()});await confirm(retry)();assert.equal(latch.current,false);
+});
+
+
+test('shared Browser voice settings use a section heading without skipping levels',async()=>{
+ const {BrowserVoiceSettings}=await import('../../apps/web/src/components/speech/BrowserVoiceSettings.tsx');
+ const html=renderToStaticMarkup(React.createElement(BrowserVoiceSettings,{preferences:{speech:{speed:1}},onPreferences(){}}));
+ assert.match(html,/<h2[^>]*>Browser voice<\/h2>/);
 });

@@ -10,7 +10,7 @@ export function BrowserVoiceSettings({ preferences, onPreferences }: {
   const [speed, setSpeed] = useState(saved);
   useEffect(() => setSpeed(saved), [saved]);
   return <Stack spacing={1}>
-    <Typography variant="h6">Browser voice</Typography>
+    <Typography variant="h6" component="h2">Browser voice</Typography>
     <Box sx={{maxWidth:360,px:1}}>
       <Typography id="browser-speech-speed">Speaking speed</Typography>
       <Slider aria-labelledby="browser-speech-speed" min={.75} max={1.25} step={.05} value={speed}

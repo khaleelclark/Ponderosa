@@ -27,10 +27,10 @@ export function ChatContextSettings({ chat, open, onClose }: {
       <ResourceNotificationSettings kind="conversation" id={chat.id} />
       <TextField label="Instructions" multiline minRows={5} value={instructions}
         onChange={event=>setInstructions(event.target.value)} disabled={save.isPending}
-        helperText="Applies to this chat and its agents only. Folder membership does not share these instructions." />
+        helperText="Only this Chat and its Agents." />
       {extension.render?.("chat",chat.id)}
       <TextField label="Working folder" value={chat.workingDirectory ?? ""} slotProps={{input:{readOnly:true}}}
-        helperText="Existing working-folder associations are preserved. This is not a filesystem sandbox." />
+        helperText="Working folder · Not a filesystem sandbox." />
       {save.isError ? <Alert severity="error">{String(save.error)}</Alert> : null}
     </Stack></DialogContent>
     <DialogActions><Button onClick={close} disabled={save.isPending}>Cancel</Button>

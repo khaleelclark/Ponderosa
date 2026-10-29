@@ -106,7 +106,7 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
         />
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Shared is best when Agents need to see each other's changes immediately. Separate Git gives this Agent its own branch and folder for code work.
+        Shared folder or separate Git branch.
       </Typography>
       <Box sx={{ mb: 1.5 }}>
         <Typography variant="caption" color="text.secondary" display="block">
@@ -211,7 +211,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Typography variant="subtitle1" fontWeight={800}>Hosted Browser</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Disposable profiles start clean. Trusted profiles retain cookies, logins, and site storage on this Ponderosa host and are leased to only one browser at a time.
+        Trusted profiles keep sign-ins on this host.
       </Typography>
       <FormControl fullWidth size="small" disabled={preference.isLoading || updatePreference.isPending}>
         <InputLabel id={`browser-profile-${agent.id}`}>Browser profile</InputLabel>

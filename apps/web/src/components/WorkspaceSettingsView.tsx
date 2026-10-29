@@ -70,7 +70,7 @@ import { useUnsavedForm } from "../reloadSafety";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
-  "Applies to every Agent on the next fresh provider session. Chat and Agent instructions follow it. Behavioral preferences, such as preferred models, are guidance rather than guaranteed structural routing.";
+  "Applies to all Agents on their next fresh provider session.";
 
 function SettingsHeader({
   profile = false,
@@ -179,9 +179,9 @@ function GeneralSettingsSection({
   return (
     <Stack spacing={2.5}>
       <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
-      {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Applies to regular Ponderosa Chats and their Agents. Chat and Agent settings may add restrictions; they cannot undo these defaults. Branches has its own policies." immediateSave/></Paper>}
+      {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></Paper>}
       <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
+        <Typography variant="h6" component="h2" fontWeight={800} sx={{ mb: 1.5 }}>
           Appearance
         </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
@@ -209,7 +209,7 @@ function GeneralSettingsSection({
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800}>
+        <Typography variant="h6" component="h2" fontWeight={800}>
           Agent Defaults
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -251,7 +251,7 @@ function GeneralSettingsSection({
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800}>
+        <Typography variant="h6" component="h2" fontWeight={800}>
           Provider Session Rollover
         </Typography>
         <Stack spacing={2}>
@@ -275,7 +275,7 @@ function GeneralSettingsSection({
             error={Boolean(rolloverTokensError)}
             helperText={
               rolloverTokensError ??
-              "Minimum 75,000. Fresh Ponderosa sessions already consume substantial context, so lower values can cause repeated rollover. Default 150,000."
+              "Minimum 75,000; default 150,000 tokens."
             }
           />
           <TextField
@@ -287,7 +287,7 @@ function GeneralSettingsSection({
             error={Boolean(rolloverFractionError)}
             helperText={
               rolloverFractionError ??
-              "Applies only to providers that report a window size (Codex does; Claude does not). Catches sessions configured with a small window, where the token ceiling above would never be reached."
+              "Requires a provider-reported context window size."
             }
           />
           <Button
@@ -338,11 +338,11 @@ function NotificationSettingsSection({
       : "info" as const;
   return (
     <Paper variant="outlined" sx={{ p: 2.5 }}>
-      <Typography variant="h6" fontWeight={800}>
+      <Typography variant="h6" component="h2" fontWeight={800}>
         Notifications
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Choose which Agent updates appear in Notifications and browser push. Chat and Agent notification settings can further limit these alerts, including those that need attention.
+        Choose alerts for Notifications and browser push.
       </Typography>
       <Stack>
         {NOTIFICATION_LABELS.map(([key, label]) => (
@@ -486,10 +486,7 @@ function ClaudeModelOptionsSettings({
         </Stack>
       ) : (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          No specific versions are pinned by the environment. Set
-          {" "}ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
-          ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_DEFAULT_FABLE_MODEL, or
-          ANTHROPIC_CUSTOM_MODEL_OPTION to add host-managed choices.
+          No environment-pinned model versions.
         </Typography>
       )}
       <Stack spacing={1} sx={{ mt: 2 }}>
@@ -659,12 +656,11 @@ function ProviderSettingsSection({
       ) : null}
       {usageProviders.length > 1 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
-          <Typography variant="h6" fontWeight={800}>
+          <Typography variant="h6" component="h2" fontWeight={800}>
             Provider Usage
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Choose which provider appears in the usage button by default.
-            Agent pages can temporarily show that Agent&apos;s active provider.
+            Default provider for the usage button.
           </Typography>
           <FormControl fullWidth>
             <InputLabel id="settings-default-usage-provider">
@@ -812,7 +808,7 @@ function ProviderSettingsSection({
             {engine.configuredModels !== undefined ? (
               <>
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
-                  Latest aliases follow future Claude upgrades. Pinned exact IDs stay on the selected version.
+                  Latest follows upgrades; exact IDs stay pinned.
                 </Typography>
                 <ClaudeModelOptionsSettings
                   engine={engine}
@@ -1184,7 +1180,7 @@ export function WorkspaceSettingsView({
         {section === "activity" ? (
           <Stack spacing={2.5}>
             <Paper variant="outlined" sx={{ p: 2.5 }}>
-              <Typography variant="h6" fontWeight={800}>Provider Status</Typography>
+              <Typography variant="h6" component="h2" fontWeight={800}>Provider Status</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                 Sign-in, runtime access, and network availability for configured AI providers.
               </Typography>
@@ -1255,7 +1251,7 @@ function OperatorProfileSettingsSection({
         form={form}
         avatarSize={72}
         nameLabel="What Agents Call You"
-        handleHelperText="# identifies people and Agents; @ references files. Historical mentions continue to follow your stable identity."
+        handleHelperText="# for people and Agents; @ for files."
         pictureLabelId="profile-picture"
         avatarFirst
         showDescription

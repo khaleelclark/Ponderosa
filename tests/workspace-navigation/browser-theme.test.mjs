@@ -45,3 +45,14 @@ test('built PWA applies a single CSP-safe blocking theme script before deferred 
  assert.match(html,/width=device-width, initial-scale=1, viewport-fit=cover/);assert.match(html,new RegExp(`background-color: ${THEME_BACKGROUNDS.dark}; color-scheme: dark`));
  for(const mode of ['light','dark']){const context=page(mode,mode==='light');vm.runInNewContext(readFileSync(new URL(src.slice(1),root),'utf8'),context);matchesTheme(context,mode)}
 });
+
+
+test('filled notices retain readable text for every severity in both themes',async()=>{
+ const {getContrastRatio}=await import('@mui/material/styles');
+ for(const mode of ['light','dark'])for(const severity of ['error','warning','info','success']){
+  const theme=createPonderosaTheme(mode),foreground=theme.components.MuiAlert.styleOverrides.filled({theme,ownerState:{severity}}).color;
+  // MUI filled Alerts use main in light mode and dark in dark mode.
+  const background=theme.palette[severity][mode==='dark'?'dark':'main'];
+  assert.ok(getContrastRatio(foreground,background)>=4.5,`${mode} ${severity} notice contrast`);
+ }
+});

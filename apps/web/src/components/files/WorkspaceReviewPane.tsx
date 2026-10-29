@@ -130,7 +130,7 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
     {scope === "response" && response.isLoading || scope === "folder" && workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
       : scope === "response" && response.isError || scope === "folder" && workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Review could not be loaded. Refresh to try again.</Alert>
         : recordedMode ? <Box sx={{ minHeight: 0, overflow: "auto", p: 1.5 }}>
-          <Alert severity="info" sx={{ mb: 1.5 }}>{scope === "response" ? "Recorded changes from this response, not the current working folder. Each preview shows the latest recorded change for that file in this response." : "Agent change history. This working folder is not a Git repository, so no Git diff is available."}</Alert>
+          <Alert severity="info" sx={{ mb: 1.5 }}>{scope === "response" ? "Latest recorded changes per file in this response." : "Agent change history · No Git repository."}</Alert>
           {scope === "response" && response.data?.truncated ? <Alert severity="info">Showing a bounded set of recorded changes; older changes in this response may be omitted.</Alert> : null}
           {files.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded changed files for this agent.</Typography> : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(240px, 34%) minmax(0, 1fr)" }, gap: 1.5 }}>
             <Stack spacing={0.75} sx={{ display: { xs: showFiles ? "flex" : "none", lg: "flex" }, maxHeight: { lg: "65vh" }, overflowY: "auto" }}>

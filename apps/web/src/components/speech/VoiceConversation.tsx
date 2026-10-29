@@ -511,6 +511,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         <Button disabled={Boolean(sttUnavailable) || (!handsFree && !recording && !muted)} aria-pressed={muted} startIcon={muted ? <MicOffIcon /> : <MicNoneIcon />} onClick={() => { if (!muted) { stopAutomatic(); abandon(); changePhase("paused"); setNotice("Microphone muted. Unfinished words were discarded."); } setMuted(!muted); }}>{muted ? "Unmute microphone" : "Mute microphone"}</Button>
         <Button color="error" startIcon={<CallEndIcon />} onClick={end}>End call</Button>
       </Stack>
+      {attempt.current && <Typography variant="caption">Retry expires after 24 hours; ending or reloading discards these words.</Typography>}
       {attempt.current && <Button disabled={!live || !checked || recording || inFlight || recovering || blocked || !retryable} onClick={() => { void send(); }}>Retry same turn</Button>}
       {playText && error && !inFlight && !recording && !ttsUnavailable && !expanded && <Button onClick={() => play(playText)}>Play reply</Button>}
       <Button size="small" sx={{ minHeight: 44 }} aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={() => setExpanded(value => !value)}>Transcript &amp; typing</Button>
@@ -534,7 +535,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           <Button disabled={!live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked} onClick={() => { stopAutomatic(); listen(); }}>Listen</Button>
           <Button disabled={!live || !checked || !text.trim() || recording || inFlight || recovering || blocked || Boolean(attempt.current)} onClick={() => { void send(); }}>Send turn</Button>
         </Stack>
-        <Typography variant="caption" color="text.secondary">Read and type in Chat anytime. Calls require a visible foreground page. End stops browser audio and discards unsent words; accepted work continues. An unconfirmed send keeps its full private words only in this mounted call for deliberate retry. This tab stores only an identity marker. End, reopening or reload drops the call’s retry payload and requires Chat review; markers cannot reconstruct words. Retry expires after 24 hours, without promising physical browser or network memory erasure.</Typography>
+        <Typography variant="caption" color="text.secondary">Keep this page visible. Ending or reloading discards unsent words; accepted work continues.</Typography>
       </Stack>}
     </Stack></DialogContent>
   </Dialog>;

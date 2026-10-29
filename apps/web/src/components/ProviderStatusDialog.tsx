@@ -33,7 +33,7 @@ export function ProviderStatusDetails({
             ? <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Checking network security posture…</Typography>
             : <Alert severity="error" sx={{ mt: 1 }}>{networkSecurityError ?? "Network security posture is unavailable."}</Alert>}
         </Box>
-        <Typography variant="body2" color="text.secondary">Ponderosa reports local configuration, sign-in, and runtime access. Supported providers expose account limits in Provider usage; Provider Activity shows individual Run telemetry, not billing.</Typography>
+        <Typography variant="body2" color="text.secondary">Account limits: Provider usage · Run telemetry: Provider Activity</Typography>
         {engines.map((engine) => {
           const status = engineStatusPresentation(engine);
           const disabled = engine.enabled === false;
