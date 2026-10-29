@@ -241,7 +241,7 @@ test('both products share ordered accessible sidebar controls and preserve norma
    assert.doesNotMatch(html,/data-testid="ChevronLeftIcon"/);
   }
   assert.match(normal,/aria-label="Home" aria-current="page"/);
-  assert.ok(normal.includes('aria-label="Messages across Ponderosa"'));
+  assert.ok(normal.includes('aria-label="Inbox"'));
  }
 });
 

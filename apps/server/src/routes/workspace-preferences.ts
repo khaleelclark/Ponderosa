@@ -156,6 +156,7 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
+    if ('outputApps' in patch) return reply.code(400).send({error:'Use output-app designation settings to change output roles'});
     if (patch.notificationScopes !== undefined) return reply.code(400).send({ error: "use the resource notification settings endpoint" });
     for (const key of ["projectFolders", "chatFolders", "branchFolders"] as const) {
       if (patch[key] === undefined) continue;

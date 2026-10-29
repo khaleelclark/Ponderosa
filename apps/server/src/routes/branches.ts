@@ -1,9 +1,10 @@
+import type {OutputAgentApps} from '../output-agent-apps.js';
 import type {BranchInstallationService} from '../branch-installation-service.js';
 import type {ChatCreator} from './projects.js';
 import { normalizeTriggerSourceConfig, type BranchTriggerSourceService } from '../branch-trigger-service.js';
 import { triggerSourceConfig } from '../branch-trigger-config.js';
 import { realpathSync, statSync } from 'node:fs';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
 import { readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
@@ -16,7 +17,7 @@ import {sqliteCollectionGeneration,StaleCollectionCursorError,sqliteCollectionPa
 import {parseTokenUsageRange} from '../token-usage.js';
 import {workspaceNotificationPage} from './notifications.js';
 
-export function registerBranchRoutes(app: FastifyInstance, context: { branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
+export function registerBranchRoutes(app: FastifyInstance, context: { outputApps:OutputAgentApps; branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
   const { branches, store, sources, notify } = context;
   const assertEditable=(id:string)=>{
     if(store.sqlite.prepare("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')").get(id))throw new Error('An installation update is applying; wait for it to finish');
@@ -69,6 +70,44 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     if(trigger&&input.definition.trigger.kind==='webhook'&&(!currentTrigger||currentTrigger.sourceKind!=='webhook'||!currentTrigger.secretFingerprint))trigger={...trigger,enabledOverride:false} as typeof trigger;
     return branches.deploy(input,new Date().toISOString(),trigger,configuration);
   },()=>sources.refresh());
+  app.get('/api/branches/assistant',async()=>context.outputApps.status());
+  app.post<{Body?:{enabled?:boolean;initialize?:boolean}}>('/api/branches/assistant',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body??{},'Assistant settings');exactObjectFields(body,['enabled','initialize'],'Assistant settings');
+      if((body.enabled!==undefined&&typeof body.enabled!=='boolean')||(body.initialize!==undefined&&typeof body.initialize!=='boolean'))throw new Error('Invalid Assistant setting');
+      const result=body.enabled===false?context.outputApps.disable():await context.outputApps.initialize(body.initialize!==true);
+      await sources.refresh();notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:{id:string}}>('/api/branches/output-apps/:id',async(request,reply)=>{
+    try{return context.outputApps.get(request.params.id);}catch(error){return reply.code(404).send({error:(error as Error).message});}
+  });
+  app.put<{Params:{id:string};Body:{enabled:boolean;speaker?:boolean}}>('/api/branches/output-apps/:id',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'output settings');exactObjectFields(body,['enabled','speaker'],'output settings');
+      if(typeof body.enabled!=='boolean'||(body.speaker!==undefined&&typeof body.speaker!=='boolean'))throw new Error('Invalid output designation');
+      const app=context.outputApps.designate(request.params.id,body.enabled,body.speaker===true);await sources.refresh();notify();return {app:app??null};
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.put<{Params:{id:string};Body:{expectedVersionId:string;automatic:boolean;everyMs:number}}>('/api/branches/output-apps/:id/schedule',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'output settings');exactObjectFields(body,['expectedVersionId','automatic','everyMs'],'schedule settings');
+      if(typeof body.expectedVersionId!=='string'||typeof body.automatic!=='boolean'||(typeof body.everyMs!=='number'||!Number.isInteger(body.everyMs)))throw new Error('Invalid schedule settings');
+      const output=context.outputApps.get(request.params.id),branch=branches.getBranch(output.branchId)!;assertEditable(branch.id);
+      if(body.expectedVersionId!==branch.versionId)throw new Error('Workflow changed. Reload settings.');
+      const version=branches.version(branch.id,branch.versionId);if(!version)throw new Error('Publish this workflow before changing its schedule');
+      if(version.definition.trigger.kind!=='manual'&&version.definition.trigger.kind!=='schedule')throw new Error('Open More options to change an event-triggered workflow');
+      const priorConfig=branches.trigger(branch.id)?.sourceConfig;
+      const schedule=priorConfig&&'scheduleKind'in priorConfig?priorConfig:undefined;
+      const config={scheduleKind:'interval' as const,everyMs:body.everyMs,startsAt:schedule?.scheduleKind==='interval'&&schedule.everyMs===body.everyMs?schedule.startsAt:new Date(Date.now()+body.everyMs).toISOString(),...(schedule&&'whenRunning'in schedule&&schedule.whenRunning?{whenRunning:schedule.whenRunning}:{})};
+      normalizeTriggerSourceConfig('schedule',config);
+      const ref=version.definition.trigger.kind==='schedule'?version.definition.trigger.configRef:'output_schedule';
+      const bindings=branches.localConfiguration(branch.id);if(!bindings)throw new Error('Workflow bindings are unavailable');
+      const input:DeployBranchRequest={chatId:'',branchId:branch.id,expectedVersionId:body.expectedVersionId,idempotencyKey:randomUUID(),definition:{...version.definition,trigger:{kind:'schedule',configRef:ref}},bindings:{...bindings,triggers:{...bindings.triggers,[ref]:{sourceConfig:config,enabled:body.automatic}}}};
+      const previous=branches.trigger(branch.id);branches.deploy(input,new Date().toISOString(),validateLocal(input));
+      await sources.applyDefinitionChange(previous,branches.trigger(branch.id));notify();return context.outputApps.get(request.params.id);
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.post<{Body:{package:unknown;bindings:import('@ponderosa/core').BranchBindings;branchId?:string}}>('/api/branches/install-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
     try{return context.installations.preview(request.body.package,request.body.bindings,request.body.branchId)}catch(error){return reply.code(400).send({error:(error as Error).message})}
   });

@@ -2,6 +2,7 @@ import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
 import {BranchScriptService} from "./branch-script-service.js";
 import {BranchTriggerSourceService} from "./branch-trigger-service.js";
 import {registerCapabilityRoutes} from './routes/capabilities.js';
+import {OutputAgentApps} from './output-agent-apps.js';
 import {registerBranchRoutes} from './routes/branches.js';
 import {registerProductScope,rewriteProductUrl} from './product-scope.js';
 import {BranchResourceService} from "./branch-resource-service.js";
@@ -1418,7 +1419,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     },
   });
   registerCapabilityRoutes(app,{store,branches,engines,dataDir:opts.dataDir,localMemoryEnabled:Boolean(opts.localMemory),providerEnabled,discoverCapabilities:discoverEngineCapabilities});
-  registerBranchRoutes(app,{branches,store,workspace,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
+  const outputApps=new OutputAgentApps(store,branches,workspace,application.createChat,application.packageEngine,()=>[...engines.keys()].find(id=>providerEnabled(id)),publishWorkspaceSince);
+  registerBranchRoutes(app,{outputApps,branches,store,workspace,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
     preferences:()=>workspace.getPreferences(),engineAvailable:id=>engines.has(id)&&providerEnabled(id),
     providerStatus:async id=>{const registration=engines.get(id);return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:'error',intakeReady:false,availabilityDetail:'Provider is not configured'};},
 notify:()=>coordinationV3Scheduler.notify(),

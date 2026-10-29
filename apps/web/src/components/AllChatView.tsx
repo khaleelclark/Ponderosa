@@ -1369,7 +1369,7 @@ export function AllChatView({
     >
       <CompactWorkspaceHeader
         icon={<ChatBubbleOutlineIcon fontSize="small" />}
-        title="Messages Across Ponderosa"
+        title="Inbox"
       />
       <ChatSurface
         showOutgoingMessage

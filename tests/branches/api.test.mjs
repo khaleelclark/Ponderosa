@@ -4,7 +4,7 @@ import {randomUUID,createHmac} from 'node:crypto';
 import {AgentStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
-import {withFixture} from '../shared/fixture.mjs';
+import {withFixture,until} from '../shared/fixture.mjs';
 
 const branch=async(f,name)=>f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
 const chat=async(f,owner,key=randomUUID())=>f.ok(await f.api('POST',`/api/branches/${owner.id}/chats`,{label:owner.name,defaultEngine:'codex'},{'idempotency-key':key}));
@@ -234,4 +234,95 @@ test('Agent picker team and Chat context comes from canonical membership outside
   assert.equal(members[0].id,member.id);assert.equal(members[0].managerTitle,lead.title);assert.equal(members[0].hasTeam,false);
   assert.equal(f.ok(await f.api('GET',`/api/branches/${owner.id}/agents?search=Foreign`)).length,0);
  });
+});
+
+test('Assistant bootstrap is single-flight, persistent, editable and disabled until explicit re-enable after role removal',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const enable=()=>f.api('POST','/api/branches/assistant',{initialize:true});
+  const [one,two]=await Promise.all([enable(),enable()]);const first=f.ok(one),second=f.ok(two);
+  assert.equal(first.enabled,true,JSON.stringify(first));assert.equal(first.app.agentId,second.app.agentId);
+  const app=first.app,agent=store.getAgent(app.agentId),history=f.ok(await f.api('GET',`/api/branches/engine/agents/${app.agentId}`)).messages;
+  assert.equal(app.url,`/apps/${app.agentId}`);assert.equal(app.everyMs,600000);assert.equal(app.automatic,true);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM branches').get().n,1);
+  const renamed=f.ok(await f.api('PATCH',`/api/branches/engine/agents/${app.agentId}`,{title:'My Assistant',model:'fixture'}));assert.equal(renamed.id,app.agentId);
+  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,app.agentId);
+  assert.deepEqual(f.ok(await f.api('GET',`/api/branches/engine/agents/${app.agentId}`)).messages,history);
+  await f.reopen();assert.equal(f.ok(await enable()).app.agentId,app.agentId);
+  const schedule=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,automatic:false,everyMs:1200000}));
+  assert.equal(schedule.automatic,false);assert.equal(schedule.everyMs,1200000);
+  assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).sourceConfig.whenRunning,'run_latest','everyday schedule settings preserve the existing busy policy');
+  assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,automatic:true,everyMs:60000})).status,409);
+  f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}`,{enabled:false}));
+  assert.equal(f.ok(await enable()).enabled,false,'ordinary initialization never restores a removed speaker');
+  assert.equal((await f.api('GET',`/api/branches/output-apps/${app.agentId}`)).status,404);
+  const fresh=f.ok(await f.api('POST','/api/branches/assistant',{enabled:true}));assert.equal(fresh.enabled,true);assert.notEqual(fresh.app.agentId,app.agentId);
+  assert.equal(store.getAgent(app.agentId).id,agent.id,'old user-owned workflow/Agent are retained');
+  store.sqlite.exec("CREATE TEMP TRIGGER refuse_assistant_pause BEFORE UPDATE OF enabled ON trigger_definitions BEGIN SELECT RAISE(ABORT,'Controlled pause failure'); END");
+  assert.equal((await f.api('POST','/api/branches/assistant',{enabled:false})).status,409);
+  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).enabled,true,'a failed pause must not claim Assistant disabled');
+  store.sqlite.exec('DROP TRIGGER refuse_assistant_pause');
+  const disabled=f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));assert.equal(disabled.enabled,false);
+  const kept=f.ok(await f.api('GET',`/api/branches/output-apps/${fresh.app.agentId}`));assert.equal(kept.automatic,false,'disable pauses proactive intake');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('output roles reject foreign/ephemeral Agents and duplicate speakers; imports cannot carry installation role authority',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const ordinary=await f.createChat('Ordinary'),ordinaryAgent=await f.createAgent(ordinary,'Ordinary Agent');
+  assert.equal((await f.api('PUT',`/api/branches/output-apps/${ordinaryAgent.id}`,{enabled:true})).status,409);
+  const assistant=f.ok(await f.api('POST','/api/branches/assistant',{enabled:true}));
+  const owner=await branch(f,'Another app'),owned=await chat(f,owner);
+  const other=f.ok(await f.api('POST',`/api/branches/engine/projects/${owned.projectId}/agents`,{title:'Other output',engine:'codex',conversationId:owned.id,idempotencyKey:randomUUID()}));
+  const output=f.ok(await f.api('PUT',`/api/branches/output-apps/${other.id}`,{enabled:true}));assert.equal(output.app.speaker,false);
+  assert.equal((await f.api('PUT',`/api/branches/output-apps/${other.id}`,{enabled:true,speaker:true})).status,409);
+  assert.equal((await f.api('PATCH','/api/branches/engine/workspace/preferences',{outputApps:{agentIds:[other.id],speakerAgentId:other.id,initialized:true}})).status,400);
+  const pkg=f.ok(await f.api('GET',`/api/branches/engine/agents/${assistant.app.agentId}/export?mode=template`));
+  assert.equal(JSON.stringify(pkg).includes('speakerAgentId'),false);
+  f.ok(await f.api('PUT',`/api/branches/output-apps/${assistant.app.agentId}`,{enabled:true,speaker:false}));
+  assert.equal(f.ok(await f.api('PUT',`/api/branches/output-apps/${other.id}`,{enabled:true,speaker:true})).app.speaker,true);
+  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,other.id);
+  await f.reopen();assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,other.id);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('output URL Agent receives a real controlled-provider direct message and attachment through existing canonical routes',async t=>{
+ await withFixture(t,async f=>{
+  const status=f.ok(await f.api('POST','/api/branches/assistant',{enabled:true})),app=status.app;
+  const detail=f.ok(await f.api('GET',`/api/branches/engine/agents/${app.agentId}`)),previous=detail.runs.map(run=>run.id);
+  f.plans.set(app.agentId,[{run:async session=>assert.equal((await session.tool('ponderosa_message',{text:'OUTPUT_APP_REPLY'})).success,true)}]);
+  const asset=f.ok(await f.api('POST',`/api/branches/engine/agents/${app.agentId}/attachments`,Buffer.from('Output app fixture attachment'),{'content-type':'application/octet-stream','x-ponderosa-filename':'output.txt','x-ponderosa-media-type':'text/plain'}));
+  f.ok(await f.api('POST',`/api/branches/engine/agents/${app.agentId}/messages`,{text:'Reply from this output app',attachmentIds:[asset.id],idempotencyKey:randomUUID()}));
+  await until(async()=>{const detail=f.ok(await f.api('GET',`/api/branches/engine/agents/${app.agentId}`));return detail.runs.some(run=>!previous.includes(run.id)&&['completed','failed','interrupted'].includes(run.status))&&detail.messages.some(message=>message.text==='OUTPUT_APP_REPLY');},'output app controlled reply');
+  const final=f.ok(await f.api('GET',`/api/branches/engine/agents/${app.agentId}`));
+  assert.ok(final.messages.some(message=>message.text==='OUTPUT_APP_REPLY'));
+  assert.ok(f.turns.some(turn=>turn.agentId===app.agentId));
+ });
+});
+
+test('deleting the speaker disables Assistant without automatic recreation and malformed role/schedule inputs leave it intact',async t=>{
+ await withFixture(t,async f=>{
+  const status=f.ok(await f.api('POST','/api/branches/assistant',{enabled:true})),app=status.app;
+  for(const body of [{enabled:'yes'},{enabled:true,speaker:'yes'},{enabled:true,extra:'scope'}])assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}`,body)).status,409);
+  for(const everyMs of [0,1000,60000.5])assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,automatic:true,everyMs})).status,409);
+  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,app.agentId);
+  const preview=f.ok(await f.api('POST',`/api/branches/engine/projects/${app.projectId}/agent-deletions/preview`,{rootAgentIds:[app.agentId]}));
+  f.ok(await f.api('POST',`/api/branches/engine/projects/${app.projectId}/agent-deletions/commit`,{rootAgentIds:[app.agentId],previewHash:preview.previewHash}));
+  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).enabled,false);
+  await f.reopen();assert.equal(f.ok(await f.api('POST','/api/branches/assistant',{initialize:true})).enabled,false);
+ });
+});
+
+test('a retry pins the original Assistant import payload even if workspace model defaults change',async()=>{
+ const {OutputAgentApps}=await import('../../apps/server/dist/output-agent-apps.js');
+ let preferences={engineDefaults:{codex:{model:'original',effort:'medium'}}};const attempts=[];
+ const workspace={cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})};
+ const branches={create:()=>({id:'owned-branch',createdAt:'2026-10-29T00:00:00.000Z'})};
+ const importer={validateAgent(){},async importAgent(project,chat,pkg,mapping,key){attempts.push({pkg,mapping,key});throw Error('Controlled interrupted import');}};
+ const create=()=>new OutputAgentApps({},branches,workspace,async()=>({id:'chat',projectId:'project'}),importer,()=> 'codex');
+ await assert.rejects(create().initialize(true),/Controlled interrupted/);
+ preferences.engineDefaults.codex.model='changed';
+ await assert.rejects(create().initialize(true),/Controlled interrupted/);
+ assert.deepEqual(attempts[1],attempts[0],'retry must not change the tracked import hash/key or silently adopt new defaults');
 });

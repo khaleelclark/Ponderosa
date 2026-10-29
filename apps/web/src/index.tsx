@@ -1,4 +1,4 @@
-import {isBranchesPath} from "./api/productScope.js";
+import {isBranchesPath,isOutputAppPath,setStandaloneProductScope} from "./api/productScope.js";
 import {applyBrowserTheme} from "./browserTheme";
 import CssBaseline from "@mui/material/CssBaseline";
 import "@fontsource-variable/inter";
@@ -6,6 +6,8 @@ import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, Suspense, lazy, useLayoutEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+const OutputAgentApp=lazy(()=>import('./components/OutputAgentApp').then(module=>({default:module.OutputAgentApp})));
+if(isOutputAppPath(window.location.pathname))setStandaloneProductScope('branches');
 const App=lazy(()=>import('./App'));
 const BranchesView=lazy(()=>import('./components/BranchesView').then(module=>({default:module.BranchesView})));
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
@@ -51,7 +53,7 @@ function Root(): JSX.Element {
         <MutationNotificationProvider>
           <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
             <Suspense fallback={<div role="status" style={{padding:24}}>Loading Ponderosa…</div>}>
-            {isBranchesPath(window.location.pathname)?<BranchesView colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:<App
+            {isOutputAppPath(window.location.pathname)?<OutputAgentApp/>:isBranchesPath(window.location.pathname)?<BranchesView colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:<App
               colorMode={colorMode}
               onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
             />}

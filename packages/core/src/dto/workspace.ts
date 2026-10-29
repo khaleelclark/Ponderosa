@@ -51,6 +51,9 @@ export interface WorkspacePreferencesDto {
   branchSort?:ProjectSort;
   /** Absent on pre-local-voice workspaces; resolves to browser speech. */
   speech?: SpeechPreferencesDto;
+  /** Output designations are local installation roles, never imported Agent authority. */
+  outputApps?: { agentIds: string[]; speakerAgentId: string | null; initialized: boolean;
+    setup?: { key: string; branchId: string; engine: string; model?: string; effort?: string; createdAt: string } };
   /** Canonical monotonic preference mutation sequence. */
   revision: number;
   projectSort: ProjectSort;

@@ -1,3 +1,4 @@
+import {AssistantEntry} from './components/AssistantEntry';
 import { Alert, Box, Button } from "@mui/material";
 import { LoadingState } from "./components/LoadingState";
 import { MobileNavigationButton } from "./components/MobileNavigationContext";
@@ -122,7 +123,9 @@ export function WorkspaceRouteOutlet({
           Some workspace data could not be refreshed. The last loaded data remains available.
         </Alert>
       ) : null}
-      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
+      <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection:"column" }}>
+      <AssistantEntry/>
+      <Box sx={{flex:1,minHeight:0,display:"grid"}}>
       {loadError ? (
         <Box sx={{ p: 2 }}>
           <MobileNavigationButton />
@@ -268,6 +271,7 @@ export function WorkspaceRouteOutlet({
       ) : (
         assertNeverRoute(route)
       )}
+      </Box>
       </Box>
     </Box>
   );

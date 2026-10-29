@@ -17,3 +17,5 @@ export function productWorkspacePath(path:string):string {
   query.set('tab','chats');query.set('workspace',path);query.delete('settings');
   return `/branches?${query}`;
 }
+
+export const isOutputAppPath=(path:string):boolean=>path==='/assistant'||/^\/apps\/[^/]+\/?$/.test(path);

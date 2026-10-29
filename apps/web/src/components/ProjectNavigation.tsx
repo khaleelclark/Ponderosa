@@ -98,8 +98,8 @@ export function ProjectRail({
     <>
       <SidebarHeader drawer={drawer} hideTitle={drawer} homeLabel="Home" selected={route.kind === "home"} onHome={onOpenHome} onCollapse={drawer ? onClose : onCollapse} actions={<>
         {drawer ? (
-          <Tooltip title="Messages across Ponderosa">
-            <IconButton aria-label="Messages across Ponderosa" aria-current={route.kind === "allChat" ? "page" : undefined} onClick={onOpenAllMessages}>
+          <Tooltip title="Inbox">
+            <IconButton aria-label="Inbox" aria-current={route.kind === "allChat" ? "page" : undefined} onClick={onOpenAllMessages}>
               <ForumOutlinedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
@@ -136,7 +136,7 @@ export function ProjectRail({
         }}
       >
         {!drawer ? <ButtonBase
-          aria-label="Messages across Ponderosa"
+          aria-label="Inbox"
           aria-current={route.kind === "allChat" ? "page" : undefined}
           onClick={onOpenAllMessages}
           sx={{
@@ -154,7 +154,7 @@ export function ProjectRail({
         >
           <ForumOutlinedIcon sx={{ fontSize: 18, flex: "0 0 auto" }} />
           <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: 12, fontWeight: 700 }}>
-            Messages across Ponderosa
+            Inbox
           </Typography>
         </ButtonBase> : null}
         {PROJECT_MODES.map(mode => (
