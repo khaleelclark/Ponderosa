@@ -254,11 +254,6 @@ function GeneralSettingsSection({
         <Typography variant="h6" fontWeight={800}>
           Provider Session Rollover
         </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          When a session passes either limit, Ponderosa asks the Agent to write
-          a short handoff, then starts a fresh provider session at the next safe
-          boundary. The provider&apos;s own compaction remains the fallback.
-        </Typography>
         <Stack spacing={2}>
           <FormControlLabel
             control={

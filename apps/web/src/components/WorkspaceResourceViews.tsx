@@ -270,7 +270,6 @@ export function ProviderActivitySettingsSection({ projects, projectId, workflows
       <CollectionStateFeedback request={chatQuery.requestState} itemCount={chats.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Chat scopes" emptyTitle="No Chat scopes" compact autoLoadMore={false} />
       <CollectionStateFeedback request={agentQuery.requestState} itemCount={agents.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Agent scopes" emptyTitle="No Agent scopes" compact autoLoadMore={false} />
     </Box>
-    <Alert severity="info" sx={{ mb: 2 }}>Input includes instructions, tools, conversation context, and cached reuse. These are provider-reported tokens, not subscription quota, remaining context, or a cost estimate.</Alert>
     <Box>{usage.isError ? <Alert severity="error">Provider activity could not be loaded.</Alert> : !usage.data ? <LinearProgress /> : <TokenUsageDetails data={usage.data} />}</Box>
   </Paper>;
 }

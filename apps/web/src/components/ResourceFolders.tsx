@@ -114,7 +114,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   const action = (run: () => void) => { closeMenu(); run(); };
   const row = (item: Item) => {
     const id = item.id;
-    return <Box key={id} {...{[resourceKind === "conversation" ? "data-chat-folder-row" : "data-branch-folder-row"]: id}} draggable
+    return <Box component="li" key={id} {...{[resourceKind === "conversation" ? "data-chat-folder-row" : "data-branch-folder-row"]: id}} draggable
       onDragStart={event => { setDragged(id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData(dragType, id); }}
       onDragEnd={endDrag}
       onDragOver={event => { if (dragged && dragged !== id) { event.preventDefault(); setTarget({ id, zone: zone(event) }); } }}
@@ -160,7 +160,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
     const expanded = filtering || savedExpanded;
     const active = members.some(item => (item.runningAgentCount ?? 0) > 0);
     const unread = folderUnread?.[folder.id];
-    return <Box key={`${section}:${folder.id}`} {...{[resourceKind === "conversation" ? "data-chat-folder" : "data-branch-folder"]: folder.id}} data-folder-section={section} sx={{ minWidth: 0, mt: .5, mb: 1 }}>
+    return <Box component="li" key={`${section}:${folder.id}`} {...{[resourceKind === "conversation" ? "data-chat-folder" : "data-branch-folder"]: folder.id}} data-folder-section={section} sx={{ minWidth: 0, mt: .5, mb: 1 }}>
       <Stack direction="row" draggable
         onDragStart={event => { setDraggedFolder(folder.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData(`${dragType}-folder`, folder.id); }}
         onDragEnd={endDrag}
@@ -208,10 +208,10 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
           {folder.starred ? <StarRoundedIcon fontSize="small" sx={{ color: starColor }} /> : <StarBorderRoundedIcon fontSize="small" />}
         </IconButton>
       </Stack>
-      {expanded ? <Box sx={{ pl: 1.5, borderLeft: 1, borderColor: "divider", ml: 1.5 }}>
+      {expanded ? <List disablePadding sx={{ pl: 1.5, borderLeft: 1, borderColor: "divider", ml: 1.5 }}>
         {members.map(row)}
-        {!filtering && members.length < folder.memberIds.length ? <Typography sx={{ p: 1 }} variant="caption" color="text.secondary">More {resourceLabel.toLocaleLowerCase()} in this folder may appear as you load the list.</Typography> : null}
-      </Box> : null}
+        {!filtering && members.length < folder.memberIds.length ? <Typography component="li" sx={{ p: 1 }} variant="caption" color="text.secondary">More {resourceLabel.toLocaleLowerCase()} in this folder may appear as you load the list.</Typography> : null}
+      </List> : null}
     </Box>;
   };
   const loose = ungrouped.filter(item => !starred(item));
@@ -221,10 +221,10 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   const pickerContent = <>
     <TextField id="move-folder-search" autoFocus={!moveAnchor} fullWidth size="small" label="Search folders" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} sx={{ mt: .5 }} />
     <List sx={{ mt: 1, maxHeight: "min(45dvh, 320px)", overflowY: "auto", overflowX: "hidden" }}>
-      {destinations.map(folder => <ListItemButton key={folder.id} onClick={() => { if (moving) move(moving.id, folder.id); closeMenu(); }} sx={{ minHeight: 44, gap: 1 }}>
+      {destinations.map(folder => <Box component="li" key={folder.id}><ListItemButton onClick={() => { if (moving) move(moving.id, folder.id); closeMenu(); }} sx={{ minHeight: 44, gap: 1 }}>
         <FolderOutlinedIcon fontSize="small" /><ListItemText primary={folder.name} primaryTypographyProps={{ sx: { overflowWrap: "anywhere" } }} />
-      </ListItemButton>)}
-      {!destinations.length ? <Typography color="text.secondary" sx={{ p: 1 }}>{folderSearch.trim() ? "No matching folders." : "No other folders available."}</Typography> : null}
+      </ListItemButton></Box>)}
+      {!destinations.length ? <Typography component="li" color="text.secondary" sx={{ p: 1 }}>{folderSearch.trim() ? "No matching folders." : "No other folders available."}</Typography> : null}
     </List>
   </>;
   return <>

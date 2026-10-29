@@ -569,6 +569,7 @@ export function WorkspaceSidebar({
       const ownerTitle = ownerConversation?.title ?? "Unavailable Chat";
       return (
         <Stack
+          component="li"
           key={agent.id}
           direction="row"
           draggable

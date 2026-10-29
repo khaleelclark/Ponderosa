@@ -120,3 +120,16 @@ Optional `AXE_CORE_PATH` points to an already installed axe-core browser script;
 both themes; critical findings fail, and other severities remain in the report.
 The check does not qualify physical iPhone, native IME, the future Assistant,
 provider inference or a production release.
+
+The second UI batch adds a native Chrome zoom/keyboard qualification (Linux host
+with existing Xvfb and xdotool). It uses 100%, 200% and 400% browser zoom, asserts
+actual DPR and theme, walks compose/send/rename and instructions by keyboard,
+and saves complete axe results and screenshots. Set `AXE_CORE_PATH` to an existing
+axe-core script; no package is installed by the runner.
+
+```sh
+AXE_CORE_PATH=/path/to/axe.min.js QUALIFICATION_DIRECTORY=/tmp/ui-a11y node --import ./tests/shared/workspace-resolution.mjs tests/workspace-navigation/accessibility-qualification.mjs
+```
+
+This finite native-browser matrix does not substitute for a screen reader,
+Safari qualification, every dialog state, or independent visual comparison.

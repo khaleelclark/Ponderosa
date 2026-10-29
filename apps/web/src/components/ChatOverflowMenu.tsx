@@ -15,7 +15,7 @@ import {
   Tooltip,
 } from "@mui/material";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { copyText } from "../clipboard";
 import { downloadMarkdownTranscript } from "../chatTranscript";
 import { useMutationNotification } from "./MutationNotifications";
@@ -57,11 +57,18 @@ export function ChatOverflowMenu({
   const [exportMenu, setExportMenu] = useState<{ kind: "copy" | "download"; anchor: HTMLElement }>();
   const notify = useMutationNotification();
   const close = () => setAnchor(null);
+  const afterMenuClose = useRef<(() => void)>();
+  const finishMenuAction = () => {
+    const action = afterMenuClose.current;
+    afterMenuClose.current = undefined;
+    action?.();
+  };
   const run = (action: ChatOverflowAction["onSelect"]) => {
     const mainAnchor = anchor;
-    if (!mainAnchor?.isConnected) return;
+    if (!mainAnchor?.isConnected || afterMenuClose.current) return;
+    // Let the old focus trap finish before another dialog or popover opens.
+    afterMenuClose.current = () => { if (mainAnchor.isConnected) action(mainAnchor); };
     close();
-    action(mainAnchor);
   };
   return <>
     <Tooltip title={label}>
@@ -79,13 +86,11 @@ export function ChatOverflowMenu({
       anchorEl={anchor}
       open={Boolean(anchor)}
       onClose={close}
+      TransitionProps={{ onExited: finishMenuAction }}
       MenuListProps={{ "aria-label": label, dense: true }}
       slotProps={{ paper: { sx: { minWidth: 240, maxWidth: "min(360px, calc(100vw - 24px))", "& .MuiMenuItem-root": { minHeight: { xs: 44, sm: 36 }, py: 0.75 } } } }}
     >
-      {details ? <MenuItem sx={menuRowSx} onClick={() => {
-        setDetailsAnchor(anchor);
-        close();
-      }}>
+      {details ? <MenuItem sx={menuRowSx} onClick={() => run(setDetailsAnchor)}>
         <ListItemIcon><TuneOutlinedIcon fontSize="small" /></ListItemIcon>
         <ListItemText>{detailsLabel}</ListItemText>
       </MenuItem> : null}
@@ -100,18 +105,12 @@ export function ChatOverflowMenu({
         <ListItemText>{action.label}</ListItemText>
       </MenuItem>)}
       {actions.length && showExports ? <Divider /> : null}
-      {showExports ? <MenuItem sx={menuRowSx} onClick={() => {
-        if (anchor) setExportMenu({ kind: "copy", anchor });
-        close();
-      }}>
+      {showExports ? <MenuItem sx={menuRowSx} onClick={() => run(anchor => setExportMenu({ kind: "copy", anchor }))}>
         <ListItemIcon><ContentCopyOutlinedIcon fontSize="small" /></ListItemIcon>
         <ListItemText>{CHAT_EXPORT_ACTION_LABELS[0]}</ListItemText>
         <ChevronRightIcon fontSize="small" />
       </MenuItem> : null}
-      {showExports ? <MenuItem sx={menuRowSx} onClick={() => {
-        if (anchor) setExportMenu({ kind: "download", anchor });
-        close();
-      }}>
+      {showExports ? <MenuItem sx={menuRowSx} onClick={() => run(anchor => setExportMenu({ kind: "download", anchor }))}>
         <ListItemIcon><DownloadOutlinedIcon fontSize="small" /></ListItemIcon>
         <ListItemText>{CHAT_EXPORT_ACTION_LABELS[1]}</ListItemText>
         <ChevronRightIcon fontSize="small" />

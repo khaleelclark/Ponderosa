@@ -1656,7 +1656,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 position: "absolute",
                 top: 6,
                 left: 2,
-                color: { xs: "text.secondary", md: "text.disabled" },
+                color: "text.secondary",
                 fontSize: isIOSComposer ? 16 : 15,
                 lineHeight: "22px",
                 pointerEvents: "none",

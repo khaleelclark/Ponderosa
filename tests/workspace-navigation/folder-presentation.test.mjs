@@ -166,3 +166,10 @@ test('BR004 Starred keeps legacy folder/member/loose ordering when canonical use
   assert.ok(chatStar.indexOf('data-chat-folder-row="loose-new"')<chatStar.indexOf('data-chat-folder-row="loose-old"'));
   assert.ok(chatAll.indexOf('data-chat-folder="a"')<chatAll.indexOf('data-chat-folder="b"'));
 });
+
+test('sidebar folders and rows use nested semantic list items',()=>{
+ const html=render(rows.slice(30));
+ assert.match(html,/<li[^>]*data-chat-folder="folder"/);
+ assert.match(html,/<ul[^>]*>[\s\S]*?<li[^>]*data-chat-folder-row="chat-30"/);
+ assert.ok(!/<div[^>]*data-chat-folder(?:-row)?=/.test(html));
+});

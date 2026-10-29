@@ -520,3 +520,33 @@ accepts `providers.codex.executable` and `providers.claude.executable`. Use an
 absolute path and valid JSON; on Windows use forward slashes or escaped
 backslashes. This file holds executable paths, not tokens or passwords. Restart
 Engine after changing it and check the web provider status again.
+
+### Sidebar accessibility and browser text size
+
+Sidebar folders and their contents are nested lists. Resource links, star buttons
+and context menus remain separately reachable by keyboard. Settings navigation
+is a named navigation region. Active message placeholders use readable secondary
+text in both themes. Browser zoom remains enabled; use your browser's zoom controls
+for larger text and the normal theme controls for light/dark appearance.
+
+Session rollover requests a short Agent handoff when either configured limit is
+reached, then starts a fresh provider session at the next safe boundary. The
+provider's own compaction remains the fallback. Provider Activity's input figures
+include instructions, tool definitions, context and cached reuse; they are
+reported tokens, not subscription quota, remaining context or cost estimates.
+
+Your profile identity controls how Agents address you throughout Ponderosa.
+Pictures are stored in managed workspace data. Use PNG, JPEG, WebP, GIF or AVIF
+(up to 10 MiB); HEIC is unsupported because browser rendering is inconsistent.
+
+For a local browser, use a dedicated Chrome/Edge window with extension 0.4.1.
+Pairing can happen before sign-in. Existing and new application tabs in that
+window are included; other windows stay outside access. Agent actions show a
+temporary cursor. Sign-in pauses control while retaining the pairing; complete
+sign-in directly, then use Resume browser access in the extension. Manual pause
+is available anytime. Agents can attach PDF, DOCX and text files from their Chat
+(up to 10 MiB).
+
+Opening Rename from the Chat menu keeps keyboard focus in the name field, including
+at larger browser zoom. Menu actions wait for the menu to close before opening the
+next dialog or popover.

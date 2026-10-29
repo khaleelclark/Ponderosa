@@ -52,7 +52,7 @@ export function SettingsSidebarPanel({
       >
         <IconTitle icon={<SettingsOutlinedIcon />} title="Settings" />
       </Stack>
-      <List sx={{ px: 1.25, minHeight: 0, overflowY: "auto" }}>
+      <List component="nav" aria-label="Settings" sx={{ px: 1.25, minHeight: 0, overflowY: "auto" }}>
         <ListItemButton
           selected={(route.kind === "settings" && route.section === "profile")}
           component="a" href={hrefForRoute({ kind: "settings", section: "profile" })}
@@ -114,7 +114,7 @@ export function SettingsSidebarPanel({
       </List>
       <Typography
         variant="caption"
-        color="text.disabled"
+        color="text.secondary"
         sx={{ px: 2.25, pb: 2 }}
       >
         Ponderosa{version ? ` v${version}` : ""}
