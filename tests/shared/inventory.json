@@ -1594,6 +1594,14 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24 and installed Lexical; no browser or provider account"
+    },
+    {
+      "path": "tests/memory/package-portability.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built server, owned Chroma and pinned models; no provider account",
+      "origin": "Phase2 actual product package memory/lifecycle regressions"
     }
   ],
   "retainedReleasePayload": [
@@ -1788,6 +1796,22 @@
       "feature": "branches",
       "moduleBase": "apps/server/package.json",
       "origin": "Opt-in loopback BR024 browser qualification; disposable canonical stores and controlled provider roots only"
+    },
+    {
+      "path": "tests/memory/portability-fixture.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned private memory package fixtures",
+      "origin": "Phase2 actual product memory package tests"
+    },
+    {
+      "path": "tests/memory/package-crash-worker.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned private memory package fixtures",
+      "origin": "Phase2 actual product memory package tests"
     }
   ],
   "support": [

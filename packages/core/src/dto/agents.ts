@@ -137,6 +137,17 @@ export interface PortableAgentNodeDto {
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
 }
+export interface PortableMemorySourceStamp {
+  format:1; principal:string; id:string; scope:string; audience:string; ownerChat:string;
+  sourceType:'user_statement'|'ai_inference';
+  provenance:{actor:{kind:'agent'|'user';id:string};runId:string;fenceToken:string;at:string};
+  origin?:PortableMemorySourceStamp['provenance'];
+}
+export interface PortableMemoryRowDto {id:string;text:string;metadata:Record<string,string|number|boolean>;embedding:number[];stamp:PortableMemorySourceStamp}
+export interface PortableChatMemorySnapshotDto {
+  schema:'ponderosa.chat-memory.v1';signature:string;sourceChatId:string;agentIds:string[];excludedScopes:['global'];chunks:PortableMemoryRowDto[];conflicts:PortableMemoryRowDto[];
+}
+export interface PortablePackageMemoryDto {snapshot:PortableChatMemorySnapshotDto;agentRefs:Record<string,string>}
 export interface AgentPortablePackageDto {
   schema: "ponderosa.agent-package.v1";
   mode: AgentExportMode;
@@ -147,6 +158,8 @@ export interface AgentPortablePackageDto {
   sourceProjectInstructions?: string;
   rootRef: string;
   agents: PortableAgentNodeDto[];
+  /** Full-mode selected Chat/team and included Agent private memory; grants are never transported. */
+  memory?: PortablePackageMemoryDto[];
 }
 export interface AgentImportChatInstructionsResolution {
   action: "keep_destination" | "use_source";

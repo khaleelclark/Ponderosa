@@ -570,8 +570,17 @@ and times. A source Run marked running remains a historical observation; import
 does not start or resume it. Known credential fields are removed, but free-form
 history can contain sensitive text, as the full-export warning states.
 
-This does not yet migrate local memory, provider-native sessions, exact provider
-inputs or historical Branch execution Chats. Full machine-to-machine recreation
+With local memory configured, full packages also transfer the selected Chat
+team memory and included Agents' private memory, including versions and conflicts.
+The destination needs compatible local models and memory storage. Templates
+contain no memory. Fresh Branch workflow installations use the same path;
+memory-bearing updates to existing workflows currently require separate migration
+review and are refused explicitly.
+
+Installation-global memory is explicitly excluded; a separate selected-global
+transfer flow is still needed. Cross-Chat organizations require separate packages
+and destination Chats. Provider-native sessions, exact provider inputs and
+historical Branch execution Chats are not migrated. Full machine-to-machine recreation
 remains incomplete. Execution logs share the existing 64 MiB managed-file and
 aggregate package artifact limits; export fails explicitly rather than dropping
 records when a limit is exceeded. Unsupported execution-archive versions and

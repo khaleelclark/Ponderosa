@@ -49,6 +49,7 @@ export class LocalMemoryService{
     if(!fresh){policy.close();policy=new Database(file,{fileMustExist:true});}this.policy=policy;this.freshPolicy=fresh;return principal.principal_id;
    }catch(e){policy.close();throw e;}
   });this.principalId=this.core.database.principal;
+   this.core.database.packageVisible=id=>this.ports.store.getAgentCreationOperation(id)?.status==='completed'&&!this.ports.store.sqlite.prepare("SELECT 1 FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.creation_operation_id=? AND p.state!='completed'").get(id);
    this.core.database.onRead=(a,row)=>this.noteSpeechRead(a,row);
    this.core.database.onMutation=(scope,id)=>{for(const entry of this.speech.values())if(entry.refs.has(JSON.stringify([scope,id])))this.invalidateSpeech(entry,scope==='global'?'global':'chat');};
  }
@@ -261,6 +262,40 @@ export class LocalMemoryService{
  async restorePackageMemory(snapshot:unknown,chatId:string,agents:Readonly<Record<string,string>>,operationId:string){
   const guard=async()=>{this.chat(chatId);for(const id of Object.values(agents)){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Package destination Agent ownership changed');}};
   await guard();await this.ready();const pending=this.core.database.restorePackageMemory(snapshot,chatId,agents,operationId,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+ }
+
+ private importMemoryGuard(operationId:string,agents?:Readonly<Record<string,string>>,signal?:AbortSignal){
+  return async()=>{
+   this.live();signal?.throwIfAborted();const store=this.ports.store,op=store.getAgentCreationOperation(operationId);
+   if(!op||op.kind!=='import'||op.status!=='preparing'||!op.conversationId)throw new MemoryDenied('Exact preparing package import required');
+   const chat=store.getConversation(op.conversationId);
+   if(!chat||chat.projectId!==op.projectId||store.sqlite.prepare('SELECT 1 FROM conversations WHERE id=? AND branch_execution_id IS NOT NULL').get(chat.id)||store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(op.projectId)||store.sqlite.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?').get(chat.id))throw new MemoryDenied('Package memory destination retired');
+   if(chat.branchId&&!store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(chat.branchId))throw new MemoryDenied('Package Branch retired');
+   if(!activeChatResourceOwner(store,'chat',chat.id)){
+    const staged=store.sqlite.prepare("SELECT r.staging_plan_id AS plan FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.local_id=? AND r.agent_ref='' AND r.state='staging' AND p.state='applying' AND r.branch_id=?").get(chat.id,chat.branchId) as {plan:string}|undefined;
+    if(!staged||op.agentIds.some(id=>!store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state='staging' AND staging_plan_id=? AND creation_operation_id=?").get(id,staged.plan,op.id)))throw new MemoryDenied('Exact staged Branch import ownership required');
+   }
+   for(const id of Object.values(agents??{})){
+    const agent=store.getAgent(id);
+    if(!op.agentIds.includes(id)||!agent||agent.projectId!==op.projectId||agent.conversationId!==chat.id||store.sqlite.prepare('SELECT 1 FROM agent_deletion_pending WHERE agent_id=?').get(id))throw new MemoryDenied('Exact pending package Agent membership required');
+   }
+  };
+ }
+ prepareImportMemory(operationId:string,memory:NonNullable<import('@ponderosa/core').AgentPortablePackageDto['memory']>){
+  const op=this.ports.store.getAgentCreationOperation(operationId);if(!op?.conversationId||op.status!=='preparing')throw new MemoryDenied('Preparing package import required');
+  return memory.map((entry,index)=>({...this.core.database.packageMemoryIds(entry.snapshot,op.conversationId!,operationId+':m:'+index),namespace:operationId+':m:'+index}));
+ }
+ async restoreImportMemory(operationId:string,entry:NonNullable<import('@ponderosa/core').AgentPortablePackageDto['memory']>[number],agents:Readonly<Record<string,string>>,namespace:string,signal?:AbortSignal){
+  const op=this.ports.store.getAgentCreationOperation(operationId);if(!op?.conversationId)throw new MemoryDenied('Package import missing destination');
+  const guard=this.importMemoryGuard(operationId,agents,signal);await guard();await this.ready();
+  const pending=this.core.database.restorePackageMemory(entry.snapshot,op.conversationId,agents,namespace,guard,operationId);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+ }
+ async rollbackImportMemory(operationId:string){
+  const store=this.ports.store,op=store.getAgentCreationOperation(operationId);const plan=(op?.result as {memoryPlan?:Array<{chatId:string;namespace:string;chunkIds:string[];conflictIds:string[]}>}|undefined)?.memoryPlan;
+  if(!plan?.length)return;
+  const guard=async()=>{this.live();const current=store.getAgentCreationOperation(operationId);if(!current||current.kind!=='import'||!['preparing','rolling_back'].includes(current.status)||current.projectId!==op!.projectId||current.conversationId!==op!.conversationId)throw new MemoryDenied('Exact failed package import cleanup required');};
+  const pending=(async()=>{for(const item of plan){if(item.chatId!==op!.conversationId)throw new MemoryDenied('Memory cleanup Chat mismatch');await this.core.database.rollbackPackageMemory(item,operationId,guard);}await guard();store.updateAgentCreationOperation(operationId,{result:{phase:'memory_rolled_back'}});})();
+  this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}
  }
 
  fence(){this.closed=true;for(const e of this.speech.values())e.invalid=true;}

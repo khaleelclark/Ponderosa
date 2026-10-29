@@ -1,79 +1,111 @@
-# Bounded host memory restoration slice
+# Product memory package transport and remaining work
 
-`LocalMemoryService.exportPackageMemory(chatId, agentIds)` and
-`restorePackageMemory(snapshot, chatId, sourceToDestinationAgents, operationId)`
-are trusted host methods, not Agent tools or public endpoints. The owning host
-caller must perform human export/import admission before invoking them. They
-check canonical active Chat/Agent ownership throughout storage access and track
-in-flight calls for shutdown. They use the existing `AuthorityStorage` and
-Chroma collections, not a second memory database or authority system.
+Full Agent and organization exports now include a `memory` section when local
+memory is configured. It carries one versioned Chat snapshot and an explicit
+source-Agent-ID to package-Agent-ref map. Templates omit it. The source Chat's
+team audience and only included Agents' private audiences are selected, including
+deprecated lineage and conflict history. Free memory text is user data; the
+existing sensitive-data export warning remains required.
 
-The `ponderosa.chat-memory.v1` snapshot records the embedding signature, source
-Chat and included Agent inventory, chunks, conflicts, original source stamps,
-text, metadata and actual 384-dimensional embeddings. It explicitly declares
-`excludedScopes: ["global"]`. Export includes the selected Chat's team audience
-and only the listed Agents' private audiences. Deprecated ancestors and conflict
-references must form a complete, acyclic graph within one audience. Foreign or
-unclassified source stamps cause an explicit error. This operation never sweeps
-installation-global memory or source policy/grant databases.
+Fresh Branch workflow installation uses the same Agent package parser and import
+engine. Export retains team memory only in the first Agent package for each Chat;
+subsequent packages contain their private audience. Logical Branch refs are
+mapped separately from the snapshot's historical source IDs. Re-export uses the
+current canonical destination memory; it does not replay an old snapshot.
 
-Restore validates the schema, allowed structural fields, embedding signature,
-finite vectors, provenance, lineage, conflict references and exact Agent mapping
-before writing. Both directions enforce a 16 MiB serialized snapshot bound and
-10,000 total selected rows; export also bounds the inspected inventory. Known
-credential-named metadata fields are rejected. Arbitrary memory text remains
-user data and can be sensitive; the existing full-export warning remains
-required. Generic encoded metadata needs the independently reviewed shared
-known-secret validator before this format is exposed in product packages.
+The shared core DTOs describe `PortableChatMemorySnapshotDto`, source stamps,
+rows and bindings. The existing bounded JSON codec and total package byte counter
+include the entire section. Snapshots enforce 16 MiB serialized UTF-8 and 10,000
+selected rows, supported schema/signature, well-formed Unicode, actual finite
+384-vectors, complete acyclic same-audience lineage and conflict references.
+Branch envelopes also pass the shared whole-package byte counter. Foreign or
+unclassified source rows fail explicitly. Cross-Chat Agent/organization snapshots
+are refused rather than merged into one destination Chat and silently broadening
+their team audiences; export separate packages to separate Chats instead.
 
-Destination principal, Chat ownership and private Agent audiences are rebound.
-Original stamps remain inert `package_source_stamp` metadata; original lineage
-origins remain historical provenance. New source provenance names a historical
-package import, never a source Run capability. The destination's policy and
-readGlobal grants stay unchanged. No scheduler Runs, activations or outbox work
-are created. Chroma stores vectors as float32; exported Chroma vector values
-survive exactly, and hand-authored inputs use Chroma's float32 representation.
+Structured metadata and provenance reuse `portable-secrets.ts`. Export removes
+known generic/provider credential fields through nested object/array and JSON
+string layers; import rejects such fields before mutation. Free user memory text
+is outside that policy and can contain sensitive information. Historical
+`SourceStamp.fenceToken` remains allowed. The two separately reviewed secret-policy
+commits are prerequisites, not a claim of independent approval.
 
-IDs derive from destination principal/Chat, operation ID, source Chat, row kind
-and original ID. Repeating an identical operation accepts only identical
-existing rows. Any differing content causes a collision error without
-replacement. A failed write compensates only IDs absent at preflight and
-attempted by that call. If ownership is revoked or compensation fails, an
-explicit incomplete-installation error is raised. Chroma is not transactional:
-this helper does not claim crash recovery or a durable import receipt. The
-caller must keep its existing durable creation-operation fence until commit.
+## Authority and lifetime
 
-## Verification
+`LocalMemoryService` remains the only host entry point. Package calls use the
+existing `AuthorityStorage`, not a second memory database. Destination principal,
+Chat and private Agent audiences are explicitly rebound. Original source stamps
+remain inert `package_source_stamp` metadata and lineage origins remain historical.
+No grants, policy databases, installation bindings, provider credentials, profiles,
+Run capabilities or scheduler work are imported. Destination memory restrictions
+and global-read settings stay authoritative. Chroma stores vectors as float32;
+values exported from Chroma survive exactly.
 
-Run after building dependencies and server:
+The product path requires the exact canonical `preparing` import operation,
+Chat/project ownership and reserved Agent membership. It admits that operation's
+pending Agents without changing normal active-Agent predicates. A staged Branch
+Chat additionally requires the matching applying installation plan and exact
+Agent resource bindings. Cancellation, deletion, shutdown and membership changes
+are checked during storage calls.
 
-```sh
-TMPDIR=/tmp PONDEROSA_TEST_CHROMA_BIN=/path/to/existing/chroma PONDEROSA_TEST_MEMORY_MODEL_DIR=/path/to/existing/models node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/memory/portability.test.mjs tests/memory/deletion-lifecycle.test.mjs tests/memory/startup-config.test.mjs
-```
+Before the first memory mutation, SQLite's existing creation-operation `result`
+records `phase: prepared_memory` and the exact destination namespace/row IDs.
+There is no schema migration or new import journal. Deterministic IDs permit
+identical retries and refuse differing existing data. Rows carry an internal
+`host_package_operation` marker; normal reads and exports cannot see them until
+the SQLite operation completes. Branch rows additionally wait for their owning
+installation plan to complete. This is visibility gating, not a new grant.
 
-The portability fixture starts its own Chroma process and creates separate
-source/destination service policy directories, canonical stores and collection
-prefixes using existing local models. Core and Branches checks compare text,
-vectors, deprecated lineage and remapped conflicts, source/destination
-principals and private/team visibility; they reopen/re-export, preserve denied
-read authority and destination global grants, and assert empty scheduler
-Runs/activations/outbox. Other checks refuse malformed/oversized/incompatible
-snapshots before writes and simulate a partial write failure with unrelated
-pre-existing rows preserved.
+On failure, the import enters `rolling_back` and cleans only its journaled IDs,
+checking the destination principal, Chat and exact operation marker. It then
+removes its existing Agent/artifact plan through normal rollback. A cleanup
+failure retains the memory plan and quarantine. Startup retries memory cleanup
+before ordinary creation recovery can release that quarantine. Missing memory
+configuration remains an explicit pending-cleanup error; restore configuration
+and restart to retry. Successful completion atomically replaces the temporary
+plan with the ordinary import result. Imported history never creates Runs,
+activations or provider outbox work.
 
-## Unfinished product integration
+## Verified scope
 
-These host methods are not yet called by Agent, organization or Branches package
-routes. Existing user exports still omit memory. The next slice must add a
-shared package DTO/parser and size accounting, human inventory admission,
-Chat-level deduplication, Branch logical-reference mapping and explicit handling
-of required global data. Its durable creation-operation integration must support
-its own pending Agents, stage/commit/recover/rollback the package namespace and
-handle process death, cancellation and destination deletion. The present active
-ownership guard intentionally cannot authorize pending creation-operation Agents.
+After the dependency-order build, run the bounded regression command recorded in
+the evidence report. Product tests use the actual Agent export/import and Branch
+installation/export HTTP APIs, separate fresh private canonical stores/policies
+and Chroma prefixes, an owned Chroma process and pinned existing local models.
+They verify semantic text/vector/deprecation equality, remapped lineage/conflicts,
+private/team queries, denied scopes and unchanged global grants, replay, reopen,
+re-export, encoded-secret export exclusion/import refusal, malformed/oversized
+payload refusal and unconfigured-destination refusal. A separate writer process
+is SIGKILLed immediately after its first real package memory write; the next
+server startup removes the namespace and pending Agent, then the exact import
+can retry. An explicit incomplete-cleanup fixture proves the journal remains
+pending and hidden until recovery succeeds. Providers are inert and never run.
 
-The execution archive's independent known-secret P1 correction must be reviewed
-and integrated separately; this branch does not modify that archive or its
-tests. Provider-native transcripts, exact provider inputs, historical Branch
-execution Chats and full workflow equality remain open. Full portability (#8)
-is still False; no upgrade, whole-suite pass or 20-run streak is claimed.
+## Explicit incomplete paths
+
+Memory-bearing updates to an existing Branch workflow are refused before
+installation planning. The next slice must journal additive memory changes for
+new Agents and preserved active Chats, keep them hidden until the entire update
+commits, and compensate exact namespaces on cancellation/review-required paths.
+Existing active Agents' current memory must not be overwritten by incoming
+history; the preview must state which incoming data is applied or preserved.
+The refusal is a temporary data-integrity boundary, not an access policy.
+
+Installation-global memory is explicitly listed in each snapshot's
+`excludedScopes: ["global"]`; it is not silently swept or demoted to Chat scope.
+No UI or API for selected global transport is implemented in this batch. Required
+follow-up: add an explicit human global-memory selection to export, show ancestor
+and conflict closure before confirmation, and carry a separately versioned global
+section. Import must offer a separate human action to install those selected
+facts as global data, use new namespace IDs/principal provenance and the same
+durable visibility/rollback plan, and preserve the destination's existing
+readGlobal grants. Required but disabled access must appear in installation
+results, with no automatic permission change. Tests must cover global selection,
+recall only under destination grants, cancellation and crash recovery without
+affecting unrelated global rows. Keep global data unimplemented until that
+product path exists.
+
+Multi-Chat organization recreation, provider-native transcripts, exact provider
+inputs, historical Branch execution Chats and full workflow equality remain open.
+No whole-suite, integrated upgrade, 20-run streak or full portability (#8) verdict
+is claimed by this batch.

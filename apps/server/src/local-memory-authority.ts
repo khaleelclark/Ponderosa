@@ -1,8 +1,10 @@
+import {withoutPortableSecrets} from './portable-secrets.js';
 import {createHash} from 'node:crypto';
 import {MEMORY_SNAPSHOT_MAX_BYTES,validateMemorySnapshot,type PortableMemorySnapshot,type PortableMemoryRow} from './portable-memory-snapshot.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {MemoryRuntime,ChromaStorage,type MemoryStorage,type Chunk,type Conflict,type Inference} from '@local-memory/mcp-node-private';
-export type SourceStamp={format:1;principal:string;id:string;scope:string;audience:string;ownerChat:string;sourceType:'user_statement'|'ai_inference';provenance:{actor:{kind:'agent'|'user';id:string};runId:string;fenceToken:string;at:string};origin?:SourceStamp['provenance']};
+export type {PortableMemorySourceStamp as SourceStamp} from '@ponderosa/core';
+import type {PortableMemorySourceStamp as SourceStamp} from '@ponderosa/core';
 export type MemoryAuthority={chatId:string;actor:{kind:'agent'|'user';id:string};runId:string;fenceToken:string;sourceType:'user_statement'|'ai_inference';readGlobal:boolean;readChat:boolean;writeScope?:string;visibility?:'team'|'private';targetId?:string;observeExposure?:boolean;guard:()=>Promise<void>};
 type Frame={owner:AuthorityStorage;authority:MemoryAuthority;all:Map<string,SourceStamp|null>;allowed:Map<string,SourceStamp>;scopes:string[];parents:Map<string,string>;created:Set<string>};
 const context=new AsyncLocalStorage<Frame>();const key=(scope:string,id:string)=>JSON.stringify([scope,id]);
@@ -15,11 +17,12 @@ export async function checkedCollection(raw:ChromaStorage,scope:string,log:boole
 /** A per-call storage view, not persistence, a journal, a transaction or a recovery coordinator. */
 export class AuthorityStorage implements MemoryStorage{
  constructor(readonly raw:ChromaStorage,readonly principal:string,readonly inference:Inference){}
+ packageVisible?:(operationId:string)=>boolean;
  onRead?:(authority:MemoryAuthority,row:Chunk)=>void;
  onMutation?:(scope:string,id:string)=>void;
  private frame(){const f=context.getStore();if(!f||f.owner!==this)throw new Error('Trusted memory call boundary required');return f;}
  private async guard(){await this.frame().authority.guard();}
- private parse(id:string,scope:string,m:any):SourceStamp|null{try{const str=(v:unknown,max=512)=>typeof v==='string'&&v.length>0&&v.length<=max&&v.trim()===v&&!v.includes('\0');const provenance=(v:any)=>v&&Object.keys(v).every(k=>['actor','runId','fenceToken','at'].includes(k))&&v.actor&&Object.keys(v.actor).every(k=>['kind','id'].includes(k))&&['agent','user'].includes(v.actor?.kind)&&str(v.actor.id)&&str(v.runId)&&str(v.fenceToken)&&str(v.at,64)&&Number.isFinite(Date.parse(v.at));if(typeof m?.host_source_authority!=='string'||m.host_source_authority.length>8192)return null;const s=JSON.parse(m.host_source_authority);if(Object.keys(s??{}).some(k=>!['format','principal','id','scope','audience','ownerChat','sourceType','provenance','origin'].includes(k)))return null;if(s?.format!==1||s.principal!==this.principal||s.id!==id||s.scope!==scope||!str(id)||!str(scope)||s.sourceType!==m.source_type||!['user_statement','ai_inference'].includes(s.sourceType)||!str(s.ownerChat)||!str(s.audience)||!provenance(s.provenance)||(s.origin!==undefined&&!provenance(s.origin)))return null;if(scope==='global'&&(s.ownerChat!=='global'||s.audience!=='installation-global'||(s.provenance.actor.kind==='agent'?s.sourceType!=='ai_inference':s.sourceType!=='user_statement')))return null;return s;}catch{return null;}}
+ private parse(id:string,scope:string,m:any,includePending=false):SourceStamp|null{try{if(m?.host_package_operation!==undefined&&(typeof m.host_package_operation!=='string'||!includePending&&!this.packageVisible?.(m.host_package_operation)))return null;const str=(v:unknown,max=512)=>typeof v==='string'&&v.length>0&&v.length<=max&&v.trim()===v&&!v.includes('\0');const provenance=(v:any)=>v&&Object.keys(v).every(k=>['actor','runId','fenceToken','at'].includes(k))&&v.actor&&Object.keys(v.actor).every(k=>['kind','id'].includes(k))&&['agent','user'].includes(v.actor?.kind)&&str(v.actor.id)&&str(v.runId)&&str(v.fenceToken)&&str(v.at,64)&&Number.isFinite(Date.parse(v.at));if(typeof m?.host_source_authority!=='string'||m.host_source_authority.length>8192)return null;const s=JSON.parse(m.host_source_authority);if(Object.keys(s??{}).some(k=>!['format','principal','id','scope','audience','ownerChat','sourceType','provenance','origin'].includes(k)))return null;if(s?.format!==1||s.principal!==this.principal||s.id!==id||s.scope!==scope||!str(id)||!str(scope)||s.sourceType!==m.source_type||!['user_statement','ai_inference'].includes(s.sourceType)||!str(s.ownerChat)||!str(s.audience)||!provenance(s.provenance)||(s.origin!==undefined&&!provenance(s.origin)))return null;if(scope==='global'&&(s.ownerChat!=='global'||s.audience!=='installation-global'||(s.provenance.actor.kind==='agent'?s.sourceType!=='ai_inference':s.sourceType!=='user_statement')))return null;return s;}catch{return null;}}
  private readable(s:SourceStamp,a:MemoryAuthority){return s.scope==='global'?a.readGlobal&&s.ownerChat==='global'&&s.audience==='installation-global':a.readChat&&s.scope===`chat:${a.chatId}`&&s.ownerChat===a.chatId&&(s.audience===`chat:${a.chatId}:team`||(a.actor.kind==='agent'&&s.audience===`chat:${a.chatId}:agent:${a.actor.id}`));}
  private async collection(scope:string,log=false){return checkedCollection(this.raw,scope,log,()=>this.guard());}
  private vector(v:unknown):number[]{const a=Array.from(v as ArrayLike<number>??[]);if(a.length!==384||!a.every(Number.isFinite)||!a.some(n=>n!==0))throw Error('Invalid memory vector');return a;}
@@ -68,10 +71,10 @@ export class AuthorityStorage implements MemoryStorage{
      await guard();const p=await c.get({offset,limit:100,include:['documents','metadatas','embeddings'] as any});await guard();
      for(let i=0;i<p.ids.length;i++){
       const metadata:any=p.metadatas[i],stamp=this.parse(p.ids[i]!,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata);
-      if(!stamp)throw Error('Memory snapshot: unclassified or foreign source prevents export');
+      if(!stamp){if(typeof metadata?.host_package_operation==='string'&&!this.packageVisible?.(metadata.host_package_operation)&&this.parse(p.ids[i]!,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata,true))continue;throw Error('Memory snapshot: unclassified or foreign source prevents export');}
       if(!audiences.has(stamp.audience))continue;
-      const clean={...metadata};delete clean.host_source_authority;delete clean.host_conflict_authority;
-      const row:PortableMemoryRow={id:p.ids[i]!,text:p.documents[i] as string,metadata:clean,embedding:this.vector(p.embeddings?.[i]),stamp};
+      const clean={...metadata};delete clean.host_source_authority;delete clean.host_conflict_authority;delete clean.host_package_operation;
+      const row:PortableMemoryRow={id:p.ids[i]!,text:p.documents[i] as string,metadata:withoutPortableSecrets(clean) as PortableMemoryRow['metadata'],embedding:this.vector(p.embeddings?.[i]),stamp:withoutPortableSecrets(stamp) as SourceStamp};
       bytes+=Buffer.byteLength(JSON.stringify(row))+1;if(bytes>MEMORY_SNAPSHOT_MAX_BYTES)throw Error('Memory snapshot: 16 MiB byte limit exceeded');
       (log?snapshot.conflicts:snapshot.chunks).push(row);
      }
@@ -84,14 +87,14 @@ export class AuthorityStorage implements MemoryStorage{
   });
  }
  /** Import only adds deterministic package-owned IDs; retries never overwrite another source. */
- async restorePackageMemory(value:unknown,chatId:string,agents:Readonly<Record<string,string>>,operationId:string,guard:()=>Promise<void>){
+ async restorePackageMemory(value:unknown,chatId:string,agents:Readonly<Record<string,string>>,operationId:string,guard:()=>Promise<void>,packageOperationId?:string){
   const snapshot=validateMemorySnapshot(value,this.raw.signature),source=structuredClone(snapshot);
   if(!operationId||operationId.length>128||!chatId||Object.keys(agents).length!==source.agentIds.length||source.agentIds.some(id=>typeof agents[id]!=='string'||!agents[id])||new Set(Object.values(agents)).size!==source.agentIds.length)throw Error('Memory snapshot: exact destination Agent mapping required');
   const scope='chat:'+chatId;
   const id=(kind:string,sourceId:string)=>createHash('sha256').update(JSON.stringify([this.principal,chatId,operationId,source.sourceChatId,kind,sourceId])).digest('hex');
   const prepared=([false,true] as const).map(log=>(log?source.conflicts:source.chunks).map(row=>{
    const destinationId=id(log?'conflict':'chunk',row.id),privateAgent=source.agentIds.find(a=>row.stamp.audience==='chat:'+source.sourceChatId+':agent:'+a);
-   const metadata={...row.metadata};
+   const metadata={...row.metadata};if(packageOperationId)metadata.host_package_operation=packageOperationId;
    if(metadata.supersedes)metadata.supersedes=id('chunk',String(metadata.supersedes));
    if(log){const refs=JSON.parse(String(metadata.chunk_ids_affected??metadata.chunk_ids)).map((ref:string)=>id('chunk',ref));metadata.chunk_ids=JSON.stringify(refs);metadata.chunk_ids_affected=JSON.stringify(refs);metadata.log_id=destinationId;metadata.chunks_affected=refs.length;}
    // Original source identities remain inert provenance, never destination Run capabilities.
@@ -101,7 +104,7 @@ export class AuthorityStorage implements MemoryStorage{
    return {id:destinationId,text:row.text,metadata,embedding:row.embedding.map(Math.fround)};
   }));
   return this.raw.exclusive(async()=>{
-   const collections=await Promise.all([false,true].map(log=>checkedCollection(this.raw,scope,log,guard))),pending:Array<{c:typeof collections[number];row:typeof prepared[number][number]}>=[];
+   const collections=await Promise.all([false,true].map(log=>checkedCollection(this.raw,scope,log,guard,Boolean(packageOperationId)))),pending:Array<{c:typeof collections[number];row:typeof prepared[number][number]}>=[];
    for(let index=0;index<2;index++)for(const row of prepared[index]!){
     const c=collections[index]!;await guard();const existing=await c.get({ids:[row.id],include:['documents','metadatas','embeddings'] as any});await guard();
     if(existing.ids.length){const sorted=(v:any)=>JSON.stringify(Object.entries(v).sort(([a],[b])=>a.localeCompare(b)));if(existing.ids.length!==1||existing.documents[0]!==row.text||sorted(existing.metadatas[0])!==sorted(row.metadata)||JSON.stringify(Array.from(existing.embeddings?.[0]??[]))!==JSON.stringify(row.embedding))throw Error('Memory snapshot: destination ID collision; existing data preserved');}
@@ -111,6 +114,26 @@ export class AuthorityStorage implements MemoryStorage{
    try{for(const item of pending){await guard();attempted.push(item);await item.c.upsert({ids:[item.row.id],documents:[item.row.text],metadatas:[item.row.metadata],embeddings:[item.row.embedding]});await guard();}}
    catch(error){try{await guard();for(const item of attempted){await guard();await item.c.delete({ids:[item.row.id]});}await guard();}catch(cleanup){throw new AggregateError([error,cleanup],'Memory snapshot installation incomplete; exact package namespace requires retry/cleanup');}throw error;}
    return {chunkIds:prepared[0]!.map(r=>r.id),conflictIds:prepared[1]!.map(r=>r.id),excludedScopes:source.excludedScopes};
+  });
+ }
+ packageMemoryIds(value:unknown,chatId:string,namespace:string){
+  const snapshot=validateMemorySnapshot(value,this.raw.signature);
+  const id=(kind:string,sourceId:string)=>createHash('sha256').update(JSON.stringify([this.principal,chatId,namespace,snapshot.sourceChatId,kind,sourceId])).digest('hex');
+  return {chatId,chunkIds:snapshot.chunks.map(r=>id('chunk',r.id)),conflictIds:snapshot.conflicts.map(r=>id('conflict',r.id))};
+ }
+ async rollbackPackageMemory(plan:{chatId:string;chunkIds:string[];conflictIds:string[]},operationId:string,guard:()=>Promise<void>){
+  return this.raw.exclusive(async()=>{
+   const scope='chat:'+plan.chatId;
+   for(const log of [false,true]){
+    let c;try{c=await checkedCollection(this.raw,scope,log,guard);}catch(error){if(error instanceof Error&&error.name==='ChromaNotFoundError')continue;throw error;}
+    for(const id of log?plan.conflictIds:plan.chunkIds){
+     await guard();const rows=await c.get({ids:[id],include:['metadatas'] as any});await guard();
+     if(!rows.ids.length)continue;
+     const m:any=rows.metadatas[0],stamp=this.parse(id,scope,log?{...m,host_source_authority:m.host_conflict_authority}:m,true);
+     if(rows.ids.length!==1||rows.ids[0]!==id||!stamp||stamp.ownerChat!==plan.chatId||m.host_package_operation!==operationId)throw Error('Memory package rollback refused foreign source');
+     await guard();await c.delete({ids:[id]});await guard();
+    }
+   }
   });
  }
  /** Only durable host deletion receipts call this; Agent tools never gain a clear operation. */

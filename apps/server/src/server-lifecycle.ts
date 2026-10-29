@@ -1,3 +1,4 @@
+import {localMemoryFor} from './local-memory.js';
 import WebSocket from "ws";
 import type {
   AgentDeletionReceipt,
@@ -99,6 +100,7 @@ export function recoverFailedAgentCreations(input: {
   const failures: Array<{ operationId: string; error: unknown }> = [];
   for (const operation of input.store.listRecoverableAgentCreationOperations()) {
     if (operation.status === "canonical_committed") continue;
+    if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error('Package memory cleanup remains pending')});continue;}
     input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
     let rolledBack = true;
     const authorityBlockedArtifactIds = new Set<string>();
@@ -515,6 +517,13 @@ export function registerServerLifecycle(
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
     await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
+    for(const operation of store.listRecoverableAgentCreationOperations()){
+      if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){
+        store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
+        try{const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for package cleanup');await memory.rollbackImportMemory(operation.id);}
+        catch(error){store.updateAgentCreationOperation(operation.id,{lastError:error instanceof Error?error.message:String(error)});}
+      }
+    }
     const failedCreationRecovery = recoverFailedAgentCreations({
       store,
       assets,

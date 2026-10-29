@@ -1,3 +1,4 @@
+import {agentPackageJsonUtf8Bytes} from '@ponderosa/core';
 import type {ChatCreator} from "./routes/projects.js";
 import {branchDefinitionChanges} from "@ponderosa/agents";
 import {randomUUID,createHash} from 'node:crypto';
@@ -88,8 +89,15 @@ export class BranchInstallationService {
   for(const row of this.rows("SELECT c.id FROM conversations c WHERE c.branch_id=? AND c.branch_execution_id IS NULL AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=c.id AND r.state!='active') ORDER BY c.created_at,c.id",branchId)){
    const c=this.store.getConversation(row.id)!;const identity=this.identity(branchId,c.id),agents=this.store.listAgents(c.projectId).filter(a=>a.conversationId===c.id&&!this.row("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state!='active'",a.id));
    for(const a of agents){const id=this.identity(branchId,c.id,a.id);refs.set(a.id,{chatRef:id.chatRef,agentRef:id.agentRef!});}
-   const nodes:BranchPackageChat['agents']=[];
+   const nodes:BranchPackageChat['agents']=[];let exportedTeamMemory=false;
    for(const a of agents){const portable=await this.engine.exportAgent(a.id,mode),ref=refs.get(a.id)!.agentRef;
+    if(portable.memory){
+      for(const entry of portable.memory){
+        entry.agentRefs=Object.fromEntries(Object.keys(entry.agentRefs).map(id=>[id,ref]));
+        if(exportedTeamMemory){const team='chat:'+entry.snapshot.sourceChatId+':team';entry.snapshot.chunks=entry.snapshot.chunks.filter(row=>row.stamp.audience!==team);entry.snapshot.conflicts=entry.snapshot.conflicts.filter(row=>row.stamp.audience!==team);}
+      }
+      exportedTeamMemory=true;
+    }
     nodes.push({ref,...(a.managerAgentId&&refs.has(a.managerAgentId)?{managerRef:refs.get(a.managerAgentId)!.agentRef}:{}),definition:{...portable,rootRef:ref,agents:portable.agents.map(n=>({...n,ref,managerRef:undefined}))}});
    }
    chats.push({ref:identity.chatRef,title:c.title,instructions:c.instructions,agents:nodes});
@@ -98,9 +106,11 @@ export class BranchInstallationService {
   for(const [ref,id] of Object.entries(bindings.agents)){const target=refs.get(id);if(!target)throw new Error(`Cannot export unavailable Agent binding: ${ref}`);agentBindings[ref]=target;}
   let packageId=this.row('SELECT package_id FROM branches WHERE id=?',branchId)!.package_id;
   if(!packageId){packageId=randomUUID();this.run('UPDATE branches SET package_id=? WHERE id=?',packageId,branchId);}
-  return {schema:'ponderosa.branch-installation.v1',packageId,mode,exportedAt:new Date().toISOString(),definition,chats,agentBindings,limits:configuration.limits,...(mode==='full'&&includeValues?{parameters:configuration.parameters}:{}),triggers:bindings.triggers,engines:bindings.engines};
+  const portable:InstalledBranchPackage={schema:'ponderosa.branch-installation.v1',packageId,mode,exportedAt:new Date().toISOString(),definition,chats,agentBindings,limits:configuration.limits,...(mode==='full'&&includeValues?{parameters:configuration.parameters}:{}),triggers:bindings.triggers,engines:bindings.engines};
+  agentPackageJsonUtf8Bytes(portable);return portable;
  }
  validate(value:unknown):InstalledBranchPackage{
+  agentPackageJsonUtf8Bytes(value);
   const p=structuredClone(value) as InstalledBranchPackage;
   if(!p||p.schema!=='ponderosa.branch-installation.v1'||typeof p.packageId!=='string'||!p.packageId||!['template','full'].includes(p.mode)||!Array.isArray(p.chats)||p.chats.length>100||!p.agentBindings)throw new Error('Invalid Branch installation package');
   if(Object.keys(p).some(k=>!['schema','packageId','mode','exportedAt','definition','chats','agentBindings','limits','parameters','triggers','engines'].includes(k)))throw new Error('Unsupported package field');
@@ -186,6 +196,7 @@ export class BranchInstallationService {
   const pkg=this.validate(value),branch=branchId?this.branches.getBranch(branchId):undefined;
   if(branchId&&this.row('SELECT 1 FROM branches WHERE id=? AND deleting=1',branchId))throw new Error('Branch deletion is pending');
   if(branchId&&!branch)throw new Error('Branch unavailable');
+  if(branchId&&pkg.chats.some(c=>c.agents.some(a=>a.definition.memory?.some(m=>m.snapshot.chunks.length||m.snapshot.conflicts.length))))throw new Error('Memory-bearing workflow packages currently require fresh installation; existing workflow memory updates need explicit migration review');
   if(branchId&&this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')",branchId))throw new Error('Another update is still applying');
   for(const directory of Object.values(bindings.directories))if(!statSync(realpathSync(interpolateBranchText(directory,pkg.definition,this.configurationFor(pkg,branchId)))).isDirectory())throw new Error('Working directories must exist');
   if(pkg.chats.length&&!bindings.directories.workspace)throw new Error('Choose a default working directory for imported Chats');

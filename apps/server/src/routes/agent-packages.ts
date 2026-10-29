@@ -1,3 +1,5 @@
+import {localMemoryFor} from '../local-memory.js';
+import {validateMemorySnapshot} from '../portable-memory-snapshot.js';
 import {executionArchive,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
@@ -738,6 +740,12 @@ export function registerAgentPackageRoutes(
       rootRef: root.id,
       agents,
     };
+    if(mode==='full'&&localMemoryFor(app)){
+      const groups=new Map<string,string[]>();for(const agent of nodes){if(!agent.conversationId)throw new Error('Package memory Agent has no Chat');const ids=groups.get(agent.conversationId)??[];ids.push(agent.id);groups.set(agent.conversationId,ids);}
+      if(groups.size>1)throw new Error('Cross-Chat memory exports require separate packages and destination Chats');
+      portable.memory=[];
+      for(const [chatId,ids] of groups)portable.memory.push({snapshot:await localMemoryFor(app)!.exportPackageMemory(chatId,ids),agentRefs:Object.fromEntries(ids.map(id=>[id,id]))});
+    }
     agentPackageJsonUtf8Bytes(portable);
     return portable;
   };
@@ -1309,6 +1317,11 @@ export function registerAgentPackageRoutes(
         abandonMutationFreeOperation(error instanceof Error ? error.message : "Agent package exceeds its byte limit");
         return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({ error: error instanceof Error ? error.message : "Agent package exceeds its byte limit" });
       }
+      const packageMemory=portablePackage.memory??[];
+      if(packageMemory.length){
+        const memory=localMemoryFor(app);if(!memory)throw new AssetError(409,'Package contains memory; configure destination local memory before importing');
+        for(const entry of packageMemory){try{validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}catch(error){throw new AssetError(400,error instanceof Error?error.message:'Invalid memory snapshot');}}
+      }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
       rollbackArtifacts = plannedArtifacts;
       store.sqlite.transaction(() => {
@@ -1355,6 +1368,11 @@ export function registerAgentPackageRoutes(
         }
       }
       branchHooks?.plan(operationAgentIds, creationOperationId);
+      if(packageMemory.length){
+        const memoryPlan=localMemoryFor(app)!.prepareImportMemory(creationOperationId!,packageMemory);
+        store.updateAgentCreationOperation(creationOperationId!,{result:{phase:'prepared_memory',memoryPlan}});
+      }
+
       })();
       signal?.throwIfAborted();
       await onPhase?.("importing_artifacts");
@@ -1452,6 +1470,11 @@ export function registerAgentPackageRoutes(
           );
         }
       }
+      for(const [index,entry] of packageMemory.entries()){
+        signal?.throwIfAborted();
+        const mapping=Object.fromEntries(Object.entries(entry.agentRefs).map(([id,ref])=>[id,created.get(ref)!.id]));
+        await localMemoryFor(app)!.restoreImportMemory(creationOperationId!,entry,mapping,creationOperationId+':m:'+index,signal);
+      }
       signal?.throwIfAborted();
       // All imported Agents start detached. Attach descendants before their
       // managers so each existing ancestry check stays bounded even for a
@@ -1530,6 +1553,11 @@ export function registerAgentPackageRoutes(
       return reply.code(201).send(response);
       } catch (error) {
         let rollbackComplete = true;
+        if(creationOperationId){
+          store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back'});
+          try{const memoryPlan=(store.getAgentCreationOperation(creationOperationId)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan;if(memoryPlan?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for import rollback');await memory.rollbackImportMemory(creationOperationId);}}
+          catch{rollbackComplete=false;}
+        }
         if (appliedChatInstructions !== undefined) {
           try {
             if (store.getConversation(conversation.id)?.instructions === appliedChatInstructions) {
@@ -2125,6 +2153,7 @@ export function registerAgentPackageRoutes(
   );
   return {packageEngine:{
     validateAgent(pkg,mapping) {
+      if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Package contains memory; configure destination local memory before importing');for(const entry of pkg.memory)validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}
       for (const node of validatePortableAgentPackage(pkg).package.agents) {
         const target=mapping[node.engine]?.trim(), registration=target?engines.get(target):undefined;
         if(!registration)throw new Error(`Choose an available Engine for ${node.engine}`);
