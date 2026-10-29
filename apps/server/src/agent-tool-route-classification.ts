@@ -8,8 +8,8 @@ interface AgentApiRouteClassification {
 
 /**
  * Security-sensitive classification for every `/api/agent-*` namespace.
- * Agent-facing routes accept a per-Run capability. Operator routes must pass
- * the ordinary operator/session boundary instead.
+ * Agent-facing routes accept a per-Run capability. Operator routes use
+ * ordinary Origin and request admission checks instead.
  */
 export const AGENT_API_ROUTES = [
   {path:"/api/agent-local-memory",match:"exact",audience:"agent"},

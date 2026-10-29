@@ -3,23 +3,21 @@ import test from 'node:test';
 import {mkdtemp,mkdir,writeFile,rm,readFile,symlink,stat,chmod} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {createHmac} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {BranchTriggerSourceService,normalizeTriggerSourceConfig} from '../../apps/server/dist/branch-trigger-service.js';
 import {triggerSourceConfig} from '../../apps/server/dist/branch-trigger-config.js';
-import {BranchTriggerSecretStore} from '../../apps/server/dist/branch-trigger-secrets.js';
 import {until} from '../shared/fixture.mjs';
 
-async function fixture(t,kind,config,{secret=false,nextFireAt}={}){
+async function fixture(t,kind,config,{nextFireAt}={}){
  const root=await mkdtemp(path.join(tmpdir(),'branch-source-current-')),dataDir=path.join(root,'data'),workspace=path.join(root,'work');await mkdir(workspace);
  let store,branches,sources,passed=false,available=true;const notices=[],failures=[];
- const open=()=>{store=new AgentStore(dataDir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));sources=new BranchTriggerSourceService({store,triggers:branches.triggers,dataDir,notify:id=>notices.push(id),sourceAvailable:()=>available,onSourceFailure:value=>failures.push(value)})};open();
+ const open=()=>{store=new AgentStore(dataDir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));sources=new BranchTriggerSourceService({store,triggers:branches.triggers,notify:id=>notices.push(id),sourceAvailable:()=>available,onSourceFailure:value=>failures.push(value)})};open();
  t.after(async()=>{let clean=false;try{await sources.stop();clean=true}finally{store.close();if(passed&&clean)await rm(root,{recursive:true,force:true});else t.diagnostic(`Retained source fixture: ${root}`)}});
- const owner=branches.create('Source','source'),signing=secret?sources.createWebhookSecret():undefined;
+ const owner=branches.create('Source','source');
  const definition={schema:'ponderosa.branch.v1',name:'Source',trigger:{kind,configRef:'source'},entry:'work',steps:[{id:'work',kind:'script',runtime:'node',source:'process.stdout.write("unused")',cwdRef:'workspace',timeoutMs:1000}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
  const bindings={agents:{},directories:{workspace},triggers:{source:{sourceConfig:config,enabled:true}}};
- const branch=branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'deploy',definition,bindings},new Date().toISOString(),{sourceConfig:config,...(nextFireAt?{nextFireAt}:{}),...(signing?{secretCiphertext:signing.ciphertext,secretFingerprint:signing.fingerprint}:{})});
- return {root,workspace,branch,definition,bindings,signing,notices,failures,get store(){return store},get branches(){return branches},get sources(){return sources},get triggers(){return branches.triggers},pause(){available=false},resume(){available=true},async reopen(){await sources.stop();store.close();open()},pass(){passed=true},noProviderWork(){assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0)}};
+ const branch=branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'deploy',definition,bindings},new Date().toISOString(),{sourceConfig:config,...(nextFireAt?{nextFireAt}:{})});
+ return {root,workspace,branch,definition,bindings,notices,failures,get store(){return store},get branches(){return branches},get sources(){return sources},get triggers(){return branches.triggers},pause(){available=false},resume(){available=true},async reopen(){await sources.stop();store.close();open()},pass(){passed=true},noProviderWork(){assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0)}};
 }
 
 test('schedule recovery admits each due interval, retains a bounded backlog and resumes without duplicates',async t=>{
@@ -38,14 +36,16 @@ test('schedule recovery admits each due interval, retains a bounded backlog and 
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,205);f.noProviderWork();f.pass();
 });
 
-test('signed webhook replay survives reopening, rejects tampering and cannot smuggle manual or direct Agent authority',async t=>{
- const f=await fixture(t,'webhook',{replayWindowSeconds:300},{secret:true});await f.sources.start();
- const payload={text:'Untrusted external content',operatorManual:true,recipientAgentId:'unrelated'},rawBody=Buffer.from(JSON.stringify(payload)),timestamp=String(Math.floor(Date.now()/1000)),eventId='external-event';
- const signature='v1='+createHmac('sha256',f.signing.secret).update(`${timestamp}.${eventId}.`).update(rawBody).digest('hex'),input={triggerId:f.branch.triggerId,eventId,timestamp,signature,rawBody,payload};
+test('unsigned webhook intake deduplicates across reopening and cannot smuggle manual or direct Agent authority',async t=>{
+ const f=await fixture(t,'webhook',{replayWindowSeconds:30});await f.sources.start();
+ const payload={text:'Untrusted external content',operatorManual:true,recipientAgentId:'unrelated'},input={triggerId:f.branch.triggerId,eventId:'external-event',payload};
  const event=f.sources.verifyAndRecordWebhook(input);assert.equal(event.replayed,false);const occurrence=f.triggers.getTriggerOccurrence(event.occurrenceId);assert.equal(f.branches.execution(occurrence.branchExecutionId).admissionSource,'automatic');
- assert.equal(JSON.stringify(f.triggers.getTriggerDefinition(f.branch.triggerId)).includes(f.signing.secret),false);
+ assert.equal(occurrence.provenance.source,'webhook');assert.equal(occurrence.provenance.signatureVersion,undefined);
+ await assert.rejects(stat(path.join(f.root,'data','trigger-secrets.key')),{code:'ENOENT'});
  await f.reopen();await f.sources.start();assert.equal(f.sources.verifyAndRecordWebhook(input).occurrenceId,event.occurrenceId);assert.equal(f.sources.verifyAndRecordWebhook(input).replayed,true);
- for(const invalid of [{signature:'v1=invalid'},{rawBody:Buffer.from('{}')},{timestamp:'0'},{timestamp:'not-a-time'}])assert.throws(()=>f.sources.verifyAndRecordWebhook({...input,...invalid}),/signature|timestamp/);
+ assert.throws(()=>f.sources.verifyAndRecordWebhook({...input,payload:{text:'changed'}}),/idempotency conflict/);
+ for(const eventId of ['', ' '.repeat(3), 'x'.repeat(201)])assert.throws(()=>f.sources.verifyAndRecordWebhook({...input,eventId}),/Event-Id/);
+ f.pause();assert.throws(()=>f.sources.verifyAndRecordWebhook({...input,eventId:'next'}),/unavailable/);f.resume();
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,1);f.noProviderWork();f.pass();
 });
 
@@ -74,7 +74,7 @@ test('an unavailable bound workspace disables its inert source and reports a vis
 
 test('source configuration validates exact current fields and preserves the minute-level schedule ceiling',()=>{
  for(const value of [{scheduleKind:'interval',everyMs:1000,startsAt:new Date().toISOString()},{scheduleKind:'cron',expression:'* * * * * *',timezone:'UTC'}])assert.throws(()=>normalizeTriggerSourceConfig('schedule',value));
- assert.throws(()=>triggerSourceConfig('webhook',{replayWindowSeconds:300,extraAuthority:true}),/unknown/);assert.throws(()=>normalizeTriggerSourceConfig('filesystem',{include:['../outside'],exclude:[],quietMs:100,maxWindowMs:500}),/relative/);
+ assert.deepEqual(triggerSourceConfig('webhook',{}),{});assert.throws(()=>triggerSourceConfig('webhook',{replayWindowSeconds:300}),/unknown/);assert.throws(()=>triggerSourceConfig('webhook',{extraAuthority:true}),/unknown/);assert.throws(()=>normalizeTriggerSourceConfig('filesystem',{include:['../outside'],exclude:[],quietMs:100,maxWindowMs:500}),/relative/);
  const normalized=normalizeTriggerSourceConfig('schedule',{scheduleKind:'cron',expression:'0 9 * * *',timezone:'America/New_York'},new Date('2026-03-07T15:00:00Z'));assert.equal(normalized.nextFireAt,'2026-03-08T13:00:00.000Z');
 });
 
@@ -118,17 +118,6 @@ test('publishing a new binding seals pending filesystem evidence against its pre
  const newer=path.join(f.root,'newer');await mkdir(newer);
  f.branches.deploy({chatId:'',branchId:f.branch.id,expectedVersionId:f.branch.versionId,idempotencyKey:'new-binding',definition:f.definition,bindings:{...f.bindings,directories:{workspace:newer}}},new Date().toISOString(),{sourceConfig:f.triggers.getTriggerDefinition(f.branch.triggerId).sourceConfig});
  const event=f.triggers.listTriggerOccurrences(f.branch.triggerId)[0];assert.ok(event,'Pending accepted events must seal before binding replacement');const execution=f.branches.execution(event.branchExecutionId);assert.equal(execution.bindingRevisionId,f.branch.bindingRevisionId);assert.equal(execution.versionId,f.branch.versionId);assert.equal(f.triggers.getFilesystemTriggerBurst(f.branch.triggerId),undefined);f.noProviderWork();f.pass();
-});
-
-test('webhook envelope keys use durable owner-only publication and refuse linked, oversized or broadly readable replacements',async t=>{
- const root=await mkdtemp(path.join(tmpdir(),'branch-webhook-key-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const original=new BranchTriggerSecretStore(root),secret=original.create(),key=path.join(root,'trigger-secrets.key');assert.equal((await readFile(key)).length,32);if(process.platform!=='win32')assert.equal((await stat(key)).mode&0o777,0o600);
- assert.equal(new BranchTriggerSecretStore(root).decrypt(secret.ciphertext),secret.secret);
- if(process.platform!=='win32'){
-  await chmod(key,0o644);assert.throws(()=>new BranchTriggerSecretStore(root),/owner-only/);await chmod(key,0o600);
-  const linked=path.join(root,'linked');await mkdir(linked);await symlink(key,path.join(linked,'trigger-secrets.key'));assert.throws(()=>new BranchTriggerSecretStore(linked),/regular file/);
- }
- await writeFile(key,Buffer.alloc(33));assert.throws(()=>new BranchTriggerSecretStore(root));
 });
 
 test('more than one due page of disabled Branches cannot starve an enabled schedule',async t=>{

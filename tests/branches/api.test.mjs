@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {randomUUID,createHmac} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {AgentStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
@@ -55,27 +55,31 @@ test('Branch favorites and folders reuse canonical preferences, reject stale edi
  });
 });
 
-test('HTTP Branch webhook intake verifies exact bytes, survives replay, and requires the reviewed snapshot for pause/resume',async t=>{
+test('HTTP unsigned Branch webhook intake preserves canonical deduplication, Origin checks and reviewed pause/resume',async t=>{
  let store;
  await withFixture(t,async f=>{
-  const owner=await branch(f,'Webhook'),configuration={replayWindowSeconds:300};
+  const owner=await branch(f,'Webhook'),configuration={};
   const deployed=f.ok(await f.api('POST','/api/branches/deploy',{chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition:{schema:'ponderosa.branch.v1',name:'Webhook',trigger:{kind:'webhook',configRef:'source'},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('verified');"}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{workspace:f.root},triggers:{source:{sourceConfig:configuration,enabled:true}}}}));
-  assert.equal(typeof deployed.webhookSecret,'string');const trigger=f.ok(await f.api('GET',`/api/branches/${owner.id}/trigger`));assert.equal(JSON.stringify(trigger).includes(deployed.webhookSecret),false);
+  assert.equal(deployed.webhookSecret,undefined);const trigger=f.ok(await f.api('GET',`/api/branches/${owner.id}/trigger`));assert.equal(trigger.enabled,true);assert.equal(trigger.secretFingerprint,undefined);
   const paused=f.ok(await f.api('PATCH',`/api/branches/${owner.id}/trigger`,{enabled:false,reviewedTrigger:trigger}));assert.equal(paused.enabled,false);
   assert.equal((await f.api('PATCH',`/api/branches/${owner.id}/trigger`,{enabled:true,reviewedTrigger:trigger})).status,409);
   f.ok(await f.api('PATCH',`/api/branches/${owner.id}/trigger`,{enabled:true,reviewedTrigger:paused}));
-  const raw='{ "operatorManual":true, "recipientAgentId":"unrelated", "text":"External data" }',timestamp=String(Math.floor(Date.now()/1000)),event='one-event';
-  const headers={'content-type':'application/json','x-ponderosa-event-id':event,'x-ponderosa-timestamp':timestamp,'x-ponderosa-signature':'v1='+createHmac('sha256',deployed.webhookSecret).update(`${timestamp}.${event}.`).update(raw).digest('hex')},url=`/api/trigger-webhooks/${trigger.id}`;
+  const raw='{ "operatorManual":true, "recipientAgentId":"unrelated", "text":"External data" }',event='one-event';
+  const headers={'content-type':'application/json','x-ponderosa-event-id':event},url=`/api/trigger-webhooks/${trigger.id}`;
   const accepted=await f.api('POST',url,raw,headers);assert.equal(accepted.status,202,JSON.stringify(accepted));
   const execution=store.sqlite.prepare('SELECT admission_source FROM branch_executions WHERE id=(SELECT branch_execution_id FROM trigger_occurrences WHERE id=?)').get(accepted.body.occurrenceId);assert.equal(execution.admission_source,'automatic');
   assert.equal((await f.api('POST',url,raw,headers)).status,200);
-  assert.equal((await f.api('POST',url,JSON.stringify(JSON.parse(raw)),headers)).status,401,'Parsing and reserializing must not satisfy a signature over different bytes');
+  assert.equal((await f.api('POST',url,JSON.stringify(JSON.parse(raw)),headers)).status,200,'Equivalent canonical JSON replays the same occurrence');
+  assert.equal((await f.api('POST',url,{text:'changed'},headers)).status,409);
+  assert.equal((await f.api('POST',url,raw,{'content-type':'application/json'})).status,400);
+  assert.equal((await f.api('POST',url,'invalid',headers)).status,400);
+  assert.equal((await f.api('POST',url,'x'.repeat(1024*1024+1),headers)).status,413);
+  assert.equal((await f.api('POST',url,raw,{...headers,'x-ponderosa-timestamp':'0','x-ponderosa-signature':'invalid'})).status,200,'Obsolete network authentication headers do not gate intake');
   assert.equal((await f.api('POST',url,raw,{...headers,authorization:''})).status,200,'Webhook replay needs no operator authentication');
   assert.equal((await f.api('POST',url,raw,{...headers,origin:'https://untrusted.invalid'})).status,403);
   assert.equal((await f.api('POST',url,raw,{...headers,host:'untrusted.invalid'})).status,200);
   for(const eventId of ['second-event','third-event']){
-   const signature='v1='+createHmac('sha256',deployed.webhookSecret).update(`${timestamp}.${eventId}.`).update(raw).digest('hex');
-   assert.equal((await f.api('POST',url,raw,{...headers,'x-ponderosa-event-id':eventId,'x-ponderosa-signature':signature})).status,202);
+   assert.equal((await f.api('POST',url,raw,{...headers,'x-ponderosa-event-id':eventId})).status,202);
   }
   await f.reopen();const ids=[];let before;
   do{const page=f.ok(await f.api('GET',`/api/branches/${owner.id}/trigger/occurrences?limit=1${before?'&before='+before:''}`));assert.ok(page.every(item=>item.triggerId===trigger.id));ids.push(...page.map(item=>item.id));before=page.length?page.at(-1).id:undefined;}while(before);
@@ -83,6 +87,11 @@ test('HTTP Branch webhook intake verifies exact bytes, survives replay, and requ
   assert.equal((await f.api('GET',`/api/branches/${owner.id}/trigger/occurrences?limit=101`)).status,400);
   assert.equal((await f.api('GET',`/api/branches/${owner.id}/trigger/occurrences?before=${randomUUID()}`)).status,400);
   assert.equal((await f.api('GET',`/api/branches/missing/trigger/occurrences?before=${ids[0]}`)).status,404);
+  const portable=f.ok(await f.api('GET',`/api/branches/${owner.id}/package?mode=template`));
+  const plan=f.ok(await f.api('POST','/api/branches/install-preview',{package:portable,bindings:{agents:{},directories:{workspace:f.root},triggers:{source:{enabled:true,sourceConfig:{}}}}}));
+  const installed=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(installed.state,'completed',installed.error);
+  const installedTrigger=f.ok(await f.api('GET',`/api/branches/${installed.branchId}/trigger`));assert.equal(installedTrigger.enabled,true,'Package installation needs no generated secret');
+  assert.equal((await f.api('POST',installedTrigger.webhookPath,{text:'installed'},{'x-ponderosa-event-id':'installed-event'})).status,202);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),authToken:'controlled-webhook-regression-auth'});
 });

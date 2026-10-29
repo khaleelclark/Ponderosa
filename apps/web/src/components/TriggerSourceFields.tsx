@@ -1,6 +1,6 @@
 import {useState} from 'react';
 import {FormControl,InputLabel,Select,MenuItem,Stack,TextField,Typography} from '@mui/material';
-import type {TriggerScheduleWhenRunning,TriggerSourceConfig,TriggerSourceKind} from '@ponderosa/core';
+import type {TriggerScheduleConfig,TriggerScheduleWhenRunning,TriggerSourceConfig,TriggerSourceKind} from '@ponderosa/core';
 import {splitTriggerGlobText} from './triggerSourceValues';
 export function isoToDatetimeLocal(value: string): string {
   const date = new Date(value);
@@ -12,7 +12,7 @@ export function changedSourceConfig(original: TriggerSourceConfig, next: Trigger
   return JSON.stringify(original) === JSON.stringify(next) ? undefined : next;
 }
 
-export function intervalSourceConfig(everyMs: number, original?: { startsAt: string }): TriggerSourceConfig {
+export function intervalSourceConfig(everyMs: number, original?: { startsAt: string }): Extract<TriggerScheduleConfig,{scheduleKind:"interval"}> {
   return { scheduleKind: "interval", everyMs, startsAt: original?.startsAt ?? new Date().toISOString() };
 }
 
@@ -83,7 +83,7 @@ export function useTriggerSourceDraft(initial?:TriggerSourceConfig){
    else if('include'in config){setInclude(config.include.join('\n'));setExclude(config.exclude.join('\n'));setQuietSeconds(String(config.quietMs/1000));setMaxWindowSeconds(String(config.maxWindowMs/1000))}
   };
   const configuration=(kind:TriggerSourceKind,original?:TriggerSourceConfig):TriggerSourceConfig=>{
-   if(kind==='webhook')return original&&'replayWindowSeconds'in original?original:{replayWindowSeconds:300};
+   if(kind==='webhook')return {};
    if(kind==='filesystem')return {include:splitTriggerGlobText(include),exclude:splitTriggerGlobText(exclude),quietMs:Math.round(Number(quietSeconds)*1000),maxWindowMs:Math.round(Number(maxWindowSeconds)*1000)};
    if(scheduleKind==='once')return {scheduleKind:'once',at:new Date(onceAt).toISOString()};
    const policy=whenRunning===undefined?{}:{whenRunning};
@@ -105,6 +105,6 @@ export function TriggerSourceFields({sourceKind,draft}:{sourceKind:TriggerSource
         {scheduleKind !== "once" ? <><FormControl fullWidth><InputLabel id="schedule-when-running-label">When Already Running</InputLabel><Select labelId="schedule-when-running-label" label="When Already Running" value={whenRunning??'queue_all'} onChange={event=>setWhenRunning(event.target.value as TriggerScheduleWhenRunning)}><MenuItem value="update_current">Update Current Run</MenuItem><MenuItem value="run_latest">Run Latest When Finished</MenuItem><MenuItem value="queue_all">Queue Every Run</MenuItem></Select></FormControl><Typography variant="caption" color="text.secondary">{whenRunning==='update_current'?'Send newer scheduled events to supported active Agent work; otherwise keep only the latest event for the next Run.':whenRunning==='run_latest'?'Keep only the latest scheduled event for the next Run when current work finishes.':'Queue a separate Run for each schedule check, even while current work is active.'} Runs already queued remain queued. Changing this setting does not clear or merge them.</Typography></> : null}
       </> : null}
       {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
-      {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
+      {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Send JSON with a stable X-Ponderosa-Event-Id header. Reusing an event ID with the same input returns the original occurrence; conflicting input is rejected.</Typography> : null}
 </>;
 }

@@ -1377,7 +1377,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     resolveGateNotification:resolveOperationalNotification,
   });
   let scheduleDiagnosticCursor: {createdAt:string;id:string}|undefined;
-  branchSources=new BranchTriggerSourceService({store,triggers:branches.triggers,dataDir:opts.dataDir,
+  branchSources=new BranchTriggerSourceService({store,triggers:branches.triggers,
     sourceAvailable:()=>!closed&&!deploymentControl.isDraining(),
     logDiagnosticFailure:()=>app.log.error({code:'branch_source_diagnostic_write_failed'},'Branch source diagnostic could not be persisted'),
     notify:()=>coordinationV3Scheduler.notify(),

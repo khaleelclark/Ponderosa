@@ -9,9 +9,7 @@ export type TriggerScheduleConfig =
   | { scheduleKind: "interval"; everyMs: number; startsAt: string; whenRunning?: TriggerScheduleWhenRunning }
   | { scheduleKind: "cron"; expression: string; timezone: string; whenRunning?: TriggerScheduleWhenRunning };
 
-export interface TriggerWebhookConfig {
-  replayWindowSeconds: number;
-}
+export type TriggerWebhookConfig = Record<string, never>;
 
 export interface TriggerFilesystemConfig {
   include: string[];
@@ -45,7 +43,6 @@ export interface TriggerDefinitionDto {
   nextFireAt?: string;
   lastFiredAt?: string;
   webhookPath?: string;
-  secretFingerprint?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -108,8 +105,6 @@ export interface TriggerRunBudgetStateDto {
 
 export interface CreateTriggerResponse {
   trigger: TriggerDefinitionDto;
-  /** Returned once for webhook Triggers. It is never exposed by subsequent reads. */
-  webhookSecret?: string;
 }
 
 export interface RunTriggerResponse {

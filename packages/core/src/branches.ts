@@ -222,7 +222,7 @@ export interface BranchIntervention {
   externalEffectsReconciled?: boolean; reason: string;
 }
 
-export interface DeployBranchResponse extends BranchDto { /** One-time webhook secret; never included in a replay or package. */ webhookSecret?: string }
+export type DeployBranchResponse = BranchDto;
 
 export interface BranchRequirementsDto { agents: string[]; directories: string[]; engines: string[]; triggers: string[] }
 export interface BranchPackageDto { schema: "ponderosa.branch-package.v1"; exportedAt: string; definition: BranchDefinition }

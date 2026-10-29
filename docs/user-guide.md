@@ -571,3 +571,26 @@ remains incomplete. Execution logs share the existing 64 MiB managed-file and
 aggregate package artifact limits; export fails explicitly rather than dropping
 records when a limit is exceeded. Unsupported execution-archive versions and
 malformed envelopes are refused before destination Agents are created.
+
+### Branch webhook intake
+
+Publish or install a webhook workflow with an empty source configuration (`{}`).
+POST JSON to the webhook URL shown in the workflow, with a stable
+`X-Ponderosa-Event-Id` header (1–200 characters). Intake uses ordinary Origin
+checks and the 1 MiB request limit. It does not require an operator token,
+signing secret, HMAC signature, or timestamp freshness header. Provider sign-in
+is separate and unchanged.
+
+Keep the same event ID when retrying the same event. Equivalent canonical JSON
+returns the original occurrence; different input under the same ID returns a
+conflict. Give a new event a new ID. Event data remains untrusted and cannot
+select an Agent or claim manual execution authority. Pause intake with the
+workflow's intake control.
+
+`replayWindowSeconds` is retired network admission configuration, including
+nondefault values. Existing intake no longer applies it. For a new publication
+or package installation, remove that field and use `{}`. If a workflow needs a
+business rule about event age, express it as a workflow condition using event
+payload data. Existing occurrence records and their historical provenance are
+retained. Historical database credential columns and old local key files are
+inert; this change neither reads nor deletes those files.

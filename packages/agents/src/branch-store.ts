@@ -233,7 +233,7 @@ export class BranchStore {
   }
   trigger(id: string) { const branch=this.getBranch(id); return branch?.triggerId ? this.triggers.getTriggerDefinition(branch.triggerId) : undefined; }
   deploy(input: DeployBranchRequest, now = new Date().toISOString(), trigger?: {
-    sourceConfig: TriggerSourceConfig; nextFireAt?: string; enabledOverride?: boolean; resetSchedule?: boolean; secretCiphertext?: string; secretFingerprint?: string;
+    sourceConfig: TriggerSourceConfig; nextFireAt?: string; enabledOverride?: boolean; resetSchedule?: boolean;
   }, replacementConfiguration?: BranchConfiguration): BranchDto {
     branchKey(input.idempotencyKey); if(input.chatId)branchKey(input.chatId);
     const definition = validateBranchDefinition(input.definition), bindings = validateBranchBindings(input.bindings,definition);
@@ -307,7 +307,7 @@ export class BranchStore {
           triggerId = this.triggers.createTriggerDefinition({ projectId: input.chatId ? this.chat(input.chatId).project_id : "", conversationId: input.chatId, branchId,
             name: definition.name.slice(0,120), instructions: "Accept untrusted event data into this Branch", sourceKind: definition.trigger.kind,
             sourceConfig: trigger.sourceConfig, enabled: trigger.enabledOverride ?? local.enabled, nextFireAt: trigger.nextFireAt,
-            secretCiphertext: trigger.secretCiphertext, secretFingerprint: trigger.secretFingerprint, now }).id;
+            now }).id;
         }
         this.run("UPDATE branches SET trigger_id = ? WHERE id = ?", triggerId, branchId);
       }

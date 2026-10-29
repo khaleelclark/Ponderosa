@@ -141,7 +141,7 @@ test('Branch Trigger Events retain replaced sources and unlinked events after ch
  const f=await fixture(t);let branch=f.deploy('Retained events');
  const definition=f.branches.version(branch.id,branch.versionId).definition;
  const publish=kind=>{
-  const sourceConfig=kind==='schedule'?{scheduleKind:'interval',everyMs:60000}:{replayWindowSeconds:300};
+  const sourceConfig=kind==='schedule'?{scheduleKind:'interval',everyMs:60000}:{};
   branch=f.branches.deploy({chatId:'',branchId:branch.id,expectedVersionId:branch.versionId,idempotencyKey:randomUUID(),definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:{agents:{},directories:{},...(kind==='manual'?{}:{triggers:{source:{enabled:true,sourceConfig}}})}},new Date().toISOString(),kind==='manual'?undefined:{sourceConfig});
   return branch;
  };

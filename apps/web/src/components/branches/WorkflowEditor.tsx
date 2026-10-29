@@ -84,7 +84,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const setTrigger=(kind:BranchDefinition['trigger']['kind'])=>{
   const next={...bindings};
   if(kind==='manual')delete next.triggers;
-  else next.triggers={source:{enabled:true,sourceConfig:kind==='schedule'?{scheduleKind:'interval',everyMs:3600000,startsAt:new Date(Date.now()+60000).toISOString(),whenRunning:'run_latest'}:kind==='webhook'?{replayWindowSeconds:300}:{include:['**/*'],exclude:[],quietMs:1000,maxWindowMs:10000}}};
+  else next.triggers={source:{enabled:true,sourceConfig:kind==='schedule'?{scheduleKind:'interval',everyMs:3600000,startsAt:new Date(Date.now()+60000).toISOString(),whenRunning:'run_latest'}:kind==='webhook'?{}:{include:['**/*'],exclude:[],quietMs:1000,maxWindowMs:10000}}};
   onDraft({definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:next});
  };
  return <Stack ref={canvas} sx={{minWidth:0,minHeight:0,height:'100%',width:'100%'}}>

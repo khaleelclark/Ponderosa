@@ -37,9 +37,9 @@ export class BranchTriggerStore {
     return this.sqlite.transaction(() => {
       this.requireBranch(input.branchId);
       this.sqlite.prepare(`INSERT INTO trigger_definitions
-        (id,project_id,conversation_id,branch_id,name,instructions,source_kind,source_config_json,enabled,next_fire_at,secret_ciphertext,secret_fingerprint,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.projectId,input.conversationId,input.branchId,input.name.trim(),input.instructions.trim(),
-          input.sourceKind,stableJson(input.sourceConfig),input.enabled === false ? 0 : 1,input.nextFireAt ?? null,input.secretCiphertext ?? null,input.secretFingerprint ?? null,now,now);
+        (id,project_id,conversation_id,branch_id,name,instructions,source_kind,source_config_json,enabled,next_fire_at,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.projectId,input.conversationId,input.branchId,input.name.trim(),input.instructions.trim(),
+          input.sourceKind,stableJson(input.sourceConfig),input.enabled === false ? 0 : 1,input.nextFireAt ?? null,now,now);
       return this.getTriggerDefinition(id)!;
     })();
   }
@@ -50,7 +50,6 @@ export class BranchTriggerStore {
       name:row.name,instructions:row.instructions,sourceKind:row.source_kind,sourceConfig:JSON.parse(row.source_config_json) as TriggerSourceConfig,
       enabled:Boolean(row.enabled),fullAccess:true,createdAt:row.created_at,updatedAt:row.updated_at,
       ...(row.next_fire_at ? {nextFireAt:row.next_fire_at} : {}),...(row.last_fired_at ? {lastFiredAt:row.last_fired_at} : {}),
-      ...(row.secret_fingerprint ? {secretFingerprint:row.secret_fingerprint} : {}),
       ...(row.source_kind === "webhook" ? {webhookPath:`/api/trigger-webhooks/${row.id}`} : {}) };
   }
 
@@ -65,9 +64,9 @@ export class BranchTriggerStore {
       const name = input.name?.trim() ?? row.name, instructions = input.instructions?.trim() ?? row.instructions;
       this.text(name,instructions);
       this.sqlite.prepare(`UPDATE trigger_definitions SET conversation_id=?,name=?,instructions=?,source_config_json=?,enabled=?,next_fire_at=?,
-        secret_ciphertext=?,secret_fingerprint=?,updated_at=? WHERE id=?`).run(input.conversationId ?? row.conversation_id,name,instructions,
+        updated_at=? WHERE id=?`).run(input.conversationId ?? row.conversation_id,name,instructions,
           input.sourceConfig === undefined ? row.source_config_json : stableJson(input.sourceConfig),input.enabled === undefined ? row.enabled : Number(input.enabled),
-          input.nextFireAt === undefined ? row.next_fire_at : input.nextFireAt,input.secretCiphertext ?? row.secret_ciphertext,input.secretFingerprint ?? row.secret_fingerprint,now,id);
+          input.nextFireAt === undefined ? row.next_fire_at : input.nextFireAt,now,id);
       if (input.enabled === false) this.cancelPending(id,"Automation disabled",now);
       return this.getTriggerDefinition(id);
     })();
@@ -150,7 +149,6 @@ export class BranchTriggerStore {
     })();
   }
 
-  getTriggerSecretCiphertext(id: string): string | undefined { return this.row(id)?.secret_ciphertext ?? undefined; }
 
   recordTriggerOccurrence(input: RecordTriggerOccurrenceInput): TriggerOccurrenceResult {
     if (!input.triggerId.trim() || !input.occurrenceKey.trim() || !input.provenance.source?.trim()) throw new Error("Trigger identity, occurrence key and provenance source are required");

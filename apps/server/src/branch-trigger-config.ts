@@ -45,13 +45,7 @@ export function triggerSourceConfig(
       throw new Error("whenRunning must be update_current, run_latest or queue_all");
     }
   } else if (kind === "webhook") {
-    exactObjectFields(config, ["replayWindowSeconds"], "webhook config");
-    if (
-      config.replayWindowSeconds !== undefined &&
-      typeof config.replayWindowSeconds !== "number"
-    ) {
-      throw new Error("replayWindowSeconds must be a number");
-    }
+    exactObjectFields(config, [], "webhook config");
   } else if(kind==='filesystem') {
     exactObjectFields(
       config,

@@ -1,4 +1,3 @@
-import { createHmac } from "node:crypto";
 import path from "node:path";
 import {realpathSync,statSync} from "node:fs";
 import { watch, type FSWatcher } from "chokidar";
@@ -11,9 +10,7 @@ import type {
   TriggerScheduleConfig,
   TriggerSourceConfig,
   TriggerSourceKind,
-  TriggerWebhookConfig,
 } from "@ponderosa/core";
-import { BranchTriggerSecretStore } from "./branch-trigger-secrets.js";
 
 const MIN_INTERVAL_MS = 60_000;
 const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1_000;
@@ -66,14 +63,8 @@ export function normalizeTriggerSourceConfig(
     throw new Error("invalid schedule configuration");
   }
 
-  if (sourceKind === "webhook") {
-    const webhook = config as TriggerWebhookConfig;
-    const replayWindowSeconds = webhook.replayWindowSeconds ?? 300;
-    if (!Number.isInteger(replayWindowSeconds) || replayWindowSeconds < 30 || replayWindowSeconds > 3_600) {
-      throw new Error("webhook replay window must be between 30 and 3600 seconds");
-    }
-    return { config: { replayWindowSeconds } };
-  }
+  // Timestamp freshness was network admission, not a workflow condition.
+  if (sourceKind === "webhook") return { config: {} };
 
   if(sourceKind!=='filesystem')throw new Error('Unknown Branch trigger source');
   const filesystem = config as TriggerFilesystemConfig;
@@ -117,7 +108,6 @@ interface ProjectFilesystemWatcher {
 }
 
 export class BranchTriggerSourceService {
-  readonly secrets: BranchTriggerSecretStore;
   private readonly watchers = new Map<string, ProjectFilesystemWatcher>();
   private readonly bursts = new Map<string, FileBurst>();
   private scheduleTimer?: NodeJS.Timeout;
@@ -132,7 +122,6 @@ export class BranchTriggerSourceService {
   constructor(private readonly options: {
     store: AgentStore;
     triggers: BranchTriggerStore;
-    dataDir: string;
     notify(triggerId?: string): void;
     onSourceFailure?(input: {
       trigger?: TriggerDefinitionDto;
@@ -144,7 +133,6 @@ export class BranchTriggerSourceService {
     logDiagnosticFailure?(): void;
     sourceAvailable?(): boolean;
   }) {
-    this.secrets = new BranchTriggerSecretStore(options.dataDir);
   }
 
   async start(): Promise<void> {
@@ -360,16 +348,9 @@ export class BranchTriggerSourceService {
     }
   }
 
-  createWebhookSecret(): { secret: string; ciphertext: string; fingerprint: string } {
-    return this.secrets.create();
-  }
-
   verifyAndRecordWebhook(input: {
     triggerId: string;
     eventId: string;
-    timestamp: string;
-    signature: string;
-    rawBody: Buffer;
     payload: unknown;
     remoteAddress?: string;
   }): { occurrenceId: string; state: "pending" | "activated" | "cancelled" | "dead_lettered"; replayed: boolean } {
@@ -378,26 +359,13 @@ export class BranchTriggerSourceService {
     if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Branch trigger not found");
     if (!this.destinationAvailable(trigger)) throw new Error("Branch trigger destination is unavailable");
     if (!input.eventId.trim() || input.eventId.length > 200) throw new Error("X-Ponderosa-Event-Id is required");
-    const timestampSeconds = Number(input.timestamp);
-    const config = trigger.sourceConfig as TriggerWebhookConfig;
-    const nowSeconds = Math.floor(Date.now() / 1_000);
-    if (!Number.isInteger(timestampSeconds) || Math.abs(nowSeconds - timestampSeconds) > config.replayWindowSeconds) {
-      throw new Error("webhook timestamp is outside the replay window");
-    }
-    const ciphertext = this.options.triggers.getTriggerSecretCiphertext(trigger.id);
-    if (!ciphertext) throw new Error("webhook Branch trigger has no signing secret");
-    const secret = this.secrets.decrypt(ciphertext);
-    const expected = `v1=${createHmac("sha256", secret).update(`${input.timestamp}.${input.eventId}.`).update(input.rawBody).digest("hex")}`;
-    if (!this.secrets.equal(expected, input.signature)) throw new Error("invalid webhook signature");
     const result = this.options.triggers.recordTriggerOccurrence({
       triggerId: trigger.id,
       occurrenceKey: input.eventId,
       payload: input.payload,
       provenance: {
-        source: "signed_webhook",
+        source: "webhook",
         eventId: input.eventId,
-        timestamp: new Date(timestampSeconds * 1_000).toISOString(),
-        signatureVersion: "v1",
         ...(input.remoteAddress ? { remoteAddress: input.remoteAddress } : {}),
       },
       now: new Date().toISOString(),

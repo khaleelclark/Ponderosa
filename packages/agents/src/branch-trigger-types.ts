@@ -25,8 +25,6 @@ export interface CreateTriggerDefinitionInput {
   enabled?: boolean;
   runBudget?: never;
   nextFireAt?: string;
-  secretCiphertext?: string;
-  secretFingerprint?: string;
   now?: string;
 }
 
@@ -40,8 +38,6 @@ export interface UpdateTriggerDefinitionInput {
   enabled?: boolean;
   runBudget?: never;
   nextFireAt?: string | null;
-  secretCiphertext?: string;
-  secretFingerprint?: string;
   now?: string;
 }
 

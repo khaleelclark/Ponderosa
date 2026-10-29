@@ -65,9 +65,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
     return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:!keepSchedule,...(keepSchedule?{enabledOverride:local.enabled?current!.enabled:false}:{})};
   }
   context.installations.setPublisher((input,configuration)=>{
-    let trigger=validateLocal(input,configuration);
-    const currentTrigger=input.branchId?branches.trigger(input.branchId):undefined;
-    if(trigger&&input.definition.trigger.kind==='webhook'&&(!currentTrigger||currentTrigger.sourceKind!=='webhook'||!currentTrigger.secretFingerprint))trigger={...trigger,enabledOverride:false} as typeof trigger;
+    const trigger=validateLocal(input,configuration);
     return branches.deploy(input,new Date().toISOString(),trigger,configuration);
   },()=>sources.refresh());
   app.get('/api/branches/assistant',async()=>context.outputApps.status());
@@ -309,39 +307,19 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
       assertEditable(request.params.id);
       const current=branches.trigger(request.params.id);if(!current)return reply.code(404).send({error:'Trigger not found'});
       if(stableJson(current)!==stableJson(body.reviewedTrigger))return reply.code(409).send({error:'Branch trigger changed; refresh before editing intake'});
-      if(body.enabled&&current.sourceKind==='webhook'&&!current.secretFingerprint)throw new Error('Rotate the signing secret before enabling webhook intake');
       const normalized=body.enabled&&!current.enabled?normalizeTriggerSourceConfig(current.sourceKind,current.sourceConfig):undefined;
       const trigger=branches.triggers.updateTriggerDefinition(current.id,{enabled:body.enabled,...(normalized?{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt??null}:{})});
       await sources.applyDefinitionChange(current,trigger);await sources.refresh();notify();return trigger;
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid Branch trigger switch'});}
   });
-  app.post<{Params:{id:string}}>('/api/branches/:id/trigger/rotate-secret',async(request,reply)=>{
+  // Webhooks share the ordinary Origin and request admission checks.
+  app.post<{Params:{id:string};Body:unknown}>('/api/trigger-webhooks/:id',{bodyLimit:1024*1024},async(request,reply)=>{
+    if(!request.headers['content-type']?.split(';')[0]?.trim().match(/^application\/json$/i))return reply.code(415).send({error:'Branch webhooks require application/json'});
+    const eventId=request.headers['x-ponderosa-event-id'];
     try{
-      assertEditable(request.params.id);const current=branches.trigger(request.params.id);
-      if(!current)return reply.code(404).send({error:'Trigger not found'});
-      if(current.sourceKind!=='webhook')throw new Error('Only webhook sources have signing secrets');
-      const secret=sources.createWebhookSecret(),trigger=branches.triggers.updateTriggerDefinition(current.id,{secretCiphertext:secret.ciphertext,secretFingerprint:secret.fingerprint});
-      return {trigger,webhookSecret:secret.secret};
-    }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Webhook rotation failed'});}
-  });
-
-  // Keep raw-byte HMAC verification local to this bounded route. All ordinary
-  // operator Host, Origin, authentication and request admission hooks apply.
-  void app.register(async scope=>{
-    const rawBodies=new WeakMap<import('node:http').IncomingMessage,Buffer>(),parseJson=scope.getDefaultJsonParser('error','error');
-    scope.removeContentTypeParser('application/json');
-    scope.addContentTypeParser('application/json',{parseAs:'buffer',bodyLimit:1024*1024},(request,body,done)=>{
-      const raw=Buffer.isBuffer(body)?body:Buffer.from(body);
-      rawBodies.set(request.raw,raw);parseJson(request,raw.toString('utf8'),done);
-    });
-    scope.post<{Params:{id:string};Body:unknown}>('/api/trigger-webhooks/:id',{bodyLimit:1024*1024},async(request,reply)=>{
-      const rawBody=rawBodies.get(request.raw);if(!rawBody)return reply.code(415).send({error:'Branch webhooks require application/json'});
-      const header=(name:string)=>{const value=request.headers[name];return typeof value==='string'?value:'';};
-      try{
-        const result=sources.verifyAndRecordWebhook({triggerId:request.params.id,eventId:header('x-ponderosa-event-id'),timestamp:header('x-ponderosa-timestamp'),signature:header('x-ponderosa-signature'),rawBody,payload:request.body,remoteAddress:request.ip});
-        return reply.code(result.replayed?200:202).send(result);
-      }catch(error){const message=error instanceof Error?error.message:'Webhook rejected';return reply.code(message.includes('idempotency conflict')?409:message.includes('unavailable')?503:message.includes('not found')?404:message.startsWith('canonical JSON')?400:401).send({error:message});}
-    });
+      const result=sources.verifyAndRecordWebhook({triggerId:request.params.id,eventId:typeof eventId==='string'?eventId:'',payload:request.body,remoteAddress:request.ip});
+      return reply.code(result.replayed?200:202).send(result);
+    }catch(error){const message=error instanceof Error?error.message:'Webhook rejected';return reply.code(message.includes('idempotency conflict')?409:message.includes('unavailable')?503:message.includes('not found')?404:400).send({error:message});}
   });
   app.post<{ Body: DeployBranchRequest }>('/api/branches/preview', async (request, reply) => {
     try {
@@ -369,14 +347,12 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
       assertEditable(input.branchId!);
       const replay = branches.deploymentReplay(input);
       if (replay) { await sources.reconcileBranch(replay.id); return replay; }
-      let trigger=validateLocal(input);
+      const trigger=validateLocal(input);
       const currentTrigger=input.branchId?branches.trigger(input.branchId):undefined;
-      const secret=input.definition.trigger.kind==='webhook' && (!currentTrigger || currentTrigger.sourceKind!=='webhook' || !currentTrigger.secretFingerprint) ? sources.createWebhookSecret() : undefined;
-      if(trigger&&secret)trigger={...trigger,secretCiphertext:secret.ciphertext,secretFingerprint:secret.fingerprint} as typeof trigger;
       const result = branches.deploy(input, new Date().toISOString(), trigger);
       await sources.applyDefinitionChange(currentTrigger,branches.trigger(result.id));
       notify();
-      return { ...result, ...(secret && branches.trigger(result.id)?.secretFingerprint === secret.fingerprint ? { webhookSecret: secret.secret } : {}) };
+      return result;
     } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch deployment', ...(error instanceof BranchValidationError?{issues:[error.issue]}:{}) }); }
   });
   app.post<{ Params: { id: string }; Body: { occurrenceKey: string; input: string } }>('/api/branches/:id/executions', async (request, reply) => {

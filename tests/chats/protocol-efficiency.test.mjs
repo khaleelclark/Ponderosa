@@ -32,3 +32,26 @@ test('actual scheduler prompts retain default route and canonical explicit reply
   assert.equal((await f.detail(agent.id)).messages.filter(m=>m.text==='Canonical reply without protocol repetition').length,1);
  });
 });
+
+test('Branches scheduler records one protocol and preserves its private canonical reply route',{timeout:30000},async t=>{
+ const {randomUUID}=await import('node:crypto');
+ const {until}=await import('../shared/fixture.mjs');
+ await withFixture(t,async f=>{
+  const branch=f.ok(await f.api('POST','/api/branches',{name:'Protocol fixture',idempotencyKey:randomUUID()}));
+  const chat=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{label:'Protocol Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+  const prefix='/api/branches/engine';
+  const agent=f.ok(await f.api('POST',`${prefix}/projects/${chat.projectId}/agents`,{title:'Protocol speaker',engine:'codex',conversationId:chat.id,idempotencyKey:randomUUID()}));
+  f.plans.set(agent.id,[{hold:true}]);
+  f.ok(await f.api('POST',`${prefix}/agents/${agent.id}/messages`,{text:'Controlled private task',idempotencyKey:randomUUID()}));
+  await until(()=>f.sessions.get(agent.id),'Branches provider input');
+  const session=f.sessions.get(agent.id),detail=()=>f.api('GET',`${prefix}/agents/${agent.id}`).then(f.ok);
+  const run=(await detail()).runs[0];
+  const recorded=f.ok(await f.api('GET',`${prefix}/runs/${run.id}/provider-input?exact=1`));
+  for(const instruction of communicationV3SessionPrompt())assert.equal(recorded.exactSystemPrompt.split(instruction).length-1,1,instruction);
+  assert.equal(recorded.exactPrompt.split('one authorized default reply route').length-1,1);
+  assert.equal(recorded.exactPrompt.includes('Common delegation: ponderosa_coordinate'),false);
+  f.ok(await f.tool(session,'ponderosa_message',{text:'Branches private reply'}));session.finish();
+  await until(async()=>!(await detail()).runs.some(r=>['running','preparing'].includes(r.status)),'Branches completed reply');
+  assert.equal((await detail()).messages.filter(m=>m.text==='Branches private reply').length,1);
+ });
+});
