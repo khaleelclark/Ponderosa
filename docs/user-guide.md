@@ -202,6 +202,8 @@ Rename a Chat from its actions menu. **Enter** saves; **Cancel** leaves the name
 unchanged. The shared rename dialog ignores Enter while an IME composition is active.
 
 Pasting multiline text keeps the complete text in the draft until you submit it.
+After you begin interacting with the next draft, background replies do not add a
+reply destination to it. Existing and explicitly selected destinations remain.
 On desktop, **Enter** sends and **Shift+Enter** inserts a newline. On Android and
 iOS, **Return** inserts a newline; use **Send** to submit.
 

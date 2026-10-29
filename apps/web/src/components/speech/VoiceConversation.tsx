@@ -519,7 +519,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         {latency && <Typography aria-label="Call timing" variant="caption">{latency} Recognition finalization and provider time vary; these are this turn’s observed intervals.</Typography>}
         {provisionalReply && <Typography ref={replyElement} aria-label="Streaming reply" sx={{ whiteSpace: "pre-wrap" }}>{provisionalReply}</Typography>}
         <Box aria-label="Call transcript">{transcript.map(message => <Box key={message.id} sx={{ mb: 1 }}><Typography variant="caption">{message.role === "user" ? "You" : "Agent"}</Typography><Typography ref={renderReply?.canonicalId === message.id ? replyElement : undefined} sx={{ whiteSpace: "pre-wrap" }}>{message.document ? "Full message available in Chat." : message.text}</Typography></Box>)}</Box>
-        <TextField label="Your next turn" multiline minRows={2} value={text} disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked} onChange={e => setText(e.target.value)} />
+        <TextField label="Your next turn" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked} onChange={e => setText(e.target.value)} />
         {text.trim() && !recording && !inFlight && <Typography variant="caption">Send or clear your draft before starting a call.</Typography>}
         {replyPending && observedRun.current && <Button onClick={async () => {
           const targetRunId = observedRun.current; if (!targetRunId) return;

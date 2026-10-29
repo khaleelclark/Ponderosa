@@ -473,6 +473,7 @@ export function Composer({
   const inputRef = useRef<ComposerEditorHandle | null>(null);
   const pendingSelection = useRef(readDraftSelection(draftStorageKey));
   const selectionIntent = useRef(0);
+  const continuationSeedIntent = useRef(0);
   const authoredTextInput = useRef(false);
   useEffect(() => {
     const cancelRestore = (event: Event) => {
@@ -1308,6 +1309,7 @@ export function Composer({
     const changed = previousConversationDraftId.current !== conversationDraftId;
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
+      continuationSeedIntent.current = selectionIntent.current;
       draftGeneration.current += 1;
       draftWriteChain.current = createDraftWriteChain();
       pastedTextMutationGeneration.current += 1;
@@ -1757,6 +1759,7 @@ export function Composer({
     const editor = inputRef.current;
     if (!editor || draftMutationLockedRef.current) return;
     // A continuation is a normal authored token, not an ephemeral overlay.
+    // Late replies must not seed between Select All/Delete and native paste.
     // Seed only an empty draft with no retained destination: refreshes/new
     // replies must never duplicate or retarget an already selected recipient.
     const currentText = editor.getCanonicalText();
@@ -1766,6 +1769,7 @@ export function Composer({
       retainedSelectionKey: activeDefaultDestination?.selectionKey,
       localText: textRef.current,
       editorText: currentText,
+      interactionStarted: continuationSeedIntent.current !== selectionIntent.current,
     })) {
       if (activeDefaultDestination) {
         appliedDefaultDestination.current = defaultDestination;
@@ -2668,6 +2672,7 @@ export function Composer({
         return;
       }
       executeCaptured(item, handler, submittedDraftWriteChain, [...files]);
+      continuationSeedIntent.current = selectionIntent.current;
       // Local retirement is synchronous and incarnation-based, not text equality.
       // Identical newly typed text is a distinct draft and cannot be cleared by
       // late acknowledgement. Staged assets remain protected by pendingSubmissions.
@@ -2917,6 +2922,7 @@ export function Composer({
         // Clear only the exact draft incarnation that produced this submission.
         // This also preserves edits made while a runtime command is pending.
         if (submissionMayClearDraft && scopeStillActive) {
+          continuationSeedIntent.current = selectionIntent.current;
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;

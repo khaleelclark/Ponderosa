@@ -1028,7 +1028,8 @@ function EditorBridge({
     },
     focus: () => editor.focus(),
     isFocused: () => editor.getRootElement()?.contains(document.activeElement) ?? false,
-    getCanonicalText: () => canonicalRef.current,
+    // Native input can be queued before the update-listener cache catches up.
+    getCanonicalText: () => editor.read("pending", $canonicalText),
     getSelectionOffsets: () =>
       editor.getEditorState().read(() => $selectionOffsets()),
     setSelectionOffsets: (start, end) => {

@@ -1579,6 +1579,13 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24 TypeScript transform; no provider account"
+    },
+    {
+      "path": "tests/chats/composer-pending-read.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed Lexical; no browser or provider account"
     }
   ],
   "retainedReleasePayload": [
