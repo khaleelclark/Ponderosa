@@ -115,7 +115,6 @@ export interface CoordinationRequestDeliveryView {
 }
 
 export interface SchedulerLease {
-  resumedFromPause?: boolean;
   runId: string;
   projectId: string;
   agentId: string;

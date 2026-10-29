@@ -1,54 +1,90 @@
-# Human Agent pause/resume — implementation under review
+# Human Agent pause/resume
 
-This branch is an incomplete prototype. Do not integrate or release it.
+Pause is a durable human hold on an exact observed scheduler Run. It fences late
+output first and requests observed provider/browser cleanup. It preserves the
+original task activations, Request/reply routes, satisfied replies, access,
+provider input packets and execution history. New work stays queued. Stop is
+terminal cancellation; it supersedes the pause and recovery and does not undo
+external effects or file edits.
 
-The intended behavior is a durable human hold on an exact observed Agent Run.
-Pause must close output authority before observed provider/browser process cleanup,
-retain unfinished canonical activations, Request/reply lineage, history and human
-access settings, and hold newly arriving input. Resume must continue unfinished
-work through the existing scheduler with a new fence. Stop remains terminal
-cancellation, including when invoked on paused work; it does not resume it.
+POST `/api/agents/:id/pause` accepts `targetRunId` and `idempotencyKey`.
+POST `/api/agents/:id/resume` accepts `pauseId` and `idempotencyKey`.
+Agent Chat exposes Pause and Resume. Exact-target mismatches return 409. Resume
+requires observed cleanup. Its waiting state persists until provider
+acknowledgement, and durable preparation errors appear in Agent detail. Native
+provider commands and Context Refresh cannot bypass the hold. Human access
+settings and provider authentication are unchanged.
 
-The prototype adds POST `/api/agents/:id/pause` with `targetRunId` and
-`idempotencyKey`, and POST `/api/agents/:id/resume` with `pauseId` and
-`idempotencyKey`. Agent Chat exposes Pause/Resume using the existing action and
-query invalidation patterns. Exact-target mismatches return 409. Resume waits
-for completed provider-operation cleanup. There is no provider dynamic tool or
-permission change associated with these human controls.
+## Canonical recovery authority
 
-SQLite `agent_run_pauses` records current holds and retains the previous exact
-provider-input and prompt-injection snapshots. It is canonical lifecycle state,
-not reconstructed from rendered status. Its Agent identity deliberately has no
-foreign key to the replaceable Agent projection; direct Agent deletion clears
-these private receipts and project Run deletion cascades them. The scheduler
-excludes held Agents. Failed pre-injection resume preparation restores the hold
-rather than failing its attached work. A history row is not yet a complete
-user-facing error surface for failed Resume.
+SQLite `agent_run_pauses` retains the hold, exact input/injection snapshots,
+phase, checkpoint, source Run and current recovery activation. Immutable
+`agent_pause_recoveries` receipts bind each human command key to one isolated
+activation and a fresh execution/fence. The normal scheduler alone leases it,
+using normal scope/resource admission and excluded-Agent filtering. Original
+Runs remain terminal; original task activations are never re-executed.
 
-The migration has an exact immediate predecessor signature, alongside the
-existing explicit history/workspace predecessors; arbitrary schema repair
-remains refused. The schema now has 513 objects, exceeding the former fixed 512
-object ceiling. The fixed metadata-object allowance is 528; row, byte and work
-budgets remain bounded and unchanged. No install or provider authentication change.
+The recovery activation copies source lineage using the continuation pattern.
+The existing required-reply authority transfers pending roots and preserves
+satisfied roots and exact routes. Only that activation can pass the hold;
+queue coalescing and passive deliveries cannot add unrelated work. The hold is
+released on actual provider acknowledgement, not leasing or preparation.
 
-## Unresolved engineering boundaries
+Source/requested-refresh recovery reconstructs cold from frozen canonical
+source payloads and at most eight exact same-session input packets, with their
+original hashes/manifests. For an unsubmitted source, the latest completed,
+injected same-scope canonical packet can supply historical input; it is never
+admitted as a retained opaque checkpoint. No incomplete session is relabeled
+completed. Repeated pauses flatten prior checkpoint sources instead of nesting
+old recovery prompts. Earlier history remains retained and explicitly omitted.
 
-Reactivating the same Run after killing its provider is insufficient. The
-current retained-context contract requires a trustworthy completed-session
-checkpoint or explicit recovery; paused incomplete work cannot be mislabeled as
-completed. Native work can change provider context without a host token count.
-An attempted relaxation of this proof was removed. The source/requested-refresh
-resume cases therefore remain red. Unverified replacement inputs are separately
-hash-bound and cannot be changed merely by reusing a Run ID. Handoff/replacement
-and restart-resume coverage is required before approval.
+The checkpoint includes at most 16 tool/command/file/error observations plus
+four final text observations, with a 16 KiB inline evidence ceiling and 4 KiB
+per observation. Oversized observations retain exact event IDs, hashes and byte
+counts. They and earlier observations remain in execution history. This is
+selected non-authoritative partial evidence, never a fabricated model summary
+or completed turn. Current and previous bounded observations, parent checkpoint
+identity and uncertainty remain inspectable. The compiler refuses an oversized
+required checkpoint while retaining the hold; it never silently clips it.
 
-The next design must reuse canonical bounded continuation/recovery, preserve
-partial work as non-authoritative evidence, retain exact reply authority and
-explicit queue isolation, and avoid automatic re-execution of already performed
-actions. It must never broaden context admission merely because a pause receipt
-exists. No product decision or human-only check is asserted as the cause of
-these engineering failures.
+An interrupted isolated handoff recovers only its bounded handoff contract from
+its frozen checkpoint, then uses ordinary continuation. An unverified
+replacement uses the existing exact replacement-recovery path: saved prompt,
+system and manifest hashes stay identical, with no appended resume prose.
+
+Submitted/unacknowledged steering remains outcome-unknown. Human Resume is not
+proof that external effects failed. Recovery instructions require inspection
+before retry; the scheduler never automatically replays original activations.
+
+## Failure, Stop and restart
+
+Canonical lifecycle containment precedes generic failure settlement. Rejected
+pre-submission preparation, resource deferral or unavailable scope restores the
+same hold and visible diagnostic without failing original work. A repeated
+command key returns its original receipt, including a rejection. After cleanup,
+a different human command key may authorize a corrected attempt. Submitted or
+unknown delivery retains uncertainty and ownership and cannot automatically
+retry; Stop remains available. This implementation provides no automatic
+reconciliation of external effects.
+
+Stop and deletion atomically supersede pending/accepted recovery ownership,
+fence descendants, cancel reply obligations and request observed cleanup.
+Restart preserves receipts and holds; abandoned recovery execution is contained
+before generic orphan settlement. Pause receipts do not reference the
+replaceable Agent projection. Direct Agent deletion removes private receipts;
+project scheduler-Run deletion cascades them.
+
+The unpublished migration has exact supported predecessor signatures (0029,
+0028 and 0027). Foreign and partial schemas remain refused. The metadata object
+ceiling remains 528; byte/row/work read ceilings are unchanged.
+
+## Qualification
 
 Run `node --import ./tests/shared/workspace-resolution.mjs --test tests/context-recovery/pause-resume.test.mjs`
-after sequential agents/server builds. All failures are retained separately;
-this document makes no passing lifecycle or full-commandment claim.
+after sequential builds. Tests cover all four phases through original Request
+completion, exact replacement hashes, queue isolation, stale output, satisfied
+roots, failure boundaries, Stop, restart, cleanup, fairness, command holds,
+resource/scope rejection, supported migrations and schema refusal. Controlled
+providers perform no inference. Passing tests do not establish native-provider
+or UI parity. Exact-head independent runtime review and subsequent UI review
+are required before integration.

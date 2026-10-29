@@ -445,6 +445,14 @@ export class CoordinationV3RequiredReplyAuthority {
     activations: readonly ActivationInput[];
     now: string;
   }): RequiredReplyObligation[] {
+    const pausedOrigins=input.activations.flatMap(activation=>{
+      const row=this.sqlite.prepare(`SELECT pause.run_id FROM agent_pause_recoveries recovery
+        JOIN agent_run_pauses pause ON pause.id=recovery.pause_id
+        WHERE recovery.activation_id=? AND recovery.run_id=? AND pause.agent_id=? AND pause.state='resume_requested'`)
+        .get(activation.id,input.runId,input.agentId) as {run_id:string}|undefined;
+      return row?[row.run_id]:[];
+    });
+    this.transferFromOrigins(input,pausedOrigins,false,true);
     this.transferContextRolloverObligations(input);
     this.transferFromOrigins(input, input.activations.flatMap(a =>
       delegationOriginsForActivation(this.sqlite, a.id)), true);
@@ -622,7 +630,7 @@ export class CoordinationV3RequiredReplyAuthority {
   private transferFromOrigins(input: {
     runId: string; projectId: string; agentId: string; scopeKey: string; now: string;
     activations?: readonly ActivationInput[];
-  }, originRunIds: string[], finalOnly = false): void {
+  }, originRunIds: string[], finalOnly = false, paused = false): void {
     for (const originRunId of new Set(originRunIds)) {
       const roots = this.forRun(originRunId).filter(o =>
         o.projectId === input.projectId && o.agentId === input.agentId && o.scopeKey === input.scopeKey);
@@ -648,9 +656,9 @@ export class CoordinationV3RequiredReplyAuthority {
         // ordinary callbacks cannot revive completed or cancelled work.
         const answeredInitial = predecessor.deliveryPhase === 'initial' && ['pending','satisfied'].includes(predecessor.state) &&
           answeredDecision && row?.run_status !== 'cancelled';
-        const satisfiedInitial = answeredInitial && predecessor.state === 'satisfied';
-        if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial) continue;
-        if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial) continue;
+        const satisfiedInitial = (answeredInitial || paused) && predecessor.state === 'satisfied';
+        if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial && !(paused && predecessor.state === "satisfied")) continue;
+        if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial && !(paused && predecessor.state === "satisfied")) continue;
         this.sqlite.prepare(`
           INSERT OR IGNORE INTO required_reply_obligations (
             run_id, source_activation_id, project_id, agent_id, scope_key, reply_authority_json,

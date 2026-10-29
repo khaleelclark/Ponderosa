@@ -205,6 +205,7 @@ export class CoordinationV3Store {
       input => this.updateRequest(input),
       (activationIds, now) =>
         this.questionAuthority.settleQuestionsForFailedActivations(activationIds, now),
+      (id,error,now)=>this.runLifecycleAuthority.rejectPausedActivation(id,error,now),
     );
     this.activationCommandAuthority = new CoordinationV3ActivationCommandAuthority(
       sqlite,
@@ -272,6 +273,7 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.settleForRun(runId, "cancelled", now); },
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
       options.canonicalTaskDecisions,
+      input => this.createActivation(input),
     );
     this.deletionAuthority = new CoordinationV3DeletionAuthority(
       sqlite,
@@ -339,6 +341,10 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+      (runId,error) => {
+        const run=this.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(runId) as {fencing_token:number}|undefined;
+        return Boolean(run&&this.runLifecycleAuthority.containPauseRecoveryFailure(runId,run.fencing_token,error));
+      },
     );
     this.contextRolloverAuthority.reconcileRetainedContinuity(new Date().toISOString());
   }
@@ -1225,8 +1231,11 @@ export class CoordinationV3Store {
   resumeAgentRun(input: {agentId:string;pauseId:string;idempotencyKey:string}) {
     return this.runLifecycleAuthority.resumeAgentRun(input);
   }
-  restoreRejectedPauseResume(runId:string,fencingToken:number,injectionId:string) {
-    return this.runLifecycleAuthority.restoreRejectedPauseResume(runId,fencingToken,injectionId);
+  pauseRecoveryForRun(runId:string,agentId:string) {
+    return this.sqlite.prepare(`SELECT pause.id,pause.run_id,pause.phase,pause.rollover_id,pause.checkpoint_json,recovery.state
+      FROM agent_pause_recoveries recovery JOIN agent_run_pauses pause ON pause.id=recovery.pause_id
+      WHERE recovery.run_id=? AND pause.agent_id=? AND pause.state<>'stopped'`).get(runId,agentId) as
+      {id:string;run_id:string;phase:string;rollover_id:string|null;checkpoint_json:string;state:string}|undefined;
   }
   runPause(runId:string) {
     return this.sqlite.prepare("SELECT id,state FROM agent_run_pauses WHERE run_id=? AND state IN ('paused','resume_requested')").get(runId) as {id:string;state:string}|undefined;

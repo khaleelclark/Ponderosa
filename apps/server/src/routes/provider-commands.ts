@@ -360,6 +360,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
   async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
+    if(store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id))
+      return reply.code(409).send({error:'Agent is paused; Resume or Stop before a provider command'});
     const project = store.getChatContext(agent.conversationId);
     if (!project || project.id !== agent.projectId) return reply.code(409).send({ error: "Agent Chat context is unavailable" });
     const engine = engines.get(agent.activeEngine);
@@ -629,6 +631,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
 app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {
   const agent = store.getAgent(request.params.id);
   if (!agent) return reply.code(404).send({ error: "agent not found" });
+  if(store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id))
+    return reply.code(409).send({error:'Agent is paused; Resume or Stop before Context Refresh'});
   if (activeRuns.has(request.params.id) || coordinationV3.activeAgentRun(request.params.id)) {
     return reply.code(409).send({ error: "cannot compact an agent with an active run", retryable: true });
   }

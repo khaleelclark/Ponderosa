@@ -248,6 +248,12 @@ reconcile that attempt instead of composing a duplicate. Check Chat for an
 accepted message before resending. **Stop** cancels the selected active Run;
 it does not reverse file edits or external actions.
 
+**Pause** holds the selected work while preserving its history and reply route.
+**Resume** waits for cleanup, then continues through a fresh recovery execution.
+Messages arriving during the hold remain queued. A preparation error leaves the
+work paused and shows its cause; inspect uncertain external effects before
+retrying. **Stop** cancels paused work as well.
+
 ### Answer a Decision or skip it
 
 A **Decision** is a recorded question or approval request for you. Read the question

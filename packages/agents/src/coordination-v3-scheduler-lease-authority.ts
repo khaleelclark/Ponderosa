@@ -48,6 +48,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
     private readonly recoverRequiredReply: (runId: string, now: string) => void,
     private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
     private readonly restoreUninjectedDecisionRoots: (runId: string, now: string) => void,
+    private readonly containPauseRecovery: (runId:string,error:string) => boolean,
   ) {}
 
   /** A coarse injection flag alone cannot certify that abandoned work never
@@ -85,6 +86,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         `).run(incidentId, now);
       }
       for (const run of runs) {
+        if(this.containPauseRecovery(run.id,"Recovery execution ownership expired or the server restarted")){outcomeUnknown+=1;continue;}
         if (retryableRunIds.has(run.id)) {
           this.sqlite.prepare(`
             UPDATE scheduler_runs
@@ -173,30 +175,19 @@ export class CoordinationV3SchedulerLeaseAuthority {
     return this.sqlite.transaction(() => {
       this.recoverExpiredRunsInTransaction(now);
       this.activationLifecycle.settleUnauthorizedPendingActivations(now);
-      const resume=this.sqlite.prepare(`SELECT pause.id AS pause_id,run.* FROM agent_run_pauses pause
-        JOIN scheduler_runs run ON run.id=pause.run_id WHERE pause.state='resume_requested' AND run.status='cancelled'
-        ORDER BY pause.paused_at LIMIT 1`).get() as {pause_id:string;id:string;agent_id:string;project_id:string;scope_key:string}|undefined;
-      if(resume && !excludedAgentIds.includes(resume.agent_id)) {
-        const rows=this.sqlite.prepare(`SELECT a.* FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? AND a.state='attached' ORDER BY a.created_at,a.id`).all(resume.id) as ActivationRow[];
-        if(!rows.length)throw new Error('Paused Run lost its canonical attached sources');
-        if(!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(resume.project_id,resume.agent_id,resume.scope_key))throw new Error('Paused Run scope is no longer available');
-        const fencingToken=this.support.nextFence(resume.agent_id), injectionId=randomUUID();
-        const leaseExpiresAt=new Date(Date.parse(now)+leaseMs).toISOString();
-        this.sqlite.prepare("UPDATE scheduler_runs SET status='leased',lease_owner=?,lease_expires_at=?,fencing_token=?,side_effects_fenced_at=NULL,terminal_at=NULL,updated_at=? WHERE id=? AND status='cancelled'").run(input.workerId,leaseExpiresAt,fencingToken,now,resume.id);
-        this.sqlite.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at) VALUES(?,?,'turn',(SELECT COALESCE(MAX(sequence),-1)+1 FROM scheduler_prompt_injections WHERE run_id=?),'pending','',?,?,?)").run(injectionId,resume.id,resume.id,stableJson(rows.map(a=>a.id)),now,now);
-        this.sqlite.prepare("UPDATE agent_run_pauses SET state='resumed',resumed_at=? WHERE id=?").run(now,resume.pause_id);
-        return {runId:resume.id,projectId:resume.project_id,agentId:resume.agent_id,scopeKey:resume.scope_key,fencingToken,leaseOwner:input.workerId,leaseExpiresAt,injectionId,activationIds:rows.map(a=>a.id),activations:rows.map(a=>({id:a.id,kind:a.kind,priority:a.priority,dispatchPolicy:a.dispatch_policy,promptClass:a.prompt_class,payload:providerSafeActivationPayload(this.sqlite,a.id,a.payload_json),deliveryFailures:a.delivery_failures})),resumedFromPause:true};
-      }
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
-          AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id AND pause.state IN ('paused','resume_requested'))
+          AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
+            AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'
+              AND pause.recovery_activation_id=a.id))
           AND a.available_at <= ?
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
           ${excludedClause}
           AND (
-            (a.kind = 'context_rollover_handoff' AND EXISTS (
+            (EXISTS (SELECT 1 FROM agent_pause_recoveries recovery WHERE recovery.activation_id=a.id AND recovery.state='pending'))
+            OR (a.kind = 'context_rollover_handoff' AND EXISTS (
               SELECT 1 FROM context_rollovers rollover
               WHERE rollover.agent_id = a.agent_id
                 AND rollover.id = json_extract(a.payload_json, '$.rolloverId')
@@ -231,9 +222,13 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.* FROM agent_activations a
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
+            AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'
+              AND pause.recovery_activation_id=a.id))
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
           AND (
-            (kind = 'context_rollover_handoff' AND EXISTS (
+            (EXISTS (SELECT 1 FROM agent_pause_recoveries recovery WHERE recovery.activation_id=a.id AND recovery.state='pending'))
+            OR (kind = 'context_rollover_handoff' AND EXISTS (
               SELECT 1 FROM context_rollovers rollover
               WHERE rollover.agent_id = a.agent_id
                 AND rollover.id = json_extract(a.payload_json, '$.rolloverId')
@@ -277,7 +272,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
       );
       const isContextRolloverCandidate = (activation: ActivationRow): boolean =>
         Boolean(this.sqlite.prepare(`
-          SELECT 1
+          SELECT 1 FROM agent_pause_recoveries WHERE activation_id=?
+          UNION ALL SELECT 1
           FROM context_rollovers rollover
           WHERE rollover.agent_id = ? AND rollover.project_id = ?
             AND (
@@ -291,6 +287,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             )
           LIMIT 1
         `).get(
+          activation.id,
           candidate.agent_id,
           candidate.project_id,
           activation.id,
@@ -369,6 +366,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
         now,
         now,
       );
+      this.sqlite.prepare(`UPDATE agent_pause_recoveries SET run_id=? WHERE activation_id=? AND state='pending' AND run_id IS NULL`)
+        .run(runId,activations[0]!.id);
       this.registerRequiredReply({
         runId,
         projectId: candidate.project_id,
@@ -433,6 +432,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
     let retried = 0;
     let outcomeUnknown = 0;
     for (const run of runs) {
+        if(this.containPauseRecovery(run.id,"Recovery execution ownership expired or the server restarted")){outcomeUnknown+=1;continue;}
       if (this.canRetryUninjectedRun(run.id)) {
         this.sqlite.prepare(`
           UPDATE scheduler_runs

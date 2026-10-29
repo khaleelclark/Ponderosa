@@ -117,7 +117,7 @@ function pausePredecessorContract(budget = new StateReadBudget()): string {
   try {
     bindStateReadBudget(sqlite, budget);
     initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
-    sqlite.exec("DROP TABLE agent_run_pauses");
+    sqlite.exec("DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses");
     sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
     return compiledPausePredecessor = schemaSignature(sqlite);
   } finally { sqlite.close(); }
@@ -133,7 +133,7 @@ function workspacePredecessorContract(budget = new StateReadBudget(), beforeHist
     bindStateReadBudget(sqlite, budget);
     sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
     initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
-    sqlite.exec("DROP TABLE agent_run_pauses");
+    sqlite.exec("DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses");
     sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
     sqlite.exec("DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'");
     sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0029_assistant_workspace.sql");

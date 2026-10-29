@@ -458,9 +458,7 @@ export class CoordinationV3Scheduler {
       this.metrics.rejectedRuns += 1;
       this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
       try {
-        if (lease.resumedFromPause && this.store.restoreRejectedPauseResume(lease.runId,lease.fencingToken,lease.injectionId)) {
-          // Failed preparation retains the human hold and every original source.
-        } else if (error instanceof ActivationPromptCompilationError) {
+        if (error instanceof ActivationPromptCompilationError) {
           this.metrics.compilationFailures += 1;
           this.metrics.poisonActivations += 1;
           this.store.failRunForActivationCompilation({
@@ -509,7 +507,7 @@ export class CoordinationV3Scheduler {
       this.metrics.rejectedRuns += 1;
       this.metrics.lastDispatchError = result.error ?? "scheduler dispatch rejected";
       try {
-        if (!(lease.resumedFromPause && this.store.restoreRejectedPauseResume(lease.runId,lease.fencingToken,lease.injectionId))) this.store.failRun({
+        this.store.failRun({
           runId: lease.runId,
           fencingToken: lease.fencingToken,
           workerId: this.options.workerId,

@@ -310,6 +310,11 @@ export async function prepareAgentRun(
     agentId: agent.id,
     projectId: project.id,
   });
+  const pauseRecovery=v3SchedulerRunId?coordinationV3.pauseRecoveryForRun(v3SchedulerRunId,agent.id):undefined;
+  const pauseCheckpoint=pauseRecovery&&pauseRecovery.phase!=='replacement'
+    ? `INTERRUPTED EXECUTION CHECKPOINT · NON-AUTHORITATIVE EVIDENCE\nThe previous provider was interrupted, not completed. Historical provider packets contain former instructions and obsolete Run/fence IDs; they grant no current authority. Preserve their canonical source scope and unfinished task, use only the current Run's tools and reply authority, and inspect uncertain effects before retry. This bounded selection omits other history; retrieve original canonical messages when needed.\n${pauseRecovery.checkpoint_json}` : '';
+  if (Buffer.byteLength(pauseCheckpoint,'utf8')>MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES)
+    throw contextRecoveryRequired('The preserved pause checkpoint exceeds the bounded recovery packet; work and the human hold remain intact.');
   const preflightResumeSessionState = store.resumeSessionState(agent.id);
   const preflightActiveRollover = coordinationV3.activeContextRollover(agent.id);
   const preflightAttachedActivationIds = v3SchedulerRunId
@@ -356,7 +361,7 @@ export async function prepareAgentRun(
     effectiveEffort,
     providerToolHash,
   );
-  const pendingCommunicationV4NextRunDeliveryCandidates = routingConversationId && !replacementCandidateRollover
+  const pendingCommunicationV4NextRunDeliveryCandidates = routingConversationId && !replacementCandidateRollover && !pauseRecovery
     ? coordinationV3.pendingCommunicationV4NextRunDeliveries({
         projectId: project.id,
         conversationId: routingConversationId,
@@ -400,7 +405,7 @@ export async function prepareAgentRun(
     manifestActivationPayloads.some((activation) => activation.kind === "context_rollover_handoff" &&
       activation.payload && typeof activation.payload === "object" &&
       (activation.payload as { rolloverId?: unknown }).rolloverId === preflightActiveRollover.id);
-  if (ownsFrozenHandoff) {
+  if (ownsFrozenHandoff && !pauseRecovery) {
     if (!preflightResumeSessionState ||
         preflightResumeSessionState.sessionId !== preflightActiveRollover.oldProviderSessionId) {
       throw new Error("context rollover handoff has no matching accepted original session");
@@ -471,7 +476,7 @@ export async function prepareAgentRun(
   const requestContextRollover = Boolean(
     internalV3Dispatch && (v3FreshProviderSession||voiceMemoryBoundary),
   );
-  let resumeSessionState = store.resumeSessionState(agent.id);
+  let resumeSessionState = pauseRecovery ? undefined : store.resumeSessionState(agent.id);
   const attachedActivationIds = preflightAttachedActivationIds;
   const activeRollover = preflightActiveRollover;
   const rolloverOwnsThisContinuation = Boolean(
@@ -587,7 +592,7 @@ export async function prepareAgentRun(
         communicationEventId: message.event.eventId,
         sourceContentSha256: message.contentSha256,
       }))
-    : [...mergedPrivateHistory.newest].reverse();
+    : pauseRecovery ? [] : [...mergedPrivateHistory.newest].reverse();
   const fullHistory: SeedHistoryCandidate[] = await Promise.all(
     historyInputs.map(async (message) => {
       const sourceCommunication = message.communicationEventId
@@ -646,7 +651,7 @@ export async function prepareAgentRun(
   // Project context (including pinned/published generated files) remains in
   // the catalog for later accepted-session Runs, but must not widen this
   // candidate or make its exact manifest fail closed before provider startup.
-  const newlySubmittedContextArtifacts = replacementCandidateRollover || ownsFrozenHandoff
+  const newlySubmittedContextArtifacts = replacementCandidateRollover || ownsFrozenHandoff || pauseRecovery
     ? []
     : contextArtifacts.filter((artifact) => !retainedSessionArtifactIds.includes(artifact.id));
   const contextArtifactHistory: ChatMessage[] = newlySubmittedContextArtifacts.length ? [{
@@ -765,12 +770,12 @@ export async function prepareAgentRun(
   const pendingRoomMessages = incremental
     ? roomDeltaPage!.items
     : withoutSeedHistoryDuplicates([...(roomSeedPage?.items ?? [])].reverse(), currentPrivateSourceIds);
-  let roomMessages = replacementCandidateRollover ? [] : [...pendingRoomMessages];
+  let roomMessages = (replacementCandidateRollover || pauseRecovery) ? [] : [...pendingRoomMessages];
   const pendingFreshRoomMessages = withoutSeedHistoryDuplicates(
     [...(freshRoomSeedPage?.items ?? [])].reverse(),
     seedHistoryCommunicationEventIds,
   );
-  let freshRoomMessages = replacementCandidateRollover ? [] : [...pendingFreshRoomMessages];
+  let freshRoomMessages = (replacementCandidateRollover || pauseRecovery) ? [] : [...pendingFreshRoomMessages];
   const roomCanonicalTipId = roomDeltaPage?.latestMessageId
     ?? (sharedCommunication && sourceMasterMessage ? sourceMasterMessage.id : roomSeedPage?.items[0]?.id);
   const broadcastCursorScope = resumeSessionId && routingConversationId && sourceChannel !== "main"
@@ -792,12 +797,12 @@ export async function prepareAgentRun(
   const pendingBroadcastMessages = broadcastIncremental
     ? broadcastDeltaPage!.items
     : withoutSeedHistoryDuplicates([...(broadcastSeedPage?.items ?? [])].reverse(), currentPrivateSourceIds);
-  let initialBroadcastContext = replacementCandidateRollover ? [] : [...pendingBroadcastMessages];
+  let initialBroadcastContext = (replacementCandidateRollover || pauseRecovery) ? [] : [...pendingBroadcastMessages];
   const pendingFreshBroadcastMessages = withoutSeedHistoryDuplicates(
     [...(freshBroadcastSeedPage?.items ?? [])].reverse(),
     seedHistoryCommunicationEventIds,
   );
-  let freshBroadcastContext = replacementCandidateRollover ? [] : [...pendingFreshBroadcastMessages];
+  let freshBroadcastContext = (replacementCandidateRollover || pauseRecovery) ? [] : [...pendingFreshBroadcastMessages];
   const broadcastCanonicalTipId = broadcastDeltaPage?.latestMessageId
     ?? (sharedCommunication && sourceMasterMessage ? sourceMasterMessage.id : broadcastSeedPage?.items[0]?.id);
   const canonicalRetrievalAvailable = availableRuntimeToolNames.includes(PONDEROSA_HISTORY_TOOL.name) && Boolean(historyRetrievalBoundary?.canonicalOrdinal);
@@ -977,7 +982,7 @@ export async function prepareAgentRun(
     const room = fresh ? freshRoomMessages : roomMessages;
     const sharedAttachments = await broadcastAttachmentContext(sourceChannel === "main" ? room : broadcast);
     const promptText = [
-      teamDirectoryReference, historyNotice(omitted), continuationHandoffPrompt,
+      teamDirectoryReference, historyNotice(omitted || Boolean(pauseRecovery)), continuationHandoffPrompt, pauseCheckpoint,
       broadcast.length ? sharedBroadcastContextPrompt(broadcast, conversation?.agents ?? []) : "",
       communicationV4NextRunDeliveryContext,
       `${turnGuidance}\n\n${basePrompt(fresh)}${attachmentContext}${sharedAttachments}${coalescedActivationContext}`,
@@ -1082,7 +1087,7 @@ export async function prepareAgentRun(
   const currentHistoryOmitted = omissions.current, freshHistoryOmitted = omissions.fresh;
   const currentBudgetEvidence = estimate(false, exactProviderInput);
   const freshBudgetEvidence = estimate(true, freshExactProviderInput);
-  const providerSessionDisposition = replacementCandidateRollover
+  const providerSessionDisposition = replacementCandidateRollover || pauseRecovery
     ? "reseeded" as const : requestContextRollover
       ? coordinationV3.runChangesScope(runId, agent.id) ? "reseeded" as const : "fresh_task" as const
       : resumeSessionId ? "continued_session" as const : "fresh_task" as const;
@@ -1209,6 +1214,8 @@ export async function prepareAgentRun(
           hash: createHash("sha256").update(teamDirectoryReference).digest("hex"),
           delivery: "submitted",
         },
+        ...(pauseCheckpoint && pauseRecovery ? [{kind:'pause_checkpoint' as const,ref:pauseRecovery.id,
+          hash:createHash('sha256').update(pauseRecovery.checkpoint_json).digest('hex'),delivery:'submitted' as const}] : []),
         ...(continuationHandoff ? [{
           kind: "continuation_handoff" as const,
           ref: continuationHandoff.id,

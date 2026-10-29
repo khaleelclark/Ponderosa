@@ -20,6 +20,7 @@ export class CoordinationV3ActivationLifecycleAuthority {
       activationIds: string[],
       now: string,
     ) => void,
+    private readonly rejectPausedActivation: (activationId:string,error:string,now:string)=>boolean,
   ) {}
 
   settleUnauthorizedPendingActivations(now: string): number {
@@ -50,6 +51,7 @@ export class CoordinationV3ActivationLifecycleAuthority {
       )) {
         continue;
       }
+      if(this.rejectPausedActivation(activation.id,'Recovery scope is no longer authorized; original work remains paused',now)){settled+=1;continue;}
       const changed = fail.run(
         now,
         "activation recipient is no longer authorized for its scope",

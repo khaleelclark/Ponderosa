@@ -94,7 +94,7 @@ export interface ProviderInputSourceManifestV3 {
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "policy" | "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment";
+    kind: "policy" | "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment" | "pause_checkpoint";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";
