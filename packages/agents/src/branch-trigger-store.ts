@@ -22,7 +22,7 @@ export class BranchTriggerStore {
   }
 
   private row(id: string): Row | undefined {
-    return this.sqlite.prepare("SELECT * FROM trigger_definitions WHERE id=?").get(id) as Row | undefined;
+    return this.sqlite.prepare("SELECT id,project_id,conversation_id,branch_id,name,instructions,source_kind,source_config_json,enabled,next_fire_at,last_fired_at,created_at,updated_at FROM trigger_definitions WHERE id=?").get(id) as Row | undefined;
   }
 
   private text(name: string, instructions: string): void {

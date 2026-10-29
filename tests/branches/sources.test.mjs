@@ -190,3 +190,17 @@ test('partial catchup failure retries only the unaccepted scheduled times after 
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,3);
  const events=f.triggers.listTriggerOccurrences(f.branch.triggerId);assert.equal(new Set(events.map(event=>event.payload.scheduledTimes[0])).size,3);f.noProviderWork();f.pass();
 });
+
+test('webhook trigger reads project only active columns from historical credential-bearing rows',async t=>{
+ const f=await fixture(t,'webhook',{}),db=f.store.sqlite;
+ db.prepare('UPDATE trigger_definitions SET secret_ciphertext=?,secret_fingerprint=? WHERE id=?').run('synthetic-retired-ciphertext','synthetic-retired-fingerprint',f.branch.triggerId);
+ const original=db.prepare,queries=[];
+ db.prepare=function(sql){if(/SELECT.*FROM trigger_definitions/i.test(sql))queries.push(sql);return original.call(this,sql)};
+ try{
+  const trigger=f.triggers.getTriggerDefinition(f.branch.triggerId);assert.equal(JSON.stringify(trigger).includes('synthetic-retired'),false);
+  f.sources.verifyAndRecordWebhook({triggerId:trigger.id,eventId:'projection-proof',payload:{text:'untrusted'}});
+ }finally{db.prepare=original;}
+ assert.ok(queries.length>0);
+ for(const sql of queries){assert.doesNotMatch(sql,/SELECT\s+\*|secret_ciphertext|secret_fingerprint/i);}
+ f.noProviderWork();f.pass();
+});

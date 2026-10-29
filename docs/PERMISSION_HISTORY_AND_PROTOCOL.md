@@ -36,3 +36,24 @@ protocol strings, not complete provider requests, billing or Claude tokens. The
 single restored human-input path previously omitted the route; its added authority
 is a correctness fix, not a token saving. A representative real core/Branches log
 sample and independent blind judge panel remain required for commandment 11.
+
+Existing canonical databases from the immediately preceding schema (through
+0027, before capability history) have one explicit online transition. Admission
+first verifies their exact schema and migration receipts, integrity, generation
+and physical directory authority using the existing private snapshot. Under the
+same lease it rechecks the live predecessor, then adds history and its receipt
+in one transaction and validates the result before commit. Current policies and
+Chat authority are retained; historical events are not invented. A failed
+migration rolls back; unknown, incomplete and mismatched-generation stores are
+still refused without rewriting them. This is not a generic legacy-state path.
+
+Genuine base-build regression command (base build must be the frozen eec1e7952
+runtime-access checkout, with built dependencies):
+
+```sh
+PONDEROSA_UPGRADE_BASE_AGENTS=/path/to/frozen-base/packages/agents/dist/index.js node --import ./tests/shared/workspace-resolution.mjs --test tests/branches/capability-history.test.mjs
+```
+
+The optional base-build tests cover a populated normal upgrade/reopen, rollback
+following executed DDL, unknown/incomplete schema, false/missing migration
+receipts and generation mismatch, including source-byte preservation on refusal.
