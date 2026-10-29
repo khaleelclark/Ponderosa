@@ -968,16 +968,35 @@ export class CoordinationV3RunLifecycleAuthority {
       if(this.sqlite.prepare("SELECT 1 FROM provider_operation_outbox operation JOIN agent_pause_recoveries recovery ON recovery.run_id=operation.run_id WHERE recovery.pause_id=? AND operation.state<>'completed'").get(input.pauseId))throw new Error('Previous recovery cleanup is not confirmed');
       if(this.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='outcome_unknown'").get(input.pauseId))throw new Error('Previous recovery submission has an unknown outcome; inspect it before any retry');
       const run=this.sqlite.prepare('SELECT project_id,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(pause.run_id,input.agentId) as {project_id:string;scope_key:string};
-      const continuationId=pause.phase==='continuation'&&pause.rollover_id
+      // A rejected committed candidate retains its packet proof. Only its exact,
+      // terminal, never-submitted attempt can authorize saved-packet recovery.
+      const packetRecovery=pause.phase==='continuation'&&pause.rollover_id?this.sqlite.prepare(`
+        SELECT recovery.activation_id FROM context_rollovers rollover
+        JOIN agent_pause_recoveries recovery ON recovery.run_id=rollover.replacement_run_id
+        JOIN scheduler_runs rejected ON rejected.id=recovery.run_id
+        JOIN provider_inputs packet ON packet.scheduler_run_id=rejected.id
+        WHERE rollover.id=? AND rollover.state='failed' AND rollover.replacement_verified_at IS NULL
+          AND recovery.pause_id=? AND recovery.state='rejected'
+          AND rejected.agent_id=? AND rejected.status='cancelled' AND rejected.side_effects_fenced_at IS NOT NULL
+          AND rejected.prompt_injection_state<>'injected'
+          AND NOT EXISTS(SELECT 1 FROM scheduler_prompt_injections injection WHERE injection.run_id=rejected.id
+            AND injection.state IN ('submitted','acknowledged','outcome_unknown'))`).get(pause.rollover_id,input.pauseId,input.agentId) as {activation_id:string}|undefined:undefined;
+      const continuationId=pause.phase==='continuation'&&pause.rollover_id&&!packetRecovery
         ?this.preparePausedContinuation(pause.rollover_id,now):undefined;
-      const template=continuationId?this.sqlite.prepare('SELECT kind,payload_json FROM agent_activations WHERE id=?').get(continuationId) as {kind:string;payload_json:string}:
+      const templateId=packetRecovery?.activation_id??continuationId;
+      const template=templateId?this.sqlite.prepare('SELECT kind,payload_json FROM agent_activations WHERE id=?').get(templateId) as {kind:string;payload_json:string}:
         pause.phase==='handoff'&&pause.rollover_id?this.sqlite.prepare(`SELECT a.kind,a.payload_json FROM scheduler_run_activations attached
           JOIN agent_activations a ON a.id=attached.activation_id WHERE attached.run_id=? AND a.kind='context_rollover_handoff'`).get(pause.run_id) as {kind:string;payload_json:string}|undefined:undefined;
       const activationId=this.createActivation({projectId:run.project_id,agentId:input.agentId,scopeKey:run.scope_key,
-        kind:template?.kind??'agent_pause_recovery',priority:110,dispatchPolicy:'next_run',promptClass:'human',
+        kind:packetRecovery?'agent_pause_recovery':template?.kind??'agent_pause_recovery',priority:110,dispatchPolicy:'next_run',promptClass:'human',
         dedupeKey:`pause-recovery:${input.pauseId}:${input.idempotencyKey}`,sourceKind:'agent_pause',sourceId:input.pauseId,now,
         payload:{...(template?JSON.parse(template.payload_json):{}),pauseId:input.pauseId,
-          ...(!continuationId?{sourceRunId:pause.run_id,instruction:template?'Resume only the isolated bounded handoff contract. Do not execute the original task actions.':'The human resumed the unfinished work. Continue from the canonical source lineage and bounded interrupted checkpoint; do not start over. Preserve exact Request/reply routes and satisfied replies. Inspect uncertain effects before retrying actions. Unrelated queued inputs remain separate.'}:{})}});
+          ...(!templateId?{sourceRunId:pause.run_id,instruction:template?'Resume only the isolated bounded handoff contract. Do not execute the original task actions.':'The human resumed the unfinished work. Continue from the canonical source lineage and bounded interrupted checkpoint; do not start over. Preserve exact Request/reply routes and satisfied replies. Inspect uncertain effects before retrying actions. Unrelated queued inputs remain separate.'}:{})}});
+      if(packetRecovery){
+        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT ?,source_kind,source_id FROM activation_sources
+          WHERE activation_id=? AND source_kind NOT IN ('agent_pause','context_rollover','context_rollover_recovery')`).run(activationId,packetRecovery.activation_id);
+        this.sqlite.prepare('INSERT OR IGNORE INTO activation_sources VALUES(?,?,?)').run(activationId,'context_rollover_recovery',pause.rollover_id);
+      }
       if(continuationId){
         this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT ?,source_kind,source_id FROM activation_sources WHERE activation_id=?`).run(activationId,continuationId);
         this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled',updated_at=?,terminal_at=? WHERE id=? AND state IN ('pending','retry_pending')`).run(now,now,continuationId);
@@ -1024,6 +1043,9 @@ export class CoordinationV3RunLifecycleAuthority {
       this.sqlite.prepare(`UPDATE scheduler_runs SET status=?,fencing_token=?,side_effects_fenced_at=?,terminal_at=?,updated_at=? WHERE id=?`).run(submitted?'outcome_unknown':'cancelled',fence,now,now,now,runId);
       this.sqlite.prepare(`UPDATE scheduler_prompt_injections SET state=?,terminal_at=?,updated_at=? WHERE run_id=? AND state IN ('pending','submitted')`).run(submitted?'outcome_unknown':'cancelled',now,now,runId);
       this.sqlite.prepare("UPDATE agent_activations SET state=?,updated_at=?,last_delivery_error=? WHERE id=? AND state='attached'").run(submitted?'outcome_unknown':'failed',now,diagnostic,recovery.activation_id);
+      if(!submitted)this.sqlite.prepare(`UPDATE context_rollovers SET state='failed',last_error=?,updated_at=?,terminal_at=?
+        WHERE replacement_run_id=? AND replacement_verified_at IS NULL AND state='continuation_ready'
+          AND id IN(SELECT rollover_id FROM agent_run_pauses WHERE id=?)`).run(diagnostic,now,now,runId,recovery.pause_id);
       this.sqlite.prepare('UPDATE agent_pause_recoveries SET state=?,error=? WHERE run_id=?').run(submitted?'outcome_unknown':'rejected',diagnostic,runId);
       this.sqlite.prepare("UPDATE agent_run_pauses SET state='paused',last_error=? WHERE id=?").run(diagnostic,recovery.pause_id);
       // Even an unstarted runtime may own browser/provider preparation resources.

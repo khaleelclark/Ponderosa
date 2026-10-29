@@ -68,7 +68,16 @@ Canonical lifecycle containment precedes generic failure settlement. Rejected
 pre-submission preparation, resource deferral or unavailable scope restores the
 same hold and visible diagnostic without failing original work. A repeated
 command key returns its original receipt, including a rejection. After cleanup,
-a different human command key may authorize a corrected attempt. Submitted or
+a different human command key may authorize a corrected attempt. If a committed
+continuation already bound its provider packet before preparation failed, the
+rejected candidate remains fenced with its exact packet/handoff/tail proof.
+After confirmed cleanup and proof of no submitted or unknown input, the new
+command uses the existing exact replacement-packet recovery path. It transfers
+the latest rejected attempt's pending and satisfied reply roots, preserves
+immutable command receipts and checks the same packet hashes before submission.
+The rollover candidate pointer and hashes are never cleared to enable a retry.
+An audit projection failure still requires restart/replay before new commands.
+Submitted or
 unknown delivery retains uncertainty and ownership and cannot automatically
 retry; Stop remains available. This implementation provides no automatic
 reconciliation of external effects.

@@ -446,14 +446,17 @@ export class CoordinationV3RequiredReplyAuthority {
     now: string;
   }): RequiredReplyObligation[] {
     const pausedOrigins=input.activations.flatMap(activation=>{
-      const row=this.sqlite.prepare(`SELECT pause.run_id FROM agent_pause_recoveries recovery
+      const row=this.sqlite.prepare(`SELECT COALESCE((SELECT previous.run_id FROM agent_pause_recoveries previous
+          WHERE previous.pause_id=pause.id AND previous.state='rejected' AND previous.run_id IS NOT NULL
+            AND previous.rowid<recovery.rowid ORDER BY previous.rowid DESC LIMIT 1),pause.run_id) AS run_id
+        FROM agent_pause_recoveries recovery
         JOIN agent_run_pauses pause ON pause.id=recovery.pause_id
         WHERE recovery.activation_id=? AND recovery.run_id=? AND pause.agent_id=? AND pause.state='resume_requested'`)
         .get(activation.id,input.runId,input.agentId) as {run_id:string}|undefined;
       return row?[row.run_id]:[];
     });
     this.transferFromOrigins(input,pausedOrigins,false,true);
-    this.transferContextRolloverObligations(input);
+    this.transferContextRolloverObligations(input,pausedOrigins.length>0);
     this.transferFromOrigins(input, input.activations.flatMap(a =>
       delegationOriginsForActivation(this.sqlite, a.id)), true);
     const inheritedFinalRoutes = new Set(input.activations.flatMap(a => delegationOriginsForActivation(this.sqlite, a.id))
@@ -534,7 +537,7 @@ export class CoordinationV3RequiredReplyAuthority {
     scopeKey: string;
     activations: readonly ActivationInput[];
     now: string;
-  }): void {
+  }, paused = false): void {
     const continuations = input.activations.filter(
       (activation) => activation.kind === "context_rollover_continuation",
     );
@@ -624,7 +627,7 @@ export class CoordinationV3RequiredReplyAuthority {
     if (attachedSourceCount.count !== sourceActivationIds.length) {
       throw new Error("context rollover source activation lineage conflicts with its source Run");
     }
-    this.transferFromOrigins(input, [rollover.source_run_id]);
+    this.transferFromOrigins(input, [rollover.source_run_id],false,paused);
   }
 
   private transferFromOrigins(input: {

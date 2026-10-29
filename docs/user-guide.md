@@ -253,7 +253,9 @@ it does not reverse file edits or external actions.
 If a context handoff already committed, Resume keeps it and continues the original
 task once; it does not rerun the handoff. Messages arriving during the hold remain
 queued. A preparation error leaves the
-work paused and shows its cause; inspect uncertain external effects before
+work paused and shows its cause. Once the cause is repaired and cleanup finishes,
+Resume retries a saved continuation packet exactly. An audit projection error
+requires the restart shown by that error. Inspect uncertain external effects before
 retrying. **Stop** cancels paused work as well.
 
 ### Answer a Decision or skip it

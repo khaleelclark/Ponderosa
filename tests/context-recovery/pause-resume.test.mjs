@@ -320,7 +320,7 @@ test('pausing a recovered execution preserves lineage without recursively nestin
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 
-for(const boundary of ['handoff_committed','session_retiring','continuation_ready'])for(const action of ['resume','restart','stop'])
+for(const boundary of ['handoff_committed','session_retiring','continuation_ready'])for(const action of ['resume','restart','stop','packet retry','claim retry','packet restart','claim restart','packet stop','claim stop','packet unknown'])
 test(`pause at ${boundary} preserves committed continuation on ${action}`,{timeout:30000},async t=>{
  let store,pause,agentId,handoffRun,frozen,packet,attached;
  const method={handoff_committed:'commitContextRolloverHandoff',session_retiring:'beginContextRolloverRetirement',continuation_ready:'prepareContextRolloverContinuation'}[boundary];
@@ -346,6 +346,15 @@ test(`pause at ${boundary} preserves committed continuation on ${action}`,{timeo
   f.ok(await f.tool(ms,'ponderosa_coordinate',{recipientAgentId:agent.id,text:'Tracked original task must retain requester'}));
   const request=store.sqlite.prepare('SELECT id FROM coordination_requests WHERE recipient_agent_id=?').get(agent.id);
   const session=await until(()=>f.sessions.get(agent.id),'source');
+  if(/^(packet|claim) /.test(action)){
+   await f.send(agent.id,'Acknowledge this completed human check, then keep the original tracked task');
+   const steer=await until(()=>f.steers.find(steer=>steer.agentId===agent.id),'human steering accepted');
+   f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Human check acknowledged; tracked task continues',steeringInjectionId:steer.input.clientMessageId}));
+   const current=new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id);
+   assert.ok(new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(current.id).some(root=>root.state==='satisfied'));
+   await f.send(agent.id,'Keep this second human reply pending with the original tracked task');
+   await until(()=>new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(current.id).some(root=>root.state==='pending'),'second pending human root');
+  }
   session.events.push({type:'context_usage',providerSessionId:session.engineAgentId,providerSessionGeneration:session.engineAgentId,usedTokens:190000,windowTokens:200000});
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'requested');
   f.plans.set(agent.id,[{output:false,run:async s=>{s.events.push({type:'text',delta:'Continue unfinished task and preserve canonical reply authority. No external actions were completed. Inspect uncertain effects before retry.'});}}]);
@@ -358,8 +367,49 @@ test(`pause at ${boundary} preserves committed continuation on ${action}`,{timeo
   await f.send(agent.id,'Unrelated queued boundary input',{activeRunDelivery:'queue'});
   if(action==='restart')await f.reopen();
   assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before,'hold excludes pending continuation and unrelated work');
-  const coord=new CoordinationV3Store(store.sqlite);
-  if(action==='stop'){
+  let coord=new CoordinationV3Store(store.sqlite);
+  let rejectedPacket,rejectedRoots;
+  const rejectsPacket=action.startsWith('packet '),rejectsClaim=action.startsWith('claim ');
+  if(rejectsPacket||rejectsClaim){
+   const originalCommit=CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement;
+   let injected=false;
+   if(rejectsPacket)CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=function(input){
+    const result=originalCommit.call(this,input);
+    if(!injected&&input.agentId===agent.id){injected=true;throw new Error('Controlled rejection after canonical packet commit');}
+    return result;
+   };
+   if(rejectsClaim)store.sqlite.exec(`CREATE TRIGGER controlled_claim_rejection BEFORE INSERT ON events
+     WHEN NEW.agent_id='${agent.id}' AND NEW.type='agent_lifecycle' AND json_extract(NEW.payload_json,'$.status')='running'
+     BEGIN SELECT RAISE(ABORT,'Controlled audit rejection before server claim'); END`);
+   const rejectedKey=randomUUID();
+   try{
+    f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:rejectedKey}));
+    await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE id=? AND state='paused' AND last_error IS NOT NULL").get(pause.pauseId),'committed packet rejected');
+   }finally{
+    CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=originalCommit;
+    if(rejectsClaim)store.sqlite.exec('DROP TRIGGER controlled_claim_rejection');
+   }
+   const rejected=store.sqlite.prepare('SELECT * FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId);
+   assert.equal(rejected.state,'rejected');
+   rejectedRoots=coord.requiredReplyObligationsForRun(rejected.run_id);
+   assert.ok(rejectedRoots.some(root=>root.state==='pending'));
+   assert.ok(rejectedRoots.some(root=>root.state==='satisfied'));
+   assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before,'rejected attempt never submitted');
+   assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM scheduler_prompt_injections WHERE run_id=? AND state IN ('submitted','acknowledged','outcome_unknown')").get(rejected.run_id).n,0);
+   const rollover=store.sqlite.prepare('SELECT state,replacement_run_id FROM context_rollovers WHERE agent_id=?').get(agent.id);
+   assert.deepEqual(rollover,{state:'failed',replacement_run_id:rejected.run_id});
+   rejectedPacket=store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(rejected.run_id);
+   assert.ok(rejectedPacket);
+   await until(()=>!store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE run_id=? AND state<>'completed'").get(rejected.run_id),'rejected candidate cleanup');
+   if(rejectsClaim)await f.reopen(); // Repair the injected audit projection failure before another public command.
+   f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:rejectedKey}));
+   assert.deepEqual(store.sqlite.prepare('SELECT * FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId),rejected,'rejected receipt remains immutable');
+   if(action.endsWith('restart'))await f.reopen();
+   assert.deepEqual(snapshot(),frozen);
+   coord=new CoordinationV3Store(store.sqlite);
+  }
+  if(action==='stop'||action.endsWith(' stop')){
+
    coord.cancelAgentRun({agentId:agent.id,expectedRunId:handoffRun,idempotencyKey:randomUUID()});
    assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pause.pauseId).state,'stopped');
    assert.equal(store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(request.id).state,'outcome_unknown');
@@ -376,12 +426,26 @@ test(`pause at ${boundary} preserves committed continuation on ${action}`,{timeo
   assert.deepEqual(snapshot(),frozen,'handoff and frozen tail remain immutable');
   assert.deepEqual(store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(handoffRun),attached);
   const activations=coord.activationPayloads(agent.id,coord.activationIdsAttachedToRun(run.id,agent.id),run.id);
-  assert.deepEqual(activations.map(x=>x.kind),['context_rollover_continuation']);
+  assert.deepEqual(activations.map(x=>x.kind),[rejectedPacket?'agent_pause_recovery':'context_rollover_continuation']);
+  if(rejectedPacket)assert.ok(coord.contextRolloverCandidateForRun(run.id,agent.id),'saved packet recovery has exact rollover authority');
   assert.doesNotMatch(JSON.stringify(f.turns.filter(x=>x.agentId===agent.id).at(-1)),/Unrelated queued boundary input|INTERRUPTED EXECUTION CHECKPOINT/);
+  for(const root of rejectedRoots??[]){const moved=coord.requiredReplyObligationsForRun(run.id).find(candidate=>candidate.sourceActivationId===root.sourceActivationId);assert.ok(moved);assert.deepEqual(moved.replyAuthority,root.replyAuthority);assert.equal(moved.state,root.state==='satisfied'?'satisfied':'pending');if(root.state==='satisfied')assert.equal(moved.satisfiedCommunicationId,root.satisfiedCommunicationId);}
+  if(action.endsWith(' unknown')){
+   coord.failRun({runId:run.id,fencingToken:run.fencingToken,workerId:run.leaseOwner,sameRunResumable:false,retryable:false,error:'Controlled failure after acknowledged exact packet'});
+   assert.equal(store.sqlite.prepare('SELECT state FROM agent_pause_recoveries WHERE run_id=?').get(run.id).state,'outcome_unknown');
+   const count=store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n;
+   assert.equal((await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()})).status,409);
+   assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,count);
+   assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),rejectedPacket);
+   coord.cancelAgentRun({agentId:agent.id,expectedRunId:run.id,idempotencyKey:randomUUID()});
+   assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pause.pauseId).state,'stopped');
+   return;
+  }
   f.ok(await f.tool(current,'ponderosa_update_request',{text:'Recovered original tracked task'}));
   assert.deepEqual(store.sqlite.prepare('SELECT state,requester_agent_id,recipient_agent_id FROM coordination_requests WHERE id=?').get(request.id),{state:'completed',requester_agent_id:manager.id,recipient_agent_id:agent.id});
-  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,1);
-  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM agent_activations WHERE agent_id=? AND kind='context_rollover_continuation' AND state IN ('pending','retry_pending','attached')").get(agent.id).n,1);
+  if(rejectedPacket)assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),rejectedPacket,'corrected retry preserves exact rejected packet and manifest');
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,rejectedPacket?2:1);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM agent_activations WHERE agent_id=? AND kind IN ('context_rollover_continuation','agent_pause_recovery') AND state IN ('pending','retry_pending','attached')").get(agent.id).n,1);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});}finally{CoordinationV3Store.prototype[method]=original;}
 });
 
