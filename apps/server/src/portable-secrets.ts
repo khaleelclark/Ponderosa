@@ -47,3 +47,65 @@ export function withoutPortableSecrets(value:unknown,maxBytes=PORTABLE_SECRET_MA
 export function assertPortableSecretsAbsent(value:unknown,label='Portable structured data'):void {
   if(JSON.stringify(withoutPortableSecrets(value))!==JSON.stringify(value))throw new Error(`${label} cannot contain known credential fields`);
 }
+
+/** Provider diagnostics are free text, but named credential values are not evidence.
+ * Reuse the structured policy for JSON (including encoded JSON) and field names. */
+export function redactPortableDiagnostic(text: string): string {
+  if (Buffer.byteLength(text) > 4 * 1024 * 1024) return '[Provider diagnostic omitted: exceeds 4 MiB inspection limit]';
+  try {
+    if (/^\s*[\[{"]/.test(text)) {
+      const value: unknown = JSON.parse(text);
+      let safe: unknown;
+      try { safe = withoutPortableSecrets(value, 16 * 1024 * 1024); }
+      catch { return '[Provider diagnostic omitted: structured inspection limit exceeded]'; }
+      if (JSON.stringify(value) !== JSON.stringify(safe)) text = JSON.stringify(safe);
+    }
+  } catch {
+    // Non-JSON diagnostics still have their credential assignments redacted below.
+  }
+  // Consume complete quoted/container values, including nested credential objects.
+  const assignment = /["']?\b([a-zA-Z][a-zA-Z0-9_-]*)["']?\s*[:=]\s*/g;
+  let result = '', start = 0;
+  for (let match; (match = assignment.exec(text));) {
+    const secret = isPortableSecretField(match[1]!);
+    const valueStart = assignment.lastIndex;
+    let end = valueStart;
+    const first = text[end];
+    if (first === '"' || first === "'" || first === '{' || first === '[') {
+      let quote = first === '"' || first === "'" ? first : '';
+      let depth = quote ? 0 : 1;
+      end++;
+      for (; end < text.length; end++) {
+        const character = text[end];
+        if (quote) {
+          if (character === '\\') { end++; continue; }
+          if (character === quote) { quote = ''; if (!depth) { end++; break; } }
+        } else if (character === '"' || character === "'") quote = character;
+        else if (character === '{' || character === '[') depth++;
+        else if ((character === '}' || character === ']') && --depth === 0) { end++; break; }
+      }
+    } else {
+      while (end < text.length && !/[\s,;&#}\]]/.test(text[end]!)) end++;
+      // An unquoted Authorization value can include the scheme and credential.
+      if (match[1]!.toLowerCase() === 'authorization' && /^(?:Bearer|Basic)$/i.test(text.slice(valueStart,end))) {
+        while (end < text.length && /[ \t]/.test(text[end]!)) end++;
+        while (end < text.length && !/[\s,;&#}\]]/.test(text[end]!)) end++;
+      }
+    }
+    let replacement = '[REDACTED]';
+    if (!secret) {
+      try {
+        const value: unknown = JSON.parse(text.slice(valueStart,end));
+        let safe: unknown;
+        try { safe = withoutPortableSecrets(value, 16 * 1024 * 1024); }
+        catch { return '[Provider diagnostic omitted: structured inspection limit exceeded]'; }
+        if (JSON.stringify(value) === JSON.stringify(safe)) continue;
+        replacement = JSON.stringify(safe);
+      } catch { continue; }
+    }
+    result += text.slice(start, valueStart) + replacement;
+    start = end;
+    assignment.lastIndex = end;
+  }
+  return (result + text.slice(start)).replace(/(\bbearer\s+)[a-z0-9._~+/=-]+/gi, '$1[REDACTED]');
+}

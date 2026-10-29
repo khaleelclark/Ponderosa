@@ -25,7 +25,7 @@ test('check 31: provider status reads do not test access; explicit recheck probe
 import { publicProviderFailure, publicProviderFailureEvent, publicProviderFailureSummary, publicProviderFailureRemediation, outcomeCauseExplanation } from '@ponderosa/core';
 import { mapClaudeEvent } from '../../packages/engines/dist/claude-events.js';
 import { ClaudeModelCatalogProbe } from '../../packages/engines/dist/claude-models.js';
-import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -376,14 +376,14 @@ test('native diagnostic handles remain owned blockers after failed cleanup and c
  owner.pruneExited();assert.equal(owner.count(),1);fail=false;await owner.terminateDiagnostics();assert.equal(owner.count(),0);assert.equal(closes,2);
 });
 
-import {providerSessionFacade,projectProviderRootExitDetail} from '../../apps/server/dist/provider-session-facade.js';
+import {providerSessionFacade,projectProviderRootExitDetail,ProviderRuntimeBoundaryError} from '../../apps/server/dist/provider-session-facade.js';
 test('provider exit evidence and resume validation cross only closed data boundaries',()=>{
  const raw={engineAgentId:'session',events:{async *[Symbol.asyncIterator](){}},isAlive:()=>true,close:async()=>{},startTurn:async()=>({turnId:'t'}),steer:async()=>({status:'not_active'}),interrupt:async()=>{},validatesResumeBeforeTurn:true};
  assert.equal(providerSessionFacade(raw).validatesResumeBeforeTurn,true);
  let getterCalls=0;const invalid=Object.defineProperty({},'terminalEvent',{get(){getterCalls++;return {type:'error',message:'forged'}}});
  assert.throws(()=>projectProviderRootExitDetail(invalid));assert.equal(getterCalls,0);
- const detail=projectProviderRootExitDetail({outputDraining:false,exitCode:0,terminalEvent:{type:'error',category:'quota_exhausted',message:'secret arbitrary detail',quotaResetAt:'2030-01-01T00:00:00.000Z'}});
- assert.equal(detail.terminalEvent.category,'quota_exhausted');assert.equal(detail.terminalEvent.quotaResetAt,'2030-01-01T00:00:00.000Z');assert.doesNotMatch(detail.terminalEvent.message,/secret/);
+ const detail=projectProviderRootExitDetail({outputDraining:false,exitCode:0,terminalEvent:{type:'error',category:'quota_exhausted',message:'Exact harmless root detail; api_key=SYNTHETIC_ROOT_SECRET',quotaResetAt:'2030-01-01T00:00:00.000Z'}});
+ assert.equal(detail.terminalEvent.category,'quota_exhausted');assert.equal(detail.terminalEvent.quotaResetAt,'2030-01-01T00:00:00.000Z');assert.match(detail.terminalEvent.message,/Exact harmless root detail/);assert.doesNotMatch(detail.terminalEvent.message,/SYNTHETIC_ROOT_SECRET/);
 });
 
 test('native persistent runtime aliases retain one root and cancellation never targets its previous Run',async t=>{
@@ -461,4 +461,65 @@ for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and 
     if (child && child.exitCode === null && child.signalCode === null) { process.kill(-child.pid, 'SIGTERM'); await exited; }
     await app?.close(); await rm(root, { recursive: true, force: true });
   }
+});
+
+import { canonicalProviderFailureEvent } from '../../apps/server/dist/provider-failure-event.js';
+import { redactPortableDiagnostic } from '../../apps/server/dist/portable-secrets.js';
+
+const marker = 'HARMLESS_CAUSE_14_19_BROKEN_WIDGET_731';
+const secret = 'SYNTHETIC_CREDENTIAL_731';
+const cause = `${marker} transport rejected widget 731; 日本語 café 🦄; api_key=${secret}`;
+
+test('canonical diagnostics retain Unicode/cause, redact shared known fields and refuse uninspectable text explicitly', () => {
+  for (const text of [cause, `${marker} Authorization: Bearer ${secret}`, `${marker} OPENAI_API_KEY="${secret}"`,
+    `${marker} credentials={"nested": ["${secret}"]}`, JSON.stringify({ marker, env: JSON.stringify({ ANTHROPIC_API_KEY: secret }) }),
+    `${marker} env=${JSON.stringify(JSON.stringify({ api_key: secret }))}`, `${marker} https://example.invalid/?api_key=${secret}`]) {
+    const event = canonicalProviderFailureEvent({ type: 'error', message: text, code: 'provider_error' });
+    assert.equal(event.category, 'unknown'); assert.ok(event.message.startsWith('Provider execution failed.\n'));
+    assert.ok(event.message.includes(marker)); assert.ok(!event.message.includes(secret), event.message);
+    assert.equal(canonicalProviderFailureEvent(event).message, event.message);
+  }
+  assert.match(canonicalProviderFailureEvent({ type:'error', message:cause }).message, /日本語 café 🦄/);
+  assert.match(redactPortableDiagnostic('a'.repeat(4*1024*1024+1)), /omitted.*limit/);
+  assert.match(redactPortableDiagnostic(JSON.stringify(JSON.stringify('['.repeat(100)+'0'+']'.repeat(100)))), /omitted.*limit/);
+  const thrown = new ProviderRuntimeBoundaryError('controlled provider operation', new Error(cause));
+  assert.ok(thrown.restrictedDetail.includes(marker)); assert.ok(!thrown.restrictedDetail.includes(secret));
+  const root = projectProviderRootExitDetail({ stderr: cause, terminalEvent:{type:'error',message:cause} });
+  assert.ok(root.terminalEvent.message.includes(marker)); assert.ok(!JSON.stringify(root).includes(secret));
+});
+
+test('unknown streamed cause survives canonical storage, bounded API and server reopen with no named credential on disk', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Exact provider cause'),agent=await f.createIdleAgent(chat,'Controlled failure');
+    const diagnostic=cause+'\n'+'長'.repeat(20000)+' END_OF_COMPLETE_DIAGNOSTIC';
+    f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message:diagnostic})}]);
+    await f.send(agent.id,'One controlled failure');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'failed Run');
+    const inspect = async () => {
+      const detail=await f.detail(agent.id);
+      const error=detail.activity.find(a=>a.event.type==='error');
+      assert.equal(detail.runs[0].status,'failed'); assert.ok(error.event.message.includes(marker));
+      assert.ok(error.event.message.includes('日本語 café 🦄'));
+      assert.equal(error.event.message,canonicalProviderFailureEvent({type:'error',code:'provider_error',message:diagnostic}).message,'Complete validated diagnostic, including its tail, remains available');
+      const page=f.ok(await f.api('GET',`/api/agents/${agent.id}/history/activity?limit=1`));
+      assert.ok(JSON.stringify(page).includes(marker));
+      for(const suffix of ['', '/history/runOutput','/history/activity','/history/runs','/runs','/history/workItems']) {
+        const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);
+        assert.ok(!JSON.stringify(response).includes(secret));
+      }
+      assert.ok(!JSON.stringify(await f.api('GET','/api/conversations/'+chat.id)).includes(secret));
+      return error;
+    };
+    const before=await inspect();
+    let durable=false;
+    const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+      const name=path.join(dir,item.name);if(item.isDirectory())await scan(name);else{
+        const bytes=await readFile(name);assert.ok(!bytes.includes(Buffer.from(secret)),name);
+        if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))durable=true;
+      }
+    }};
+    await scan(f.dataDir);assert.equal(durable,true,'canonical event journal must retain the cause');
+    const count=f.turns.length;await f.reopen();const after=await inspect();assert.equal(after.event.message,before.event.message);
+    assert.equal(f.turns.length,count,'inspection/reopen does not replay provider work');await scan(f.dataDir);
+  });
 });

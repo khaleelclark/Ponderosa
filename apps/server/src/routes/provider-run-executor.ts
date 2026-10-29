@@ -1,3 +1,4 @@
+import { canonicalProviderFailureEvent } from "../provider-failure-event.js";
 import {localMemoryFor} from "../local-memory.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
 import {
@@ -13,7 +14,6 @@ import {
   type RuntimeCapabilityRestrictions,
   type RuntimeProcessHandle,
   unicodeCodePointLength,
-  publicProviderFailureEvent,
   publicProviderFailureSummary,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
@@ -1254,7 +1254,7 @@ export function startProviderRunExecution(
       const message = providerFailure?.restrictedDetail
         ?? "Agent execution failed due to an internal runtime error.";
       const failureEvent = providerFailure
-        ? publicProviderFailureEvent({
+        ? canonicalProviderFailureEvent({
             type: "error",
             message,
             ...(providerFailure.code ? { code: providerFailure.code } : {}),
