@@ -1,6 +1,6 @@
-# Local memory consuming-package contract (context-bound private patch)
+# Local memory consuming-package contract
 
-This patch targets saved modernized source HEAD a11acdf704b5518cd246736e5f6d2a0892eca3f7, baseline7ea24d/publicHead5a0c08, not a live deployment. Rebase/review on a newer target is mandatory. Core remains immutable private.6 archive790d81ccabd862e956ce323e00a71c5f2c00042f58261138da16d53593923dba. No application journal/recovery/logical receipt framework is supplied.
+The host integrates the pinned immutable private.6 core archive (SHA-256 790d81ccabd862e956ce323e00a71c5f2c00042f58261138da16d53593923dba). The host owns permissions and provenance; the core owns memory operations. No application journal, recovery or logical receipt framework is supplied.
 
 Configure localMemory with chromaUrl, collectionPrefix, modelDir, and a NEW private stateDirectory outside canonical dataDir. journalDirectory and legacy journal files refuse without opening/migrating/deleting. Fresh policy initialization requires explicit provision:true; subsequent starts validate independent format2 policy principal, canonical data generation and storage/model binding. This policy database stores only independent operator/global-read grants; it is not memory command state. Old format1 journal-bound policy files refuse. No canonical host DB schema changes occur.
 
@@ -16,6 +16,6 @@ Before every read/effect and delivery, the host re-resolves canonical capability
 
 Origin provenance is retained across new physical versions; replacement is not exposed. Business conflict/agent self-healing remains the core semantics, not automatic startup repair. The old six-tool host catalog does not gain broad admin/index/backup tools. Unavailable/archive semantics must map to the actual canonical target's lifecycle policy; the saved source has no separate archive column/API, so no fabricated archive schema is introduced.
 
-Only synthetic isolated integration qualification is authorized. No V6 owner contact, live workspace/deployment edits, credentials/security/network configuration changes, provider memory sends or production migration occurs. Native/platform notice and wider deployment gates remain separate.
+Synthetic isolated qualification uses disposable state and no provider account. Native platform and installed-app deployment qualification remain separate.
 
 Permission regressions run with `node --import ./tests/shared/workspace-resolution.mjs --test tests/memory/startup-config.test.mjs` after building. Set `PONDEROSA_TEST_CHROMA_BIN` to a local Chroma executable to also run the owned physical-source save/get/update/forget check. That check starts a fresh disposable Chroma root and uses deterministic synthetic embeddings; it verifies permissions, routing, lineage and provenance, not model recall quality. No provider account is used.
