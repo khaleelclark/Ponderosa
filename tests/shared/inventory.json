@@ -1632,6 +1632,13 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Installed Chromium via PONDEROSA_BROWSER_EXECUTABLE (default /usr/bin/google-chrome); rsbuild and playwright-core; loopback component fixture only",
       "origin": "Browser tablist owned roles, adjacent add action, desktop/mobile themes and keyboard/management guards"
+    },
+    {
+      "path": "tests/workspace-navigation/overlay-focus.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; overlay exit connected/visible/hidden fallback regression"
     }
   ],
   "retainedReleasePayload": [
@@ -1870,6 +1877,11 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Existing installed Chromium and playwright-core;390x844 mobile/touch emulation; real permissioned clipboard, loopback fixture, no account or installation",
       "origin": "Mobile transport for existing complete Chat input qualification, not a provider inference path"
+    },
+    {
+      "path": "tests/workspace-navigation/search-accessibility.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [

@@ -1,3 +1,4 @@
+import { restoreOverlayFocus } from "./overlayFocus";
 import { PreferenceSaveFeedback } from "./preferenceSaveFeedback";
 import {useWorkspaceFont} from "./hooks/useWorkspaceFont";
 import {isBranchesPath} from "./api/productScope.js";
@@ -286,31 +287,10 @@ export default function App({
       ? document.activeElement
       : undefined;
   };
-  const restoreFocus = (previous: HTMLElement | undefined) => {
-    window.requestAnimationFrame(() => {
-      if (
-        previous?.isConnected &&
-        previous.getClientRects().length > 0 &&
-        !previous.closest('[aria-hidden="true"]')
-      ) {
-        previous.focus();
-        return;
-      }
-      const stableNavigationTarget = [
-        ...document.querySelectorAll<HTMLElement>(
-          '[aria-label="Open workspace navigation"], nav[aria-label="Workspace sections"] [aria-label="Open All Chats"]',
-        ),
-      ].find(candidate => (
-        candidate.getClientRects().length > 0 &&
-        !candidate.closest('[aria-hidden="true"]')
-      ));
-      stableNavigationTarget?.focus();
-    });
-  };
   const restoreOverlayTrigger = () => {
     const previous = overlayReturnFocus.current;
     overlayReturnFocus.current = undefined;
-    restoreFocus(previous);
+    restoreOverlayFocus(previous);
   };
   const openGlobalSearch = (initial?: { query: string; scope: "chats" }) => {
     rememberOverlayTrigger();
@@ -340,7 +320,7 @@ export default function App({
     setMobileNavOpen(false);
     // Let the Drawer transition release its focus trap before moving focus to
     // the equivalent desktop navigation control.
-    const focusTimer = window.setTimeout(() => restoreFocus(drawerTrigger), 400);
+    const focusTimer = window.setTimeout(() => restoreOverlayFocus(drawerTrigger), 400);
     return () => window.clearTimeout(focusTimer);
   }, [mobileWorkspace]);
   useEffect(() => {

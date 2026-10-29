@@ -1,3 +1,4 @@
+import {restoreOverlayFocus} from '../overlayFocus';
 import {useMutationNotification} from './MutationNotifications';
 import {ConfirmDialog,TextInputDialog} from './ConfirmationDialogs';
 import {PrimaryHeaderActionsProvider} from './PrimaryHeaderActions';
@@ -254,8 +255,10 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const failedOpening=Boolean(error&&!openingLink&&!loading&&(route.branchId||route.executionId)&&(!draft.branchId||route.branchId!==draft.branchId));
  const failure=actionFailure||branches.error?.message||contexts.error?.message||agents.error?.message||engines.error?.message||selectedBranch.error?.message||trigger.error?.message||lifecycle.error?.message;
  useEffect(()=>{if(actionFailure){feedback.current?.scrollIntoView({block:'center',behavior:'instant'});feedback.current?.focus({preventScroll:true});if(review.error&&actionFailure===review.error.message&&review.variables&&branchDraftRevision(review.variables)===draftRevision.current&&!advancedDirty)setValidationRequest(value=>value+1)}},[actionFailure]);
+ const searchReturnFocus=useRef<HTMLElement>();
+ const restoreSearchTrigger=()=>{const previous=searchReturnFocus.current;searchReturnFocus.current=undefined;restoreOverlayFocus(previous,'[aria-label="Open workspace navigation"], [aria-label="Search Branch Chats"]')};
  const closeMobileNavigation=()=>setMobileNavOpen(false);
- const openGlobalSearch=()=>{setGlobalSearchOpen(true);setMobileNavOpen(false)};
+ const openGlobalSearch=()=>{searchReturnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:undefined;setGlobalSearchOpen(true);setMobileNavOpen(false)};
  const openGlobalSearchSelection=async(selection:GlobalSearchSelection)=>{
   try{
    const conversationId='file'in selection?selection.file.conversationId:selection.chat.kind==='conversation'?selection.chat.id:(await realApi.getAgent(selection.chat.id,1)).agent.conversationId;
@@ -344,7 +347,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
    </Stack>}
   </Box>
   {mobileWorkspace&&<SwipeableDrawer open={mobileNavOpen} onOpen={()=>setMobileNavOpen(true)} onClose={closeMobileNavigation} SlideProps={{onExited:()=>{if(!globalSearchOpen&&document.activeElement===document.body)sharedNavigationButton.current?.focus({preventScroll:true})}}} disableDiscovery disableSwipeToOpen={false} swipeAreaWidth={24} SwipeAreaProps={{style:{touchAction:'pan-y'}}} hysteresis={0.25} PaperProps={{sx:{width:'auto',maxWidth:'100vw',height:'100dvh',overflow:'hidden'}}}><BranchesSidebar profile={preferences.data?.profile} onGlobal={onGlobal} onHome={()=>{navigate({tab:'workflow'},false,closeMobileNavigation)}} onSearch={openGlobalSearch} notifications={<BranchNotifications onNavigate={next=>{navigate(next,false,closeMobileNavigation)}}/>} drawer panel={sidebarPanel(true)} onDismiss={closeMobileNavigation}/></SwipeableDrawer>}
-  <GlobalChatSearch open={globalSearchOpen} onClose={()=>setGlobalSearchOpen(false)} onSelect={selection=>void openGlobalSearchSelection(selection)}/>
+  <GlobalChatSearch open={globalSearchOpen} onClose={()=>setGlobalSearchOpen(false)} onExited={restoreSearchTrigger} onSelect={selection=>void openGlobalSearchSelection(selection)}/>
   <ConfirmDialog open={runOpen&&Boolean(draft.branchId&&draft.branchId===route.branchId&&!route.global)} title={dirty&&current?.versionId?'Run Published Workflow':'Run Workflow'} confirmLabel={runAccepted?'View Run':runUnconfirmed?'Retry Run Submission':dirty&&current?.versionId?'Run Published Workflow':'Run Workflow'} pendingLabel="Submitting…" pending={run.isPending} error={run.error?.message} confirmDisabled={!runAccepted&&!runUnconfirmed&&Boolean(runUnavailable||runInputError)} maxWidth="sm" onCancel={()=>setRunOpen(false)} onConfirm={submitRun}>
    <Stack spacing={2} sx={{pt:1}}>
     {dirty&&current?.versionId&&<Alert severity="info">This run uses the published workflow. Your unpublished edits are not included.</Alert>}

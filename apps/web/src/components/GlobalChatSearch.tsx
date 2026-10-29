@@ -113,11 +113,12 @@ function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRang
 }
 
 export function SearchSnippet({ snippet, ranges, query }: { snippet: string; ranges: SearchHighlightRangeDto[]; query: string }): JSX.Element {
+  const theme = useTheme();
   const visibleSnippet = plainGlobalSearchSnippet(snippet);
   const visibleRanges = visibleSnippet === snippet ? ranges : queryHighlightRanges(visibleSnippet, query);
   return <Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
     {highlightedSnippetSegments(visibleSnippet, visibleRanges).map((segment, index) => segment.highlighted
-      ? <Box component="mark" key={index} sx={{ bgcolor: "warning.light", color: "text.primary", borderRadius: .5, px: .25 }}>{segment.text}</Box>
+      ? <Box component="mark" key={index} sx={{ bgcolor: "warning.light", color: theme.palette.getContrastText(theme.palette.warning.light), borderRadius: .5, px: .25 }}>{segment.text}</Box>
       : <Box component="span" key={index}>{segment.text}</Box>)}
   </Typography>;
 }
