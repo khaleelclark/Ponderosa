@@ -364,3 +364,25 @@ test('Branches 30-message burst stays quiet, unread and isolated from Core acros
  await f.reopen();
  assert.equal((await projection('branches')).conversations[chat.id].quietUnreadCount??0,0);
 }));
+
+for(const scope of ['conversation','agent'])for(const mode of ['muted','attention']){
+ test(`Branches enabled alerts retain scoped unread for ${scope} ${mode}`,async t=>withFixture(t,async f=>{
+  const {products}=await setup(f),{chat,agent}=products.branches[0],base=prefix('branches');
+  f.ok(await f.api('PATCH',`${base}/workspace/preferences`,{notifications:{directResponses:true,broadcasts:false}}));
+  f.ok(await f.api('PUT',`${base}/notification-settings/${scope}/${scope==='agent'?agent.id:chat.id}`,{mode}));
+  const request={projectIds:[chat.projectId],conversationIds:[chat.id]};
+  const projection=()=>f.api('POST',`${base}/notifications/projection`,request).then(f.ok);
+  f.ok(await f.api('POST',`${base}/agents/${agent.id}/messages`,{text:'Unread Branch reply',idempotencyKey:randomUUID()}));
+  await until(async()=>{const d=f.ok(await f.api('GET',`${base}/agents/${agent.id}`));return d.runs.some(r=>r.status==='completed')&&d.messages.some(m=>m.role==='assistant');},'scoped Branch reply');
+  assert.equal((await projection()).conversations[chat.id].totalCount,0);
+  assert.equal((await projection()).conversations[chat.id].quietUnreadCount,1);
+  await f.reopen();
+  const ids=f.ok(await f.api('GET',`${base}/agents/${agent.id}`)).messages.filter(m=>m.role==='assistant').map(m=>m.communicationEventId);
+  assert.equal(f.ok(await f.api('POST','/api/notifications/read-visible',{communicationEventIds:ids})).read,0);
+  assert.equal((await projection()).conversations[chat.id].quietUnreadCount,1);
+  assert.equal(f.ok(await f.api('POST',`${base}/notifications/read-visible`,{communicationEventIds:ids})).read,1);
+  f.ok(await f.api('PUT',`${base}/notification-settings/${scope}/${scope==='agent'?agent.id:chat.id}`,{mode:'all'}));
+  assert.equal((await projection()).conversations[chat.id].totalCount,0,'unmuting must not revive acknowledged alerts');
+  assert.equal((await projection()).conversations[chat.id].quietUnreadCount??0,0);
+ }));
+}

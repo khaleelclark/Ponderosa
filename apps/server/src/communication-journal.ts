@@ -130,7 +130,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         publishWorkspaceSince(cursor);
         webPushDelivery?.notify();
       }
-      if (kind && stored.event.intent !== "collaboration" && !notificationPreferenceMatches(preference, kind)) {
+      if (kind && stored.event.intent !== "collaboration") {
         const cursor = workspace.cursor();
         workspace.recordQuietActivity({
           id: stored.event.eventId, createdAt: stored.event.createdAt,

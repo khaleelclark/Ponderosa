@@ -303,7 +303,8 @@ export class WorkspaceStore {
   }
 
   private notificationSearchIndexEligible(item: WorkspaceNotificationDto): boolean {
-    return this.notificationAllowed(item) && notificationLiveKind(item) === "update";
+    // Reading a Communication must also clear alerts suppressed by scope settings.
+    return notificationLiveKind(item) === "update";
   }
 
   notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity" | "category" | "projectId" | "workContext">): boolean {
@@ -1752,7 +1753,12 @@ export class WorkspaceStore {
       .filter((id) => this.quietActivity.has(id) || (this.unreadNotificationIdsByCommunication.get(id)?.size ?? 0) > 0);
     const unreadConversationCounts: Record<string, number> = {};
     for (const id of new Set(input.conversationIds)) {
-      const count = (this.unreadNotificationIdsByConversation.get(id)?.size ?? 0) + (this.quietActivityByConversation.get(id)?.size ?? 0);
+      const identities = new Set(this.quietActivityByConversation.get(id));
+      for (const notificationId of this.unreadNotificationIdsByConversation.get(id) ?? []) {
+        const item = this.notifications.get(notificationId)!;
+        identities.add(item.communicationEventId ?? item.id);
+      }
+      const count = identities.size;
       if (count > 0) unreadConversationCounts[id] = count;
     }
     return { unreadCommunicationEventIds, unreadConversationCounts };
@@ -1802,10 +1808,12 @@ export class WorkspaceStore {
       conversations.set(conversationId, emptyNotificationProjectionAccumulator());
     }
 
+    const alertedCommunicationIds = new Set<string>();
     for (const item of this.notifications.values()) {
       if (!this.notificationAllowed(item)||(input.include&&!input.include(item))) continue;
       const kind = unreadProjectionKind(item);
       if (!kind) continue;
+      if (item.communicationEventId) alertedCommunicationIds.add(item.communicationEventId);
       const navigationConversationIds = new Set([
         ...(item.conversationId ? [item.conversationId] : []),
         ...(item.conversationIds ?? []),
@@ -1850,7 +1858,7 @@ export class WorkspaceStore {
       let count = 0;
       for (const id of this.quietActivityByConversation?.get(conversationId) ?? []) {
         const item = this.quietActivity.get(id)!;
-        if (!input.include || input.include(item)) count++;
+        if (!alertedCommunicationIds.has(id) && (!input.include || input.include(item))) count++;
       }
       if (!count) continue;
       quietCounts.set(conversationId, count);
@@ -1901,7 +1909,10 @@ export class WorkspaceStore {
       { type: "notification_changed", action: "read" },
       { kind: "notifications_read_ids", notificationIds: [...notificationIds], readAt },
     );
-    return notificationIds.size + quietIds.length;
+    return new Set([
+      ...quietIds,
+      ...[...notificationIds].map(id => this.notifications.get(id)!.communicationEventId ?? id),
+    ]).size;
   }
 
   readNotification(notificationId: string): boolean {

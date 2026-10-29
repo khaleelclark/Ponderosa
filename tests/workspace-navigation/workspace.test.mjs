@@ -178,3 +178,54 @@ test('ordinary Agent activity is unread without notification noise by default, w
   await f.reopen();
   assert.deepEqual((await preferences()).notifications, { directResponses: true, broadcasts: false });
 }));
+
+for (const scope of ['conversation', 'agent']) for (const mode of ['muted', 'attention']) {
+  test(`enabled response alerts retain independent unread for ${scope} ${mode}`, options, t => withFixture(t, async f => {
+    const chat = await f.createChat('Scoped unread'), agent = await f.createIdleAgent(chat, 'Scoped Agent');
+    f.ok(await f.api('PATCH', '/api/workspace/preferences', { notifications: { directResponses: true, broadcasts: false } }));
+    f.ok(await f.api('PUT', `/api/notification-settings/${scope}/${scope === 'agent' ? agent.id : chat.id}`, { mode }));
+    const projection = () => f.api('POST', '/api/notifications/projection', { projectIds: [chat.projectId], conversationIds: [chat.id], chatFolders: [{ id: 'scope-folder', conversationIds: [chat.id] }] }).then(f.ok);
+    const send = async text => {
+      const previous = (await f.detail(agent.id)).runs.map(run => run.id);
+      await f.send(agent.id, text); await f.settled(agent.id, previous);
+      return (await f.detail(agent.id)).messages.filter(m => m.role === 'assistant').at(-1).communicationEventId;
+    };
+    const first = await send('Muted unread one');
+    assert.equal((await projection()).conversations[chat.id].totalCount, 0);
+    assert.equal((await projection()).conversations[chat.id].quietUnreadCount, 1);
+    assert.equal((await projection()).chatFolders['scope-folder'].quietUnreadCount, 1);
+    await f.reopen();
+    assert.equal((await projection()).conversations[chat.id].quietUnreadCount, 1);
+    const second = await send('Unread arriving after visible snapshot');
+    assert.equal(f.ok(await f.api('POST', '/api/notifications/read-visible', { communicationEventIds: [first, first] })).read, 1);
+    assert.equal((await projection()).conversations[chat.id].quietUnreadCount, 1, 'exact visible IDs preserve later unread');
+    assert.equal(f.ok(await f.api('POST', '/api/notifications/read-visible', { communicationEventIds: [second] })).read, 1);
+    f.ok(await f.api('PUT', `/api/notification-settings/${scope}/${scope === 'agent' ? agent.id : chat.id}`, { mode: 'all' }));
+    const third = await send('Enabled and visible alert');
+    const search = f.ok(await f.api('GET', '/api/search?kind=conversation'));
+    assert.equal(search.recentChats.find(row => row.chat.id === chat.id).unreadCount, 1, 'search deduplicates alert and quiet identity');
+    const counts = (await projection()).conversations[chat.id];
+    assert.equal(counts.totalCount, 1);
+    assert.equal((await projection()).chatFolders['scope-folder'].totalCount, 1);
+    assert.equal((await projection()).chatFolders['scope-folder'].quietUnreadCount ?? 0, 0);
+    assert.equal(counts.quietUnreadCount ?? 0, 0, 'alert and quiet records share one identity');
+    assert.equal(f.ok(await f.api('POST', '/api/notifications/read-visible', { communicationEventIds: [third, third] })).read, 1);
+    assert.equal(f.ok(await f.api('POST', '/api/notifications/read-visible', { communicationEventIds: [third] })).read, 0);
+    await f.reopen();
+    assert.equal((await projection()).conversations[chat.id].totalCount, 0);
+    assert.equal((await projection()).conversations[chat.id].quietUnreadCount ?? 0, 0);
+  }));
+}
+
+test('deleted Chat unread cannot be projected, searched or acknowledged after restart', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Deleted unread Chat'), agent = await f.createIdleAgent(chat, 'Deleted unread Agent');
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { notifications: { directResponses: true, broadcasts: false } }));
+  f.ok(await f.api('PUT', `/api/notification-settings/conversation/${chat.id}`, { mode: 'muted' }));
+  await f.send(agent.id, 'Unread before deletion'); await f.settled(agent.id);
+  const ids = (await f.detail(agent.id)).messages.filter(m => m.role === 'assistant').map(m => m.communicationEventId);
+  assert.equal(f.ok(await f.api('DELETE', `/api/conversations/${chat.id}`, { expectedAgentIds: [agent.id] })).deleted, true);
+  await f.reopen();
+  assert.equal(f.ok(await f.api('POST', '/api/notifications/read-visible', { communicationEventIds: ids })).read, 0);
+  assert.equal((await f.api('POST', '/api/notifications/projection', { projectIds: [chat.projectId], conversationIds: [chat.id] })).status, 404);
+  assert.ok(!f.ok(await f.api('GET', '/api/search')).recentChats.some(row => row.chat.id === chat.id || row.chat.id === agent.id));
+}));

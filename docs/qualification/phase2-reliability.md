@@ -6,6 +6,12 @@ Ordinary Agent responses and broadcasts default to quiet unread activity. Quiet 
 
 The regression fixtures use controlled inert providers and disposable canonical stores. Core and Branches each emit 30 replies across three Agents. Checks cover zero default alerts, exact quiet unread counts, restart persistence, read-visible clearing, and Branches/Core isolation. Core additionally checks opt-in direct response alerts and saved settings after restart. No real provider account is used.
 
+## Independent unread correction
+
+Enabled response categories now retain quiet unread metadata even when Chat or Agent alert modes suppress the alert. Projection quiet counts exclude identities already represented by allowed unread alerts. Search counts and read-visible acknowledgements deduplicate canonical Communication IDs. The unread index includes suppressed informational alerts, allowing exact visible reads to clear them before a later mode change. Badge and push selection remain on the existing alert policy path.
+
+Supported API regressions cover muted and attention-only modes at Chat and Agent scope in Core and Branches, restart, product-isolated acknowledgement, folder counts, search counts, repeated IDs, and a reply arriving after a visible snapshot. Existing Core and Branches 30-message default bursts remain part of focused verification. These checks do not establish a full commandment 18 pass: the complete mentions/settings matrix and browser visual qualification remain outstanding.
+
 ## Portability remains incomplete
 
 The full Agent v1 package schema still contains setup, conversation history, and artifacts, but no local-memory chunks or execution records. The Branch installation format delegates Agent snapshots to the same exporter and inherits those omissions. The full-export dialog warns that history and stored data may contain sensitive information; known credential fields remain outside the schema. This warning does not establish full portability.
