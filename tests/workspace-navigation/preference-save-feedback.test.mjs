@@ -1,0 +1,23 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {PreferenceSaveFeedback} from '../../apps/web/src/preferenceSaveFeedback.ts';
+const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
+test('preference failure identity survives unrelated success, explicit save and overlapping attempts',async()=>{
+ const feedback=new PreferenceSaveFeedback(),errors=new Map();
+ const report=(field,error)=>error===undefined?errors.delete(field):errors.set(field,error);
+ const start=(patch,immediate=true)=>{const job=deferred();const done=feedback.track(patch,job.promise,report,immediate).catch(()=>{});return {...job,done};};
+ const font=start({fontFamily:'sans'});font.reject(new Error('Font failed'));await font.done;
+ const other=start({contextRolloverEnabled:false});other.resolve();await other.done;
+ assert.equal(errors.get('fontFamily'),'Font failed');
+ const explicit=start({globalInstructions:'draft'},false);assert.equal(errors.get('fontFamily'),'Font failed');explicit.resolve();await explicit.done;assert.equal(errors.get('fontFamily'),'Font failed');
+ const context=start({contextRolloverEnabled:false});context.reject(new Error('Context failed'));await context.done;
+ assert.equal(errors.size,2);
+ const retry=start({fontFamily:'sans'});assert.equal(errors.size,2);retry.resolve();await retry.done;
+ assert.deepEqual([...errors],[['contextRolloverEnabled','Context failed']]);
+ const old=start({fontFamily:'sans'}),newer=start({fontFamily:'system'});newer.reject(new Error('New font failed'));await newer.done;old.resolve();await old.done;assert.equal(errors.get('fontFamily'),'New font failed');
+ const oldFailure=start({fontFamily:'sans'}),newSuccess=start({fontFamily:'system'});newSuccess.resolve();await newSuccess.done;oldFailure.reject(new Error('Stale'));await oldFailure.done;assert.equal(errors.has('fontFamily'),false);
+ const pendingOld=start({fontFamily:'sans'}),pendingNew=start({fontFamily:'system'});pendingOld.reject(new Error('Still unresolved'));await pendingOld.done;assert.equal(errors.get('fontFamily'),'Still unresolved');pendingNew.resolve();await pendingNew.done;assert.equal(errors.has('fontFamily'),false);
+ const both=start({fontFamily:'sans',contextRolloverEnabled:true});both.reject(new Error('Both failed'));await both.done;
+ const partial=start({fontFamily:'system'},false);partial.resolve();await partial.done;assert.deepEqual([...errors],[['contextRolloverEnabled','Both failed']]);
+ const explicitFailure=start({contextRolloverEnabled:false},false);explicitFailure.reject(new Error('Form owns error'));await explicitFailure.done;assert.equal(errors.get('contextRolloverEnabled'),'Both failed');
+});

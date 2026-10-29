@@ -207,7 +207,8 @@ iOS, **Return** inserts a newline; use **Send** to submit.
 
 Global Agent instructions accept up to 100,000 UTF-16 code units. An oversized save
 shows an error and leaves saved instructions unchanged; shorten the unsaved draft
-before saving again.
+before saving again. Immediate settings errors stay visible until dismissed or that
+setting saves successfully. Saving a different setting does not clear the failure.
 
 Browser voice uses the browser's read-aloud voice and the device's speech recognition;
 availability varies by browser and device. Speaking speed is adjustable in settings.

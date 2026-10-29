@@ -1572,6 +1572,13 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server; disposable stores and controlled providers; no provider account",
       "origin": "Phase2 permission history and concise protocol regression"
+    },
+    {
+      "path": "tests/workspace-navigation/preference-save-feedback.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 TypeScript transform; no provider account"
     }
   ],
   "retainedReleasePayload": [

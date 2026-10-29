@@ -1,3 +1,4 @@
+import { PreferenceSaveFeedback } from "./preferenceSaveFeedback";
 import {useWorkspaceFont} from "./hooks/useWorkspaceFont";
 import {isBranchesPath} from "./api/productScope.js";
 import { stopSpeech } from "./components/speech/speechCoordinator";
@@ -500,14 +501,19 @@ export default function App({
     : engines.find(engine =>
         engine.enabled !== false && Boolean(engine.providerUsageCommand)
       )?.id;
+  const preferenceFeedback = useRef(new PreferenceSaveFeedback());
+  const reportPreferenceSave = (field: string, error?: string) => notify({
+    key: `workspace-preferences:${field}`,
+    message: error ?? "Settings Saved",
+    severity: error ? "error" : "success",
+  });
   const savePreferences = (patch: Partial<typeof preferences>) => {
-    void preferencesWriter.current!.enqueueAndWait(patch).then(
-      () => notify({ key: "workspace-preferences", message: "Settings Saved" }),
-      (error: unknown) => notify({ key: "workspace-preferences", message: error instanceof Error ? error.message : "Workspace settings could not be saved.", severity: "error" }),
-    );
+    void preferenceFeedback.current.track(patch,
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, true).catch(() => {});
   };
   const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
-    preferencesWriter.current!.enqueueAndWait(patch);
+    preferenceFeedback.current.track(patch,
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, false);
   useWorkspaceFont(preferences.fontFamily);
 
   useEffect(() => {
