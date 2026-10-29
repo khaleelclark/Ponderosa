@@ -67,3 +67,21 @@ for(const kind of ['chunks','conflicts'])test(`float32-underflow ${kind} refuse 
  }
  await destination.reopen();assert.deepEqual(await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id]),restored);
 });
+
+test('natural local embedding export retries exactly before and after reopen; changed vectors and content collide',async t=>{
+ const source=await instance(t),destination=await instance(t);
+ await seed(source,await source.memory.core.inference.embed('A small blue boat crosses a quiet lake.'));
+ const snapshot=await source.memory.exportPackageMemory(source.chat.id,[source.a.id]),mapping={[source.a.id]:destination.a.id},key=randomUUID();
+ const receipt=await destination.memory.restorePackageMemory(snapshot,destination.chat.id,mapping,key);
+ const canonical=s=>({...s,chunks:[...s.chunks].sort((a,b)=>a.id.localeCompare(b.id)),conflicts:[...s.conflicts].sort((a,b)=>a.id.localeCompare(b.id))});
+ const restored=await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id]);
+ for(const [rows,original,ids] of [[restored.chunks,snapshot.chunks,receipt.chunkIds],[restored.conflicts,snapshot.conflicts,receipt.conflictIds]])for(let i=0;i<ids.length;i++)assert.deepEqual(rows.find(r=>r.id===ids[i]).embedding,original[i].embedding);
+ assert.deepEqual(await destination.memory.restorePackageMemory(snapshot,destination.chat.id,mapping,key),receipt);
+ await destination.reopen();assert.deepEqual(canonical(await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id])),canonical(restored));
+ assert.deepEqual(await destination.memory.restorePackageMemory(snapshot,destination.chat.id,mapping,key),receipt);
+ for(const kind of ['chunks','conflicts'])for(const field of ['embedding','text']){
+  const changed=structuredClone(snapshot);if(field==='embedding'){const component=new Float32Array([changed[kind][0].embedding[0]]);new Uint32Array(component.buffer)[0]++;changed[kind][0].embedding[0]=component[0];}else changed[kind][0].text+=' changed';
+  await assert.rejects(destination.memory.restorePackageMemory(changed,destination.chat.id,mapping,key),/collision/);
+ }
+ assert.deepEqual(canonical(await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id])),canonical(restored));
+});

@@ -33,18 +33,18 @@ export async function instance(t,branch=false,memoryConfigured=true){
  const f={root,project,chat,a,b,options,dataDir,headers:{authorization:'Bearer '+token},get app(){return app;},get memory(){return localMemoryFor(app);},get store(){return store;},async reopen(){await close();store=new AgentStore(dataDir);await open();},async suspend(){await close();},async resume(){store=new AgentStore(dataDir);await open();}};return f;
 }
 export const vector=Array.from({length:384},(_,i)=>i?0:1);
-export async function seed(f){
+export async function seed(f,embedding=vector){
  const memory=f.memory,raw=memory.core.database.raw,scope='chat:'+f.chat.id,at=new Date().toISOString();
  const provenance={actor:{kind:'agent',id:f.a.id},runId:'source-not-a-live-run',fenceToken:'historical-source',at};
- const row=(id,audience,text,parent)=>({id,text,embedding:vector,metadata:{source_type:'ai_inference',confidence:0.9,deprecated:Boolean(parent===null),timestamp:at,...(typeof parent==='string'?{supersedes:parent}:{})},stamp:{format:1,principal:memory.principalId,id,scope,ownerChat:f.chat.id,audience,sourceType:'ai_inference',provenance,origin:provenance}});
+ const row=(id,audience,text,parent)=>({id,text,embedding,metadata:{source_type:'ai_inference',confidence:0.9,deprecated:Boolean(parent===null),timestamp:at,...(typeof parent==='string'?{supersedes:parent}:{})},stamp:{format:1,principal:memory.principalId,id,scope,ownerChat:f.chat.id,audience,sourceType:'ai_inference',provenance,origin:provenance}});
  const parent=randomUUID(),child=randomUUID(),privateId=randomUUID(),outside=randomUUID(),conflict=randomUUID();
  const rows=[row(parent,scope+':team','Original seeded team fact',null),row(child,scope+':team','Revised seeded team fact 😀',parent),row(privateId,scope+':agent:'+f.a.id,'Included private fact'),row(outside,scope+':agent:'+f.b.id,'EXCLUDED_PRIVATE_FACT')];
  const c=await raw.client.getCollection({name:raw.names(scope).memory});
  await c.upsert({ids:rows.map(r=>r.id),documents:rows.map(r=>r.text),embeddings:rows.map(r=>r.embedding),metadatas:rows.map(r=>({...r.metadata,host_source_authority:JSON.stringify(r.stamp)}))});
  const log=await raw.client.getCollection({name:raw.names(scope).log}),r=row(conflict,scope+':team','Preserved conflict reasoning');
- await log.upsert({ids:[conflict],documents:[r.text],embeddings:[vector],metadatas:[{...r.metadata,log_id:conflict,chunk_ids:JSON.stringify([parent,child]),chunk_ids_affected:JSON.stringify([parent,child]),chunks_affected:2,host_conflict_authority:JSON.stringify(r.stamp)}]});
+ await log.upsert({ids:[conflict],documents:[r.text],embeddings:[embedding],metadatas:[{...r.metadata,log_id:conflict,chunk_ids:JSON.stringify([parent,child]),chunk_ids_affected:JSON.stringify([parent,child]),chunks_affected:2,host_conflict_authority:JSON.stringify(r.stamp)}]});
  const global=await raw.client.getCollection({name:raw.names('global').memory}),gid=randomUUID(),gprov={...provenance,actor:{kind:'user',id:memory.principalId}};
- await global.upsert({ids:[gid],documents:['EXCLUDED_GLOBAL_FACT'],embeddings:[vector],metadatas:[{...r.metadata,source_type:'user_statement',host_source_authority:JSON.stringify({...r.stamp,id:gid,scope:'global',ownerChat:'global',audience:'installation-global',sourceType:'user_statement',provenance:gprov,origin:gprov})}]});
+ await global.upsert({ids:[gid],documents:['EXCLUDED_GLOBAL_FACT'],embeddings:[embedding],metadatas:[{...r.metadata,source_type:'user_statement',host_source_authority:JSON.stringify({...r.stamp,id:gid,scope:'global',ownerChat:'global',audience:'installation-global',sourceType:'user_statement',provenance:gprov,origin:gprov})}]});
  return {parent,child,privateId};
 }
 export async function read(f,agentId,readGlobal=false,readChat=true){

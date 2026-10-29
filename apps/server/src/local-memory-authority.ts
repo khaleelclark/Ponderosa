@@ -107,7 +107,8 @@ export class AuthorityStorage implements MemoryStorage{
    const collections=await Promise.all([false,true].map(log=>checkedCollection(this.raw,scope,log,guard,Boolean(packageOperationId)))),pending:Array<{c:typeof collections[number];row:typeof prepared[number][number]}>=[];
    for(let index=0;index<2;index++)for(const row of prepared[index]!){
     const c=collections[index]!;await guard();const existing=await c.get({ids:[row.id],include:['documents','metadatas','embeddings'] as any});await guard();
-    if(existing.ids.length){const sorted=(v:any)=>JSON.stringify(Object.entries(v).sort(([a],[b])=>a.localeCompare(b)));if(existing.ids.length!==1||existing.documents[0]!==row.text||sorted(existing.metadatas[0])!==sorted(row.metadata)||JSON.stringify(Array.from(existing.embeddings?.[0]??[]))!==JSON.stringify(row.embedding))throw Error('Memory snapshot: destination ID collision; existing data preserved');}
+    // Compare stored float32 values; Chroma's JSON decimals need not equal JS float32 doubles.
+    if(existing.ids.length){const sorted=(v:any)=>JSON.stringify(Object.entries(v).sort(([a],[b])=>a.localeCompare(b)));if(existing.ids.length!==1||existing.documents[0]!==row.text||sorted(existing.metadatas[0])!==sorted(row.metadata)||JSON.stringify(this.vector(existing.embeddings?.[0]).map(Math.fround))!==JSON.stringify(row.embedding))throw Error('Memory snapshot: destination ID collision; existing data preserved');}
     else pending.push({c,row});
    }
    const attempted:typeof pending=[];

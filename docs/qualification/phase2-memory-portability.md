@@ -111,3 +111,14 @@ No whole-suite, integrated upgrade, 20-run streak or full portability (#8) verdi
 is claimed by this batch.
 
 Chunk and conflict vectors that become all zero or nonfinite in float32 are rejected before writes (B1).
+
+## Natural-vector retry correction (B2)
+
+Restore compares existing Chroma embeddings and incoming prepared embeddings in
+the same exact float32 representation, after validating the stored vector. No
+epsilon or ignored vector fields are used. Natural local-model embeddings stored
+in a real source Chroma collection are exported, restored, retried, reopened and
+retried again. Canonical row-order-independent comparisons cover chunk/conflict
+content and embeddings; one-float32-step vector changes and changed text still
+refuse collision without changing destination rows. This bounded correction does
+not qualify the remaining full workflow/global-data portability work.
