@@ -19,9 +19,9 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  const detail={execution,steps:[step],attempts:[],gates:[],paths:[],resources:[],decisions:[],waits:[]};
  const operations={executionId:execution.id,state:operationsState,label:'Needs Your Review',observedAt:execution.updatedAt,counts:{completed:1,running:0,retrying:0,failed:0,waitingAgent:0,waitingHuman:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0};
  const actionPage={executionId:execution.id,revision:7,generation:'checkpoint-7',items:actions};
- const effects=[],slots=[],queries=new Map(),buttons=[],disclosures=[],fields=[],mutations=[],requests=[],focused=[],viewStates=new Map(savedView?[[execution.id,savedView]]:[]),invalidations=[];
+ const effects=[],slots=[],queries=new Map(),buttons=[],disclosures=[],fields=[],mutations=[],requests=[],focused=[],refetches=[],viewStates=new Map(savedView?[[execution.id,savedView]]:[]),invalidations=[];
  let slot=0,transport=async()=>({}),queryPatch={};
- const hooks={...React,useState(initial){const index=slot++;if(!(index in slots))slots[index]=typeof initial==='function'?initial():initial;return[slots[index],next=>slots[index]=typeof next==='function'?next(slots[index]):next]},useRef(initial){const index=slot++;return slots[index]??=( {current:initial} )},useEffect(fn){effects.push(fn)},useLayoutEffect(){}};
+ const hooks={...React,useState(initial){const index=slot++;if(!(index in slots))slots[index]=typeof initial==='function'?initial():initial;return[slots[index],next=>slots[index]=typeof next==='function'?next(slots[index]):next]},useRef(initial){const index=slot++;return slots[index]??=( {current:initial} )},useEffect(fn,deps){const index=slot++,previous=slots[index];if(!previous||!deps||deps.some((value,i)=>value!==previous[i])){slots[index]=deps;effects.push(fn)}},useLayoutEffect(){}};
  const primitive=name=>props=>{
   if(name==='Button')buttons.push(props);
   if(name==='TextField')fields.push(props);
@@ -33,11 +33,12 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  const query=options=>{
   const key=options.queryKey[0];queries.set(key,options);
   let data=key==='branch-execution-operations'?operations:key==='branch-execution-actions'?{pages:[actionPage],pageParams:[undefined]}:undefined;
-  return {data,isPending:!data,isFetching:false,isFetchingNextPage:false,error:null,hasNextPage:false,refetch(){},fetchNextPage(){},...queryPatch[key]};
+  return {data,isPending:!data,isFetching:false,isFetchingNextPage:false,error:null,hasNextPage:false,refetch(){refetches.push(key)},fetchNextPage(){},...queryPatch[key]};
  };
+ const queryClient={invalidateQueries:value=>invalidations.push(value),resetQueries:()=>{throw Error('Refreshing must not reset mounted decisions')}};
  const scope={exports:{},console,Date,JSON,Map,Set,Error,navigator:{clipboard:{writeText:async()=>{}}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){},document:{getElementById:id=>({scrollIntoView(){focused.push(id)},focus(){focused.push('focus:'+id)}})},require:name=>{
   if(name==='react')return hooks;
-  if(name==='@tanstack/react-query')return {useQuery:query,useInfiniteQuery:query,useQueryClient:()=>({invalidateQueries:value=>invalidations.push(value),resetQueries:()=>{throw Error('Refreshing must not reset mounted decisions')}}) ,useMutation:options=>{const mutation={isPending:false,error:null,reset(){},mutate:input=>mutation.mutateAsync(input),async mutateAsync(input){requests.push({mutation:options,input});return options.mutationFn(input)}};mutations.push(mutation);return mutation;}};
+  if(name==='@tanstack/react-query')return {useQuery:query,useInfiniteQuery:query,useQueryClient:()=>queryClient,useMutation:options=>{const mutation={isPending:false,error:null,reset(){},mutate:input=>mutation.mutateAsync(input),async mutateAsync(input){requests.push({mutation:options,input});return options.mutationFn(input)}};mutations.push(mutation);return mutation;}};
   if(name==='@ponderosa/core')return {branchScriptFailureSummary};
   if(name==='@mui/material')return mui;
   if(name.startsWith('@mui/icons-material/'))return {default:()=>null};
@@ -57,7 +58,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{...scope,require:name=>name==='react/jsx-runtime'?require('react/jsx-runtime'):scope.require(name)});
  const props={detail,definition:{name:'Published workflow',entry:'review',steps:[{id:'review',label:'Review Document',kind:'agent'},{id:'older',label:'Earlier Important Step',kind:'script'}],controls:[],edges:[],trigger:{kind:'manual'}},executions:[execution],viewStates,evidenceControls:React.createElement('div',null,'Load Older Evidence'),onBudgetSettings:id=>focused.push('budget:'+id)};
  const render=()=>{slot=0;buttons.length=0;disclosures.length=0;fields.length=0;queries.clear();effects.length=0;return renderToStaticMarkup(React.createElement(scope.exports.ExecutionPanel,props));};
- return {execution,detail,operations,actionPage,queries,buttons,disclosures,fields,requests,focused,invalidations,render,props,flushEffects:()=>effects.splice(0).forEach(fn=>fn()),setTransport:fn=>transport=fn,setQuery:(key,value)=>queryPatch[key]=value,button:label=>buttons.find(button=>button.children===label)};
+ return {execution,detail,operations,actionPage,queries,buttons,disclosures,fields,requests,focused,refetches,invalidations,render,props,flushEffects:()=>effects.splice(0).forEach(fn=>fn()),setTransport:fn=>transport=fn,setQuery:(key,value)=>queryPatch[key]=value,button:label=>buttons.find(button=>button.children===label)};
 }
 function olderAttempt({unknown=false,current=true,blocked=false}={}){
  const step={id:'older-step',executionId:'run-a',stepId:'older',pathId:'old-path',invocation:3,state:unknown?'outcome_unknown':'failed',input:'Earlier original input'};
@@ -109,11 +110,41 @@ test('budget and provider controls use canonical run ownership without changing 
 });
 
 test('full ordinary and joined results stay in the main surface and reuse their existing exact routes',async()=>{
- const f=fixture();f.detail.executionOutputTruncated=true;f.render();assert.equal(f.queries.get('branch-execution-output').enabled,false);f.button('Show full result').onClick();
+ const f=fixture();f.detail.executionOutputTruncated=true;f.render();assert.equal(f.queries.get('branch-execution-output').enabled,true,'Selected truncated output loads without another click');
  const complete='🙂'.repeat(400)+' FINAL FACT PRESERVED';f.setQuery('branch-execution-output',{data:{output:complete},isPending:false});const html=f.render();assert.match(html,/FINAL FACT PRESERVED/);assert.ok(html.indexOf('FINAL FACT PRESERVED')<html.indexOf('<details'));assert.equal(f.disclosures[0].open,false);
  f.setTransport(async path=>{assert.equal(path,'/api/branch-executions/run-a/result');return {output:complete}});assert.equal((await f.queries.get('branch-execution-output').queryFn()).output,complete);
- const joined=fixture();joined.execution.id='11111111-1111-1111-1111-111111111111';joined.execution.output='branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';joined.render();joined.button('Show full joined text').onClick();joined.setQuery('branch-result-bundle',{data:{content:complete,contentHash:'hash'},isPending:false});const bundle=joined.render();assert.match(bundle,/FINAL FACT PRESERVED/);assert.ok(bundle.indexOf('FINAL FACT PRESERVED')<bundle.indexOf('<details'));assert.equal(joined.queries.get('branch-result-bundle').enabled,true);
+ const joined=fixture();joined.execution.id='11111111-1111-1111-1111-111111111111';joined.execution.output='branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222';joined.render();assert.equal(joined.queries.get('branch-result-bundle').enabled,true,'Selected joined output loads without another click');joined.setQuery('branch-result-bundle',{data:{content:complete,contentHash:'hash'},isPending:false});const bundle=joined.render();assert.match(bundle,/FINAL FACT PRESERVED/);assert.ok(bundle.indexOf('FINAL FACT PRESERVED')<bundle.indexOf('<details'));assert.equal(joined.queries.get('branch-result-bundle').enabled,true);
  const foreign=fixture({output:'branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222'});foreign.render();assert.equal(foreign.queries.get('branch-result-bundle').enabled,false,'An authored marker for another run cannot fetch that run as this result');
+});
+
+test('selected result errors offer inline retry and retain already-loaded text through background failure',()=>{
+ const f=fixture();f.detail.executionOutputTruncated=true;
+ assert.match(f.render(),/Loading complete result/);
+ f.setQuery('branch-execution-output',{data:undefined,error:Error('Read unavailable'),isPending:false});let html=f.render();
+ assert.match(html,/complete result could not be loaded/);assert.match(html,/complete original wording/);f.button('Retry Result').onClick();assert.deepEqual(f.refetches,['branch-execution-output']);
+ f.setQuery('branch-execution-output',{data:{output:'Previously loaded exact result Ω',requestedRevision:7},error:Error('Refresh failed'),isPending:false});html=f.render();f.flushEffects();
+ assert.match(html,/Previously loaded exact result Ω/);assert.match(html,/Showing the last loaded text/);
+ const count=()=>f.invalidations.filter(value=>value.queryKey[0]==='branch-execution-output').length;
+ const before=count();f.render();f.flushEffects();assert.equal(count(),before,'Ordinary rerenders do not loop failed refetches');
+ const joined=fixture({output:'branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222'});joined.execution.id='11111111-1111-1111-1111-111111111111';joined.setQuery('branch-result-bundle',{error:Error('Bundle read failed'),isPending:false});assert.match(joined.render(),/joined result could not be loaded/);joined.button('Retry Result').onClick();assert.deepEqual(joined.refetches,['branch-result-bundle']);
+});
+
+test('a Run advancing during result fetch refreshes the existing query without discarding cached output or looping',async()=>{
+ const f=fixture({state:'running'});f.detail.executionOutputTruncated=true;f.render();f.flushEffects();
+ let complete;f.setTransport(()=>new Promise(resolve=>{complete=resolve}));
+ const pending=f.queries.get('branch-execution-output').queryFn();f.execution.revision=8;f.render();f.flushEffects();
+ complete({output:'Complete result for the earlier request'});const earlier=await pending;assert.equal(earlier.requestedRevision,7);
+ f.setQuery('branch-execution-output',{data:earlier,isPending:false,isFetching:true});assert.match(f.render(),/Complete result for the earlier request/);f.flushEffects();
+ const invalidations=()=>f.invalidations.filter(value=>value.queryKey[0]==='branch-execution-output');assert.equal(invalidations().length,1);assert.equal(invalidations()[0].exact,true);
+ f.setQuery('branch-execution-output',{data:earlier,isPending:false,isFetching:false,error:Error('Retry unavailable')});f.render();f.flushEffects();f.render();f.flushEffects();assert.equal(invalidations().length,1,'Failed refresh keeps cached output and does not blindly retry');
+ f.setTransport(async()=>({output:'Newest complete result'}));const newest=await f.queries.get('branch-execution-output').queryFn();assert.equal(newest.requestedRevision,8);
+ f.setQuery('branch-execution-output',{data:newest,isPending:false});assert.match(f.render(),/Newest complete result/);f.flushEffects();assert.equal(invalidations().length,1);
+});
+
+test('exceptionally large joined results reuse shared progressive expansion while normal results remain readable',()=>{
+ const f=fixture({output:'branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222'});f.execution.id='11111111-1111-1111-1111-111111111111';
+ const content='Readable joined report.\n'.repeat(1000)+'COMPLETE LAST FACT';f.setQuery('branch-result-bundle',{data:{content,contentHash:'original'},isPending:false});
+ const html=f.render();assert.match(html,/Show Full Message/);assert.doesNotMatch(html,/COMPLETE LAST FACT/);assert.equal(f.queries.get('branch-result-bundle').enabled,true);
 });
 
 test('opening diagnostics preserves raw Script evidence, receipts, resolved decisions and existing full evidence route',()=>{
