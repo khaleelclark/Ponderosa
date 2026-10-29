@@ -22,7 +22,6 @@ interface AgentManagementRoutesContext {
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   publishWorkspaceSince(cursor: number): void;
   notifyScheduler(): void;
-  authToken?: string;
 }
 
 const ACTION_FIELDS = {
@@ -96,7 +95,7 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
   const { store, coordinationV3, workspace, engines, managementPlans, activeRuns,
     agentMessageCapabilities, deletingAgentIds, cachedModelOptions,
     capabilityOwnsAuthoritativeRun, publicManagementOperations, commitAgentDeletion,
-    appendWorkspace, publishWorkspaceSince, notifyScheduler, authToken } = context;
+    appendWorkspace, publishWorkspaceSince, notifyScheduler } = context;
   const durableStore = store as AgentStore & Partial<Pick<AgentStore,
     "getAgentManagementPlan" | "findAgentManagementPlan" | "createAgentManagementPlan" | "updateAgentManagementPlan">>;
   const loadPlan = (id: string) => durableStore.getAgentManagementPlan?.(id) ?? managementPlans.get(id);
@@ -315,7 +314,6 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
             }
             if (!targetRunId || coordinationV3.agentSnapshot(targetId).activeRun?.id !== targetRunId) throw new Error("the exact Run bound to this stop_agent plan is no longer active");
             const response = await app.inject({ method: "POST", url: `/api/agents/${encodeURIComponent(targetId)}/cancel`,
-              headers: authToken ? { authorization: `Bearer ${authToken}` } : undefined,
               payload: { targetRunId, idempotencyKey: cancellationKey } });
             if (response.statusCode >= 400) throw new Error(response.json().error ?? "Agent stop failed");
             const receipt = coordinationV3.cancellationReceipt(targetId, cancellationKey);

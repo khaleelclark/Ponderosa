@@ -77,7 +77,7 @@ test('operator permission updates block a live regular Agent on host boundaries 
   f.ok(await f.api('PUT','/api/workspace/capabilities',{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.hostFileImport]}));
   f.ok(await f.api('PUT',url,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.managedAgentCreate,CAPABILITY_IDS.browserRead,CAPABILITY_IDS.filesystemWrite]}));
   for(const [name,args]of [['ponderosa_manage',{action:'apply',planId:plan.planId}],['ponderosa_browser_open',{url:'https://example.invalid'}],['ponderosa_import_file',{path:'does-not-exist.txt'}]])assert.equal((await f.tool(first,name,args)).status,403,name);
-  assert.equal((await f.api('PUT',url,{revision:1,restrictedCapabilityIds:[]},{authorization:'Bearer non-operator-runtime-token'})).status,401);
+  assert.equal((await f.api('PUT',url,{revision:0,restrictedCapabilityIds:[]},{authorization:'Bearer obsolete-operator-token'})).status,409);
   f.ok(await f.tool(first,'ponderosa_message',{intent:'direct_to_user',text:'User communication survives permission changes'}));first.finish();await f.settled(agent.id);
   const previous=(await f.detail(agent.id)).runs.map(r=>r.id),second=await f.hold(agent.id);assert.notEqual(second.engineAgentId,first.engineAgentId);assert.equal((await second.tool('ponderosa_create_managed_agent',{title:'Blocked',text:'Do nothing',lifetime:{kind:'indefinite'},idempotencyKey:'blocked-new-session'})).success,false);
   second.finish();await f.settled(agent.id,previous);

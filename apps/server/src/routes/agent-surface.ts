@@ -167,7 +167,6 @@ registerAgentManagementRoutes(app, {
   appendWorkspace,
   publishWorkspaceSince,
   notifyScheduler: notifyScheduler,
-  authToken: opts.authToken,
 });
 
 registerAgentRuntimeToolRoutes(app, {

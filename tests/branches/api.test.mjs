@@ -70,9 +70,9 @@ test('HTTP Branch webhook intake verifies exact bytes, survives replay, and requ
   const execution=store.sqlite.prepare('SELECT admission_source FROM branch_executions WHERE id=(SELECT branch_execution_id FROM trigger_occurrences WHERE id=?)').get(accepted.body.occurrenceId);assert.equal(execution.admission_source,'automatic');
   assert.equal((await f.api('POST',url,raw,headers)).status,200);
   assert.equal((await f.api('POST',url,JSON.stringify(JSON.parse(raw)),headers)).status,401,'Parsing and reserializing must not satisfy a signature over different bytes');
-  assert.equal((await f.api('POST',url,raw,{...headers,authorization:''})).status,401,'A webhook signature does not replace operator authentication');
+  assert.equal((await f.api('POST',url,raw,{...headers,authorization:''})).status,200,'Webhook replay needs no operator authentication');
   assert.equal((await f.api('POST',url,raw,{...headers,origin:'https://untrusted.invalid'})).status,403);
-  assert.equal((await f.api('POST',url,raw,{...headers,host:'untrusted.invalid'})).status,421);
+  assert.equal((await f.api('POST',url,raw,{...headers,host:'untrusted.invalid'})).status,200);
   for(const eventId of ['second-event','third-event']){
    const signature='v1='+createHmac('sha256',deployed.webhookSecret).update(`${timestamp}.${eventId}.`).update(raw).digest('hex');
    assert.equal((await f.api('POST',url,raw,{...headers,'x-ponderosa-event-id':eventId,'x-ponderosa-signature':signature})).status,202);

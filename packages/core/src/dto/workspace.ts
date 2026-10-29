@@ -1064,7 +1064,7 @@ export interface ReadinessCheckDto {
 }
 
 export interface NetworkSecurityPostureDto {
-  mode: "loopback" | "authenticated" | "trusted_tailnet" | "reverse_proxy";
+  mode: "trusted_network";
   /** Exact configured listener host. Never contains credentials. */
   bindHost: string;
   authenticationRequired: boolean;

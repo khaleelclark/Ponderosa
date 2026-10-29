@@ -30,7 +30,6 @@ assertProductionBuildIdentity({
 
 const launcherControlToken = process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN?.trim();
 delete process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN;
-const launcherSecurity = launcherControlToken ? { controlToken: launcherControlToken } : undefined;
 const shutdownRecovery = process.env.PONDEROSA_SHUTDOWN_RECOVERY === "1";
 const shutdownRecoveryPid = Number(process.env.PONDEROSA_SHUTDOWN_RECOVERY_PID);
 const shutdownRecoveryRequestedAt = process.env.PONDEROSA_SHUTDOWN_RECOVERY_REQUESTED_AT;
@@ -121,15 +120,12 @@ try { app = createServer({
   launcherRecords,
   engines: defaultEngineRegistrations(),
   webDist,
-  authToken: config.authToken,
   networkSecurity: config.networkSecurity,
   operatorOrigins: config.operatorOrigins,
-  operatorIdentities: config.operatorIdentities,
   requestLimits: { maxRequestsPerMinute: 600, maxCriticalRequestsPerMinute: 120, maxStreamRequestsPerMinute: 120, maxMonitorRequestsPerMinute: 120, maxInflight: 128 },
   buildRevision: process.env.PONDEROSA_BUILD_SHA,
   buildVersion: process.env.PONDEROSA_BUILD_VERSION,
   releaseChannel: process.env.PONDEROSA_RELEASE_CHANNEL,
-  ...(launcherSecurity ? { launcherSecurity } : {}),
   agentBaseUrl: process.env.PONDEROSA_AGENT_BASE_URL ?? internalAgentBaseUrl(config.host, config.port),
   allowedImportRoots: (process.env.PONDEROSA_IMPORT_ROOTS ?? "")
     .split(path.delimiter).map((root) => root.trim()).filter(Boolean),

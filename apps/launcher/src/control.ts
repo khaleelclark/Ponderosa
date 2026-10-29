@@ -680,24 +680,11 @@ async function waitForStart(
   throw new Error("Ponderosa did not become ready in time. Check the server and error logs in Ponderosa Engine before retrying.");
 }
 
-export async function requestBrowserBootstrap(
+export async function openPonderosaBrowser(
   state: LauncherState,
   platform: PlatformAdapter,
-  fetchFn: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<void> {
-  const response = await fetchFn(`${baseUrl(state)}/api/launcher/bootstrap`, {
-    method: "POST",
-    headers: bearer(state.controlToken),
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!response.ok) throw new Error(`Could not open Ponderosa: ${await responseDetail(response)}`);
-  const body = await response.json() as { token?: unknown };
-  if (typeof body.token !== "string" || body.token === "") {
-    throw new Error("Ponderosa returned an invalid browser bootstrap.");
-  }
-  await platform.openBrowser(
-    `${baseUrl(state)}/__ponderosa_bootstrap#${encodeURIComponent(body.token)}`,
-  );
+  await platform.openBrowser(baseUrl(state));
 }
 
 export async function startPonderosa(input: {
@@ -721,7 +708,7 @@ export async function startPonderosa(input: {
     if (current) {
       validateCurrentLookup(originalPaths, current);
       const recovered = canonicalAuthenticatedRecord(existing, current);
-        if (input.openBrowser !== false) await requestBrowserBootstrap(recovered, input.platform, fetchFn);
+        if (input.openBrowser !== false) await openPonderosaBrowser(recovered, input.platform);
       return recovered;
     }
   }
@@ -810,10 +797,9 @@ export async function startPonderosa(input: {
       await waitForStart(state, fetchFn);
     } catch (error) { throw error; } // Startup failure never erases an uncertain control fence.
     if (input.openBrowser !== false) {
-      await requestBrowserBootstrap(
+      await openPonderosaBrowser(
         state,
         input.platform,
-        fetchFn,
       );
     }
     return state;

@@ -26,10 +26,6 @@ import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPa
 import { projectedProjectCount } from "../readiness.js";
 import { browserResidueCleanupStatus } from "../browser-session-residue.js";
 import type { ServerMetrics } from "../server-metrics.js";
-import { secretEqual } from "../security.js";
-import { browserSessionCookie } from "../launcher-security.js";
-export { browserSessionCookie } from "../launcher-security.js";
-
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
   serverContext: ServerContext;
@@ -37,13 +33,6 @@ interface ServerControlRoutesContext {
   coordinationV3: CoordinationV3Store;
   engines: ReadonlyMap<string, EngineRegistration>;
   activeRuns: Map<string, ActiveRun>;
-  launcherNow(): number;
-  launcherRandomToken(): string;
-  launcherBootstrapTtlMs: number;
-  launcherSessionTtlMs: number;
-  launcherBootstraps: Map<string, number>;
-  issueLauncherSession(): string;
-  purgeLauncherSecurityState(): void;
   networkSecurity: ReadinessDto["networkSecurity"];
   artifactFilesystem: ReadinessCheckDto;
   processContainment: ReadinessCheckDto;
@@ -137,13 +126,6 @@ export function registerServerControlRoutes(
     coordinationV3,
     engines,
     activeRuns,
-    launcherNow,
-    launcherRandomToken,
-    launcherBootstrapTtlMs,
-    launcherSessionTtlMs,
-    launcherBootstraps,
-    issueLauncherSession,
-    purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
     processContainment,
@@ -201,123 +183,13 @@ app.get<{ Querystring: { stream?: string } }>(
   },
 );
 
-app.post("/api/launcher/bootstrap", async (_request, reply) => {
-  reply.header("Cache-Control", "no-store");
-  purgeLauncherSecurityState();
-  const token = launcherRandomToken();
-  launcherBootstraps.set(token, launcherNow() + launcherBootstrapTtlMs);
-  return { token, expiresInMs: launcherBootstrapTtlMs };
+// Existing launchers may still open their bootstrap URL; it now only navigates.
+app.post("/api/launcher/bootstrap", async () => ({ token: "", expiresInMs: 0 }));
+app.post("/api/launcher/session-exchange", async (_request, reply) => reply.code(204).send());
+app.get("/__ponderosa_bootstrap", async (request, reply) => {
+  const next = new URL(request.url, "http://localhost").searchParams.get("next");
+  return reply.redirect(next === "/branches" ? "/branches" : "/");
 });
-
-app.post<{ Body: { token?: string } }>("/api/launcher/session-exchange", async (request, reply) => {
-  reply.header("Cache-Control", "no-store");
-  const reverseProxyBootstrap = networkSecurity.mode === "reverse_proxy" && Boolean(opts.authToken);
-  if (!opts.launcherSecurity && !reverseProxyBootstrap) {
-    return reply.code(404).send({ error: "browser session bootstrap is disabled" });
-  }
-  purgeLauncherSecurityState();
-  const token = request.body?.token;
-  const expiresAt = typeof token === "string" ? launcherBootstraps.get(token) : undefined;
-  const validLauncherBootstrap = Boolean(
-    opts.launcherSecurity && token && expiresAt && expiresAt > launcherNow(),
-  );
-  const validReverseProxyBootstrap = Boolean(
-    reverseProxyBootstrap && token && opts.authToken && secretEqual(token, opts.authToken),
-  );
-  if (!validLauncherBootstrap && !validReverseProxyBootstrap) {
-    if (token && opts.launcherSecurity) launcherBootstraps.delete(token);
-    return reply.code(401).send({ error: "browser bootstrap is invalid or expired" });
-  }
-  // Consume launcher bootstraps before issuing the browser session. The
-  // operator bearer remains a host-managed secret and is cleared from the URL
-  // fragment by the bootstrap page before this request is made.
-  if (validLauncherBootstrap) launcherBootstraps.delete(token!);
-  const session = issueLauncherSession();
-  const trustedHttpsProxy = networkSecurity.mode === "reverse_proxy" &&
-    Boolean(opts.operatorOrigins?.some((origin) => origin.startsWith("https://")));
-  const secure = request.protocol === "https" || trustedHttpsProxy;
-  reply.header(
-    "Set-Cookie",
-    browserSessionCookie(
-      session,
-      Math.floor(launcherSessionTtlMs / 1_000),
-      secure,
-    ),
-  );
-  return reply.code(204).send();
-});
-
-app.get("/__ponderosa_bootstrap", async (_request, reply) => reply
-  .type("text/html; charset=utf-8")
-  .header("Cache-Control", "no-store")
-  .send(`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<title>Opening Ponderosa…</title>
-</head>
-<body>
-<main><h1>Opening Ponderosa…</h1><p id="status">Securing this browser session.</p></main>
-<script src="/__ponderosa_bootstrap.js"></script>
-</body>
-</html>`));
-
-app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
-  .type("text/javascript; charset=utf-8")
-  .header("Cache-Control", "no-store")
-  .send(`(async()=>{
-const status=document.getElementById("status");
-const token=decodeURIComponent(location.hash.slice(1));
-const destination=new URLSearchParams(location.search).get("next")==="/branches"?"/branches":"/";
-history.replaceState(null,"","/__ponderosa_bootstrap"+location.search);
-if(!token){location.replace(destination);return}
-try{
-  const response=await fetch("/api/launcher/session-exchange",{
-    method:"POST",
-    headers:{"content-type":"application/json"},
-    body:JSON.stringify({token})
-  });
-  if(!response.ok)throw new Error("exchange failed");
-  if("serviceWorker" in navigator){
-    try{
-      const registration=await navigator.serviceWorker.getRegistration("/");
-      if(registration){
-        await registration.update();
-        let candidate=registration.waiting||registration.installing;
-        if(candidate&&candidate.state!=="installed"){
-          await Promise.race([
-            new Promise(resolve=>{
-              const changed=()=>{
-                if(candidate.state==="installed"||candidate.state==="redundant"){
-                  candidate.removeEventListener("statechange",changed);
-                  resolve();
-                }
-              };
-              candidate.addEventListener("statechange",changed);
-              changed();
-            }),
-            new Promise(resolve=>setTimeout(resolve,5000))
-          ]);
-        }
-        candidate=registration.waiting;
-        if(candidate){
-          const controlled=Promise.race([
-            new Promise(resolve=>navigator.serviceWorker.addEventListener("controllerchange",resolve,{once:true})),
-            new Promise(resolve=>setTimeout(resolve,5000))
-          ]);
-          candidate.postMessage({type:"SKIP_WAITING"});
-          await controlled;
-        }
-      }
-    }catch{}
-  }
-  location.replace(destination);
-}catch{
-  status.textContent="This launch link expired or was already used. Open Ponderosa Engine again.";
-}
-})();`));
 
 let shutdownQueued = false;
 const beginShutdown = (reply: FastifyReply, requestGeneration: unknown, requestTime: unknown) => {

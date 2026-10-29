@@ -209,7 +209,7 @@ test('inert Branch-owned accepted DM → scheduled Run → scoped early text →
  await f.app.listen({host:'127.0.0.1',port:0});
  const origin=`http://127.0.0.1:${f.app.server.address().port}`;
  const streamPath=`/api/branches/engine/agents/${f.agent.id}/stream`;
- assert.equal((await fetch(origin+streamPath)).status,401,'actual socket requires operator authentication');
+ const anonymousStream=await fetch(origin+streamPath);assert.equal(anonymousStream.status,200,'actual socket needs no operator authentication');await anonymousStream.body.cancel();
  async function replay(cursor=0){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);
   let reader;

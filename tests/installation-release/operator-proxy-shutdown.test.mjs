@@ -45,8 +45,8 @@ for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
   const backend = createServer((incoming, outgoing) => {
     backendRequests++;
     incoming.on('error', () => {});
-    assert.equal(incoming.headers.authorization, `Bearer ${token}`);
-    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], identity);
+    assert.equal(incoming.headers.authorization, undefined);
+    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], undefined);
     assert.equal(incoming.headers['tailscale-user-login'], undefined);
     assert.equal(incoming.headers.host, 'qualification.test');
     assert.equal(incoming.headers['x-remove-me'], undefined);
@@ -60,8 +60,8 @@ for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
   });
   backend.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   backend.on('upgrade', (incoming, socket) => {
-    assert.equal(incoming.headers.authorization, `Bearer ${token}`);
-    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], identity);
+    assert.equal(incoming.headers.authorization, undefined);
+    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], undefined);
     assert.equal(incoming.headers['tailscale-user-login'], undefined);
     socket.resume();
     socket.once('end', () => socket.end());
@@ -95,12 +95,12 @@ for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
           result.once('end', () => resolve({ status: result.statusCode, body })); result.once('error', reject);
         }); req.once('error', reject); req.end();
       });
-      assert.equal((await fetch({ [identityHeader]: 'wrong@qualification.test', [OPERATOR_IDENTITY_HEADER]: identity })).status, 401);
-      assert.equal((await fetch({ 'x-forwarded-host': 'wrong.test' })).status, 421);
-      assert.equal(backendRequests, 0, 'Rejected identity/host reached the backend');
+      assert.equal((await fetch({ [identityHeader]: 'wrong@qualification.test', [OPERATOR_IDENTITY_HEADER]: identity })).status, 200);
+      assert.equal((await fetch({ 'x-forwarded-host': 'wrong.test' })).status, 200);
+      assert.equal(backendRequests, 2, 'The bridge imposes no network identity gate');
       const result = await fetch({ authorization: 'Bearer untrusted-client-token', [OPERATOR_IDENTITY_HEADER]: 'forged@client.test', connection: 'x-remove-me', 'x-remove-me': 'private-hop' });
       assert.deepEqual(result, { status: 200, body: 'exact completed response: café 東京' });
-      assert.equal(backendRequests, 1);
+      assert.equal(backendRequests, 3);
     } else if (kind.includes('upgrade') || kind === 'incomplete request headers') {
       client = createConnection({ path: socketPath, allowHalfOpen: kind === 'rejected upgrade' });
       client.on('error', () => {});
@@ -159,5 +159,23 @@ for(const allowlist of [[],['verified@fixture.test']])test(`authenticated rate b
   const r=await app.inject({url:'/api/owned',headers:{host:'localhost',authorization:'Bearer '+token,'tailscale-user-login':'rotation-'+i,[OPERATOR_IDENTITY_HEADER]:allowlist[0]??'unvalidated-'+i}});
   assert.equal(r.statusCode,i<2?200:429,r.body);
  }
- if(allowlist.length){const r=await app.inject({url:'/api/owned',headers:{host:'localhost',authorization:'Bearer '+token,[OPERATOR_IDENTITY_HEADER]:'intruder@fixture.test'}});assert.equal(r.statusCode,401);}
+ const r=await app.inject({url:'/api/owned',headers:{host:'localhost',[OPERATOR_IDENTITY_HEADER]:'intruder@fixture.test'}});assert.equal(r.statusCode,429,'Rotating a claim cannot bypass the shared capacity budget');
+});
+
+import {resolveNetworkSecurity} from '../../packages/core/dist/config.js';
+test('network configuration accepts arbitrary listeners without operator credentials or VPN dependencies',()=>{
+ for(const host of ['0.0.0.0','192.168.1.7','::','ponderosa.internal']){
+  const config=resolveNetworkSecurity({PONDEROSA_HOST:host,PONDEROSA_OPERATOR_ORIGINS:'http://ponderosa.internal:8787',NODE_ENV:'production'});
+  assert.equal(config.host,host);assert.equal(config.authToken,undefined);assert.equal(config.posture.authenticationRequired,false);assert.equal(config.posture.mode,'trusted_network');
+ }
+});
+test('operator access needs no token, while browser origins and Agent capability boundaries stay enforced',async t=>{
+ const app=Fastify();t.after(()=>app.close());
+ registerRequestSecurityHooks(app,{opts:{authToken:token,launcherSecurity:{controlToken:'obsolete'},operatorOrigins:['https://owned.test'],operatorIdentities:['obsolete'],networkSecurity:{mode:'reverse_proxy'}},v3DispatchKey:'owned',agentMessageCapabilities:new Map([['live-agent',{agentId:'owned-agent'}]]),deletingAgentIds:new Set(),artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>false});
+ app.get('/api/owned',async()=>({ok:true}));app.post('/api/owned',async()=>({ok:true}));app.post('/api/launcher/owned',async()=>({ok:true}));
+ for(const url of ['/api/owned','/api/launcher/owned'])assert.equal((await app.inject({method:'POST',url,headers:{host:'owned.test',origin:'https://owned.test'}})).statusCode,200);
+ assert.equal((await app.inject({url:'/api/owned',headers:{host:'arbitrary.internal'}})).statusCode,200);
+ assert.equal((await app.inject({method:'POST',url:'/api/owned',headers:{host:'owned.test',origin:'https://outside.test'}})).statusCode,403);
+ assert.equal((await app.inject({url:'/api/owned',headers:{host:'owned.test','sec-fetch-site':'cross-site'}})).statusCode,403);
+ assert.equal((await app.inject({method:'POST',url:'/api/owned',headers:{host:'owned.test',authorization:'Bearer live-agent'}})).statusCode,401);
 });

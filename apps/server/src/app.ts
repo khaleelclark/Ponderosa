@@ -53,15 +53,11 @@ import {
   ProviderAdapterBoundaryError,
 } from "./engine-control-plane.js";
 import { createLinkPreviewService } from "./link-preview-service.js";
-import { createLauncherSecurity } from "./launcher-security.js";
+
 import { createOperationalNotifications } from "./operational-notifications.js";
 import {
   descriptorRelativeFilesystemCapability
 } from "./project-file-access.js";
-import {
-  publicWebAssetPaths,
-  publicWebAssetRequest,
-} from "./public-web-assets.js";
 import { ProviderUsageCache } from "./provider-usage-cache.js";
 import { providerUnavailableNotificationBody } from "./provider-availability-detail.js";
 import { restrictedProviderExceptionLogDetail } from "./provider-exception-properties.js";
@@ -141,18 +137,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     opts = { ...opts, reportedDataDir: opts.reportedDataDir ?? opts.dataDir, dataDir: admission.dataDir };
   } finally { admission.close(); }
   cleanupAllRuntimeAttachments(opts.dataDir);
-  const {
-    networkSecurity,
-    launcherNow,
-    launcherRandomToken,
-    launcherBootstrapTtlMs,
-    launcherSessionTtlMs,
-    launcherBootstraps,
-    issueLauncherSession,
-    purgeLauncherSecurityState,
-    validLauncherSession,
-  } = createLauncherSecurity(opts, store.sqlite);
-  const publicWebAssets = publicWebAssetPaths(opts.webDist);
+  const networkSecurity: import("@ponderosa/core").ReadinessDto["networkSecurity"] = {
+    mode: "trusted_network", bindHost: opts.networkSecurity?.bindHost ?? "127.0.0.1",
+    authenticationRequired: false, detail: "Network access is managed by the user; browser origin checks remain enabled.",
+  };
   const artifactFilesystem = descriptorRelativeFilesystemCapability(opts.dataDir);
   const processContainment = process.platform === "win32"
     ? windowsJobObjectsSupported()
@@ -1042,14 +1030,10 @@ app.server.on("upgrade", linkPreviewUpgrade);
 
   registerRequestSecurityHooks(app, {
     opts,
-    v3DispatchKey,
     agentMessageCapabilities,
     deletingAgentIds,
-    validLauncherSession,
     artifactFilesystemError,
     isArtifactDependentWorkIntake,
-    isPublicWebAssetRequest: (method, url) =>
-      publicWebAssetRequest(method, url, publicWebAssets),
   });
   registerLocalMemory(app,{opts,store,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,publishInvalidation:(agentId,event)=>publish(agentId,store.appendEvent(agentId,event))});
 
@@ -1183,13 +1167,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3,
     engines,
     activeRuns,
-    launcherNow,
-    launcherRandomToken,
-    launcherBootstrapTtlMs,
-    launcherSessionTtlMs,
-    launcherBootstraps,
-    issueLauncherSession,
-    purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
     processContainment,

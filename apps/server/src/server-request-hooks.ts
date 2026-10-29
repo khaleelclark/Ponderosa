@@ -11,10 +11,8 @@ import {
   MAX_OPERATOR_AVATAR_BYTES,
   OPERATOR_AVATAR_MEDIA_TYPES,
 } from "./operator-profile-images.js";
-import { OPERATOR_IDENTITY_HEADER, secretEqual } from "./security.js";
 import { isAgentToolRoute } from "./agent-tool-route-classification.js";
 import { localBrowserTransportPath } from "./routes/local-browsers.js";
-import { browserSessionCookie } from "./launcher-security.js";
 
 /** Purpose, not method, determines whether a user-authored action gets its
  * reserved admission budget. Read-like POSTs remain standard traffic. */
@@ -57,16 +55,10 @@ export function registerBodyParsers(
 
 interface RequestSecurityHooksContext {
   opts: CreateServerOptions;
-  v3DispatchKey: string;
   agentMessageCapabilities: Map<string, AgentMessageCapability>;
   deletingAgentIds: ReadonlySet<string>;
-  validLauncherSession(
-    header: string | undefined,
-    onRenew?: (token: string, maxAgeSeconds: number) => void,
-  ): boolean;
   artifactFilesystemError(): string | undefined;
   isArtifactDependentWorkIntake(method: string, url: string, body?: unknown): boolean;
-  isPublicWebAssetRequest(method: string, url: string): boolean;
 }
 
 export function registerRequestSecurityHooks(
@@ -75,13 +67,10 @@ export function registerRequestSecurityHooks(
 ): void {
   const {
     opts,
-    v3DispatchKey,
     agentMessageCapabilities,
     deletingAgentIds,
-    validLauncherSession,
     artifactFilesystemError,
     isArtifactDependentWorkIntake,
-    isPublicWebAssetRequest,
   } = context;
 
   const normalizedHostname = (value: string): string =>
@@ -89,9 +78,6 @@ export function registerRequestSecurityHooks(
   const allowedHostnames = new Set(["localhost", "127.0.0.1", "::1"]);
   if (opts.networkSecurity?.bindHost) allowedHostnames.add(normalizedHostname(opts.networkSecurity.bindHost));
   const allowedOrigins = new Set<string>();
-  const allowedProxyIdentities = new Set(
-    (opts.operatorIdentities ?? []).map((identity) => identity.toLocaleLowerCase()),
-  );
   for (const rawOrigin of opts.operatorOrigins ?? []) {
     const origin = new URL(rawOrigin);
     allowedOrigins.add(origin.origin.toLowerCase());
@@ -106,16 +92,6 @@ export function registerRequestSecurityHooks(
   const handlerDeadlines = new WeakMap<IncomingMessage, ReturnType<typeof setTimeout>>();
 
   app.addHook("onRequest", async (request, reply) => {
-    const host = request.headers.host;
-    let hostname: string;
-    try {
-      hostname = normalizedHostname(new URL(`http://${host ?? ""}`).hostname);
-    } catch {
-      return reply.code(400).send({ error: "invalid Host header" });
-    }
-    if (!allowedHostnames.has(hostname)) {
-      return reply.code(421).send({ error: "unrecognized Ponderosa host" });
-    }
     const fetchSite = request.headers["sec-fetch-site"];
     if (fetchSite === "cross-site" && request.url.startsWith("/api/")) {
       return reply.code(403).send({ error: "cross-site API request forbidden" });
@@ -165,98 +141,25 @@ export function registerRequestSecurityHooks(
     });
   }
 
-  const verifiedOperatorIdentities = new WeakMap<IncomingMessage, string>();
-
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    // Only the narrow extension transport uses its own unguessable, tab-scoped
-    // pairing capability. It never grants access to operator or Agent APIs.
-    if (request.method === "POST" && localBrowserTransportPath(request.url)) return;
-    const browserBootstrapPath =
-      /^\/__ponderosa_bootstrap(?:\?|$)/u.test(request.url) ||
-      request.url === "/__ponderosa_bootstrap.js";
-    const launcherExchange = request.url === "/api/launcher/session-exchange";
-    const launcherControlRequest = request.url.startsWith("/api/launcher/") && !launcherExchange;
-    if (launcherControlRequest) {
-      if (opts.launcherSecurity && provided &&
-          secretEqual(provided, opts.launcherSecurity.controlToken)) return;
-      return reply.code(401).send({ error: "launcher authorization required" });
+    const capability = provided ? agentMessageCapabilities.get(provided) : undefined;
+    if (capability && !isAgentToolRoute(request.url)) {
+      return reply.code(401).send({ error: "Agent capability is not operator authority" });
     }
-    const internalV3Dispatch = request.method === "POST" &&
-      /^\/api\/agents\/[^/?]+\/messages(?:\?|$)/u.test(request.url) &&
-      typeof request.headers["x-ponderosa-v3-dispatch"] === "string" &&
-      secretEqual(request.headers["x-ponderosa-v3-dispatch"], v3DispatchKey);
-    if (internalV3Dispatch) return;
-    if (opts.launcherSecurity && opts.networkSecurity?.mode !== "reverse_proxy" &&
-        (browserBootstrapPath || launcherExchange)) return;
-    if (isPublicWebAssetRequest(request.method, request.url)) return;
-    const agentToolRequest = isAgentToolRoute(request.url);
-    const capability = agentToolRequest && provided ? agentMessageCapabilities.get(provided) : undefined;
-    if (capability) {
-      if (deletingAgentIds.has(capability.agentId)) {
-        return reply.code(409).send({ error: "Agent deletion is already in progress" });
-      }
-      return;
-    }
-    if (request.url === "/api/health" || request.url === "/api/ready") return;
-    const validBrowserSession = (): boolean => validLauncherSession(
-      request.headers.cookie,
-      (token, maxAgeSeconds) => {
-        const trustedHttpsProxy = opts.networkSecurity?.mode === "reverse_proxy" &&
-          Boolean(opts.operatorOrigins?.some((origin) => origin.startsWith("https://")));
-        reply.header("Set-Cookie", browserSessionCookie(
-          token,
-          maxAgeSeconds,
-          request.protocol === "https" || trustedHttpsProxy,
-        ));
-      },
-    );
-    if (opts.networkSecurity?.mode === "reverse_proxy") {
-      let verifiedIdentity: string | undefined;
-      if (allowedProxyIdentities.size > 0) {
-        const asserted = request.headers[OPERATOR_IDENTITY_HEADER];
-        const identity = typeof asserted === "string" ? asserted.trim().toLocaleLowerCase() : "";
-        if (!identity || !allowedProxyIdentities.has(identity)) {
-          return reply.code(401).send({ error: "trusted proxy operator identity required" });
-        }
-        verifiedIdentity = identity;
-      }
-      if ((opts.launcherSecurity || opts.authToken) &&
-          (browserBootstrapPath || launcherExchange)) return;
-      if (opts.authToken && !validBrowserSession() && !secretEqual(provided, opts.authToken)) {
-        return reply.code(401).send({ error: "reverse proxy backend authentication required" });
-      }
-      if (verifiedIdentity) verifiedOperatorIdentities.set(request.raw, verifiedIdentity);
-      return;
-    }
-    if (opts.launcherSecurity && validBrowserSession()) return;
-    if (opts.authToken && secretEqual(provided, opts.authToken)) return;
-    if (opts.authToken || opts.launcherSecurity) {
-      return reply.code(401).send({ error: "unauthorized" });
+    if (capability && deletingAgentIds.has(capability.agentId)) {
+      return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
   });
 
-  // Admission follows authentication so an untrusted peer cannot consume the
-  // authenticated operator's rate or concurrency budget. Long-lived SSE
-  // streams have their own subscriber, replay, byte, and backpressure bounds.
+  // Resource admission protects server capacity independently of network identity.
   app.addHook("onRequest", async (request, reply) => {
     if (!opts.requestLimits) return;
     const now = Date.now();
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = provided ? agentMessageCapabilities.get(provided) : undefined;
-    const proxyIdentity = verifiedOperatorIdentities.get(request.raw);
-    const source = capability
-      ? `agent:${capability.agentId}`
-      : opts.networkSecurity?.mode === "reverse_proxy"
-        ? proxyIdentity ? `operator:${proxyIdentity}` : "operator"
-        : opts.authToken || opts.launcherSecurity
-          ? "operator"
-          : request.ip;
-    const requestClass = !capability && request.method === "GET" && /^\/api\/(?:health|ready)(?:\?|$)/u.test(request.url)
-      ? "monitor"
-      : !capability && (opts.authToken || opts.launcherSecurity)
-        ? classifyOperatorRequest(request.method, request.url)
-        : "standard";
+    const source = capability ? `agent:${capability.agentId}` : "operator";
+    const requestClass = capability ? "standard" : classifyOperatorRequest(request.method, request.url);
     const bucketKey = `${source}\0${requestClass}`;
     const current = requestBuckets.get(bucketKey);
     const operatorId = source.startsWith("operator")

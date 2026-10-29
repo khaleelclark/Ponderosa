@@ -384,7 +384,6 @@ return new CoordinationV3Scheduler(
       method: "POST",
       url: `/api/agents/${encodeURIComponent(lease.agentId)}/messages`,
       headers: {
-        ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
         "x-ponderosa-v3-dispatch": v3DispatchKey,
       },
       payload: {

@@ -1,6 +1,6 @@
 # Ponderosa production runbook
 
-Ponderosa is a single-operator system. Every admitted proxy identity has the
+Ponderosa is a single-operator system. Every client with network access has the
 same authority over all Projects, Agents, files, providers, and retained
 browsers. Never expose one deployment to mutually untrusted operators.
 
@@ -14,36 +14,26 @@ browsers. Never expose one deployment to mutually untrusted operators.
   at least daily while the service changes.
 - Recovery time: restore rehearsal completes within 30 minutes.
 
-Scrape authenticated `GET /api/metrics`; never publish it anonymously. Import
+Scrape `GET /api/metrics` from the user-managed network. Import
 `deploy/observability/ponderosa-alerts.yml` into Prometheus. Request logs carry
 the same `X-Request-Id` returned to the caller.
 
 ## Identity and network boundary
 
-For Tailscale Serve, configure the exact HTTPS origin, enable the trusted proxy,
-and list the only allowed Tailscale login identities:
+Set the listener address with `PONDEROSA_HOST` and configure exact remote
+browser origins with `PONDEROSA_OPERATOR_ORIGINS`, for example:
 
 ```ini
-PONDEROSA_OPERATOR_ORIGINS=https://ponderosa.example.ts.net
-PONDEROSA_TRUSTED_REVERSE_PROXY=true
-PONDEROSA_OPERATOR_IDENTITIES=operator@example.com
-PONDEROSA_AUTH_TOKEN=<at-least-32-random-characters>
+PONDEROSA_HOST=0.0.0.0
+PONDEROSA_OPERATOR_ORIGINS=https://ponderosa.example.com
 ```
 
-Ponderosa requires both the verified `x-ponderosa-operator-identity` identity
-and the backend bearer (or the secure browser
-session obtained by opening `/__ponderosa_bootstrap#TOKEN`). An identity header
-alone never grants authority, including on loopback. Restrict the Serve port to
-the same identities with tailnet grants; the application allowlist is defense
-in depth, not a substitute for tailnet policy. Production origins must be HTTPS.
-When Serve cannot inject a backend bearer, use the private Unix-socket
-identity bridge documented in `deploy/README.md`; do not rely on expiring
-browser cookies for a bookmarked hosted deployment.
-The bridge validates its configured upstream header (for example,
-`Tailscale-User-Login`) and replaces any caller-supplied internal identity.
-Deploy the bridge and backend from the same qualified artifact when this
-internal contract changes; direct authenticated probes must use the internal
-header, not the upstream one.
+Ponderosa assumes a secure environment and provides no operator authentication.
+Any external network access controls belong to the user's setup. Operator tokens,
+proxy identity allowlists, and browser login cookies are no longer required.
+Browser origin checks remain enabled. See `deploy/README.md` for the optional
+Unix-socket forwarding bridge. Provider sign-in, scoped Run capabilities and exact
+launcher generation/process fencing remain separate runtime authority mechanisms.
 
 Production support is Linux x64 only. The unit must load a mandatory
 `%h/.config/ponderosa/release.env` containing the exact installed identity:

@@ -71,24 +71,13 @@ export interface CreateServerOptions {
   store?: AgentStore;
   engines: EngineRegistration[];
   webDist?: string;
-  authToken?: string;
   /** Installed-build identity. Development embeddings may omit it. */
   buildVersion?: string;
   releaseChannel?: string;
-  /** Host-launcher security is enabled only for installed loopback builds.
-   * The launcher secret never enters a browser; it creates one-time browser
-   * bootstraps that exchange into HttpOnly local sessions. */
-  launcherSecurity?: {
-    controlToken: string;
-    bootstrapTtlMs?: number;
-    sessionTtlMs?: number;
-  };
   /** Validated production listener boundary. Embedded servers default safely to loopback. */
   networkSecurity?: ReadinessDto["networkSecurity"];
   /** Exact browser-facing origins admitted by Host/Origin validation. */
   operatorOrigins?: string[];
-  /** Exact lower-cased identities asserted by the trusted loopback proxy. */
-  operatorIdentities?: string[];
   /** Global admission limits. Tests and embedded servers may omit them. */
   requestLimits?: {
     maxRequestsPerMinute: number;
