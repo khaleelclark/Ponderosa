@@ -18,7 +18,9 @@ const MAX_TERMINAL_RECEIPTS=10_000;
 const IMPORT_DEADLINE_MS=5*60*1000;
 class InstallationStoppedError extends Error{}
 class InstallationConflictError extends Error{}
-type InstallationJournal={chats:Array<{id:string;title:string;instructions?:string}>;agents:Array<{id:string;title:string;handle:string;activeEngine:string;model:string|null;effort:string|null;speed:string|null;managementPermissions:unknown;managerAgentId:string|null}>};
+type ChatSnapshot={id:string;title:string;instructions?:string};
+type AgentSnapshot={id:string;title:string;handle:string;activeEngine:string;model:string|null;effort:string|null;speed:string|null;managementPermissions:unknown;managerAgentId:string|null};
+type InstallationJournal={chats:Array<ChatSnapshot&{applied?:ChatSnapshot}>;agents:Array<AgentSnapshot&{applied?:Omit<AgentSnapshot,'managerAgentId'>;appliedManager?:string|null;configurationRestored?:boolean}>};
 interface PackageEngine {
  validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
  exportAgent(id:string,mode:'template'|'full'):Promise<AgentPortablePackageDto>;
@@ -44,15 +46,16 @@ export class BranchInstallationService {
  private run(sql:string,...args:unknown[]):void{this.store.sqlite.prepare(sql).run(...args);}
  private planState(id:string):string|undefined{return this.row('SELECT state FROM branch_installation_plans WHERE id=?',id)?.state;}
  private compactPlan(id:string,state:string,error?:string):void{
+  if(state!=='completed'&&this.journal(id))throw new Error('Installation compensation remains unresolved; its journal must be retained');
   this.run("UPDATE branch_installation_plans SET state=?,error=?,package_json='{}',bindings_json='{}',preview_json='[]',journal_json='{}',owned_resources_json='[]',expected_version_id=NULL,expected_configuration_revision=NULL,expected_resources_hash=NULL,next_attempt_at=NULL,updated_at=? WHERE id=?",state,error??null,new Date().toISOString(),id);
  }
  private maintainPlans(now=new Date()):void{
   const cutoff=new Date(now.getTime()-PREVIEW_TTL_MS).toISOString();
   for(const plan of this.rows("SELECT id FROM branch_installation_plans WHERE state='preview' AND created_at<?",cutoff))this.compactPlan(plan.id,'expired','Installation preview expired; review the package again');
-  for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND (package_json!='{}' OR bindings_json!='{}' OR preview_json!='[]')"))this.compactPlan(plan.id,plan.state,plan.error??undefined);
+  for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND (package_json!='{}' OR bindings_json!='{}' OR preview_json!='[]')"))this.compactPlan(plan.id,plan.state,plan.error??undefined);
   const receiptCutoff=new Date(now.getTime()-TERMINAL_RECEIPT_TTL_MS).toISOString();
-  this.run("DELETE FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND updated_at<?",receiptCutoff);
-  this.run("DELETE FROM branch_installation_plans WHERE id IN (SELECT id FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') ORDER BY updated_at DESC,id DESC LIMIT -1 OFFSET ?)",MAX_TERMINAL_RECEIPTS);
+  this.run("DELETE FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND updated_at<?",receiptCutoff);
+  this.run("DELETE FROM branch_installation_plans WHERE id IN (SELECT id FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' ORDER BY updated_at DESC,id DESC LIMIT -1 OFFSET ?)",MAX_TERMINAL_RECEIPTS);
  }
  private assertPlanCapacity(branchId:string|undefined,incomingBytes:number):void{
   const global=this.row("SELECT COUNT(*) n FROM branch_installation_plans WHERE state IN ('preview','applying','canceling')")!.n as number;
@@ -124,13 +127,48 @@ export class BranchInstallationService {
   return createHash('sha256').update(stableJson(resources)).digest('hex');
  }
  private journal(planId:string):InstallationJournal|undefined{const raw=this.row('SELECT journal_json FROM branch_installation_plans WHERE id=?',planId)?.journal_json;if(!raw||raw==='{}')return;return JSON.parse(raw) as InstallationJournal;}
+ private chatSnapshot(chat:{id:string;title:string;instructions?:string}):ChatSnapshot{return {id:chat.id,title:chat.title,instructions:chat.instructions??''};}
+ private agentSnapshot(agent:import('@ponderosa/core').AgentDto):AgentSnapshot{return {id:agent.id,title:agent.title,handle:agent.handle,activeEngine:agent.activeEngine,model:agent.model??null,effort:agent.effort??null,speed:agent.speed??null,managementPermissions:agent.managementPermissions,managerAgentId:agent.managerAgentId??null};}
+ private saveJournal(planId:string,journal:InstallationJournal):void{
+  this.run('UPDATE branch_installation_plans SET journal_json=?,updated_at=? WHERE id=?',journal.chats.length||journal.agents.length?stableJson(journal):'{}',new Date().toISOString(),planId);
+ }
  private compensate(planId:string):void{
   const journal=this.journal(planId);if(!journal)return;
-  // Canonical projections must observe each inverse event. Never wrap these file-backed writes in SQLite rollback.
-  for(const chat of journal.chats)if(this.store.getConversation(chat.id))this.store.updateConversation(chat.id,{title:chat.title,instructions:chat.instructions??''});
-  for(const agent of journal.agents)if(this.store.getAgent(agent.id))this.store.restoreAgentConfiguration(agent.id,{title:agent.title,handle:agent.handle,activeEngine:agent.activeEngine,model:agent.model,effort:agent.effort,speed:agent.speed,managementPermissions:agent.managementPermissions as never});
-  for(const agent of journal.agents)if(this.store.getAgent(agent.id))this.store.updateAgentOrganization(agent.id,{managerAgentId:agent.managerAgentId});
-  this.run("UPDATE branch_installation_plans SET journal_json='{}',updated_at=? WHERE id=?",new Date().toISOString(),planId);
+  const conflicts:string[]=[];
+  // Each inverse write has its own durable progress. A crash after the canonical
+  // write is safe: current==before proves it was already restored on the next pass.
+  for(const before of [...journal.chats]){
+   const current=this.store.getConversation(before.id);
+   if(current&&stableJson(this.chatSnapshot(current))!==stableJson(this.chatSnapshot(before))){
+    if(!before.applied||stableJson(this.chatSnapshot(current))!==stableJson(this.chatSnapshot(before.applied))){conflicts.push('Chat '+before.id);continue;}
+    this.store.updateConversation(before.id,{title:before.title,instructions:before.instructions??''});
+   }
+   journal.chats.splice(journal.chats.indexOf(before),1);this.saveJournal(planId,journal);
+  }
+  for(const before of [...journal.agents]){
+   const current=this.store.getAgent(before.id);
+   if(!current){journal.agents.splice(journal.agents.indexOf(before),1);this.saveJournal(planId,journal);continue;}
+   const {managerAgentId:beforeManager,applied,appliedManager,configurationRestored,...configuration}=before;
+   const {managerAgentId:currentManager,...currentConfiguration}=this.agentSnapshot(current);
+   if(!configurationRestored){
+    if(stableJson(currentConfiguration)!==stableJson(configuration)){
+     if(!applied||stableJson(currentConfiguration)!==stableJson(applied)){conflicts.push('Agent settings '+before.id);continue;}
+     this.store.restoreAgentConfiguration(before.id,{...configuration,managementPermissions:configuration.managementPermissions as never});
+    }
+    before.configurationRestored=true;this.saveJournal(planId,journal);
+   }
+   if(currentManager!==beforeManager){
+    if(!Object.prototype.hasOwnProperty.call(before,'appliedManager')||currentManager!==appliedManager){conflicts.push('Agent manager '+before.id);continue;}
+    try { this.store.updateAgentOrganization(before.id,{managerAgentId:beforeManager}); }
+    catch {
+     // Another owned inverse may need to detach first (a valid tree reversal).
+     // Continue independent restorations and retain this entry for the next pass.
+     conflicts.push('Agent manager '+before.id);continue;
+    }
+   }
+   journal.agents.splice(journal.agents.indexOf(before),1);this.saveJournal(planId,journal);
+  }
+  if(conflicts.length)throw new Error('Installation compensation needs review; newer or unproven changes were preserved: '+conflicts.slice(0,8).join(', '));
  }
  private cancelReady(plan:Row):boolean{
   return !this.row("SELECT 1 FROM branch_installation_resources WHERE staging_plan_id=? AND state IN ('staging','retiring')",plan.id);
@@ -337,10 +375,20 @@ export class BranchInstallationService {
    try{
     for(const c of pkg.chats){
      const chatResource=get(c.ref,'');
-     if(chatResource?.state==='active')this.store.updateConversation(chatResource.local_id,{title:c.title,instructions:c.instructions??''});
-     for(const a of c.agents){const resource=get(c.ref,a.ref)!,node=a.definition.agents[0]!;if(resource.state==='active')this.store.updateAgent(resource.local_id,{title:node.title,activeEngine:bindings.engines?.[node.engine]??pkg.engines?.[node.engine]??node.engine,model:node.model??null,effort:node.effort??null,managementPermissions:node.managementPermissions});}
+     if(chatResource?.state==='active'){
+      const changed=this.store.updateConversation(chatResource.local_id,{title:c.title,instructions:c.instructions??''});
+      const entry=journal.chats.find(row=>row.id===chatResource.local_id);if(entry&&changed){entry.applied=this.chatSnapshot(changed);this.saveJournal(plan.id,journal);}
+     }
+     for(const a of c.agents){const resource=get(c.ref,a.ref)!,node=a.definition.agents[0]!;if(resource.state==='active'){
+      const changed=this.store.updateAgent(resource.local_id,{title:node.title,activeEngine:bindings.engines?.[node.engine]??pkg.engines?.[node.engine]??node.engine,model:node.model??null,effort:node.effort??null,managementPermissions:node.managementPermissions});
+      const entry=journal.agents.find(row=>row.id===resource.local_id);if(entry&&changed){const {managerAgentId,...configuration}=this.agentSnapshot(changed);entry.applied=configuration;this.saveJournal(plan.id,journal);}
+     }}
     }
-    for(const c of pkg.chats)for(const a of c.agents)this.store.updateAgentOrganization(get(c.ref,a.ref)!.local_id,{managerAgentId:a.managerRef?get(c.ref,a.managerRef)!.local_id:null});
+    for(const c of pkg.chats)for(const a of c.agents){
+     const id=get(c.ref,a.ref)!.local_id,manager=a.managerRef?get(c.ref,a.managerRef)!.local_id:null;
+     this.store.updateAgentOrganization(id,{managerAgentId:manager});
+     const entry=journal.agents.find(row=>row.id===id);if(entry){entry.appliedManager=manager;this.saveJournal(plan.id,journal);}
+    }
     this.ensureApplying(plan.id,branchId);
     const agentBindings:Record<string,string>={};for(const [ref,target]of Object.entries(pkg.agentBindings))agentBindings[ref]=get(target.chatRef,target.agentRef)!.local_id;
     this.store.sqlite.transaction(()=>{

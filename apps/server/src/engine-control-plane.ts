@@ -146,6 +146,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       ? publicProviderAvailabilityDetail(denial.detail, denial.failureCategory)
       : undefined;
   };
+  const diagnosticCleanupPending = (id: string): boolean =>
+    ["authentication", "availability"].some((kind) =>
+      context.providerProcessAuthority.count({ purpose: `${id} ${kind} diagnostic` }) > 0);
   const runtimeAdmissionBlocker = (id: string, registration: EngineRegistration): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined => {
     const providerId = id.slice(0, 128);
     if (!providerEnabled(id)) return { kind: "provider_disabled", providerId };
@@ -156,6 +159,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     if (auth.state === "unknown") return { kind: "authentication_unknown", providerId,
       ...(auth.lastKnown ? { lastKnownAuthentication: auth.lastKnown } : {}) };
     if (!auth.authenticated) return { kind: "authentication_required", providerId, ...(auth.observedAt ? { observedAt: auth.observedAt } : {}) };
+    if (auth.diagnosticFailure || diagnosticCleanupPending(id)) return {kind:'provider_unavailable',providerId,...(auth.observedAt?{observedAt:auth.observedAt}:{})};
     const denial = engineAvailability.denial(id);
     return denial ? { kind: "provider_unavailable", providerId, observedAt: denial.observedAt } : undefined;
   };
@@ -222,17 +226,19 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const denial = runtimeFailureDetail(id);
     const evidence = engineAvailability.get(id);
     const enabled = providerEnabled(id);
+    const cleanupPending = Boolean(auth.diagnosticFailure) || diagnosticCleanupPending(id);
     return {
       configured: true,
       installed: true,
       authentication: checking ? "checking" : unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
-      intakeReady: enabled && !unknown && auth.authenticated && !denial && resources?.state !== "held",
+      intakeReady: enabled && !unknown && auth.authenticated && !cleanupPending && !denial && resources?.state !== "held",
       ...(resources ? { resourceAdmission: resources } : {}),
       authObservedAt: engineAuthStatuses.snapshot(id).observedAt,
       ...(auth.reason ? { authReason: auth.reason } : {}),
+      ...(auth.diagnosticFailure?{authDiagnosticFailure:auth.diagnosticFailure}:{}),
       ...(auth.source ? { authSource: auth.source } : {}),
       ...(unknown && engineAuthStatuses.snapshot(id).lastKnown ? { authLastKnown: engineAuthStatuses.snapshot(id).lastKnown } : {}),
-      reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
+      reachability: evidence ? (evidence.available ? "reachable" : denial ? "degraded" : "unverified") : "unverified",
       ...(evidence ? {
         availabilityObservedAt: evidence.observedAt,
         availabilitySource: evidence.source,
@@ -246,6 +252,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
         : resources?.state === "held"
         ? { availabilityDetail: "Waiting for host resources. Accepted work remains queued and will resume automatically when headroom recovers." }
+        : cleanupPending ? { availabilityDetail: "Provider diagnostic cleanup is pending; replacement remains blocked until the owned process exits." }
         : !auth.authenticated
         ? { availabilityDetail: authDetail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: denial }

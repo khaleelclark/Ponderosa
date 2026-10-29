@@ -121,6 +121,9 @@ export class BranchTriggerSourceService {
   private readonly watchers = new Map<string, ProjectFilesystemWatcher>();
   private readonly bursts = new Map<string, FileBurst>();
   private scheduleTimer?: NodeJS.Timeout;
+  private scheduleCycleCutoff?: string;
+  private lastDiagnosticFailureLoggedAt = 0;
+  private scheduleCursor?: { nextFireAt: string; id: string };
   private refreshChain: Promise<void> = Promise.resolve();
   private started = false;
   private stopping = false;
@@ -132,11 +135,13 @@ export class BranchTriggerSourceService {
     dataDir: string;
     notify(triggerId?: string): void;
     onSourceFailure?(input: {
-      trigger: TriggerDefinitionDto;
-      kind: "watcher" | "filesystem_persistence";
+      trigger?: TriggerDefinitionDto;
+      kind: "watcher" | "filesystem_persistence" | "schedule" | "schedule_polling";
+      episode?: string;
       error: string;
     }): void;
-    onSourceRecovered?(triggerId: string, kind: "watcher" | "filesystem_persistence"): void;
+    onSourceRecovered?(triggerId: string, kind: "watcher" | "filesystem_persistence" | "schedule" | "schedule_polling", episode?: string): void;
+    logDiagnosticFailure?(): void;
     sourceAvailable?(): boolean;
   }) {
     this.secrets = new BranchTriggerSecretStore(options.dataDir);
@@ -179,6 +184,7 @@ export class BranchTriggerSourceService {
 
   async refresh(): Promise<void> {
     if (this.stopping || !this.started) return;
+    this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule"));
     const operation = this.refreshChain.then(() => this.refreshNow());
     this.refreshChain = operation.catch(() => undefined);
     return operation;
@@ -194,6 +200,7 @@ export class BranchTriggerSourceService {
     previous: TriggerDefinitionDto | undefined,
     next: TriggerDefinitionDto | undefined,
   ): Promise<void> {
+    this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule"));
     const affectsFilesystem = [previous, next].some(
       (trigger) => trigger?.sourceKind === "filesystem" && trigger.enabled,
     );
@@ -399,17 +406,49 @@ export class BranchTriggerSourceService {
     return { occurrenceId: result.occurrenceId, state: result.state, replayed: result.replayed };
   }
 
+  private reportScheduleDiagnostic(report: () => void): void {
+    try { report(); }
+    catch {
+      if (Date.now() - this.lastDiagnosticFailureLoggedAt >= 60_000) {
+        this.lastDiagnosticFailureLoggedAt = Date.now();
+        try { this.options.logDiagnosticFailure?.(); } catch { /* no recursive diagnostic failures */ }
+      }
+    }
+  }
+
   async processDueSchedules(): Promise<void> {
     if (!this.sourceAvailable()) return;
     const now = new Date();
-    for (const trigger of this.options.triggers.listDueScheduleTriggers(now.toISOString())) {
+    this.scheduleCycleCutoff ??= now.toISOString();
+    this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule"));
+    let due: TriggerDefinitionDto[];
+    try {
+      due = this.options.triggers.listDueScheduleTriggers(this.scheduleCycleCutoff, 100, this.scheduleCursor);
+      if (!due.length && this.scheduleCursor) {
+        this.scheduleCursor = undefined;
+        this.scheduleCycleCutoff = now.toISOString();
+        due = this.options.triggers.listDueScheduleTriggers(now.toISOString());
+      }
+      if (!due.length) this.scheduleCycleCutoff = undefined;
+      this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule_polling"));
+    } catch {
+      this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: "Schedule polling is temporarily unavailable (schedule_poll_failed). No scheduled work was accepted by this check; polling will retry." }));
+      return;
+    }
+    for (const trigger of due) {
+      const episode = trigger.nextFireAt;
+      this.scheduleCursor = { nextFireAt: episode!, id: trigger.id };
       try {
         if (!this.destinationAvailable(trigger)) continue;
         this.fireSchedule(trigger, now);
       } catch {
-        // A concurrent edit or one malformed definition must not
-        // prevent other due Triggers from advancing. It remains visible as due.
+        this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ trigger, kind: "schedule", episode,
+          error: "Scheduled check could not be accepted (schedule_accept_failed). Check current Trigger Events; unchanged due checks retry automatically." }));
+        continue;
       }
+      // Diagnostic persistence is not admission: a notification-write failure
+      // after commit must never claim the accepted occurrence was rolled back.
+      this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.(trigger.id, "schedule", episode));
     }
   }
 
@@ -556,7 +595,9 @@ export class BranchTriggerSourceService {
 
   private ensureSchedulePolling(): void {
     if (this.scheduleTimer||!this.sourceAvailable()) return;
-    this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => undefined); }, 1_000);
+    this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => {
+      this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: "Schedule polling is temporarily unavailable (schedule_poll_failed). Polling will retry." }));
+    }); }, 1_000);
     this.scheduleTimer.unref();
   }
 

@@ -963,8 +963,7 @@ export class CoordinationV3RequiredReplyAuthority {
       if (obligation.blockingDecisionId || (obligation.deliveryPhase === "final" && hasOutstandingDelegation(this.sqlite, obligation))) continue;
       const attempts = Math.max(1, providerRecoveryAttempts(this.sqlite, runId, obligation.sourceActivationId));
       const delay = providerRecoveryDelay(category, attempts, failure?.retryable !== false,
-        typeof failure?.retryAfterMs === 'number' ? failure.retryAfterMs : 0,
-        typeof failure?.quotaResetAt === 'string' ? failure.quotaResetAt : undefined, Date.parse(now));
+        typeof failure?.retryAfterMs === 'number' ? failure.retryAfterMs : 0);
       if (delay === null) {
         const exhausted = attempts >= MAX_PROVIDER_RECOVERY_ATTEMPTS;
         const error = exhausted ? REQUIRED_REPLY_EXHAUSTED_ERROR

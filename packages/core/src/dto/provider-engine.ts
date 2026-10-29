@@ -47,6 +47,37 @@ export interface RuntimeEnvironmentFactsDto {
 }
 
 export interface ProviderInputSourceManifestV3 {
+  /** Frozen authorization and selection evidence for this exact accepted packet. */
+  historyContext?: {
+    boundary?: { canonicalOrdinal: number; communicationEventId?: string };
+    additionalHistory: boolean;
+    fullyIncludedCommunicationEventIds: string[];
+    clippedCommunicationEventIds: string[];
+    retrievalAvailable: boolean;
+    importedArchiveVersion?: string;
+  };
+  /** Frozen estimate for this exact packet; UTF-8 accounting is not tokenization.
+   * Policy headroom is conservative reserve, not observed model capacity. */
+  contextBudget?: {
+    estimator: "conservative_utf8_bytes";
+    basis: "context_policy" | "provider_window";
+    inputCeilingTokens: number;
+    windowTokens?: number;
+    responseHeadroomTokens: number;
+    responseHeadroomBasis: "policy_low_water_margin" | "provider_window_margin" | "handoff_remaining_window";
+    occupancyBasis: "exact_session" | "estimated_session" | "unavailable" | "fresh_session";
+    occupancyTokens: number;
+    /** Conservative estimate of subsequent durable output; old observations stay unchanged. */
+    postObservationUtf8Bytes: number;
+    providerSessionGeneration?: string;
+    occupancyObservation?: { source: "live_session" | "accepted_run" | "provider_command" | "accepted_input_estimate"; providerSessionId: string;
+      observedAt?: string; sampledAt?: string; executionId?: string; commandInvocationId?: string; fencingToken?: number; requestOutputIncluded?: boolean;
+      acceptedInputUtf8Bytes?: number; outputUtf8Bytes?: number; retainedStaticUtf8Bytes?: number; liveLowerBoundTokens?: number };
+    submittedUtf8Bytes: number;
+    systemPromptUtf8Bytes: number;
+    toolDefinitionsUtf8Bytes: number;
+    estimatedInputTokens: number;
+  };
   /** Reviewed voice session boundary; memory integration stays fail-closed until bound. */
   memorySessionResetSeq?: number;
   memoryScopes?: [];
@@ -253,6 +284,7 @@ export interface EngineDto {
   authDetail?: string;
   authObservedAt?: string;
   authReason?: import("../adapter.js").EngineAuthStatus["reason"];
+  authDiagnosticFailure?: import("../adapter.js").EngineAuthStatus["diagnosticFailure"];
   authSource?: import("../adapter.js").EngineAuthStatus["source"];
   resourceAdmission?: ResourceAdmissionDto;
   /** Bounded stale information, never intake authority when authentication is error. */

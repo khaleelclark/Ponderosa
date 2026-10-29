@@ -48,13 +48,13 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerValidatesResumeBeforeTurn = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
   let closingFixture = false;
   const capabilities = { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [] };
-  const providerProbes = [], capabilityDiscoveries = [];
+  const providerProbes = [], capabilityDiscoveries = [], knownProviderSessions = new Map();
   const adapter = {
     id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer',
     ...(modelValidator ? { validateModel: modelValidator } : {}),
@@ -64,6 +64,11 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     async *seed() { throw Error('Persistent fixture unexpectedly used one-shot seed'); },
     async *continue() { throw Error('Persistent fixture unexpectedly used one-shot continuation'); },
     async openSession(options) {
+      const known = knownProviderSessions.get(options.agentId) ?? new Set();
+      if (providerValidatesResumeBeforeTurn && options.resumeSessionId) {
+        assert.ok(known.has(options.resumeSessionId), 'Verified fixture resume refused an unknown or foreign Agent generation');
+      }
+      const engineAgentId = options.resumeSessionId ?? randomUUID();
       const events = new Events();
       const job = process.platform === 'win32' ? new WindowsProcessJob() : undefined;
       let child;
@@ -74,7 +79,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
       const record = { pid: child.pid, exited: false }; children.push(record);
       const birthMarker = processBirthMarker(child.pid);
       const exited = new Promise(resolve => child.once('exit', () => {
-        record.exited = true; events.end(); options.onRuntimeRootExit?.({ exitCode: child.exitCode }); resolve();
+        record.exited = true; events.end(); options.onRuntimeRootExit?.({ exitCode: child.exitCode, ...record.rootExitDetail }); resolve();
       }));
       try { job?.assign(child.pid); }
       catch (error) {
@@ -83,7 +88,8 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
       }
       let closing;
       const session = {
-        engineAgentId: options.resumeSessionId ?? randomUUID(), events,
+        engineAgentId, events,
+        ...(providerValidatesResumeBeforeTurn ? { validatesResumeBeforeTurn: true } : {}),
         processIdentity: job ? undefined : { pid: child.pid, pgid: child.pid, birthMarker },
         isAlive: () => !record.exited || (job?.activeProcesses() ?? 0) > 0,
         close: async () => {
@@ -106,12 +112,15 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
         capabilities: async () => ({ ...capabilities, sessionId: session.engineAgentId, model: 'fixture' }),
         invokeCommand: async (name, argumentsText) => {
           commands.push({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText });
-          return { message: 'Controlled command completed' };
+          return providerCommandResult ? await providerCommandResult({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText }) : { message: 'Controlled command completed' };
         },
-        contextUsage: () => ({ usedTokens: 1000, windowTokens: 200000 }),
+        contextUsage: () => providerContextUsage
+          ? providerContextUsage({ agentId: options.agentId, sessionId: session.engineAgentId })
+          : { usedTokens: 1000, windowTokens: 200000 },
         steer: async input => { steers.push({ agentId: options.agentId, input }); return steeringResponse ? await steeringResponse({agentId:options.agentId,input}) : { status: 'accepted' }; },
         interrupt: async () => { events.push({ type: 'error', terminalStatus: 'interrupted', message: 'Controlled interruption' }); session.finish(); },
         tool: (name, args, id = randomUUID()) => options.handleDynamicToolCall({ id, name, arguments: args }),
+        exitWithDetail: async detail => { record.rootExitDetail = detail; await session.close(); },
         finish: () => events.push({ type: 'turn_done', usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 } }),
         async startTurn(input) {
           const turnId = randomUUID(), plan = (plans.get(options.agentId) ?? []).shift() ?? {};
@@ -120,7 +129,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
           setImmediate(async () => {
             if (closing || record.exited) return;
             try {
-              events.push({ type: 'session', sessionId: session.engineAgentId });
+              if (plan.emitSession !== false) events.push({ type: 'session', sessionId: session.engineAgentId });
               if (plan.output !== false) events.push({ type: 'text', delta: 'Ordinary fixture execution output' });
               if (plan.hold) return;
               if (plan.run) await plan.run(session, input, turn);
@@ -138,6 +147,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
         },
       };
       record.close = session.close;
+      known.add(engineAgentId); knownProviderSessions.set(options.agentId, known);
       sessions.set(options.agentId, session); options.onRuntimeSpawned(session); return session;
     },
   };

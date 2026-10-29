@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withFixture } from '../shared/fixture.mjs';
+import { withFixture, until } from '../shared/fixture.mjs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer } from '../../apps/server/dist/app.js';
+import { processBirthMarker } from '@ponderosa/engines';
 
 test('check 31: provider status reads do not test access; explicit recheck probes only its selected provider', {
   timeout: 30000
@@ -150,7 +154,7 @@ test('absent or disabled provider discovery/recheck creates no helpers; reinstal
   const availability = { get: () => undefined, denial: () => undefined, record: x => x, servingBuildRevision: 'fixture', servingInstanceId: 'fixture' };
   const workspace = { cursor: () => 0, getPreferences: () => ({ providerAvailability: { claude: enabled } }) };
   const store = { getProject: id => id === project.id ? project : undefined, listAgents: () => [] };
-  const plane = createEngineControlPlane({ engines, store, workspace, engineAuthStatuses: auth, engineAvailability: availability, providerUsage: {}, providerEnabled: () => enabled, applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map(), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { register() { assert.fail('Unexpected provider process'); } } });
+  const plane = createEngineControlPlane({ engines, store, workspace, engineAuthStatuses: auth, engineAvailability: availability, providerUsage: {}, providerEnabled: () => enabled, applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map(), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { count:()=>0, register() { assert.fail('Unexpected provider process'); } } });
   registerEngineRoutes(app, { engines, store, workspace, engineDto: plane.engineDto, authStatuses: auth, availability, discoverModelCatalog: plane.discoverEngineModelCatalog, validateModel: plane.validateEngineModel, discoverCapabilities: plane.discoverEngineCapabilities, readCapabilities: plane.readEngineCapabilities, projectDeletionInProgress: () => false, publishWorkspaceSince() {}, notifyScheduler() {}, createOperationalNotification() {}, resolveOperationalNotification() {} });
   try {
     for (const scenario of ['absent', 'disabled']) {
@@ -219,7 +223,7 @@ test('retained session inventory cannot replace a newly installed CLI catalog or
   registration.adapter.discoverModelCatalog = async () => { discoveries++; return { models: [model(version === old.cliVersion ? 'old-model' : 'new-model')], cliVersion: version, configurationKey: version }; };
   const plane = createEngineControlPlane({ engines: new Map([['codex', registration]]), store: { getProject: () => project, listAgents: () => [{ id: 'pinned-agent', activeEngine: 'codex', model: 'old-model' }] }, workspace: {},
     engineAuthStatuses: new EngineAuthStatusCache(), engineAvailability: { get() {}, denial() {}, servingBuildRevision: 'fixture', servingInstanceId: 'fixture' }, providerUsage: {}, providerEnabled: () => true,
-    applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map([['pinned-agent', { runtimeSession: { capabilities: async () => ({ steering: false, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [], modelCatalog: old }) } }]]), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { register() { assert.fail('Controlled inventory must not spawn a process'); } } });
+    applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map([['pinned-agent', { runtimeSession: { capabilities: async () => ({ steering: false, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [], modelCatalog: old }) } }]]), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { count:()=>0, register() { assert.fail('Controlled inventory must not spawn a process'); } } });
   try {
     assert.equal((await plane.engineDto(registration)).models[0].id, 'old-model');
     version = '0.159.2';
@@ -240,7 +244,7 @@ test('deferred sign-in checks stay checking during host pressure and recover wit
   let reads=0,answer={authenticated:true},resources={state:'held',protected:true,reason:'host_resource_pressure'};
   const registration=defaultEngineRegistrations().find(r=>r.adapter.id==='claude');
   registration.isInstalled=()=>true;registration.authStatus=async()=>{reads++;return answer;};
-  const plane=createEngineControlPlane({engines:new Map([['claude',registration]]),store:{listAgents:()=>[]},workspace:{},engineAuthStatuses:auth,engineAvailability:{get(){},denial(){},servingBuildRevision:'test',servingInstanceId:'test'},providerUsage:{},providerEnabled:()=>true,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,deletingProjectIds:new Set(),isClosed:()=>false,providerProcessAuthority:{register(){assert.fail('Unexpected provider process')}},resourceAdmission:{snapshot:()=>resources}});
+  const plane=createEngineControlPlane({engines:new Map([['claude',registration]]),store:{listAgents:()=>[]},workspace:{},engineAuthStatuses:auth,engineAvailability:{get(){},denial(){},servingBuildRevision:'test',servingInstanceId:'test'},providerUsage:{},providerEnabled:()=>true,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,deletingProjectIds:new Set(),isClosed:()=>false,providerProcessAuthority:{count:()=>0,register(){assert.fail('Unexpected provider process')}},resourceAdmission:{snapshot:()=>resources}});
   try {
     await auth.get('claude',registration.authStatus);t.mock.timers.tick(31000);
     const held=await plane.runtimeStatus('claude',registration);
@@ -350,4 +354,111 @@ test('adding standing roles preserves existing creation fingerprints when no rol
     assert.equal(store.sqlite.prepare('SELECT payload_hash FROM agent_creation_operations WHERE idempotency_key = ?').get(idempotencyKey).payload_hash, expected);
     assert.equal(f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, body)).id, agent.id);
   }, { storeFactory: dataDir => (store = new AgentStore(dataDir)) });
+});
+
+import {EngineAvailabilityStore} from '../../apps/server/dist/engine-availability-store.js';
+import {ProviderProcessAuthority} from '../../apps/server/dist/provider-process-authority.js';
+import {openCurrentMemoryDatabase} from '../../packages/agents/dist/state-admission.js';
+test('transient provider denials expire for owned revalidation but older success never overwrites newer denial',async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'availability-revalidation-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ let evidence=new EngineAvailabilityStore(root),started=new Date(Date.now()-120000).toISOString(),observed=new Date(Date.now()-70000).toISOString();
+ evidence.record({engineId:'codex',available:false,failureCategory:'unavailable',source:'operator_probe',observedAt:observed});
+ evidence=new EngineAvailabilityStore(root);assert.equal(evidence.denial('codex'),undefined);
+ const stale=evidence.record({engineId:'codex',available:true,source:'provider_run',operationStartedAt:started});assert.equal(stale.available,false);assert.equal(evidence.get('codex').observedAt,observed);
+ evidence.record({engineId:'codex',available:true,source:'operator_probe',operationStartedAt:new Date().toISOString()});assert.equal(evidence.get('codex').available,true);
+ for(const failureCategory of ['authentication','quota_exhausted','invalid_request']){evidence.record({engineId:'codex',available:false,failureCategory,source:'operator_probe',observedAt:observed});assert.ok(evidence.denial('codex'));}
+});
+test('native diagnostic handles remain owned blockers after failed cleanup and clear only on observed exit',async t=>{
+ const db=openCurrentMemoryDatabase();t.after(()=>db.close());const owner=new ProviderProcessAuthority(db,'owned-native-test'),platform=Object.getOwnPropertyDescriptor(process,'platform');
+ let alive=true,fail=true,closes=0;const handle={isAlive:()=>alive,close:async()=>{closes++;if(fail)throw Error('Controlled native cleanup failure');alive=false}};
+ try{Object.defineProperty(process,'platform',{...platform,value:'win32'});owner.register(handle,{purpose:'codex availability diagnostic'});}finally{Object.defineProperty(process,'platform',platform)}
+ assert.equal(owner.count({purpose:'codex availability diagnostic'}),1);await assert.rejects(owner.terminatePurpose('codex availability diagnostic'),/pending/);assert.equal(owner.count(),1);
+ owner.pruneExited();assert.equal(owner.count(),1);fail=false;await owner.terminateDiagnostics();assert.equal(owner.count(),0);assert.equal(closes,2);
+});
+
+import {providerSessionFacade,projectProviderRootExitDetail} from '../../apps/server/dist/provider-session-facade.js';
+test('provider exit evidence and resume validation cross only closed data boundaries',()=>{
+ const raw={engineAgentId:'session',events:{async *[Symbol.asyncIterator](){}},isAlive:()=>true,close:async()=>{},startTurn:async()=>({turnId:'t'}),steer:async()=>({status:'not_active'}),interrupt:async()=>{},validatesResumeBeforeTurn:true};
+ assert.equal(providerSessionFacade(raw).validatesResumeBeforeTurn,true);
+ let getterCalls=0;const invalid=Object.defineProperty({},'terminalEvent',{get(){getterCalls++;return {type:'error',message:'forged'}}});
+ assert.throws(()=>projectProviderRootExitDetail(invalid));assert.equal(getterCalls,0);
+ const detail=projectProviderRootExitDetail({outputDraining:false,exitCode:0,terminalEvent:{type:'error',category:'quota_exhausted',message:'secret arbitrary detail',quotaResetAt:'2030-01-01T00:00:00.000Z'}});
+ assert.equal(detail.terminalEvent.category,'quota_exhausted');assert.equal(detail.terminalEvent.quotaResetAt,'2030-01-01T00:00:00.000Z');assert.doesNotMatch(detail.terminalEvent.message,/secret/);
+});
+
+test('native persistent runtime aliases retain one root and cancellation never targets its previous Run',async t=>{
+ const db=openCurrentMemoryDatabase();t.after(()=>db.close());const owner=new ProviderProcessAuthority(db,'native-alias'),platform=Object.getOwnPropertyDescriptor(process,'platform'),lifetime={};
+ let closed=0;const first={isAlive:()=>closed===0,close:async()=>{closed++}},alias={isAlive:()=>true,close:async()=>{throw Error('Must retain the actual spawn-time owner')}};
+ try{Object.defineProperty(process,'platform',{...platform,value:'win32'});owner.register(first,{purpose:'persistent provider runtime',runId:'old'},lifetime);owner.register(alias,{purpose:'persistent provider runtime',runId:'new'},lifetime);}finally{Object.defineProperty(process,'platform',platform)}
+ assert.equal(owner.count(),1);assert.equal(owner.count({runId:'old'}),0);assert.equal(owner.count({runId:'new'}),1);await owner.terminateRun('old');assert.equal(closed,0);await owner.terminateRun('new');assert.equal(closed,1);assert.equal(owner.count(),0);
+});
+
+import {createRuntimeAuthority} from '../../apps/server/dist/runtime-authority.js';
+test('two-phase root exit preserves the first causal observation instead of attributing cleanup as a crash cause',async()=>{
+ for(const hostOperation of [undefined,'failed resume replacement']){
+  const identity={},audit=[],failures=[],run={runId:'run',executionId:'run',v3SchedulerRunId:'run',v3FencingToken:1,generation:1,persistentRuntimeIdentity:identity,messageCapability:'capability',controller:new AbortController()};
+  const runtime={identity,session:{isAlive:()=>false,close:async()=>{}}},authority={oneShots:new Map(),retryAttempt:0,...(hostOperation?{closing:{runtime,reason:hostOperation}}:{reusable:runtime})};
+  const activeRuns=new Map([['agent',run]]),agentMessageCapabilities=new Map([['capability',{}]]);
+  const owner=createRuntimeAuthority({runtimeAuthorities:new Map([['agent',authority]]),activeRuns,agentMessageCapabilities,organizationEnvelopeStates:new Map(),scheduledSessionRollovers:new Map(),
+   store:{getAgent:()=>({projectId:'project'}),appendEvent:(_id,event)=>{audit.push(event);return {event}}},coordinationV3:{ownsRunForCleanup:()=>true,agentSnapshot:()=>({activeRun:{promptInjectionState:'injected'}}),failRun:value=>failures.push(value)},coordinationV3WorkerId:'owned',
+   runtimeAuthority:()=>authority,reusableRuntime:()=>authority.reusable,openingRuntime:()=>authority.opening,closingRuntime:()=>authority.closing,pruneRuntimeAuthority(){},clearAgentResumeSession(){},closeRunBrowser:async()=>{},closeLinkPreviewsForAgent(){},publish(){},publishMessageDeliveryChanged(){},resolveOperationalNotification(){},notifyScheduler(){},logError(){},transitionRun:()=>true,clearRunLeaseTimer(){},clearRunLivenessTimer(){},isClosed:()=>false});
+  owner.persistentRootExited('agent',identity,{exitCode:1,outputDraining:true});assert.equal(failures.length,0);
+  owner.persistentRootExited('agent',identity,{exitCode:1});
+  if(hostOperation){assert.equal(failures.length,0);assert.equal(run.controller.signal.aborted,false)}
+  else {assert.equal(failures.length,1);assert.equal(audit.at(-1).runtimeObservation.origin,'not_established');assert.equal(audit.at(-1).runtimeObservation.hostOperation,undefined);assert.equal(run.controller.signal.aborted,true)}
+  await authority.closing?.operation;
+ }
+});
+
+test('a successful sign-in observation survives a separate diagnostic cleanup failure without authorizing intake',{timeout:15000,skip:process.platform==='win32'||/\s/.test(process.execPath)?'POSIX inert executable fixture; status projection remains portable':false},async t=>{
+ const {codexAuthStatus}=await import('../../packages/engines/dist/auth.js');
+ const root=await mkdtemp(path.join(tmpdir(),'auth-cleanup-observation-')),bin=path.join(root,'fake-codex');let handle;
+ t.after(async()=>{await rm(root,{recursive:true,force:true})});
+ await writeFile(bin,'#!'+process.execPath+'\nconsole.log("Logged in using ChatGPT");\n',{mode:0o700});
+ const result=await codexAuthStatus({PONDEROSA_CODEX_BIN:bin,PATH:process.env.PATH},{onRuntimeSpawned:spawned=>{handle=spawned;const close=handle.close.bind(handle);handle.close=async()=>{await close();throw Error('Controlled cleanup receipt failure')}}});
+ assert.equal(handle.isAlive(),false);assert.equal(result.authenticated,true);assert.equal(result.diagnosticFailure,'cleanup_failed');
+ const cache=new EngineAuthStatusCache();await cache.get('codex',async()=>result);assert.equal(cache.snapshot('codex').authenticated,true);assert.equal(cache.snapshot('codex').diagnosticFailure,'cleanup_failed');
+});
+
+
+
+for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and drains diagnostic operations delayed ${phase}`, { timeout: 10000, skip: process.platform === 'win32' }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'diagnostic-shutdown-'));
+  let release, entered = false, calls = 0, child, exited, app;
+  const gate = new Promise(resolve => { release = resolve; });
+  const original = ProviderProcessAuthority.prototype.terminatePurpose;
+  ProviderProcessAuthority.prototype.terminatePurpose = async function(purpose) {
+    if (phase === 'before-probe' && !entered && purpose === 'codex authentication diagnostic') { entered = true; await gate; }
+    return original.call(this, purpose);
+  };
+  try {
+    app = createServer({ dataDir: root, logger: false, engines: [{
+      adapter: { id: 'codex', displayName: 'Owned diagnostic', listModels: () => [], listEfforts: () => [], defaultModel: () => '', defaultEffort: () => '' },
+      isInstalled: () => true,
+      authStatus: async options => {
+        calls++; entered = true; await gate;
+        child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore' });
+        exited = once(child, 'exit'); await once(child, 'spawn');
+        const identity = { pid: child.pid, pgid: child.pid, birthMarker: processBirthMarker(child.pid) };
+        const handle = { processIdentity: identity, isAlive: () => child.exitCode === null && child.signalCode === null,
+          close: async () => { if (handle.isAlive()) process.kill(-child.pid, 'SIGTERM'); await exited; } };
+        options.onRuntimeSpawned(handle);
+        return { authenticated: true };
+      },
+    }] });
+    await app.ready();
+    const request = app.inject({ url: '/api/engines' });
+    await until(() => entered, 'owned diagnostic entered'); await request;
+    app.prepareForShutdown(); let finished = false;
+    const closing = app.close().then(() => { finished = true; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(finished, false, 'Storage must remain owned while diagnostic admission or spawning is pending');
+    release(); await closing;
+    assert.equal(calls, phase === 'before-probe' ? 0 : 1);
+    if (child) assert.ok(child.exitCode !== null || child.signalCode !== null, 'Late registered diagnostic survived shutdown');
+  } finally {
+    release(); ProviderProcessAuthority.prototype.terminatePurpose = original;
+    if (child && child.exitCode === null && child.signalCode === null) { process.kill(-child.pid, 'SIGTERM'); await exited; }
+    await app?.close(); await rm(root, { recursive: true, force: true });
+  }
 });

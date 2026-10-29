@@ -112,3 +112,9 @@ test('restart preserves unknown scheduled delivery and never converts a Run fenc
  assert.equal(f.coordination.cancelUndeliveredBranchScheduleUpdate('tick',f.now),false);assert.equal(f.coordination.leaseNextRun({workerId:'replacement-scheduler',now:f.now}),undefined);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_steering_recoveries').get().n,0);f.pass();
 });
+
+test('canceling a workflow recognizes its exact already-attached schedule steering',t=>{
+ const f=fixture(t);f.occurrence();f.queue();const steering=f.steer();assert.ok(steering);prepare(f,steering);f.coordination.markPromptSubmitted({...steering,now:f.now});f.coordination.acknowledgePromptInjection({...steering,now:f.now});
+ f.branches.cancel(f.execution.id,f.now);const [operation]=f.coordination.claimProviderOperations('cleanup',20,f.now);assert.ok(operation);assert.equal(operation.runId,f.lease.runId);
+ f.coordination.completeProviderOperation(operation.id,'cleanup',f.now);f.branches.advance(f.now);assert.equal(f.branches.execution(f.execution.id).state,'canceled');f.pass();
+});

@@ -118,10 +118,6 @@ export {
   isProjectFileReferenceAllowed
 } from "./project-files.js";
 export {
-  boundedContinuationHistory,
-  boundedSeedHistory
-} from "./prompts.js";
-export {
   PROVIDER_TOOL_CONTRACT_HASH,
   providerSessionContractHash
 } from "./runtime-selection.js";
@@ -290,19 +286,43 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
     createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince, store);
   store.recoverInterruptedExecutions();
+  let closed = false;
+  const diagnosticOperations = new Set<Promise<unknown>>();
   const engines = new Map(opts.engines.map((engine) => {
-    const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => async (): Promise<T> => {
+    const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => (options?: import("@ponderosa/core").EngineProbeOptions): Promise<T> => {
+      if (closed) return Promise.reject(new Error("Server is shutting down"));
       const purpose = `${engine.adapter.id} ${kind} diagnostic`;
-      await providerProcessAuthority.terminatePurpose(purpose);
-      return probe({ onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
-        providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
-      } });
+      const operation = (async () => {
+        await providerProcessAuthority.terminatePurpose(purpose);
+        if (closed) throw new Error("Server is shutting down");
+        try {
+          return await probe({ ...options, onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
+            providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
+            if (closed) throw new Error("Server is shutting down");
+          } });
+        } finally {
+          // A probe admitted before shutdown may register its native child after
+          // an await. Keep storage/cleanup authority until that probe settles.
+          if (closed) await providerProcessAuthority.terminatePurpose(purpose);
+          // A failed close is not an expired availability observation: retain its
+          // exact process receipt until exit is observed, even after backoff.
+          try { providerProcessAuthority.pruneExited(); }
+          catch { app.log.warn({ engineId: engine.adapter.id, purpose }, "provider diagnostic exit could not be confirmed"); }
+        }
+      })();
+      diagnosticOperations.add(operation);
+      void operation.then(() => diagnosticOperations.delete(operation), () => diagnosticOperations.delete(operation));
+      return operation;
     };
     return [engine.adapter.id, { ...engine,
       ...(engine.authStatus ? { authStatus: diagnostic("authentication", options => engine.authStatus!(options)) } : {}),
       ...(engine.availabilityProbe ? { availabilityProbe: diagnostic("availability", options => engine.availabilityProbe!(options)) } : {}),
     }];
   }));
+  const drainEngineDiagnostics = async (): Promise<void> => {
+    await Promise.allSettled([...diagnosticOperations]);
+    await providerProcessAuthority.terminateDiagnostics();
+  };
   const applyOperatorModelOptions = (): void => {
     const models = workspace.getPreferences().claudeModelOptions.map((model) => ({
       id: model.id,
@@ -565,7 +585,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // the durable Project deletion fence before scheduler leasing starts.
   for (const projectId of deletingProjectIds) coordinationV3.prepareProjectDeletion(projectId);
   const projectDeletionInFlightIds = new Set<string>();
-  let closed = false;
   const {
     communicationReconciliation,
     dirtyCommunicationProjects,
@@ -930,8 +949,9 @@ app.server.on("upgrade", linkPreviewUpgrade);
     appendWorkspace,
     closeLinkPreviewsForAgent,
     terminateRuntimeHandle,
-    closeRunBrowser: closeRunBrowserAfterRun,
+    closeRunBrowser,
     persistentRuntimeForTermination,
+    clearAgentResumeSession,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
     renewExecutionLease,
@@ -1071,6 +1091,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     setClosed: () => { closed = true; },
     projectCommunicationArtifact,
     requestArtifactAccess,
+    drainEngineDiagnostics,
     drainEngineCapabilityDiscoveries,
     drainEngineModelCatalogDiscoveries,
     engineCapabilityDiscoveries,
@@ -1377,11 +1398,47 @@ app.server.on("upgrade", linkPreviewUpgrade);
     notifyGate:input=>{createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,category:'decision',severity:'attention',push:true,title:input.title,body:input.body,action:{kind:'open_branch',targetId:input.branchId}});},
     resolveGateNotification:resolveOperationalNotification,
   });
+  let scheduleDiagnosticCursor: {createdAt:string;id:string}|undefined;
   branchSources=new BranchTriggerSourceService({store,triggers:branches.triggers,dataDir:opts.dataDir,
     sourceAvailable:()=>!closed&&!deploymentControl.isDraining(),
+    logDiagnosticFailure:()=>app.log.error({code:'branch_source_diagnostic_write_failed'},'Branch source diagnostic could not be persisted'),
     notify:()=>coordinationV3Scheduler.notify(),
-    onSourceFailure:({trigger,kind,error})=>{createOperationalNotification({dedupeKey:`branch-source:${trigger.id}:${kind}`,branchId:trigger.branchId,category:'system',severity:'attention',title:'Branch discovery needs attention',body:error,action:{kind:'open_branch',targetId:trigger.branchId!}});},
-    onSourceRecovered:(id,kind)=>resolveOperationalNotification(`branch-source:${id}:${kind}`),
+    onSourceFailure:({trigger,kind,error,episode})=>{
+      const prefix = `branch-source:${trigger?.id ?? 'poller'}:${kind}`;
+      // A new poller failure after confirmed recovery gets a new episode;
+      // repeated failures and persistent dismissals reuse the same notice.
+      const key = episode ? `${prefix}:${episode}` : prefix;
+      createOperationalNotification({dedupeKey:key,renewAfterRecovery:kind==='schedule_polling',...(trigger?.branchId?{branchId:trigger.branchId}:{}),
+        informational:kind==='schedule'||kind==='schedule_polling',...(kind==='schedule'||kind==='schedule_polling'?{push:false}:{}),category:'system',severity:kind==='schedule'||kind==='schedule_polling'?'info':'attention',
+        title:kind==='schedule'||kind==='schedule_polling'?'Schedule Check Delayed':'Branch discovery needs attention',body:error,
+        ...(trigger?.branchId?{action:{kind:'open_branch' as const,targetId:trigger.branchId}}:{})});
+    },
+    onSourceRecovered:(id,kind,episode)=>{
+      const key=`branch-source:${id||'poller'}:${kind}${episode?':'+episode:''}`;
+      if (kind === 'schedule' && !episode) {
+        const page = workspace.listNotificationPage({limit:100,before:scheduleDiagnosticCursor,
+          include:item=>/^branch-source:[^:]+:schedule:/u.test(item.dedupeKey??'')});
+        scheduleDiagnosticCursor = page.nextCursor;
+        for (const item of page.items) {
+          const match = /^branch-source:([^:]+):schedule:(.+)$/u.exec(item.dedupeKey!);
+          if (!match) continue;
+          const trigger = branches.triggers.getTriggerDefinition(match[1]!);
+          const branch = trigger?.branchId ? branches.getBranch(trigger.branchId) : undefined;
+          if (!trigger?.enabled || !branch?.enabled || trigger.sourceKind !== 'schedule' || trigger.nextFireAt !== match[2]) {
+            resolveOperationalNotification(item.dedupeKey!);
+          }
+        }
+        return;
+      }
+      if (kind === 'schedule_polling') {
+        const current = workspace.getNotificationByDedupeKey(key);
+        if (current?.status === 'dismissed') {
+          const cursor = workspace.cursor();
+          workspace.setNotificationStatus(current.id, 'resolved', true);
+          publishWorkspaceSince(cursor);
+        } else resolveOperationalNotification(key);
+      } else resolveOperationalNotification(key);
+    },
   });
   registerCapabilityRoutes(app,{store,branches,engines,dataDir:opts.dataDir,localMemoryEnabled:Boolean(opts.localMemory),providerEnabled,discoverCapabilities:discoverEngineCapabilities});
   registerBranchRoutes(app,{branches,store,workspace,installations:branchInstallations,sources:branchSources,createChat:application.createChat,

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -333,3 +333,41 @@ test('failed Agent recovery is internal while failed exact operator recovery is 
 test('pending descendant hides predecessor, completed descendant resolves existing predecessor notice',t=>{const f=recoveryFixture(t);f.ops.reconcileCoordinationAttentionNotifications();const n=f.w.listNotificationPage({limit:100}).items[0];f.r.retry={successorRequestId:'b',successorState:'failed',recoveryState:'in_progress'};f.ops.reconcileCoordinationAttentionNotifications();assert.equal(f.w.listNotificationPage({limit:100}).openActionCount,0);assert.equal(f.w.getNotification(n.id).status,'open');f.r.retry.recoveryState='completed';f.ops.reconcileCoordinationAttentionNotifications();assert.equal(f.w.getNotification(n.id).status,'resolved');});
 test('legacy Join cleanup uses exact canonical read without graph traversal and checks Chat scope',t=>{const f=recoveryFixture(t);f.requests.clear();f.owner(true);f.ownerChat('different-chat');f.joins.set('j',{projectId:'p',conversationId:'chat',ownerAgentId:'owner',state:'impossible'});const n=f.w.createNotification({...historicalNotice('join'),workContext:{kind:'join',recordId:'j',state:'impossible',occurredAt:at}});f.ops.reconcileCoordinationAttentionNotifications();assert.equal(f.inspections(),0);assert.equal(f.w.getNotification(n.id).kind,'operational');f.ownerChat('chat');f.ops.reconcileCoordinationAttentionNotifications();assert.equal(f.w.getNotification(n.id).kind,'information');});
 test('actual canonical multi-step lineage retains direct successor and reports descendant completion',t=>{const dir=mkdtempSync(path.join(tmpdir(),'ui021-lineage-review-'));const store=new AgentStore(dir);t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});const p=store.createProject({label:'Disposable',hostPath:dir,defaultEngine:'codex'});const chat=store.createConversation(p.id,{title:'Disposable'});const a=store.createAgent(p.id,{title:'Owner',engine:'codex',conversationId:chat.id});const b=store.createAgent(p.id,{title:'Worker',engine:'codex',conversationId:chat.id});const v=new CoordinationV3Store(store.sqlite);const create=predecessor=>v.coordinate({projectId:p.id,conversationId:chat.id,requesterAgentId:a.id,actorScope:'user:local-operator',idempotencyKey:randomUUID(),requests:[{recipientAgentId:b.id,lifetime:{kind:'indefinite'},payload:{text:'Report actual outcome'},...(predecessor?{recoveryOfRequestId:predecessor}:{})}]}).requestIds[0];const finish=(id,kind)=>v.updateRequest({requestId:id,updateId:randomUUID(),kind,actor:{kind:'agent',id:b.id},payload:{text:'Exact canonical result'}});const aId=create();finish(aId,'failed');const bId=create(aId);finish(bId,'failed');const cId=create(bId);assert.equal(v.requestIsOperatorRecovery(aId),false);assert.equal(v.requestIsOperatorRecovery(bId),true);assert.equal(v.requestRetryStatus(aId).successorRequestId,bId);assert.equal(v.requestRetryStatus(aId).successorState,'failed');assert.equal(v.requestRetryStatus(aId).recoveryState,'open');finish(cId,'completed');assert.equal(v.requestRetryStatus(aId).recoveryState,'completed');assert.equal(v.requestRetryStatus(bId).recoveryState,'completed');});
+
+test('reordered affected Agents do not rewrite a notice, while real changes persist across reopen', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'notification-membership-'));
+  let workspace = new WorkspaceStore(root);
+  t.after(() => { workspace.close(); rmSync(root, { recursive: true, force: true }); });
+  const input = { projectId: 'p', kind: 'operational', status: 'open',
+    dedupeKey: 'coordination-attention:membership', title: 'Assignment needs review',
+    body: 'The outcome is uncertain.', agentId: 'worker', agentIds: ['worker', 'reviewer', 'manager'] };
+  const notice = workspace.createNotification(input);
+  const journal = path.join(root, 'workspace-events.jsonl');
+  const before = readFileSync(journal), cursor = workspace.cursor();
+  for (const agentIds of [['manager', 'worker', 'reviewer'], ['reviewer', 'manager', 'worker']]) {
+    const retained = workspace.createNotification({ ...input, agentIds });
+    assert.deepEqual(retained.agentIds, notice.agentIds, 'retain the saved presentation order');
+  }
+  assert.equal(workspace.cursor(), cursor);
+  assert.deepEqual(readFileSync(journal), before, 'reconciliation must not append duplicate updates');
+  workspace.close(); workspace = new WorkspaceStore(root);
+  workspace.createNotification({ ...input, agentIds: [...input.agentIds].reverse() });
+  assert.equal(workspace.cursor(), cursor, 'reopen must not recreate ordering churn');
+  assert.deepEqual(readFileSync(journal), before);
+
+  let changedAt = workspace.cursor();
+  const changed = workspace.createNotification({ ...input, agentIds: ['worker', 'new-reviewer'] });
+  assert.equal(workspace.readSince(changedAt).length, 1, 'new membership remains a real update');
+  assert.deepEqual(changed.agentIds, ['worker', 'new-reviewer']);
+  changedAt = workspace.cursor();
+  const detail = workspace.createNotification({ ...input, body: 'A human choice is required.', agentIds: ['new-reviewer', 'worker'] });
+  assert.equal(workspace.readSince(changedAt).length, 1, 'changed content remains visible');
+  assert.equal(detail.body, 'A human choice is required.');
+  assert.deepEqual(detail.agentIds, changed.agentIds);
+  workspace.setNotificationStatus(notice.id, 'dismissed');
+  changedAt = workspace.cursor();
+  workspace.createNotification(input);
+  assert.equal(workspace.cursor(), changedAt, 'dismissed notices stay dismissed');
+  workspace.close(); workspace = new WorkspaceStore(root);
+  assert.equal(workspace.getNotification(notice.id).status, 'dismissed');
+});

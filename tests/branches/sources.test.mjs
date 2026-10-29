@@ -151,3 +151,19 @@ test('pausing a Branch seals accepted file events before disabling admission so 
  const events=f.triggers.listTriggerOccurrences(f.branch.triggerId);assert.equal(events.length,1);assert.equal(events[0].payload.changes[0].path,'accepted-before-pause.txt');
  assert.equal(f.branches.getBranch(f.branch.id).enabled,false);assert.equal(f.triggers.getFilesystemTriggerBurst(f.branch.triggerId),undefined);f.noProviderWork();f.pass();
 });
+
+test('failed schedule acceptance stays due, reports a stable sanitized episode, and recovers without duplicate work',async t=>{
+ const at=new Date(Date.now()-60000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt:at},{nextFireAt:at});
+ f.store.sqlite.exec("CREATE TEMP TRIGGER fail_schedule BEFORE INSERT ON branch_executions BEGIN SELECT RAISE(ABORT,'SQL payload secret/path'); END");
+ for(let i=0;i<3;i++)await f.sources.processDueSchedules();
+ const failures=f.failures.filter(row=>row.kind==='schedule');assert.equal(failures.length,3);assert.equal(new Set(failures.map(row=>row.trigger.id+row.episode+row.error)).size,1);assert.doesNotMatch(failures[0].error,/SQL|secret|path/);
+ assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,at);assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
+ f.store.sqlite.exec('DROP TRIGGER fail_schedule');await f.sources.processDueSchedules();await f.sources.processDueSchedules();
+ assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,1);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,1);f.noProviderWork();f.pass();
+});
+
+test('an idle schedule scan advances its cutoff when a future tick becomes due',async t=>{
+ const now=Date.now(),at=new Date(now+5000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'once',at},{nextFireAt:at});
+ t.mock.timers.enable({apis:['Date'],now});await f.sources.processDueSchedules();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
+ t.mock.timers.setTime(now+10000);await f.sources.processDueSchedules();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,1);f.noProviderWork();f.pass();
+});

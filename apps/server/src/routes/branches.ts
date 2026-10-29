@@ -168,7 +168,9 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
   app.get<{Params:{id:string}}>('/api/branches/:id/lifecycle',async(request,reply)=>{
     const id=request.params.id,row=store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(id) as {deleting:number}|undefined;
     if(!row)return reply.code(404).send({error:'Branch not found'});
-    return {deleting:Boolean(row.deleting),runCounts:readBranchRunCounts(store.sqlite,[id]).get(id)!,chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
+    return {sourceDiagnostics:context.workspace.listNotificationPage({limit:10,include:item=>Boolean(item.dedupeKey?.startsWith('branch-source:')) &&
+      (item.branchId===id||item.dedupeKey?.startsWith('branch-source:poller:schedule_polling')===true)}).items.map(({id,title,body,createdAt})=>({id,title,body,createdAt})),
+      deleting:Boolean(row.deleting),runCounts:readBranchRunCounts(store.sqlite,[id]).get(id)!,chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
       activeExecutions:(store.sqlite.prepare("SELECT COUNT(*) n FROM branch_executions WHERE branch_id=? AND state IN ('queued','running','waiting')").get(id) as {n:number}).n,
       callers:store.sqlite.prepare('SELECT DISTINCT b.id,b.name FROM branch_dependencies d JOIN branches b ON b.id=d.branch_id WHERE d.target_branch_id=? AND d.branch_id!=?').all(id,id) as Array<{id:string;name:string}>,
       pendingRemoval:store.sqlite.prepare("SELECT r.local_id id,CASE WHEN r.agent_ref='' THEN 'Chat' ELSE 'Agent' END kind,e.error FROM branch_installation_resources r LEFT JOIN branch_retirement_errors e ON e.resource_id=r.local_id WHERE r.branch_id=? AND r.state='retiring'").all(id) as Array<{id:string;kind:'Chat'|'Agent';error?:string}>,

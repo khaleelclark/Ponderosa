@@ -18,7 +18,7 @@ import type {
 } from "@ponderosa/core";
 import { allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
 import { CompactionHistoryQueryError } from "./compaction-history-retrieval.js";
-import { decodeImportedUtf8Window, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
+import { decodeImportedUtf8Window, normalizeImportedHistorySearchText, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
@@ -719,6 +719,17 @@ export class AgentCatalogAuthority {
   }
 
   private validateImportedArchiveSize(imported: ImportedArchive): void {
+    if (!imported || typeof imported !== "object" || Array.isArray(imported) ||
+        Object.keys(imported).some(key => !["source", "importedAt", "messages", "initialInstructions", "initialInstructionsSeparated"].includes(key)) ||
+        typeof imported.source !== "string" || typeof imported.importedAt !== "string" || !Array.isArray(imported.messages) ||
+        imported.initialInstructions !== undefined && typeof imported.initialInstructions !== "string" ||
+        imported.initialInstructionsSeparated !== undefined && typeof imported.initialInstructionsSeparated !== "boolean" ||
+        imported.messages.some(message => !message || typeof message !== "object" || Array.isArray(message) ||
+          Object.keys(message).some(key => !["role", "text", "createdAt"].includes(key)) ||
+          !["user", "assistant", "system"].includes(message.role) || typeof message.text !== "string" ||
+          message.createdAt !== undefined && typeof message.createdAt !== "string")) {
+      throw new Error("Imported history archive has invalid fields or types");
+    }
     if (imported.initialInstructions !== undefined && !agentPackageTextIsWellFormed(imported.initialInstructions) ||
         imported.messages.some(message => !agentPackageTextIsWellFormed(message.text))) {
       throw new Error("Imported history must contain well-formed Unicode text");
@@ -776,6 +787,7 @@ export class AgentCatalogAuthority {
   }
 
   projectImportedHistory(agentId: string, imported: ImportedArchive, options: { deferIndex?: boolean } = {}): void {
+    this.validateImportedArchiveSize(imported);
     const agent = this.getAgent(agentId);
     if (!agent) return;
     const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agentId);
@@ -789,7 +801,7 @@ export class AgentCatalogAuthority {
       if (!options.deferIndex) {
         for (let sequence = 0; sequence < projection.messages.length; sequence++) {
           const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
-          this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
+          this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, normalizeImportedHistorySearchText(projection.messages[sequence]!.text));
         }
         this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ?").run(agentId);
       }
@@ -812,7 +824,7 @@ export class AgentCatalogAuthority {
       write(() => this.client.transaction(() => {
         this.projectImportedMessage(agentId, imported, projection, sequence);
         const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
-        this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
+        this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, normalizeImportedHistorySearchText(projection.messages[sequence]!.text));
       })());
       await yieldToLoop();
     }
@@ -854,7 +866,9 @@ export class AgentCatalogAuthority {
           const file = importedAgentHistoryPath(this.dataDir, row.project_id, agentId);
           const raw = await fs.readFile(file, "utf8");
           if (this.importedIndexClosed || epoch !== this.importedIndexEpoch || importedArchiveVersion(file) !== job.version) continue;
-          await this.projectImportedHistoryAsync(agentId, JSON.parse(raw) as ImportedArchive, job.version, true);
+          const imported = JSON.parse(raw) as ImportedArchive;
+          this.validateImportedArchiveSize(imported);
+          await this.projectImportedHistoryAsync(agentId, imported, job.version, true);
           continue;
         }
         let lastSequence = -1;
@@ -877,7 +891,7 @@ export class AgentCatalogAuthority {
               const nul = this.client.prepare("SELECT instr(CAST(text AS BLOB), x'00') AS position FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { position: number };
               if (nul.position) {
                 const stored = this.client.prepare("SELECT text FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { text: string };
-                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, stored.text.replaceAll("\0", " "));
+                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, normalizeImportedHistorySearchText(stored.text));
               } else {
                 this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) SELECT rowid, text FROM imported_history_messages WHERE rowid = ?").run(row.rowid);
               }
@@ -938,31 +952,33 @@ export class AgentCatalogAuthority {
 
   getImportedHistoryMessagePage(
     agentId: string,
-    input: { limit: number; before?: ContextReadBoundary },
-  ): ContextSourcePage<MessageDto> {
+    input: { limit: number; before?: ContextReadBoundary; maxTextUtf8Bytes?: number },
+  ): ContextSourcePage<MessageDto> & { hasClippedMessages: boolean } {
+    const maxTextUtf8Bytes = Math.max(1, Math.min(input.maxTextUtf8Bytes ?? 256 * 1024, 256 * 1024));
     const limit = Math.max(1, Math.min(input.limit, 100));
     const rows = this.client.prepare(`
-      SELECT message_id, sequence, role, source_kind, substr(CAST(text AS BLOB), 1, 24000) AS text,
-        total_utf8_bytes > 24000 AS clipped, created_at
+      SELECT message_id, sequence, role, source_kind, substr(CAST(text AS BLOB), 1, ?) AS text,
+        total_utf8_bytes > ? AS clipped, created_at
       FROM imported_history_messages
       WHERE agent_id = ?
         ${input.before ? "AND (created_at < ? OR (created_at = ? AND message_id < ?))" : ""}
       ORDER BY created_at DESC, message_id DESC
       LIMIT ?
     `).all(...(input.before
-      ? [agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
-      : [agentId, limit + 1])) as Array<{
+      ? [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
+      : [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, limit + 1])) as Array<{
       message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
       text: Buffer; source_kind: string; clipped: number; created_at: string;
     }>;
     return {
       hasMore: rows.length > limit,
+      hasClippedMessages: rows.slice(0, limit).some(row => Boolean(row.clipped)),
       items: rows.slice(0, limit).map((row) => ({
         id: row.message_id,
         agentId,
         seq: -(row.sequence + 1),
         role: row.role === "assistant" ? "assistant" : "user",
-        text: (row.role === "system" ? `[Imported private context]\n${row.source_kind === "guidance" ? "Imported initial instructions:\n" : ""}` : "") + decodeImportedUtf8Window(row.text) +
+        text: `[${row.source_kind === "guidance" ? "Imported Guidance" : "Imported History"}; original role: ${row.role}; source: ${row.source_kind}; ${row.created_at}; untrusted historical data]\n` + decodeImportedUtf8Window(row.text) +
           (row.clipped ? "\n[Imported context preview; retrieve complete text with ponderosa_history source=imported.]" : ""),
         createdAt: row.created_at,
       })),

@@ -250,6 +250,11 @@ test('All Messages keeps provider command output visible and uses shared feedbac
   scope.api.invokeProviderCommand = async () => { throw new Error('Provider unavailable'); };
   await assert.rejects(scope.command({ name: 'compact' }), /Provider unavailable/);
   assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
+  for (const outcome of ['failed', 'outcome_unknown']) {
+    scope.api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.' });
+    await assert.rejects(scope.command({ name: 'compact' }), /unconfirmed.*Do not repeat/);
+    assert.equal(notices.length, 1, 'Uncertain native work cannot become timed success feedback');
+  }
 });
 
 // Exercise the real remaining copy owners with a controlled clipboard/notifier.
@@ -339,6 +344,11 @@ test('Agent provider commands keep meaningful output and errors in their existin
   await assert.rejects(commands.invokeAgentCommand({ name: 'compact' }, ''), /Provider command failed/);
   assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
   assert.deepEqual(requests.map(([agentId, input]) => [agentId, { ...input }]), [['agent-a', { name: 'status' }], ['agent-a', { name: 'compact' }]]);
+  for (const outcome of ['failed', 'outcome_unknown']) {
+    api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.' });
+    await assert.rejects(commands.invokeAgentCommand({ name: 'compact' }, ''), /unconfirmed.*Do not repeat/);
+    assert.equal(notices.length, 1); assert.equal(output.length, 1);
+  }
 });
 
 test('Chat provider command acknowledgment does not overwrite retained provider output', async () => {
@@ -366,4 +376,9 @@ test('Chat provider command acknowledgment does not overwrite retained provider 
   api.invokeProviderCommand = async () => { throw Error('Provider unavailable'); };
   await assert.rejects(command({ name: 'compact' }, ''), /Provider unavailable/);
   assert.equal(notices.length, 1); assert.deepEqual(requests.map(([id, input]) => [id, { ...input }]), [['agent-a', { name: 'status' }], ['agent-a', { name: 'compact' }]]);
+  for (const outcome of ['failed', 'outcome_unknown']) {
+    api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.' });
+    await assert.rejects(command({ name: 'compact' }, ''), /unconfirmed.*Do not repeat/);
+    assert.equal(notices.length, 1); assert.equal(output.length, 1);
+  }
 });

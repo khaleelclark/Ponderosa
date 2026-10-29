@@ -188,7 +188,7 @@ test('imported archive retains >100k Unicode/control text and retrieves late fac
     } });
   };
   try {
-    const seed = f.store.getImportedHistoryMessagePage(f.agent.id, { limit: 1 });
+    const seed = f.store.getImportedHistoryMessagePage(f.agent.id, { limit: 1, maxTextUtf8Bytes: 24000 });
     assert.equal(seed.items.length, 1);
     assert.ok(Buffer.byteLength(seed.items[0].text) < 25000);
     search(f.store, f.agent.id, version, 'LATEFIDELITYWITNESS', 1);
@@ -415,4 +415,51 @@ test('requested large neighbors cannot prevent exact forward progress through a 
   const target = initial.messages[initial.requestedMessageIndex];
   assert.equal(target.reference, hit.reference); assert.equal(target.complete, false); assert.ok(target.endCodePoint > target.startCodePoint); assert.ok(target.continuation);
   assert.ok(reassemble(f.store, f.agent.id, version, hit, retained, { before: 2, after: 2 }) > 1);
+}));
+
+
+for (const source of ['canonical', 'imported']) test(`${source} Unicode excerpts use original offsets after case-fold expansion`, t => fixture(t, async f => {
+  const text = 'İ'.repeat(300) + ' ORCHARD_MARKER ' + 'z'.repeat(300);
+  let hit;
+  if (source === 'canonical') {
+    f.store.appendCommunicationEvent({ schemaVersion: 2, eventId: randomUUID(), projectId: f.project.id, conversationId: f.chat.id,
+      sender: { kind: 'user', userId: 'local-operator' }, intent: 'user_dm', audience: { kind: 'user_agent', userId: 'local-operator', agentId: f.agent.id }, text, createdAt: new Date().toISOString() });
+    hit = f.store.searchCompactionHistory({ agentId: f.agent.id, currentConversationId: f.chat.id,
+      excludedCommunicationEventIds: new Set(), query: 'ORCHARD_MARKER' }).response.hits[0];
+  } else {
+    f.store.setImportedHistory(f.agent.id, 'Unicode excerpt fixture', [{ role: 'assistant', text }]);
+    const version = await ready(f.store, f.agent.id);
+    hit = search(f.store, f.agent.id, version, 'ORCHARD_MARKER').hits[0];
+  }
+  assert.ok(hit); assert.match(hit.excerpt.text, /ORCHARD_MARKER/);
+  assert.equal([...text].slice(hit.excerpt.startCodePoint, hit.excerpt.endCodePoint).join(''), hit.excerpt.text);
+  assert.equal(digest(hit.excerpt.text), hit.excerpt.sha256);
+}));
+
+test('existing archive grammar and types refuse before indexing while Unicode whitespace remains string data', { timeout: 20000 }, t => fixture(t, async f => {
+  const text = 'GRAMMAR_ORCHARD\u00a0valid authored string data';
+  f.store.setImportedHistory(f.agent.id, 'Grammar fixture', [{ role: 'user', text }]);
+  await ready(f.store, f.agent.id);
+  const original = await readFile(f.pathname(f.agent.id), 'utf8');
+  const parsed = JSON.parse(original);
+  const malformed = [original.slice(0, -3), original + ' trailing', original.replace('"source":', '"source"\u00a0:'),
+    original.replace('"source":', '"unknown":'), JSON.stringify({ ...parsed, source: 42 }),
+    JSON.stringify({ ...parsed, messages: false }), JSON.stringify({ ...parsed, messages: [{ role: 'tool', text }] }),
+    JSON.stringify({ ...parsed, messages: [{ role: 'user', text, createdAt: 42 }] })];
+  const oldRows = f.store.sqlite.prepare('SELECT * FROM imported_history_messages WHERE agent_id=?').all(f.agent.id);
+  for (const invalid of malformed) {
+    await writeFile(f.pathname(f.agent.id), invalid);
+    const pending = f.store.getImportedHistoryAvailability(f.agent.id);
+    assert.equal(pending.status, 'preparing');
+    const deadline = Date.now() + 5000;
+    while (f.store.getImportedHistoryAvailability(f.agent.id).status === 'preparing' && Date.now() < deadline) await yieldToLoop();
+    assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'unavailable', 'Malformed canonical archive cannot be certified as searchable');
+    assert.throws(() => search(f.store, f.agent.id, pending.archiveVersion, 'GRAMMAR_ORCHARD'), /unavailable/i);
+    assert.equal(await readFile(f.pathname(f.agent.id), 'utf8'), invalid, 'Refusal cannot rewrite canonical archive bytes');
+    assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM imported_history_messages WHERE agent_id=?').all(f.agent.id), oldRows, 'Rejected source cannot replace the prior projection');
+  }
+  await writeFile(f.pathname(f.agent.id), original);
+  const version = await ready(f.store, f.agent.id);
+  const hit = search(f.store, f.agent.id, version, 'GRAMMAR_ORCHARD').hits[0];
+  reassemble(f.store, f.agent.id, version, hit, text);
 }));

@@ -205,7 +205,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     Boolean(service),
   );
 
-  function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
+  function browserScopeForRun(agentId: string, run: Pick<ActiveRun, "runId" | "conversationId">): BrowserScope | undefined {
     const agent = store.getAgent(agentId);
     if (!agent || !run.conversationId || agent.conversationId !== run.conversationId) return undefined;
     const chat = store.getConversation(run.conversationId);
@@ -271,7 +271,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
 
   function closeRunBrowser(
     agentId: string,
-    run: ActiveRun,
+    run: Pick<ActiveRun, "runId" | "conversationId">,
     reason: string,
   ): Promise<void> {
     const retained = browserSessions.get(agentId);
@@ -283,7 +283,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     ]).then(() => undefined);
   }
 
-  function closeRunBrowserAfterRun(agentId: string, run: ActiveRun, reason: string): Promise<void> {
+  function closeRunBrowserAfterRun(agentId: string, run: Pick<ActiveRun, "runId" | "conversationId">, reason: string): Promise<void> {
     // Run settlement must not become an unhandled rejection when a browser
     // handoff fails. The managers retain the browser and its cleanup blocker;
     // shutdown still uses the rejecting closeRunBrowser so it cannot drain.

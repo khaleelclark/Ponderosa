@@ -11,9 +11,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const proxy = fileURLToPath(new URL('../../apps/server/dist/operator-auth-proxy.js', import.meta.url));
+import {OPERATOR_IDENTITY_HEADER} from '../../apps/server/dist/security.js';
 const token = 'owned-proxy-fixture-token'.padEnd(40, 'x');
 const identity = 'operator@qualification.test';
-const headers = { host: 'qualification.test', 'tailscale-user-login': identity };
 async function bounded(promise, label, milliseconds = 2_000) {
   const abort = new AbortController();
   try {
@@ -23,8 +23,9 @@ async function bounded(promise, label, milliseconds = 2_000) {
 
 // Exercise the shipped signal handler in a real owned child, not server.close()
 // in the test process. No provider, app state or existing proxy is touched.
-for (const [kind, signal] of [
+for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
   ['completed HTTP/authentication controls', 'SIGTERM'],
+  ['completed HTTP/authentication controls', 'SIGTERM', 'x-owned-upstream-identity'],
   ['active HTTP response', 'SIGINT'],
   ['SSE response', 'SIGTERM'],
   ['incomplete upload', 'SIGINT'],
@@ -37,6 +38,7 @@ for (const [kind, signal] of [
   skip: process.platform === 'win32' ? 'Host-local Unix proxy is a POSIX deployment option' : false,
 }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pqs-')), socketPath = path.join(root, 's');
+  const headers = { host: 'qualification.test', [identityHeader]: identity };
   const sockets = new Set();
   let observed, child, exited, client, response, passed = false, stderr = '', backendRequests = 0;
   const received = new Promise(resolve => { observed = resolve; });
@@ -44,7 +46,8 @@ for (const [kind, signal] of [
     backendRequests++;
     incoming.on('error', () => {});
     assert.equal(incoming.headers.authorization, `Bearer ${token}`);
-    assert.equal(incoming.headers['tailscale-user-login'], identity);
+    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], identity);
+    assert.equal(incoming.headers['tailscale-user-login'], undefined);
     assert.equal(incoming.headers.host, 'qualification.test');
     assert.equal(incoming.headers['x-remove-me'], undefined);
     if (kind === 'completed HTTP/authentication controls') outgoing.end('exact completed response: café 東京');
@@ -58,7 +61,8 @@ for (const [kind, signal] of [
   backend.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   backend.on('upgrade', (incoming, socket) => {
     assert.equal(incoming.headers.authorization, `Bearer ${token}`);
-    assert.equal(incoming.headers['tailscale-user-login'], identity);
+    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], identity);
+    assert.equal(incoming.headers['tailscale-user-login'], undefined);
     socket.resume();
     socket.once('end', () => socket.end());
     if (kind === 'established upgrade') socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');
@@ -72,7 +76,7 @@ for (const [kind, signal] of [
       PONDEROSA_PROXY_BACKEND_PORT: String(backend.address().port),
       PONDEROSA_PROXY_BACKEND_TOKEN: token,
       PONDEROSA_PROXY_PUBLIC_ORIGIN: 'https://qualification.test',
-      PONDEROSA_PROXY_IDENTITY_HEADER: 'tailscale-user-login',
+      PONDEROSA_PROXY_IDENTITY_HEADER: identityHeader,
       PONDEROSA_PROXY_ALLOWED_IDENTITIES: identity,
     }, stdio: ['ignore', 'ignore', 'pipe'] });
     child.stderr.setEncoding('utf8');
@@ -91,10 +95,10 @@ for (const [kind, signal] of [
           result.once('end', () => resolve({ status: result.statusCode, body })); result.once('error', reject);
         }); req.once('error', reject); req.end();
       });
-      assert.equal((await fetch({ 'tailscale-user-login': 'wrong@qualification.test' })).status, 401);
+      assert.equal((await fetch({ [identityHeader]: 'wrong@qualification.test', [OPERATOR_IDENTITY_HEADER]: identity })).status, 401);
       assert.equal((await fetch({ 'x-forwarded-host': 'wrong.test' })).status, 421);
       assert.equal(backendRequests, 0, 'Rejected identity/host reached the backend');
-      const result = await fetch({ authorization: 'Bearer untrusted-client-token', connection: 'x-remove-me', 'x-remove-me': 'private-hop' });
+      const result = await fetch({ authorization: 'Bearer untrusted-client-token', [OPERATOR_IDENTITY_HEADER]: 'forged@client.test', connection: 'x-remove-me', 'x-remove-me': 'private-hop' });
       assert.deepEqual(result, { status: 200, body: 'exact completed response: café 東京' });
       assert.equal(backendRequests, 1);
     } else if (kind.includes('upgrade') || kind === 'incomplete request headers') {
@@ -143,4 +147,17 @@ for (const [kind, signal] of [
     if (passed) await rm(root, { recursive: true, force: true });
     else t.diagnostic(`Failed owned proxy fixture retained: ${root}`);
   }
+});
+
+import Fastify from 'fastify';
+import {registerRequestSecurityHooks} from '../../apps/server/dist/server-request-hooks.js';
+for(const allowlist of [[],['verified@fixture.test']])test(`authenticated rate buckets ignore unvalidated rotated claims; allowlist=${allowlist.length}`,async t=>{
+ const app=Fastify();t.after(()=>app.close());
+ registerRequestSecurityHooks(app,{opts:{authToken:token,operatorIdentities:allowlist,networkSecurity:{mode:'reverse_proxy',bindHost:'127.0.0.1'},requestLimits:{maxRequestsPerMinute:2,maxInflight:2}},v3DispatchKey:'private-dispatch',agentMessageCapabilities:new Map(),deletingAgentIds:new Set(),validLauncherSession:()=>false,artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>false});
+ app.get('/api/owned',async()=>({ok:true}));
+ for(let i=0;i<4;i++){
+  const r=await app.inject({url:'/api/owned',headers:{host:'localhost',authorization:'Bearer '+token,'tailscale-user-login':'rotation-'+i,[OPERATOR_IDENTITY_HEADER]:allowlist[0]??'unvalidated-'+i}});
+  assert.equal(r.statusCode,i<2?200:429,r.body);
+ }
+ if(allowlist.length){const r=await app.inject({url:'/api/owned',headers:{host:'localhost',authorization:'Bearer '+token,[OPERATOR_IDENTITY_HEADER]:'intruder@fixture.test'}});assert.equal(r.statusCode,401);}
 });

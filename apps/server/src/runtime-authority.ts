@@ -509,6 +509,9 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
     return operation;
   }
 
+  // Multiple adapter observations may drain typed output after physical exit.
+  // Cleanup started by the first observation cannot become the cause of exit.
+  const rootExitHostOperations = new WeakMap<object, string | undefined>();
   function persistentRootExited(agentId: string, identity: object, detail?: ProviderRootExitDetail): void {
     const authority = runtimeAuthority(agentId);
     const runtime = authority?.reusable;
@@ -526,31 +529,42 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
     // not establish who initiated it (including the historical Richmond case).
     const closing = authority?.closing;
     let auditPersistenceFailed = false;
-    const observedHostOperation = closing?.runtime.identity === identity ? closing.reason : undefined;
+    if (!rootExitHostOperations.has(identity)) {
+      rootExitHostOperations.set(identity, closing?.runtime.identity === identity ? closing.reason : undefined);
+    }
+    const observedHostOperation = rootExitHostOperations.get(identity);
     const observedProcess = matchedReusable ? runtime?.session.processIdentity
       : matchedOpening ? opening?.handle?.processIdentity
       : matchedRun ? run?.runtimeSession?.processIdentity : undefined;
 
-    // The provider process is the authority behind its opaque resumable
-    // session. Once that process exits, the persisted session id must not be
-    // offered to a replacement process. This applies to active, opening, and
-    // warm-idle runtimes; stale callbacks from superseded identities do not
-    // affect the current session generation.
     if (matchedReusable || matchedOpening || matchedRun) {
       scheduledSessionRollovers.delete(agentId);
-      try { clearAgentResumeSession(agentId, "provider_root_exit"); }
-      catch (error) {
-        if (!(error instanceof AgentEventPersistenceError)) throw error;
-        auditPersistenceFailed = true;
-        logError({ agentId, persistenceFailure: error.diagnostic }, "provider root exit could not clear failed Agent audit projection");
+      const session=matchedReusable?runtime?.session:matchedRun?run?.runtimeSession:undefined;
+      // A dead process is never reused. Only an adapter with a provider-verified
+      // resume handshake may validate the saved session for a different Run.
+      // Interrupted/uncertain work itself is still fenced and never replayed.
+      if(!observedHostOperation&&!session?.validatesResumeBeforeTurn){
+        try { clearAgentResumeSession(agentId, "provider_root_exit"); }
+        catch(error){
+          if(!(error instanceof AgentEventPersistenceError))throw error;
+          auditPersistenceFailed=true;
+          logError({agentId,persistenceFailure:error.diagnostic},'provider root exit could not record bounded reconstruction');
+        }
       }
       organizationEnvelopeStates.delete(agentId);
+    }
+    if(run&&matchedRun){
+      run.observedRootExit=detail;
+      if (detail?.terminalEvent) {
+        run.observedProviderFailure ??= detail.terminalEvent;
+        run.observedProviderTerminalStatus ??= detail.terminalEvent.terminalStatus ?? "failed";
+      }
     }
 
     if (runtime && matchedReusable) {
       // Detach before checking Run ownership. An idle or second-turn crash must
       // never leave this dead process eligible for later reuse.
-      teardownPersistentRuntimeInBackground(agentId, runtime, "provider root exited");
+      teardownPersistentRuntimeInBackground(agentId, runtime, observedHostOperation ?? "provider root exited");
     }
     if (opening && matchedOpening && opening.handle && !opening.terminationConfirmed) {
       void teardownOpeningRuntime(agentId, opening, "provider root exited during readiness").catch((error) => {
@@ -563,12 +577,18 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
     // its exit before replacement. That host-owned close must retain the Run;
     // unexpected exits still revoke its authority below.
     if (observedHostOperation === "failed resume replacement") return;
-    transitionRun(agentId, run, "cancelling");
-    void closeRunBrowser(agentId, run, "persistent_provider_root_exited");
+    // Process exit revokes local tool/capture authority even when the event
+    // consumer still owns typed terminal settlement. It may drain emitted data,
+    // but cannot perform new side effects under the expired runtime.
+    void closeRunBrowser(agentId, run, "persistent_provider_root_exited").catch((error) => {
+      logError({ err: error, agentId }, "root-exit browser cleanup remains pending");
+    });
     closeLinkPreviewsForAgent(agentId, "persistent provider root exited");
     agentMessageCapabilities.delete(run.messageCapability);
     clearRunLeaseTimer(run);
     clearRunLivenessTimer(run);
+    if (detail?.outputDraining || run.observedProviderFailure || run.observedProviderTerminalStatus === "completed") return;
+    transitionRun(agentId, run, "cancelling");
     run.controller.abort();
     try {
       const lifecycle = store.appendEvent(agentId, {

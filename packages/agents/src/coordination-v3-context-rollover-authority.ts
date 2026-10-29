@@ -6,13 +6,13 @@ import {
   type CoordinationRequestState,
 } from "@ponderosa/core";
 import type Database from "better-sqlite3";
+import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
-const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
 const UNSAFE_INTERNAL_ROLLOVER_FAILURE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const CONTEXT_ROLLOVER_HANDOFF_GUIDANCE =
@@ -67,6 +67,8 @@ export class CoordinationV3ContextRolloverAuthority {
     providerSessionGeneration: string; detectedOccupancy?: number; aggregateTokens?: number;
     threshold: number; contextWindow?: number; lowWaterMark: number;
     triggerKind?: "automatic" | "human";
+    /** Explicit idle recovery with no provider-held unfinished work. */
+    canonicalOnlyRefresh?: { fencingToken: number };
     sourceRunId: string;
     compactionCutoffOrdinal: number; compactionCutoffEventId: string;
     recentTail: Array<{ communicationEventId: string; contentSha256: string }>;
@@ -82,12 +84,70 @@ export class CoordinationV3ContextRolloverAuthority {
         !input.compactionCutoffEventId.trim()) {
       throw new Error("context rollover requires an exact positive canonical boundary");
     }
-    if (input.recentTail.length === 0 || input.recentTail.length > MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS ||
+    if (input.recentTail.length === 0 ||
+        Buffer.byteLength(JSON.stringify(input.recentTail), "utf8") > MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES ||
         new Set(input.recentTail.map((binding) => binding.communicationEventId)).size !== input.recentTail.length ||
         input.recentTail.some((binding) => !binding.communicationEventId.trim() || !/^[a-f0-9]{64}$/u.test(binding.contentSha256))) {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
     }
     return this.sqlite.transaction(() => {
+      let sourceActivationIds = input.sourceActivationIds;
+      if (input.canonicalOnlyRefresh) {
+        const latest = this.sqlite.prepare(`SELECT id, status, provider_session_id, fencing_token, prompt_injection_state
+          FROM scheduler_runs WHERE agent_id=? AND project_id=? AND prompt_injection_state<>'not_injected'
+          ORDER BY fencing_token DESC LIMIT 1`).get(input.agentId, input.projectId) as {
+            id: string; status: string; provider_session_id: string | null; fencing_token: number; prompt_injection_state: string;
+          } | undefined;
+        if (input.triggerKind !== "human" || latest?.id !== input.sourceRunId || latest.status !== "completed" ||
+            latest.provider_session_id !== input.oldProviderSessionId || latest.prompt_injection_state !== "injected" ||
+            latest.fencing_token !== input.canonicalOnlyRefresh.fencingToken || input.providerSessionGeneration !== input.oldProviderSessionId) {
+          throw new Error("canonical context refresh requires the exact completed idle generation");
+        }
+        // Only future, never-attempted human input may wait across retirement.
+        // All older obligations and ambiguous deliveries retain their owners.
+        // A terminal human delivery rejected before every provider boundary is
+        // retained as a failed audit, rather than provider-held unfinished work.
+        const unfinished = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=?
+            AND (status IN ('leased','running','outcome_unknown') OR prompt_injection_state='injecting')
+          UNION ALL SELECT 1 FROM scheduler_prompt_injections injection JOIN scheduler_runs run ON run.id=injection.run_id
+            WHERE run.agent_id=? AND injection.state IN ('submitted','outcome_unknown')
+          UNION ALL SELECT 1 FROM required_reply_obligations obligation WHERE agent_id=?
+            AND obligation.state NOT IN ('satisfied','cancelled','superseded')
+            AND NOT (obligation.state='failed' AND EXISTS (
+              SELECT 1 FROM scheduler_runs failed JOIN scheduler_run_activations attached ON attached.run_id=failed.id
+                JOIN agent_activations source ON source.id=attached.activation_id
+              WHERE failed.id=obligation.run_id AND source.id=obligation.source_activation_id
+                AND failed.agent_id=obligation.agent_id AND failed.project_id=obligation.project_id
+                AND failed.scope_key=obligation.scope_key AND failed.status='failed' AND failed.terminal_at IS NOT NULL
+                AND source.kind='human_message' AND source.state='failed' AND source.terminal_at IS NOT NULL
+                AND source.terminal_outcome IS NOT NULL AND source.agent_id=failed.agent_id
+                AND source.project_id=failed.project_id AND source.scope_key=failed.scope_key
+                AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations history JOIN scheduler_runs attempt ON attempt.id=history.run_id
+                  WHERE history.activation_id=source.id AND (attempt.prompt_injection_state<>'not_injected'
+                    OR attempt.provider_session_id IS NOT NULL OR attempt.started_at IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM provider_inputs packet WHERE packet.scheduler_run_id=attempt.id)
+                    OR EXISTS (SELECT 1 FROM scheduler_prompt_injections injection WHERE injection.run_id=attempt.id
+                      AND (injection.state NOT IN ('pending','cancelled') OR injection.submitted_at IS NOT NULL
+                        OR injection.acknowledged_at IS NOT NULL))))))
+          UNION ALL SELECT 1 FROM coordination_joins WHERE owner_agent_id=? AND state='open'
+          UNION ALL SELECT 1 FROM agent_activations activation WHERE activation.agent_id=? AND (
+            activation.state='outcome_unknown' OR activation.state IN ('pending','retry_pending','attached') AND (
+              activation.kind<>'human_message' OR EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=activation.id)))
+          UNION ALL SELECT 1 FROM coordination_requests request WHERE (recipient_agent_id=? OR requester_agent_id=?)
+            AND state NOT IN ('completed','failed','cancelled','superseded','expired','recipient_unavailable')
+            AND NOT (request.state='open' AND request.requester_agent_id IS NULL AND request.origin_run_id IS NULL
+              AND request.open_question_update_id IS NULL AND EXISTS (SELECT 1 FROM activation_sources source
+                JOIN agent_activations activation ON activation.id=source.activation_id
+                WHERE source.source_kind='request' AND source.source_id=request.id AND activation.agent_id=?
+                  AND activation.kind='human_message' AND activation.state='pending'
+                  AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=activation.id)))
+          LIMIT 1`).get(...Array(8).fill(input.agentId));
+        if (unfinished) throw new Error("Context Refresh is waiting for unfinished work or an uncertain outcome. Resolve its existing Request, Decision or recovery before refreshing.");
+        sourceActivationIds = (this.sqlite.prepare(`SELECT DISTINCT attached.activation_id FROM scheduler_run_activations attached
+          JOIN scheduler_runs run ON run.id=attached.run_id WHERE run.agent_id=? AND run.project_id=?
+            AND run.provider_session_id=? AND run.prompt_injection_state='injected' ORDER BY attached.activation_id`)
+          .all(input.agentId, input.projectId, input.oldProviderSessionId) as Array<{activation_id: string}>).map(row => row.activation_id);
+      }
       const latest = this.sqlite.prepare(`
         SELECT * FROM context_rollovers
         WHERE agent_id = ? AND provider_session_generation = ?
@@ -163,13 +223,18 @@ export class CoordinationV3ContextRolloverAuthority {
         input.compactionCutoffEventId,
         JSON.stringify(input.recentTail.map((binding) => binding.communicationEventId)),
         JSON.stringify(input.recentTail.map((binding) => binding.contentSha256)),
-        JSON.stringify([...new Set(input.sourceActivationIds)].sort()), input.scopeKey,
+        JSON.stringify([...new Set(sourceActivationIds)].sort()), input.scopeKey,
         input.conversationId ?? null,
         input.replyAuthority ? JSON.stringify(input.replyAuthority) : null,
         input.visibleResponseCommitted ? 1 : 0,
         input.visibleResponseCommitted ? now : null,
         now, now,
       );
+      if (input.canonicalOnlyRefresh) {
+        this.sqlite.prepare(`UPDATE context_rollovers SET state='completed', completion_reason='no_continuation_required',
+          terminal_at=? WHERE id=?`).run(now, id);
+        return { rollover: this.get(id)!, created: true };
+      }
       this.createActivation({
         projectId: input.projectId,
         agentId: input.agentId,

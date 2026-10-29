@@ -27,5 +27,5 @@ export function providerUnavailableNotificationBody(
   category?: ProviderFailureCategory,
 ): string {
   const failure = publicProviderFailure({ detail, category });
-  return `${failure.summary} ${failure.remediation} Queued work is held until access is explicitly rechecked or a successful authorized Run proves recovery.`;
+  return `${failure.summary} ${failure.remediation} Queued work remains held for a definitive denial or pending cleanup. Transient failures receive a bounded hold before the next authorized operation can revalidate access; Recheck can validate access sooner.`;
 }

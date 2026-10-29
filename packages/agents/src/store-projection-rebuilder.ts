@@ -246,23 +246,14 @@ export class AgentProjectionRebuilder {
           reservedAt: t.createdAt,
         }).onConflictDoNothing().run();
         const workingCopy = t.workingCopy ?? sharedWorkingCopy(p, t.updatedAt);
-        const fallbackConversation = this.client.prepare(`
-          SELECT id FROM conversations WHERE project_id = ? AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = conversations.id)
-          ORDER BY created_at, id LIMIT 1
-        `).get(projectId) as { id: string } | undefined;
-        const conversationExists = (conversationId: string | undefined): conversationId is string =>
-          Boolean(conversationId && this.client.prepare(`
-            SELECT 1 FROM conversations WHERE id = ? AND project_id = ?
-          `).get(conversationId, projectId));
-        const primaryConversationId = t.deletedAt
-          ? undefined
-          : conversationExists(t.conversationId)
-            ? t.conversationId
-            : conversationExists(p.lastConversationId)
-              ? p.lastConversationId
-              : fallbackConversation?.id;
-        if (!t.deletedAt && !primaryConversationId) {
-          throw new Error(`live Agent ${t.id} has no owner Chat`);
+        // Recorded ownership is private-history authority. Missing owners are
+        // quarantined by the existing Project recovery savepoint, never guessed.
+        const primaryConversationId = t.deletedAt ? undefined : t.conversationId;
+        if (!t.deletedAt && (!primaryConversationId || !this.client.prepare(`
+          SELECT 1 FROM conversations WHERE id = ? AND project_id = ?
+            AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts d WHERE d.conversation_id = conversations.id)
+        `).get(primaryConversationId, projectId))) {
+          throw new Error(`live Agent ${t.id} has missing owner Chat ${t.conversationId ?? '(unrecorded)'}; restore or explicitly resolve its recorded ownership`);
         }
         this.db
           .insert(agents)

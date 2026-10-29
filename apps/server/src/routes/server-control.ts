@@ -4,6 +4,7 @@ import path from "node:path";
 import type { FastifyReply } from "fastify";
 import {
   type EngineLogDto,
+  type EngineDto,
   type CommunicationReconciliationReport,
   type ReadinessCheckDto,
   type ReadinessDto,
@@ -64,7 +65,7 @@ interface ServerControlRoutesContext {
   ): Promise<{
     configured: true;
     installed?: boolean;
-    authentication: "checking" | "authenticated" | "unauthenticated" | "error";
+    authentication: EngineDto["authentication"];
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
     authDetail?: string;

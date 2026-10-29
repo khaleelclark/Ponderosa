@@ -195,6 +195,7 @@ export function recoverFailedAgentCreations(input: {
 }
 
 type ServerLifecycleContext =
+  { drainEngineDiagnostics(): Promise<void> } &
   Pick<ArtifactAuthority, "projectCommunicationArtifact" | "requestArtifactAccess"> &
   Pick<EngineControlPlane,
     "drainEngineCapabilityDiscoveries" | "drainEngineModelCatalogDiscoveries" |
@@ -314,6 +315,7 @@ export function registerServerLifecycle(
     setClosed,
     projectCommunicationArtifact,
     requestArtifactAccess,
+    drainEngineDiagnostics,
     drainEngineCapabilityDiscoveries,
     drainEngineModelCatalogDiscoveries,
     engineCapabilityDiscoveries,
@@ -979,6 +981,7 @@ export function registerServerLifecycle(
         drainEngineCapabilityDiscoveries(),
         drainEngineModelCatalogDiscoveries(),
         providerUsage.shutdown(),
+        drainEngineDiagnostics(),
       ]);
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Provider runtime authority shutdown did not complete");

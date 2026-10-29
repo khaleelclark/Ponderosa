@@ -542,6 +542,8 @@ export interface WorkspaceNotificationDto {
   readAt?: string;
   /** Canonical closure/dismissal time for an action that is no longer open. */
   resolvedAt?: string;
+  /** Confirmed source recovery, independently of a persistent dismissal. */
+  recoveredAt?: string;
   decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction"> & { questionCount?: number };
   /** Human-facing recovery context for one current coordination problem. */
   resolution?: {

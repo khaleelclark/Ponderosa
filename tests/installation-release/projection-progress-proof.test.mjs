@@ -108,6 +108,57 @@ test('FTS coherent deletion and text damage cannot be certified', async t => {
   });
 });
 
+function importedFixture(t, status = 'ready') {
+  return fixture(t, db => {
+    db.exec(`INSERT INTO projects(id,label,host_path,created_at) VALUES('p','Imported proof','/fixture','2026-10-27');
+      INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES('c','p','Imported proof','2026-10-27','2026-10-27');
+      INSERT INTO agents(id,project_id,conversation_id,title,handle,active_engine,created_at,updated_at,working_copy_json)
+        VALUES('a','p','c','Imported proof','imported-proof','codex','2026-10-27','2026-10-27','{}');`);
+    const messages = ['retained', 'a'.repeat(65535) + '\0😀\0z'];
+    const insert = db.prepare(`INSERT INTO imported_history_messages
+      (agent_id,message_id,sequence,role,text,created_at) VALUES('a',?,?, 'assistant',?,'2026-10-27')`);
+    for (const [sequence,text] of messages.entries()) {
+      const row = insert.run(`imported-${sequence}`,sequence,text);
+      db.prepare('INSERT INTO imported_history_fts(rowid,text) VALUES(?,?)').run(row.lastInsertRowid,text.replaceAll('\0',' '));
+    }
+    db.prepare(`INSERT INTO imported_history_indexes(agent_id,archive_version,integrity_key,imported_at,expected_messages,status)
+      VALUES('a','version','hash','2026-10-27',2,?)`).run(status);
+  });
+}
+
+test('imported FTS coherent deletion, wrong content and foreign rows cannot be certified', async t => {
+  for (const sql of ['DELETE FROM imported_history_fts WHERE rowid=1',
+    "UPDATE imported_history_fts SET text='modified' WHERE rowid=1",
+    "INSERT INTO imported_history_fts(rowid,text) VALUES(99,'orphan')"]) await t.test(sql, sub => {
+    const f = importedFixture(sub);
+    f.db.exec(sql); f.progress.run([eventPath], () => f.append('{"seq":2}\n'));
+    assert.throws(() => f.progress.checkpoint(), /projection integrity/);
+  });
+});
+
+test('imported FTS proof preserves legitimate NUL normalization and partial preparing indexes', async t => {
+  for (const status of ['ready','preparing']) await t.test(status, sub => {
+    const f = importedFixture(sub,status);
+    if(status==='preparing') f.db.exec('DELETE FROM imported_history_fts WHERE rowid=1');
+    f.progress.checkpoint(); assert.deepEqual(f.reopen(), {tails:[]});
+  });
+});
+
+test('imported FTS content after embedded NUL cannot be certified', t => {
+  const f = importedFixture(t);
+  f.db.prepare('UPDATE imported_history_fts SET text=? WHERE rowid=2').run('a'.repeat(65535)+' 😀 x');
+  assert.throws(() => f.progress.checkpoint(), /projection integrity/);
+});
+
+test('SQLite defensive mode refuses imported FTS shadow corruption without weakening the proof', t => {
+  const f = importedFixture(t);
+  const before = f.db.prepare('SELECT rowid,text FROM imported_history_fts ORDER BY rowid').all();
+  assert.throws(() => f.db.exec('DELETE FROM imported_history_fts_data WHERE id>10'), /shadow|may not be modified/);
+  const after = f.db.prepare('SELECT rowid,text FROM imported_history_fts ORDER BY rowid').all();
+  assert.equal(JSON.stringify(after)===JSON.stringify(before),true,'Rejected corruption must preserve every indexed byte');
+  f.progress.checkpoint(); assert.deepEqual(f.reopen(), {tails:[]});
+});
+
 test('database or canonical file changes after certification invalidate it on reopen', async t => {
   for (const kind of ['database', 'source']) await t.test(kind, sub => {
     const f = fixture(sub); f.progress.checkpoint();

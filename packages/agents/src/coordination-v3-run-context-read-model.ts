@@ -76,10 +76,11 @@ export class CoordinationV3RunContextReadModel {
       FROM scheduler_runs run
       JOIN scheduler_run_activations attached ON attached.run_id = run.id
       JOIN activation_sources source ON source.activation_id = attached.activation_id
+      JOIN agent_activations activation ON activation.id = attached.activation_id
       JOIN coordination_requests request
         ON source.source_kind = 'request' AND request.id = source.source_id
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
-        AND request.recipient_agent_id = ?
+        AND request.recipient_agent_id = ? AND activation.kind = 'coordination_request'
       LIMIT 1
     `).get(runId, agentId, agentId) as { matched: number } | undefined;
     return Boolean(row);

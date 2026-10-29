@@ -23,6 +23,12 @@ export interface HistoryMessageProvenanceDto {
   createdAt: string;
   editedAt?: string;
   contentSha256: string;
+  /** Inline text/hash remains canonical; these separately verified managed
+   * files contain referenced full documents. Metadata is historical data. */
+  referencedFiles?: Array<{ artifactId: string; available?: false; localPath?: string; byteLength?: number; sha256?: string }>;
+  /** Supplemental descriptors omitted from this chunk's bounded metadata.
+   * Canonical text and artifact identities are never rewritten or truncated. */
+  referencedFilesOmitted?: number;
 }
 
 export interface HistorySearchHitDto extends HistoryMessageProvenanceDto {
@@ -42,6 +48,12 @@ export interface HistorySearchHitDto extends HistoryMessageProvenanceDto {
 
 export interface HistoryExactMessageDto extends HistoryMessageProvenanceDto {
   text: string;
+  startCodePoint?: number;
+  endCodePoint?: number;
+  totalCodePoints?: number;
+  totalUtf8Bytes?: number;
+  complete?: boolean;
+  continuation?: string;
   warnings: HistoryWarning[];
 }
 
