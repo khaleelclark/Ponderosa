@@ -79,3 +79,29 @@ or rerun here; their pinned mobile 4x CPU/eight fresh sessions/active-agent load
 and installer-downloaded/provider-signed-in boundaries remain governing. #32
 uses its finite pinned capability set. Exceptions require human approval and
 recorded scope/reason/test; resource delays are not permission changes.
+
+
+## Malformed encoded-assignment correction
+
+A second independent review found that removing the final outer quote from
+`JSON.stringify(JSON.stringify({OPENAI_API_KEY:syntheticValue}))` bypassed the
+failed-JSON fallback; a single-quoted escaped object had the same helper defect.
+The earlier candidate remains blocked as a standalone integration choice.
+
+The shared diagnostic assignment scanner now recognizes backslash-escaped field
+quotes and scans an escaped quoted credential value through its matching escape
+level. This also handles damaged containers without a second decoder or budget.
+Recognizable assignments use the same known-field policy. Harmless prefix,
+Unicode and the tail after the credential delimiter remain exact. If that value
+itself has no closing delimiter, its ambiguous remainder is explicitly omitted;
+it cannot safely be separated into credential and prose. The scanner charges the
+same cumulative inspection budget. Export/import behavior is unchanged.
+
+Permanent tests cover both known fields in actual scheduler persistence/API/all
+owned stores/reopen/no-replay trials. A finite 50-case helper matrix covers one to
+five encoding levels, two truncations, single quotes, broken outer objects and
+arrays, plus harmless malformed text and explicit unterminated-value omission.
+The exact independent red product expression and five-form probe are retained in
+the evidence alongside their green results. These finite cases are not an
+exhaustive malformed-language or native-provider qualification. Original-reviewer
+exact-head approval is required before integration; no full #14/#19 claim.

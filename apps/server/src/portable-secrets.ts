@@ -46,14 +46,28 @@ function portableSecretInspection(maxBytes: number, diagnostic = false) {
 
   function redactText(text: string, depth: number): string {
     charge(Buffer.byteLength(text));
-    const token = /(?:"([a-zA-Z][a-zA-Z0-9_-]*)"|'([a-zA-Z][a-zA-Z0-9_-]*)'|\b([a-zA-Z][a-zA-Z0-9_-]*))\s*[:=]\s*|["'\[{]/g;
+    const token = /(?:(?<!\\)\\*["']([a-zA-Z][a-zA-Z0-9_-]*)\\*["']|\b([a-zA-Z][a-zA-Z0-9_-]*))\s*[:=]\s*|["'\[{]/g;
     let result = '', start = 0;
     for (let match; (match = token.exec(text));) {
-      const field = match[1] ?? match[2] ?? match[3];
+      const field = match[1] ?? match[2];
       if (field && !isPortableSecretField(field)) continue;
       const valueStart = field ? token.lastIndex : match.index;
       let end = valueStart;
-      if (/^["'\[{]$/.test(text[end] ?? '')) end = spanEnd(text, end, depth);
+      let malformedValue = false;
+      const escapedQuote = field ? /^(\\+)(["'])/.exec(text.slice(end)) : null;
+      if (escapedQuote) {
+        // Damaged encoded JSON still has recognizable escaped credential assignments.
+        end += escapedQuote[0].length;
+        let closed = false;
+        for (; end < text.length; end++) {
+          charge(1);
+          if (text[end] !== '\\') continue;
+          const runStart = end;
+          while (text[end] === '\\') { charge(1); end++; }
+          if (end - runStart === escapedQuote[1]!.length && text[end] === escapedQuote[2]) { end++; closed = true; break; }
+        }
+        malformedValue = !closed;
+      } else if (/^["'\[{]$/.test(text[end] ?? '')) end = spanEnd(text, end, depth);
       else {
         while (end < text.length && !/[\s,;&#}\]]/.test(text[end]!)) { charge(1); end++; }
         if (field?.toLowerCase() === 'authorization' && /^(?:Bearer|Basic)$/i.test(text.slice(valueStart, end))) {
@@ -61,12 +75,12 @@ function portableSecretInspection(maxBytes: number, diagnostic = false) {
           while (end < text.length && !/[\s,;&#}\]]/.test(text[end]!)) { charge(1); end++; }
         }
       }
-      let replacement = '[REDACTED]';
+      let replacement = malformedValue ? '[Provider diagnostic span omitted: unterminated credential value]' : '[REDACTED]';
       if (!field) {
         const original = text.slice(valueStart, end);
         let parsed: unknown;
         try { parsed = JSON.parse(original); }
-        catch { continue; } // Keep scanning malformed prose for named fields.
+        catch { continue; } // The assignment scanner also handles escaped keys in damaged spans.
         const safe = visit(parsed, depth + 1);
         if (JSON.stringify(parsed) === JSON.stringify(safe)) {
           token.lastIndex = end;
