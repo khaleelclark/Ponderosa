@@ -129,3 +129,13 @@ Application sources are identical to the frozen rapid-paste candidate
 `f250d60cf0105c0287008f2588bbce26bd6b59fd`. Review/integration and the boundaries
 above remain open; this does not close the broader EVERY-input or #27 release
 requirements on the final integrated candidate.
+
+
+## Current integration adaptation
+
+The filename census now classifies `InboxView.tsx` after the integrated rename.
+Regeneration retains 135 declarations: 11 Chat/editor declarations and 124
+exclusions. Each classified declaration was inspected; remaining changed census
+entries reflect current source line numbers/attributes and renamed Inbox paths.
+Frozen desktop corpus results above remain predecessor evidence; integrated
+qualification receipts are reported separately. No mobile proof is inferred.

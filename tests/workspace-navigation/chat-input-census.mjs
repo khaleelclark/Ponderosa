@@ -5,7 +5,7 @@ import {readdir,readFile,writeFile} from 'node:fs/promises';
 const rows=[];async function scan(dir){for(const entry of await readdir(dir,{withFileTypes:true})){const file=dir+'/'+entry.name;if(entry.isDirectory())await scan(file);else if(file.endsWith('.tsx')){const source=await readFile(file,'utf8'),tree=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);function visit(node){if(ts.isJsxOpeningElement(node)||ts.isJsxSelfClosingElement(node)){const tag=node.tagName.getText(tree),attrs=node.attributes.properties.map(p=>p.getText(tree));if(['Composer','ComposerEditor','TextField','Input','OutlinedInput','InputBase','input','textarea','ContentEditable'].includes(tag)||attrs.some(a=>/^component=["']textarea/.test(a))){const line=tree.getLineAndCharacterOfPosition(node.getStart()).line+1;rows.push({file,line,tag,attributes:attrs});}}ts.forEachChild(node,visit);}visit(tree);}}}await scan('apps/web/src');const chatFiles=new Map([
  ['AgentCreateDialog.tsx','Agent initial task: Core create route and Branches embedded form'],
  ['AgentDetail.composer.tsx','Agent private Chat: Core, Branches, Assistant and output'],
- ['AllChatView.tsx','Global Inbox target-required reply'],
+ ['InboxView.tsx','Global Inbox target-required reply'],
  ['ConversationView.tsx','Core and Branches shared Chat'],
  ['Composer.controls.tsx','Shared main editor'],
  ['ComposerEditor.tsx','Shared Lexical contenteditable'],
