@@ -134,7 +134,7 @@ function WorkspaceTabScrollButton(props: TabScrollButtonProps): JSX.Element {
 // Tabs must clone selection/keyboard props onto the Tab itself, not onto Tooltip.
 const WorkspaceIconTab = forwardRef<HTMLDivElement, TabProps>(function WorkspaceIconTab(props, ref) {
   const tab = <Tab {...props} ref={ref} />;
-  return <Tooltip title={props["aria-label"]}>{props.disabled ? <span aria-disabled="true" style={{display:"inline-flex"}}>{tab}</span> : tab}</Tooltip>;
+  return props.disabled ? tab : <Tooltip title={props["aria-label"]}>{tab}</Tooltip>;
 });
 
 export function WorkspaceTabBar<T extends string>({ value, items, onChange, label, idPrefix, compact = false }: {

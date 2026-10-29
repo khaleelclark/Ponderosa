@@ -196,6 +196,25 @@ You can start an ordinary Chat without first creating a team.
 Shared Chat contains authored messages. Inspect tools and execution details in
 Agent views such as **Work log**.
 
+### Editing and input
+
+Rename a Chat from its actions menu. **Enter** saves; **Cancel** leaves the name
+unchanged. The shared rename dialog ignores Enter while an IME composition is active.
+
+Pasting multiline text keeps the complete text in the draft until you submit it.
+On desktop, **Enter** sends and **Shift+Enter** inserts a newline. On Android and
+iOS, **Return** inserts a newline; use **Send** to submit.
+
+Global Agent instructions accept up to 100,000 UTF-16 code units. An oversized save
+shows an error and leaves saved instructions unchanged; shorten the unsaved draft
+before saving again.
+
+Browser voice uses the browser's read-aloud voice and the device's speech recognition;
+availability varies by browser and device. Speaking speed is adjustable in settings.
+Token Usage shows provider-reported counts, with cached input separate where available;
+provider account limits appear in Provider usage. These counts are not cost estimates.
+The Engine's truncated log label reports the size of the returned tail, not the full log.
+
 ### Attachments and saved results
 
 Attach files through the composer or use `@` references to available working-folder

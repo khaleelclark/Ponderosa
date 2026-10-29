@@ -1030,7 +1030,7 @@ test('compact shared tabs keep canonical IDs, selection, disabled eligibility an
  const render=value=>renderToStaticMarkup(React.createElement(WorkspaceTabBar,{compact:true,idPrefix:'branch',label:'Branch views',items,value,onChange(){}}));
  const html=render('chats'),tabs=[...html.matchAll(/<button[^>]*role="tab"[^>]*>[\s\S]*?<\/button>/g)].map(m=>m[0]);assert.equal(tabs.length,4);assert.equal((html.match(/role="tablist"/g)??[]).length,1);
  for(let i=0;i<items.length;i++){const item=items[i];assert.ok(tabs[i].includes(`id="branch-${item.value}-tab"`));assert.ok(tabs[i].includes(`aria-controls="branch-${item.value}-panel"`));assert.ok(tabs[i].includes(`aria-label="${item.label}"`));assert.ok(tabs[i].includes(`aria-selected="${item.value==='chats'}"`));assert.ok(tabs[i].includes(`data-icon="${item.value}"`));assert.ok(!tabs[i].includes(`>${item.label}<`),'Compact labels remain accessible instead of consuming row width')}
- assert.ok(tabs[2].includes('disabled=""'));assert.ok(html.includes('<span aria-disabled="true"'),'Disabled tab keeps its tooltip event wrapper without becoming another focus stop');assert.equal((render(false).match(/aria-selected="true"/g)??[]).length,0,'Work-open false value must not falsely select Chat');
+ assert.ok(tabs[2].includes('disabled=""'));assert.ok(!html.includes('<span aria-disabled="true"'),'Disabled tab remains a direct semantic child of tablist');assert.equal((render(false).match(/aria-selected="true"/g)??[]).length,0,'Work-open false value must not falsely select Chat');
 });
 
 

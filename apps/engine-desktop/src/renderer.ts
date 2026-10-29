@@ -93,10 +93,10 @@ function render(snapshot: EngineSnapshot): void {
   const selected = snapshot.logs[selectedLog];
   logOutput.textContent = selected.text ||
     (["running", "reachable", "degraded"].includes(snapshot.state) ? "No log output yet." : snapshot.detail);
-  const totalKiB = (selected.totalBytes / 1024).toFixed(1);
+  const returnedKiB = (selected.returnedBytes / 1024).toFixed(1);
   logOutput.setAttribute(
     "aria-label",
-    `${selectedLog} log${selected.truncated ? `, latest ${totalKiB} KiB shown` : ""}`,
+    `${selectedLog} log${selected.truncated ? `, latest ${returnedKiB} KiB shown` : ""}`,
   );
   openButton.disabled = branchesButton.disabled = !["running", "reachable", "degraded"].includes(snapshot.state) || busy;
   restartButton.disabled = ["starting", "stopping"].includes(snapshot.state) || busy;

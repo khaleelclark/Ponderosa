@@ -1044,6 +1044,9 @@ export class WorkspaceStore {
   }
 
   updatePreferences(patch: UpdateWorkspacePreferencesRequest): WorkspacePreferencesDto {
+    if (patch.globalInstructions !== undefined && patch.globalInstructions.length > 100_000) {
+      throw new Error("Global instructions must be at most 100,000 characters. Your saved instructions were not changed.");
+    }
     const notifications = patch.notifications ? normalizeNotifications(patch.notifications) : this.preferences.notifications;
     const preferences: WorkspacePreferencesDto = {
       ...this.preferences,
@@ -1067,7 +1070,7 @@ export class WorkspaceStore {
       claudeModelOptions: patch.claudeModelOptions === undefined
         ? this.preferences.claudeModelOptions
         : normalizeClaudeModelOptions(patch.claudeModelOptions),
-      globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
+      globalInstructions: patch.globalInstructions ?? this.preferences.globalInstructions,
       maxConcurrentAgentRuns: patch.maxConcurrentAgentRuns ?? this.preferences.maxConcurrentAgentRuns,
       contextRolloverEnabled: patch.contextRolloverEnabled ?? this.preferences.contextRolloverEnabled,
       contextRolloverTokens: clampContextRolloverTokens(

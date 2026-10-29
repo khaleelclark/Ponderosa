@@ -754,6 +754,10 @@ export function WorkspaceSidebar({
           role="separator"
           aria-label="Resize sidebar"
           aria-orientation="vertical"
+          aria-valuenow={width}
+          aria-valuemin={clampWorkspaceSidebarWidth(0)}
+          aria-valuemax={clampWorkspaceSidebarWidth(Infinity)}
+          aria-valuetext={`${width} pixels`}
           tabIndex={0}
           onPointerDown={resizeStart}
           onKeyDown={event => {

@@ -11,7 +11,6 @@ export function BrowserVoiceSettings({ preferences, onPreferences }: {
   useEffect(() => setSpeed(saved), [saved]);
   return <Stack spacing={1}>
     <Typography variant="h6">Browser voice</Typography>
-    <Typography variant="body2" color="text.secondary">Read aloud uses your browser’s voice. Dictation uses your device’s speech recognition. Availability depends on your browser and device.</Typography>
     <Box sx={{maxWidth:360,px:1}}>
       <Typography id="browser-speech-speed">Speaking speed</Typography>
       <Slider aria-labelledby="browser-speech-speed" min={.75} max={1.25} step={.05} value={speed}

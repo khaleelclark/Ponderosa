@@ -1385,8 +1385,7 @@ export function ConversationView({
         }}
         onStopConfirm={targets => void cancelOperationTargets(targets)}
         onRenameClose={() => setRenameOpen(false)}
-        onRenameValueChange={setRenameValue}
-        onRename={() => rename.mutate(renameValue.trim())}
+        onRename={value => rename.mutate(value)}
         onDeleteClose={() => setDeleteOpen(false)}
         onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
       />}

@@ -203,7 +203,7 @@ export function TextInputDialog({
         helperText={validationError ?? helperText}
         sx={{ mt: 1 }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !props.pending && !validationError) {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !props.pending && !validationError) {
             event.preventDefault();
             onConfirm(value);
           }

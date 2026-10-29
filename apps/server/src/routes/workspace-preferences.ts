@@ -236,6 +236,7 @@ export function registerWorkspacePreferenceRoutes(
       }
     }
     if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
+    if (patch.globalInstructions !== undefined && patch.globalInstructions.length > 100_000) return reply.code(400).send({ error: "Global instructions must be at most 100,000 characters. Your saved instructions were not changed." });
     if (patch.maxConcurrentAgentRuns !== undefined && (!Number.isSafeInteger(patch.maxConcurrentAgentRuns) ||
         patch.maxConcurrentAgentRuns < MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY ||
         patch.maxConcurrentAgentRuns > MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY)) {

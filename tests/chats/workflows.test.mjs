@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { AgentStore } from '@ponderosa/agents';
+import { AgentStore, WorkspaceStore } from '@ponderosa/agents';
 import { processBirthMarker } from '@ponderosa/engines';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
@@ -23,6 +23,16 @@ test('checks 29, 30, 91: settings persist and invalid settings do not overwrite 
   assert.equal((await f.api('PATCH', `/api/conversations/${chat.id}`, { defaultModel: 'unknown-model' })).status, 400);
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { fontFamily: 'system', globalInstructions: 'Saved global guidance', maxConcurrentAgentRuns: 2 }));
   assert.equal((await f.api('PATCH', '/api/workspace/preferences', { maxConcurrentAgentRuns: 'two' })).status, 400);
+  for (const route of ['/api/workspace/preferences', '/api/branches/engine/workspace/preferences']) {
+    const full = 'é'.repeat(99_995) + 'TAIL!';
+    f.ok(await f.api('PATCH', route, { globalInstructions: full }));
+    assert.equal(f.ok(await f.api('GET', route)).globalInstructions, full);
+    const rejected = await f.api('PATCH', route, { globalInstructions: full + 'X' });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.body.error, /100,000 characters/);
+    assert.equal(f.ok(await f.api('GET', route)).globalInstructions, full);
+    f.ok(await f.api('PATCH', route, { globalInstructions: 'Saved global guidance' }));
+  }
   await f.reopen();
   const c = f.ok(await f.api('GET', `/api/conversations/${chat.id}`)).conversation;
   assert.equal(c.defaultModel, 'fixture'); assert.equal(c.instructions, 'Saved Chat guidance');
@@ -316,4 +326,14 @@ test('Q01 a stale stream cursor requests a canonical snapshot rather than replay
     const snapshot = f.ok(await f.api('GET', `/api/conversations/${chat.id}`));
     assert.equal(snapshot.messages.filter(item => item.text.includes(marker)).length, 1);
   } finally { await reader.cancel(); controller.abort(); }
+}));
+
+test('global instruction rejection preserves the store revision and complete saved text', options, t => withFixture(t, async f => {
+  const workspace = new WorkspaceStore(f.dataDir);
+  try {
+    const saved = workspace.updatePreferences({globalInstructions:'keep the complete saved text'});
+    assert.throws(()=>workspace.updatePreferences({globalInstructions:'x'.repeat(100_001)}),/100,000 characters/);
+    assert.equal(workspace.getPreferences().revision,saved.revision);
+    assert.equal(workspace.getPreferences().globalInstructions,saved.globalInstructions);
+  } finally { workspace.close(); }
 }));
