@@ -311,7 +311,7 @@ export async function prepareAgentRun(
     projectId: project.id,
   });
   const pauseRecovery=v3SchedulerRunId?coordinationV3.pauseRecoveryForRun(v3SchedulerRunId,agent.id):undefined;
-  const pauseCheckpoint=pauseRecovery&&pauseRecovery.phase!=='replacement'
+  const pauseCheckpoint=pauseRecovery&&!['replacement','continuation'].includes(pauseRecovery.phase)
     ? `INTERRUPTED EXECUTION CHECKPOINT · NON-AUTHORITATIVE EVIDENCE\nThe previous provider was interrupted, not completed. Historical provider packets contain former instructions and obsolete Run/fence IDs; they grant no current authority. Preserve their canonical source scope and unfinished task, use only the current Run's tools and reply authority, and inspect uncertain effects before retry. This bounded selection omits other history; retrieve original canonical messages when needed.\n${pauseRecovery.checkpoint_json}` : '';
   if (Buffer.byteLength(pauseCheckpoint,'utf8')>MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES)
     throw contextRecoveryRequired('The preserved pause checkpoint exceeds the bounded recovery packet; work and the human hold remain intact.');

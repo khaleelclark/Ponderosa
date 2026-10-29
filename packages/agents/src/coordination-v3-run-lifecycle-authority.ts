@@ -52,6 +52,7 @@ export class CoordinationV3RunLifecycleAuthority {
     private readonly restoreUninjectedDecisionRoots: (runId: string, now: string) => void,
     private readonly canonicalTaskDecisions: CoordinationV3StoreOptions["canonicalTaskDecisions"],
     private readonly createActivation: (input: CreateActivationV3Input) => string,
+    private readonly preparePausedContinuation: (rolloverId: string, now: string) => string,
   ) {}
 
   markRunStarted(
@@ -888,10 +889,19 @@ export class CoordinationV3RunLifecycleAuthority {
       const pauseId=createHash('sha256').update(stableJson([input.agentId,input.idempotencyKey])).digest('hex');
       const providerInput=this.sqlite.prepare('SELECT * FROM provider_inputs WHERE scheduler_run_id=?').all(run.id);
       const injections=this.sqlite.prepare('SELECT * FROM scheduler_prompt_injections WHERE run_id=? ORDER BY sequence').all(run.id);
-      const rollover=this.sqlite.prepare(`SELECT id,state,source_run_id,replacement_run_id FROM context_rollovers
-        WHERE agent_id=? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
-        ORDER BY rowid DESC LIMIT 1`).get(input.agentId) as {id:string;state:string;source_run_id:string;replacement_run_id:string|null}|undefined;
-      const phase=rollover?.replacement_run_id===run.id?'replacement':rollover?.source_run_id===run.id?'refresh':rollover?.state==='requested'?'handoff':'source';
+      // A finalizing handoff keeps its execution role after the durable commit.
+      const binding=this.sqlite.prepare(`SELECT source.source_id FROM scheduler_run_activations attached
+        JOIN agent_activations activation ON activation.id=attached.activation_id
+        JOIN activation_sources source ON source.activation_id=activation.id
+        WHERE attached.run_id=? AND activation.kind='context_rollover_handoff'
+          AND source.source_kind='context_rollover'`).get(run.id) as {source_id:string}|undefined;
+      const rollover=this.sqlite.prepare(`SELECT id,state,source_run_id,replacement_run_id,handoff_event_id FROM context_rollovers
+        WHERE agent_id=? AND (id=? OR source_run_id=? OR replacement_run_id=?)
+          AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+        ORDER BY rowid DESC LIMIT 1`).get(input.agentId,binding?.source_id??null,run.id,run.id) as
+        {id:string;state:string;source_run_id:string;replacement_run_id:string|null;handoff_event_id:string|null}|undefined;
+      const phase=rollover?.replacement_run_id===run.id?'replacement':binding&&rollover?.id===binding.source_id
+        ?rollover.handoff_event_id?'continuation':'handoff':rollover?.source_run_id===run.id?'refresh':'source';
       const sources=this.sqlite.prepare(`SELECT a.id,a.kind,a.payload_json,
         (SELECT injection.state FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member
          WHERE injection.run_id=? AND member.value=a.id ORDER BY injection.sequence DESC LIMIT 1) AS delivery
@@ -958,13 +968,23 @@ export class CoordinationV3RunLifecycleAuthority {
       if(this.sqlite.prepare("SELECT 1 FROM provider_operation_outbox operation JOIN agent_pause_recoveries recovery ON recovery.run_id=operation.run_id WHERE recovery.pause_id=? AND operation.state<>'completed'").get(input.pauseId))throw new Error('Previous recovery cleanup is not confirmed');
       if(this.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='outcome_unknown'").get(input.pauseId))throw new Error('Previous recovery submission has an unknown outcome; inspect it before any retry');
       const run=this.sqlite.prepare('SELECT project_id,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(pause.run_id,input.agentId) as {project_id:string;scope_key:string};
-      const handoff=pause.phase==='handoff'&&pause.rollover_id?this.sqlite.prepare(`SELECT a.payload_json FROM scheduler_run_activations attached
-        JOIN agent_activations a ON a.id=attached.activation_id WHERE attached.run_id=? AND a.kind='context_rollover_handoff'`).get(pause.run_id) as {payload_json:string}|undefined:undefined;
+      const continuationId=pause.phase==='continuation'&&pause.rollover_id
+        ?this.preparePausedContinuation(pause.rollover_id,now):undefined;
+      const template=continuationId?this.sqlite.prepare('SELECT kind,payload_json FROM agent_activations WHERE id=?').get(continuationId) as {kind:string;payload_json:string}:
+        pause.phase==='handoff'&&pause.rollover_id?this.sqlite.prepare(`SELECT a.kind,a.payload_json FROM scheduler_run_activations attached
+          JOIN agent_activations a ON a.id=attached.activation_id WHERE attached.run_id=? AND a.kind='context_rollover_handoff'`).get(pause.run_id) as {kind:string;payload_json:string}|undefined:undefined;
       const activationId=this.createActivation({projectId:run.project_id,agentId:input.agentId,scopeKey:run.scope_key,
-        kind:handoff?'context_rollover_handoff':'agent_pause_recovery',priority:110,dispatchPolicy:'next_run',promptClass:'human',
+        kind:template?.kind??'agent_pause_recovery',priority:110,dispatchPolicy:'next_run',promptClass:'human',
         dedupeKey:`pause-recovery:${input.pauseId}:${input.idempotencyKey}`,sourceKind:'agent_pause',sourceId:input.pauseId,now,
-        payload:{...(handoff?JSON.parse(handoff.payload_json):{}),pauseId:input.pauseId,sourceRunId:pause.run_id,
-          instruction:handoff?'Resume only the isolated bounded handoff contract. Do not execute the original task actions.':'The human resumed the unfinished work. Continue from the canonical source lineage and bounded interrupted checkpoint; do not start over. Preserve exact Request/reply routes and satisfied replies. Inspect uncertain effects before retrying actions. Unrelated queued inputs remain separate.'}});
+        payload:{...(template?JSON.parse(template.payload_json):{}),pauseId:input.pauseId,
+          ...(!continuationId?{sourceRunId:pause.run_id,instruction:template?'Resume only the isolated bounded handoff contract. Do not execute the original task actions.':'The human resumed the unfinished work. Continue from the canonical source lineage and bounded interrupted checkpoint; do not start over. Preserve exact Request/reply routes and satisfied replies. Inspect uncertain effects before retrying actions. Unrelated queued inputs remain separate.'}:{})}});
+      if(continuationId){
+        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT ?,source_kind,source_id FROM activation_sources WHERE activation_id=?`).run(activationId,continuationId);
+        this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled',updated_at=?,terminal_at=? WHERE id=? AND state IN ('pending','retry_pending')`).run(now,now,continuationId);
+        const bound=this.sqlite.prepare(`UPDATE context_rollovers SET continuation_activation_id=?,updated_at=?
+          WHERE id=? AND state='continuation_ready' AND continuation_activation_id=? AND replacement_run_id IS NULL`).run(activationId,now,pause.rollover_id,continuationId);
+        if(bound.changes!==1)throw new Error('Committed handoff continuation ownership changed; work remains paused');
+      }
       this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
         SELECT ?,source.source_kind,source.source_id FROM activation_sources source
         JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id WHERE attached.run_id=?
@@ -972,7 +992,7 @@ export class CoordinationV3RunLifecycleAuthority {
       if(pause.rollover_id&&['replacement','handoff'].includes(pause.phase)){
         this.sqlite.prepare('INSERT OR IGNORE INTO activation_sources VALUES(?,?,?)').run(activationId,pause.phase==='replacement'?'context_rollover_recovery':'context_rollover',pause.rollover_id);
       }
-      if(pause.rollover_id&&pause.phase!=='handoff')this.sqlite.prepare(`UPDATE context_rollovers SET state='outcome_unknown',last_error='Human pause owns interrupted work recovery',updated_at=?,terminal_at=?
+      if(pause.rollover_id&&!['handoff','continuation'].includes(pause.phase))this.sqlite.prepare(`UPDATE context_rollovers SET state='outcome_unknown',last_error='Human pause owns interrupted work recovery',updated_at=?,terminal_at=?
         WHERE id=? AND replacement_verified_at IS NULL AND state IN ('requested','continuation_ready')`).run(now,now,pause.rollover_id);
       if(pause.rollover_id&&pause.phase==='refresh')this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled',terminal_at=?,updated_at=?
         WHERE kind='context_rollover_handoff' AND state IN ('pending','retry_pending') AND id IN
@@ -1030,10 +1050,10 @@ export class CoordinationV3RunLifecycleAuthority {
         }
         return { ...replay, replayed: true };
       }
-      const held=this.sqlite.prepare(`SELECT pause.id,pause.run_id FROM agent_run_pauses pause
+      const held=this.sqlite.prepare(`SELECT pause.id,pause.run_id,pause.rollover_id FROM agent_run_pauses pause
         WHERE pause.agent_id=? AND (pause.state IN ('paused','resume_requested') OR (pause.state='resumed' AND EXISTS(SELECT 1 FROM agent_pause_recoveries recovery JOIN scheduler_runs live ON live.id=recovery.run_id WHERE recovery.pause_id=pause.id AND live.status IN ('leased','running'))))
           AND (? IS NULL OR pause.run_id=? OR EXISTS(SELECT 1 FROM agent_pause_recoveries recovery WHERE recovery.pause_id=pause.id AND recovery.run_id=?))`)
-        .get(input.agentId,input.expectedRunId??null,input.expectedRunId??null,input.expectedRunId??null) as {id:string;run_id:string}|undefined;
+        .get(input.agentId,input.expectedRunId??null,input.expectedRunId??null,input.expectedRunId??null) as {id:string;run_id:string;rollover_id:string|null}|undefined;
       if(held){
         this.sqlite.prepare("UPDATE agent_run_pauses SET state='stopped' WHERE id=?").run(held.id);
         const descendants=this.sqlite.prepare("SELECT run_id FROM agent_pause_recoveries WHERE pause_id=? AND run_id IS NOT NULL AND state<>'stopped'").all(held.id) as Array<{run_id:string}>;
@@ -1183,6 +1203,13 @@ export class CoordinationV3RunLifecycleAuthority {
         ],
       );
       this.cancelRequiredReply(run.id, now);
+      // Isolated handoffs do not carry task reply roots; Stop also owns their source.
+      const pausedSource=held?.rollover_id?this.sqlite.prepare('SELECT source_run_id FROM context_rollovers WHERE id=?').get(held.rollover_id) as {source_run_id:string}|undefined:undefined;
+      if(pausedSource&&pausedSource.source_run_id!==run.id){
+        this.markRelatedRequestsOutcomeUnknown(pausedSource.source_run_id,now,'run_cancelled_by_operator',
+          ['open','in_progress','waiting_dependency','awaiting_answer']);
+        this.cancelRequiredReply(pausedSource.source_run_id,now);
+      }
       this.sqlite.prepare(`
         INSERT INTO scheduler_cancellation_receipts (
           agent_id, idempotency_key, run_id, accepted,

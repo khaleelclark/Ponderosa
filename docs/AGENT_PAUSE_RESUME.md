@@ -47,7 +47,13 @@ or completed turn. Current and previous bounded observations, parent checkpoint
 identity and uncertainty remain inspectable. The compiler refuses an oversized
 required checkpoint while retaining the hold; it never silently clips it.
 
-An interrupted isolated handoff recovers only its bounded handoff contract from
+A pause identifies the exact attached execution role, including after handoff commit.
+Once committed, Resume preserves that handoff and frozen tail and atomically binds
+one sanctioned continuation to the pause receipt, inheriting its original task
+lineage. Any superseded pending continuation is fenced from admission. Stale
+handoff finalization cannot publish output or create another continuation.
+
+An interrupted uncommitted isolated handoff recovers only its bounded handoff contract from
 its frozen checkpoint, then uses ordinary continuation. An unverified
 replacement uses the existing exact replacement-recovery path: saved prompt,
 system and manifest hashes stay identical, with no appended resume prose.

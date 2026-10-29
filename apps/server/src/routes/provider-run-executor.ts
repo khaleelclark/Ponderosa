@@ -1495,7 +1495,7 @@ export function startProviderRunExecution(
         });
         publish(agent.id, cancelled);
       }
-      if (owned && !isClosed() && !controller.signal.aborted) {
+      if (owned && ownsActiveRunForAuditDrain(agent.id, activeRun) && !coordinationV3.runPause(runId) && !isClosed() && !controller.signal.aborted) {
         if (!rolloverSucceeded && !suppressRolloverHandoffOutput && !schedulerCancelled &&
             !runError && finalText.trim() &&
             firstTextSeq !== undefined && lastTextSeq !== undefined) {

@@ -151,7 +151,12 @@ test('workspace schema upgrade accepts only exact published predecessor and pres
    let store=new AgentStore(state);const chat=store.createProject({label:'Preserved Project',chatOwned:true,hostPath:folder,defaultEngine:'codex'});store.close();
    const db=new Database(path.join(state,'ponderosa.db'));
    db.exec(scenario==='exact predecessor'?"DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'":'DROP TABLE assistant_report_scan');
-   if(scenario==='exact predecessor')db.prepare('DELETE FROM _schema_version WHERE name=?').run('0029_assistant_workspace.sql');db.close();
+   if(scenario==='exact predecessor'){
+    // Reconstruct the exact 0028 predecessor, without newer pause tables or its marker.
+    db.exec('DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses');
+    db.prepare('DELETE FROM _schema_version WHERE name IN (?,?)').run('0030_agent_run_pauses.sql','0029_assistant_workspace.sql');
+   }
+   db.close();
    const snapshot=()=>JSON.stringify(readdirSync(state).filter(name=>name.endsWith('.db')||name.endsWith('.json')||name.includes('layout-version')).sort().map(name=>[name,readFileSync(path.join(state,name)).toString('base64')]));const before=snapshot();
    if(scenario==='exact predecessor'){store=new AgentStore(state);assert.equal(store.getProject(chat.id).label,'Preserved Project');assert.ok(store.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='workspace_agent_actions'").get());store.close();}
    else{assert.throws(()=>new AgentStore(state));assert.equal(snapshot(),before);}

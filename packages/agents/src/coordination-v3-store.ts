@@ -274,6 +274,14 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
       options.canonicalTaskDecisions,
       input => this.createActivation(input),
+      (id, now) => {
+        let rollover=this.contextRolloverAuthority.get(id);
+        if(rollover?.state==='handoff_committed')rollover=this.contextRolloverAuthority.beginRetiring(id,now);
+        if(rollover?.state==='session_retiring')rollover=this.contextRolloverAuthority.prepareContinuation({id,now});
+        if(rollover?.state!=='continuation_ready'||!rollover.continuationActivationId||rollover.replacementRunId)
+          throw new Error('Committed handoff has no exclusively owned continuation; work remains paused');
+        return rollover.continuationActivationId;
+      },
     );
     this.deletionAuthority = new CoordinationV3DeletionAuthority(
       sqlite,

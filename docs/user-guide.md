@@ -250,7 +250,9 @@ it does not reverse file edits or external actions.
 
 **Pause** holds the selected work while preserving its history and reply route.
 **Resume** waits for cleanup, then continues through a fresh recovery execution.
-Messages arriving during the hold remain queued. A preparation error leaves the
+If a context handoff already committed, Resume keeps it and continues the original
+task once; it does not rerun the handoff. Messages arriving during the hold remain
+queued. A preparation error leaves the
 work paused and shows its cause; inspect uncertain external effects before
 retrying. **Stop** cancels paused work as well.
 
