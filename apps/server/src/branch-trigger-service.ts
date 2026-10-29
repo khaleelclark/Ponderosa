@@ -17,7 +17,7 @@ import { BranchTriggerSecretStore } from "./branch-trigger-secrets.js";
 
 const MIN_INTERVAL_MS = 60_000;
 const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1_000;
-const MAX_MISSED_TIMES = 10_000;
+const MAX_SCHEDULE_OCCURRENCES_PER_POLL = 100;
 const MAX_FILES_PER_OCCURRENCE = 500;
 const MAX_FILESYSTEM_WINDOW_MS = 60 * 60 * 1_000;
 const DEFAULT_EXCLUDES = [".git/**", "node_modules/**", ".ponderosa/**"];
@@ -456,63 +456,28 @@ export class BranchTriggerSourceService {
     const expected = trigger.nextFireAt;
     if (!expected) return;
     const config = trigger.sourceConfig as TriggerScheduleConfig;
-    const missed: string[] = [];
-    let cursor = new Date(expected);
-    let next: Date | null = null;
-    let missedCount = 0;
-    let exactIntervalRange: { first: string; last: string; everyMs: number; count: number } | undefined;
-    let truncatedCron = false;
-    if (config.scheduleKind === "once") {
-      missed.push(cursor.toISOString());
-    } else if (config.scheduleKind === "interval") {
-      missedCount = Math.floor((now.getTime() - cursor.getTime()) / config.everyMs) + 1;
-      if (missedCount <= MAX_MISSED_TIMES) {
-        for (let index = 0; index < missedCount; index += 1) {
-          missed.push(new Date(cursor.getTime() + index * config.everyMs).toISOString());
-        }
-      } else {
-        exactIntervalRange = {
-          first: cursor.toISOString(),
-          last: new Date(cursor.getTime() + (missedCount - 1) * config.everyMs).toISOString(),
-          everyMs: config.everyMs,
-          count: missedCount,
-        };
-        missed.push(exactIntervalRange.first, exactIntervalRange.last);
-      }
-      next = new Date(cursor.getTime() + missedCount * config.everyMs);
-    } else {
-      const cron = new Cron(config.expression, { timezone: config.timezone, paused: true });
-      while (cursor.getTime() <= now.getTime() && missed.length < MAX_MISSED_TIMES) {
-        missed.push(cursor.toISOString());
-        const candidate = cron.nextRun(cursor);
-        if (!candidate) break;
-        cursor = candidate;
-      }
-      truncatedCron = cursor.getTime() <= now.getTime();
-      if (truncatedCron) {
-        const latest = cron.previousRuns(1, now)[0];
-        if (latest && missed.at(-1) !== latest.toISOString()) missed.push(latest.toISOString());
-      }
-      next = cursor.getTime() > now.getTime() ? cursor : cron.nextRun(now);
+    let cursor: Date | null = new Date(expected);
+    const cron = config.scheduleKind === "cron"
+      ? new Cron(config.expression, { timezone: config.timezone, paused: true }) : undefined;
+    // Bound each poll without advancing past unaccepted due times.
+    for (let count = 0; cursor && cursor.getTime() <= now.getTime() && count < MAX_SCHEDULE_OCCURRENCES_PER_POLL; count += 1) {
+      const scheduledAt = cursor.toISOString();
+      const next: Date | null = config.scheduleKind === "once" ? null
+        : config.scheduleKind === "interval" ? new Date(cursor.getTime() + config.everyMs)
+        : cron!.nextRun(cursor);
+      this.options.triggers.recordScheduledTriggerOccurrence({
+        triggerId: trigger.id,
+        occurrenceKey: `schedule:${scheduledAt}:${scheduledAt}`,
+        expectedNextFireAt: scheduledAt,
+        ...(next ? { nextFireAt: next.toISOString() } : {}),
+        lastFiredAt: scheduledAt,
+        payload: { scheduledTimes: [scheduledAt], missedCount: 1, collapsedRecovery: false },
+        provenance: { source: "schedule", evaluatedAt: now.toISOString() },
+        now: now.toISOString(),
+      });
+      this.options.notify(trigger.id);
+      cursor = next;
     }
-    if (!missed.length) return;
-    const last = missed.at(-1)!;
-    this.options.triggers.recordScheduledTriggerOccurrence({
-      triggerId: trigger.id,
-      occurrenceKey: `schedule:${missed[0]}:${last}`,
-      expectedNextFireAt: expected,
-      ...(next ? { nextFireAt: next.toISOString() } : {}),
-      lastFiredAt: last,
-      payload: {
-        ...(exactIntervalRange ? { exactIntervalRange } : { scheduledTimes: missed }),
-        ...(truncatedCron ? { enumeratedCount: missed.length } : { missedCount: missedCount || missed.length }),
-        collapsedRecovery: (missedCount || missed.length) > 1,
-        ...(truncatedCron ? { truncatedCronHistory: true, enumeratedLimit: MAX_MISSED_TIMES } : {}),
-      },
-      provenance: { source: "schedule", evaluatedAt: now.toISOString() },
-      now: now.toISOString(),
-    });
-    this.options.notify(trigger.id);
   }
 
   private addFileEvent(trigger: TriggerDefinitionDto, changedPath: string, type: string,revision:string): void {

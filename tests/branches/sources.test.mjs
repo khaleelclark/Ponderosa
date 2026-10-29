@@ -22,11 +22,20 @@ async function fixture(t,kind,config,{secret=false,nextFireAt}={}){
  return {root,workspace,branch,definition,bindings,signing,notices,failures,get store(){return store},get branches(){return branches},get sources(){return sources},get triggers(){return branches.triggers},pause(){available=false},resume(){available=true},async reopen(){await sources.stop();store.close();open()},pass(){passed=true},noProviderWork(){assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0)}};
 }
 
-test('schedule recovery collapses a long exact interval range into one durable Branch admission and advances its cursor once',async t=>{
- const startsAt=new Date(Date.now()-10005*60000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt},{nextFireAt:startsAt});
- await f.sources.start();await f.sources.processDueSchedules();
- const events=f.triggers.listTriggerOccurrences(f.branch.triggerId);assert.equal(events.length,1);assert.equal(events[0].payload.collapsedRecovery,true);assert.ok(events[0].payload.exactIntervalRange.count>=10005);assert.equal(events[0].payload.scheduledTimes,undefined);
- assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,1);assert.ok(Date.parse(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt)>Date.now());f.noProviderWork();f.pass();
+test('schedule recovery admits each due interval, retains a bounded backlog and resumes without duplicates',async t=>{
+ const now=Date.parse('2026-10-30T10:00:00Z');t.mock.timers.enable({apis:['Date'],now});
+ const startsAt=new Date(now-204*60000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt,whenRunning:'queue_all'},{nextFireAt:startsAt});
+ for(const expected of [100,200,205,205]){
+  await f.sources.processDueSchedules();
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,expected);
+ }
+ const events=f.store.sqlite.prepare('SELECT payload_json,provenance_json FROM trigger_occurrences ORDER BY created_at,id').all();
+ const times=events.map(row=>JSON.parse(row.payload_json).scheduledTimes[0]).sort();
+ assert.deepEqual(times,Array.from({length:205},(_,i)=>new Date(Date.parse(startsAt)+i*60000).toISOString()));
+ for(const row of events)assert.equal(JSON.parse(row.provenance_json).evaluatedAt,new Date(now).toISOString());
+ assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,new Date(now+60000).toISOString());
+ await f.reopen();t.mock.timers.setTime(now-60000);await f.sources.processDueSchedules();t.mock.timers.setTime(now);await f.sources.processDueSchedules();
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,205);f.noProviderWork();f.pass();
 });
 
 test('signed webhook replay survives reopening, rejects tampering and cannot smuggle manual or direct Agent authority',async t=>{
@@ -131,7 +140,7 @@ test('more than one due page of disabled Branches cannot starve an enabled sched
   f.branches.setEnabled(owner.id,false);
  }
  assert.deepEqual(f.triggers.listDueScheduleTriggers().map(item=>item.id),[f.branch.triggerId]);
- await f.sources.start();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,1);f.noProviderWork();f.pass();
+ await f.sources.start();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,3);f.noProviderWork();f.pass();
 });
 
 test('changing configuration seals a pending file burst against the immutable previous configuration',async t=>{
@@ -159,11 +168,36 @@ test('failed schedule acceptance stays due, reports a stable sanitized episode, 
  const failures=f.failures.filter(row=>row.kind==='schedule');assert.equal(failures.length,3);assert.equal(new Set(failures.map(row=>row.trigger.id+row.episode+row.error)).size,1);assert.doesNotMatch(failures[0].error,/SQL|secret|path/);
  assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,at);assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
  f.store.sqlite.exec('DROP TRIGGER fail_schedule');await f.sources.processDueSchedules();await f.sources.processDueSchedules();
- assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,1);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,1);f.noProviderWork();f.pass();
+ assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,2);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,2);f.noProviderWork();f.pass();
 });
 
 test('an idle schedule scan advances its cutoff when a future tick becomes due',async t=>{
  const now=Date.now(),at=new Date(now+5000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'once',at},{nextFireAt:at});
  t.mock.timers.enable({apis:['Date'],now});await f.sources.processDueSchedules();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
  t.mock.timers.setTime(now+10000);await f.sources.processDueSchedules();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,1);f.noProviderWork();f.pass();
+});
+
+test('cron forward catchup admits distinct times and retains existing DST and backward-clock semantics',async t=>{
+ for(const [name,initial,expression,observations] of [
+  ['forward','2026-10-30T10:00:00Z','* * * * *',[['2026-10-30T10:03:01Z',3],['2026-10-30T09:59:00Z',3],['2026-10-30T10:03:01Z',3]]],
+  ['fall','2026-11-01T04:00:00Z','30 1 * * *',[['2026-11-01T05:30:00Z',1],['2026-11-01T06:30:00Z',1],['2026-11-02T06:30:00Z',2]]],
+  ['spring','2026-03-08T05:00:00Z','30 2 * * *',[['2026-03-08T07:00:00Z',0],['2026-03-08T07:30:00Z',1],['2026-03-09T06:30:00Z',2]]],
+ ])await t.test(name,async t=>{
+  t.mock.timers.enable({apis:['Date'],now:Date.parse(initial)});
+  const config={scheduleKind:'cron',expression,timezone:'America/New_York',whenRunning:'queue_all'};
+  const normalized=normalizeTriggerSourceConfig('schedule',config),f=await fixture(t,'schedule',config,{nextFireAt:normalized.nextFireAt});
+  for(const [at,count] of observations){t.mock.timers.setTime(Date.parse(at));await f.sources.processDueSchedules();assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,count);}
+  f.noProviderWork();f.pass();
+ });
+});
+
+test('partial catchup failure retries only the unaccepted scheduled times after reopening',async t=>{
+ const now=Date.parse('2026-10-30T10:03:01Z'),startsAt='2026-10-30T10:01:00.000Z';t.mock.timers.enable({apis:['Date'],now});
+ const f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt,whenRunning:'queue_all'},{nextFireAt:startsAt});
+ f.store.sqlite.exec("CREATE TEMP TRIGGER fail_third BEFORE INSERT ON branch_executions WHEN (SELECT count(*) FROM branch_executions)=2 BEGIN SELECT RAISE(ABORT,'Controlled third admission failure'); END");
+ await f.sources.processDueSchedules();assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,2);
+ assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,'2026-10-30T10:03:00.000Z');
+ await f.reopen();await f.sources.processDueSchedules();await f.sources.processDueSchedules();
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,3);
+ const events=f.triggers.listTriggerOccurrences(f.branch.triggerId);assert.equal(new Set(events.map(event=>event.payload.scheduledTimes[0])).size,3);f.noProviderWork();f.pass();
 });
