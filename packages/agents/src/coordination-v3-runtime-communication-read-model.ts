@@ -44,7 +44,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       SELECT run.status,
         EXISTS (SELECT 1 FROM context_rollovers rollover
           WHERE rollover.agent_id = run.agent_id
-            AND rollover.state IN ('requested', 'handoff_committed', 'session_retiring', 'continuation_ready')) AS rollover,
+            AND (rollover.state IN ('handoff_committed', 'session_retiring', 'continuation_ready')
+              OR rollover.state = 'requested' AND rollover.source_run_id <> run.id)) AS rollover,
         EXISTS (SELECT 1 FROM scheduler_prompt_injections injection
           WHERE injection.run_id = run.id AND injection.kind = 'steer'
             AND injection.state IN ('pending', 'submitted')) AS prior_steering,

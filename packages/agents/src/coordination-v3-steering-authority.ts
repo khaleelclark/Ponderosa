@@ -167,7 +167,8 @@ export class CoordinationV3SteeringAuthority {
           AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
             WHERE rollover.agent_id = a.agent_id
-              AND rollover.state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+              AND (rollover.state IN ('handoff_committed','session_retiring','continuation_ready')
+                OR rollover.state = 'requested' AND rollover.source_run_id <> r.id)
           ))
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
@@ -209,7 +210,8 @@ export class CoordinationV3SteeringAuthority {
           AND (kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
             WHERE rollover.agent_id = agent_activations.agent_id
-              AND rollover.state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+              AND (rollover.state IN ('handoff_committed','session_retiring','continuation_ready')
+                OR rollover.state = 'requested' AND rollover.source_run_id <> ?)
           ))
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
@@ -224,6 +226,7 @@ export class CoordinationV3SteeringAuthority {
         now,
         candidate.run_id,
         scheduled?1:0,
+        candidate.run_id,
         scheduled?64:limit,
       ) as ActivationRow[]).filter(activation=>!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions)).slice(0,limit);
       if (activations.length === 0) return undefined;
@@ -410,6 +413,14 @@ export class CoordinationV3SteeringAuthority {
         WHERE id = ? AND run_id = ?
           AND state IN ('pending', 'submitted')
       `).run(now, now, input.injectionId, input.runId);
+      // A known refusal did not replace the acknowledged turn with uncertain input.
+      this.sqlite.prepare(`UPDATE scheduler_runs SET prompt_injection_state='injected',updated_at=?
+        WHERE id=? AND fencing_token=? AND status='running' AND prompt_injection_state='injecting'
+          AND EXISTS (SELECT 1 FROM scheduler_prompt_injections accepted
+            WHERE accepted.run_id=scheduler_runs.id AND accepted.kind='turn' AND accepted.state='acknowledged')
+          AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections unsettled
+            WHERE unsettled.run_id=scheduler_runs.id AND unsettled.state IN ('pending','submitted','outcome_unknown'))`)
+        .run(now,input.runId,input.fencingToken);
     })();
   }
 

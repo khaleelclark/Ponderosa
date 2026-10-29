@@ -1273,6 +1273,10 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.request(input);
   }
 
+  rebindContextRolloverHandoffBoundary(input: Parameters<CoordinationV3ContextRolloverAuthority["rebindHandoffBoundary"]>[0]): ContextRolloverV3 {
+    return this.contextRolloverAuthority.rebindHandoffBoundary(input);
+  }
+
   contextRollover(id: string): ContextRolloverV3 | undefined {
     return this.contextRolloverAuthority.get(id);
   }

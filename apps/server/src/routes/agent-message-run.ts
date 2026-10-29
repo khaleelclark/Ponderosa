@@ -951,6 +951,7 @@ export function registerAgentMessageRunRoute(
         text,
         internalV3Dispatch,
         v3SchedulerRunId,
+        v3FencingToken,
         v3InjectionId,
         v3FreshProviderSession,
         v3ActivationPrompt,

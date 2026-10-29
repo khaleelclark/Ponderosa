@@ -23,7 +23,7 @@ import {
   unicodeCodePointLength,
 } from "@ponderosa/core";
 import { CapabilityPolicyStore } from "@ponderosa/agents";
-import { boundedFrozenSeedHistory, communicationSeedProvenance, renderSeedHistoryMessage } from "@ponderosa/core/seed-history";
+import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES, boundedFrozenSeedHistory, communicationSeedProvenance, renderSeedHistoryMessage } from "@ponderosa/core/seed-history";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
@@ -72,6 +72,7 @@ interface PrepareAgentRunInput {
   text: string;
   internalV3Dispatch: boolean;
   v3SchedulerRunId: string | undefined;
+  v3FencingToken: number | undefined;
   v3InjectionId: string | undefined;
   v3FreshProviderSession: boolean | undefined;
   v3ActivationPrompt: string | undefined;
@@ -188,6 +189,7 @@ export async function prepareAgentRun(
     text,
     internalV3Dispatch,
     v3SchedulerRunId,
+    v3FencingToken,
     v3InjectionId,
     v3FreshProviderSession,
     v3ActivationPrompt,
@@ -406,6 +408,19 @@ export async function prepareAgentRun(
     if (preflightResumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash) {
       throw new Error("context rollover handoff contract is incompatible; original accepted context retained");
     }
+    coordinationV3.rebindContextRolloverHandoffBoundary({
+      id: preflightActiveRollover.id,
+      handoffRunId: v3SchedulerRunId!,
+      fencingToken: v3FencingToken!,
+      bind: communicationEventIds => store.bindContextRolloverBoundary({
+        agentId: agent.id,
+        ...(preflightActiveRollover.conversationId ? { currentConversationId: preflightActiveRollover.conversationId } : {}),
+        submittedCommunicationEventIds: [...new Set([
+          ...(store.acceptedProviderSessionCommunicationEventIds(agent.id) ?? []), ...communicationEventIds,
+        ])],
+        maxUtf8Bytes: Math.min(preflightActiveRollover.lowWaterMark, MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES),
+      }),
+    });
   }
   const runtimeAttachmentsFollowSession = Boolean(engine.adapter.openSession);
   let runtimeAttachmentDirectory: string | undefined;

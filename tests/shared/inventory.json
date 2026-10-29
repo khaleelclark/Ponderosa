@@ -1602,6 +1602,13 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Built server, owned Chroma and pinned models; no provider account",
       "origin": "Phase2 actual product package memory/lifecycle regressions"
+    },
+    {
+      "path": "tests/context-recovery/steering-refresh.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
     }
   ],
   "retainedReleasePayload": [
