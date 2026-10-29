@@ -282,6 +282,10 @@ test('drafts, resource activity, saved decisions and accepted context use their 
 
 
 test('a real server lifetime preserves the host identity and independent journals while reusing healthy history', async t => {
+  // This check exercises generated identity, independent of host overrides.
+  const saved = new Map(['PONDEROSA_VAPID_PUBLIC_KEY', 'PONDEROSA_VAPID_PRIVATE_KEY', 'PONDEROSA_VAPID_SUBJECT'].map(key => [key, process.env[key]]));
+  for (const key of saved.keys()) delete process.env[key];
+  t.after(() => { for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
   const f = fixture(t);
   let app = createServer({ dataDir: f.dataDir, store: f.store, engines: [], logger: false, allowedBrowseRoots: [f.root] });
   try {

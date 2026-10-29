@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -16,6 +16,7 @@ test("pnpm wrapper cleanup removes only build metadata and retains arguments, li
     for (const [name, newline] of [["shim", "\n"], ["shim-crlf", "\r\n"]]) {
       const body = ['#!/bin/sh', '# runtime comment', 'printf "%s\\n" "$@"', ''].join(newline);
       writeFileSync(path.join(bins, name), body + '# cmd-shim-target=C:/Users/build-user/staging/script.js' + newline, { mode: 0o755 });
+      if (process.platform !== "win32") chmodSync(path.join(bins, name), 0o755);
       writeFileSync(path.join(bins, name + ".cmd"), "@echo untouched\r\n");
       prunePackageManagerMetadata(root);
       assert.equal(readFileSync(path.join(bins, name), "utf8"), body);
