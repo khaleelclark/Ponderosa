@@ -78,8 +78,8 @@ test('a clean checkpoint preserves preparing state and safely resumes a fenced p
   assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'ready');
 }));
 
-for (const source of ['canonical files', 'SQLite authority']) {
-  test(`writes to ${source} between deferred index turns still require recovery`, { timeout: 20000 }, t => fixture(t, async f => {
+for (const source of ['canonical files', 'owned metadata', 'untracked projections', 'SQLite authority']) {
+  test(`writes to ${source} between deferred index turns preserve their recovery boundary`, { timeout: 20000 }, t => fixture(t, async f => {
     const messages = Array.from({ length: 48 }, (_, index) => ({ role: 'assistant', text: `DIRTYCHECKPOINTWITNESS ${index}` }));
     f.store.setImportedHistory(f.agent.id, 'Dirty checkpoint archive', messages);
     f.reopen();
@@ -87,8 +87,14 @@ for (const source of ['canonical files', 'SQLite authority']) {
     const indexed = f.store.sqlite.prepare('SELECT count(*) count FROM imported_history_fts').get().count;
     assert.ok(indexed > 0 && indexed < messages.length, 'Authoritative write must interleave actual indexing turns');
     let requestBefore;
-    if (source === 'canonical files') f.store.updateAgent(f.agent.id, { title: 'Canonical edit between indexing turns' });
-    else {
+    if (source === 'canonical files') {
+      const filename = path.join(f.dataDir, 'projects', f.project.id, 'agents', f.agent.id, 'agent.json');
+      const record = JSON.parse(await readFile(filename, 'utf8'));
+      await writeFile(filename, JSON.stringify({...record, title:'Canonical edit between indexing turns'}));
+    } else if (source === 'owned metadata') f.store.updateAgent(f.agent.id, {title:'Canonical edit between indexing turns'});
+    else if (source === 'untracked projections') {
+      f.store.sqlite.prepare("UPDATE imported_history_messages SET text = 'Unaccounted projection edit' WHERE agent_id = ? AND sequence = 0").run(f.agent.id);
+    } else {
       const requests = new CoordinationV3Store(f.store.sqlite).coordinate({
         projectId: f.project.id, conversationId: f.chat.id, actorScope: 'user:local-operator', idempotencyKey: randomUUID(),
         requests: [{ recipientAgentId: f.agent.id, lifetime: { kind: 'indefinite' } }],
@@ -97,9 +103,10 @@ for (const source of ['canonical files', 'SQLite authority']) {
     }
     await ready(f.store, f.agent.id);
     f.reopen();
-    assert.equal(f.store.startupProfile().mode, 'recovery', 'Deferred projection accounting must never credit unrelated writes');
-    if (source === 'canonical files') assert.equal(f.store.getAgent(f.agent.id).title, 'Canonical edit between indexing turns');
-    else assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM coordination_requests WHERE id=?').get(requestBefore.id), requestBefore);
+    assert.equal(f.store.startupProfile().mode, ['SQLite authority', 'owned metadata'].includes(source) ? 'clean' : 'recovery',
+      'Tracked metadata and V3 authority may reuse views; deferred indexing must not credit unrelated changes');
+    if (['canonical files', 'owned metadata'].includes(source)) assert.equal(f.store.getAgent(f.agent.id).title, 'Canonical edit between indexing turns');
+    else if (requestBefore) assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM coordination_requests WHERE id=?').get(requestBefore.id), requestBefore);
     await ready(f.store, f.agent.id);
     assert.deepEqual(f.store.getImportedHistory(f.agent.id).messages, messages);
   }));

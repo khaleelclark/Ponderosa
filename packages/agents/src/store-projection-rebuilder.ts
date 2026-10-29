@@ -7,7 +7,7 @@ import {
   type AgentPresetDto,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
-import { EventLog } from "./eventlog.js";
+import { readLog } from "./eventlog.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
 import { pruneArtifactDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type { AgentJson, ConversationJson, PresetEvent, ProjectJson } from "./store-types.js";
@@ -311,7 +311,7 @@ export class AgentProjectionRebuilder {
         if (t.deletedAt && !existsSync(logFile)) continue;
         mkdirSync(artifactsDir(this.dataDir, projectId, agentId), { recursive: true });
         if (!existsSync(logFile)) continue;
-        const stored = new EventLog(logFile).readAll();
+        const stored = readLog(logFile);
         const protectedArtifactPaths = new Set(stored.flatMap(({ event }) =>
           event.type === "generated_artifact" || event.type === "browser_screenshot" ? [event.path] : [],
         ));

@@ -34,7 +34,7 @@ function BranchTriggerSource({kind,config,onChange,onInvalid}:{kind:'schedule'|'
  const draft=useTriggerSourceDraft(config),callbacks=useRef({onChange,onInvalid,config});callbacks.current={onChange,onInvalid,config};
  const configKey=JSON.stringify(config),adopted=useRef(configKey),loading=useRef(false);
  useEffect(()=>{if(adopted.current===configKey)return;adopted.current=configKey;loading.current=true;draft.load(config)},[configKey]);
- const values=JSON.stringify([kind,draft.scheduleKind,draft.onceAt,draft.intervalValue,draft.intervalUnit,draft.cronExpression,draft.timezone,draft.include,draft.exclude,draft.quietSeconds,draft.maxWindowSeconds]);
+ const values=JSON.stringify([kind,draft.scheduleKind,draft.whenRunning,draft.onceAt,draft.intervalValue,draft.intervalUnit,draft.cronExpression,draft.timezone,draft.include,draft.exclude,draft.quietSeconds,draft.maxWindowSeconds]);
  // Local echoes keep the authored fields; Undo/Redo loads the existing draft hook.
  // Skip the old render's write while that external configuration is loading.
  useEffect(()=>{if(loading.current){loading.current=false;return;}try{if(kind==='filesystem'&&(draft.filesystemErrors.quiet||draft.filesystemErrors.max)||kind==='schedule'&&draft.scheduleKind==='interval'&&draft.intervalInvalid)throw new Error('Invalid trigger source');const next=draft.configuration(kind,callbacks.current.config);callbacks.current.onInvalid(false);const nextKey=JSON.stringify(next);if(nextKey!==configKey){adopted.current=nextKey;callbacks.current.onChange(next)}}catch{callbacks.current.onInvalid(true)}},[values,configKey]);
@@ -84,7 +84,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const setTrigger=(kind:BranchDefinition['trigger']['kind'])=>{
   const next={...bindings};
   if(kind==='manual')delete next.triggers;
-  else next.triggers={source:{enabled:true,sourceConfig:kind==='schedule'?{scheduleKind:'interval',everyMs:3600000,startsAt:new Date(Date.now()+60000).toISOString()}:kind==='webhook'?{replayWindowSeconds:300}:{include:['**/*'],exclude:[],quietMs:1000,maxWindowMs:10000}}};
+  else next.triggers={source:{enabled:true,sourceConfig:kind==='schedule'?{scheduleKind:'interval',everyMs:3600000,startsAt:new Date(Date.now()+60000).toISOString(),whenRunning:'run_latest'}:kind==='webhook'?{replayWindowSeconds:300}:{include:['**/*'],exclude:[],quietMs:1000,maxWindowMs:10000}}};
   onDraft({definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:next});
  };
  return <Stack ref={canvas} sx={{minWidth:0,minHeight:0,height:'100%',width:'100%'}}>

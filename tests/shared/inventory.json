@@ -1204,6 +1204,30 @@
       "origin": "PR95 workflow leave choices, exact settlement fencing, retained drafts, native reload and shared pending dismissal"
     },
     {
+      "path": "tests/branches/execution-controls.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled budget query and mutation owners",
+      "origin": "BR024 Execution Controls placement, stable refresh and exact revision/period/uncertain-save safeguards"
+    },
+    {
+      "path": "tests/branches/execution-workspace.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 selected Run actions, results, lazy technical evidence and canonical recovery"
+    },
+    {
+      "path": "tests/branches/run-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 retained Run history, mobile navigation, truthful activation audit"
+    },
+    {
       "path": "tests/branches/ui-state.test.mjs",
       "feature": "branches",
       "lane": "web",
@@ -1436,6 +1460,78 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, installed web dependencies; controlled React scheduling, no live data",
       "origin": "Shared transient success feedback and durable actionable/progress contract"
+    },
+    {
+      "path": "tests/branches/decision-form-retention.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; actual shared Decision response owner with controlled outcomes",
+      "origin": "BR024 keeps open and unconfirmed shared Decision forms mounted across canonical page refresh"
+    },
+    {
+      "path": "tests/branches/schedule-steering.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents; disposable local SQLite stores, no provider, listener or live data",
+      "origin": "Exact scheduled update ownership, non-delivery, uncertainty, approval races and no fallback Run regressions"
+    },
+    {
+      "path": "tests/branches/run-status.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents; disposable SQLite authority fixtures, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/run-status-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies and source loader; shared status markup, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/schedule-overlap.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; disposable SQLite and controlled Codex/Claude adapters, no external provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/installation-release/projection-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Validated clean checkpoint reuse, write-active corruption recovery, canonical source scope, certificate/crash refusal and event sequence/torn append regression"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-proof.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Transactional projection receipt, FTS visibility and source/database binding boundaries"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-recovery.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Native write-active restart and incomplete history tails; metadata, SQL, V3 and saved-decision preservation"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-theme.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built web assets; generated startup script in VM and existing theme owner, no native Android claim",
+      "origin": "Android PWA browser metadata and prepaint theme consistency"
     }
   ],
   "retainedReleasePayload": [
@@ -1624,6 +1720,12 @@
     {
       "path": "tests/branches/branch-execution-budget-worker.mjs",
       "moduleBase": "packages/agents/package.json"
+    },
+    {
+      "path": "tests/branches/execution-ui-qualification.mjs",
+      "feature": "branches",
+      "moduleBase": "apps/server/package.json",
+      "origin": "Opt-in loopback BR024 browser qualification; disposable canonical stores and controlled provider roots only"
     }
   ],
   "support": [

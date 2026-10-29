@@ -109,6 +109,8 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   actionsInMobileTabs?: boolean;
   /** Retain the owning tabs as icons when the header is collapsed. */
   collapsedIconTabs?: boolean;
+  /** Branch workflows retain a compact Run action and one collapsed row. */
+  collapsedSingleRow?: boolean;
   /** Keep essential authoring controls reachable in the compact desktop header. */
   retainCollapsedActions?: boolean;
   /** Keep owner status beside identity, ahead of shared usage controls. */
@@ -195,6 +197,7 @@ export function CompactWorkspaceHeader({
   tabs,
   collapseAction,
   primaryActions,
+  singleRow = false,
 }: {
   icon: ReactElement;
   title: string;
@@ -205,6 +208,7 @@ export function CompactWorkspaceHeader({
   tabs?: ReactNode;
   collapseAction?: ReactNode;
   primaryActions?: ReactNode;
+  singleRow?: boolean;
 }): JSX.Element {
   const primary = primaryActions === undefined ? <PrimaryHeaderActionsOutlet /> : primaryActions;
   return (
@@ -230,7 +234,10 @@ export function CompactWorkspaceHeader({
             display:"grid",columnGap:.5,rowGap:0,
             gridTemplateAreas:'"identity tabs primary actions toggle"',
             gridTemplateColumns:"minmax(0, 1fr) minmax(44px, 176px) auto auto auto",
-            "@container (max-width: 40rem)":{
+            "@container (max-width: 40rem)":singleRow?{
+              gridTemplateColumns:"minmax(0, 1fr) 44px auto auto auto",
+              columnGap:.25,
+            }:{
               gridTemplateAreas:'"identity identity identity toggle" "tabs primary actions actions"',
               gridTemplateColumns:"minmax(44px, 1fr) auto auto auto",
             },
@@ -246,6 +253,7 @@ export function CompactWorkspaceHeader({
             minWidth: 0,
             flexGrow: 1,
             ...(tabs ? {gridArea:"identity"} : status ? {"@container (max-width: 27.5rem)":{flexBasis:"calc(100% - 52px)"}} : {}),
+            ...(singleRow?{"@container (max-width: 40rem)":{gap:.25}}:{}),
           }}
         >
           {tabs ? <MobileNavigationButton /> : null}
@@ -254,6 +262,7 @@ export function CompactWorkspaceHeader({
               color: "text.secondary",
               display: hideIcon ? "none" : "flex",
               flexShrink: 0,
+              ...(singleRow?{"@container (max-width: 40rem)":{display:"none"}}:{}),
             }}
           >
             {icon}
@@ -308,6 +317,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   compactMobile = false,
   actionsInMobileTabs = false,
   collapsedIconTabs = false,
+  collapsedSingleRow = false,
   retainCollapsedActions = false,
   statusBeforePrimaryActions = false,
   tabs,
@@ -343,7 +353,7 @@ export function TabbedWorkspaceFrame<T extends string>({
     const retainedActions = collapsedActions !== undefined || compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{alignItems:"center",flexShrink:0}}>
       {statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : collapsedActions === undefined ? actions : collapsedActions}
     </Stack> : null;
-    return <CompactWorkspaceHeader icon={icon} title={title} hideIcon={compact}
+    return <CompactWorkspaceHeader icon={icon} title={title} hideIcon={compact} singleRow={collapsedSingleRow}
       status={statusBeforePrimaryActions ? status : undefined}
       context={collapsedIconTabs ? undefined : activeLabel}
       tabs={collapsedIconTabs ? <WorkspaceTabBar {...tabs} compact /> : undefined}

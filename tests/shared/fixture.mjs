@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -109,7 +109,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
           return { message: 'Controlled command completed' };
         },
         contextUsage: () => ({ usedTokens: 1000, windowTokens: 200000 }),
-        steer: async input => { steers.push({ agentId: options.agentId, input }); return { status: 'accepted' }; },
+        steer: async input => { steers.push({ agentId: options.agentId, input }); return steeringResponse ? await steeringResponse({agentId:options.agentId,input}) : { status: 'accepted' }; },
         interrupt: async () => { events.push({ type: 'error', terminalStatus: 'interrupted', message: 'Controlled interruption' }); session.finish(); },
         tool: (name, args, id = randomUUID()) => options.handleDynamicToolCall({ id, name, arguments: args }),
         finish: () => events.push({ type: 'turn_done', usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 } }),

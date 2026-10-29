@@ -1,4 +1,6 @@
-import {workspaceRecencyCte} from './workspace-store.js';
+import {readBranchRunCounts} from './branch-run-status.js';
+import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
+import {REQUEST_SOURCE_LINEAGE_CTE} from './coordination-v3-request-lineage.js';
 import { BranchTriggerStore } from "./branch-trigger-store.js";
 import { BranchExecutionBudgetAuthority } from "./branch-execution-budget.js";
 import {inspectBranchExecution} from "./branch-inspection.js";
@@ -12,7 +14,7 @@ import type Database from "better-sqlite3";
 import {
   BranchValidationError, CAPABILITY_IDS,
   TERMINAL_REQUEST_STATES, type ProjectSort, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchBindings, type BranchDto,
-  type BranchExecutionDto, type BranchExecutionDetailDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
+  type BranchExecutionDto, type BranchExecutionDetailDto, type BranchExecutionActionsDto, type BranchGateDto, type BranchStepExecutionDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
 } from "@ponderosa/core";
@@ -22,6 +24,7 @@ import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { CapabilityPolicyStore } from "./capability-policy-store.js";
 
 type Row = Record<string, any>;
+const MERGE_TARGET_STATES:readonly string[]=['queued','running','waiting','completed'];
 export interface BranchResourceProvision { branchId:string; executionId:string; workingDirectory:string; defaultEngine:string; stepExecutionId: string; projectId: string; chatId: string; creationKey: string; template: AgentPortablePackageDto; engineMapping: Record<string, string> }
 export interface BranchActionLease { attemptId:string; fence:number; workerId:string; branchId:string; executionId:string; projectId?:string; chatId?:string; title:string; input:string }
 
@@ -43,6 +46,7 @@ export class BranchStore {
   private cleanupCursor = 0;
   private cleanupCeiling = 0;
   private contextCleanupCursor = 0;
+  private scheduleCursor = 0;
   constructor(readonly sqlite: Database.Database, private readonly coordination: CoordinationV3Store,
     private readonly communicationEvent?: (projectId:string,eventId:string)=>CommunicationEvent|undefined) {
     this.executionBudgets = new BranchExecutionBudgetAuthority(sqlite);
@@ -55,7 +59,7 @@ export class BranchStore {
       catch { text = stableJson({ artifactRef: `trigger-occurrence:${input.occurrenceId}`, notice: "Event exceeds inline input limit. Retrieve this explicit occurrence reference for its complete untrusted payload and provenance." }); }
       return this.acceptInput(input.branchId, `trigger:${input.occurrenceId}`, text, input.inputHash,
         { ...input.provenance, source: "trigger", occurrenceId: input.occurrenceId, contentInjected: false }, input.now, input.admissionSource).id;
-    });
+    },(id,now)=>this.coordination.cancelUndeliveredBranchScheduleUpdate(id,now));
   }
   private row(sql: string, ...args: unknown[]): Row | undefined { return this.sqlite.prepare(sql).get(...args) as Row | undefined; }
   private rows(sql: string, ...args: unknown[]): Row[] { return this.sqlite.prepare(sql).all(...args) as Row[]; }
@@ -171,7 +175,8 @@ export class BranchStore {
       SELECT page.*,t.enabled trigger_enabled,COALESCE(active.n,0) active_executions
       FROM page LEFT JOIN trigger_definitions t ON t.id=page.trigger_id LEFT JOIN active ON active.branch_id=page.id
       ORDER BY page.navigation_rank`,options.recency??'[]',JSON.stringify(sort==='custom'?options.order??[]:[]),sort,sort,sort,sort,chatId??null,chatId??null,search.trim().slice(0,240),ids,ids??'[]',beforeId??null,options.completeOrganized&&options.ids?-1:options.limit??100);
-    return rows.map(r=>({id:r.id,chatId:r.chat_id,enabled:Boolean(r.enabled),name:r.name,versionId:r.active_version_id,bindingRevisionId:r.binding_revision_id,
+    const runCounts=readBranchRunCounts(this.sqlite,rows.map(row=>row.id));
+    return rows.map(r=>({runCounts:runCounts.get(r.id)!,id:r.id,chatId:r.chat_id,enabled:Boolean(r.enabled),name:r.name,versionId:r.active_version_id,bindingRevisionId:r.binding_revision_id,
       ...(r.trigger_id?{triggerId:r.trigger_id,triggerEnabled:Boolean(r.trigger_enabled)}:{}),activeExecutions:Number(r.active_executions),createdAt:r.created_at,...(r.last_used_at?{lastUsedAt:r.last_used_at}:{})}));
   }
   preview(input: DeployBranchRequest): BranchDeploymentPreviewDto {
@@ -194,7 +199,10 @@ export class BranchStore {
     operations.unshift(...branchDefinitionChanges(current?.versionId?this.version(current.id,current.versionId)?.definition:undefined,definition));
     if(current){const configured=this.configuration(current.id);for(const key of Object.keys(configured.parameters))if(!definition.parameters?.[key])operations.push({resource:'Parameter value',ref:key,kind:'detach',before:'Configured local value',after:'Removed with the parameter definition'});}
     for(const category of ['branches','triggers'] as const){const a=previous?.[category]??{},b=bindings[category]??{};for(const ref of new Set([...Object.keys(a),...Object.keys(b)])){if(stableJson(a[ref]??null)!==stableJson(b[ref]??null))operations.push({resource:category==='branches'?'Called Branch':'Trigger configuration',ref,kind:!a[ref]?'create':!b[ref]?'detach':'update',before:JSON.stringify(a[ref]),after:JSON.stringify(b[ref])});}}
+    const backlog=current?Number(this.row("SELECT COUNT(*) n FROM branch_executions WHERE branch_id=? AND state='queued'",current.id)!.n):0;
+    const changedSchedulePolicy=definition.trigger.kind==='schedule'&&previous&&stableJson(previous.triggers)!==stableJson(bindings.triggers);
     return {definitionHash:payloadHash(definition),requirements,operations,notes:[
+      ...(changedSchedulePolicy&&backlog?[`${backlog} already queued Run${backlog===1?'':'s'} remain. Schedule changes affect future checks; they do not clear, merge or cancel this backlog.`]:[]),
       ...(budget.uncertain?[`Traversal preflight: estimated baseline ${budget.minimum} visits. Conditions or loops make the full count uncertain; check the configured ${limit} traversal limit before running.`]:
         budget.minimum>limit?[`Traversal preflight: a successful run needs at least ${budget.minimum} visits, above the configured ${limit} traversal limit. Increase the Branch limit before running.`]:
         [`Traversal preflight: a successful run needs at least ${budget.minimum} visits of the configured ${limit} traversal limit.`]),
@@ -552,11 +560,6 @@ export class BranchStore {
     const resources=page('resources','r.*','branch_resources r','r','r.execution_id');
     const paths=page('paths','p.*','branch_paths p','p','p.execution_id');
     const gates=page('gates','g.*,s.step_id','branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id','g','s.execution_id');
-    const gateOpened = new Map<string,string>();
-    if(gates.length)for(const checkpoint of this.rows("SELECT evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND kind='gate_opened' ORDER BY id",id)){
-      const gateId=JSON.parse(checkpoint.evidence_json).gateId;
-      if(typeof gateId==='string')gateOpened.set(gateId,checkpoint.created_at);
-    }
     const decisions=page('decisions','c.*','branch_checkpoints c','c',"c.kind IN ('condition_selected','route_selected','route_invalid','fork_started','map_items_sealed','map_item_started','join_resolved','join_arrival','loop_traversed','limit_exhausted') AND c.execution_id");
     const sealedResults=page('sealedResults','r.*','branch_sealed_results r','r','r.execution_id');
     const maps=page('maps','m.*','branch_map_invocations m','m','m.execution_id');
@@ -569,14 +572,127 @@ export class BranchStore {
       sealedResults:sealedResults.map(r=>({id:r.id,executionId:id,pathId:r.path_id,stepExecutionId:r.step_execution_id,terminalAttemptId:r.terminal_attempt_id,result:JSON.parse(r.result_json),contentHash:r.content_hash,createdAt:r.created_at})),
       maps:maps.map(r=>({id:r.id,mapId:r.map_id,parentPathId:r.parent_path_id,joinId:r.join_id,...(r.source_result_id?{sourceResultId:r.source_result_id}:{}),itemCount:r.item_count,itemsHash:r.items_hash,state:r.state})),
       mapItems:mapItems.map(r=>({id:r.id,mapInvocationId:r.map_invocation_id,mapId:this.row('SELECT map_id FROM branch_map_invocations WHERE id=?',r.map_invocation_id)!.map_id,index:r.item_index,pathId:r.path_id,input:r.input_text,inputHash:r.input_hash,state:r.path_state,...(r.path_result_json?{result:JSON.parse(r.path_result_json)}:{}),...(r.step_execution_id?{stepExecutionId:r.step_execution_id,...this.mapItemAttemptSummary(r.step_execution_id)}:{attemptCount:0}),...(r.step_execution_id&&this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)!.id}:{})})),
-      steps: steps.map(r => ({ id: r.id, executionId: id, stepId: r.step_id, pathId: r.path_id, invocation: r.invocation, state: r.state, input: r.input_text, ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}),...(this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id)!.id}:{}) })), attempts: attempts.map(r => this.attemptDto(execution,definition,r)),
+      steps: steps.map(r => this.stepDto(r)), attempts: attempts.map(r => this.attemptDto(execution,definition,r)),
       resources: resources.map(r=>({stepExecutionId:r.step_execution_id,templateRef:r.template_ref,state:r.state,...(r.root_agent_id?{rootAgentId:r.root_agent_id}:{}),agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",r.step_execution_id).map(m=>m.agent_id),...(r.error?{error:r.error}:{})})),
       paths: paths.map(r => ({ id: r.id, state: r.state, input: r.input_text, ...(r.node_id ? { nodeId: r.node_id } : {}), ...(r.step_execution_id?{stepExecutionId:r.step_execution_id}:{}), ...(r.parent_path_id ? { parentPathId: r.parent_path_id } : {}), ...(r.fork_invocation_id ? { forkInvocationId: r.fork_invocation_id, edgeId: r.edge_id } : {}), ...(r.last_result_id?{lastResultId:r.last_result_id}:{}), ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}) })),
-      gates: gates.map(r => {
-        const step = definition.steps.find(step => step.id === r.step_id);
-        const openedAt=gateOpened.get(r.id);
-        return { id: r.id, stepExecutionId: r.step_execution_id, attemptId: r.attempt_id, state: r.state, purpose: r.purpose, revision: r.revision, proposal: r.proposal_text, ...(r.choices_json ? { choices: JSON.parse(r.choices_json) } : {}), ...(openedAt ? { openedAt } : {}), prompt:r.prompt_text || (step?.kind === "human_gate" ? this.text(execution,step.prompt) : "Review the failed Step before retrying"),...(r.response_json?{resolution:JSON.parse(r.response_json)}:{}), editable: step?.kind === "human_gate" ? step.editable : false };
-      }) };
+      gates: gates.map(r => this.gateDto(execution,definition,r)) };
+  }
+  private stepDto(r:Row):BranchStepExecutionDto {
+    const sealed=this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id);
+    return {id:r.id,executionId:r.execution_id,stepId:r.step_id,pathId:r.path_id,invocation:r.invocation,state:r.state,input:r.input_text,
+      ...(r.result_json?{result:JSON.parse(r.result_json)}:{}),...(sealed?{sealedResultId:sealed.id}:{})};
+  }
+  private gateDto(execution:BranchExecutionDto,definition:BranchDefinition,r:Row):BranchGateDto {
+    const step=definition.steps.find(step=>step.id===r.step_id);
+    const openedAt=this.row("SELECT created_at FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='gate_opened'",
+      execution.id,`gate:${r.id}:${r.state==='waiting'?r.revision:r.revision-1}`)?.created_at;
+    return {id:r.id,stepExecutionId:r.step_execution_id,attemptId:r.attempt_id,state:r.state,purpose:r.purpose,revision:r.revision,proposal:r.proposal_text,
+      ...(r.choices_json?{choices:JSON.parse(r.choices_json)}:{}),...(openedAt?{openedAt}:{}),
+      prompt:r.prompt_text||(step?.kind==='human_gate'?this.text(execution,step.prompt):'Review the failed Step before retrying'),
+      ...(r.response_json?{resolution:JSON.parse(r.response_json)}:{}),editable:step?.kind==='human_gate'?step.editable:false};
+  }
+  /** Current decisions cannot disappear behind newer resolved audit rows. */
+  currentActions(id:string,cursor?:string,workspace?:Pick<WorkspaceStore,'decisionsForRuns'|'getDecision'>):BranchExecutionActionsDto|undefined {
+    const execution=this.execution(id);if(!execution)return undefined;
+    const decisions=new Map<string,import('@ponderosa/core').DecisionDto>();
+    if(workspace){
+      // Reuse immutable Request attachment and durable task roots, never all
+      // questions belonging to an Agent that happens to work on this Branch.
+      const runs=new Map<string,Row>();
+      for(const attached of this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
+        SELECT DISTINCT run.id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+        JOIN coordination_requests r ON r.id=a.request_id JOIN request_source_lineage source ON source.request_id=r.id
+        JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
+        JOIN scheduler_runs run ON run.id=attached.run_id AND run.agent_id=r.recipient_agent_id AND run.project_id=r.project_id
+          AND run.scope_key=CASE WHEN r.conversation_id IS NOT NULL THEN 'conversation:'||r.conversation_id ELSE 'agent:'||r.recipient_agent_id END
+        WHERE s.execution_id=?`,id)){
+        if(runs.has(attached.id))continue;
+        // A Request can still attach to the initial Run after its task moves
+        // to a later carrier. One carrier per authored root reuses the existing
+        // equivalence helper without rescanning it for every historical Run.
+        const carriers=this.rows(`SELECT MIN(current.run_id) run_id FROM required_reply_obligations origin
+          JOIN required_reply_obligations current ON current.source_activation_id=origin.source_activation_id
+            AND current.agent_id=origin.agent_id AND current.project_id=origin.project_id AND current.scope_key=origin.scope_key
+          WHERE origin.run_id=? AND current.delivery_phase='final' GROUP BY origin.source_activation_id`,attached.id);
+        const related=new Set(this.coordination.taskOriginRunIds(attached.id));
+        for(const carrier of carriers)if(!related.has(carrier.run_id))for(const runId of this.coordination.taskOriginRunIds(carrier.run_id))related.add(runId);
+        for(const runId of related){
+          const run=this.row('SELECT id,agent_id,project_id,scope_key FROM scheduler_runs WHERE id=?',runId);
+          if(run)runs.set(run.id,run);
+        }
+      }
+      const owned=(decision:import('@ponderosa/core').DecisionDto,owner:Row)=>decision.status==='pending'&&decision.agentId===owner.agent_id&&
+        decision.projectId===owner.project_id&&(decision.conversationId?`conversation:${decision.conversationId}`:`agent:${decision.agentId}`)===owner.scope_key;
+      // The existing workspace index returns canonical references; question
+      // content is materialized on the wire only for the selected page.
+      for(const decision of workspace.decisionsForRuns(new Set(runs.keys()))){
+        const run=runs.get(decision.coordinationRunId??decision.runId);
+        if(run&&owned(decision,run))decisions.set(decision.id,decision);
+      }
+      // An outbound question may be suspended by its requester's Decision.
+      // Its exact durable dependency owns that continuation, not the recipient.
+      for(const row of this.rows(`SELECT DISTINCT suspension.dependency_id,r.project_id,r.requester_agent_id agent_id,
+          CASE WHEN r.conversation_id IS NOT NULL THEN 'conversation:'||r.conversation_id ELSE 'agent:'||r.requester_agent_id END scope_key
+        FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+        JOIN coordination_requests r ON r.id=a.request_id JOIN coordination_question_suspensions suspension ON suspension.request_id=r.id
+        WHERE s.execution_id=? AND suspension.dependency_kind='decision' AND suspension.state='open'
+          AND suspension.owner_agent_id=r.requester_agent_id AND r.state='awaiting_answer'
+          AND suspension.question_update_id=r.open_question_update_id`,id)){
+        const decision=workspace.getDecision(row.dependency_id);
+        if(decision&&owned(decision,row))decisions.set(decision.id,decision);
+      }
+    }
+    const pending=[...decisions.values()].sort((a,b)=>a.id.localeCompare(b.id));
+    const decisionGeneration=createHash('sha256');
+    for(const decision of pending)decisionGeneration.update(JSON.stringify([decision.id,decision.status,decision.updatedAt]));
+    // Gate/path/attempt additions checkpoint atomically. Script uncertainty
+    // advances existing fences; Request count/versions also cover cleanup and
+    // outcomes observed before the next Branch turn.
+    const checkpoint=this.row('SELECT COALESCE(MAX(id),0) id FROM branch_checkpoints WHERE execution_id=?',id)!.id;
+    const changes=this.row(`SELECT COUNT(a.id) attempts,CAST(COALESCE(SUM(a.fence),0) AS TEXT) fences,
+      COUNT(r.id) requests,CAST(COALESCE(SUM(r.version),0) AS TEXT) versions FROM branch_attempts a
+      JOIN branch_step_executions s ON s.id=a.step_execution_id LEFT JOIN coordination_requests r ON r.id=a.request_id WHERE s.execution_id=?`,id)!;
+    const scheduleChanges=this.row("SELECT COUNT(*) count,COALESCE(MAX(rowid),0) latest FROM trigger_occurrences WHERE branch_execution_id=? AND state='pending' AND json_extract(activation_config_json,'$.schedule.delivery')='unconfirmed'",id)!;
+    const generation=`${scheduleChanges.count}:${scheduleChanges.latest}:${checkpoint}:${changes.attempts}:${changes.fences}:${changes.requests}:${changes.versions}:${decisionGeneration.digest('hex')}`;
+    let after:{rank:number;position:number}|undefined;
+    if(cursor){
+      if(cursor.length>512)throw new Error('Invalid execution actions cursor');
+      let parsed:Record<string,unknown>;
+      try{parsed=JSON.parse(Buffer.from(cursor,'base64url').toString())}catch{throw new Error('Invalid execution actions cursor')}
+      if(!parsed||parsed.executionId!==id||!Number.isSafeInteger(parsed.revision)||typeof parsed.generation!=='string'||parsed.generation.length>256||!Number.isSafeInteger(parsed.rank)||
+        ![0,1,2,3,4].includes(parsed.rank as number)||!Number.isSafeInteger(parsed.position)||(parsed.position as number)<1)throw new Error('Invalid execution actions cursor');
+      if(parsed.revision!==execution.revision||parsed.generation!==generation)throw new Error('Execution actions changed; reload current actions');
+      after={rank:parsed.rank as number,position:parsed.position as number};
+    }
+    const rows=this.rows(`SELECT * FROM (
+      SELECT 0 rank,o.rowid position,'schedule_update' kind,o.id,NULL step_id FROM trigger_occurrences o
+        WHERE o.branch_execution_id=? AND o.state='pending' AND json_extract(o.activation_config_json,'$.schedule.delivery')='unconfirmed'
+      UNION ALL
+      SELECT 1 rank,CAST(key AS INTEGER)+1 position,'decision' kind,value id,NULL step_id FROM json_each(?)
+      UNION ALL
+      SELECT 2 rank,g.rowid position,'gate' kind,g.id,s.id step_id
+        FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id
+        WHERE s.execution_id=? AND g.state='waiting'
+      UNION ALL
+      SELECT CASE WHEN p.step_execution_id=s.id AND p.state NOT IN ('arrived','canceled','completed','skipped') THEN 3 ELSE 4 END rank,
+        a.rowid position,'attempt' kind,a.id,s.id step_id
+        FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN branch_paths p ON p.id=s.path_id
+        LEFT JOIN coordination_requests r ON r.id=a.request_id
+        WHERE s.execution_id=? AND (a.state IN ('failed','outcome_unknown') OR a.state='waiting' AND r.state='outcome_unknown')
+          AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number)
+          AND NOT EXISTS(SELECT 1 FROM branch_gates g WHERE g.step_execution_id=s.id AND g.state='waiting')
+      ) WHERE ? IS NULL OR rank>? OR rank=? AND position>? ORDER BY rank,position LIMIT 101`,
+      id,JSON.stringify(pending.map(decision=>decision.id)),id,id,after?.rank??null,after?.rank??null,after?.rank??null,after?.position??null);
+    const definition=this.definition(execution),page=rows.slice(0,100);
+    const items:BranchExecutionActionsDto['items']=page.map(row=>{
+      if(row.kind==='decision')return {kind:'decision',decision:decisions.get(row.id)!};
+      if(row.kind==='schedule_update'){const occurrence=this.triggers.getTriggerOccurrence(row.id)!,status=this.coordination.branchScheduleUpdateStatus(row.id);return {kind:'schedule_update',occurrenceId:row.id,injectionId:status.injectionId!,eventCount:occurrence.schedule!.eventCount,lastScheduledAt:occurrence.schedule!.lastScheduledAt};}
+      const step=this.stepDto(this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',row.step_id,id)!);
+      if(row.kind==='gate')return {kind:'gate',step,gate:this.gateDto(execution,definition,this.row('SELECT g.*,s.step_id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE g.id=? AND s.execution_id=?',row.id,id)!)};
+      return {kind:'attempt',step,current:row.rank===3,attempt:this.attemptDto(execution,definition,this.row('SELECT * FROM branch_attempts WHERE id=? AND step_execution_id=?',row.id,step.id)!)};
+    });
+    const last=page.at(-1);
+    return {executionId:id,revision:execution.revision,generation,items,...(rows.length>100&&last?{nextCursor:Buffer.from(JSON.stringify({executionId:id,revision:execution.revision,generation,rank:last.rank,position:last.position})).toString('base64url')}:{})};
   }
   /** One canonical projection for bounded history and exact full Step evidence. */
   private attemptDto(execution:BranchExecutionDto,definition:BranchDefinition,r:Row):import('@ponderosa/core').BranchAttemptDto {
@@ -638,11 +754,14 @@ export class BranchStore {
     const child=this.row('SELECT id,state,version_id FROM branch_executions WHERE parent_attempt_id=?',attemptId);
     return {...(branch?{calledBranch:{id:branch.id,name:branch.name,enabled:branch.enabled!==false}}:{}),...(child?{childExecution:{id:child.id,state:child.state,versionId:child.version_id}}:{})};
   }
-  listExecutions(branchId: string, beforeId?: string, state?: string): BranchExecutionDto[] {
+  listExecutions(branchId: string, beforeId?: string, state?: string, mergeFor?:string): BranchExecutionDto[] {
     if(state&&!['queued','running','waiting','completed','failed','canceled','skipped','merged'].includes(state))throw new Error('Invalid execution status filter');
+    if(mergeFor!==undefined){const source=this.execution(mergeFor);if(!source||source.branchId!==branchId)throw new Error('Merge source does not belong to this Branch');if(state)throw new Error('Merge candidates use their own eligible states');}
     const before = beforeId ? this.row("SELECT rowid AS position FROM branch_executions WHERE id = ? AND branch_id = ?", beforeId, branchId)?.position : Number.MAX_SAFE_INTEGER;
     if (before === undefined) throw new Error("Execution cursor does not belong to this Branch");
-    return this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+(state?" AND state = ?":"")+" ORDER BY rowid DESC LIMIT 100", branchId, before, ...(state?[state]:[])).map(r => this.execution(r.id)!);
+    return this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
+      (mergeFor!==undefined?` AND id!=? AND state IN (${MERGE_TARGET_STATES.map(()=>'?').join(',')})`:state?" AND state = ?":"")+
+      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:state?[state]:[])).map(r => this.execution(r.id)!);
   }
   /** Global execution membership is canonical, independent of sidebar pages, search and folders. */
   homeExecutions(input: { activeBefore?: { at: string; id: string }; outcomeBefore?: { at: string; id: string } }) {
@@ -701,6 +820,7 @@ export class BranchStore {
   }
   /** Only the existing scheduler calls this reducer. A bounded scan is not runtime authority. */
   advance(now = new Date().toISOString()): void {
+    this.advanceScheduledChecks(now);
     let batch = this.rows("SELECT rowid AS position, id FROM branch_executions WHERE state IN ('queued','running','waiting') AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 100", this.advanceCursor, this.advanceCeiling);
     if (!batch.length) {
       this.advanceCursor = 0;
@@ -827,6 +947,60 @@ export class BranchStore {
         this.drivePaths(execution.id, now);
         this.aggregate(execution.id, now);
       }).immediate();
+    }
+  }
+  /** Reuse occurrence admission and exact scheduler steering; held checks are not executions. */
+  private advanceScheduledChecks(now:string):void {
+    let pending=this.rows("SELECT rowid position,id FROM trigger_occurrences WHERE state='pending' AND available_at<=? AND rowid>? ORDER BY rowid LIMIT 100",now,this.scheduleCursor);
+    if(!pending.length){this.scheduleCursor=0;pending=this.rows("SELECT rowid position,id FROM trigger_occurrences WHERE state='pending' AND available_at<=? ORDER BY rowid LIMIT 100",now);}
+    for(const observed of pending){
+      this.scheduleCursor=observed.position;
+      try{this.sqlite.transaction(()=>{
+        const row=this.row("SELECT * FROM trigger_occurrences WHERE id=? AND state='pending'",observed.id);if(!row)return;
+        const config=JSON.parse(row.activation_config_json);if(!config.schedule)return;
+        const write=(error:string|null=null)=>{const value=stableJson(config);if(value!==row.activation_config_json||error!==(row.last_error??null))this.run('UPDATE trigger_occurrences SET activation_config_json=?,last_error=?,updated_at=? WHERE id=?',value,error,now,row.id)};
+        if(row.activation_id){
+          const status=this.coordination.branchScheduleUpdateStatus(row.id,now);
+          if(status.state==='acknowledged'){
+            config.schedule.delivery='updated';write();
+            this.run("UPDATE trigger_occurrences SET state='activated' WHERE id=?",row.id);return;
+          }
+          if(status.state==='outcome_unknown'){
+            config.schedule.delivery='unconfirmed';write('The scheduled update may have reached this Agent Run. Delivery is unconfirmed; it will not be replayed or converted into another Run automatically. Inspect its existing delivery and Run evidence.');return;
+          }
+          if(status.state==='queued')return;
+          if(!this.coordination.cancelUndeliveredBranchScheduleUpdate(row.id,now))return;
+          config.schedule.delivery='held';
+          this.run('UPDATE trigger_occurrences SET activation_id=NULL,branch_execution_id=NULL WHERE id=?',row.id);write();
+          const newer=this.row(`SELECT id FROM trigger_occurrences WHERE trigger_id=? AND state='pending' AND activation_id IS NULL
+            AND rowid>? AND json_extract(activation_config_json,'$.schedule.delivery')='held' ORDER BY rowid DESC LIMIT 1`,row.trigger_id,observed.position);
+          if(newer&&this.triggers.combineHeldScheduleChecks(row.id,newer.id,now))return;
+        }
+        const branch=this.getBranch(row.branch_id),source=this.triggers.getTriggerDefinition(row.trigger_id);
+        if(!branch?.enabled||!source?.enabled||branch.triggerId!==row.trigger_id)return;
+        // Unknown delivery is an existing recovery barrier, never proof that a
+        // new execution is safe. An explicit, recorded operator intervention releases it.
+        const uncertain=this.row(`SELECT 1 FROM trigger_occurrences WHERE branch_id=? AND id<>? AND state='pending'
+          AND json_extract(activation_config_json,'$.schedule.delivery')='unconfirmed'`,row.branch_id,row.id);
+        if(uncertain){write('Waiting for an earlier scheduled update with an unconfirmed delivery. Review its Run before retrying work.');return;}
+        if(this.row("SELECT 1 FROM trigger_occurrences WHERE branch_id=? AND id<>? AND state='pending' AND activation_id IS NOT NULL",row.branch_id,row.id))return;
+        const unfinished=this.row("SELECT COUNT(*) n FROM branch_executions WHERE branch_id=? AND state IN ('queued','running','waiting')",row.branch_id)!.n;
+        if(!unfinished){this.triggers.activateScheduledCheck(row.id,now);return;}
+        if(config.schedule.policy!=='update_current')return;
+        const target=this.coordination.branchScheduleUpdateTarget(row.branch_id,now);if(!target)return;
+        // A known rejected delivery stays one held check, not a per-poll retry.
+        // A new tick has a new immutable occurrence; this one waits to run fresh.
+        if(config.steering)return;
+        config.steering={runId:target.runId,attemptId:target.attemptId,fence:target.fence};config.schedule.delivery='steering';
+        this.run('UPDATE trigger_occurrences SET activation_config_json=?,branch_execution_id=? WHERE id=?',stableJson(config),target.executionId,row.id);
+        const update=this.coordination.queueBranchScheduleUpdate({occurrenceId:row.id,runId:target.runId,attemptId:target.attemptId,fence:target.fence,now});
+        this.run('UPDATE trigger_occurrences SET activation_id=?,last_error=NULL,updated_at=? WHERE id=?',update.activationId,now,row.id);
+      })();}catch(error){
+        // Keep this occurrence visible and durable without blocking unrelated
+        // workflow reduction or pretending failed admission created a Run.
+        const message=`Scheduled check remains pending: ${error instanceof Error?error.message:'authority unavailable'}`.slice(0,2000);
+        this.run("UPDATE trigger_occurrences SET last_error=?,updated_at=? WHERE id=? AND state='pending' AND last_error IS NOT ?",message,now,observed.id,message);
+      }
     }
   }
   private finish(attemptId: string, result: BranchResult, now: string, outcome = result.failed ? "failure" : "success"): void {
@@ -1157,11 +1331,38 @@ export class BranchStore {
     return this.command(id, input.commandKey, input, () => {
       const execution = this.execution(id);
       if (!execution || execution.revision !== input.expectedRevision) throw new Error("Execution revision conflict");
-      if (input.action === "skip" || input.action === "merge") {
+      if(input.action==='resolve_schedule_update'){
+        if(input.externalEffectsReconciled!==true||typeof input.updateApplied!=='boolean')throw new Error('Reconcile the scheduled update effects and record whether it was applied');
+        const occurrence=this.row("SELECT rowid position,* FROM trigger_occurrences WHERE id=? AND branch_execution_id=? AND branch_id=? AND state='pending'",input.occurrenceId,id,execution.branchId);
+        if(!occurrence?.activation_id||this.coordination.branchScheduleUpdateStatus(occurrence.id,now).state!=='outcome_unknown')throw new Error('Scheduled update is no longer awaiting reconciliation');
+        const activation=this.row("SELECT project_id FROM agent_activations WHERE id=? AND kind='branch_schedule_update'",occurrence.activation_id);if(!activation)throw new Error('Scheduled delivery authority unavailable');
+        const settled=this.coordination.cancelTerminalMessageDelivery({projectId:activation.project_id,activationId:occurrence.activation_id,idempotencyKey:`branch-schedule-reconcile:${id}:${input.commandKey}`,now});
+        if(!settled.cancelled)throw new Error('Scheduled delivery is no longer terminal and uncertain');
+        const config=JSON.parse(occurrence.activation_config_json);config.schedule.reconciled=input.updateApplied?'applied':'not_applied';
+        config.steering.reconciliation={commandKey:input.commandKey,activationId:occurrence.activation_id,injectionId:this.coordination.branchScheduleUpdateStatus(occurrence.id,now).injectionId,applied:input.updateApplied,reason:input.reason,at:now};
+        if(input.updateApplied){
+          config.schedule.delivery='updated';
+          this.run("UPDATE trigger_occurrences SET state='activated',activation_config_json=?,last_error=NULL,updated_at=? WHERE id=?",stableJson(config),now,occurrence.id);
+        }else{
+          this.run('UPDATE trigger_occurrences SET activation_id=NULL,activation_config_json=?,updated_at=? WHERE id=?',stableJson(config),now,occurrence.id);
+          const newer=this.row("SELECT id FROM trigger_occurrences WHERE trigger_id=? AND state='pending' AND activation_id IS NULL AND rowid>? ORDER BY rowid DESC LIMIT 1",occurrence.trigger_id,occurrence.position);
+          if(!newer||!this.triggers.combineHeldScheduleChecks(occurrence.id,newer.id,now)){
+            const source=this.triggers.getTriggerDefinition(occurrence.trigger_id),branch=this.getBranch(execution.branchId);
+            if(source?.enabled&&branch?.enabled&&branch.triggerId===occurrence.trigger_id){
+              const replacement=this.triggers.recordTriggerOccurrence({triggerId:occurrence.trigger_id,occurrenceKey:`reconciled:${occurrence.id}:${input.commandKey}`,
+                payload:JSON.parse(occurrence.payload_json),provenance:{...JSON.parse(occurrence.provenance_json),reconciledOccurrenceId:occurrence.id},payloadMediaType:occurrence.payload_media_type,
+                heldSchedule:{...config.schedule,delivery:'held'},now});
+              config.schedule.delivery='combined';config.schedule.combinedIntoOccurrenceId=replacement.occurrenceId;
+              this.run("UPDATE trigger_occurrences SET state='cancelled',activation_config_json=?,last_error=NULL,cancelled_at=?,updated_at=? WHERE id=?",stableJson(config),now,now,occurrence.id);
+            }else this.run("UPDATE trigger_occurrences SET state='cancelled',cancelled_at=?,updated_at=?,last_error='Reconciled as not applied; this schedule is inactive, so no replay was queued.' WHERE id=?",now,now,occurrence.id);
+          }
+        }
+        this.run('UPDATE branch_executions SET revision=revision+1,updated_at=? WHERE id=?',now,id);
+      } else if (input.action === "skip" || input.action === "merge") {
         if (!["queued", "running", "waiting"].includes(execution.state)) throw new Error("Only live executions can be skipped or merged");
         if (input.action === "merge") {
           const target = this.execution(input.mergedInto ?? "");
-          if (!target || target.id === id || target.branchId !== execution.branchId || !["queued", "running", "waiting", "completed"].includes(target.state)) throw new Error("Invalid merge target");
+          if (!target || target.id === id || target.branchId !== execution.branchId || !MERGE_TARGET_STATES.includes(target.state)) throw new Error("Invalid merge target");
           // A target cannot already lead back to the execution being merged.
           let current: BranchExecutionDto | undefined = target;
           const seen = new Set<string>();
@@ -1374,6 +1575,12 @@ export class BranchStore {
       if (this.row("SELECT 1 FROM branch_executions WHERE branch_id = ? AND state IN ('queued','running','waiting')", id)) throw new Error("Cancel and drain Branch executions before deletion");
       if (this.row(`SELECT 1 FROM branch_checkpoints c JOIN branch_executions e ON e.id = c.execution_id WHERE e.branch_id = ? AND c.audit_published = 0`, id)) throw new Error("Branch audit publication is still pending");
       if(this.row(`SELECT 1 FROM branch_gate_notifications n JOIN branch_executions e ON e.id=n.execution_id WHERE e.branch_id=? AND n.state!='resolved'`,id))throw new Error("Branch gate notification closure is still pending");
+      // Final deletion follows observed runtime cleanup. Keep delivery evidence,
+      // but retire checks whose workflow/reconciliation owner is now being removed.
+      const deletedAt = new Date().toISOString();
+      this.run(`UPDATE trigger_occurrences SET state='cancelled',cancelled_at=?,updated_at=?,
+        last_error='Workflow deleted after runtime cleanup; any unconfirmed delivery remains in the audit record.'
+        WHERE branch_id=? AND state='pending'`,deletedAt,deletedAt,id);
       this.run("UPDATE branch_executions SET parent_attempt_id=NULL,parent_execution_id=NULL WHERE parent_execution_id IN (SELECT id FROM branch_executions WHERE branch_id=?) OR branch_id=?",id,id);
       const executions = this.rows("SELECT id FROM branch_executions WHERE branch_id = ?", id);
       for (const e of executions) {

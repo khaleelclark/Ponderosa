@@ -3,6 +3,7 @@ import type {
   AgentDetailDto,
   AgentDto,
   AgentRunDto,
+  AssetDto,
   ArtifactDto,
   ChangedFileDto,
   HistoryPageDto,
@@ -10,7 +11,7 @@ import type {
   RunOutputDto,
   WorkItemDto,
 } from "@ponderosa/core";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull } from "drizzle-orm";
 import type { CommunicationEvent } from "@ponderosa/core";
 import { agentMentionHandleBase } from "@ponderosa/core";
 import type { Db } from "./db.js";
@@ -51,6 +52,15 @@ export class AgentAuditReadModel {
     private readonly getArtifacts: (agentId: string) => ArtifactDto[],
     private readonly getArtifactPage: Page<ArtifactDto>,
   ) {}
+
+  /** Attachment maintenance needs no message text, author or mention hydration. */
+  getMessageAttachmentIds(agentId: string): Set<string> {
+    return new Set(this.db.select({ attachments: messages.attachmentsJson })
+      .from(messages)
+      .where(and(eq(messages.agentId, agentId), isNotNull(messages.attachmentsJson)))
+      .all()
+      .flatMap((row) => (JSON.parse(row.attachments || "null") as AssetDto[] | null)?.map((asset) => asset.id) ?? []));
+  }
 
   getMessages(agentId: string): MessageDto[] {
     const projectId = this.projectIdOf(agentId);

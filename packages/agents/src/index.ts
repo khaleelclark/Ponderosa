@@ -107,8 +107,11 @@ export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone
 export { openDb } from "./db.js";
 export {
   createOfflineDataDirectoryBackup,
+  createOfflineWebDeploymentBackup,
+  assertWebOnlyDeploymentCompatibility,
   restoreOfflineDataDirectoryBackup,
   type DataDirectoryBackupManifest,
+  type WebDeploymentBackupManifest,
 } from "./data-directory-backup.js";
 export { stableJson } from "./coordination-v3-canonical-json.js";
 export {
@@ -175,4 +178,6 @@ export { BranchTriggerStore } from "./branch-trigger-store.js";
 export type * from "./branch-trigger-types.js";
 export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./capability-policy-store.js";
 
-export {REQUEST_SOURCE_LINEAGE_CTE} from "./coordination-v3-request-lineage.js";
+export {REQUEST_SOURCE_LINEAGE_CTE,requestSourceLineageBody} from "./coordination-v3-request-lineage.js";
+
+export {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchRunCounts,readBranchWorkingStepCount} from "./branch-run-status.js";

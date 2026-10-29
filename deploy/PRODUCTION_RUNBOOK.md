@@ -177,6 +177,67 @@ means stopping the new unit, restoring the pre-migration snapshot to a new
 path with the retained installed offline CLI, reinstalling the prior exact
 `.deb`, updating `release.env`, and retaining the failed directory.
 
+### Bounded fast path for web-only updates
+
+The full procedure above remains mandatory for engine, runtime, schema, storage
+or unknown changes. A qualified web-only artifact can use the existing offline
+backup tool's narrower scope. This is an application-state preservation snapshot,
+**not a portable backup or disaster-recovery restore point**. It retains SQLite
+and its WAL cohort, layout identity, canonical journals, managed artifacts,
+credentials and other application-owned files. Managed and external working
+folders remain at their exact existing physical locations; their identities and
+canonical Project/Chat ownership are recorded. Unknown or inconsistent ownership
+refuses this fast path. Do not delete or relocate the retained working folders.
+
+First build and qualify the complete candidate while the old daemon is available.
+Retain the previous exact installed artifact and environment/systemd configuration.
+Then use the qualified candidate's bundled tool to check both installed artifacts:
+
+```sh
+candidate_root=/path/to/qualified/Ponderosa
+current_root=/path/to/current/Ponderosa
+runtime="$candidate_root/runtime/node"
+data_tool="$candidate_root/app/server/tools/data-directory.mjs"
+"$runtime" "$data_tool" check-web-deployment --data-dir "$PONDEROSA_DATA_DIR" \
+  --current-install "$current_root" --candidate-install "$candidate_root"
+```
+
+Eligibility checks the actual complete server, launcher and optional desktop
+payloads and their dependencies, runtime and schema files, plus the existing
+build manifests. Node and both native host images must match their declared
+hashes and sizes. Only the web payload and release metadata may differ. A changed
+backend tool description also conservatively requires the full path. This first
+rung deliberately avoids inventing a second storage-version authority. The first
+release introducing these tools or changing startup recovery therefore requires
+the full path; later identical-engine web updates can qualify.
+
+Keep the same proxy gate, canonical drain, zero cleanup blockers, observed process
+exit and exact configuration checks as the full procedure. After stop:
+
+```sh
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+"$runtime" "$data_tool" backup-web-deployment --data-dir "$PONDEROSA_DATA_DIR" \
+  --output "$PONDEROSA_BACKUP_EVIDENCE_DIR/web-deployment-$stamp" \
+  --current-install "$current_root" --candidate-install "$candidate_root"
+```
+
+The native offline lease excludes a daemon writer. Creation verifies every copied
+path/checksum and rechecks retained working-folder identities and installed
+payloads before publishing its separate `ponderosa-web-deployment-backup.json`.
+Portable `restore` explicitly refuses this scope. Ordinary full backups retain
+their complete-coverage and absolute/escaping-symlink refusal rules; an absolute
+link inside a preserved working folder is never traversed by the scoped snapshot.
+Do not weaken portable validation to make a same-host snapshot look portable.
+
+Start the exact candidate drained, require full readiness and the normal public
+API/assets/provider smoke, then resume supported intake. If eligibility or any
+creation check fails, do not cut over: use the full path or safely resume the old
+daemon. Rollback of a web-only update restores the previous exact code and
+configuration **against current compatible data**, preserving every subsequently
+accepted write and Decision. Never apply the scoped snapshot over current data.
+Keep full encrypted disaster-recovery backups and restore rehearsals under the
+existing RPO/RTO policy; this optimization does not replace them.
+
 ## Agent workload boundary
 
 A release code update does not replace a stale installed systemd unit. Before
@@ -243,15 +304,25 @@ aggregate limit; resource admission and exact process-ledger cleanup remain acti
 Never reproduce host-wide OOM on production. Use a uniquely owned, small capped
 fixture to prove a scope-local OOM leaves backend health and unrelated work intact.
 
-Orderly application shutdown uses the existing default storage close. After a
-write-active lifetime it leaves no clean projection checkpoint, preserving full
-canonical recovery and SQLite admission checks at startup. This avoids moving
-an unbounded synchronous replay into shutdown: the isolated retained production
-copy took 196 seconds with the optional replay/checkpoint versus 1 ms without it.
-Cold startup may consequently take longer. Measure the candidate on a private
-copy and use a larger **bounded deployment readiness observation** if needed
-while drained and proxy gated; do not bypass admission, shorten the service's
-180-second stop timeout, mint an unverified checkpoint or resume on health alone.
+Orderly application shutdown records verified projection progress through the
+existing storage close. Known event, Communication, artifact and Project-recency
+writes commit their source receipts with the derived SQLite rows. Healthy
+write-active restarts can reuse those views; verified incomplete append suffixes
+are repaired before ordinary traffic. The consumed checkpoint also binds exact
+source inventory, projection/schema versions and the quiescent database/WAL
+cohort. Independently replayed workspace, context and provider journals, host
+secrets and physical attachment/browser/working-copy bytes are not history
+projection sources; their existing validation and cleanup barriers still run.
+
+Missing/crashed or invalid proof, unknown derived SQL writes, unfinished
+creation/deletion, unsupported metadata changes and imports retain full recovery.
+A successful stop alone is not a projection certificate. Normal shutdown never
+moves full history replay into the stop interval; the explicit full-rebuild
+checkpoint option remains for isolated/offline qualification. Measure total
+stop-through-ready on a private retained copy, including certification time.
+Use a larger **bounded deployment readiness observation** while drained and proxy
+gated if necessary; do not bypass admission, shorten the service's 180-second stop
+timeout, mint an unverified checkpoint or resume on health alone.
 Historical SIGBUS evidence remains a separate investigation.
 
 Rollback restores the backed-up code and exact boundary drop-in while stopped,

@@ -2,7 +2,7 @@
  * they carry. Keep every consumer on this one definition so resumed answers
  * and Join continuations cannot diverge from direct Request ownership. */
 export function requestSourceLineageBody(
-  sourceTable: "activation_sources" | "task_wake_sources" = "activation_sources",
+  sourceTable: "activation_sources" | "task_wake_sources" | "branch_live_sources" | "branch_retry_sources" = "activation_sources",
 ): string {
   return `request_source_lineage AS (
     SELECT source.activation_id, source.source_kind,

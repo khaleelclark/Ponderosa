@@ -1,5 +1,5 @@
 import { Alert, Button, Stack } from "@mui/material";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { DecisionPrompt, DecisionResponse } from "../../decisions";
 import { decisionAcceptsText, decisionTextActionLabel } from "../../decisions";
 import { useDecisionResponse } from "../../hooks/useDecisionResponse";
@@ -11,10 +11,12 @@ export function DecisionActions({
   decision,
   compact = false,
   onResolved,
+  onRetentionChange,
 }: {
   decision: DecisionPrompt;
   compact?: boolean;
   onResolved?(): void;
+  onRetentionChange?(decision: DecisionPrompt, retain: boolean): void;
 }): JSX.Element | null {
   const [textDialogOpen, setTextDialogOpen] = useState(false);
   const response = useDecisionResponse(() => {
@@ -25,12 +27,18 @@ export function DecisionActions({
   // completion succeeded. Keep its existing idempotent retry reachable.
   const currentAttempt = response.variables?.decision.id === decision.id;
   const unconfirmedApproval = currentAttempt && response.isError && (decision.mode === "approval" || decision.approvalScope || decision.runtimeAction);
+  useEffect(() => {
+    // A canonical approval can resolve before applying access succeeds. Keep
+    // that exact mounted response owner available until its existing retry settles.
+    if (textDialogOpen || currentAttempt) onRetentionChange?.(decision, textDialogOpen || response.isPending || Boolean(unconfirmedApproval));
+  }, [currentAttempt, decision, onRetentionChange, response.isPending, textDialogOpen, unconfirmedApproval]);
   if (response.isSuccess && response.data.id === decision.id && response.data.status !== "pending") return null;
   if (decision.status !== "pending" && !(currentAttempt && response.isPending) && !unconfirmedApproval) return null;
 
-  const respond = (value: DecisionResponse) => settleDecisionResponse(() =>
-    response.mutateAsync({ decision, response: value })
-  );
+  const respond = (value: DecisionResponse) => {
+    onRetentionChange?.(decision, true);
+    return settleDecisionResponse(() => response.mutateAsync({ decision, response: value }));
+  };
   const error = response.error instanceof Error
     ? response.error.message
     : response.isError
@@ -77,6 +85,7 @@ export function DecisionActions({
             disabled={response.isPending}
             onClick={(event) => {
               event.stopPropagation();
+              onRetentionChange?.(decision, true);
               setTextDialogOpen(true);
             }}
           >
@@ -96,7 +105,7 @@ export function DecisionActions({
         open={textDialogOpen}
         pending={response.isPending}
         error={error}
-        onClose={() => setTextDialogOpen(false)}
+        onClose={() => { setTextDialogOpen(false); if (!response.isPending && !unconfirmedApproval) onRetentionChange?.(decision, false); }}
         onRespond={respond}
       />
     </>

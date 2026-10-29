@@ -2,11 +2,12 @@
 
 export type TriggerSourceKind = "schedule" | "webhook" | "filesystem";
 export type TriggerOccurrenceState = "pending" | "activated" | "cancelled" | "dead_lettered";
+export type TriggerScheduleWhenRunning = "update_current" | "run_latest" | "queue_all";
 
 export type TriggerScheduleConfig =
   | { scheduleKind: "once"; at: string }
-  | { scheduleKind: "interval"; everyMs: number; startsAt: string }
-  | { scheduleKind: "cron"; expression: string; timezone: string };
+  | { scheduleKind: "interval"; everyMs: number; startsAt: string; whenRunning?: TriggerScheduleWhenRunning }
+  | { scheduleKind: "cron"; expression: string; timezone: string; whenRunning?: TriggerScheduleWhenRunning };
 
 export interface TriggerWebhookConfig {
   replayWindowSeconds: number;
@@ -126,6 +127,15 @@ export interface TriggerOccurrenceDto {
   agentId?: never;
   branchId: string;
   branchExecutionId?: string;
+  schedule?: {
+    policy: TriggerScheduleWhenRunning;
+    firstScheduledAt: string;
+    lastScheduledAt: string;
+    eventCount: number;
+    eventCountExact?: boolean;
+    delivery: "held" | "steering" | "updated" | "run" | "unconfirmed" | "combined";
+    combinedIntoOccurrenceId?: string;reconciled?: 'applied'|'not_applied';
+  };
   state: TriggerOccurrenceState;
   payload: unknown;
   provenance: Record<string, unknown>;

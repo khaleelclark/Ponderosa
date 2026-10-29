@@ -1,7 +1,7 @@
 import type { ConversationDto } from "./dto/conversations.js";
 import type { AgentPortablePackageDto } from "./dto/agents.js";
 import type { TriggerBudgetPeriod, TriggerSourceConfig } from "./dto/branch-triggers.js";
-import type { WorkspaceNotificationDto } from "./dto/workspace.js";
+import type { DecisionDto, WorkspaceNotificationDto } from "./dto/workspace.js";
 /** Branch definitions are desired structure. Runtime records never live in a package. */
 /** Local operational policy; never part of portable definitions or execution snapshots. */
 export interface BranchExecutionBudgetPolicy { limit: number; period: TriggerBudgetPeriod }
@@ -100,11 +100,13 @@ export type BranchExecutionState = "queued" | "running" | "waiting" | "completed
 export type BranchAttemptState = "prepared" | "leased" | "running" | "waiting" | "completed" | "failed" | "canceled" | "outcome_unknown";
 export interface BranchVersionDto { id: string; branchId: string; hash: string; definition: BranchDefinition; createdAt: string }
 export type BranchVersionSummaryDto = Omit<BranchVersionDto, "definition">;
+/** Mutually exclusive current activity of all nonterminal workflow Runs. */
+export interface BranchRunCountsDto {running:number;waiting:number;queued:number}
 export interface BranchDto {
   /** Canonical last use, supplied by directory reads. Creation is the fallback. */
   lastUsedAt?: string;
  id: string; chatId: string; enabled?: boolean; name: string; versionId: string; bindingRevisionId: string;
- triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; createdAt: string;
+ triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; runCounts?:BranchRunCountsDto; createdAt: string;
 }
 export interface BranchExecutionDto {
   id: string; branchId: string; versionId: string; bindingRevisionId: string;
@@ -150,6 +152,23 @@ export interface BranchStepEvidenceDto {
   result?: BranchResult;
   attempts: BranchAttemptDto[];
   sealedResult?: BranchSealedResultDto;
+}
+/** Focused current decisions and failed/uncertain attempts, independent of audit-history pages. */
+export type BranchExecutionActionDto =
+  | { kind: 'schedule_update'; occurrenceId: string; injectionId: string; eventCount: number; lastScheduledAt: string }
+  | { kind: 'decision'; decision: DecisionDto }
+  | { kind: 'gate'; gate: BranchGateDto; step: BranchStepExecutionDto }
+  | { kind: 'attempt'; attempt: BranchAttemptDto; step: BranchStepExecutionDto; current: boolean };
+export interface BranchExecutionActionsDto {
+  executionId: string;
+  revision: number;
+  /** Canonical checkpoint/Request observation; decisions can change without a Run-state revision. */
+  generation: string;
+  items: BranchExecutionActionDto[];
+  /** Attempt/Step text uses the ordinary bounded preview; full evidence remains explicit. */
+  largeEvidenceOmitted?: boolean;
+  /** Execution/revision-bound continuation; older failure evidence remains explicitly paged. */
+  nextCursor?: string;
 }
 /** Read-only explanations projected from canonical workflow records. */
 export interface BranchWaitDto {
@@ -198,8 +217,8 @@ export interface BranchGateResolution {
   decision: "approve" | "reject" | "retry"; output?: string; choice?: string;
 }
 export interface BranchIntervention {
-  commandKey: string; expectedRevision: number; action: "retry" | "resolve_script" | "skip" | "merge";
-  attemptId?: string; result?: BranchResult; mergedInto?: string;
+  commandKey: string; expectedRevision: number; action: "retry" | "resolve_script" | "resolve_schedule_update" | "skip" | "merge";
+  attemptId?: string; result?: BranchResult; mergedInto?: string; occurrenceId?: string; updateApplied?: boolean;
   externalEffectsReconciled?: boolean; reason: string;
 }
 
@@ -228,6 +247,7 @@ export interface BranchLifecycleDto {
  deleting:boolean;
  chats:number;
  activeExecutions:number;
+ runCounts?:BranchRunCountsDto;
  callers:Array<{id:string;name:string}>;
  pendingRemoval:Array<{id:string;kind:'Chat'|'Agent';error?:string}>;
  updates:Array<{id:string;error?:string}>;

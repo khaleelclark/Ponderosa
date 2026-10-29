@@ -1,3 +1,4 @@
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
@@ -159,7 +160,6 @@ export class AgentCatalogAuthority {
   private importedIndexClosed = false;
   private importedIndexEpoch = 0;
   private importedIndexRunning = false;
-  private importedIndexProjectionChanges = 0;
   private readonly importedIndexActive = new Map<string, string>();
   private readonly importedIndexQueue = new Map<string, { version: string; project: boolean }>();
   private readonly agentById;
@@ -172,6 +172,7 @@ export class AgentCatalogAuthority {
     private readonly client: Database.Database,
     private readonly getAgentPreset: (presetId: string) => AgentPresetDto | undefined,
     private readonly getProject: (projectId: string) => ProjectDto | undefined,
+    private readonly progress: ProjectionProgress,
   ) {
     this.agentById = db.select().from(agents)
       .where(and(eq(agents.id, sql.placeholder("agentId")), isNull(agents.deletedAt))).prepare();
@@ -796,17 +797,10 @@ export class AgentCatalogAuthority {
     if (options.deferIndex) this.queueImportedIndex(agentId, version, false);
   }
 
-  /** Only synchronous derived-index writes may be discounted by the clean-shutdown guard. */
-  deferredImportedProjectionChanges(): number { return this.importedIndexProjectionChanges; }
-
   private importedIndexWrite<T>(write: () => T): T {
-    // Include FTS shadow/trigger changes, but never another owner's work across an await.
-    const before = (this.client.prepare("SELECT total_changes() value").get() as { value: number }).value;
-    try { return write(); }
-    finally {
-      this.importedIndexProjectionChanges +=
-        (this.client.prepare("SELECT total_changes() value").get() as { value: number }).value - before;
-    }
+    // Certify this synchronous derived-index turn through the existing owner;
+    // never credit another owner's work between indexing turns.
+    return this.progress.run([], write);
   }
 
   private async projectImportedHistoryAsync(agentId: string, imported: ImportedArchive, version: string, deferred = false): Promise<void> {

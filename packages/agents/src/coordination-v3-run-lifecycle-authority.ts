@@ -1,3 +1,4 @@
+import { requireBranchScheduleInjectionEligible } from "./coordination-v3-branch-schedule.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -21,6 +22,7 @@ import type { CoordinationV3QuestionAuthority } from "./coordination-v3-question
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type {
   ActivationTerminalOutcome,
+  CoordinationV3StoreOptions,
   CancellationResult,
   UpdateRequestV3Input,
 } from "./coordination-v3-types.js";
@@ -47,6 +49,7 @@ export class CoordinationV3RunLifecycleAuthority {
     private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
     private readonly cancelRequiredReply: (runId: string, now: string) => void,
     private readonly restoreUninjectedDecisionRoots: (runId: string, now: string) => void,
+    private readonly canonicalTaskDecisions: CoordinationV3StoreOptions["canonicalTaskDecisions"],
   ) {}
 
   markRunStarted(
@@ -163,6 +166,7 @@ export class CoordinationV3RunLifecycleAuthority {
     const hash = createHash("sha256").update(input.prompt).digest("hex");
     this.sqlite.transaction(() => {
       this.support.getFencedRun(input.runId, input.fencingToken);
+      requireBranchScheduleInjectionEligible(this.sqlite,input.injectionId,input.runId,now,this.canonicalTaskDecisions);
       const row = this.sqlite.prepare(`
         SELECT prompt_hash, state, kind, activation_ids_json FROM scheduler_prompt_injections
         WHERE id = ? AND run_id = ?
@@ -233,6 +237,7 @@ export class CoordinationV3RunLifecycleAuthority {
   }): void {
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
+      requireBranchScheduleInjectionEligible(this.sqlite,input.injectionId,input.runId,now,this.canonicalTaskDecisions);
       const run = this.support.getFencedRun(
         input.runId,
         input.fencingToken,

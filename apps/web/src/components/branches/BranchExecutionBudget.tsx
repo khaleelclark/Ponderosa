@@ -27,7 +27,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
    if(!grantAttempt.current){const current=query.data;if(!current?.periodId)throw new Error('Load the current budget first');grantResultLimit.current=current.policy!.limit+current.allowance+Number(additional);grantAttempt.current={commandKey:createClientId(),expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:Number(additional)}}
    return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget/allow`,{method:'POST',body:JSON.stringify(grantAttempt.current)});
  },onSuccess:()=>{grantAttempt.current=undefined;grantResultLimit.current=undefined;setGrantOpen(false);setAdditional('1');refresh()},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){grantAttempt.current=undefined;grantResultLimit.current=undefined;refresh()}}});
- const presentation=budgetPresentation(query),unavailable=!query.data||Boolean(query.error)||query.isFetching;
+ const presentation=budgetPresentation(query),unavailable=!query.data||Boolean(query.error);
  const epochChange=draft!==undefined&&draft!==null&&(!base?.policy||base.policy.period!==draft.period);
  const valid=draft===null||Boolean(draft&&validBudgetNumber(String(draft.limit)));
  const grantValid=validBudgetNumber(additional)&&Boolean(query.data?.policy&&query.data.policy.limit+query.data.allowance+Number(additional)<=1_000_000_000);

@@ -12,7 +12,7 @@ test('Branch header reuses ordered shared icon tabs and unpublished status witho
  assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Editing"'),'Dirty indication is accessible');
  assert.ok(!/aria-label="Review &amp; publish"|SaveOutlined/.test(html),'Publication has one canvas entry point');assert.ok(html.includes('Unpublished Changes'),'Editing tooltip explains unpublished changes');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
- assert.deepEqual(names,['Workflow','Chats','Executions','Settings']);
+ assert.deepEqual(names,['Workflow','Executions','Chats','Settings']);
  for(const tab of ['workflow','chats','executions','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
  for(const tab of ['executions'])assert.ok(new RegExp(`disabled=""[^>]*id="branch-${tab}-tab"|id="branch-${tab}-tab"[^>]*disabled=""`).test(html),`Unpublished ${tab} remains disabled`);
  assert.ok(!/Ponderosa Branches|Build and operate|No changes to publish/.test(html),'No displaced product banner or duplicate actions');
@@ -256,7 +256,7 @@ test('workflow Settings sections load without parameter configuration and keep l
  const html=render(),labels=['Branch capabilities','Dependencies','Delete workflow'];
  assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
  assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
- assert.ok(!html.includes('Workflow settings sections')&&!html.includes('Loading configuration'),'No nested navigation or unrelated configuration gate');
+ assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced local execution limits')&&html.indexOf('Loading configuration')<html.indexOf('Branch capabilities'),'Local limits load independently inside Execution Controls without gating the other sections');
  assert.ok(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),'The sole configuration editor stays mounted without blocking other Settings sections');
  client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
  const named=render();assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
@@ -742,32 +742,32 @@ test('an external publication cannot unmount and erase an open workflow Rename d
 test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
  const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  const render=extra=>renderBranchHeader({...props,...extra});
- for(const [extra,label] of [[{executionCount:0},'0 active executions'],[{executionCount:4},'4 active executions'],[{},'Executions loading…'],[{executionCount:4,executionsUnavailable:true},'Executions unavailable']]){
+ for(const [extra,label] of [[{runCounts:{running:0,waiting:0,queued:0}},'0 Running'],[{runCounts:{running:4,waiting:1,queued:2}},'4 Running · 3 Pending'],[{},'Run status loading…'],[{executionsUnavailable:true},'Run status unavailable']]){
   const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Editing"'),'Execution state and unpublished draft remain independently visible');
-  if(extra.executionsUnavailable)assert.ok(!html.includes('4 active executions'),'A failed query overrides its cached count');
+  if(extra.executionsUnavailable)assert.ok(!html.includes('0 Running'),'An unavailable count is not confirmed idle');
  }
- const nested=renderBranchHeader({...props,tab:'chats',executionCount:4});
- assert.ok(nested.includes('4 active executions'),'The retained outer Branch header keeps its own execution status in Chats');
+ const nested=renderBranchHeader({...props,tab:'chats',runCounts:{running:4,waiting:1,queued:2}});
+ assert.ok(nested.includes('4 Running · 3 Pending'),'The retained outer Branch header keeps its own execution status in Chats');
 });
 
 
 test('workflow directory status keeps availability, trigger intake and active work independent',async()=>{
  const {BranchDirectoryStatus}=await import('../../apps/web/src/components/branches/BranchDirectoryStatus.tsx');
- const branch={id:'stable-id',name:'Full workflow name',versionId:'published',enabled:true,activeExecutions:0};
+ const branch={id:'stable-id',name:'Full workflow name',versionId:'published',enabled:true,activeExecutions:0,runCounts:{running:0,waiting:0,queued:0}};
  const render=(patch={},delayed=false)=>renderToStaticMarkup(React.createElement(BranchDirectoryStatus,{branch:{...branch,...patch},delayed}));
- const enabled=render();assert.ok(enabled.includes('aria-label="Enabled · Manual · No active executions"'));assert.ok(enabled.includes('data-branch-availability="enabled"'));
- const paused=render({enabled:false,triggerId:'trigger',triggerEnabled:true,activeExecutions:3});assert.ok(paused.includes('aria-label="Paused · Automatic intake paused · 3 active executions"'));assert.ok(paused.includes('data-branch-availability="paused"'));assert.ok(paused.includes('Automatic'));
- assert.ok(render({triggerId:'trigger',triggerEnabled:true}).includes('Enabled · Automatic intake on · No active executions'));
+ const enabled=render();assert.ok(enabled.includes('aria-label="Workflow Runs · Enabled · Manual · Running: 0 · Waiting: 0 · Queued: 0"'));assert.ok(enabled.includes('data-branch-availability="enabled"'));
+ const paused=render({enabled:false,triggerId:'trigger',triggerEnabled:true,activeExecutions:3,runCounts:{running:1,waiting:1,queued:1}});assert.ok(paused.includes('aria-label="Workflow Runs · Paused · Automatic intake paused · Running: 1 · Waiting: 1 · Queued: 1"'));assert.ok(paused.includes('data-branch-availability="paused"'));assert.ok(paused.includes('Automatic'));
+ assert.ok(render({triggerId:'trigger',triggerEnabled:true}).includes('Workflow Runs · Enabled · Automatic intake on · Running: 0 · Waiting: 0 · Queued: 0'));
  assert.ok(render({triggerId:'trigger',triggerEnabled:false}).includes('Automatic intake paused'));
- const unknown=render({enabled:undefined,activeExecutions:undefined,triggerId:'trigger',triggerEnabled:true},true);assert.ok(unknown.includes('Availability unknown · Automatic intake unknown · Active executions unknown · Updates delayed'));assert.ok(!unknown.includes('No active executions'));
+ const unknown=render({enabled:undefined,activeExecutions:undefined,runCounts:undefined,triggerId:'trigger',triggerEnabled:true},true);assert.ok(unknown.includes('Availability unknown · Automatic intake unknown · Run status unavailable'));assert.ok(!unknown.includes('Running: 0'));
  assert.ok(render({versionId:''}).includes('Unpublished — cannot run'));assert.ok(!render({versionId:''}).includes('aria-label="Enabled'));
- for(const activeExecutions of [-1,NaN,Infinity])assert.ok(render({activeExecutions}).includes('Active executions unknown'));
+ for(const running of [-1,NaN,Infinity])assert.ok(render({runCounts:{running,waiting:0,queued:0}}).includes('Run status loading'));
  const {SidebarActivityBadge}=await import('../../apps/web/src/components/SidebarActivityBadge.tsx');
  const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
  const ponderosaCircle=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));
  assert.ok(ponderosaCircle,'The reference is Ponderosa’s actual sidebar renderer');
  for(const patch of [{},{enabled:false},{versionId:''},{enabled:undefined,activeExecutions:undefined}])assert.equal(svg(render(patch)),ponderosaCircle,'Every Branch availability state uses the exact same circle as Ponderosa');
- const busy=render({activeExecutions:200});assert.ok(busy.includes('200 active executions'));assert.ok(busy.includes('99+'));assert.ok(!busy.includes('stable-id'),'Tooltip does not expose raw identifiers');
+ const busy=render({activeExecutions:200,runCounts:{running:0,waiting:1,queued:199}});assert.ok(busy.includes('Running: 0 · Waiting: 1 · Queued: 199'));assert.ok(busy.includes('99+'));assert.ok(!busy.includes('stable-id'),'Tooltip does not expose raw identifiers');
 });
 
 
@@ -1017,7 +1017,7 @@ test('pending actual advanced Apply survives publication retry without a new edi
 
 
 test('Editing label has the Unpublished Changes tooltip and disappears at every clean baseline',()=>{
- const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,onTab(){},onExport(){},onUpdate(){}};
+ const props={name:'Workflow',tab:'workflow',published:true,dirty:true,runCounts:{running:2,waiting:0,queued:0},onTab(){},onExport(){},onUpdate(){}};
  const dirty=renderBranchHeader(props);
  assert.ok(/tabindex="0"[^>]*aria-label="Editing"/.test(dirty));assert.ok(dirty.includes('Unpublished Changes'));assert.ok(dirty.includes('>Editing</span>'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Editing"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
  const clean=renderBranchHeader({...props,dirty:false});assert.ok(!clean.includes('aria-label="Editing"'));assert.ok(!clean.includes('Unpublished Changes'));
@@ -1040,14 +1040,14 @@ test('compact execution count preserves full meaning and uses Ponderosa’s shar
  const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
  const reference=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));assert.ok(reference);
  const base={name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){},onRename(){}};
- for(const [props,label,visible] of [[{executionCount:0},'0 active executions','0'],[{executionCount:12},'12 active executions','12'],[{},'Executions loading…','…'],[{executionCount:12,executionsUnavailable:true},'Executions unavailable','!']]){
+ for(const [props,label,visible] of [[{runCounts:{running:0,waiting:0,queued:0}},'0 Running','0'],[{runCounts:{running:12,waiting:3,queued:4}},'12 Running · 7 Pending','12 / 7'],[{},'Run status loading…','…'],[{executionsUnavailable:true},'Run status unavailable','!']]){
   const html=renderBranchHeader({...base,...props});
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
   const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
   const compact=status.props.children[1].props.children,executionCircle=compact.props.children[0],dirty=status.props.children[2].props.children;
   assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children,'Editing','Unpublished workflow changes use the visible Editing label');assert.equal(status.props.children[2].props.title,'Unpublished Changes');
   assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),undefined,'The Editing label replaces the ambiguous dot');
-  const kind=props.executionsUnavailable?'needs_attention':props.executionCount===undefined?'waiting':props.executionCount>0?'running':'idle';
+  const kind=props.executionsUnavailable?'needs_attention':props.runCounts===undefined?'waiting':props.runCounts.running>0?'running':props.runCounts.waiting+props.runCounts.queued>0?'waiting':'idle';
   for(const mode of ['light','dark'])assert.equal(executionCircle.props.sx({palette:{mode}}).color,semanticStatusColorToken(kind,mode));
   assert.equal(dirty.props.sx.color,'warning.main');assert.equal(dirty.props.sx.display,'inline-flex');assert.equal(compact.props.tabIndex,0);assert.equal(dirty.props.tabIndex,0);
  }
@@ -1118,7 +1118,11 @@ test('expanded Branch actions share the title row while ordinary frame defaults 
  assert.equal(grid.props.children[1].props.children[0].props.children[0].props.children.type,scope.Typography,'A desktop Branch narrowed by its sidebar keeps title space instead of reserving another decorative icon');
  const ordinary=render({...props,primaryActions:undefined}),ordinaryGrid=ordinary.props.children[0].props.children;
  assert.equal(ordinaryGrid.props.children[2].props.sx.gridRow.xs,2);assert.equal(ordinaryGrid.props.children[1].props.sx.overflow,'hidden');
- scope.useWorkspaceHeaderCollapse=()=>({collapsed:true,toggleCollapsed(){}});const collapsed=render({...props,statusBeforePrimaryActions:true});assert.equal(collapsed.props.primaryActions,props.primaryActions,'Collapsed and expanded Branch headers keep one usage destination contract');
+ scope.useWorkspaceHeaderCollapse=()=>({collapsed:true,toggleCollapsed(){}});const collapsed=render({...props,statusBeforePrimaryActions:true});assert.equal(collapsed.props.primaryActions,props.primaryActions,'Collapsed and expanded Branch headers keep one usage destination contract');assert.equal(collapsed.props.singleRow,false,'Ordinary defaults keep their existing compact layout');assert.equal(render({...props,collapsedSingleRow:true}).props.singleRow,true,'Branches explicitly opts into one collapsed row');
+ const compact=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='CompactWorkspaceHeader'),renderCompact=vm.runInNewContext(ts.transpile(`(${compact.getText(ast).replace(/^export /,'')})`,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);
+ const ordinaryCompact=renderCompact({...props,tabs:React.createElement('div')}),single=renderCompact({...props,tabs:React.createElement('div'),singleRow:true});
+ assert.match(ordinaryCompact.props.children.props.sx['@container (max-width: 40rem)'].gridTemplateAreas,/".*" "/,'Other consumers retain their current two-row narrow arrangement');
+ assert.equal(single.props.children.props.sx['@container (max-width: 40rem)'].gridTemplateAreas,undefined,'The Branch narrow override retains the single-row areas');assert.match(single.props.children.props.sx['@container (max-width: 40rem)'].gridTemplateColumns,/44px/,'A scrollable tab remains a full touch target');
 });
 
 
@@ -1292,6 +1296,30 @@ test('trigger external schedule subtype and webhook configuration changes do not
  const webhook=await branchTriggerDraftFixture('webhook',{replayWindowSeconds:300});webhook.setConfig({replayWindowSeconds:600});assert.equal(webhook.calls.length,0);assert.equal(webhook.config.replayWindowSeconds,600);webhook.unmount();
 });
 
+test('repeating busy policy preserves legacy absence, explicit choice and Undo without rewriting cadence',async()=>{
+ const legacy={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',legacy);
+ assert.equal(f.calls.length,0);assert.equal(f.draft.whenRunning,undefined);assert.ok(renderToStaticMarkup(f.render()).includes('Queue Every Run'),'Legacy schedule displays Queue Every Run');
+ f.input('whenRunning','run_latest');assert.equal(f.config.whenRunning,'run_latest');assert.equal(f.config.startsAt,legacy.startsAt);assert.equal(f.calls.length,1);
+ const selected=structuredClone(f.config);f.input('intervalValue','2');assert.equal(f.config.whenRunning,'run_latest');assert.equal(f.config.startsAt,legacy.startsAt);
+ f.setConfig(legacy);assert.equal(f.draft.whenRunning,undefined);assert.equal(f.calls.length,2,'Undo loads the old policy without authoring another edit');
+ f.setConfig(selected);assert.equal(f.draft.whenRunning,'run_latest');assert.equal(f.calls.length,2);
+ const markup=renderToStaticMarkup(f.render());assert.ok(markup.includes('When Already Running'),'Policy control is labeled');assert.ok(markup.includes('Run Latest When Finished'),'Selected policy is readable');assert.ok(markup.includes('already queued'),'Existing backlog warning remains visible');f.unmount();
+ const cron={scheduleKind:'cron',expression:'0 9 * * *',timezone:'UTC',whenRunning:'update_current'},c=await branchTriggerDraftFixture('schedule',cron);
+ assert.equal(c.calls.length,0);assert.equal(c.draft.whenRunning,'update_current');c.input('timezone','America/New_York');assert.equal(c.config.whenRunning,'update_current');c.unmount();
+});
+
+test('new repeating schedules default to Run Latest while one-time schedules carry no busy policy',async()=>{
+ const once={scheduleKind:'once',at:'2030-01-02T03:04:05.000Z'},f=await branchTriggerDraftFixture('schedule',once);
+ assert.equal(renderToStaticMarkup(f.render()).includes('When Already Running'),false,'One-time schedules have no busy policy control');assert.equal(f.calls.length,0);
+ f.input('scheduleKind','interval');assert.equal(f.config.whenRunning,'run_latest');f.input('scheduleKind','once');assert.equal(Object.hasOwn(f.config,'whenRunning'),false);
+ f.input('scheduleKind','cron');assert.equal(f.config.whenRunning,'run_latest');f.unmount();
+ const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript');
+ const source=readFileSync(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),matches=[];
+ function walk(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='setTrigger')matches.push(node.initializer.getText(ast));ts.forEachChild(node,walk)}walk(ast);assert.equal(matches.length,1);
+ const changes=[],setTrigger=vm.runInNewContext(ts.transpile('('+matches[0]+')',{target:ts.ScriptTarget.ES2022}),{bindings:{agents:{},directories:{}},definition:{trigger:{kind:'manual'}},onDraft:value=>changes.push(value),Date});
+ setTrigger('schedule');assert.equal(changes[0].bindings.triggers.source.sourceConfig.whenRunning,'run_latest');
+});
+
 
 test('Save Workflow renders the existing guarded review action with pending and disabled states',async()=>{
  const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
@@ -1377,22 +1405,101 @@ test('workflow reload fences failures and fresh reads to their original owner an
  const f=await discardActionFixture(),s=f.scope;s.pendingAdvanced.current=false;f.load('reloadWorkflow');let selected;s.select=async(branch,force,revision)=>{selected={branch,force,revision}};s.serverBranch={...s.serverBranch,versionId:'fresh-v3'};await s.reloadWorkflow('owner');assert.equal(selected.branch.versionId,'fresh-v3');assert.equal(selected.revision,s.draftRevision.current);assert.ok(f.requests.every(row=>row.cache==='no-store'));
 });
 
+async function workflowRunFixture(t,submit=async()=>({id:'accepted-run',branchId:'owner',state:'queued'})){
+ const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
+ const React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),{QueryClient,MutationObserver}=require('@tanstack/react-query'),{readFileSync}=await import('node:fs');
+ const {INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength}=await import('../../packages/core/dist/index.js'),navigations=[],buttons=[],fields=[],dialogs=[];
+ Object.assign(s,{React,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength,selectedBranch:{error:null},lifecycle:{data:{deleting:false}},runOpen:false,input:'  First line\r\nSecond line 😀  ',occurrenceKey:'original-run-intent',navigate:next=>{navigations.push(next);return true},isCurrentWorkflowResponse:(a,b)=>a.branchId===b.branchId&&a.selection===b.selection});
+ let intent=0;s.createClientId=()=>`new-run-intent-${++intent}`;const readWorkflow=s.requestJson;s.currentDraft.current=s.draft;s.requestJson=async(path,init)=>{if(!init?.body)return readWorkflow(path,init);f.requests.push({path,body:JSON.parse(init.body)});return submit()};
+ const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}});let observer;
+ s.useMutation=options=>{observer=new MutationObserver(client,options);return observer.getCurrentResult()};f.load('run');const unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear()});
+ const primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Alert','DialogActions','DialogContent','DialogTitle','Stack'].map(name=>[name,primitive]));
+ mui.Alert=props=>React.createElement('div',null,props.children,props.action);mui.Dialog=props=>{dialogs.push(props);return props.open?React.createElement('section',null,props.children):null};mui.Button=props=>{buttons.push(props);return React.createElement('button',{disabled:props.disabled},props.children)};mui.TextField=props=>{fields.push(props);return null};
+ const exports={};f.vm.runInNewContext(f.ts.transpile(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),{exports,React,require:name=>name==='@mui/material'?mui:require(name)});
+ Object.assign(s,mui,{ConfirmDialog:exports.ConfirmDialog});let dialog;
+ function find(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='ConfirmDialog'&&node.openingElement.attributes.properties.some(a=>a.name?.getText(f.file)==='onConfirm'&&a.initializer?.expression?.getText(f.file)==='submitRun'))dialog=node.getText(f.file);f.ts.forEachChild(node,find)}find(f.file);assert.ok(dialog,'Run uses the existing shared confirmation shell');
+ const render=()=>{s.route=s.routeOwner.current;s.run={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};for(const name of ['once','runAccepted','runUnconfirmed','runInputError','runUnavailable','openRun','submitRun'])f.load(name);buttons.length=0;fields.length=0;dialogs.length=0;return renderToStaticMarkup(f.vm.runInContext(f.ts.transpile('('+dialog+')',{target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),s))};
+ return {...f,navigations,render,dialogs,button:label=>buttons.find(button=>button.children===label),field:()=>fields.find(field=>field.label==='Run Input'),observer};
+}
+
+test('header Run uses the published workflow without changing its schedule, fences duplicate clicks and opens the accepted run',async t=>{
+ let finish;const f=await workflowRunFixture(t,()=>new Promise(resolve=>{finish=resolve})),s=f.scope;s.draft.definition.trigger={kind:'schedule',configRef:'schedule'};const trigger=JSON.stringify(s.draft.definition.trigger),key=s.occurrenceKey;
+ f.render();s.openRun();f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Run Published Workflow').disabled,false);assert.match(f.render(),/unpublished edits are not included/);
+ const click=f.button('Run Published Workflow').onClick,pending=click();assert.equal(click(),undefined);f.dialogs[0].onClose({},'escapeKeyDown');assert.equal(s.runOpen,true,'The shared shell fences immediate dismissal before mutation pending renders');
+ await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.button('Submitting…').disabled,true);assert.equal(f.button('Cancel').disabled,true);assert.equal(f.field().disabled,true);assert.equal(f.requests.length,1);
+ assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0])),{path:'/api/branches/owner/executions',body:{occurrenceKey:key,input:'  First line\r\nSecond line 😀  '}});assert.equal(JSON.stringify(s.draft.definition.trigger),trigger,'Run never changes the saved trigger or publishes the draft');
+ finish({id:'accepted-run',branchId:'owner',state:'queued'});await pending;f.render();assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);assert.equal(s.runOpen,false);assert.equal(f.notices.at(-1).message,'Run Accepted');assert.equal(s.occurrenceKey,key,'Feedback settlement does not rotate or reset mutation identity');
+ s.openRun();f.render();assert.notEqual(s.occurrenceKey,key);assert.equal(f.button('Run Published Workflow').disabled,false,'Another run intent is available while the accepted run remains queued');
+});
+
+test('accepted Runs retain filters and remain reachable when a settings guard refuses navigation',async t=>{
+ const f=await workflowRunFixture(t),s=f.scope;s.routeOwner.current={...s.routeOwner.current,executionFilter:'failed'};f.render();s.openRun();f.render();let accepted=false;const destinations=[];s.navigate=next=>{destinations.push(next);return accepted};
+ await f.button('Run Published Workflow').onClick();f.render();assert.equal(s.runOpen,true);assert.equal(f.field().disabled,true);assert.match(f.render(),/Run Accepted/);assert.equal(f.button('View Run').disabled,false);assert.equal(destinations[0].executionFilter,'failed');
+ const calls=f.requests.length;f.button('View Run').onClick();assert.equal(s.runOpen,true);assert.equal(f.requests.length,calls,'Opening an accepted Run cannot create a second execution');accepted=true;f.button('View Run').onClick();assert.equal(s.runOpen,false);assert.equal(destinations.at(-1).executionId,'accepted-run');
+});
+
+test('uncertain Run submissions freeze raw input and retry the exact wire intent even after disable or publication reload',async t=>{
+ let count=0;const f=await workflowRunFixture(t,async()=>{if(++count===1)throw Error('Controlled response loss');return {id:'accepted-run',branchId:'owner'}}),s=f.scope;
+ f.render();s.openRun();f.render();await assert.rejects(f.button('Run Published Workflow').onClick(),/response loss/);f.render();assert.equal(f.field().disabled,true);assert.match(f.render(),/submission outcome is not confirmed/);assert.equal(f.button('Retry Run Submission').disabled,false);
+ const key=s.occurrenceKey,input=s.input;s.current={...s.current,enabled:false,versionId:undefined};s.selection.current++;s.routeOwner.current={branchId:'owner',tab:'settings',settingsSection:'execution-controls'};f.render();s.openRun();f.render();assert.equal(s.occurrenceKey,key);assert.equal(s.input,input);assert.equal(f.button('Retry Run Submission').disabled,false,'An exact replay may recover an already accepted run after availability changes');
+ await f.button('Retry Run Submission').onClick();assert.deepEqual(f.requests[1],f.requests[0]);assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);
+});
+
+test('same-Branch published reload preserves uncertain run input, key and mutation while a new owner clears only its own form',async t=>{
+ const f=await workflowRunFixture(t,async()=>{throw Error('Controlled lost response')}),s=f.scope;f.render();s.openRun();f.render();await assert.rejects(f.button('Run Published Workflow').onClick(),/lost response/);f.render();
+ const input=s.input,key=s.occurrenceKey,attempt=s.run.variables;f.load('select');s.serverBranch={...s.serverBranch,versionId:'v2'};await s.select(s.serverBranch,true);f.render();
+ assert.equal(s.input,input);assert.equal(s.occurrenceKey,key);assert.equal(s.run.variables,attempt);assert.equal(s.runUnconfirmed,true);assert.ok(!f.resets.includes('run'),'Background reload must not discard a possibly accepted intent');
+ await s.select({...s.serverBranch,id:'another-owner'},true);f.render();assert.equal(s.input,'');assert.notEqual(s.occurrenceKey,key);assert.equal(s.runOpen,false);assert.equal(s.run.isError,false);
+});
+
+test('late Run acceptance cannot replace another owner, global view or selected run',async t=>{
+ for(const change of ['owner','global','selected-run','generation']){
+  let finish;const f=await workflowRunFixture(t,()=>new Promise(resolve=>{finish=resolve})),s=f.scope;f.render();s.openRun();f.render();const pending=f.button('Run Published Workflow').onClick();await new Promise(resolve=>setImmediate(resolve));
+  if(change==='generation')s.selection.current++;else s.routeOwner.current={...s.routeOwner.current,...(change==='owner'?{branchId:'other'}:change==='global'?{global:'providers'}:{tab:'executions',executionId:'chosen-run'})};
+  finish({id:'late-run',branchId:'owner'});await pending;assert.equal(f.navigations.length,0,change);assert.equal(f.notices.length,0,change);
+ }
+});
+
+test('Run input stays raw, validates canonical code points and exposes unpublished/disabled guidance without submitting',async t=>{
+ const f=await workflowRunFixture(t),s=f.scope;f.render();s.openRun();f.render();f.field().onChange({target:{value:'😀'.repeat(10_001)}});f.render();assert.equal(f.button('Run Published Workflow').disabled,true);assert.match(f.field().helperText,/10,000/);assert.equal(s.submitRun(),undefined);assert.equal(f.requests.length,0);
+ s.input='e\u0301'.repeat(10_000);f.render();assert.equal(f.field().error,false,'Validation uses the existing server normalization contract');
+ const verified=s.current;s.current=undefined;s.selectedBranch.isPending=true;f.render();assert.match(f.render(),/Checking workflow availability/);assert.doesNotMatch(f.render(),/Save Workflow before running/);s.selectedBranch.isPending=false;s.current=verified;
+ s.current={...s.current,versionId:undefined};f.render();assert.match(f.render(),/Save Workflow before running/);assert.equal(f.button('Run Workflow').disabled,true);assert.equal(f.requests.length,0);
+ s.current={...s.current,versionId:'v1',enabled:false};f.render();assert.match(f.render(),/Enable it in Workflow trigger settings/);assert.equal(f.button('Run Published Workflow').disabled,true);f.button('Open Workflow').onClick();assert.equal(s.runOpen,false);
+});
+
+test('Branch tabs and execution-control deep links share canonical semantic order',async()=>{
+ const {branchTabs}=await import('../../apps/web/src/branchesRouting.ts');assert.deepEqual([...branchTabs],['workflow','executions','chats','settings']);
+ const route={branchId:'called-workflow',tab:'settings',settingsSection:'execution-controls'};assert.deepEqual(parseBranchRoute(new URL(branchRoutePath(route),'https://example.test').search),route);
+ assert.equal(parseBranchRoute('?branch=b&tab=workflow&section=execution-controls').settingsSection,undefined);
+});
+
+test('every Branch tab shares a title-adjacent compact Run control with optional defaults for other callers',()=>{
+ let opened=0;const props={name:'An unusually long workflow title',published:true,dirty:true,runCounts:{running:0,waiting:0,queued:0},onTab(){},onExport(){},onUpdate(){},onRename(){},onRun(){opened++}};
+ for(const tab of ['workflow','executions','chats','settings']){
+  const element=BranchWorkspaceHeader({...props,tab}),frame=element.props.children,status=frame.props.status,run=status.props.children[3].props.children.props.children;
+  assert.equal(frame.props.collapsedSingleRow,true);assert.equal(run.props['aria-label'],'Run Published Workflow');assert.equal(run.props.sx.minWidth,44);assert.equal(run.props.sx.minHeight,44);assert.equal(run.props.sx['@container (max-width: 40rem)'].width,44);run.props.onClick();
+  const html=renderBranchHeader({...props,tab});assert.match(html,/aria-label="Run Published Workflow"/);assert.equal((html.match(/data-testid="PlayArrowOutlinedIcon"/g)??[]).length,1);
+ }
+ assert.equal(opened,4);const pending=BranchWorkspaceHeader({...props,tab:'workflow',runPending:true}).props.children.props.status.props.children[3].props.children.props.children;assert.equal(pending.props.disabled,true);
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
  const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm');
  const require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript'),React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),{QueryClient,MutationObserver}=require('@tanstack/react-query');
- const source=readFileSync(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('execution.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let mutation,dialog;
- function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='act')mutation=node.initializer.arguments[0].getText(ast);if(ts.isBinaryExpression(node)&&node.left.getText(ast)==='intervention'&&ts.isJsxElement(node.right)&&node.right.openingElement.tagName.getText(ast)==='ConfirmDialog')dialog=node.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(mutation);assert.ok(dialog,'Interventions must use the shared confirmation owner');
+ const source=readFileSync(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('execution.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let mutation,dialog;const helpers=new Map();const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
+ function find(node){if(ts.isVariableDeclaration(node)&&['interventionUnconfirmed','interventionLocked','submitIntervention'].includes(node.name.getText(ast)))helpers.set(node.name.getText(ast),node.initializer.getText(ast));if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='act')mutation=node.initializer.arguments[0].getText(ast);if(ts.isBinaryExpression(node)&&node.left.getText(ast)==='intervention'&&ts.isJsxElement(node.right)&&node.right.openingElement.tagName.getText(ast)==='ConfirmDialog')dialog=node.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(mutation);assert.ok(dialog,'Interventions must use the shared confirmation owner');
  const buttons=[],fields=[],dialogs=[],calls=[],refreshes=[];
  const primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Alert','DialogActions','DialogContent','DialogTitle','Stack','Typography','MenuItem'].map(name=>[name,primitive]));
  mui.Dialog=p=>{dialogs.push(p);return p.open?React.createElement('section',null,p.children):null;};mui.Button=p=>{buttons.push(p);return React.createElement('button',{disabled:p.disabled},p.children);};mui.TextField=p=>{fields.push(p);return null;};mui.Switch=p=>{fields.push(p);return null;};mui.FormControlLabel=p=>React.createElement('div',null,p.control);
  const load=(text,scope={})=>vm.runInNewContext(ts.transpile(text,{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);
  const exports={};load(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{exports,React,require:name=>name==='@mui/material'?mui:require(name)});
- let key=0;const scope={React,...mui,ConfirmDialog:exports.ConfirmDialog,intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'attempt-a',unknown}:{})},reason:'',reconciled:false,result:'',failed:false,target:'',commandKey:'command-0',createClientId:()=>`command-${++key}`,execution:{id:'execution-a',revision:7,parentExecutionId:'parent'},executions:[{id:'target',state:'waiting',createdAt:'2026-10-25T00:00:00Z'}],detail:{attempts:[],steps:[]},refresh:()=>refreshes.push('refresh'),requestJson:async(path,options)=>{calls.push({path,body:JSON.parse(options.body)});return submit();}};
+ let key=0;const scope={React,ApiRequestError,...mui,ConfirmDialog:exports.ConfirmDialog,intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'attempt-a',unknown}:{})},reason:'',reconciled:false,result:'',failed:false,target:'',commandKey:'command-0',createClientId:()=>`command-${++key}`,execution:{id:'execution-a',revision:7,parentExecutionId:'parent'},executions:[{id:'target',state:'waiting',createdAt:'2026-10-25T00:00:00Z'}],mergeTargets:{isPending:false,error:null,data:{},hasNextPage:false},actionsCurrent:true,detail:{attempts:[],steps:[]},refresh:()=>refreshes.push('refresh'),requestJson:async(path,options)=>{calls.push({path,body:JSON.parse(options.body)});return submit();}};
  for(const name of ['intervention','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{scope[name]=value;};
  const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}}),observer=new MutationObserver(client,load('('+mutation+')',scope)),unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear();});
- const render=()=>{buttons.length=0;fields.length=0;dialogs.length=0;scope.act={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};return renderToStaticMarkup(load('('+dialog+')',scope));};
+ const render=()=>{buttons.length=0;fields.length=0;dialogs.length=0;scope.act={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};for(const [name,initializer] of helpers)scope[name]=load('('+initializer+')',scope);return renderToStaticMarkup(load('('+dialog+')',scope));};
  return{scope,calls,refreshes,render,dialogs,button:label=>buttons.find(p=>p.children===label),field:label=>fields.find(p=>p.label===label),switches:()=>fields.filter(p=>'checked'in p)};
 }
 
@@ -1405,7 +1512,7 @@ for(const action of ['retry','resolve_script','merge','skip'])test(`shared execu
  f.render();assert.equal(f.button('Apply decision').disabled,false);const key=f.scope.commandKey,confirm=f.button('Apply decision').onClick,saving=confirm();assert.equal(confirm(),undefined,'A second click before pending renders is fenced');f.dialogs[0].onClose({},'escapeKeyDown');assert.ok(f.scope.intervention,'Dismissal is fenced immediately after the first click');await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.dialogs[0]['aria-busy'],true);assert.equal(f.button('Applying…').disabled,true);assert.equal(f.button('Back').disabled,true);if(f.scope.intervention.unknown)assert.equal(f.button('Inspect evidence before deciding').disabled,true);
  for(const why of ['escapeKeyDown','backdropClick'])f.dialogs[0].onClose({},why);f.button('Back').onClick();f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.calls.length,1,'Pending buttons cannot dispatch another submission');
  const expected={commandKey:key,expectedRevision:7,action,reason:'Verified recovery',...(['retry','resolve_script'].includes(action)?{attemptId:'attempt-a'}:{}),...(f.scope.intervention.unknown?{externalEffectsReconciled:true}:{}),...(action==='resolve_script'?{result:{failed:true,output:'Observed output retained'}}:{}),...(action==='merge'?{mergedInto:'target'}:{})};assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0])),{path:'/api/branch-executions/execution-a/intervene',body:expected});
- release.reject(Error('Recovery conflict'));await assert.rejects(saving,/Recovery conflict/);assert.match(f.render(),/Recovery conflict/);assert.equal(f.field('Reason for this decision').value,'Verified recovery');if(action==='resolve_script')assert.equal(f.field('Observed output').value,'Observed output retained');assert.equal(f.scope.commandKey,key);assert.equal(f.button('Back').disabled,false);
+ release.reject(new f.scope.ApiRequestError(409,'Recovery conflict'));await assert.rejects(saving,/Recovery conflict/);assert.match(f.render(),/Recovery conflict/);assert.equal(f.field('Reason for this decision').value,'Verified recovery');if(action==='resolve_script')assert.equal(f.field('Observed output').value,'Observed output retained');assert.equal(f.scope.commandKey,key);assert.equal(f.button('Back').disabled,false);
  const retry=f.button('Apply decision').onClick();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(f.calls[1],f.calls[0],'Retry preserves the same intervention identity and fields');release.resolve({});await retry;f.render();assert.equal(f.scope.intervention,undefined);assert.equal(f.refreshes.length,1);
 });
 

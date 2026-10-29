@@ -6,10 +6,10 @@ import { realpathSync, statSync } from 'node:fs';
 import {createHash} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
-import { workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
+import { readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
 import { BranchValidationError, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
-import {previewBranchExecutionDetail} from '../branch-detail-preview.js';
+import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {branchOperationalSummary, type ProviderIntakeStatus} from '../branch-operations.js';
 import {activeChatProductSql,activeAgentProductSql} from '@ponderosa/agents';
 import {sqliteCollectionGeneration,StaleCollectionCursorError,sqliteCollectionPage,applyCollectionPageHeaders,sendCollectionPageError,type CollectionQuery} from '../collection-page.js';
@@ -56,9 +56,12 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
         const current = input.branchId ? branches.trigger(input.branchId) : undefined;
         const previous = input.branchId ? branches.localConfiguration(input.branchId)?.triggers?.[input.definition.trigger.configRef] : undefined;
         const same = current?.sourceKind === input.definition.trigger.kind && previous && stableJson(previous.sourceConfig) === stableJson(local.sourceConfig) && stableJson(current.sourceConfig)===stableJson(parsed);
-        const keepSchedule = same && (previous.enabled === local.enabled || !local.enabled);
-        const normalized = keepSchedule ? { config: current.sourceConfig, nextFireAt: current.nextFireAt } : normalizeTriggerSourceConfig(input.definition.trigger.kind, parsed);
-    return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:!keepSchedule,...(keepSchedule?{enabledOverride:local.enabled?current.enabled:false}:{})};
+        const cadence=(value:import('@ponderosa/core').TriggerSourceConfig)=>{const {whenRunning,...timing}=value as import('@ponderosa/core').TriggerSourceConfig & {whenRunning?:string};return timing};
+        const sameCadence=current?.sourceKind==='schedule'&&input.definition.trigger.kind==='schedule'&&previous&&
+          stableJson(cadence(previous.sourceConfig))===stableJson(cadence(local.sourceConfig))&&stableJson(cadence(current.sourceConfig))===stableJson(cadence(parsed));
+        const keepSchedule = (same||sameCadence) && previous && (previous.enabled === local.enabled || !local.enabled);
+        const normalized = keepSchedule ? { config: same?current!.sourceConfig:parsed, nextFireAt: current!.nextFireAt } : normalizeTriggerSourceConfig(input.definition.trigger.kind, parsed);
+    return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:!keepSchedule,...(keepSchedule?{enabledOverride:local.enabled?current!.enabled:false}:{})};
   }
   context.installations.setPublisher((input,configuration)=>{
     let trigger=validateLocal(input,configuration);
@@ -165,7 +168,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
   app.get<{Params:{id:string}}>('/api/branches/:id/lifecycle',async(request,reply)=>{
     const id=request.params.id,row=store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(id) as {deleting:number}|undefined;
     if(!row)return reply.code(404).send({error:'Branch not found'});
-    return {deleting:Boolean(row.deleting),chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
+    return {deleting:Boolean(row.deleting),runCounts:readBranchRunCounts(store.sqlite,[id]).get(id)!,chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
       activeExecutions:(store.sqlite.prepare("SELECT COUNT(*) n FROM branch_executions WHERE branch_id=? AND state IN ('queued','running','waiting')").get(id) as {n:number}).n,
       callers:store.sqlite.prepare('SELECT DISTINCT b.id,b.name FROM branch_dependencies d JOIN branches b ON b.id=d.branch_id WHERE d.target_branch_id=? AND d.branch_id!=?').all(id,id) as Array<{id:string;name:string}>,
       pendingRemoval:store.sqlite.prepare("SELECT r.local_id id,CASE WHEN r.agent_ref='' THEN 'Chat' ELSE 'Agent' END kind,e.error FROM branch_installation_resources r LEFT JOIN branch_retirement_errors e ON e.resource_id=r.local_id WHERE r.branch_id=? AND r.state='retiring'").all(id) as Array<{id:string;kind:'Chat'|'Agent';error?:string}>,
@@ -249,13 +252,13 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
   app.get<{Params:{id:string}}>('/api/branches/:id',async(request,reply)=>branches.getBranch(request.params.id)??reply.code(404).send({error:'Branch not found'}));
   app.get<{Params:{id:string}}>('/api/branches/:id/trigger',async(request,reply)=>branches.trigger(request.params.id)??reply.code(404).send({error:'Trigger not found'}));
   app.get<{Params:{id:string};Querystring:{limit?:string;before?:string}}>('/api/branches/:id/trigger/occurrences',async(request,reply)=>{
-    const trigger=branches.trigger(request.params.id);if(!trigger)return reply.code(404).send({error:'Trigger not found'});
+    if(!branches.getBranch(request.params.id))return reply.code(404).send({error:'Branch not found'});
     const limit=Number(request.query.limit??50);
     if(!Number.isSafeInteger(limit)||limit<1||limit>100)return reply.code(400).send({error:'limit must be between 1 and 100'});
     const before=request.query.before;
-    const boundary=before&&before.length<=200?store.sqlite.prepare('SELECT created_at FROM trigger_occurrences WHERE id=? AND trigger_id=?').get(before,trigger.id) as {created_at:string}|undefined:undefined;
+    const boundary=before&&before.length<=200?store.sqlite.prepare('SELECT occurrence.created_at FROM trigger_occurrences occurrence JOIN trigger_definitions owner ON owner.id=occurrence.trigger_id WHERE occurrence.id=? AND owner.branch_id=?').get(before,request.params.id) as {created_at:string}|undefined:undefined;
     if(before&&!boundary)return reply.code(400).send({error:'Invalid trigger occurrence cursor'});
-    const rows=store.sqlite.prepare(`SELECT id FROM trigger_occurrences WHERE trigger_id=? ${boundary?'AND (created_at<? OR (created_at=? AND id<?))':''} ORDER BY created_at DESC,id DESC LIMIT ?`).all(trigger.id,...(boundary?[boundary.created_at,boundary.created_at,before]:[]),limit) as Array<{id:string}>;
+    const rows=store.sqlite.prepare(`SELECT occurrence.id FROM trigger_occurrences occurrence JOIN trigger_definitions owner ON owner.id=occurrence.trigger_id WHERE owner.branch_id=? ${boundary?'AND (occurrence.created_at<? OR (occurrence.created_at=? AND occurrence.id<?))':''} ORDER BY occurrence.created_at DESC,occurrence.id DESC LIMIT ?`).all(request.params.id,...(boundary?[boundary.created_at,boundary.created_at,before]:[]),limit) as Array<{id:string}>;
     return rows.map(row=>branches.triggers.getTriggerOccurrence(row.id)!);
   });
   app.patch<{Params:{id:string};Body:unknown}>('/api/branches/:id/trigger',async(request,reply)=>{
@@ -352,13 +355,17 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Branch cleanup pending' }); }
   });
   app.get<{ Params: { id: string; versionId: string } }>('/api/branches/:id/versions/:versionId', async (request, reply) => branches.version(request.params.id, request.params.versionId) ?? reply.code(404).send({ error: 'Branch version not found' }));
-  app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string } }>('/api/branches/:id/executions', async (request, reply) => {
-    try { return branches.listExecutions(request.params.id, request.query.before, request.query.state); }
+  app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string; mergeFor?:string } }>('/api/branches/:id/executions', async (request, reply) => {
+    try { return branches.listExecutions(request.params.id, request.query.before, request.query.state,request.query.mergeFor); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid history cursor' }); }
   });
   app.get<{ Params: { id: string } }>("/api/branch-executions/:id/operations", async (request, reply) => {
     const execution=branches.execution(request.params.id);
     return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus):reply.code(404).send({error:"Execution not found"});
+  });
+  app.get<{Params:{id:string};Querystring:{cursor?:string}}>('/api/branch-executions/:id/actions',async(request,reply)=>{
+    try{const page=branches.currentActions(request.params.id,request.query.cursor,context.workspace);return page?previewBranchExecutionActions(page):reply.code(404).send({error:'Branch execution not found'});}
+    catch(error){const message=error instanceof Error?error.message:'Invalid execution actions cursor';return reply.code(message==='Execution actions changed; reload current actions'?409:400).send({error:message});}
   });
   app.get<{ Params: { id: string };Querystring:{cursor?:string} }>('/api/branch-executions/:id', async (request, reply) => {
     try{const result = branches.detail(request.params.id,request.query.cursor);

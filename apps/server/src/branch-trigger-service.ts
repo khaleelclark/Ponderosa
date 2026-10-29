@@ -34,6 +34,11 @@ export function normalizeTriggerSourceConfig(
       if (!Number.isFinite(at.getTime()) || at.getTime() <= now.getTime()) throw new Error("one-time schedule must be in the future");
       return { config: { scheduleKind: "once", at: at.toISOString() }, nextFireAt: at.toISOString() };
     }
+    if (schedule.whenRunning !== undefined && !["update_current", "run_latest", "queue_all"].includes(schedule.whenRunning)) {
+      throw new Error("whenRunning must be update_current, run_latest or queue_all");
+    }
+    // Absence preserves legacy queueing when an existing schedule is republished.
+    const policy = schedule.whenRunning === undefined ? {} : { whenRunning: schedule.whenRunning };
     if (schedule.scheduleKind === "interval") {
       if (!Number.isInteger(schedule.everyMs) || schedule.everyMs < MIN_INTERVAL_MS || schedule.everyMs > MAX_INTERVAL_MS) {
         throw new Error("interval must be between 1 minute and 365 days");
@@ -43,7 +48,7 @@ export function normalizeTriggerSourceConfig(
       let next = startsAt.getTime();
       if (next <= now.getTime()) next += (Math.floor((now.getTime() - next) / schedule.everyMs) + 1) * schedule.everyMs;
       return {
-        config: { scheduleKind: "interval", everyMs: schedule.everyMs, startsAt: startsAt.toISOString() },
+        config: { scheduleKind: "interval", everyMs: schedule.everyMs, startsAt: startsAt.toISOString(), ...policy },
         nextFireAt: new Date(next).toISOString(),
       };
     }
@@ -54,7 +59,7 @@ export function normalizeTriggerSourceConfig(
       const next = cron.nextRun(now);
       if (!next) throw new Error("cron schedule has no future occurrence");
       return {
-        config: { scheduleKind: "cron", expression: schedule.expression.trim(), timezone: schedule.timezone.trim() },
+        config: { scheduleKind: "cron", expression: schedule.expression.trim(), timezone: schedule.timezone.trim(), ...policy },
         nextFireAt: next.toISOString(),
       };
     }
