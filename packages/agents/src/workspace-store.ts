@@ -46,6 +46,8 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
         resolution: DraftConflictResolution;
       }
     | { kind: "draft_deleted"; draftId: string }
+    | { kind: "quiet_activity"; item: WorkspaceNotificationDto }
+    | { kind: "quiet_activity_read"; communicationEventIds: string[] }
     | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
     | { kind: "notifications_read_ids"; notificationIds: string[]; readAt: string }
@@ -104,7 +106,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   starredProjectIds: [],
   sidebarCollapsed: false,
   sidebarWidth: 288,
-  notifications: { directResponses: true, broadcasts: true },
+  notifications: { directResponses: false, broadcasts: false },
   fontFamily: "inter",
   providerAvailability: {},
   engineDefaults: {},
@@ -237,6 +239,8 @@ export class WorkspaceStore {
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly draftConflictResolutions = new Map<string, DraftConflictResolution>();
   private readonly supersededDraftConflicts = new Map<string, ConversationDraftConflictDto[]>();
+  private readonly quietActivityByConversation = new Map<string, Set<string>>();
+  private readonly quietActivity = new Map<string, WorkspaceNotificationDto>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly notificationsByWork = new Map<string, WorkspaceNotificationDto>();
@@ -572,6 +576,24 @@ export class WorkspaceStore {
           nextAttemptAt: record.ts,
         });
       }
+    }
+    if (record.mutation?.kind === "quiet_activity") {
+      const item = record.mutation.item;
+      this.quietActivity.set(item.id, item);
+      if (item.conversationId) {
+        const ids = this.quietActivityByConversation.get(item.conversationId) ?? new Set<string>();
+        ids.add(item.id);
+        this.quietActivityByConversation.set(item.conversationId, ids);
+      }
+    }
+    if (record.mutation?.kind === "quiet_activity_read") for (const id of record.mutation.communicationEventIds) {
+      const item = this.quietActivity.get(id);
+      if (item?.conversationId) {
+        const ids = this.quietActivityByConversation.get(item.conversationId);
+        ids?.delete(id);
+        if (!ids?.size) this.quietActivityByConversation.delete(item.conversationId);
+      }
+      this.quietActivity.delete(id);
     }
     if (record.mutation?.kind === "notifications_read") {
       for (const item of this.notifications.values()) {
@@ -1713,6 +1735,12 @@ export class WorkspaceStore {
     });
   }
 
+  /** Unread Communication metadata is independent of opt-in notification alerts. */
+  recordQuietActivity(item: WorkspaceNotificationDto): void {
+    if (this.quietActivity.has(item.id)) return;
+    this.append({ type: "notification_changed", action: "created" }, { kind: "quiet_activity", item });
+  }
+
   notificationSearchState(input: {
     communicationEventIds: readonly string[];
     conversationIds: readonly string[];
@@ -1721,10 +1749,10 @@ export class WorkspaceStore {
     unreadConversationCounts: Record<string, number>;
   } {
     const unreadCommunicationEventIds = [...new Set(input.communicationEventIds)]
-      .filter((id) => (this.unreadNotificationIdsByCommunication.get(id)?.size ?? 0) > 0);
+      .filter((id) => this.quietActivity.has(id) || (this.unreadNotificationIdsByCommunication.get(id)?.size ?? 0) > 0);
     const unreadConversationCounts: Record<string, number> = {};
     for (const id of new Set(input.conversationIds)) {
-      const count = this.unreadNotificationIdsByConversation.get(id)?.size ?? 0;
+      const count = (this.unreadNotificationIdsByConversation.get(id)?.size ?? 0) + (this.quietActivityByConversation.get(id)?.size ?? 0);
       if (count > 0) unreadConversationCounts[id] = count;
     }
     return { unreadCommunicationEventIds, unreadConversationCounts };
@@ -1816,6 +1844,18 @@ export class WorkspaceStore {
       }
     }
 
+    const quietCounts = new Map<string, number>();
+    const quietFolderCounts = new Map<string, number>();
+    for (const conversationId of requestedConversationIds) {
+      let count = 0;
+      for (const id of this.quietActivityByConversation?.get(conversationId) ?? []) {
+        const item = this.quietActivity.get(id)!;
+        if (!input.include || input.include(item)) count++;
+      }
+      if (!count) continue;
+      quietCounts.set(conversationId, count);
+      for (const folderId of folderIdsByConversation.get(conversationId) ?? []) quietFolderCounts.set(folderId, (quietFolderCounts.get(folderId) ?? 0) + count);
+    }
     return {
       workspace: notificationProjectionCounts(workspace),
       allMessages: notificationProjectionCounts(allMessages),
@@ -1832,10 +1872,10 @@ export class WorkspaceStore {
       })),
       conversations: Object.fromEntries([...conversations].map(([conversationId, projection]) => [
         conversationId,
-        notificationProjectionCounts(projection),
+        { ...notificationProjectionCounts(projection), ...(quietCounts.has(conversationId) ? { quietUnreadCount: quietCounts.get(conversationId) } : {}) },
       ])),
       chatFolders: Object.fromEntries([...chatFolders].map(([folderId, projection]) => [
-        folderId, notificationProjectionCounts(projection),
+        folderId, { ...notificationProjectionCounts(projection), ...(quietFolderCounts.has(folderId) ? { quietUnreadCount: quietFolderCounts.get(folderId) } : {}) },
       ])),
     };
   }
@@ -1843,6 +1883,11 @@ export class WorkspaceStore {
   /** Resolve unread informational notifications by canonical Communication
    * identity, including notifications older than the bounded live-feed page. */
   readNotificationsForCommunicationEvents(communicationEventIds: readonly string[],include?:(notification:WorkspaceNotificationDto)=>boolean): number {
+    const quietIds = [...new Set(communicationEventIds)].filter(id => {
+      const item = this.quietActivity.get(id);
+      return item && (!include || include(item));
+    });
+    if (quietIds.length) this.append({ type: "notification_changed", action: "read" }, { kind: "quiet_activity_read", communicationEventIds: quietIds });
     const notificationIds = new Set<string>();
     for (const communicationEventId of new Set(communicationEventIds)) {
       for (const notificationId of this.unreadNotificationIdsByCommunication.get(communicationEventId) ?? []) {
@@ -1850,13 +1895,13 @@ export class WorkspaceStore {
         if(notification&&(!include||include(notification)))notificationIds.add(notificationId);
       }
     }
-    if (!notificationIds.size) return 0;
+    if (!notificationIds.size) return quietIds.length;
     const readAt = new Date().toISOString();
     this.append(
       { type: "notification_changed", action: "read" },
       { kind: "notifications_read_ids", notificationIds: [...notificationIds], readAt },
     );
-    return notificationIds.size;
+    return notificationIds.size + quietIds.length;
   }
 
   readNotification(notificationId: string): boolean {
@@ -2185,11 +2230,11 @@ function normalizeNotifications(input: unknown): NotificationPreferencesDto {
   if (input && typeof input === "object") {
     const value = input as Partial<NotificationPreferencesDto>;
     return {
-      directResponses: value.directResponses ?? true,
-      broadcasts: value.broadcasts ?? true,
+      directResponses: value.directResponses ?? false,
+      broadcasts: value.broadcasts ?? false,
     };
   }
-  return { directResponses: true, broadcasts: true };
+  return { directResponses: false, broadcasts: false };
 }
 
 function clampContextRolloverTokens(value: number): number {

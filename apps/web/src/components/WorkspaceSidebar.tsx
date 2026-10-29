@@ -425,7 +425,7 @@ export function WorkspaceSidebar({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <SidebarResourceRow href={routeToPath({ kind: "conversation", projectId: chatProject.id, conversationId: conversation.id })} id={`sidebar-conversation:${conversation.id}`} label={`Open Chat ${conversation.title}`} title={conversation.title} icon={<ChatBubbleOutlineIcon fontSize="small" />}
-            starred={starred} emphasis={Boolean(unread.totalCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
+            starred={starred} emphasis={Boolean(unread.totalCount || unread.quietUnreadCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
             onOpen={() => openChat(chatProject, conversation)} onStar={() => toggleStar("conversation", conversation.id)}
             status={<>
               <SidebarNotificationBadge unread={notificationProjectionQuery.data?.conversations[conversation.id]} />

@@ -335,3 +335,32 @@ test('draft attachment deletion still fences retiring installations and executio
   assert.equal(denied.status,409);assert.match(denied.body.error,/Execution-owned temporary/);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
+
+test('Branches 30-message burst stays quiet, unread and isolated from Core across restart', async t => withFixture(t, async f => {
+ const branch=f.ok(await f.api('POST','/api/branches',{name:'Quiet Branch',idempotencyKey:randomUUID()}));
+ const chat=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{label:'Quiet Branch Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+ const base='/api/branches/engine';
+ const agents=await Promise.all([1,2,3].map(n=>f.api('POST',`${base}/projects/${chat.projectId}/agents`,{title:`Quiet Branch Agent ${n}`,engine:'codex',conversationId:chat.id,idempotencyKey:randomUUID()}).then(f.ok)));
+ const detail=id=>f.api('GET',`${base}/agents/${id}`).then(f.ok);
+ const notices=()=>f.api('GET',`${base}/notifications?limit=100`).then(f.ok);
+ const before=new Set((await notices()).items.map(n=>n.id));
+ for(let round=0;round<10;round++)await Promise.all(agents.map(async agent=>{
+  const previous=(await detail(agent.id)).runs.map(run=>run.id);
+  f.ok(await f.api('POST',`${base}/agents/${agent.id}/messages`,{text:`Quiet Branch round ${round}`,idempotencyKey:randomUUID()}));
+  await until(async()=>{const d=await detail(agent.id),fresh=d.runs.filter(run=>!previous.includes(run.id));if(!fresh.length||fresh.some(run=>['running','preparing'].includes(run.status)))return false;assert.ok(fresh.every(run=>run.status==='completed'));return true;},'Branch burst reply');
+ }));
+ const request={projectIds:[chat.projectId],conversationIds:[chat.id]};
+ const projection=product=>f.api('POST',`${prefix(product)}/notifications/projection`,request).then(f.ok);
+ assert.equal((await notices()).items.filter(n=>!before.has(n.id)).length,0);
+ assert.equal((await projection('branches')).conversations[chat.id].quietUnreadCount,30);
+ assert.equal((await projection('branches')).conversations[chat.id].totalCount,0);
+ assert.equal((await f.api('POST','/api/notifications/projection',request)).status,404,'Core rejects foreign resource IDs');
+ await f.reopen();
+ assert.equal((await projection('branches')).conversations[chat.id].quietUnreadCount,30);
+ const ids=(await Promise.all(agents.map(agent=>detail(agent.id)))).flatMap(d=>d.messages).filter(m=>m.role==='assistant').map(m=>m.communicationEventId);
+ assert.equal(ids.length,30);
+ assert.equal(f.ok(await f.api('POST','/api/notifications/read-visible',{communicationEventIds:ids})).read,0);
+ assert.equal(f.ok(await f.api('POST',`${base}/notifications/read-visible`,{communicationEventIds:ids})).read,30);
+ await f.reopen();
+ assert.equal((await projection('branches')).conversations[chat.id].quietUnreadCount??0,0);
+}));

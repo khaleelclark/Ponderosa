@@ -140,3 +140,41 @@ test('Chat roster and collection searches treat percent, underscore and backslas
   else{assert.equal(result.length,1);if(url.endsWith('/agents')||url.endsWith('/members'))assert.equal(result[0].id,target.id);else if(url.endsWith('/conversations'))assert.equal(result[0].id,chat.id);else assert.equal(result[0].id,chat.projectId);}
  }
 }));
+
+test('ordinary Agent activity is unread without notification noise by default, with alerts opt-in and durable', options, t => withFixture(t, async f => {
+  const preferences = () => f.api('GET', '/api/workspace/preferences').then(f.ok);
+  assert.deepEqual((await preferences()).notifications, { directResponses: false, broadcasts: false });
+  const chat = await f.createChat('Quiet activity');
+  const agents = await Promise.all([1, 2, 3].map(n => f.createIdleAgent(chat, `Quiet Agent ${n}`)));
+  const notices = () => f.api('GET', '/api/notifications?limit=100').then(f.ok);
+  const before = new Set((await notices()).items.map(n => n.id));
+  for (let round = 0; round < 10; round++) {
+    await Promise.all(agents.map(async agent => {
+      const previous = (await f.detail(agent.id)).runs.map(run => run.id);
+      await f.send(agent.id, `Quiet burst ${round}`);
+      await f.settled(agent.id, previous);
+    }));
+  }
+  assert.equal((await notices()).items.filter(n => !before.has(n.id)).length, 0);
+  for (const agent of agents) {
+    const detail = await f.detail(agent.id);
+    assert.equal(detail.messages.filter(m => m.role === 'assistant' && m.text === 'Explicit fixture reply').length, 10);
+  }
+  const projection = () => f.api('POST', '/api/notifications/projection', { projectIds: [chat.projectId], conversationIds: [chat.id] }).then(f.ok);
+  assert.equal((await projection()).conversations[chat.id].quietUnreadCount, 30);
+  assert.equal((await projection()).conversations[chat.id].totalCount, 0, 'quiet activity must not create a badge');
+  await f.reopen();
+  assert.equal((await projection()).conversations[chat.id].quietUnreadCount, 30);
+  const ids = (await Promise.all(agents.map(agent => f.detail(agent.id)))).flatMap(detail => detail.messages).filter(message => message.role === 'assistant').map(message => message.communicationEventId);
+  assert.equal(ids.length, 30);
+  assert.equal(f.ok(await f.api('POST', '/api/notifications/read-visible', { communicationEventIds: ids })).read, 30);
+  await f.reopen();
+  assert.equal((await projection()).conversations[chat.id].quietUnreadCount ?? 0, 0);
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { notifications: { directResponses: true, broadcasts: false } }));
+  const previous = (await f.detail(agents[0].id)).runs.map(run => run.id);
+  await f.send(agents[0].id, 'Explicitly enabled alert');
+  await f.settled(agents[0].id, previous);
+  assert.equal((await notices()).items.filter(n => !before.has(n.id) && n.kind === 'direct_responses').length, 1);
+  await f.reopen();
+  assert.deepEqual((await preferences()).notifications, { directResponses: true, broadcasts: false });
+}));

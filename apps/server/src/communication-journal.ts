@@ -130,6 +130,16 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         publishWorkspaceSince(cursor);
         webPushDelivery?.notify();
       }
+      if (kind && stored.event.intent !== "collaboration" && !notificationPreferenceMatches(preference, kind)) {
+        const cursor = workspace.cursor();
+        workspace.recordQuietActivity({
+          id: stored.event.eventId, createdAt: stored.event.createdAt,
+          projectId: stored.event.projectId, conversationId: stored.event.conversationId,
+          sourceAgentId: stored.event.sender.agentId,
+          communicationEventId: stored.event.eventId, kind, title: "Unread activity", body: "",
+        });
+        publishWorkspaceSince(cursor);
+      }
       if (stored.event.conversationId) appendWorkspace({ type: "conversation_changed", projectId: stored.event.projectId, conversationId: stored.event.conversationId, action: "message" });
     }
     return stored.event;

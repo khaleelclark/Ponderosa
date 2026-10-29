@@ -576,6 +576,8 @@ export interface WorkspaceNotificationCountProjectionDto {
   importantCount: number;
   ordinaryCount: number;
   totalCount: number;
+  /** Ordinary unread activity, excluded from notification badges and alert totals. */
+  quietUnreadCount?: number;
 }
 
 /** Exact Project counts split so Project-level attention is never described
