@@ -22,7 +22,7 @@ export function validateMemorySnapshot(value:unknown,signature?:string):Portable
  for(const [rows,log] of [[s.chunks,false],[s.conflicts,true]] as const){
   const seen=new Set<string>();
   for(const row of rows){
-   if(!object(row)||!fields(row,['id','text','metadata','embedding','stamp'])||!text(row.id)||seen.has(row.id)||typeof row.text!=='string'||!agentPackageTextIsWellFormed(row.text)||!object(row.metadata)||!Array.isArray(row.embedding)||row.embedding.length!==384||!row.embedding.every(n=>Number.isFinite(n)&&Number.isFinite(Math.fround(n)))||!row.embedding.some(n=>n!==0))fail('invalid row, duplicate ID or vector');
+   if(!object(row)||!fields(row,['id','text','metadata','embedding','stamp'])||!text(row.id)||seen.has(row.id)||typeof row.text!=='string'||!agentPackageTextIsWellFormed(row.text)||!object(row.metadata)||!Array.isArray(row.embedding)||row.embedding.length!==384||!row.embedding.every(n=>Number.isFinite(n)&&Number.isFinite(Math.fround(n)))||!row.embedding.some(n=>Math.fround(n)!==0))fail('invalid row, duplicate ID or vector');
    seen.add(row.id);
    if(Object.entries(row.metadata).some(([k,v])=>k.startsWith('host_')||!['string','number','boolean'].includes(typeof v)||typeof v==='number'&&!Number.isFinite(v)||typeof v==='string'&&!agentPackageTextIsWellFormed(v)))fail('unsupported metadata or known credential field');
    assertPortableSecretsAbsent(row.metadata,'Memory snapshot: metadata');

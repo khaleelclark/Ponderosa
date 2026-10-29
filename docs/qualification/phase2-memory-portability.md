@@ -109,3 +109,5 @@ Multi-Chat organization recreation, provider-native transcripts, exact provider
 inputs, historical Branch execution Chats and full workflow equality remain open.
 No whole-suite, integrated upgrade, 20-run streak or full portability (#8) verdict
 is claimed by this batch.
+
+Chunk and conflict vectors that become all zero or nonfinite in float32 are rejected before writes (B1).

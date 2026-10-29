@@ -44,3 +44,26 @@ test('controlled partial write compensates only new package rows and retry prese
  fail=false;await destination.memory.restorePackageMemory(snapshot,destination.chat.id,mapping,key);assert.equal((await read(destination,destination.a.id)).length,6);
  const changed=structuredClone(snapshot);changed.chunks[0].text='Never overwrite existing row';await assert.rejects(destination.memory.restorePackageMemory(changed,destination.chat.id,mapping,key),/collision/);assert.equal((await read(destination,destination.a.id)).some(r=>r.text==='Never overwrite existing row'),false);
 });
+
+for(const kind of ['chunks','conflicts'])test(`float32-underflow ${kind} refuse restore before writes while stored nonzero vectors roundtrip`,async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);await seed(destination);
+ const snapshot=await source.memory.exportPackageMemory(source.chat.id,[source.a.id]),before=await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id]),mapping={[source.a.id]:destination.a.id};
+ const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let writes=0;
+ raw.client.getCollection=async args=>{const c=await original(args),upsert=c.upsert.bind(c);c.upsert=async input=>{writes++;return upsert(input);};return c;};
+ for(const component of [1e-50,-1e-50,0,1e39]){
+  const invalid=structuredClone(snapshot);invalid[kind][0].embedding=Array.from({length:384},(_,i)=>i===0?component:0);
+  await assert.rejects(destination.memory.restorePackageMemory(invalid,destination.chat.id,mapping,randomUUID()),/Memory snapshot:.*vector/);
+ }
+ assert.equal(writes,0,'reject stored-zero vectors before any Chroma upsert');
+ assert.deepEqual(await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id]),before,'pre-existing destination remains readable and unchanged');
+ const legitimate=structuredClone(snapshot),stored=Array.from({length:384},(_,i)=>i<4?(i%2?-0.5:0.5):0);
+ for(const row of [...legitimate.chunks,...legitimate.conflicts])row.embedding=[...stored];
+ const receipt=await destination.memory.restorePackageMemory(legitimate,destination.chat.id,mapping,randomUUID());
+ assert.equal(receipt.chunkIds.length,snapshot.chunks.length);assert.equal(receipt.conflictIds.length,snapshot.conflicts.length);assert.ok(writes>0);
+ const restored=await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id]);
+ for(const [rows,ids] of [[restored.chunks,receipt.chunkIds],[restored.conflicts,receipt.conflictIds]]){
+  const imported=rows.filter(row=>ids.includes(row.id));assert.equal(imported.length,ids.length);
+  for(const row of imported)assert.deepEqual(row.embedding,stored,'legitimate stored float32 components remain exact');
+ }
+ await destination.reopen();assert.deepEqual(await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id]),restored);
+});
