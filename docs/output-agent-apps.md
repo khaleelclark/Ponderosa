@@ -60,7 +60,7 @@ TMPDIR=/tmp node --import ./tests/shared/workspace-resolution.mjs tests/branches
 
 The second command uses installed headless Chrome at `/opt/google/chrome/chrome`
 (or `PONDEROSA_BROWSER_EXECUTABLE`), owned loopback servers and inert provider
-processes. It sends a real UI message and observes its explicit reply, saves
+processes. It first opens the fresh normal workspace and verifies automatic Assistant initialization, then sends a real UI message and observes its explicit reply, saves
 schedule/model settings, checks the persisted workflow interval and captures
 desktop/settings/phone screenshots under `/tmp/ponderosa-output-app-ui` (override
 with `PONDEROSA_OUTPUT_QUALIFICATION_DIR`). It installs nothing and uses no account

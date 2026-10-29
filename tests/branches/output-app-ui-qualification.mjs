@@ -33,6 +33,8 @@ try{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin=`http://127.0.0.1:${server.address().port}`;
  browser=await chromium.launch({executablePath:process.env.PONDEROSA_BROWSER_EXECUTABLE??'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox']});
  const page=await browser.newPage({viewport:{width:1280,height:900}});page.on('pageerror',error=>errors.push(error.message));
+ await Promise.all([page.waitForResponse(response=>response.url().endsWith('/api/branches/assistant')&&response.request().method()==='POST'&&response.status()===200),page.goto(origin+'/home')]);
+ assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).enabled,true,'fresh normal workspace initializes Assistant automatically');
  await page.goto(origin+'/assistant');
  await page.getByRole('button',{name:'Settings',exact:true}).first().waitFor();
  await page.getByRole('textbox').first().waitFor({timeout:20000});
@@ -51,6 +53,6 @@ try{
  await page.goto(origin+status.app.url);await page.getByRole('textbox').first().waitFor();
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'output-phone.png'),fullPage:true});
  assert.deepEqual(errors,[]);assert.ok(requests.some(item=>item.path.includes('/agents/')&&item.status===200));
- await writeFile(path.join(out,'result.json'),JSON.stringify({checksPassed:true,app:status.app,errors,requests,screenshots:['assistant-desktop.png','assistant-settings.png','output-phone.png'],limit:'Controlled provider, not real phone audio, complete usability or blind judging.'},null,2));
+ await writeFile(path.join(out,'result.json'),JSON.stringify({checksPassed:true,freshWorkspaceInitialization:true,app:status.app,errors,requests,screenshots:['assistant-desktop.png','assistant-settings.png','output-phone.png'],limit:'Controlled provider, not real phone audio, complete usability or blind judging.'},null,2));
  console.log(JSON.stringify({checksPassed:true,out,requestCount:requests.length}));
 }finally{await browser?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}await f.dispose();}
