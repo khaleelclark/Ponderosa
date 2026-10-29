@@ -1219,6 +1219,19 @@ export class CoordinationV3Store {
     return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, runtimeSelection, now);
   }
 
+  pauseAgentRun(input: {agentId:string;runId:string;idempotencyKey:string;now?:string}) {
+    return this.runLifecycleAuthority.pauseAgentRun(input);
+  }
+  resumeAgentRun(input: {agentId:string;pauseId:string;idempotencyKey:string}) {
+    return this.runLifecycleAuthority.resumeAgentRun(input);
+  }
+  restoreRejectedPauseResume(runId:string,fencingToken:number,injectionId:string) {
+    return this.runLifecycleAuthority.restoreRejectedPauseResume(runId,fencingToken,injectionId);
+  }
+  runPause(runId:string) {
+    return this.sqlite.prepare("SELECT id,state FROM agent_run_pauses WHERE run_id=? AND state IN ('paused','resume_requested')").get(runId) as {id:string;state:string}|undefined;
+  }
+
   cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {
     const result = this.runLifecycleAuthority.cancelAgentRun(input);
     this.contextRolloverAuthority.reconcileRetainedContinuity(input.now ?? new Date().toISOString());

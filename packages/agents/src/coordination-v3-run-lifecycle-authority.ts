@@ -869,6 +869,55 @@ export class CoordinationV3RunLifecycleAuthority {
     })();
   }
 
+  pauseAgentRun(input: {agentId:string; runId:string; idempotencyKey:string; now?:string}): {pauseId:string; runId:string} {
+    const now=input.now??new Date().toISOString();
+    return this.sqlite.transaction(()=>{
+      const replay=this.sqlite.prepare('SELECT id,run_id FROM agent_run_pauses WHERE agent_id=? AND pause_key=?').get(input.agentId,input.idempotencyKey) as {id:string;run_id:string}|undefined;
+      if(replay){if(replay.run_id!==input.runId)throw new CoordinationIdempotencyConflictError();return {pauseId:replay.id,runId:replay.run_id};}
+      if(this.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(input.agentId))throw new Error('Agent is already paused');
+      const run=this.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND id=? AND status IN ('leased','running') AND side_effects_fenced_at IS NULL").get(input.agentId,input.runId) as {id:string}|undefined;
+      if(!run)throw new Error('Exact active Run is no longer available');
+      const pauseId=createHash('sha256').update(stableJson([input.agentId,input.idempotencyKey])).digest('hex');
+      const providerInput=this.sqlite.prepare('SELECT * FROM provider_inputs WHERE scheduler_run_id=?').all(run.id);
+      const injections=this.sqlite.prepare('SELECT * FROM scheduler_prompt_injections WHERE run_id=? ORDER BY sequence').all(run.id);
+      this.sqlite.prepare("INSERT INTO agent_run_pauses VALUES(?,?,?,'paused',?,NULL,?,?,?,NULL)").run(pauseId,input.agentId,run.id,input.idempotencyKey,stableJson(providerInput),stableJson(injections),now);
+      const fence=this.support.nextFence(input.agentId);
+      this.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled',fencing_token=?,side_effects_fenced_at=?,updated_at=?,terminal_at=? WHERE id=?").run(fence,now,now,now,run.id);
+      // Exact prior packets remain in the pause audit. A human Resume continues this Run;
+      // it never resubmits an unsettled packet with its old injection authority.
+      this.sqlite.prepare("UPDATE scheduler_prompt_injections SET state='cancelled',updated_at=?,terminal_at=? WHERE run_id=? AND state IN ('pending','submitted')").run(now,now,run.id);
+      this.sqlite.prepare("INSERT INTO provider_operation_outbox(run_id,operation,idempotency_key,payload_json,state,available_at,created_at,updated_at) VALUES(?,'interrupt',?,?,'pending',?,?,?)").run(run.id,'pause:'+pauseId,stableJson({agentId:input.agentId,runId:run.id,fencingToken:fence,pauseId}),now,now,now);
+      return {pauseId,runId:run.id};
+    })();
+  }
+
+  resumeAgentRun(input: {agentId:string; pauseId:string; idempotencyKey:string}): void {
+    this.sqlite.transaction(()=>{
+      const pause=this.sqlite.prepare('SELECT * FROM agent_run_pauses WHERE id=? AND agent_id=?').get(input.pauseId,input.agentId) as {state:string;resume_key:string|null;run_id:string}|undefined;
+      if(!pause)throw new Error('Exact pause is no longer available');
+      if(pause.state==='stopped')throw new Error('Paused Run was stopped');
+      if(pause.resume_key){if(pause.resume_key!==input.idempotencyKey)throw new CoordinationIdempotencyConflictError();return;}
+      if(pause.state!=='paused')throw new Error('Run is not paused');
+      if(!this.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE idempotency_key=? AND state='completed'").get('pause:'+input.pauseId))throw new Error('Pause cleanup is not confirmed; Resume remains blocked');
+      this.sqlite.prepare("UPDATE agent_run_pauses SET state='resume_requested',resume_key=? WHERE id=? AND state='paused'").run(input.idempotencyKey,input.pauseId);
+    })();
+  }
+
+  restoreRejectedPauseResume(runId:string,fencingToken:number,injectionId:string): boolean {
+    return this.sqlite.transaction(()=>{
+      const pause=this.sqlite.prepare("SELECT id FROM agent_run_pauses WHERE run_id=? AND state='resumed' ORDER BY paused_at DESC LIMIT 1").get(runId) as {id:string}|undefined;
+      const injection=this.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE id=? AND run_id=? AND state='pending'").get(injectionId,runId);
+      if(!pause||!injection)return false;
+      const run=this.support.getFencedRun(runId,fencingToken),now=new Date().toISOString();
+      if(run.status!=='leased')return false;
+      const fence=this.support.nextFence(run.agent_id as string);
+      this.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled',fencing_token=?,side_effects_fenced_at=?,terminal_at=?,updated_at=? WHERE id=?").run(fence,now,now,now,runId);
+      this.sqlite.prepare("UPDATE scheduler_prompt_injections SET state='cancelled',terminal_at=?,updated_at=? WHERE id=?").run(now,now,injectionId);
+      this.sqlite.prepare("UPDATE agent_run_pauses SET state='paused',resume_key=NULL,resumed_at=NULL WHERE id=?").run(pause.id);
+      return true;
+    })();
+  }
+
   cancelAgentRun(input: {
     agentId: string;
     idempotencyKey: string;
@@ -889,7 +938,7 @@ export class CoordinationV3RunLifecycleAuthority {
       }
       const run = this.sqlite.prepare(`
         SELECT id, fencing_token FROM scheduler_runs
-        WHERE agent_id = ? AND status IN ('leased', 'running')
+        WHERE agent_id = ? AND (status IN ('leased', 'running') OR EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.run_id=scheduler_runs.id AND pause.state IN ('paused','resume_requested')))
           AND (? IS NULL OR id = ?)
       `).get(
         input.agentId,
@@ -909,6 +958,7 @@ export class CoordinationV3RunLifecycleAuthority {
           ...(input.expectedRunId ? { runId: input.expectedRunId } : {}),
         };
       }
+      this.sqlite.prepare("UPDATE agent_run_pauses SET state='stopped' WHERE run_id=? AND state IN ('paused','resume_requested')").run(run.id);
       const fence = this.support.nextFence(input.agentId);
       // Cancellation owns the rollover transition in the same transaction as
       // the scheduler fence. The provider cleanup path may run later—or not at

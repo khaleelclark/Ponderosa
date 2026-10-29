@@ -1647,6 +1647,13 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native workspaces; inert controlled adapters and private stores, no provider account",
       "origin": "Portable output/speaker import declarations, human review, cross-store finalization/recovery and singleton fences"
+    },
+    {
+      "path": "tests/context-recovery/pause-resume.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
     }
   ],
   "retainedReleasePayload": [

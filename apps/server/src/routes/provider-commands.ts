@@ -161,6 +161,18 @@ export function registerProviderCommandRoutes(
     workingCopies,
   } = context;
 
+for (const action of ['pause','resume'] as const) app.post<{Params:{id:string};Body:{targetRunId?:string;pauseId?:string;idempotencyKey?:string}}>(`/api/agents/:id/${action}`,async(request,reply)=>{
+  const body=request.body;
+  const key=body?.idempotencyKey?.trim(),target=action==='pause'?body?.targetRunId?.trim():body?.pauseId?.trim();
+  if(!key||key.length>200||!target||target.length>200)return reply.code(400).send({error:'Exact target and idempotencyKey are required'});
+  if(!store.getAgent(request.params.id))return reply.code(404).send({error:'Agent not found'});
+  try {
+    const result=action==='pause'?coordinationV3.pauseAgentRun({agentId:request.params.id,runId:target,idempotencyKey:key}):coordinationV3.resumeAgentRun({agentId:request.params.id,pauseId:target,idempotencyKey:key});
+    notifyScheduler();publishMessageDeliveryChanged(request.params.id);
+    return {accepted:true,...(result??{})};
+  } catch(error){return reply.code(409).send({error:error instanceof Error?error.message:String(error)});}
+});
+
 app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
   const idempotencyKey = request.body?.idempotencyKey?.trim();
   const targetRunId = request.body?.targetRunId?.trim();

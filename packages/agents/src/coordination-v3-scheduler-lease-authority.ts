@@ -173,10 +173,25 @@ export class CoordinationV3SchedulerLeaseAuthority {
     return this.sqlite.transaction(() => {
       this.recoverExpiredRunsInTransaction(now);
       this.activationLifecycle.settleUnauthorizedPendingActivations(now);
+      const resume=this.sqlite.prepare(`SELECT pause.id AS pause_id,run.* FROM agent_run_pauses pause
+        JOIN scheduler_runs run ON run.id=pause.run_id WHERE pause.state='resume_requested' AND run.status='cancelled'
+        ORDER BY pause.paused_at LIMIT 1`).get() as {pause_id:string;id:string;agent_id:string;project_id:string;scope_key:string}|undefined;
+      if(resume && !excludedAgentIds.includes(resume.agent_id)) {
+        const rows=this.sqlite.prepare(`SELECT a.* FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? AND a.state='attached' ORDER BY a.created_at,a.id`).all(resume.id) as ActivationRow[];
+        if(!rows.length)throw new Error('Paused Run lost its canonical attached sources');
+        if(!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(resume.project_id,resume.agent_id,resume.scope_key))throw new Error('Paused Run scope is no longer available');
+        const fencingToken=this.support.nextFence(resume.agent_id), injectionId=randomUUID();
+        const leaseExpiresAt=new Date(Date.parse(now)+leaseMs).toISOString();
+        this.sqlite.prepare("UPDATE scheduler_runs SET status='leased',lease_owner=?,lease_expires_at=?,fencing_token=?,side_effects_fenced_at=NULL,terminal_at=NULL,updated_at=? WHERE id=? AND status='cancelled'").run(input.workerId,leaseExpiresAt,fencingToken,now,resume.id);
+        this.sqlite.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at) VALUES(?,?,'turn',(SELECT COALESCE(MAX(sequence),-1)+1 FROM scheduler_prompt_injections WHERE run_id=?),'pending','',?,?,?)").run(injectionId,resume.id,resume.id,stableJson(rows.map(a=>a.id)),now,now);
+        this.sqlite.prepare("UPDATE agent_run_pauses SET state='resumed',resumed_at=? WHERE id=?").run(now,resume.pause_id);
+        return {runId:resume.id,projectId:resume.project_id,agentId:resume.agent_id,scopeKey:resume.scope_key,fencingToken,leaseOwner:input.workerId,leaseExpiresAt,injectionId,activationIds:rows.map(a=>a.id),activations:rows.map(a=>({id:a.id,kind:a.kind,priority:a.priority,dispatchPolicy:a.dispatch_policy,promptClass:a.prompt_class,payload:providerSafeActivationPayload(this.sqlite,a.id,a.payload_json),deliveryFailures:a.delivery_failures})),resumedFromPause:true};
+      }
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id AND pause.state IN ('paused','resume_requested'))
           AND a.available_at <= ?
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
           ${excludedClause}

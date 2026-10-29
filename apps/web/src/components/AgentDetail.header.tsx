@@ -142,6 +142,9 @@ interface AgentDetailHeaderProps {
   onOpenChat(conversationId: string): void;
   onOpenAgent(agentId: string): void;
   onStop(): void;
+  paused?:boolean;
+  pausePending?:boolean;
+  onPauseResume?():void;
   onExportPackage(): void;
   onDuplicate?(): void;
   onOpenTechnical(): void;
@@ -175,6 +178,7 @@ export function AgentDetailHeader({
   onOpenChat,
   onOpenAgent,
   onStop,
+  paused, pausePending, onPauseResume,
   onExportPackage,
   onDuplicate,
   onOpenTechnical,
@@ -252,6 +256,7 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
+          {(running||paused)&&!auditOnly&&onPauseResume?<Button size="small" variant="outlined" disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>:null}
           {running && !auditOnly ? (
             <Button
               size="small"

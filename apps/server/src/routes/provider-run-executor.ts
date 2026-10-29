@@ -1413,7 +1413,7 @@ export function startProviderRunExecution(
         });
       }
       const replacementCancelled = Boolean(
-        replacementRunRollover && schedulerCancelled && !isClosed(),
+        replacementRunRollover && schedulerCancelled && !coordinationV3.runPause(runId) && !isClosed(),
       );
       const replacementFailed = Boolean(
         replacementRunRollover?.state === "failed" && !isClosed(),
@@ -1569,7 +1569,7 @@ export function startProviderRunExecution(
               app.log.error({ err: error, agentId: agent.id, runId }, "policy context refresh teardown remains pending");
             }
           }
-        } else if (rolloverRequested &&
+        } else if (rolloverRequested && !coordinationV3.runPause(runId) &&
             (runError || controller.signal.aborted || schedulerCancelled || handoffActivationAcknowledged)) {
           const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);
           if (abandonedHandoff && !abandonedHandoff.consumedAt) {

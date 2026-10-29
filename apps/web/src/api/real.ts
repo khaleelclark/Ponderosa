@@ -994,6 +994,9 @@ export const realApi = {
       body: JSON.stringify(request),
     });
   },
+  controlRun(agentId: string, action:'pause'|'resume', request:{targetRunId?:string;pauseId?:string;idempotencyKey:string}): Promise<{accepted:true;pauseId?:string}> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/${action}`,{method:'POST',body:JSON.stringify(request)});
+  },
   compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },

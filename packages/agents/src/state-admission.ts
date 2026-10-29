@@ -109,6 +109,19 @@ function expectedContract(budget = new StateReadBudget()): string {
 }
 // Only the exact pre-history and pre-workspace schemas may upgrade online.
 // Derive signatures from current DDL; arbitrary missing tables remain refused.
+let compiledPausePredecessor: string | undefined;
+function pausePredecessorContract(budget = new StateReadBudget()): string {
+  if (compiledPausePredecessor) return compiledPausePredecessor;
+  budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
+  const sqlite = new Database(":memory:");
+  try {
+    bindStateReadBudget(sqlite, budget);
+    initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
+    sqlite.exec("DROP TABLE agent_run_pauses");
+    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
+    return compiledPausePredecessor = schemaSignature(sqlite);
+  } finally { sqlite.close(); }
+}
 let compiledHistoryPredecessor: string | undefined;
 let compiledWorkspacePredecessor: string | undefined;
 function workspacePredecessorContract(budget = new StateReadBudget(), beforeHistory = false): string {
@@ -120,6 +133,8 @@ function workspacePredecessorContract(budget = new StateReadBudget(), beforeHist
     bindStateReadBudget(sqlite, budget);
     sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
     initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
+    sqlite.exec("DROP TABLE agent_run_pauses");
+    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
     sqlite.exec("DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'");
     sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0029_assistant_workspace.sql");
     if (beforeHistory) {
@@ -137,7 +152,7 @@ function historyPredecessorContract(budget = new StateReadBudget()): string {
 function verifyDatabase(sqlite: Database.Database, generationId: string,
   contract = expectedContract(), allowHistoryUpgrade = false): boolean {
   const actual = schemaSignature(sqlite), upgrade = actual !== contract;
-  if (upgrade && (!allowHistoryUpgrade || (actual !== historyPredecessorContract(stateReadBudget(sqlite)) && actual !== workspacePredecessorContract(stateReadBudget(sqlite))))) refuse();
+  if (upgrade && (!allowHistoryUpgrade || (actual !== historyPredecessorContract(stateReadBudget(sqlite)) && actual !== workspacePredecessorContract(stateReadBudget(sqlite)) && actual !== pausePredecessorContract(stateReadBudget(sqlite))))) refuse();
   withStateReads(sqlite, reads => {
     const objectCount = reads.population("sqlite_master");
     const tables = reads.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'", ["name"], 512, 1024 ** 2, objectCount);

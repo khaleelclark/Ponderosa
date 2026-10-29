@@ -1,3 +1,4 @@
+import { createClientId } from "../clientId";
 import {ResourceSettingsContext} from "./ResourceSettingsContext";
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import { chatBrowserOwnerId } from "@ponderosa/core";
@@ -526,8 +527,13 @@ export function AgentDetail({
 
   const { cancelRun, stopActiveRun } = useAgentRunCancellation(
     agentId,
-    runtimeActivity?.executionId,
+    runtimeActivity?.executionId ?? detail?.coordinationV3?.pause?.runId,
   );
+  const pause=detail?.coordinationV3?.pause;
+  const pauseResume=useMutation({
+    mutationFn:()=>api.controlRun(agentId,pause?'resume':'pause',pause?{pauseId:pause.id,idempotencyKey:createClientId()}:{targetRunId:runtimeActivity?.executionId,idempotencyKey:createClientId()}),
+    onSettled:()=>{void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(agentId)});void queryClient.invalidateQueries({queryKey:queryKeys.agents.healthAll});},
+  });
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => api.recheckEngine(engineId),
     onSuccess: updated => {
@@ -924,7 +930,7 @@ export function AgentDetail({
         phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
         startedAt={status === "running" ? runtimeActivity?.startedAt : undefined}
         agentNameForId={agentNameForId}
-        running={running}
+        running={running||Boolean(pause)}
         stopping={cancelRun.isPending}
         tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         showSubagents={showSubagents}
@@ -934,6 +940,10 @@ export function AgentDetail({
         onOpenChat={onOpenMaster}
         onOpenAgent={onOpenAgent}
         onStop={stopActiveRun}
+        paused={Boolean(pause)}
+        pausePending={pauseResume.isPending||pause?.state==='resume_requested'}
+        onPauseResume={()=>pauseResume.mutate()}
+
         onExportPackage={() => setExportOpen(true)}
         onDuplicate={conversations.length ? () => setDuplicateOpen(true) : undefined}
         onOpenTechnical={() => openTechnicalDetails()}
@@ -1026,7 +1036,7 @@ export function AgentDetail({
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
-        cancellationError={
+        cancellationError={pauseResume.isError ? `Pause or Resume failed. ${pauseResume.error instanceof Error?pauseResume.error.message:String(pauseResume.error)}` :
           cancelRun.isError
             ? `The active Run could not be cancelled. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
             : undefined

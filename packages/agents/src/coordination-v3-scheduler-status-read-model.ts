@@ -28,6 +28,7 @@ export class CoordinationV3SchedulerStatusReadModel {
   }
 
   getAgentAvailability(agentId: string): DerivedAgentAvailability {
+    if(this.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agentId)) return 'waiting';
     const hasActiveRun = Boolean(this.sqlite.prepare(`
       SELECT 1 FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running') LIMIT 1
     `).get(agentId));
@@ -266,6 +267,7 @@ export class CoordinationV3SchedulerStatusReadModel {
     `).all(agentId) as Array<{ id: string; kind: string; priority: number; state: string; created_at: string }>;
     const activeRun = this.activeAgentRun(agentId);
     return {
+      ...(()=>{const row=this.sqlite.prepare("SELECT id,run_id,state,paused_at FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agentId) as {id:string;run_id:string;state:'paused'|'resume_requested';paused_at:string}|undefined;return row?{pause:{id:row.id,runId:row.run_id,state:row.state,pausedAt:row.paused_at}}:{};})(),
       availability: this.getAgentAvailability(agentId),
       requests: requests.map((request) => ({
         id: request.id,
