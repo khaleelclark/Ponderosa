@@ -1,4 +1,4 @@
-import {withoutPortableSecrets,PORTABLE_SECRET_MAX_BYTES} from './portable-secrets.js';
+import {withoutPortableSecrets,assertPortableSecretsAbsent,PORTABLE_SECRET_MAX_BYTES} from './portable-secrets.js';
 import {randomUUID} from 'node:crypto';
 import type {AgentStore} from '@ponderosa/agents';
 import type {PortableArtifactDto} from '@ponderosa/core';
@@ -61,5 +61,5 @@ export function validateExecutionArchive(data:Uint8Array):void {
     ids.add(row.id);
     for(const key of ['created_at','started_at','terminal_at'])if(!(key!=='created_at'&&row[key]===null)&&(typeof row[key]!=='string'||!Number.isFinite(Date.parse(row[key] as string))))throw new Error(`Execution archive Run ${key} is invalid`);
   }
-  if(JSON.stringify(withoutPortableSecrets(archive))!==JSON.stringify(archive))throw new Error('Execution archives cannot contain known credential fields');
+  assertPortableSecretsAbsent(archive,'Execution archives');
 }

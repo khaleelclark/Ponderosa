@@ -8,7 +8,7 @@ import Fastify from 'fastify';
 import {AgentStore,CoordinationV3Store,BranchStore,readManagedArtifactContent} from '@ponderosa/agents';
 import {AssetStore} from '../../apps/server/dist/assets.js';
 import {registerAgentPackageRoutes} from '../../apps/server/dist/routes/agent-packages.js';
-import {withoutPortableSecrets} from '../../apps/server/dist/portable-secrets.js';
+import {withoutPortableSecrets,assertPortableSecretsAbsent} from '../../apps/server/dist/portable-secrets.js';
 import {EXECUTION_ARCHIVE_MEDIA_TYPE,validateExecutionArchive,executionArchive} from '../../apps/server/dist/portable-execution-archive.js';
 
 async function instance(t,branch=false){
@@ -119,4 +119,15 @@ test('structured inspection charges decoded layers and keeps safe boundary strin
  assert.equal(withoutPortableSecrets('雪',11),'雪');
  assert.throws(()=>withoutPortableSecrets('雪',10),/inspection byte limit/);
  for(const invalid of [-1,NaN,Infinity])assert.throws(()=>withoutPortableSecrets({},invalid),/byte limit is invalid/);
+});
+
+
+test('shared metadata rejection allows historical SourceStamp fenceToken and rejects encoded credentials',()=>{
+ const metadata={sourceStamp:{fenceToken:42,sourceAgentId:'historical-agent'},encoded:JSON.stringify({env:{OPENAI_ORG_ID:'kept'}})};
+ const before=JSON.stringify(metadata);
+ assert.doesNotThrow(()=>assertPortableSecretsAbsent(metadata,'Memory metadata'));
+ assert.equal(JSON.stringify(metadata),before,'validation preserves historical metadata bytes');
+ for(const credential of [{env:{OPENAI_API_KEY:'SYNTHETIC_SECRET'}},JSON.stringify({env:{ANTHROPIC_API_KEY:'SYNTHETIC_SECRET'}}),JSON.stringify(JSON.stringify({api_key:'SYNTHETIC_SECRET'}))]){
+  assert.throws(()=>assertPortableSecretsAbsent({...metadata,credential},'Memory metadata'),/Memory metadata cannot contain known credential fields/);
+ }
 });

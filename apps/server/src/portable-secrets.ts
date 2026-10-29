@@ -42,3 +42,8 @@ export function withoutPortableSecrets(value:unknown,maxBytes=PORTABLE_SECRET_MA
   };
   return visit(value,0);
 }
+
+/** Validate metadata only; user-authored text remains outside this policy. */
+export function assertPortableSecretsAbsent(value:unknown,label='Portable structured data'):void {
+  if(JSON.stringify(withoutPortableSecrets(value))!==JSON.stringify(value))throw new Error(`${label} cannot contain known credential fields`);
+}
