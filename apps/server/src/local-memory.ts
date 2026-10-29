@@ -74,7 +74,7 @@ export class LocalMemoryService{
   const policies=new CapabilityPolicyStore(this.ports.store.sqlite),effective=policies.resolveForAgent(agent.id,a.runId);
   if(a.readChat&&effective.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead))throw new MemoryDenied('Speech memory read revoked');
   const grant=this.getGrant(a.chatId,owner.branchId?'branches':'dev');
-  if(a.readGlobal&&(!grant.readGlobal||!this.singleProtectedInstallation()))throw new MemoryDenied('Speech global memory revoked');
+  if(a.readGlobal&&!grant.readGlobal)throw new MemoryDenied('Speech global memory revoked');
   const reset=this.ports.store.sqlite.prepare("SELECT COALESCE(MAX(seq),0) AS seq FROM events WHERE agent_id=? AND type='session_reset'").get(agent.id);
   return JSON.stringify([agent.id,agent.projectId,a.chatId,owner.branchId,reset,
    effective.layers.map(l=>[l.scopeKind,l.scopeId,policies.get(l.scopeKind,l.scopeId)??null]),a.readGlobal?grant:null]);
@@ -108,7 +108,7 @@ export class LocalMemoryService{
   if(this.deniedSpeech.has(run))throw new MemoryDenied('Speech exposure unavailable for this Run; start a fresh voice request');
   const policy=new CapabilityPolicyStore(this.ports.store.sqlite).resolveForAgent(cap.agentId,cap.runId),readChat=!policy.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead);
   const owner=activeChatResourceOwner(this.ports.store,'agent',cap.agentId),grant=this.getGrant(cap.conversationId,owner?.branchId?'branches':'dev');
-  const authority:MemoryAuthority={chatId:cap.conversationId,actor:{kind:'agent',id:cap.agentId},runId:cap.runId,fenceToken:String(cap.v3FencingToken),sourceType:'ai_inference',readChat,readGlobal:readChat&&grant.readGlobal&&this.singleProtectedInstallation(),guard:async()=>{}};
+  const authority:MemoryAuthority={chatId:cap.conversationId,actor:{kind:'agent',id:cap.agentId},runId:cap.runId,fenceToken:String(cap.v3FencingToken),sourceType:'ai_inference',readChat,readGlobal:readChat&&grant.readGlobal,guard:async()=>{}};
   const entry=this.speechEntry(authority);entry.started=true;if(entry.invalid)throw new MemoryDenied('Memory changed before speech authorization');
  }
  speechCommitValid(runId:string){
@@ -188,12 +188,6 @@ export class LocalMemoryService{
   });
  }
 
- private singleProtectedInstallation(){
-  const o=this.ports.opts,ids=o.operatorIdentities??[];
-  if(ids.length>1)return false; // No implicit multi-operator tenancy.
-  if(o.networkSecurity?.mode==='reverse_proxy')return ids.length===1&&typeof ids[0]==='string'&&ids[0].trim().length>0;
-  return Boolean(o.authToken||o.launcherSecurity);
- }
  private grant(chatId:string){return this.policy.prepare('SELECT * FROM local_memory_chat_grants WHERE chat_id=?').get(chatId) as {principal_id:string;read_global:number;revision:number;updated_at:string}|undefined;}
  getGrant(chatId:string,product:ProductScope){this.chat(chatId,product);const g=this.grant(chatId);if(g&&g.principal_id!==this.principalId)throw new MemoryDenied('Foreign memory grant principal');return {chatId,readGlobal:g?.read_global===1,revision:g?.revision??0};}
  setGrant(chatId:string,readGlobal:boolean,expectedRevision:number,product:ProductScope){
@@ -220,13 +214,13 @@ export class LocalMemoryService{
   const policy=new CapabilityPolicyStore(this.ports.store.sqlite).resolveForAgent(agent.id,capability.v3SchedulerRunId),denied=new Set(policy.restrictedCapabilityIds);
   if(denied.has(write?CAPABILITY_IDS.memoryWrite:CAPABILITY_IDS.memoryRead))throw new MemoryDenied('Live memory capability policy denies operation');
   const grant=this.getGrant(agent.conversationId,product);
-  return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&this.singleProtectedInstallation()&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:false},sourceType:'ai_inference'};
+  return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
  }
  async executeAgent(token:string,operation:string,args:unknown){
   const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,write=['save','update','forget'].includes(operation);this.agentContext(token,tool,write);await this.ready();const initial=this.agentContext(token,tool,write);
-  const usesGlobal=!write&&parsed.source!=='chat'&&initial.grants.readGlobal;const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!c.grants.writeChat))throw new MemoryDenied('Live memory grant revoked');};
-  if(write&&(parsed.destination!=='chat'||!initial.grants.writeChat))throw new MemoryDenied('Agents may write only their authorized Chat');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
-  const authority:MemoryAuthority={...initial,readChat:initial.grants.readChat,readGlobal:usesGlobal,writeScope:write?'chat:'+initial.chatId:undefined,targetId:write&&operation!=='save'?parsed.chunk_id:undefined,visibility:parsed.visibility??'team',guard};
+  const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
+  if(write&&!(globalWrite?initial.grants.writeGlobal:initial.grants.writeChat))throw new MemoryDenied('Memory write denied');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
+  const authority:MemoryAuthority={...initial,readChat:initial.grants.readChat,readGlobal:usesGlobal,writeScope:write?(globalWrite?'global':'chat:'+initial.chatId):undefined,targetId:write&&operation!=='save'?parsed.chunk_id:undefined,visibility:parsed.visibility??'team',guard};
   const promise=this.perform(operation,parsed,authority);this.calls.add(promise);try{return await promise;}finally{this.calls.delete(promise);}
  }
  private async perform(operation:string,args:Record<string,any>,authority:MemoryAuthority){
@@ -248,9 +242,9 @@ export class LocalMemoryService{
  }
 
  operator(request:FastifyRequest){
-  this.live();if(request.raw.aborted)throw new MemoryDenied('Operator request aborted');if(!this.singleProtectedInstallation())throw new MemoryDenied('Protected installation operator configuration required',401);
+  this.live();if(request.raw.aborted)throw new MemoryDenied('Operator request aborted');
   const token=request.headers.authorization?.replace(/^Bearer\s+/i,'');if(token&&this.ports.capabilities.has(token))throw new MemoryDenied('Agent capability is not operator authority',401);
-  // Native request security hooks have already authenticated this exact request/session.
+  // Origin checks apply at the request boundary; no operator login is required.
   return this.principalId;
  }
  async executeOperator(request:FastifyRequest,operation:string,args:Record<string,unknown>){

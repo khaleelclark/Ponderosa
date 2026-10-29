@@ -7,7 +7,7 @@ const definitions=[
  ['search',{query:str,source:destination,top_k:{type:'integer',minimum:1,maximum:20},include_history:{type:'boolean'}},['query']],
  ['history',{chunk_id:str,source:destination},['chunk_id']],
 ] as const;
-export const localMemoryTools=definitions.map(([operation,properties,required])=>({name:`ponderosa_local_memory_${operation}`,description:`Authorized physical-source ${operation}. Explicit write destination; Chat team/private audience and trusted provenance. Physical chunk_id/version lineage; no logical IDs, expectedRevision, commandKey or exactly-once receipts. Never capture hidden DM/provider context. Agents cannot write global.`,inputSchema:{type:'object',properties,required:[...required],additionalProperties:false}}));
+export const localMemoryTools=definitions.map(([operation,properties,required])=>({name:`ponderosa_local_memory_${operation}`,description:`Authorized physical-source ${operation}. Explicit write destination; Chat team/private audience and trusted provenance. Physical chunk_id/version lineage; no logical IDs, expectedRevision, commandKey or exactly-once receipts. Never capture hidden DM/provider context. Chat and global writes follow human capability settings.`,inputSchema:{type:'object',properties,required:[...required],additionalProperties:false}}));
 export function validateMemoryCall(operation:string,args:unknown):Record<string,any>{
  const d=definitions.find(x=>x[0]===operation);if(!d||!args||typeof args!=='object'||Array.isArray(args))throw Error('Unsupported memory operation or arguments');
  const a=args as Record<string,any>;if(['memoryId','expectedRevision','commandKey'].some(k=>k in a))throw Error('Removed reliable-memory logical ID/revision/idempotency arguments; use physical chunk_id');
