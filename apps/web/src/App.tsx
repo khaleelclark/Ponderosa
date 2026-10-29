@@ -139,7 +139,6 @@ export default function App({
         void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
       }
     },
-    onError: () => notify({ key: "workspace-preferences", message: "Workspace settings could not be saved.", severity: "error" }),
   });
   const { route, navigate } = useRoute();
   const [pageVisible, setPageVisible] = useState(
@@ -502,7 +501,10 @@ export default function App({
         engine.enabled !== false && Boolean(engine.providerUsageCommand)
       )?.id;
   const savePreferences = (patch: Partial<typeof preferences>) => {
-    preferencesWriter.current!.enqueue(patch);
+    void preferencesWriter.current!.enqueueAndWait(patch).then(
+      () => notify({ key: "workspace-preferences", message: "Settings Saved" }),
+      (error: unknown) => notify({ key: "workspace-preferences", message: error instanceof Error ? error.message : "Workspace settings could not be saved.", severity: "error" }),
+    );
   };
   const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
     preferencesWriter.current!.enqueueAndWait(patch);

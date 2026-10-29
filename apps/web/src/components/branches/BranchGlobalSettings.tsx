@@ -12,9 +12,9 @@ export function BranchGlobalSettings({view,preferences,engines,colorMode,onToggl
  const [error,setError]=useState('');
  const projects=useQuery({queryKey:['branch-global-projects'],queryFn:()=>realApi.listProjects()});
  const preferenceWriter=useWorkspacePreferencesWriter();
- const save=async(patch:Partial<WorkspacePreferencesDto>)=>{setError('');try{return await preferenceWriter.enqueueAndWait(patch)}catch(e){setError((e as Error).message);throw e}};
+ const save=(patch:Partial<WorkspacePreferencesDto>)=>{setError('');return preferenceWriter.enqueueAndWait(patch)};
  return <Stack sx={{flex:1,minHeight:0,minWidth:0}}>
   {error&&<Alert severity="error" onClose={()=>setError('')}>{error} Retry saving your changes.</Alert>}
-   <WorkspaceSettingsView activityWorkflows preferences={preferences} engines={engines} projects={projects.data??[]} colorMode={colorMode} onToggleColorMode={onToggleColorMode} onPreferences={patch=>void save(patch).catch(()=>{})} onSavePreferences={save} section={branchSettingsSection(view)} onReturn={onClose} returnLabel="Back to Branches"/>
+   <WorkspaceSettingsView activityWorkflows preferences={preferences} engines={engines} projects={projects.data??[]} colorMode={colorMode} onToggleColorMode={onToggleColorMode} onPreferences={patch=>void save(patch).catch((e:Error)=>setError(e.message))} onSavePreferences={save} section={branchSettingsSection(view)} onReturn={onClose} returnLabel="Back to Branches"/>
  </Stack>;
 }

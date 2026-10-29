@@ -30,6 +30,8 @@ try{
    await page.getByRole('button',{name:'Save Agent Defaults',exact:true}).click();assert.equal((await rejected).status(),400);
    await page.getByRole('alert').filter({hasText:'at most 100,000'}).first().waitFor();
    row.rejectedSaveAlerts=await page.getByRole('alert').allTextContents();
+   assert.equal(await page.getByRole('alert').filter({hasText:'at most 100,000'}).count(),1,'One meaningful rejected-save error');
+   assert.equal(await page.getByRole('alert').filter({hasText:'Workspace settings could not be saved.'}).count(),0,'No second generic error');
    assert.equal(await instructions.inputValue(),oversized,'Rejected save keeps exact draft');
    const after=await (await fetch(prefs)).json();assert.equal(after.globalInstructions,before.globalInstructions);assert.equal(after.revision,before.revision);
    row.checks.push('Oversized save: 400, exact dirty draft and previous stored text/revision retained');
@@ -39,11 +41,26 @@ try{
    const corrected=`${product}-${theme} corrected instructions`;
    await instructions.fill(corrected);const saved=page.waitForResponse(r=>r.url()===prefs&&r.request().method()==='PATCH');await page.getByRole('button',{name:'Save Agent Defaults',exact:true}).click();assert.equal((await saved).status(),200);
    await page.waitForFunction(async({prefs,corrected})=>(await (await fetch(prefs)).json()).globalInstructions===corrected,{prefs,corrected});row.checks.push('Corrected save succeeds with exact stored text');
+   assert.equal(await page.getByRole('alert').filter({hasText:'at most 100,000'}).count(),0,'Corrected save removes stale rejection');
+   assert.equal(await page.getByRole('alert').filter({hasText:'Workspace settings could not be saved.'}).count(),0);
+   row.checks.push('One exact failure presentation; corrected save removes all rejected-save errors');
    await page.locator('.MuiSnackbar-root').evaluateAll(async nodes=>{await Promise.all(nodes.flatMap(n=>n.getAnimations({subtree:true})).map(a=>a.finished.catch(()=>{})));});
    if(process.env.AXE_CORE_PATH){await page.addScriptTag({path:process.env.AXE_CORE_PATH});row.settingsScan=await page.evaluate(()=>axe.run());assert.deepEqual(row.settingsScan.violations.filter(v=>['critical','serious'].includes(v.impact)||v.id==='heading-order').map(v=>v.id),[]);}
    row.renderedSettings=await page.locator('main').innerText();
    row.headingOutline=await page.locator('h1,h2,h3,h4,h5,h6').evaluateAll(nodes=>nodes.map(n=>({level:n.tagName,text:n.textContent})));
    await page.screenshot({path:path.join(output,`${product}-${theme}-settings.png`),fullPage:true});
+   const fontFault='Qualification immediate-save outage',targetFont=before.fontFamily==='system'?'sans':'system',fontLabel=targetFont==='sans'?'Classic Sans':'System';
+   const rejectFont=async route=>{if(route.request().method()==='PATCH'&&route.request().postDataJSON()?.fontFamily)await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:fontFault})});else await route.continue();};
+   await page.route(prefs,rejectFont);
+   await page.getByRole('combobox',{name:'Font',exact:true}).click();await page.getByRole('option',{name:fontLabel,exact:true}).click();
+   await page.getByRole('alert').filter({hasText:fontFault}).waitFor();
+   assert.equal(await page.getByRole('alert').filter({hasText:fontFault}).count(),1);
+   assert.notEqual((await (await fetch(prefs)).json()).fontFamily,targetFont,'Failed immediate save leaves canonical font unchanged');
+   await page.unroute(prefs,rejectFont);
+   await page.getByRole('combobox',{name:'Font',exact:true}).click();await page.getByRole('option',{name:fontLabel,exact:true}).click();
+   await page.waitForFunction(async({prefs,targetFont})=>(await (await fetch(prefs)).json()).fontFamily===targetFont,{prefs,targetFont});
+   await page.getByRole('alert').filter({hasText:fontFault}).waitFor({state:'hidden'});
+   row.checks.push('Immediate save shows exact error once; successful retry clears it');
    await page.goto(product==='core'?fixture.normalUrl:fixture.url);
    await page.getByLabel('Message',{exact:true}).waitFor();await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();await page.getByRole('menuitem',{name:'Rename',exact:true}).click();
    const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();const title=`${product}-${theme} retry title`;await name.fill(title);

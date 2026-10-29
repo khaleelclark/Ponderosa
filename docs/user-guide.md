@@ -551,7 +551,7 @@ Opening Rename from the Chat menu keeps keyboard focus in the name field, includ
 at larger browser zoom. Menu actions wait for the menu to close before opening the
 next dialog or popover.
 
-Detailed settings, package, browser and call behavior: [UI detail reference](ui-detail-reference.md).
+Detailed settings, package, browser and call behavior: [UI detail reference](ui-detail-reference.md). Save failure presentation and remaining text review: [UI text inventory](ui-text-inventory.md).
 ### Exported execution history
 
 Full Agent and organization exports include execution history as a saved JSON log
