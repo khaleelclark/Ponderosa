@@ -1617,6 +1617,13 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, current built native workspaces, inert provider fixture; no provider account",
       "origin": "Current-master Branch API ownership, Chat lifecycle reuse and favorite/folder persistence"
+    },
+    {
+      "path": "tests/chats/chat-input-evidence.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; no provider account or browser"
     }
   ],
   "retainedReleasePayload": [
@@ -1827,6 +1834,26 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned private memory package fixtures",
       "origin": "Phase2 actual product memory package tests"
+    },
+    {
+      "path": "tests/branches/every-input-fixture.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-fixture-or-loader"
+    },
+    {
+      "path": "tests/workspace-navigation/webkit-every-input.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/verify-chat-input-evidence.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-input-census.mjs",
+      "moduleBase": "apps/web/package.json",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [

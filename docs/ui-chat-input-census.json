@@ -1,0 +1,2163 @@
+{
+  "scope": "All source JSX input declarations, classified by rendered purpose",
+  "declarations": [
+    {
+      "file": "apps/web/src/components/AddAgentsFlow.tsx",
+      "line": 137,
+      "tag": "TextField",
+      "attributes": [
+        "{...params}",
+        "label=\"Source Agent\"",
+        "size=\"small\""
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentCreateDialog.tsx",
+      "line": 442,
+      "tag": "TextField",
+      "attributes": [
+        "label={workflowSetup ? \"Agent Name\" : \"Name\"}",
+        "value={title}",
+        "onChange={event => {\n          titleEditedRef.current = true;\n          setTitle(event.target.value);\n        }}",
+        "autoFocus",
+        "fullWidth"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentCreateDialog.tsx",
+      "line": 453,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Agent Role\"",
+        "placeholder=\"Describe This Agent’s Standing Responsibilities\"",
+        "multiline",
+        "minRows={3}",
+        "value={role}",
+        "onChange={event => setRole(event.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentCreateDialog.tsx",
+      "line": 500,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Chat\"",
+        "value={fixedConversation?.title ?? \"Checking Chat…\"}",
+        "helperText=\"This Agent will join the Chat where creation was started.\"",
+        "InputProps={{ readOnly: true }}",
+        "fullWidth",
+        "size=\"small\""
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentCreateDialog.tsx",
+      "line": 533,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Initial message (optional)\"",
+        "helperText=\"Give the Agent a task, role, or introduction—or leave it idle.\"",
+        "value={initialMessage}",
+        "onChange={event => setInitialMessage(event.target.value)}",
+        "multiline",
+        "minRows={3}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Agent initial task: Core create route and Branches embedded form"
+    },
+    {
+      "file": "apps/web/src/components/AgentDeletionDialog.tsx",
+      "line": 109,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "label={`Type ${confirmationText}`}",
+        "value={confirmation}",
+        "onChange={(event) => setConfirmation(event.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentDetail.composer.tsx",
+      "line": 81,
+      "tag": "Composer",
+      "attributes": [
+        "{...composer}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Agent private Chat: Core, Branches, Assistant and output"
+    },
+    {
+      "file": "apps/web/src/components/AgentDetail.parts.tsx",
+      "line": 158,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus",
+        "fullWidth",
+        "inputRef={inputRef}",
+        "label=\"Agent name\"",
+        "value={renameValue}",
+        "onChange={event => setRenameValue(event.target.value)}",
+        "sx={{ mt: 1 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentDetail.settings.tsx",
+      "line": 69,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Agent Role\"",
+        "multiline",
+        "minRows={3}",
+        "value={role}",
+        "disabled={save.isPending}",
+        "onChange={event => setRole(event.target.value)}",
+        "placeholder=\"Describe This Agent’s Standing Responsibilities\""
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentDetail.settings.tsx",
+      "line": 231,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "fullWidth",
+        "label=\"New trusted profile\"",
+        "value={newProfileName}",
+        "onChange={event => setNewProfileName(event.target.value)}",
+        "inputProps={{ maxLength: 80 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AgentPackageDialogs.tsx",
+      "line": 230,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"New root Agent name\"",
+        "value={rootTitle}",
+        "onChange={event => setRootTitle(event.target.value)}",
+        "inputProps={{ maxLength: 80 }}",
+        "fullWidth",
+        "size=\"small\"",
+        "error={Boolean(rootTitle && !rootTitle.trim())}",
+        "helperText=\"Descendant names stay the same.\""
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/AllChatView.tsx",
+      "line": 1734,
+      "tag": "Composer",
+      "attributes": [
+        "destinationMode=\"target-required\"",
+        "defaultDestination={activeReplyTarget ? {\n            handle: activeReplyTarget.handle,\n            binding: {\n              projectId: activeReplyTarget.projectId,\n              handle: activeReplyTarget.handle,\n              agentId: activeReplyTarget.id,\n              currentHandle: activeReplyTarget.handle,\n              currentTitle: activeReplyTarget.title,\n            },\n            selectionKey: `agent:${activeReplyTarget.id}:${activeReplyTarget.title}`,\n          } : undefined}",
+        "requiredRecipient={activeReplyTarget ? {\n            handle: activeReplyTarget.handle,\n            title: activeReplyTarget.title,\n            onClear: () => clearReplyTarget(false),\n          } : undefined}",
+        "recipientRequiredMessage={\n            selected && !selected.directMessageAgent\n              ? \"This message does not identify an active Agent you can message.\"\n              : \"Mention an Agent or choose a message to reply to.\"\n          }",
+        "mentionHandles={composerTargets.handles}",
+        "mentionBindings={composerTargets.mentionBindings}",
+        "mentionSuggestionHandles={composerTargets.suggestionHandles}",
+        "ambiguousMentionHandles={composerTargets.ambiguousHandles}",
+        "onMentionedHandlesChange={syncReplyTargetFromMentions}",
+        "onAuthoredMentionHandlesChange={selectAuthoredMentionTarget}",
+        "preserveUntargetedDraft",
+        "commands={activeReplyTarget ? selectedCommands : undefined}",
+        "capabilities={\n            selectedEngineCapabilities?.composerCapabilities ?? []\n          }",
+        "enableVoiceDictation",
+        "voiceContext={activeReplyTarget && composerConversationId ? {\n            projectId: activeReplyTarget.projectId,\n            conversationId: composerConversationId,\n            agents: projectAgentsQuery.data ?? [],\n            selectedAgentId: activeReplyTarget.id,\n            lockAgent: true,\n          } : undefined}",
+        "onCapabilitiesOpen={refreshSelectedCapabilities}",
+        "submissionRuntimeKey={JSON.stringify([\n            selectedEngineId ?? \"\",\n            selectedModel ?? \"\",\n            selectedRuntime.effort ?? \"\",\n            selectedRuntime.speed ?? \"\",\n          ])}",
+        "submissionRuntimeIntentKey={String(submissionRuntimeIntent)}",
+        "onCommand={activeReplyTarget ? invokeCommand : undefined}",
+        "controls={runtimeControls}",
+        "disabled={false}",
+        "submissionDisabled={\n            runtimeSaving ||\n            Boolean(selectedAgentId && !runtimeSelectionReady)\n          }",
+        "running={operationRunning}",
+        "allowSendWhileRunning",
+        "busyMentionHandles={busyMentionHandles}",
+        "agentResponding={Boolean(\n            activeReplyTarget &&\n            healthByAgentId.get(activeReplyTarget.id)?.runtimeActivity,\n          )}",
+        "allowUnmentionedSend={Boolean(activeReplyTarget)}",
+        "attachmentsEnabled={Boolean(composerConversationId)}",
+        "attachmentsUnavailableReason={\n            composerConversationId\n              ? undefined\n              : \"Select a source Chat before adding attachments.\"\n          }",
+        "placeholder={\n            activeReplyTarget\n              ? `Message ${activeReplyTarget.title} directly`\n              : \"Mention an Agent or choose a message to reply to\"\n          }",
+        "removeTextRequest={mentionRemoveRequest}",
+        "submissionIntentKey={String(submissionIntent.epoch)}",
+        "onSubmissionIntentChange={invalidatePreparedSubmissionIntent}",
+        "draftStorageKey={composerConversationId\n            ? chatStateKey(\n                \"draft\",\n                `conversation.${composerConversationId}.main`,\n              )\n            : \"messages:composer\"}",
+        "conversationDraftId={composerConversationId}",
+        "projectId={activeProjectId}",
+        "onSend={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>\n            send.mutateAsync({\n              activeRunDelivery: \"steer\",\n              body,\n              files,\n              draftAttachmentIds,\n              draftOwnerId,\n              mentionedAgents: context?.mentionedAgents ?? [],\n              newAgentRequested: context?.newAgentRequested ?? false,\n              retryPreparedAttempt: context?.retryPreparedAttempt ?? false,\n              capturedSubmission: context?.capturedSubmission ?? false,\n              capturedProjectId: context?.capturedProjectId,\n              submissionEpoch: submissionIntent.epoch,\n              submissionSourceKey: submissionIntent.sourceKey,\n              submissionTargetId: activeReplyTarget?.id,\n              pendingSubmission: context?.pendingSubmission,\n              persistPendingSubmission: context?.persistPendingSubmission,\n              onAgentCreated: context?.onAgentCreated,\n            })\n          }",
+        "onQueue={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>\n            send.mutateAsync({\n              activeRunDelivery: \"queue\",\n              body,\n              files,\n              draftAttachmentIds,\n              draftOwnerId,\n              mentionedAgents: context?.mentionedAgents ?? [],\n              newAgentRequested: context?.newAgentRequested ?? false,\n              retryPreparedAttempt: context?.retryPreparedAttempt ?? false,\n              capturedSubmission: context?.capturedSubmission ?? false,\n              capturedProjectId: context?.capturedProjectId,\n              submissionEpoch: submissionIntent.epoch,\n              submissionSourceKey: submissionIntent.sourceKey,\n              submissionTargetId: activeReplyTarget?.id,\n              pendingSubmission: context?.pendingSubmission,\n              persistPendingSubmission: context?.persistPendingSubmission,\n              onAgentCreated: context?.onAgentCreated,\n            })\n          }",
+        "onCancel={stopOperation}",
+        "cancelPending={cancelOperationPending}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Global Inbox target-required reply"
+    },
+    {
+      "file": "apps/web/src/components/BranchesView.tsx",
+      "line": 314,
+      "tag": "input",
+      "attributes": [
+        "ref={workflowImportInput}",
+        "hidden",
+        "type=\"file\"",
+        "accept=\".json,application/json\"",
+        "onChange={e=>{if(mobileNavOpen)closeMobileNavigation();void importFile(e.target.files?.[0]);e.target.value=''}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Attachment/package file selector, not a text editor"
+    },
+    {
+      "file": "apps/web/src/components/BranchesView.tsx",
+      "line": 319,
+      "tag": "input",
+      "attributes": [
+        "ref={packageUpdateInput}",
+        "hidden",
+        "type=\"file\"",
+        "accept=\".json,application/json\"",
+        "onChange={e=>{if(packageUpdateSelection.current===selection.current)void importFile(e.target.files?.[0],true);e.target.value=''}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Attachment/package file selector, not a text editor"
+    },
+    {
+      "file": "apps/web/src/components/BranchesView.tsx",
+      "line": 358,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus",
+        "label=\"Run Input\"",
+        "helperText={runInputError??'Optional input for this run. Saved Workflow Variables and the configured schedule stay unchanged.'}",
+        "error={Boolean(runInputError)}",
+        "multiline",
+        "minRows={3}",
+        "value={input}",
+        "disabled={run.isPending||runUnconfirmed||runAccepted}",
+        "onChange={event=>{if(run.isError&&!runUnconfirmed){run.reset();setOccurrenceKey(createClientId())}setInput(event.target.value)}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ChatContextSettings.tsx",
+      "line": 28,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Instructions\"",
+        "multiline",
+        "minRows={5}",
+        "value={instructions}",
+        "onChange={event=>setInstructions(event.target.value)}",
+        "disabled={save.isPending}",
+        "helperText=\"Only this Chat and its Agents.\""
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ChatContextSettings.tsx",
+      "line": 32,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Working folder\"",
+        "value={chat.workingDirectory ?? \"\"}",
+        "slotProps={{input:{readOnly:true}}}",
+        "helperText=\"Working folder · Not a filesystem sandbox.\""
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ChatInstructionsImportChoice.tsx",
+      "line": 18,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Existing Chat instructions\"",
+        "value={destination}",
+        "multiline",
+        "maxRows={3}",
+        "fullWidth",
+        "InputProps={{ readOnly: true }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ChatInstructionsImportChoice.tsx",
+      "line": 19,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Imported Chat instructions\"",
+        "value={source}",
+        "multiline",
+        "maxRows={3}",
+        "fullWidth",
+        "InputProps={{ readOnly: true }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/CollectionPrimitives.tsx",
+      "line": 294,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "value={search}",
+        "onChange={(event) => onSearch(event.target.value)}",
+        "placeholder=\"Search\"",
+        "inputProps={{ \"aria-label\": searchLabel }}",
+        "InputProps={{ startAdornment: <InputAdornment position=\"start\"><SearchIcon /></InputAdornment> }}",
+        "sx={{\n        width: \"100%\",\n        minWidth: 0,\n        maxWidth: searchMaxWidth ? { lg: searchMaxWidth } : undefined,\n      }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ConfirmationDialogs.tsx",
+      "line": 196,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus",
+        "fullWidth",
+        "label={label}",
+        "value={value}",
+        "onChange={(event) => setValue(event.target.value)}",
+        "error={Boolean(validationError)}",
+        "helperText={validationError ?? helperText}",
+        "sx={{ mt: 1 }}",
+        "onKeyDown={(event) => {\n          if (event.key === \"Enter\" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !props.pending && !validationError) {\n            event.preventDefault();\n            onConfirm(value);\n          }\n        }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ConversationFilesResults.tsx",
+      "line": 181,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "value={filter}",
+        "onChange={event => setFilter(event.target.value)}",
+        "placeholder=\"Search files, results, or agents\"",
+        "inputProps={{ \"aria-label\": \"Search Chat files and results\" }}",
+        "InputProps={{\n            startAdornment: (\n              <InputAdornment position=\"start\">\n                <SearchIcon fontSize=\"small\" />\n              </InputAdornment>\n            ),\n          }}",
+        "sx={{ width: { xs: \"100%\", sm: 360 } }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ConversationView.tsx",
+      "line": 1253,
+      "tag": "Composer",
+      "attributes": [
+        "enableVoiceDictation",
+        "voiceContext={activeView === \"main\" && !agentWorkOpen ? {\n            projectId: conversation.projectId,\n            conversationId,\n            agents: routingAgents,\n            selectedAgentId: commandTargetAgent?.conversationId === conversationId ? commandTargetAgent.id : undefined,\n          } : undefined}",
+        "draftStorageKey={chatStateKey(\n            \"draft\",\n            `conversation.${conversationId}.main`,\n          )}",
+        "conversationDraftId={conversationId}",
+        "destinationMode=\"project-chat\"",
+        "defaultDestination={lastContinuationDestination ? {\n            handle: lastContinuationDestination.agent.handle,\n            binding: {\n              projectId: conversation.projectId,\n              handle: lastContinuationDestination.agent.handle,\n              agentId: lastContinuationDestination.agent.id,\n              currentHandle: lastContinuationDestination.agent.handle,\n              currentTitle: lastContinuationDestination.agent.title,\n            },\n            selectionKey: lastContinuationDestination.selectionKey,\n          } : undefined}",
+        "insertTextRequest={mentionInsertRequest}",
+        "controls={runtimeControls}",
+        "disabled={false}",
+        "submissionDisabled={\n            runtimeSaving\n          }",
+        "running={operationRunning}",
+        "allowSendWhileRunning",
+        "submissionRuntimeKey={JSON.stringify([engine, model, effort, speed])}",
+        "submissionRuntimeIntentKey={String(submissionRuntimeIntent)}",
+        "mentionHandles={mentionHandles}",
+        "mentionBindings={mentionBindings}",
+        "mentionBindingsReady={projectAgentsQuery.data !== undefined}",
+        "commands={composerCommands}",
+        "onCommandTargetHandleChange={setCommandTargetHandle}",
+        "onCommandTargetAgentIdChange={setCommandTargetAgentId}",
+        "capabilities={composerRuntime.capabilities}",
+        "onCapabilitiesOpen={() =>\n            onRefreshCapabilities({ engineId: activeEngine?.id, model })\n          }",
+        "onCommand={\n            commandTargetAgent\n              ? (command, argumentsText) => {\n                  const invocation = api.invokeProviderCommand(\n                    commandTargetAgent.id,\n                    {\n                      name: command.name,\n                      ...(argumentsText ? { argumentsText } : {}),\n                    },\n                  );\n                  return invocation.then(result => {\n                    if (result.outcome && result.outcome !== \"completed\") throw new Error(result.message ?? \"Provider command completion is unconfirmed. Do not repeat the command.\");\n                    if (result.message) setQueuedMessageNotice(result.message);\n                    else notify({ key: \"provider-command\", message: `/${command.name} Invoked` });\n                  });\n                }\n              : undefined\n          }",
+        "busyMentionHandles={busyMentionHandles}",
+        "allowUnmentionedSend={engineReady}",
+        "sendUnavailableReason={engineUnavailableMessage}",
+        "placeholder={\n            engineReady\n              ? \"Write a message…\"\n              : \"Choose an available Agent with # or use #broadcast\"\n          }",
+        "onSend={(text, files, stagedIds, draftOwnerId, context) =>\n            submit(\n              text,\n              files,\n              \"steer\",\n              stagedIds,\n              draftOwnerId,\n              context?.mentionedAgents,\n              context?.newAgentRequested,\n              context?.retryPreparedAttempt,\n              context?.pendingSubmission,\n              context?.persistPendingSubmission,\n              context?.onAgentCreated,\n              context?.capturedSubmission,\n            )\n          }",
+        "onQueue={(text, files, stagedIds, draftOwnerId, context) =>\n            submit(\n              text,\n              files,\n              \"queue\",\n              stagedIds,\n              draftOwnerId,\n              context?.mentionedAgents,\n              context?.newAgentRequested,\n              context?.retryPreparedAttempt,\n              context?.pendingSubmission,\n              context?.persistPendingSubmission,\n              context?.onAgentCreated,\n              context?.capturedSubmission,\n            )\n          }",
+        "agentResponding={false}",
+        "projectId={conversation.projectId}",
+        "onCancel={stopOperation}",
+        "cancelPending={cancelOperationPending}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Core and Branches shared Chat"
+    },
+    {
+      "file": "apps/web/src/components/GlobalChatSearch.tsx",
+      "line": 355,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus",
+        "fullWidth",
+        "value={query}",
+        "onChange={(event) => setQuery(event.target.value)}",
+        "onKeyDown={handleSearchKeyDown}",
+        "placeholder=\"Search Ponderosa\"",
+        "inputProps={{\n            maxLength: 200,\n            \"aria-label\": \"Search Ponderosa\",\n            role: \"combobox\",\n            \"aria-expanded\": open,\n            \"aria-controls\": \"global-search-results\",\n            \"aria-activedescendant\": activeIndex >= 0 ? `global-search-option-${activeIndex}` : undefined,\n          }}",
+        "InputProps={{ startAdornment: <InputAdornment position=\"start\"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction=\"row\" spacing={.5} sx={{ alignItems: \"center\" }}><Box aria-label=\"Escape\" sx={{ display: { xs: \"none\", md: \"inline-flex\" }, px: .8, py: .4, borderRadius: .75, bgcolor: \"action.hover\", color: \"text.secondary\", fontSize: 11, fontFamily: \"inherit\" }}>ESC</Box><IconButton aria-label=\"Close search\" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}",
+        "variant=\"standard\"",
+        "sx={{ px: 2, py: 1.25, \"& input\": { fontSize: 20, fontWeight: 750 } }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ImportAgentDialog.tsx",
+      "line": 317,
+      "tag": "input",
+      "attributes": [
+        "hidden",
+        "type=\"file\"",
+        "accept=\"application/json,.json\"",
+        "onChange={(event) => {\n            const file = event.target.files?.[0];\n            event.target.value = \"\";\n            if (file) void loadFile(file);\n          }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Attachment/package file selector, not a text editor"
+    },
+    {
+      "file": "apps/web/src/components/ImportAgentDialog.tsx",
+      "line": 346,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Or paste Agent JSON\"",
+        "placeholder=\"Paste exported JSON here\"",
+        "value={jsonText}",
+        "onPasteCapture={(event) => {\n          const field = event.target;\n          if (!(field instanceof HTMLTextAreaElement)) return;\n          const pasted = event.clipboardData?.getData(\"text/plain\");\n          if (!pasted) return;\n          const before = field.value.slice(0, field.selectionStart);\n          const after = field.value.slice(field.selectionEnd);\n          const nextLength = before.length + pasted.length + after.length;\n          if (nextLength < LARGE_PASTE_CHARACTERS) return;\n          event.preventDefault();\n          setJsonText(\"\");\n          const blob = new Blob([before, pasted, after], { type: \"application/json\" });\n          inspectPackage(blob, \"pasted-agent-package.json\");\n        }}",
+        "onChange={(event) => updateJsonText(event.target.value)}",
+        "multiline",
+        "minRows={3}",
+        "maxRows={8}",
+        "fullWidth"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/OperatorProfileEditor.tsx",
+      "line": 123,
+      "tag": "input",
+      "attributes": [
+        "hidden",
+        "type=\"file\"",
+        "accept={IMAGE_ACCEPT}",
+        "onChange={(event) => {\n        const file = event.target.files?.[0];\n        event.target.value = \"\";\n        if (file) form.upload(file);\n      }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Attachment/package file selector, not a text editor"
+    },
+    {
+      "file": "apps/web/src/components/OperatorProfileEditor.tsx",
+      "line": 131,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus={nameAutoFocus}",
+        "label={nameLabel}",
+        "value={form.name}",
+        "onChange={(event) => form.setName(event.target.value)}",
+        "error={!form.name.trim()}",
+        "helperText={!form.name.trim() ? \"Enter a display name.\" : undefined}",
+        "inputProps={{ maxLength: 80 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/OperatorProfileEditor.tsx",
+      "line": 132,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Handle\"",
+        "value={form.handle}",
+        "onChange={(event) => form.setHandle(event.target.value)}",
+        "error={!/^[a-z][a-z0-9_-]{1,31}$/u.test(form.handle) || [\"broadcast\", \"everyone\", \"user\"].includes(form.handle)}",
+        "helperText={[\"broadcast\", \"everyone\", \"user\"].includes(form.handle) ? \"This handle is reserved. Choose another.\"\n        : !/^[a-z][a-z0-9_-]{1,31}$/u.test(form.handle) ? \"Use 2–32 characters, starting with a letter: lowercase letters, numbers, underscores, or hyphens.\"\n        : handleHelperText}",
+        "inputProps={{ maxLength: 32 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/OutputAgentApp.tsx",
+      "line": 41,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Check every (minutes)\"",
+        "type=\"number\"",
+        "value={minutes}",
+        "onChange={event=>setMinutes(Number(event.target.value))}",
+        "inputProps={{min:1}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/OutputAgentApp.tsx",
+      "line": 43,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Provider\"",
+        "value={engine}",
+        "onChange={event=>{setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/OutputAgentApp.tsx",
+      "line": 44,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Model\"",
+        "SelectProps={{displayEmpty:true}}",
+        "InputLabelProps={{shrink:true}}",
+        "value={model}",
+        "onChange={event=>setModel(event.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ProjectBrowserDialog.tsx",
+      "line": 216,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "fullWidth",
+        "placeholder=\"Search or enter a URL\"",
+        "inputProps={{ \"aria-label\": \"Website address\", autoCapitalize: \"none\", spellCheck: false }}",
+        "value={manual ? \"\" : address}",
+        "onChange={event => setAddress(event.target.value)}",
+        "onFocus={event => event.target.select()}",
+        "disabled={manual || session?.controlOwner === \"agent\"}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ResourceFolders.tsx",
+      "line": 222,
+      "tag": "TextField",
+      "attributes": [
+        "id=\"move-folder-search\"",
+        "autoFocus={!moveAnchor}",
+        "fullWidth",
+        "size=\"small\"",
+        "label=\"Search folders\"",
+        "value={folderSearch}",
+        "onChange={event => setFolderSearch(event.target.value)}",
+        "sx={{ mt: .5 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/ResourceNotificationSettings.tsx",
+      "line": 17,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "fullWidth",
+        "size=\"small\"",
+        "label=\"Notifications\"",
+        "disabled={!preferences.data || save.isPending}",
+        "value={preferences.data?.notificationScopes?.[`${kind}:${id}`] ?? (kind === \"agent\" ? \"inherit\" : \"all\")}",
+        "onChange={event => save.mutate(event.target.value as \"all\" | \"attention\" | \"muted\" | \"inherit\")}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/RuntimeSettings.tsx",
+      "line": 17,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Maximum concurrent Agent Runs\"",
+        "type=\"number\"",
+        "value={value}",
+        "onChange={(event) => onChange(event.target.value)}",
+        "error={!valid}",
+        "helperText={valid\n        ? \"Applies immediately; active Runs finish normally.\"\n        : `Enter a whole number from ${MIN_AGENT_RUN_CONCURRENCY} to ${MAX_AGENT_RUN_CONCURRENCY}.`}",
+        "inputProps={{ min: MIN_AGENT_RUN_CONCURRENCY, max: MAX_AGENT_RUN_CONCURRENCY, step: 1 }}",
+        "fullWidth"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 100,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "label=\"Every\"",
+        "type=\"number\"",
+        "value={intervalValue}",
+        "onChange={(event) => setIntervalValue(event.target.value)}",
+        "inputProps={{ min: 1, step: 1 }}",
+        "error={intervalInvalid}",
+        "helperText={intervalInvalid ? \"Choose an interval from 1 minute through 365 days.\" : \"1 minute–365 days\"}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 103,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Run at\"",
+        "type=\"datetime-local\"",
+        "value={onceAt}",
+        "onChange={(event) => setOnceAt(event.target.value)}",
+        "InputLabelProps={{ shrink: true }}",
+        "inputProps={{ step: 0.001 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 104,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Cron expression\"",
+        "value={cronExpression}",
+        "onChange={(event) => setCronExpression(event.target.value)}",
+        "error={Boolean(cronFormatError)}",
+        "helperText={cronFormatError ?? \"Five fields; minimum frequency is once per minute.\"}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 104,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"IANA timezone\"",
+        "value={timezone}",
+        "onChange={(event) => setTimezone(event.target.value)}",
+        "error={Boolean(timezoneError)}",
+        "helperText={timezoneError}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 107,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Include globs\"",
+        "value={include}",
+        "onChange={(event) => setInclude(event.target.value)}",
+        "multiline",
+        "minRows={2}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 107,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Exclude globs\"",
+        "value={exclude}",
+        "onChange={(event) => setExclude(event.target.value)}",
+        "multiline",
+        "minRows={3}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 107,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "label=\"Quiet window (seconds)\"",
+        "type=\"number\"",
+        "value={quietSeconds}",
+        "onChange={(event) => setQuietSeconds(event.target.value)}",
+        "inputProps={{ min: 0.1, max: 3_600, step: 0.1 }}",
+        "error={Boolean(filesystemErrors.quiet)}",
+        "helperText={filesystemErrors.quiet ?? \"0.1 seconds–1 hour\"}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/TriggerSourceFields.tsx",
+      "line": 107,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "label=\"Maximum window (seconds)\"",
+        "type=\"number\"",
+        "value={maxWindowSeconds}",
+        "onChange={(event) => setMaxWindowSeconds(event.target.value)}",
+        "inputProps={{ min: 0.1, max: 3_600, step: 0.1 }}",
+        "error={Boolean(filesystemErrors.max)}",
+        "helperText={filesystemErrors.max ?? \"At least quiet window; no more than 1 hour\"}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/WorkspaceResourceViews.tsx",
+      "line": 265,
+      "tag": "TextField",
+      "attributes": [
+        "{...params}",
+        "label=\"Scope\"",
+        "placeholder={workflows ? \"Search workflows, Chats, Agents, and folders\" : \"Search Chats, Agents, and folders\"}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/WorkspaceSettingsView.tsx",
+      "line": 221,
+      "tag": "TextField",
+      "attributes": [
+        "label={GLOBAL_AGENT_INSTRUCTIONS_LABEL}",
+        "value={instructions}",
+        "inputRef={instructionsInputRef}",
+        "onChange={event => {\n              onInstructions(event.target.value);\n              onInstructionsSelection();\n            }}",
+        "onSelect={onInstructionsSelection}",
+        "onBlur={onInstructionsSelection}",
+        "multiline",
+        "minRows={6}",
+        "helperText={GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/WorkspaceSettingsView.tsx",
+      "line": 269,
+      "tag": "TextField",
+      "attributes": [
+        "type=\"number\"",
+        "label=\"Roll over above (context tokens)\"",
+        "value={rolloverTokens}",
+        "onChange={event => onRolloverTokens(event.target.value)}",
+        "inputProps={{ min: 75_000, max: 2_000_000, step: 10_000 }}",
+        "error={Boolean(rolloverTokensError)}",
+        "helperText={\n              rolloverTokensError ??\n              \"Minimum 75,000; default 150,000 tokens.\"\n            }"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/WorkspaceSettingsView.tsx",
+      "line": 281,
+      "tag": "TextField",
+      "attributes": [
+        "type=\"number\"",
+        "label=\"Or at this share of the provider's context window\"",
+        "value={rolloverFraction}",
+        "onChange={event => onRolloverFraction(event.target.value)}",
+        "inputProps={{ min: 0.3, max: 0.95, step: 0.05 }}",
+        "error={Boolean(rolloverFractionError)}",
+        "helperText={\n              rolloverFractionError ??\n              \"Requires a provider-reported context window size.\"\n            }"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/WorkspaceSettingsView.tsx",
+      "line": 536,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "label=\"Model id\"",
+        "value={modelId}",
+        "onChange={event => {\n              setModelId(event.target.value);\n              setValidationError(undefined);\n              setValidationRequestError(undefined);\n            }}",
+        "helperText={\n              idAlreadyExists\n                ? \"This model id is already available.\"\n                : \"Use the exact versioned id accepted by Claude Code.\"\n            }",
+        "error={Boolean(normalizedId && idAlreadyExists)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/WorkspaceSidebar.parts.tsx",
+      "line": 196,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "size=\"small\"",
+        "value={searchValue}",
+        "onChange={event => onSearchValueChange(event.target.value)}",
+        "placeholder={searchLabel}",
+        "sx={{ \"@media (max-width: 599.95px)\": { \"& input\": { fontSize: 16 } }, ...(drawer ? { \"& .MuiInputBase-root\": { height: 44 }, \"& .MuiSvgIcon-root\": { fontSize: 20 } } : {}) }}",
+        "inputProps={{ \"aria-label\": searchLabel }}",
+        "InputProps={{\n            startAdornment: (\n              <InputAdornment position=\"start\">\n                <SearchIcon />\n              </InputAdornment>\n            ),\n          }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 38,
+      "tag": "TextField",
+      "attributes": [
+        "{...params}",
+        "size=\"small\"",
+        "label=\"Agent\"",
+        "required",
+        "error={showErrors&&'ref'in node.target&&!selectedId}",
+        "placeholder=\"Search Agents And Organizations\"",
+        "slotProps={{htmlInput:{...params.inputProps,maxLength:200}}}",
+        "InputProps={{...params.InputProps,endAdornment:<>{pages.isFetching&&<CircularProgress size={16} aria-label=\"Loading Agents\"/>}{params.InputProps.endAdornment}</>}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 44,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Agent Instructions\"",
+        "placeholder=\"Describe The Work And Expected Result For This Step\"",
+        "onBlur={()=>setTouched(true)}",
+        "multiline",
+        "minRows={4}",
+        "value={node.instructions}",
+        "onChange={event=>update({...node,instructions:event.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 48,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"title\"",
+        "label=\"Agent Name\"",
+        "required",
+        "error={showErrors&&(!member.title.trim()||[...member.title].length>60)}",
+        "size=\"small\"",
+        "value={member.title}",
+        "onChange={event=>change({title:event.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 49,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"initialInstructions\"",
+        "label=\"Agent Role\"",
+        "placeholder=\"Describe This Agent’s Standing Role And Responsibilities\"",
+        "size=\"small\"",
+        "multiline",
+        "minRows={2}",
+        "value={member.initialInstructions??''}",
+        "onChange={event=>change({initialInstructions:event.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 51,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"engine\"",
+        "select",
+        "label=\"Engine\"",
+        "size=\"small\"",
+        "required",
+        "error={showErrors&&!engineIsAvailable(engine)}",
+        "value={bindings.engines?.[member.engine]??''}",
+        "onChange={event=>{const engineRef=node.id+'_'+member.ref+'_engine',nextEngine=engines.find(item=>item.id===event.target.value),model=member.model&&nextEngine?.models.some(option=>option.id===member.model)?member.model:undefined;onDraft({definition:{...definition,templates:{...definition.templates,[('templateRef'in node.target?node.target.templateRef:'')]:{...template,agents:template.agents.map(item=>item.ref===member.ref?{...item,engine:engineRef,model,effort:member.effort&&model&&effortOptionsForModel(nextEngine,model).some(option=>option.id===member.effort)?member.effort:undefined}:item)}}},bindings:{...bindings,engines:{...bindings.engines,[engineRef]:event.target.value}}})}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 52,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"model\"",
+        "select",
+        "SelectProps={{displayEmpty:true}}",
+        "InputLabelProps={{shrink:true}}",
+        "label=\"Model\"",
+        "size=\"small\"",
+        "value={member.model??''}",
+        "onChange={event=>change({model:event.target.value||undefined,effort:undefined})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 53,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"effort\"",
+        "select",
+        "SelectProps={{displayEmpty:true}}",
+        "InputLabelProps={{shrink:true}}",
+        "label=\"Reasoning Effort\"",
+        "size=\"small\"",
+        "value={member.effort??''}",
+        "onChange={event=>change({effort:event.target.value||undefined})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/AgentStepFields.tsx",
+      "line": 56,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"managerRef\"",
+        "select",
+        "label=\"Reports To\"",
+        "size=\"small\"",
+        "value={member.managerRef??template.rootRef}",
+        "onChange={event=>change({managerRef:event.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchChats.tsx",
+      "line": 98,
+      "tag": "TextField",
+      "attributes": [
+        "{...params}",
+        "size=\"small\"",
+        "label={executionId?'Execution Chat':'Chat'}",
+        "placeholder=\"Search Chats\"",
+        "slotProps={{htmlInput:{...params.inputProps,maxLength:200}}}",
+        "InputProps={{...params.InputProps,endAdornment:<>{choices.isFetching&&<CircularProgress size={16} aria-label=\"Loading Chats\"/>}{params.InputProps.endAdornment}</>}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchExecutionBudget.tsx",
+      "line": 42,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Executions per period\"",
+        "type=\"number\"",
+        "value={draft.limit}",
+        "disabled={policyLocked}",
+        "error={!valid}",
+        "helperText=\"A whole number from 1 to 1,000,000,000.\"",
+        "onChange={e=>{save.reset();setDraft({...draft,limit:Number(e.target.value)})}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchExecutionBudget.tsx",
+      "line": 42,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Budget period\"",
+        "value={draft.period}",
+        "disabled={policyLocked}",
+        "onChange={e=>{save.reset();setDraft({...draft,period:e.target.value as BranchExecutionBudgetPolicy['period']})}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchExecutionBudget.tsx",
+      "line": 54,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus",
+        "label=\"Additional executions\"",
+        "type=\"number\"",
+        "value={additional}",
+        "disabled={grant.isPending||Boolean(grantAttempt.current)}",
+        "error={!grantValid}",
+        "helperText=\"A positive whole number; base plus extra allowance may not exceed 1,000,000,000.\"",
+        "onChange={e=>{setAdditional(e.target.value);grant.reset()}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchPackageDialog.tsx",
+      "line": 56,
+      "tag": "TextField",
+      "attributes": [
+        "key={key}",
+        "disabled={review.isPending}",
+        "label={p.label??key}",
+        "required={p.required}",
+        "select={p.type==='boolean'}",
+        "type={p.type==='number'?'number':'text'}",
+        "value={parameters[key]??p.default??''}",
+        "onChange={e=>setParameters({...parameters,[key]:p.type==='number'?Number(e.target.value):p.type==='boolean'?e.target.value==='true':e.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchPackageDialog.tsx",
+      "line": 57,
+      "tag": "TextField",
+      "attributes": [
+        "key={ref}",
+        "disabled={review.isPending}",
+        "label={ref==='workspace'?'Default working directory':`Working directory: ${ref}`}",
+        "value={bindings.directories[ref]??''}",
+        "onChange={e=>setBindings({...bindings,directories:{...bindings.directories,[ref]:e.target.value}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchPackageDialog.tsx",
+      "line": 58,
+      "tag": "TextField",
+      "attributes": [
+        "key={ref}",
+        "disabled={review.isPending}",
+        "select",
+        "label={`Engine: ${ref}`}",
+        "value={bindings.engines?.[ref]??''}",
+        "onChange={e=>setBindings({...bindings,engines:{...bindings.engines,[ref]:e.target.value}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchPackageDialog.tsx",
+      "line": 59,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "key={s.id}",
+        "disabled={review.isPending}",
+        "label={s.label??s.branchRef}",
+        "value={bindings.branches?.[s.branchRef]??''}",
+        "onChange={e=>setBindings({...bindings,branches:{...bindings.branches,[s.branchRef]:e.target.value}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchRunHistory.tsx",
+      "line": 69,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "size=\"small\"",
+        "label=\"Filter Runs\"",
+        "value={filter??''}",
+        "onChange={event=>onFilter(event.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchSettings.tsx",
+      "line": 53,
+      "tag": "TextField",
+      "attributes": [
+        "disabled={save.isPending||reloadAction.isPending}",
+        "key={key}",
+        "label={p.label??key}",
+        "required={p.required}",
+        "helperText={p.help}",
+        "type={p.type===\"number\"?\"number\":\"text\"}",
+        "value={draft.parameters[key]??p.default??\"\"}",
+        "onChange={e=>setParameter(key,p.type===\"number\"?(e.target.value===''?undefined:Number(e.target.value)):e.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/BranchSettings.tsx",
+      "line": 57,
+      "tag": "TextField",
+      "attributes": [
+        "disabled={save.isPending||reloadAction.isPending}",
+        "key={key}",
+        "label={label}",
+        "type=\"number\"",
+        "error={!Number.isSafeInteger(draft.limits[key])||draft.limits[key]<1}",
+        "helperText=\"A positive whole number is required.\"",
+        "value={draft.limits[key]}",
+        "onChange={e=>setDraft({...draft,limits:{...draft.limits,[key]:Number(e.target.value)}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 23,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Choose a result\"",
+        "disabled={disabled||resolve.isPending||resolve.isSuccess}",
+        "value={choice}",
+        "onChange={e=>{setChoice(e.target.value);setKey(createClientId())}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 23,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Proposed result\"",
+        "disabled={disabled||resolve.isPending||resolve.isSuccess}",
+        "multiline",
+        "minRows={4}",
+        "value={text}",
+        "onChange={e=>{setText(e.target.value);setKey(createClientId())}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 151,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "label=\"Find waiting decision\"",
+        "value={gateSearch}",
+        "onChange={event=>setGateSearch(event.target.value)}",
+        "sx={{maxWidth:340}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 176,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "label=\"Find item or number\"",
+        "value={itemSearch}",
+        "error={searchTooLong}",
+        "helperText={searchTooLong?\"Use 100 characters or fewer.\":undefined}",
+        "onChange={event=>{setItemSearch(event.target.value);setItemLimit(100)}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 176,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "select",
+        "label=\"Show\"",
+        "value={itemFilter}",
+        "onChange={event=>{setItemFilter(event.target.value);setItemLimit(100)}}",
+        "sx={{minWidth:170}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 176,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "select",
+        "label=\"Sort loaded items\"",
+        "value={itemSort}",
+        "onChange={event=>setItemSort(event.target.value)}",
+        "sx={{minWidth:170}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 203,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Observed scheduled update outcome\"",
+        "value={updateApplied}",
+        "disabled={interventionLocked||!reconciled}",
+        "onChange={event=>{if(interventionLocked||!reconciled)return;setUpdateApplied(event.target.value as typeof updateApplied);setCommandKey(createClientId())}}",
+        "helperText=\"Choose the outcome you verified; no result is assumed.\""
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 208,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Keep this execution\"",
+        "value={target}",
+        "disabled={interventionLocked}",
+        "onChange={e=>{if(interventionLocked)return;setTarget(e.target.value);setCommandKey(createClientId())}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 212,
+      "tag": "TextField",
+      "attributes": [
+        "disabled={interventionLocked}",
+        "label=\"Observed output\"",
+        "multiline",
+        "minRows={4}",
+        "value={result}",
+        "onChange={e=>{if(interventionLocked)return;setResult(e.target.value);setCommandKey(createClientId())}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
+      "line": 213,
+      "tag": "TextField",
+      "attributes": [
+        "disabled={interventionLocked}",
+        "label=\"Reason for this decision\"",
+        "multiline",
+        "minRows={2}",
+        "value={reason}",
+        "onChange={e=>{if(interventionLocked)return;setReason(e.target.value);setCommandKey(createClientId())}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 18,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "SelectProps={{MenuProps:{transitionDuration:0}}}",
+        "size=\"small\"",
+        "label=\"Failure Handling\"",
+        "value={mode??value?.action??'inherit'}",
+        "onChange={e=>{if(onMode){onMode(e.target.value);return;}onChange(e.target.value==='inherit'?undefined:e.target.value==='retry'?{action:'retry',maxAttempts:3,delayMs:1000}:e.target.value==='recover'?{action:'recover',agentRef:recoveryRef,maxAttempts:1}:{action:e.target.value as 'stop'|'ask_human'})}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 21,
+      "tag": "TextField",
+      "attributes": [
+        "label={value.action==='retry'?'Maximum Attempts':'Recovery Attempts'}",
+        "type=\"number\"",
+        "size=\"small\"",
+        "inputProps={{min:1,max:100,step:1}}",
+        "error={showErrors&&(!Number.isSafeInteger(value.maxAttempts)||value.maxAttempts<1||value.maxAttempts>100)}",
+        "value={value.maxAttempts}",
+        "onChange={e=>onChange({...value,maxAttempts:Number(e.target.value)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 22,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Retry Delay\"",
+        "helperText=\"Seconds\"",
+        "size=\"small\"",
+        "type=\"number\"",
+        "inputProps={{min:0,max:86400,step:.001}}",
+        "error={showErrors&&(!Number.isSafeInteger(value.delayMs)||value.delayMs<0||value.delayMs>86400000)}",
+        "value={value.delayMs/1000}",
+        "onChange={e=>onChange({...value,delayMs:Number(e.target.value)*1000})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 23,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Recovery Agent\"",
+        "required",
+        "error={showErrors&&!bindings.agents[value.agentRef]}",
+        "size=\"small\"",
+        "value={bindings.agents[value.agentRef]??''}",
+        "onChange={e=>onBindings({...bindings,agents:{...bindings.agents,[value.agentRef]:e.target.value}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 50,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Name\"",
+        "size=\"small\"",
+        "value={node.label??node.id}",
+        "onChange={e=>update({...node,label:e.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 51,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"For Each Worker Type\"",
+        "size=\"small\"",
+        "value={node.kind}",
+        "onChange={e=>{const kind=e.target.value;const replacement:BranchStep=kind==='script'?{...makeScript(node.id),label:node.label}:kind==='branch_call'?{id:node.id,label:node.label,kind:'branch_call',branchRef:node.id}:{id:node.id,label:node.label,kind:'agent',target:{kind:'persistent_agent',ref:node.id},instructions:''};update(replacement)}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 52,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Destination Workflow\"",
+        "required",
+        "error={showErrors&&!bindings.branches?.[node.branchRef]}",
+        "value={bindings.branches?.[node.branchRef]??''}",
+        "onChange={e=>onBindings({...bindings,branches:{...bindings.branches,[node.branchRef]:e.target.value}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 52,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"If The Child Is Canceled\"",
+        "value={node.canceled??'ask_human'}",
+        "onChange={e=>update({...node,canceled:e.target.value as 'retry'|'ask_human'|'terminate'})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 53,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Script\"",
+        "required",
+        "error={showErrors&&!node.source.trim()}",
+        "multiline",
+        "minRows={7}",
+        "value={node.source}",
+        "onChange={e=>update({...node,source:e.target.value})}",
+        "slotProps={{input:{sx:{fontFamily:'monospace',fontSize:12}}}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 55,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Review Prompt\"",
+        "required",
+        "error={showErrors&&!node.prompt.trim()}",
+        "multiline",
+        "minRows={3}",
+        "value={node.prompt}",
+        "onChange={e=>update({...node,prompt:e.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 55,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Choices (One Per Line, Optional)\"",
+        "multiline",
+        "minRows={2}",
+        "value={node.choices?.join('\\n')??''}",
+        "onChange={e=>update({...node,choices:e.target.value?e.target.value.split('\\n'):undefined})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 56,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Input Equals\"",
+        "multiline",
+        "value={node.predicate.equals}",
+        "onChange={e=>update({...node,predicate:{source:'input',equals:e.target.value}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 57,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Route Name\"",
+        "size=\"small\"",
+        "value={edge.choice??''}",
+        "onChange={e=>onChange({...definition,edges:definition.edges.map(item=>item.id===edge.id?{...item,choice:e.target.value}:item)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 57,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Go To\"",
+        "size=\"small\"",
+        "value={edge.to}",
+        "onChange={e=>onChange({...definition,edges:definition.edges.map(item=>item.id===edge.id?{...item,to:e.target.value}:item)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 57,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Otherwise / Invalid Choice\"",
+        "value={node.otherwise}",
+        "onChange={e=>onChange({...definition,controls:definition.controls.map(control=>control.id===node.id?{...node,otherwise:e.target.value}:control),edges:definition.edges.map(edge=>edge.from===node.id&&edge.on==='failure'?{...edge,to:e.target.value}:edge)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 58,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Items From Previous Result\"",
+        "value={node.source}",
+        "onChange={e=>update({...node,source:e.target.value as typeof node.source})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 58,
+      "tag": "TextField",
+      "attributes": [
+        "type=\"number\"",
+        "label=\"Maximum Items\"",
+        "value={node.maxItems}",
+        "onChange={e=>update({...node,maxItems:Number(e.target.value)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 58,
+      "tag": "TextField",
+      "attributes": [
+        "type=\"number\"",
+        "label=\"Concurrent Items\"",
+        "value={node.maxConcurrentItems}",
+        "onChange={e=>update({...node,maxConcurrentItems:Number(e.target.value)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 60,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Continue After\"",
+        "size=\"small\"",
+        "value={node.mode}",
+        "onChange={e=>{const mode=e.target.value as typeof node.mode;update({...node,mode,quorum:mode==='quorum'?1:undefined})}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 61,
+      "tag": "TextField",
+      "attributes": [
+        "type=\"number\"",
+        "label=\"Required Successes\"",
+        "size=\"small\"",
+        "value={node.quorum??1}",
+        "onChange={e=>update({...node,quorum:Number(e.target.value)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 62,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"If The Required Number Cannot Succeed\"",
+        "size=\"small\"",
+        "value={node.onUnmet??'fail'}",
+        "onChange={e=>update({...node,onUnmet:e.target.value as 'fail'|'continue'})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 63,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Remaining Paths\"",
+        "size=\"small\"",
+        "value={node.remainder}",
+        "onChange={e=>update({...node,remainder:e.target.value as 'finish'|'cancel'})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 73,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Next Step\"",
+        "size=\"small\"",
+        "value={nodeName(nodes.find(candidate=>candidate.id===mapOwner.joinId)??mapOwner)}",
+        "slotProps={{input:{readOnly:true}}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 75,
+      "tag": "TextField",
+      "attributes": [
+        "key={outcome}",
+        "data-branch-section=\"connections\"",
+        "SelectProps={{displayEmpty:true}}",
+        "InputLabelProps={{shrink:true}}",
+        "data-edge-id={definition.edges.find(edge=>edge.from===node.id&&edge.on===outcome)?.id}",
+        "select",
+        "size=\"small\"",
+        "label={node.kind==='condition'?(outcome==='selected'?'Matches':'Otherwise'):outcome==='success'?'Next Step':`After ${outcome}`}",
+        "value={definition.edges.find(e=>e.from===node.id&&e.on===outcome)?.to??''}",
+        "onChange={e=>route(outcome,e.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 79,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-section=\"connections\"",
+        "data-edge-id={definition.edges.find(edge=>edge.from===node.id&&edge.on==='failure')?.id}",
+        "select",
+        "required",
+        "label=\"Failure Destination\"",
+        "size=\"small\"",
+        "error={showErrors&&!definition.edges.find(edge=>edge.from===node.id&&edge.on==='failure')?.to}",
+        "value={definition.edges.find(edge=>edge.from===node.id&&edge.on==='failure')?.to??''}",
+        "onChange={event=>onChange({...definition,edges:definition.edges.map(edge=>edge.from===node.id&&edge.on==='failure'?{...edge,to:event.target.value}:edge)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 81,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Timeout (Seconds)\"",
+        "type=\"number\"",
+        "size=\"small\"",
+        "inputProps={{min:.001,max:3600,step:.001}}",
+        "error={!Number.isSafeInteger(node.timeoutMs)||node.timeoutMs<1||node.timeoutMs>3600000}",
+        "value={node.timeoutMs/1000}",
+        "onChange={e=>update({...node,timeoutMs:Number(e.target.value)*1000})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 81,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Working Directory\"",
+        "size=\"small\"",
+        "required",
+        "error={showErrors&&!bindings.directories[node.cwdRef]?.trim()}",
+        "helperText={!bindings.directories[node.cwdRef]?.trim()?'Required. Choose a directory or use \".\" for the Engine’s current working directory.':undefined}",
+        "value={bindings.directories[node.cwdRef]??''}",
+        "onChange={e=>onBindings({...bindings,directories:{...bindings.directories,[node.cwdRef]:e.target.value}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 82,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"input\"",
+        "select",
+        "label=\"Text Passed To The Next Step\"",
+        "value={edge.input?.kind??'output'}",
+        "onChange={e=>onChange({...definition,edges:definition.edges.map(item=>item.id===edge.id?{...item,input:e.target.value==='literal'?{kind:'literal',text:''}:{kind:'output'}}:item)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/NodeEditor.tsx",
+      "line": 82,
+      "tag": "TextField",
+      "attributes": [
+        "data-branch-field=\"input\"",
+        "multiline",
+        "label=\"Explicit Input\"",
+        "value={edge.input.text}",
+        "onChange={e=>onChange({...definition,edges:definition.edges.map(item=>item.id===edge.id?{...item,input:{kind:'literal',text:e.target.value}}:item)})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ParameterDefinitions.tsx",
+      "line": 15,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "label={`Label for ${key}`}",
+        "value={p.label??''}",
+        "onChange={e=>update(key,{...p,label:e.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ParameterDefinitions.tsx",
+      "line": 15,
+      "tag": "TextField",
+      "attributes": [
+        "fullWidth",
+        "select",
+        "label={`Type for ${key}`}",
+        "value={p.type}",
+        "onChange={e=>{const {default:discarded,...rest}=p;void discarded;update(key,{...rest,type:e.target.value as BranchParameter['type']})}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ParameterDefinitions.tsx",
+      "line": 16,
+      "tag": "TextField",
+      "attributes": [
+        "label={`Help for ${key}`}",
+        "value={p.help??''}",
+        "onChange={e=>update(key,{...p,help:e.target.value})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ParameterDefinitions.tsx",
+      "line": 20,
+      "tag": "TextField",
+      "attributes": [
+        "label={`Default for ${key}`}",
+        "type={p.type==='number'?'number':'text'}",
+        "value={p.default}",
+        "onChange={e=>{const value=p.type==='number'?Number(e.target.value):e.target.value;if(typeof value!=='number'||Number.isFinite(value))update(key,{...p,default:value})}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/ParameterDefinitions.tsx",
+      "line": 23,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "label=\"New parameter name\"",
+        "value={name}",
+        "error={Boolean(name)&&!valid}",
+        "helperText=\"Unique letters, numbers, dots, colons, underscores, or hyphens.\"",
+        "onChange={e=>setName(e.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/WorkflowEditor.tsx",
+      "line": 97,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "label=\"Starts\"",
+        "size=\"small\"",
+        "value={definition.trigger.kind}",
+        "onChange={e=>setTrigger(e.target.value as BranchDefinition['trigger']['kind'])}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/WorkflowEditor.tsx",
+      "line": 114,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Definition JSON\"",
+        "multiline",
+        "minRows={10}",
+        "maxRows={24}",
+        "value={advanced??JSON.stringify(definition,null,2)}",
+        "onChange={e=>{applyRequest.current++;setAdvanced(e.target.value)}}",
+        "slotProps={{input:{sx:{fontFamily:'monospace',fontSize:12}}}}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/branches/WorkflowEditor.tsx",
+      "line": 121,
+      "tag": "TextField",
+      "attributes": [
+        "key={field}",
+        "label={label}",
+        "type=\"number\"",
+        "size=\"small\"",
+        "inputProps={{min:1,max:field==='maxConcurrentExecutions'?1000:100000,step:1}}",
+        "error={!Number.isSafeInteger(definition.policy[field]??fallback)||(definition.policy[field]??fallback)<1||(definition.policy[field]??fallback)>(field==='maxConcurrentExecutions'?1000:100000)}",
+        "value={definition.policy[field]??fallback}",
+        "onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/browser/BrowserArtifactUpload.tsx",
+      "line": 78,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "size=\"small\"",
+        "label=\"Files & Results\"",
+        "value={artifactId}",
+        "onChange={(event) => setArtifactId(event.target.value)}",
+        "disabled={disabled || artifacts.isPending || choices.length === 0}",
+        "sx={{ minWidth: { md: 240 }, flex: 1 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Remote browser keyboard/control; not an authored Ponderosa message"
+    },
+    {
+      "file": "apps/web/src/components/browser/BrowserKeyboard.tsx",
+      "line": 27,
+      "tag": "Box",
+      "attributes": [
+        "component=\"textarea\"",
+        "ref={input}",
+        "aria-label=\"Browser mobile keyboard\"",
+        "defaultValue={\"\\u200b\"}",
+        "disabled={disabled}",
+        "autoComplete=\"off\"",
+        "autoCorrect=\"off\"",
+        "autoCapitalize=\"off\"",
+        "spellCheck={false}",
+        "onCompositionStart={() => { composing.current = true; }}",
+        "onCompositionEnd={event => { composing.current = false; flush(event.currentTarget); }}",
+        "onChange={event => { if (!composing.current) flush(event.currentTarget); }}",
+        "onKeyDown={event => {\n        if (composing.current || event.nativeEvent.isComposing || event.key.length === 1) return;\n        if ([\"Backspace\", \"Delete\", \"Enter\", \"Tab\", \"Escape\", \"ArrowLeft\", \"ArrowRight\", \"ArrowUp\", \"ArrowDown\"].includes(event.key)) {\n          event.preventDefault(); onKey(event.key); clear();\n          if (event.key === \"Escape\") event.currentTarget.blur();\n        }\n      }}",
+        "onBlur={clear}",
+        "sx={{ position: \"absolute\", width: \"1px\", height: \"1px\", opacity: .01, pointerEvents: \"none\", fontSize: 16, p: 0, border: 0 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Remote browser keyboard/control; not an authored Ponderosa message"
+    },
+    {
+      "file": "apps/web/src/components/browser/BrowserViewport.tsx",
+      "line": 373,
+      "tag": "Box",
+      "attributes": [
+        "component=\"textarea\"",
+        "ref={keyboard}",
+        "aria-label=\"Type in the browser page. Escape returns focus to browser controls.\"",
+        "autoComplete=\"off\"",
+        "autoCorrect=\"off\"",
+        "autoCapitalize=\"off\"",
+        "spellCheck={false}",
+        "onCompositionStart={() => { composing.current = true; }}",
+        "onCompositionEnd={event => {\n          composing.current = false;\n          if (event.currentTarget.value) sendInput({ kind: \"type\", text: event.currentTarget.value });\n          event.currentTarget.value = \"\";\n        }}",
+        "onChange={event => {\n          if (composing.current) return;\n          if (event.target.value) sendInput({ kind: \"type\", text: event.target.value });\n          event.target.value = \"\";\n        }}",
+        "onKeyDown={event => {\n          if (composing.current || event.nativeEvent.isComposing) return;\n          if (event.key === \"Escape\") {\n            event.stopPropagation();\n            event.currentTarget.blur();\n            event.currentTarget.closest('[role=\"dialog\"]')?.querySelector<HTMLInputElement>('input[aria-label=\"Website address\"]')?.focus();\n            return;\n          }\n          // Native text entry/paste feeds onChange, preserving Unicode and IME.\n          if ([\"Shift\", \"Control\", \"Alt\", \"Meta\"].includes(event.key)) return;\n          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === \"v\") return;\n          if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) return;\n          event.preventDefault();\n          // Control is the browser API's primary-shortcut token; the host driver\n          // maps it to Command when Chrome runs on macOS.\n          const modifiers = `${event.ctrlKey || event.metaKey ? \"Control+\" : \"\"}${event.altKey ? \"Alt+\" : \"\"}${event.shiftKey ? \"Shift+\" : \"\"}`;\n          sendInput({ kind: \"key\", key: modifiers + event.key });\n        }}",
+        "sx={{ position: \"absolute\", left: 0, top: 0, width: \"1px\", height: \"1px\", pointerEvents: \"none\", opacity: .01, p: 0, border: 0, fontSize: 16 }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Remote browser keyboard/control; not an authored Ponderosa message"
+    },
+    {
+      "file": "apps/web/src/components/browser/LocalBrowserSetup.tsx",
+      "line": 23,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "label=\"Ponderosa address\"",
+        "value={window.location.origin}",
+        "inputProps={{ readOnly: true }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Remote browser keyboard/control; not an authored Ponderosa message"
+    },
+    {
+      "file": "apps/web/src/components/browser/LocalBrowserSetup.tsx",
+      "line": 24,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "label=\"Pairing code — valid for 5 minutes\"",
+        "value={pair.data.code}",
+        "inputProps={{ readOnly: true }}",
+        "onFocus={event => event.target.select()}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Remote browser keyboard/control; not an authored Ponderosa message"
+    },
+    {
+      "file": "apps/web/src/components/chat/Composer.controls.tsx",
+      "line": 253,
+      "tag": "ComposerEditor",
+      "attributes": [
+        "ref={inputRef}",
+        "text={text}",
+        "disabled={disabled}",
+        "locked={locked}",
+        "placeholder={placeholder}",
+        "comboboxEnabled={comboboxEnabled}",
+        "menuOpen={menuOpen}",
+        "listId={listId}",
+        "highlighted={highlighted}",
+        "attachmentsEnabled={attachmentsEnabled}",
+        "pastedText={pastedText}",
+        "menuSuggestions={menuSuggestions}",
+        "destinationMode={destinationMode}",
+        "requiredRecipient={requiredRecipient}",
+        "inlineDestination={inlineDestination}",
+        "mentionDescriptors={mentionTokens}",
+        "mentionBindings={mentionBindings}",
+        "canSend={canSend}",
+        "onTextChange={onTextChange}",
+        "onFiles={onFiles}",
+        "onPastedText={onPastedText}",
+        "onPasteError={onPasteError}",
+        "onHighlightChange={onHighlightChange}",
+        "onSuppressMenu={onSuppressMenu}",
+        "onApplySuggestion={onApplySuggestion}",
+        "onClearRequiredRecipient={onClearRequiredRecipient}",
+        "onSend={onSend}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Shared main editor"
+    },
+    {
+      "file": "apps/web/src/components/chat/Composer.controls.tsx",
+      "line": 370,
+      "tag": "input",
+      "attributes": [
+        "ref={fileInput}",
+        "aria-label=\"Choose files\"",
+        "hidden",
+        "type=\"file\"",
+        "multiple",
+        "onChange={event => {\n          onFiles(Array.from(event.target.files ?? []));\n          event.target.value = \"\";\n        }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Attachment/package file selector, not a text editor"
+    },
+    {
+      "file": "apps/web/src/components/chat/Composer.controls.tsx",
+      "line": 381,
+      "tag": "input",
+      "attributes": [
+        "ref={element => { folderInput.current = element; if (element) element.webkitdirectory = true; }}",
+        "aria-label=\"Choose folder\"",
+        "hidden",
+        "type=\"file\"",
+        "multiple",
+        "onChange={event => {\n          onFolderFiles(Array.from(event.target.files ?? [])); event.target.value = \"\";\n        }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Attachment/package file selector, not a text editor"
+    },
+    {
+      "file": "apps/web/src/components/chat/Composer.controls.tsx",
+      "line": 385,
+      "tag": "input",
+      "attributes": [
+        "ref={photoInput}",
+        "aria-label=\"Choose photos\"",
+        "hidden",
+        "type=\"file\"",
+        "accept=\"image/*\"",
+        "multiple",
+        "onChange={event => {\n          onFiles(Array.from(event.target.files ?? []));\n          event.target.value = \"\";\n        }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Attachment/package file selector, not a text editor"
+    },
+    {
+      "file": "apps/web/src/components/chat/Composer.controls.tsx",
+      "line": 442,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus={!mobile}",
+        "fullWidth",
+        "size=\"small\"",
+        "value={filter}",
+        "onChange={event => onFilterChange(event.target.value)}",
+        "placeholder={mobile ? \"Search skills & connectors\" : \"Find a skill, plugin, or connector\"}",
+        "inputProps={{ \"aria-label\": \"Filter runtime capabilities\" }}",
+        "sx={isIOSDevice() ? { \"& input\": { fontSize: 16 } } : undefined}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/chat/Composer.tsx",
+      "line": 3657,
+      "tag": "TextField",
+      "attributes": [
+        "disabled={draftMutationLocked}",
+        "autoFocus",
+        "fullWidth",
+        "multiline",
+        "minRows={12}",
+        "maxRows={24}",
+        "value={pastedTextEditorValue}",
+        "onChange={event => setPastedTextEditorValue(event.target.value)}",
+        "error={utf8ByteLength(pastedTextEditorValue) > LONG_TEXT_MAX_UTF8_BYTES}",
+        "helperText={`${utf8ByteLength(pastedTextEditorValue).toLocaleString()} of ${LONG_TEXT_MAX_UTF8_BYTES.toLocaleString()} bytes`}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Long pasted-text View or edit dialog"
+    },
+    {
+      "file": "apps/web/src/components/chat/ComposerEditor.tsx",
+      "line": 1632,
+      "tag": "ContentEditable",
+      "attributes": [
+        "className=\"composer-editor-input\"",
+        "tabIndex={disabled || locked ? -1 : 0}",
+        "aria-label=\"Message\"",
+        "role=\"textbox\"",
+        "aria-multiline=\"true\"",
+        "aria-autocomplete={comboboxEnabled ? \"list\" : undefined}",
+        "aria-controls={menuOpen ? listId : undefined}",
+        "aria-activedescendant={menuOpen\n                ? `${listId}-option-${highlighted}`\n                : undefined}",
+        "onKeyDown={handleKeyDown}",
+        "onFocus={() => {\n                // Native focus can restore a pre-chip DOM selection after the\n                // focus handler. Reconcile once it has finished, before typing.\n                queueMicrotask(() => bridgeRef.current?.placeCaretAfterLoneMention());\n                requestAnimationFrame(() => bridgeRef.current?.placeCaretAfterLoneMention());\n              }}",
+        "onClick={() => bridgeRef.current?.placeCaretAfterLoneMention()}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Shared Lexical contenteditable"
+    },
+    {
+      "file": "apps/web/src/components/chat/QueuedMessageTray.tsx",
+      "line": 80,
+      "tag": "TextField",
+      "attributes": [
+        "value={editingText}",
+        "onChange={(event) => setEditingText(event.target.value)}",
+        "size=\"small\"",
+        "fullWidth",
+        "autoFocus",
+        "multiline",
+        "maxRows={4}",
+        "inputProps={{ \"aria-label\": `Edit queued message ${message.position ?? \"pending\"}` }}",
+        "onKeyDown={(event) => {\n              if (event.key === \"Escape\") setEditingId(undefined);\n              if (event.key === \"Enter\" && !event.shiftKey && editingText.trim()) {\n                event.preventDefault();\n                run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined));\n              }\n            }}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Queue editing in shared Chat, Agent private Chat and Inbox"
+    },
+    {
+      "file": "apps/web/src/components/decisions/DecisionResponseDialog.tsx",
+      "line": 111,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus",
+        "fullWidth",
+        "multiline",
+        "minRows={3}",
+        "label={prompt.mode === \"text\" ? \"Your answer\" : \"Alternative direction\"}",
+        "disabled={!draft.ready || pending}",
+        "helperText={draft.canAttach ? \"Paste or drop images and files into your answer.\" : undefined}",
+        "onPaste={event => {\n              const files = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);\n              if (!files.length) return;\n              event.preventDefault(); event.stopPropagation();\n              if (canEdit.current && draft.canAttach) draft.addFiles(files, question?.id);\n            }}",
+        "value={text}",
+        "onChange={(event) => setText(event.target.value)}",
+        "inputProps={{ maxLength: 10_000 }}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Single/grouped answers and alternatives in timeline, notification and execution callers"
+    },
+    {
+      "file": "apps/web/src/components/decisions/RuntimeElicitationActions.tsx",
+      "line": 149,
+      "tag": "TextField",
+      "attributes": [
+        "autoFocus",
+        "fullWidth",
+        "multiline",
+        "minRows={2}",
+        "label=\"Tell the Agent what you want instead\"",
+        "value={otherText}",
+        "onChange={(event) => setOtherText(event.target.value)}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Provider form and URL alternative response"
+    },
+    {
+      "file": "apps/web/src/components/decisions/RuntimeElicitationActions.tsx",
+      "line": 228,
+      "tag": "TextField",
+      "attributes": [
+        "key={field.name}",
+        "fullWidth",
+        "size=\"small\"",
+        "label={field.label}",
+        "required={field.required}",
+        "type={field.type === \"number\" || field.type === \"integer\" ? \"number\" : \"text\"}",
+        "value={String(values[field.name] ?? \"\")}",
+        "error={Boolean(fieldErrors[field.name])}",
+        "helperText={fieldErrors[field.name] ?? field.description}",
+        "select={Boolean(field.options?.length)}",
+        "onChange={(event) => {\n            setValues((current) => ({ ...current, [field.name]: event.target.value }));\n            setFieldErrors((current) => {\n              const { [field.name]: _removed, ...rest } = current;\n              return rest;\n            });\n          }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/filePreview/ArtifactsPane.tsx",
+      "line": 87,
+      "tag": "TextField",
+      "attributes": [
+        "size=\"small\"",
+        "value={filter}",
+        "onChange={(event) => setFilter(event.target.value)}",
+        "placeholder=\"Search files and results\"",
+        "inputProps={{ \"aria-label\": \"Search agent files and results\" }}",
+        "InputProps={{ startAdornment: <InputAdornment position=\"start\"><SearchIcon fontSize=\"small\" /></InputAdornment> }}",
+        "sx={{ width: { xs: \"100%\", sm: 280 } }}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/speech/VoiceConversation.tsx",
+      "line": 489,
+      "tag": "TextField",
+      "attributes": [
+        "select",
+        "SelectProps={{ native: true }}",
+        "label=\"Call Agent\"",
+        "value={agentId}",
+        "disabled={recording || inFlight || Boolean(attempt.current)}",
+        "onChange={e => setAgentId(e.target.value)}"
+      ],
+      "classification": "non-chat input",
+      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+    },
+    {
+      "file": "apps/web/src/components/speech/VoiceConversation.tsx",
+      "line": 522,
+      "tag": "TextField",
+      "attributes": [
+        "label=\"Your next turn\"",
+        "InputLabelProps={{shrink:true}}",
+        "multiline",
+        "minRows={2}",
+        "value={text}",
+        "disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked}",
+        "onChange={e => setText(e.target.value)}"
+      ],
+      "classification": "chat input or shared editor",
+      "disposition": "Expanded typed call turn in shared Chat, Agent private Chat, Inbox and standalone routes"
+    }
+  ]
+}
