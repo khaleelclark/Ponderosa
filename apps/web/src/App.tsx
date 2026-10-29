@@ -509,11 +509,11 @@ export default function App({
   });
   const savePreferences = (patch: Partial<typeof preferences>) => {
     void preferenceFeedback.current.track(patch,
-      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, true).catch(() => {});
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, true, preferences).catch(() => {});
   };
   const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
     preferenceFeedback.current.track(patch,
-      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, false);
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, false, preferences);
   useWorkspaceFont(preferences.fontFamily);
 
   useEffect(() => {
