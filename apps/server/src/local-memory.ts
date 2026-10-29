@@ -253,6 +253,16 @@ export class LocalMemoryService{
   const promise=this.perform(operation,parsed,authority);this.calls.add(promise);try{return await promise;}finally{this.calls.delete(promise);}
  }
 
+ /** Host package inventory only. Callers must complete their human import/export admission first. */
+ async exportPackageMemory(chatId:string,agentIds:string[]){
+  const guard=async()=>{this.chat(chatId);for(const id of agentIds){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Package Agent ownership changed');}};
+  await guard();await this.ready();const pending=this.core.database.exportPackageMemory(chatId,agentIds,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+ }
+ async restorePackageMemory(snapshot:unknown,chatId:string,agents:Readonly<Record<string,string>>,operationId:string){
+  const guard=async()=>{this.chat(chatId);for(const id of Object.values(agents)){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Package destination Agent ownership changed');}};
+  await guard();await this.ready();const pending=this.core.database.restorePackageMemory(snapshot,chatId,agents,operationId,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+ }
+
  fence(){this.closed=true;for(const e of this.speech.values())e.invalid=true;}
  async close(){this.fence();await Promise.allSettled([...this.calls]);try{await this.core.close();}finally{if(this.policy.open)this.policy.close();}}
 }

@@ -11,6 +11,11 @@ The regression fixtures use controlled inert providers and disposable canonical 
 Enabled response categories now retain quiet unread metadata even when Chat or Agent alert modes suppress the alert. Projection quiet counts exclude identities already represented by allowed unread alerts. Search counts and read-visible acknowledgements deduplicate canonical Communication IDs. The unread index includes suppressed informational alerts, allowing exact visible reads to clear them before a later mode change. Badge and push selection remain on the existing alert policy path.
 
 Supported API regressions cover muted and attention-only modes at Chat and Agent scope in Core and Branches, restart, product-isolated acknowledgement, folder counts, search counts, repeated IDs, and a reply arriving after a visible snapshot. Existing Core and Branches 30-message default bursts remain part of focused verification. These checks do not establish a full commandment 18 pass: the complete mentions/settings matrix and browser visual qualification remain outstanding.
+## Host memory restoration slice
+
+A bounded host-only Chat memory snapshot/restore API now preserves selected team/private chunks, vectors, deprecated lineage and conflicts with explicit destination identity mapping. Real private Core/Branches service regressions cover reopen/re-export and denied scope. Product package routes are not wired to it, so user exports still omit memory. See [the API contract, verification and remaining integration](phase2-memory-portability.md). No policy/grant/schema migration is added.
+
+The earlier execution-evidence archive has an independently identified P1 known-secret filtering failure. Its narrow correction is owned separately; this branch must not be integrated as though that failure were resolved.
 
 ## Portability remains incomplete
 

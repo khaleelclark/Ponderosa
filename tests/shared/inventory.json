@@ -1324,6 +1324,14 @@
       "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
     },
     {
+      "path": "tests/memory/portability.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, isolated Chroma and pinned local models; no provider account",
+      "origin": "Phase2 bounded host memory snapshot/restoration qualification"
+    },
+    {
       "path": "tests/memory/deletion-lifecycle.test.mjs",
       "feature": "memory",
       "lane": "server",

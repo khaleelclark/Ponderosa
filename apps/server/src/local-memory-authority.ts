@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import {MEMORY_SNAPSHOT_MAX_BYTES,validateMemorySnapshot,type PortableMemorySnapshot,type PortableMemoryRow} from './portable-memory-snapshot.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {MemoryRuntime,ChromaStorage,type MemoryStorage,type Chunk,type Conflict,type Inference} from '@local-memory/mcp-node-private';
 export type SourceStamp={format:1;principal:string;id:string;scope:string;audience:string;ownerChat:string;sourceType:'user_statement'|'ai_inference';provenance:{actor:{kind:'agent'|'user';id:string};runId:string;fenceToken:string;at:string};origin?:SourceStamp['provenance']};
@@ -54,6 +56,63 @@ export class AuthorityStorage implements MemoryStorage{
  async conflicts(scope:string){const f=this.frame();if(!f.scopes.includes(scope))throw denied();const c=await this.collection(scope,true),ids:string[]=[];for(let offset=0;;offset+=500){await this.guard();const p=await c.get({offset,limit:500,include:['metadatas'] as any});await this.guard();for(let i=0;i<p.ids.length;i++){const m:any=p.metadatas[i];try{const logStamp=this.parse(p.ids[i]!,scope,{...m,host_source_authority:m.host_conflict_authority});if(!logStamp||!this.readable(logStamp,f.authority))continue;const affected=JSON.parse(m.chunk_ids_affected??m.chunk_ids);if(Array.isArray(affected)&&affected.length&&affected.every((id:unknown)=>typeof id==='string'&&f.allowed.has(key(scope,id)))&&new Set(affected.map((id:string)=>f.allowed.get(key(scope,id))!.audience)).size===1&&f.allowed.get(key(scope,affected[0]))!.audience===logStamp.audience)ids.push(p.ids[i]!);}catch{}}if(offset+p.ids.length>10000)throw Error('Memory conflict inventory bound exceeded');if(p.ids.length<500)break;}const rows:Conflict[]=[];for(let i=0;i<ids.length;i+=100){await this.guard();const p=await c.get({ids:ids.slice(i,i+100),include:['documents','metadatas','embeddings'] as any});await this.guard();for(let j=0;j<p.ids.length;j++){const m:any=p.metadatas[j];const stamp=this.parse(p.ids[j]!,scope,{...m,host_source_authority:m.host_conflict_authority});let affected:unknown;try{affected=JSON.parse(m.chunk_ids_affected??m.chunk_ids);}catch{throw denied();}if(!ids.slice(i,i+100).includes(p.ids[j]!)||!stamp||!this.readable(stamp,f.authority)||!Array.isArray(affected)||!affected.length||affected.some(id=>typeof id!=='string'||f.allowed.get(key(scope,id))?.audience!==stamp.audience))throw denied();rows.push({...m,id:p.ids[j],scope,reasoning:p.documents[j]??'',chunk_ids:JSON.parse(m.chunk_ids_affected??m.chunk_ids),snapshot_wire_metadata:structuredClone(m),embedding:Array.from(p.embeddings?.[j]??[]) as number[]});}}return rows;}
  async putConflict(row:Conflict){if(this.frame().authority.writeScope!==row.scope||!row.chunk_ids.length||row.chunk_ids.some(id=>!this.frame().allowed.has(key(row.scope,id))))throw denied();await this.guard();const c=await this.collection(row.scope,true);const firstStamp=this.frame().allowed.get(key(row.scope,row.chunk_ids[0]!))!;if(row.chunk_ids.some(id=>this.frame().allowed.get(key(row.scope,id))!.audience!==firstStamp.audience))throw denied();await this.guard();const prior=await c.get({ids:[row.id],include:['metadatas'] as any});await this.guard();if(prior.ids.length){const m:any=prior.metadatas[0],stamp=this.parse(row.id,row.scope,{...m,host_source_authority:m.host_conflict_authority});if(prior.ids.length!==1||prior.ids[0]!==row.id||!stamp||stamp.audience!==firstStamp.audience||!this.readable(stamp,this.frame().authority))throw denied();let affected;try{affected=JSON.parse(m.chunk_ids_affected??m.chunk_ids);}catch{throw denied();}if(!Array.isArray(affected)||!affected.length||affected.some(id=>typeof id!=='string'||this.frame().allowed.get(key(row.scope,id))?.audience!==firstStamp.audience))throw denied();}let vector=row.embedding;if(vector===undefined){await this.guard();const existing=await c.get({ids:[row.id],include:['metadatas'] as any});await this.guard();if(existing.ids.length){const m:any=existing.metadatas[0];let ids:unknown;try{ids=JSON.parse(m.chunk_ids_affected??m.chunk_ids);}catch{throw denied();}if(!Array.isArray(ids)||!ids.length||ids.some(id=>typeof id!=='string'||!this.frame().allowed.has(key(row.scope,id))))throw denied();await this.guard();const p=await c.get({ids:[row.id],include:['embeddings'] as any});await this.guard();vector=Array.from(p.embeddings?.[0]??[]) as number[];}else{await this.guard();vector=await this.inference.embed(row.reasoning);await this.guard();}}if(!Array.isArray(vector)||vector.length!==384||!vector.every(Number.isFinite)||!vector.some(n=>n!==0))throw Error('Conflict requires actual finite nonzero384vector');const {scope,embedding,...metadata}=row;delete (metadata as any).snapshot_wire_metadata;const a=this.frame().authority,first=this.frame().allowed.get(key(row.scope,row.chunk_ids[0]!))!,stamp:SourceStamp={format:1,principal:this.principal,id:row.id,scope:row.scope,ownerChat:first.ownerChat,audience:first.audience,sourceType:a.sourceType,provenance:{actor:a.actor,runId:a.runId,fenceToken:a.fenceToken,at:new Date().toISOString()}};const m={...((row as any).snapshot_wire_metadata??{}),...metadata,source_type:a.sourceType,host_conflict_authority:JSON.stringify(stamp),log_id:row.id,chunk_ids:JSON.stringify(row.chunk_ids),chunk_ids_affected:JSON.stringify(row.chunk_ids),chunks_affected:row.chunk_ids.length};await this.guard();await c.upsert({ids:[row.id],documents:[row.reasoning],embeddings:[vector],metadatas:[m as any]});await this.guard();}
  async removeConflict(id:string,scope:string){if(!(await this.conflicts(scope)).some(c=>c.id===id)||this.frame().authority.writeScope!==scope)throw denied();await this.guard();const c=await this.collection(scope,true);await this.guard();await c.delete({ids:[id]});await this.guard();}
+ /** Trusted host inventory; deliberately separate from Agent read authority. No policy grants are read or changed. */
+ async exportPackageMemory(chatId:string,agentIds:string[],guard:()=>Promise<void>):Promise<PortableMemorySnapshot>{
+  return this.raw.exclusive(async()=>{
+   const scope='chat:'+chatId,audiences=new Set([scope+':team',...agentIds.map(id=>scope+':agent:'+id)]);
+   const snapshot:PortableMemorySnapshot={schema:'ponderosa.chat-memory.v1',signature:this.raw.signature,sourceChatId:chatId,agentIds:[...agentIds],excludedScopes:['global'],chunks:[],conflicts:[]};
+   let bytes=Buffer.byteLength(JSON.stringify(snapshot));
+   for(const log of [false,true]){
+    const c=await checkedCollection(this.raw,scope,log,guard);
+    for(let offset=0;;offset+=100){
+     await guard();const p=await c.get({offset,limit:100,include:['documents','metadatas','embeddings'] as any});await guard();
+     for(let i=0;i<p.ids.length;i++){
+      const metadata:any=p.metadatas[i],stamp=this.parse(p.ids[i]!,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata);
+      if(!stamp)throw Error('Memory snapshot: unclassified or foreign source prevents export');
+      if(!audiences.has(stamp.audience))continue;
+      const clean={...metadata};delete clean.host_source_authority;delete clean.host_conflict_authority;
+      const row:PortableMemoryRow={id:p.ids[i]!,text:p.documents[i] as string,metadata:clean,embedding:this.vector(p.embeddings?.[i]),stamp};
+      bytes+=Buffer.byteLength(JSON.stringify(row))+1;if(bytes>MEMORY_SNAPSHOT_MAX_BYTES)throw Error('Memory snapshot: 16 MiB byte limit exceeded');
+      (log?snapshot.conflicts:snapshot.chunks).push(row);
+     }
+     if(snapshot.chunks.length+snapshot.conflicts.length>10000)throw Error('Memory snapshot: 10000 row limit exceeded');
+     if(offset+p.ids.length>10000)throw Error('Memory snapshot: inventory bound exceeded');
+     if(p.ids.length<100)break;
+    }
+   }
+   return validateMemorySnapshot(snapshot,this.raw.signature);
+  });
+ }
+ /** Import only adds deterministic package-owned IDs; retries never overwrite another source. */
+ async restorePackageMemory(value:unknown,chatId:string,agents:Readonly<Record<string,string>>,operationId:string,guard:()=>Promise<void>){
+  const snapshot=validateMemorySnapshot(value,this.raw.signature),source=structuredClone(snapshot);
+  if(!operationId||operationId.length>128||!chatId||Object.keys(agents).length!==source.agentIds.length||source.agentIds.some(id=>typeof agents[id]!=='string'||!agents[id])||new Set(Object.values(agents)).size!==source.agentIds.length)throw Error('Memory snapshot: exact destination Agent mapping required');
+  const scope='chat:'+chatId;
+  const id=(kind:string,sourceId:string)=>createHash('sha256').update(JSON.stringify([this.principal,chatId,operationId,source.sourceChatId,kind,sourceId])).digest('hex');
+  const prepared=([false,true] as const).map(log=>(log?source.conflicts:source.chunks).map(row=>{
+   const destinationId=id(log?'conflict':'chunk',row.id),privateAgent=source.agentIds.find(a=>row.stamp.audience==='chat:'+source.sourceChatId+':agent:'+a);
+   const metadata={...row.metadata};
+   if(metadata.supersedes)metadata.supersedes=id('chunk',String(metadata.supersedes));
+   if(log){const refs=JSON.parse(String(metadata.chunk_ids_affected??metadata.chunk_ids)).map((ref:string)=>id('chunk',ref));metadata.chunk_ids=JSON.stringify(refs);metadata.chunk_ids_affected=JSON.stringify(refs);metadata.log_id=destinationId;metadata.chunks_affected=refs.length;}
+   // Original source identities remain inert provenance, never destination Run capabilities.
+   metadata.package_source_stamp=metadata.package_source_stamp??JSON.stringify(row.stamp);
+   const stamp:SourceStamp={format:1,principal:this.principal,id:destinationId,scope,ownerChat:chatId,audience:privateAgent?scope+':agent:'+agents[privateAgent]:scope+':team',sourceType:row.stamp.sourceType,provenance:{actor:{kind:'user',id:this.principal},runId:'package-import:'+operationId,fenceToken:'historical',at:row.stamp.provenance.at},origin:row.stamp.origin??row.stamp.provenance};
+   metadata[log?'host_conflict_authority':'host_source_authority']=JSON.stringify(stamp);
+   return {id:destinationId,text:row.text,metadata,embedding:row.embedding.map(Math.fround)};
+  }));
+  return this.raw.exclusive(async()=>{
+   const collections=await Promise.all([false,true].map(log=>checkedCollection(this.raw,scope,log,guard))),pending:Array<{c:typeof collections[number];row:typeof prepared[number][number]}>=[];
+   for(let index=0;index<2;index++)for(const row of prepared[index]!){
+    const c=collections[index]!;await guard();const existing=await c.get({ids:[row.id],include:['documents','metadatas','embeddings'] as any});await guard();
+    if(existing.ids.length){const sorted=(v:any)=>JSON.stringify(Object.entries(v).sort(([a],[b])=>a.localeCompare(b)));if(existing.ids.length!==1||existing.documents[0]!==row.text||sorted(existing.metadatas[0])!==sorted(row.metadata)||JSON.stringify(Array.from(existing.embeddings?.[0]??[]))!==JSON.stringify(row.embedding))throw Error('Memory snapshot: destination ID collision; existing data preserved');}
+    else pending.push({c,row});
+   }
+   const attempted:typeof pending=[];
+   try{for(const item of pending){await guard();attempted.push(item);await item.c.upsert({ids:[item.row.id],documents:[item.row.text],metadatas:[item.row.metadata],embeddings:[item.row.embedding]});await guard();}}
+   catch(error){try{await guard();for(const item of attempted){await guard();await item.c.delete({ids:[item.row.id]});}await guard();}catch(cleanup){throw new AggregateError([error,cleanup],'Memory snapshot installation incomplete; exact package namespace requires retry/cleanup');}throw error;}
+   return {chunkIds:prepared[0]!.map(r=>r.id),conflictIds:prepared[1]!.map(r=>r.id),excludedScopes:source.excludedScopes};
+  });
+ }
  /** Only durable host deletion receipts call this; Agent tools never gain a clear operation. */
  async purge(scope:string,guard:()=>Promise<void>,agentId?:string){
   return this.raw.exclusive(async()=>{
