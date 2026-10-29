@@ -26,3 +26,9 @@ Upgrade separate populated disposable Core and Branches stores from the previous
 Only after integrated fixes and upgrade qualification pass, run the complete controlled core-path suite 20 consecutive times with a fixed source commit, command, environment and manifest. Retain every run's output and skips. Any failure breaks the streak; identify and fix it, then restart. Provider-backed or external checks skipped by the suite remain unverified and cannot be presented as passing.
 
 First-run timing starts with the installer downloaded and a provider already signed in. Use a fresh disposable user environment and the published docs; record each step through the first reply. Missing authorization must be supplied by the operator and cannot be bypassed. Phone/provider-only checks go on the operator handoff checklist without blocking independent source fixes.
+
+## Controlled suite prerequisites
+
+Build every workspace used by the selected lanes, including `@ponderosa/launcher` and `@ponderosa/engine-desktop` for tooling. Tests that launch Chroma require `PONDEROSA_TEST_CHROMA_BIN` and `PONDEROSA_TEST_MEMORY_MODEL_DIR` pointing to the existing pinned local dependencies; they start their own disposable process and collections. Use `TMPDIR=/tmp` for owned fixtures. Run packaged-mode preservation checks with `umask 022`, which is the mode those fixtures assert.
+
+Clear `PONDEROSA_VAPID_PUBLIC_KEY`, `PONDEROSA_VAPID_PRIVATE_KEY` and `PONDEROSA_VAPID_SUBJECT` from the disposable test process: the host-identity lifetime test must generate its own local identity rather than inherit an operator-managed override. Do not read, copy or publish the operator's values. Keep all initial failures and focused corrected reruns in the evidence; a passing focused rerun does not turn an earlier failed whole-suite command into a passing whole-suite result.
