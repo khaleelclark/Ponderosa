@@ -7,6 +7,8 @@ import {
   browserDockIsAvailable,
   clampBrowserDockWidth,
   PREFERRED_BROWSER_DOCK_WIDTH,
+  MIN_BROWSER_DOCK_WIDTH,
+  maximumBrowserDockWidth,
 } from "./browserWindowSizing";
 
 type Mode = "docked" | "floating" | "expanded";
@@ -94,7 +96,7 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
     sx={{ position: "fixed", zIndex: theme => theme.zIndex.drawer + 1 + layer, display: "flex", flexDirection: "column", overflow: "hidden", border: 1, borderColor: "divider", borderRadius: mode === "floating" && !mobile ? 2 : 0,
       ...(full ? { inset: 0 } : mode === "docked" ? { top: 0, right: 0, bottom: 0, width: dockWidth } : { left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height }) }}>
     {children(controls)}
-    {!mobile && mode === "docked" ? <Box role="separator" aria-label="Resize browser panel" aria-orientation="vertical" tabIndex={0}
+    {!mobile && mode === "docked" ? <Box role="separator" aria-label="Resize browser panel" aria-orientation="vertical" aria-valuenow={dockWidth} aria-valuemin={MIN_BROWSER_DOCK_WIDTH} aria-valuemax={maximumBrowserDockWidth(viewportWidth)} aria-valuetext={`${dockWidth} pixels`} tabIndex={0}
       onPointerDown={event => start(event, "dock")}
       onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); setDockWidth(value => clampBrowserDockWidth(value + (event.key === "ArrowLeft" ? 32 : -32), window.innerWidth)); } }}
       sx={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize", touchAction: "none", "&:hover, &:focus-visible": { bgcolor: "primary.main" } }} /> : null}

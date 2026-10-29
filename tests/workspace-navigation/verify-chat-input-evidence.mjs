@@ -1,3 +1,4 @@
+import {normalizeCanonicalText} from '../../packages/core/dist/text-policy.js';
 import assert from 'node:assert/strict';
 import {readFile,writeFile} from 'node:fs/promises';
 import path from 'node:path';
@@ -10,6 +11,26 @@ export async function verifyChatInputEvidence(output){
  const [cases,requests,journals,state]=await Promise.all(['paste-cases.json','requests.json','canonical-journal.json','canonical-state.json'].map(read));
  const equality=[];
  for(const item of cases){
+  if(item.kind.startsWith('workflow-')){
+   const saved=state.workflows[item.executionId],expected=item.expectedValues;
+   const submitted=requests.filter(r=>r.method==='POST'&&r.status>=200&&r.status<300&&(item.kind==='workflow-gate'?r.path===`/api/branch-gates/${item.gateId}/resolve`:r.path===`/api/branch-executions/${item.executionId}/intervene`));
+   assert.equal(submitted.length,1,'One exact workflow endpoint');
+   assert.equal(item.kind==='workflow-gate'?submitted[0].body.output:submitted[0].body.result.output,expected.output);
+   assert.equal(saved.execution.output,expected.output,'Complete persisted workflow output');
+   if(expected.reason){assert.equal(submitted[0].body.reason,expected.reason);assert.ok(state.workflowCheckpoints.some(d=>d.execution_id===item.executionId&&d.evidence.reason===expected.reason&&d.evidence.result.output===expected.output),'Complete persisted intervention reason');}
+   equality.push({...item,status:'pass',canonical:saved.execution.output});continue;
+  }
+  if(['runtime-string','runtime-enum'].includes(item.kind)){
+   const submitted=requests.filter(r=>r.method==='POST'&&r.status>=200&&r.status<300&&r.path===`${item.prefix}/decisions/${item.decisionId}/respond`&&r.body?.content?.reply===item.expected);
+   assert.equal(submitted.length,1,'One exact provider form submission');
+   assert.equal(state.decisions[item.decisionId].agentId,item.agentId,'Exact provider owner');
+   const receipts=state.providerReplies[item.agentId];
+   const receipt=Array.isArray(receipts)?receipts.filter(r=>r.decisionId===item.decisionId):[{reply:receipts}];assert.equal(receipt.length,1,'One exact provider callback');
+   assert.deepEqual(receipt[0].reply,{action:'accept',content:{reply:item.expected}},'Exact controlled provider delivery');
+   assert.equal(Object.hasOwn(state.decisions[item.decisionId].response,'content'),false,'Provider content is not persisted in Decision');
+   equality.push({...item,status:'pass',canonical:receipt[0].reply});continue;
+  }
+
   if(item.kind==='decision-group'){
    const expectedAnswers=item.expectedAnswers.map(answer=>({...answer,attachmentIds:answer.attachmentIds??[]}));
    const submitted=requests.filter(r=>r.method==='POST'&&r.status>=200&&r.status<300&&JSON.stringify(r.body?.answers??[]).includes(item.marker+'-first '));
@@ -31,10 +52,11 @@ export async function verifyChatInputEvidence(output){
    equality.push({...item,status:'pass',submitted:submittedText,canonical:decision.response.text});continue;
   }
   const canonical=journals.filter(r=>r.role==='user'&&contains(r.renderedText));assert.equal(canonical.length,1,'One canonical message '+item.marker);
-  const expectedPrefix=item.kind.startsWith('call')?'':item.kind==='initial'?(submitted[0].body.managerAgentId?'':'#broadcast '):'#'+item.agentHandle+' ';
+  const expectedPrefix=item.kind==='chat'?'#broadcast ':item.kind.startsWith('call')?'':item.kind==='initial'?(submitted[0].body.managerAgentId?'':'#broadcast '):'#'+item.agentHandle+' ';
+  if(item.kind==='chat')assert.equal(canonical[0].channel,'main','Exact shared Broadcast scope');
   if(item.kind==='initial')assert.equal(canonical[0].channel,submitted[0].body.managerAgentId?'collaboration':'main','Exact initial communication scope');
-  assert.equal(canonical[0].renderedText,expectedPrefix+item.expected,'Complete canonical body and routing prefix');
-  assert.deepEqual(canonical[0].deliveryIntents.map(i=>i.targetAgentId),[item.kind==='initial'?submitted[0].responseId:item.agentId],'Exact canonical recipient');
+  assert.equal(canonical[0].renderedText,expectedPrefix+normalizeCanonicalText(item.expected),'Complete canonical body and routing prefix');
+  assert.deepEqual(canonical[0].deliveryIntents.map(i=>i.targetAgentId),[item.kind==='initial'||item.kind==='chat'&&submitted[0].body.initialMessage?submitted[0].responseId:item.agentId],'Exact canonical recipient');
   equality.push({...item,status:'pass',submitted:submittedText,canonical:canonical[0].renderedText});
  }
  assert.ok(cases.length,'At least one actual input case must be present');

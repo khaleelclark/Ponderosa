@@ -1854,6 +1854,14 @@
       "path": "tests/workspace-navigation/chat-input-census.mjs",
       "moduleBase": "apps/web/package.json",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chromium-mobile-input-driver.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Existing installed Chromium and playwright-core;390x844 mobile/touch emulation; real permissioned clipboard, loopback fixture, no account or installation",
+      "origin": "Mobile transport for existing complete Chat input qualification, not a provider inference path"
     }
   ],
   "support": [

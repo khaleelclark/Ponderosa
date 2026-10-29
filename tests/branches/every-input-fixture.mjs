@@ -6,7 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {fixture,until} from '../shared/fixture.mjs';
-const f=await fixture(),requests=[];
+import {AgentStore,BranchStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
+let store;const f=await fixture({storeFactory:dir=>(store=new AgentStore(dir))}),requests=[];
+const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),providerReplies={};
 const branch=f.ok(await f.api('POST','/api/branches',{name:'Paste qualification Branch',idempotencyKey:randomUUID()}));
 const assistant=f.ok(await f.api('POST','/api/branches/assistant',{initialize:true}));
 let api=await f.listen();const web=path.resolve(fileURLToPath(new URL('../../apps/web/dist/',import.meta.url)));
@@ -15,6 +17,8 @@ const held=new Map(),queueSnapshots=new Map();
 const server=createServer(async(req,res)=>{
  try{
   const url=new URL(req.url,'http://localhost');
+  if(url.pathname==='/api/__qualification/workflow-checkpoints'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(store.sqlite.prepare("SELECT execution_id,kind,evidence_json FROM branch_checkpoints WHERE kind='operator_intervention'").all().map(r=>({...r,evidence:JSON.parse(r.evidence_json)}))));return;}
+  if(url.pathname==='/api/__qualification/provider-replies'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(providerReplies));return;}
   if(url.pathname==='/api/__qualification/queue-snapshots'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(Object.fromEntries(queueSnapshots)));return;}
   if(url.pathname==='/api/__qualification/prepare'&&req.method==='POST'){
    for(const [id,prefix] of held){const current=f.ok(await f.api('GET',`${prefix}/agents/${id}/queued-messages`));queueSnapshots.set(id,[...(queueSnapshots.get(id)??[]),...(Array.isArray(current)?current:current.items??current.messages)]);f.sessions.get(id)?.finish();}held.clear();
@@ -26,13 +30,26 @@ const server=createServer(async(req,res)=>{
    }
    let app;if(product==='output')app=f.ok(await f.api('PUT',`/api/branches/output-apps/${a.id}`,{enabled:true})).app;
    if(kind==='initial')f.plans.set(a.id,[{output:false,run:async()=>{}}]);
+   if(kind==='a11y-unpublished'){
+    const owner=branches.create('Unpublished accessibility '+randomUUID(),randomUUID());
+    res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({chat:c,agent:a,prefix,route:`/branches?branch=${owner.id}&tab=workflow`}));return;
+   }
+   if(kind.startsWith('workflow-')){
+    const owner=branches.create('Multiline workflow '+randomUUID(),randomUUID());
+    const script=kind==='workflow-intervention';
+    const deployed=branches.deploy({branchId:owner.id,expectedVersionId:owner.versionId??'',chatId:'',idempotencyKey:randomUUID(),definition:{schema:'ponderosa.branch.v1',name:owner.name,trigger:{kind:'manual'},entry:'reply',steps:[script?{id:'reply',kind:'script',runtime:'node',source:'throw new Error("Controlled fixture never executes")',cwdRef:'root',timeoutMs:5000}:{id:'reply',kind:'human_gate',prompt:'Review exact multiline result',editable:true}],controls:[],edges:[],policy:{maxConcurrentExecutions:10,failure:{action:'stop'}}},bindings:{agents:{},directories:script?{root:f.root}:{}}});
+    const execution=branches.accept(deployed.id,randomUUID(),'Original proposal');branches.advance();
+    if(script){const lease=branches.claimScript('owned-input-fixture');if(!lease||lease.executionId!==execution.id)throw Error('Exact inert fixture lease required');branches.authorizeScript(lease,{pid:2147483647,pgid:2147483647,birthMarker:'controlled-no-process'});branches.recoverScript(lease.attemptId);}
+    const detail=branches.detail(execution.id);
+    res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({chat:c,agent:a,prefix,executionId:execution.id,gateId:detail.gates[0]?.id,route:`/branches?branch=${deployed.id}&tab=executions&execution=${execution.id}`}));return;
+   }
    let decision,execution;let before=f.turns.filter(t=>t.agentId===a.id).length;
    const started=()=>until(()=>f.turns.filter(t=>t.agentId===a.id).length>before&&f.sessions.get(a.id),'current scoped provider turn');
    const send=(text,extra={})=>{before=f.turns.filter(t=>t.agentId===a.id).length;return f.api('POST',`${prefix}/agents/${a.id}/messages`,{text,idempotencyKey:randomUUID(),...extra}).then(f.ok);};
    const settled=()=>until(async()=>{const d=f.ok(await f.api('GET',`${prefix}/agents/${a.id}`));return f.turns.filter(t=>t.agentId===a.id).length>before&&!d.runs.some(r=>['running','preparing'].includes(r.status));},'scoped provider settlement');
    if(kind.startsWith('runtime-')){
     f.plans.set(a.id,[{hold:true}]);await send('Hold for provider alternative');await started();
-    void f.sessions.get(a.id).elicit(kind==='runtime-url-other'?{mode:'url',serverName:'Controlled service',message:'Choose another instruction',url:'https://example.com/controlled-connection',elicitationId:randomUUID()}:{mode:'form',serverName:'Controlled service',message:'Choose another instruction',requestedSchema:{type:'object',properties:{}}}).then(()=>f.sessions.get(a.id).finish());
+    void f.sessions.get(a.id).elicit(kind==='runtime-url-other'?{mode:'url',serverName:'Controlled service',message:'Choose another instruction',url:'https://example.com/controlled-connection',elicitationId:randomUUID()}:{mode:'form',serverName:'Controlled service',message:'Choose another instruction',requestedSchema:{type:'object',properties:kind==='runtime-enum'?{reply:{type:'string',title:'Provider choice',enum:['Allowed '+a.id+' λ😀','Alternative '+a.id]}}:kind==='runtime-string'?{reply:{type:'string',title:'Provider reply'}}:{},...(kind==='runtime-string'?{required:['reply']}:{})}}).then(reply=>{(providerReplies[a.id]??=[]).push({decisionId:decision.id,reply});f.sessions.get(a.id).finish();});
     decision=await until(async()=>f.ok(await f.api('GET',`${prefix}/decisions?agentId=${a.id}`)).find(d=>d.runtimeAction),'provider alternative Decision');
    }
 
@@ -48,7 +65,7 @@ const server=createServer(async(req,res)=>{
    if(kind.startsWith('queue')){
     held.set(a.id,prefix);f.plans.set(a.id,[{hold:true}]);await send('Hold for queued input');await started();if(kind==='queue')await send('Replace this queued draft',{activeRunDelivery:'queue'});else f.ok(await f.api('POST',`${prefix}/conversations/${c.id}/direct-messages`,{text:'Replace this queued draft',idempotencyKey:randomUUID(),recipients:[{agentId:a.id}],activeRunDelivery:'queue'}));
    }
-   const nested=kind.endsWith('-chat')?`/projects/${c.projectId}/chats/${c.id}`:`/projects/${c.projectId}/agents/${a.id}`;const route=execution?`/branches?branch=${branch.id}&tab=executions&execution=${execution.id}`:product==='assistant'?'/assistant':product==='output'?app.url:['inbox','queue-inbox','call-inbox','decision-inbox'].includes(kind)?'/messages':kind==='initial'&&!isBranch?`/create/agent?project=${c.projectId}&chat=${c.id}`:isBranch?`/branches?branch=${branch.id}&tab=chats&chat=${c.id}&workspace=${encodeURIComponent(nested)}`:nested;
+   const nested=(kind==='chat'||kind.endsWith('-chat'))?`/projects/${c.projectId}/chats/${c.id}`:`/projects/${c.projectId}/agents/${a.id}`;const route=execution?`/branches?branch=${branch.id}&tab=executions&execution=${execution.id}`:product==='assistant'?'/assistant':product==='output'?app.url:['inbox','queue-inbox','call-inbox','decision-inbox'].includes(kind)?'/messages':kind==='initial'&&!isBranch?`/create/agent?project=${c.projectId}&chat=${c.id}`:isBranch?`/branches?branch=${branch.id}&tab=chats&chat=${c.id}&workspace=${encodeURIComponent(nested)}`:nested;
    res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({chat:c,agent:a,decision,prefix,route,sourceTitle}));return;
   }
   if(url.pathname.startsWith('/api/')){

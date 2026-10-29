@@ -4,7 +4,7 @@ This inventory follows rendered callers, including conditional fields. It does
 not equate one shared component test with every caller being exercised.
 `chat-input-census.mjs` parses every web TSX input declaration with TypeScript and
 writes `ui-chat-input-census.json`: 135 declarations, 11 chat input/editor
-declarations and 124 explicit exclusions. Main editor wrappers are included;
+declarations, four adjacent human-text declarations and 120 explicit exclusions. Main editor wrappers are included;
 they are not eleven independent text widgets.
 
 Reproduce the source census from the repository root:
@@ -83,10 +83,7 @@ The machine census lists every other declared input and why it is separate:
 settings/instructions, search/filter, navigation and file selectors, workflow
 Run/gate/intervention values, imported JSON and read-only previews. The remote
 browser's desktop/mobile keyboard textareas send input to a website rather than
-a Ponderosa Communication. Structured provider schema fields send values to the
-provider and deliberately do not persist those values as Chat. Their single-line
-string fields are not qualified for multiline retention by this suite; this is
-an explicit untested adjacent surface, not an all-text-input passing claim.
+a Ponderosa Communication. Structured provider schema fields send values to the provider and deliberately do not persist those values as Chat. The mobile follow-on qualifies free-string complete draft, accepted content and exact controlled-provider receipt; enum strings are actual schema-constrained selections. Workflow editable gate output, intervention observed output and reason are qualified separately through their real endpoints and persisted execution/checkpoint values. They remain distinct from Chat Communication.
 
 Representative conditional fields do not qualify every possible combination of
 attachments, retry/offline/reload, oversized text, edge whitespace, runtime
@@ -125,17 +122,26 @@ product/theme rows pass in a separate invocation. It is not one clean combined
 invocation. Exact run provenance and every selected case are recorded in the
 accompanying report and `matrix-result.json` evidence.
 
-Application sources are identical to the frozen rapid-paste candidate
-`f250d60cf0105c0287008f2588bbce26bd6b59fd`. Review/integration and the boundaries
-above remain open; this does not close the broader EVERY-input or #27 release
+The preceding desktop result used application sources identical to the frozen rapid-paste candidate
+`f250d60cf0105c0287008f2588bbce26bd6b59fd`. It is retained historical evidence. The new mobile follow-on uses the integrated `051f5647` base plus the approved test extension and the bounded corrections described in `ui-mobile-adjacent-qualification.md`. Review/integration and the boundaries above remain open; this does not close the broader EVERY-input or #27 release
 requirements on the final integrated candidate.
 
 
 ## Current integration adaptation
 
 The filename census now classifies `InboxView.tsx` after the integrated rename.
-Regeneration retains 135 declarations: 11 Chat/editor declarations and 124
+Regeneration retains 135 declarations: 11 Chat/editor declarations, four adjacent declarations and 120
 exclusions. Each classified declaration was inspected; remaining changed census
 entries reflect current source line numbers/attributes and renamed Inbox paths.
 Frozen desktop corpus results above remain predecessor evidence; integrated
 qualification receipts are reported separately. No mobile proof is inferred.
+
+## Emulated-mobile and adjacent human-text follow-on
+
+`QUALIFICATION_DRIVER=chromium-mobile QUALIFICATION_VIEWPORT=mobile` runs the same actual callers at 390×844 CSS pixels, DPR3, `isMobile` and `hasTouch`, through the installed Chromium and real permissioned Clipboard API followed by trusted keyboard paste. This is emulation, not physical Android, iOS or touch-menu/IME qualification. It installs nothing. The maintained bridge implements only the WebDriver commands used by this harness and fails on any unsupported command.
+
+Chromium delivers raw CRLF to the listener. Main Lexical drafts and accepted requests retain it exactly, then the canonical Communication store applies the explicit repository LF/NFC policy. Native textarea controls normalize line breaks before their input value. The oracle checks each stage separately; it never strips routing prefixes, trims bodies or normalizes a submitted body to conceal loss. LF and CRLF drafts are separately checked; conditional owners submit their final CRLF delivery.
+
+Free-string provider fields now render multiline after an actual failing paste reproduction. Enum/number/boolean controls retain their schema-driven controls. Provider content is checked at the accepted endpoint and the controlled provider callback; the Decision intentionally omits the content from persistence. Gate/intervention values use real endpoint requests plus canonical execution output and exact operator-intervention checkpoints. Fixture setup for uncertain Script reconciliation uses BranchStore transitions with an inert nonexistent process identity; it does not run a Script or qualify process recovery.
+
+The follow-on report lists exact executed cells, failures, source snapshots and remaining gates. BrowserPageStrip's additional New-tab-in-tablist defect is explicitly retained; numeric separator proof is not a zero-accessibility-finding claim. No full performance, panel, screen-reader or release verdict.

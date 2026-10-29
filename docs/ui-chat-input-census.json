@@ -1153,8 +1153,8 @@
         "value={text}",
         "onChange={e=>{setText(e.target.value);setKey(createClientId())}}"
       ],
-      "classification": "non-chat input",
-      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+      "classification": "adjacent human text",
+      "disposition": "Qualified separately: free provider string or workflow gate/intervention value; complete endpoint and provider/canonical-value evidence, not Chat Communication"
     },
     {
       "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
@@ -1256,8 +1256,8 @@
         "value={result}",
         "onChange={e=>{if(interventionLocked)return;setResult(e.target.value);setCommandKey(createClientId())}}"
       ],
-      "classification": "non-chat input",
-      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+      "classification": "adjacent human text",
+      "disposition": "Qualified separately: free provider string or workflow gate/intervention value; complete endpoint and provider/canonical-value evidence, not Chat Communication"
     },
     {
       "file": "apps/web/src/components/branches/ExecutionPanel.tsx",
@@ -1271,8 +1271,8 @@
         "value={reason}",
         "onChange={e=>{if(interventionLocked)return;setReason(e.target.value);setCommandKey(createClientId())}}"
       ],
-      "classification": "non-chat input",
-      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+      "classification": "adjacent human text",
+      "disposition": "Qualified separately: free provider string or workflow gate/intervention value; complete endpoint and provider/canonical-value evidence, not Chat Communication"
     },
     {
       "file": "apps/web/src/components/branches/NodeEditor.tsx",
@@ -2102,6 +2102,8 @@
         "size=\"small\"",
         "label={field.label}",
         "required={field.required}",
+        "multiline={field.type === \"string\" && !field.options?.length}",
+        "minRows={field.type === \"string\" && !field.options?.length ? 2 : undefined}",
         "type={field.type === \"number\" || field.type === \"integer\" ? \"number\" : \"text\"}",
         "value={String(values[field.name] ?? \"\")}",
         "error={Boolean(fieldErrors[field.name])}",
@@ -2109,8 +2111,8 @@
         "select={Boolean(field.options?.length)}",
         "onChange={(event) => {\n            setValues((current) => ({ ...current, [field.name]: event.target.value }));\n            setFieldErrors((current) => {\n              const { [field.name]: _removed, ...rest } = current;\n              return rest;\n            });\n          }}"
       ],
-      "classification": "non-chat input",
-      "disposition": "Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition"
+      "classification": "adjacent human text",
+      "disposition": "Qualified separately: free provider string or workflow gate/intervention value; complete endpoint and provider/canonical-value evidence, not Chat Communication"
     },
     {
       "file": "apps/web/src/components/filePreview/ArtifactsPane.tsx",
