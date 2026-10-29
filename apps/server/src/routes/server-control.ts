@@ -183,13 +183,53 @@ app.get<{ Querystring: { stream?: string } }>(
   },
 );
 
-// Existing launchers may still open their bootstrap URL; it now only navigates.
-app.post("/api/launcher/bootstrap", async () => ({ token: "", expiresInMs: 0 }));
-app.post("/api/launcher/session-exchange", async (_request, reply) => reply.code(204).send());
-app.get("/__ponderosa_bootstrap", async (request, reply) => {
-  const next = new URL(request.url, "http://localhost").searchParams.get("next");
-  return reply.redirect(next === "/branches" ? "/branches" : "/");
-});
+// Refresh an installed worker before opening the app; no browser credentials.
+app.get("/__ponderosa_bootstrap", async (_request, reply) => reply
+  .type("text/html; charset=utf-8")
+  .header("Cache-Control", "no-store")
+  .send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Opening Ponderosa…</title></head><body><main role="status">Opening Ponderosa…</main><script src="/__ponderosa_bootstrap.js"></script></body></html>`));
+app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
+  .type("text/javascript; charset=utf-8")
+  .header("Cache-Control", "no-store")
+  .send(`(async()=>{
+const destination=new URLSearchParams(location.search).get("next")==="/branches"?"/branches":"/";
+try{
+  if("serviceWorker" in navigator){
+    try{
+      const registration=await navigator.serviceWorker.getRegistration("/");
+      if(registration){
+        await registration.update();
+        let candidate=registration.waiting||registration.installing;
+        if(candidate&&candidate.state!=="installed"){
+          await Promise.race([
+            new Promise(resolve=>{
+              const changed=()=>{
+                if(candidate.state==="installed"||candidate.state==="redundant"){
+                  candidate.removeEventListener("statechange",changed);
+                  resolve();
+                }
+              };
+              candidate.addEventListener("statechange",changed);
+              changed();
+            }),
+            new Promise(resolve=>setTimeout(resolve,5000))
+          ]);
+        }
+        candidate=registration.waiting;
+        if(candidate){
+          const controlled=Promise.race([
+            new Promise(resolve=>navigator.serviceWorker.addEventListener("controllerchange",resolve,{once:true})),
+            new Promise(resolve=>setTimeout(resolve,5000))
+          ]);
+          candidate.postMessage({type:"SKIP_WAITING"});
+          await controlled;
+        }
+      }
+    }catch{}
+  }
+}catch{}
+location.replace(destination);
+})();`));
 
 let shutdownQueued = false;
 const beginShutdown = (reply: FastifyReply, requestGeneration: unknown, requestTime: unknown) => {

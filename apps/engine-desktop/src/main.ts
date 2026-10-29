@@ -270,7 +270,7 @@ async function runLauncher(command: "stop"): Promise<void> {
 async function openPonderosa(destination: "/" | "/branches" = "/"): Promise<void> {
   const running = await currentStatus();
   if (!running) throw new Error("Ponderosa is not running.");
-  const url = `http://${running.state.host}:${running.state.port}${destination}`;
+  const url = `http://${running.state.host}:${running.state.port}/__ponderosa_bootstrap?next=${encodeURIComponent(destination)}`;
   await shell.openExternal(url);
 }
 

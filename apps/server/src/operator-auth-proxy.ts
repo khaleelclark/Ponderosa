@@ -22,7 +22,7 @@ const hopByHop = new Set([
 ]);
 
 function forwardedHeaders(headers: IncomingHttpHeaders, publicHost: string): IncomingHttpHeaders {
-  const removed = new Set([...hopByHop, "authorization", OPERATOR_IDENTITY_HEADER, "tailscale-user-login"]);
+  const removed = new Set([...hopByHop, OPERATOR_IDENTITY_HEADER, "tailscale-user-login"]);
   const connection = headers.connection;
   if (typeof connection === "string") {
     for (const name of connection.split(",")) removed.add(name.trim().toLowerCase());

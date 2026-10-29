@@ -40,12 +40,13 @@ for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
   const root = await mkdtemp(path.join(tmpdir(), 'pqs-')), socketPath = path.join(root, 's');
   const headers = { host: 'qualification.test', [identityHeader]: identity };
   const sockets = new Set();
-  let observed, child, exited, client, response, passed = false, stderr = '', backendRequests = 0;
+  let observed, child, exited, client, response, passed = false, stderr = '', backendRequests = 0, lastAuthorization;
   const received = new Promise(resolve => { observed = resolve; });
   const backend = createServer((incoming, outgoing) => {
     backendRequests++;
     incoming.on('error', () => {});
-    assert.equal(incoming.headers.authorization, undefined);
+    assert.notEqual(incoming.headers.authorization, `Bearer ${token}`);
+    lastAuthorization=incoming.headers.authorization;
     assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], undefined);
     assert.equal(incoming.headers['tailscale-user-login'], undefined);
     assert.equal(incoming.headers.host, 'qualification.test');
@@ -60,7 +61,8 @@ for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
   });
   backend.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   backend.on('upgrade', (incoming, socket) => {
-    assert.equal(incoming.headers.authorization, undefined);
+    assert.notEqual(incoming.headers.authorization, `Bearer ${token}`);
+    lastAuthorization=incoming.headers.authorization;
     assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], undefined);
     assert.equal(incoming.headers['tailscale-user-login'], undefined);
     socket.resume();
@@ -101,6 +103,7 @@ for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
       const result = await fetch({ authorization: 'Bearer untrusted-client-token', [OPERATOR_IDENTITY_HEADER]: 'forged@client.test', connection: 'x-remove-me', 'x-remove-me': 'private-hop' });
       assert.deepEqual(result, { status: 200, body: 'exact completed response: café 東京' });
       assert.equal(backendRequests, 3);
+      assert.equal(lastAuthorization,'Bearer untrusted-client-token','Scoped runtime Authorization is forwarded without an injected operator credential');
     } else if (kind.includes('upgrade') || kind === 'incomplete request headers') {
       client = createConnection({ path: socketPath, allowHalfOpen: kind === 'rejected upgrade' });
       client.on('error', () => {});

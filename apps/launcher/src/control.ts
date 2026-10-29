@@ -684,7 +684,7 @@ export async function openPonderosaBrowser(
   state: LauncherState,
   platform: PlatformAdapter,
 ): Promise<void> {
-  await platform.openBrowser(baseUrl(state));
+  await platform.openBrowser(`${baseUrl(state)}/__ponderosa_bootstrap`);
 }
 
 export async function startPonderosa(input: {
