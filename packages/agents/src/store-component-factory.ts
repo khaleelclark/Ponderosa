@@ -193,7 +193,7 @@ export function createAgentStoreComponents(
     db,
     ports.listAgents,
     ports.getConversationMessages,
-    projectId => chatFeed.refreshAllChatFeedProject(projectId),
+    projectId => chatFeed.refreshInboxFeedProject(projectId),
     (projectId, conversationId, visible) =>
       setCompactionHistoryConversationVisibility(client, projectId, conversationId, visible),
     progress,
@@ -292,7 +292,7 @@ export function createAgentStoreComponents(
     ports.getAgent,
     ports.listAgents,
     ports.authorizeAgentManagementPlan,
-    projectId => chatFeed.refreshAllChatFeedProject(projectId),
+    projectId => chatFeed.refreshInboxFeedProject(projectId),
     agentId => eventProjection.forgetAgent(agentId),
     projectId => ({ events: communicationJournal.readCommunicationEvents(projectId), projections: ports.projectionIndex(projectId).projections }),
     (projectId, agentId, sourceDirectory) => artifactCatalog.retainDeletedAgentArtifactBytes(projectId, agentId, sourceDirectory),

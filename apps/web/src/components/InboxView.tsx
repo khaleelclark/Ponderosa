@@ -15,8 +15,8 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
   AgentDto,
   AgentMentionBindingDto,
-  AllChatDecisionEventDto,
-  AllChatItemDto,
+  InboxDecisionEventDto,
+  InboxItemDto,
   AssetDto,
   EngineCommand,
   EngineDto,
@@ -36,7 +36,7 @@ import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
-  useAllChat,
+  useInbox,
   useAgentHealth,
   useAgents,
   useConversations,
@@ -117,7 +117,7 @@ import {
 } from "./idempotentAttempt";
 import { recipientUploadControls } from "./recipientUploadControls";
 
-interface AllChatSubmissionPrepared {
+interface InboxSubmissionPrepared {
   projectId: string;
   body: string;
   files: File[];
@@ -128,31 +128,31 @@ interface AllChatSubmissionPrepared {
   recipientTitles: Map<string, string>;
   existingAgentTitles: string[];
   conversationId?: string;
-  runtime: AllChatRuntimePayload;
+  runtime: InboxRuntimePayload;
   title?: string;
   uploads?: RecipientUploads<Pick<AssetDto, "id">>;
 }
 import {
-  ALL_CHAT_REPLY_TARGET_KEY,
-  ALL_CHAT_SOURCE_KEY,
-  allChatDeliveryConfirmation,
-  allChatComposerConversationId,
-  allChatSourceIntentKey,
-  authoritativeAllChatReplyTarget,
-  busyAllChatMentionHandles,
-  allChatRuntimePayloadSnapshot,
-  allChatRuntimeSelectionReady,
-  allChatSourceConversationId,
-  allChatSourceIdentity,
-  eligibleAllChatTargets,
-  parseAllChatSourceIdentity,
-  reduceAllChatSubmissionIntent,
-  type AllChatReplyTarget,
-  type AllChatRuntimePayload,
-  type AllChatSourceIdentity,
-} from "./allChatRouting";
+  INBOX_REPLY_TARGET_KEY,
+  INBOX_SOURCE_KEY,
+  inboxDeliveryConfirmation,
+  inboxComposerConversationId,
+  inboxSourceIntentKey,
+  authoritativeInboxReplyTarget,
+  busyInboxMentionHandles,
+  inboxRuntimePayloadSnapshot,
+  inboxRuntimeSelectionReady,
+  inboxSourceConversationId,
+  inboxSourceIdentity,
+  eligibleInboxTargets,
+  parseInboxSourceIdentity,
+  reduceInboxSubmissionIntent,
+  type InboxReplyTarget,
+  type InboxRuntimePayload,
+  type InboxSourceIdentity,
+} from "./inboxRouting";
 
-function allChatSourceRoute(item: AllChatItemDto): Route {
+function inboxSourceRoute(item: InboxItemDto): Route {
   if (item.source.kind === "agent") {
     return {
       kind: "agent",
@@ -172,9 +172,9 @@ function allChatSourceRoute(item: AllChatItemDto): Route {
   };
 }
 
-function mergeAllChatItems(
-  ...groups: AllChatItemDto[][]
-): AllChatItemDto[] {
+function mergeInboxItems(
+  ...groups: InboxItemDto[][]
+): InboxItemDto[] {
   return uniqueBy(
     groups.flat(),
     item => item.communicationEventId,
@@ -184,16 +184,16 @@ function mergeAllChatItems(
   );
 }
 
-type AllMessagesTimelineEntry =
-  | { kind: "message"; id: string; at: string; item: AllChatItemDto }
-  | { kind: "decision"; id: string; at: string; item: AllChatDecisionEventDto }
-  | { kind: "decision-response"; id: string; at: string; item: AllChatDecisionEventDto; choice: string };
+type InboxTimelineEntry =
+  | { kind: "message"; id: string; at: string; item: InboxItemDto }
+  | { kind: "decision"; id: string; at: string; item: InboxDecisionEventDto }
+  | { kind: "decision-response"; id: string; at: string; item: InboxDecisionEventDto; choice: string };
 
-function sourceLabel(item: AllChatItemDto): string {
+function sourceLabel(item: InboxItemDto): string {
   return item.source.title;
 }
 
-function allChatSourceAccessibleName(item: AllChatItemDto): string {
+function inboxSourceAccessibleName(item: InboxItemDto): string {
   const normalized = item.text.replace(/\s+/gu, " ").trim();
   const excerpt =
     normalized.length > 80
@@ -202,14 +202,14 @@ function allChatSourceAccessibleName(item: AllChatItemDto): string {
   return `Use ${sourceLabel(item)} as the source Chat. Message from ${item.author.label}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
 
-export function AllChatView({
+export function InboxView({
   onNavigate,
   notifications = [],
 }: {
   onNavigate(route: Route): void;
   notifications?: WorkspaceNotificationDto[];
 }): JSX.Element {
-  const query = useAllChat();
+  const query = useInbox();
   const workspacePreferences = useWorkspacePreferences();
   const enginesQuery = useEngines();
   const projectsQuery = useProjects();
@@ -218,20 +218,20 @@ export function AllChatView({
     queryClient,
   );
   const [older, setOlder] = useState<{
-    items: AllChatItemDto[];
-    decisions: AllChatDecisionEventDto[];
+    items: InboxItemDto[];
+    decisions: InboxDecisionEventDto[];
     cursor?: string;
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderError, setOlderError] = useState<string>();
   const [selectedId, setSelectedId] = useState<string>();
-  const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget>();
+  const [replyTarget, setReplyTarget] = useState<InboxReplyTarget>();
   const [composerSource, setComposerSource] = useState<
-    AllChatSourceIdentity | undefined
-  >(() => parseAllChatSourceIdentity(readChatState(ALL_CHAT_SOURCE_KEY)));
+    InboxSourceIdentity | undefined
+  >(() => parseInboxSourceIdentity(readChatState(INBOX_SOURCE_KEY)));
   const [submissionIntent, dispatchSubmissionIntent] = useReducer(
-    reduceAllChatSubmissionIntent,
+    reduceInboxSubmissionIntent,
     {
       epoch: 0,
       ...(composerSource
@@ -248,10 +248,10 @@ export function AllChatView({
   submissionIntentRef.current = submissionIntent;
   const replyTargetRef = useRef(replyTarget);
   replyTargetRef.current = replyTarget;
-  const sendAttempt = useRef<IdempotentAttempt<AllChatSubmissionPrepared>>();
-  const sendAttempts = useRef(new Map<string, IdempotentAttempt<AllChatSubmissionPrepared>>());
+  const sendAttempt = useRef<IdempotentAttempt<InboxSubmissionPrepared>>();
+  const sendAttempts = useRef(new Map<string, IdempotentAttempt<InboxSubmissionPrepared>>());
   const abandonedSendAttempts = useRef<
-    IdempotentAttempt<AllChatSubmissionPrepared>[]
+    IdempotentAttempt<InboxSubmissionPrepared>[]
   >([]);
   const [runtimeEngine, setRuntimeEngine] = useState("");
   const [model, setModel] = useState("");
@@ -291,7 +291,7 @@ export function AllChatView({
     [projectsQuery.data],
   );
   const retainedItems = useMemo(
-    () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? [])
+    () => mergeInboxItems(older?.items ?? [], query.data?.items ?? [])
       .filter(item => !availableProjectIds || availableProjectIds.has(item.project.id)),
     [availableProjectIds, older?.items, query.data?.items],
   );
@@ -315,22 +315,22 @@ export function AllChatView({
     selected?.project.id ?? replyTarget?.projectId ?? composerSource?.projectId;
   const projectAgentsQuery = useAgents(activeProjectId);
   const agentHealthQuery = useAgentHealth(activeProjectId);
-  const selectedSourceConversationId = allChatSourceConversationId(
+  const selectedSourceConversationId = inboxSourceConversationId(
     selected?.source,
     projectAgentsQuery.data ?? [],
   );
-  const composerConversationId = allChatComposerConversationId(
+  const composerConversationId = inboxComposerConversationId(
     selectedSourceConversationId,
     replyTarget?.conversationId,
     composerSource,
   );
-  const activeReplyTarget = authoritativeAllChatReplyTarget(
+  const activeReplyTarget = authoritativeInboxReplyTarget(
     replyTarget,
     selected?.project.id ?? activeProjectId,
     composerConversationId,
   );
   const allProjectAgentsQuery = useQuery({
-    queryKey: queryKeys.agents.allChat,
+    queryKey: queryKeys.agents.inbox,
     queryFn: async () => {
       const byId = new Map<string, WorkspaceAgentDirectoryItemDto>();
       let cursor: string | undefined;
@@ -352,7 +352,7 @@ export function AllChatView({
     staleTime: 30_000,
   });
   const composerTargets = useMemo(() => {
-    const byId = new Map<string, AllChatReplyTarget>();
+    const byId = new Map<string, InboxReplyTarget>();
     for (const item of items) {
       if (!item.directMessageAgent || item.project.id !== activeProjectId) continue;
       const agent = projectAgentsQuery.data?.find(candidate =>
@@ -384,11 +384,11 @@ export function AllChatView({
         });
       }
     }
-    const eligibleTargets = eligibleAllChatTargets(
+    const eligibleTargets = eligibleInboxTargets(
       byId.values(),
       composerConversationId,
     );
-    const groups = new Map<string, Array<{ handle: string; target: AllChatReplyTarget }>>();
+    const groups = new Map<string, Array<{ handle: string; target: InboxReplyTarget }>>();
     for (const target of eligibleTargets) {
       const handle = target.handle;
       const normalized = handle.toLocaleLowerCase();
@@ -397,7 +397,7 @@ export function AllChatView({
       group.push({ handle, target });
       groups.set(normalized, group);
     }
-    const targetByHandle = new Map<string, AllChatReplyTarget>();
+    const targetByHandle = new Map<string, InboxReplyTarget>();
     for (const [handle, group] of groups) {
       if (group.length === 1) targetByHandle.set(handle, group[0]!.target);
     }
@@ -432,19 +432,19 @@ export function AllChatView({
     [agentHealthQuery.data?.agents],
   );
   const busyMentionHandles = useMemo(
-    () => busyAllChatMentionHandles(
+    () => busyInboxMentionHandles(
       composerTargets.targetByHandle.values(),
       agentHealthQuery.data?.agents ?? [],
     ),
     [agentHealthQuery.data?.agents, composerTargets.targetByHandle],
   );
-  const allChatAgentTitle = (agentId: string | undefined) =>
+  const inboxAgentTitle = (agentId: string | undefined) =>
     projectAgentsQuery.data?.find(agent => agent.id === agentId)?.title ??
     [...composerTargets.targetByHandle.values()]
       .find(agent => agent.id === agentId)?.title ??
     "Agent";
   const invalidateOperation = () => {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll });
     if (activeProjectId) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.health(activeProjectId),
@@ -469,7 +469,7 @@ export function AllChatView({
     activeScopeId: composerConversationId,
     healthByAgentId,
     receiptSources: items,
-    agentTitle: allChatAgentTitle,
+    agentTitle: inboxAgentTitle,
     invalidate: invalidateOperation,
   });
   const composerScopeRef = useRef(composerConversationId);
@@ -493,15 +493,15 @@ export function AllChatView({
     ).filter(item => !availableProjectIds || availableProjectIds.has(item.project.id)),
     [availableProjectIds, older?.decisions, query.data?.decisions],
   );
-  const timeline = useMemo<AllMessagesTimelineEntry[]>(() => {
-    const entries: AllMessagesTimelineEntry[] = [
+  const timeline = useMemo<InboxTimelineEntry[]>(() => {
+    const entries: InboxTimelineEntry[] = [
       ...items.map((item) => ({
         kind: "message" as const,
         id: `message:${item.communicationEventId}`,
         at: item.createdAt,
         item,
       })),
-      ...decisionEvents.flatMap((item): AllMessagesTimelineEntry[] => {
+      ...decisionEvents.flatMap((item): InboxTimelineEntry[] => {
         if (item.kind === "decision") return [{ kind: "decision", id: item.id, at: item.createdAt, item }];
         const choice = decisionChoice(item.decision);
         return choice ? [{ kind: "decision-response", id: item.id, at: item.createdAt, item, choice }] : [];
@@ -541,11 +541,11 @@ export function AllChatView({
   }, [projectAgentsQuery.data]);
   useEffect(() => {
     // A restored draft is not permission to reply from the global feed.
-    writeChatState(ALL_CHAT_REPLY_TARGET_KEY, "");
+    writeChatState(INBOX_REPLY_TARGET_KEY, "");
   }, []);
   useEffect(() => {
     if (!selected) return;
-    const identity = allChatSourceIdentity(
+    const identity = inboxSourceIdentity(
       selected.project.id,
       selected.source,
       projectAgentsQuery.data ?? [],
@@ -575,7 +575,7 @@ export function AllChatView({
   }, [activeProjectId, activeReplyTarget, composerConversationId, replyTarget, selected]);
   useEffect(() => {
     writeChatState(
-      ALL_CHAT_SOURCE_KEY,
+      INBOX_SOURCE_KEY,
       composerSource ? JSON.stringify(composerSource) : "",
     );
   }, [composerSource]);
@@ -583,7 +583,7 @@ export function AllChatView({
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
   );
-  const runtimeSelectionReady = allChatRuntimeSelectionReady(
+  const runtimeSelectionReady = inboxRuntimeSelectionReady(
     selectedAgentId,
     runtimeAgentId,
   );
@@ -813,7 +813,7 @@ export function AllChatView({
             }
           : {
               activeRunDelivery,
-              ...allChatRuntimePayloadSnapshot({
+              ...inboxRuntimePayloadSnapshot({
                 newAgentRequested,
                 recipientCount: currentRecipientIds.length,
                 selectedEngineId,
@@ -852,7 +852,7 @@ export function AllChatView({
           previous,
           fingerprint,
           () => pendingSubmission?.idempotencyKey ?? createClientId(),
-          (): AllChatSubmissionPrepared => ({
+          (): InboxSubmissionPrepared => ({
             projectId: submissionProjectId,
             body,
             files,
@@ -1124,7 +1124,7 @@ export function AllChatView({
       const sameTarget = replyTargetRef.current?.id === result.submissionTargetId &&
         submissionIntentRef.current.sourceKey === result.submissionSourceKey;
       if (sameTarget) setCommandResult(undefined);
-      const confirmation = sameTarget ? allChatDeliveryConfirmation(result) : undefined;
+      const confirmation = sameTarget ? inboxDeliveryConfirmation(result) : undefined;
       if (confirmation) {
         directSendConfirmationSequence.current += 1;
         setDirectSendConfirmation({
@@ -1134,7 +1134,7 @@ export function AllChatView({
       } else if (sameTarget) {
         setDirectSendConfirmation(undefined);
       }
-      await queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll });
       for (const agentId of result.recipientIds) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.agents.detailPrefix(agentId),
@@ -1163,15 +1163,15 @@ export function AllChatView({
     if (!sendAttempt.current) return;
     dispatchSubmissionIntent({ kind: "draft-mutated" });
   }, []);
-  const selectItem = (item: AllChatItemDto, clearRecipient = false) => {
-    const sourceIdentity = allChatSourceIdentity(
+  const selectItem = (item: InboxItemDto, clearRecipient = false) => {
+    const sourceIdentity = inboxSourceIdentity(
       item.project.id,
       item.source,
       projectAgentsQuery.data ?? [],
     );
     dispatchSubmissionIntent({
       kind: "source-selected",
-      sourceKey: allChatSourceIntentKey(
+      sourceKey: inboxSourceIntentKey(
         item.project.id,
         item.source,
         projectAgentsQuery.data ?? [],
@@ -1225,7 +1225,7 @@ export function AllChatView({
     setComposerSource({ projectId: target.projectId, conversationId: target.conversationId! });
     setReplyTarget(target);
   }, [composerTargets.targetByHandle, replyTarget?.id]);
-  const mentionItem = (item: AllChatItemDto) => {
+  const mentionItem = (item: InboxItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
     dispatchSubmissionIntent({ kind: "recipient-selected" });
@@ -1240,7 +1240,7 @@ export function AllChatView({
       conversationId:
         projectAgentsQuery.data?.find(candidate =>
           candidate.id === item.directMessageAgent?.id)?.conversationId ??
-        allChatSourceConversationId(
+        inboxSourceConversationId(
           item.source,
           projectAgentsQuery.data ?? [],
         ),
@@ -1257,13 +1257,13 @@ export function AllChatView({
     setLoadingOlder(true);
     try {
       const page = await loadRetainedData(
-        () => api.getAllChat(50, history.cursor),
+        () => api.getInbox(50, history.cursor),
         setOlderError,
         "Older messages could not be loaded.",
       );
       if (!page) return;
       setOlder(current => ({
-        items: mergeAllChatItems(
+        items: mergeInboxItems(
           page.items,
           current?.items ?? [],
           query.data?.items ?? [],
@@ -1488,7 +1488,7 @@ export function AllChatView({
                       visible,
                     ),
                   onSelect: () => selectItem(item, true),
-                  selectLabel: allChatSourceAccessibleName(item),
+                  selectLabel: inboxSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
                       collaborationRecipients={item.communicationIntent === "collaboration" ? item.collaborationRecipients ?? [] : undefined}
@@ -1541,7 +1541,7 @@ export function AllChatView({
                       <ButtonBase
                         onClick={event => {
                           event.stopPropagation();
-                          onNavigate(allChatSourceRoute(item));
+                          onNavigate(inboxSourceRoute(item));
                         }}
                         sx={{
                           borderRadius: 0.75,
@@ -1564,7 +1564,7 @@ export function AllChatView({
                           item.directMessageAgents?.find(agent => agent.id === agentId)?.title ??
                           (item.directMessageAgent?.id === agentId
                             ? item.directMessageAgent.title
-                            : allChatAgentTitle(agentId))
+                            : inboxAgentTitle(agentId))
                         }
                         compact
                       />
@@ -1589,7 +1589,7 @@ export function AllChatView({
                         </IconButton>
                       </Tooltip>
                       <MessageRequestAction projectId={item.project.id} conversationId={item.source.conversationId}
-                        recipients={item.collaborationRecipients} receipts={item.deliveryReceipts} requests={item.coordinationRequests} agentTitle={allChatAgentTitle} />
+                        recipients={item.collaborationRecipients} receipts={item.deliveryReceipts} requests={item.coordinationRequests} agentTitle={inboxAgentTitle} />
                       {item.author.kind === "agent" ? (
                         <ReadAloudControls
                           text={resolveMessageMentionText(
@@ -1712,7 +1712,7 @@ export function AllChatView({
           messages={queuedMessages.query.data ?? []}
           scope={composerConversationId}
           attachmentNamesForMessage={queued => items.find(item => item.messageId === queued.messageId || item.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name)}
-          agentNameForId={agentId => allChatAgentTitle(agentId)}
+          agentNameForId={agentId => inboxAgentTitle(agentId)}
           busy={
             queuedMessages.cancel.isPending ||
             queuedMessages.edit.isPending ||

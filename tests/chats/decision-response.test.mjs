@@ -135,7 +135,7 @@ test('explicit approval errors and validation failures keep their existing serve
 test('confirmation updates exact timeline/notice records without changing unrelated decisions or counts twice', async t => {
   const f = setup(t, async () => Response.json(answered));
   const other = { ...pending, id: 'other' }, events = [{ id: 'event-one', decision: pending }, { id: 'event-other', decision: other }];
-  const agentKey = [...queryKeys.agents.detailAll, pending.agentId], chatKey = [...queryKeys.conversations.detailAll, pending.conversationId], allKey = [...queryKeys.allChatAll, 'page'];
+  const agentKey = [...queryKeys.agents.detailAll, pending.agentId], chatKey = [...queryKeys.conversations.detailAll, pending.conversationId], allKey = [...queryKeys.inboxAll, 'page'];
   for (const key of [agentKey, chatKey]) f.client.setQueryData(key, { marker: 'retain', decisionEvents: events });
   f.client.setQueryData(allKey, { decisions: events, items: ['unchanged'] });
   f.client.setQueryData(queryKeys.notifications.all, { items: [{ id: 'notice-one', kind: 'decision', status: 'open', decision: pending }, { id: 'notice-other', kind: 'decision', status: 'open', decision: other }], openActionCount: 2, unacknowledgedActionCount: 2, unreadUpdateCount: 4 });

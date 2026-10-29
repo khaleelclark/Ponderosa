@@ -46,8 +46,9 @@ for future role-bearing portable workflows is not implemented in this slice.
 
 The existing cross-Ponderosa message UI is labeled **Inbox**, including navigation,
 page titles, accessibility labels and composer hint. Its existing `/messages`
-route and internal `allChat` transport/type names remain; the broader internal
-rename is still pending.
+route remains the stable browser entry point. Internal components, route kind,
+DTOs, query keys, transport endpoint and projection methods now use Inbox names.
+Persisted `all_chat_feed` index names remain stable storage identifiers.
 
 ## Controlled qualification
 
@@ -71,12 +72,10 @@ or paid inference. Fixtures close browser/server/provider processes.
 This is a working first slice, not full Build-list or whole-Bible completion.
 The shell still exposes the existing Agent/Chat controls; iOS Messages/phone visual
 parity, blind judging, every surface's streaming polish, real voice-message/call
-qualification and time-to-first-audio are pending. The default ten-minute schedule
-is created and configurable, but planted finished-work/issue reports across
-projects, new cross-project create/start tools under explicit grants, notification
-burst behavior and actual automatic report quality are not established by these
-controlled tests. No new cross-project access is granted. The runtime permission
-owner must review those actions before further Assistant capabilities are added.
+qualification and time-to-first-audio remain pending. Cross-project create/start
+and deterministic scheduled completion/issue reports now have controlled-provider
+coverage in [Assistant workspace actions](assistant-workspace.md). This does not
+establish real-provider report quality or grant new memory/browser access.
 
 The scheduler catch-up fix is separately frozen on `phase2/branches-first-batch`;
 this slice starts from ui097 `c581d406604d9cec7fee69cb5e118ce024285d95` and does not

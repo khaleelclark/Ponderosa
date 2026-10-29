@@ -96,7 +96,7 @@ function routeDocumentTitle(route: Route): string {
   switch (route.kind) {
     case "home": return "Home";
     case "create": return route.resource === "chat" ? "New Chat" : "New Agent";
-    case "allChat": return "Inbox";
+    case "inbox": return "Inbox";
     case "manageChats": return "Manage Chats";
     case "manageAgents": return "Manage Agents";
     case "settings": return "Settings";

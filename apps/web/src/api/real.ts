@@ -75,7 +75,7 @@ import type {
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
   HealthDto,
-  AllChatPageDto,
+  InboxPageDto,
   CreateHostFolderRequest,
   HostFolderCreateDto,
   HistoryPageDto,
@@ -407,8 +407,8 @@ export const realApi = {
   searchGlobalFiles(query: string, limit = 25, scope?: { projectId: string; conversationId?: string }, cursor?: string, signal?: AbortSignal): Promise<import("@ponderosa/core").GlobalFileSearchResponseDto> {
     return requestJson(`/api/search/files${toQuery({ q: query, limit, ...scope, cursor })}`, signal ? { signal } : undefined);
   },
-  getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
-    return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
+  getInbox(limit: number = 50, cursor?: string): Promise<InboxPageDto> {
+    return requestJson<InboxPageDto>(`/api/inbox${toQuery({ limit: String(limit), cursor })}`);
   },
   listConversations(projectId: string): Promise<ConversationDto[]> {
     return collectCollectionPages<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");

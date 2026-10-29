@@ -1,13 +1,13 @@
 import type {
   AgentDto,
   AgentHealthDto,
-  AllChatSourceDto,
+  InboxSourceDto,
 } from "@ponderosa/core";
 
-export const ALL_CHAT_REPLY_TARGET_KEY = "messages:composer:reply-target";
-export const ALL_CHAT_SOURCE_KEY = "messages:composer:source";
+export const INBOX_REPLY_TARGET_KEY = "messages:composer:reply-target";
+export const INBOX_SOURCE_KEY = "messages:composer:source";
 
-export type AllChatReplyTarget = {
+export type InboxReplyTarget = {
   id: string;
   title: string;
   handle: string;
@@ -15,12 +15,12 @@ export type AllChatReplyTarget = {
   conversationId?: string;
 };
 
-export type AllChatSourceIdentity = {
+export type InboxSourceIdentity = {
   projectId: string;
   conversationId: string;
 };
 
-export type AllChatRuntimePayload = {
+export type InboxRuntimePayload = {
   activeRunDelivery?: "steer" | "queue";
   engine?: string;
   model?: string;
@@ -28,17 +28,17 @@ export type AllChatRuntimePayload = {
   speed?: string;
 };
 
-export type AllChatSubmissionIntentState = {
+export type InboxSubmissionIntentState = {
   epoch: number;
   sourceKey?: string;
 };
 
-export type AllChatSubmissionIntentEvent =
+export type InboxSubmissionIntentEvent =
   | { kind: "source-selected"; sourceKey: string }
   | { kind: "recipient-selected" | "recipient-cleared" | "draft-mutated" }
   | { kind: "recipient-projection-missing" };
 
-export function allChatDeliveryConfirmation(input: {
+export function inboxDeliveryConfirmation(input: {
   recipientTitles: string[];
   queuedRecipientTitles: string[];
   unavailableCount: number;
@@ -57,12 +57,12 @@ export function allChatDeliveryConfirmation(input: {
   return unavailable.trim() || undefined;
 }
 
-export function allChatSourceIntentKey(
+export function inboxSourceIntentKey(
   projectId: string,
-  source: AllChatSourceDto,
+  source: InboxSourceDto,
   agents: Iterable<Pick<AgentDto, "id" | "conversationId">>,
 ): string {
-  const conversationId = allChatSourceConversationId(source, agents);
+  const conversationId = inboxSourceConversationId(source, agents);
   return JSON.stringify([
     projectId,
     conversationId ?? (source.kind === "agent" ? `legacy-agent:${source.agentId}` : "unknown"),
@@ -70,10 +70,10 @@ export function allChatSourceIntentKey(
 }
 
 /** Explicit routing changes advance the retry boundary. Projection loss does not. */
-export function reduceAllChatSubmissionIntent(
-  state: AllChatSubmissionIntentState,
-  event: AllChatSubmissionIntentEvent,
-): AllChatSubmissionIntentState {
+export function reduceInboxSubmissionIntent(
+  state: InboxSubmissionIntentState,
+  event: InboxSubmissionIntentEvent,
+): InboxSubmissionIntentState {
   if (event.kind === "recipient-projection-missing") return state;
   if (event.kind === "source-selected") {
     return event.sourceKey === state.sourceKey
@@ -84,13 +84,13 @@ export function reduceAllChatSubmissionIntent(
 }
 
 /** Exact runtime scalars that can be emitted by the selected All Messages action. */
-export function allChatRuntimePayloadSnapshot(input: {
+export function inboxRuntimePayloadSnapshot(input: {
   newAgentRequested: boolean;
   recipientCount: number;
   selectedEngineId?: string;
   defaultEngine?: string;
   runtime: { model: string; effort: string; speed: string };
-}): AllChatRuntimePayload {
+}): InboxRuntimePayload {
   const singleRecipient = input.recipientCount === 1;
   return {
     ...(input.newAgentRequested ? {
@@ -108,32 +108,32 @@ export function allChatRuntimePayloadSnapshot(input: {
   };
 }
 
-export function parseAllChatSourceIdentity(
+export function parseInboxSourceIdentity(
   raw: string | undefined,
-): AllChatSourceIdentity | undefined {
+): InboxSourceIdentity | undefined {
   if (!raw) return undefined;
   try {
-    const value = JSON.parse(raw) as Partial<AllChatSourceIdentity>;
+    const value = JSON.parse(raw) as Partial<InboxSourceIdentity>;
     return typeof value.projectId === "string" && value.projectId &&
         typeof value.conversationId === "string" && value.conversationId
-      ? value as AllChatSourceIdentity
+      ? value as InboxSourceIdentity
       : undefined;
   } catch {
     return undefined;
   }
 }
 
-export function eligibleAllChatTargets(
-  targets: Iterable<AllChatReplyTarget>,
+export function eligibleInboxTargets(
+  targets: Iterable<InboxReplyTarget>,
   conversationId?: string,
-): AllChatReplyTarget[] {
+): InboxReplyTarget[] {
   return [...targets].filter(
     target => !conversationId || target.conversationId === conversationId,
   );
 }
 
-export function busyAllChatMentionHandles(
-  targets: Iterable<Pick<AllChatReplyTarget, "id" | "handle">>,
+export function busyInboxMentionHandles(
+  targets: Iterable<Pick<InboxReplyTarget, "id" | "handle">>,
   health: Iterable<Pick<AgentHealthDto, "agentId" | "runtimeActivity">>,
 ): string[] {
   const activeAgentIds = new Set([...health].flatMap(item =>
@@ -144,7 +144,7 @@ export function busyAllChatMentionHandles(
   );
 }
 
-export function authoritativeAllChatReplyTarget<T extends AllChatReplyTarget>(
+export function authoritativeInboxReplyTarget<T extends InboxReplyTarget>(
   target: T | undefined,
   projectId: string | undefined,
   conversationId: string | undefined,
@@ -155,8 +155,8 @@ export function authoritativeAllChatReplyTarget<T extends AllChatReplyTarget>(
   return target;
 }
 
-export function allChatSourceConversationId(
-  source: AllChatSourceDto | undefined,
+export function inboxSourceConversationId(
+  source: InboxSourceDto | undefined,
   agents: Iterable<Pick<AgentDto, "id" | "conversationId">>,
 ): string | undefined {
   if (!source) return undefined;
@@ -165,26 +165,26 @@ export function allChatSourceConversationId(
   return [...agents].find(agent => agent.id === source.agentId)?.conversationId;
 }
 
-export function allChatRuntimeSelectionReady(
+export function inboxRuntimeSelectionReady(
   selectedAgentId: string | undefined,
   initializedAgentId: string | undefined,
 ): boolean {
   return Boolean(selectedAgentId && selectedAgentId === initializedAgentId);
 }
 
-export function allChatSourceIdentity(
+export function inboxSourceIdentity(
   projectId: string,
-  source: AllChatSourceDto | undefined,
+  source: InboxSourceDto | undefined,
   agents: Iterable<Pick<AgentDto, "id" | "conversationId">>,
-): AllChatSourceIdentity | undefined {
-  const conversationId = allChatSourceConversationId(source, agents);
+): InboxSourceIdentity | undefined {
+  const conversationId = inboxSourceConversationId(source, agents);
   return conversationId ? { projectId, conversationId } : undefined;
 }
 
-export function allChatComposerConversationId(
+export function inboxComposerConversationId(
   selectedConversationId: string | undefined,
   replyConversationId: string | undefined,
-  source: AllChatSourceIdentity | undefined,
+  source: InboxSourceIdentity | undefined,
 ): string | undefined {
   return selectedConversationId ?? replyConversationId ?? source?.conversationId;
 }

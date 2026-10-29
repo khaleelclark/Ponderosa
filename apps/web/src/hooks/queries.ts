@@ -152,7 +152,7 @@ export function useNotificationProjection(
       const first = pages[0]!;
       return {
         workspace: first.workspace,
-        allMessages: first.allMessages,
+        inbox: first.inbox,
         projects: Object.assign({}, ...pages.map(page => page.projects)),
         conversations: Object.assign({}, ...pages.map(page => page.conversations)),
         chatFolders: Object.fromEntries(pages.flatMap(page => Object.entries(page.chatFolders ?? {}))),
@@ -161,10 +161,10 @@ export function useNotificationProjection(
   });
 }
 
-export function useAllChat(limit = 50) {
+export function useInbox(limit = 50) {
   return useQuery({
-    queryKey: queryKeys.allChat(limit),
-    queryFn: () => api.getAllChat(limit),
+    queryKey: queryKeys.inbox(limit),
+    queryFn: () => api.getInbox(limit),
   });
 }
 

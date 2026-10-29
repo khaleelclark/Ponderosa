@@ -1,5 +1,5 @@
 import {requestProduct,resourceInProduct,decisionInProduct} from '../product-scope.js';
-import { collaborationPresentation, type AllChatPageDto } from "@ponderosa/core";
+import { collaborationPresentation, type InboxPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
 import { searchWorkspaceFiles } from "../file-search.js";
@@ -48,7 +48,7 @@ export function registerSearchRoutes(
     }
   });
 
-  app.get<{ Querystring: { limit?: string; cursor?: string } }>("/api/all-chat", async (request, reply) => {
+  app.get<{ Querystring: { limit?: string; cursor?: string } }>("/api/inbox", async (request, reply) => {
     const requestedLimit = Number(request.query.limit ?? 50);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(100, Math.floor(requestedLimit))) : 50;
     if (request.query.cursor !== undefined && (!request.query.cursor || request.query.cursor.length > 4096)) {
@@ -71,7 +71,7 @@ export function registerSearchRoutes(
       }
       const messagePage = combined?.messagesDone
         ? { items: [], history: { limit, hasMore: false } }
-        : store.getAllChatPage({ limit, cursor: combined?.messages,productScope:requestProduct(request) });
+        : store.getInboxPage({ limit, cursor: combined?.messages,productScope:requestProduct(request) });
       const receiptMaps = new Map([...new Set(
         messagePage.items.map(item => item.project.id),
       )].map(projectId => [
@@ -156,7 +156,7 @@ export function registerSearchRoutes(
           hasMore,
           ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}),
         },
-      } satisfies AllChatPageDto;
+      } satisfies InboxPageDto;
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid All Chat cursor" });
     }

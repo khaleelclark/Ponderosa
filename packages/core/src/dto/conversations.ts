@@ -891,7 +891,7 @@ export type WorkspaceFileOwnerDto =
 
 // ─── Messages ───────────────────────────────────────────────────────────────────────
 
-export type AllChatSourceDto =
+export type InboxSourceDto =
   | { kind: "project" | "team"; conversationId: string; title: string }
   | {
       kind: "agent";
@@ -902,7 +902,7 @@ export type AllChatSourceDto =
     };
 
 /** One canonical authored communication in the workspace-wide aggregate view. */
-export interface AllChatItemDto {
+export interface InboxItemDto {
   communicationEventId: string;
   messageId: string;
   communicationIntent: CommunicationIntent;
@@ -913,7 +913,7 @@ export interface AllChatItemDto {
   /** Authored routing handles bound to their stable Direct recipients. */
   agentMentions?: AgentMentionBindingDto[];
   project: Pick<ProjectDto, "id" | "label">;
-  source: AllChatSourceDto;
+  source: InboxSourceDto;
   author: GlobalChatSearchAuthorDto;
   text: string;
   createdAt: string;
@@ -926,7 +926,7 @@ export interface AllChatItemDto {
 }
 
 /** One canonical Decision event projected into the workspace-wide aggregate timeline. */
-export interface AllChatDecisionEventDto {
+export interface InboxDecisionEventDto {
   kind: "decision" | "decision_response";
   id: string;
   createdAt: string;
@@ -936,9 +936,9 @@ export interface AllChatDecisionEventDto {
   source: { kind: "project"; conversationId: string; title: string };
 }
 
-/** GET /api/all-chat response. Canonical items are oldest-first for timeline prepend. */
-export interface AllChatPageDto {
-  items: AllChatItemDto[];
-  decisions?: AllChatDecisionEventDto[];
+/** GET /api/inbox response. Canonical items are oldest-first for timeline prepend. */
+export interface InboxPageDto {
+  items: InboxItemDto[];
+  decisions?: InboxDecisionEventDto[];
   history: HistoryWindowDto;
 }

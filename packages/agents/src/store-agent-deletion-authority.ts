@@ -40,7 +40,7 @@ export class AgentDeletionAuthority {
       targetAgentIds: readonly string[],
       consumeApproval?: boolean,
     ) => void,
-    private readonly refreshAllChatFeedProject: (projectId: string) => void,
+    private readonly refreshInboxFeedProject: (projectId: string) => void,
     private readonly forgetAgentProjection: (agentId: string) => void,
     private readonly attachmentSources: (projectId: string) => { events: CommunicationEvent[]; projections: CommunicationProjection[] },
     private readonly retainSharedArtifacts: (projectId: string, agentId: string, sourceDirectory: string) => void,
@@ -321,7 +321,7 @@ export class AgentDeletionAuthority {
     catch (error) {
       this.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "Agent storage cleanup failed");
     }
-    this.refreshAllChatFeedProject(committedPreview!.projectId);
+    this.refreshInboxFeedProject(committedPreview!.projectId);
     return committedPreview!;
   }
 

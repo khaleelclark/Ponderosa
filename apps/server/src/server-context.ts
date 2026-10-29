@@ -28,7 +28,7 @@ export interface ServerContext {
     | "getAgent"
     | "agentCreationPending"
     | "getAgentDetail"
-    | "getAllChatPage"
+    | "getInboxPage"
     | "getArtifactPage"
     | "getResponseFileReview"
     | "getChangedFileDetail"

@@ -45,7 +45,7 @@ import type {
   TokenUsageRangeDto,
   TokenUsage,
   GlobalChatSearchResponseDto,
-  AllChatPageDto,
+  InboxPageDto,
   RunOutputDto,
   ResponseFileActivityDto,
   UpdateProjectRequest,
@@ -1871,8 +1871,8 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.chatFeed.searchGlobalChats(input);
   }
 
-  getAllChatPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): AllChatPageDto {
-    return this.chatFeed.getAllChatPage(input);
+  getInboxPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): InboxPageDto {
+    return this.chatFeed.getInboxPage(input);
   }
 
   getLatestRun(agentId: string, exactRunId?: string): ReturnType<AgentRunUsageReadModel["getLatestRun"]> {

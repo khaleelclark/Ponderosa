@@ -1,4 +1,4 @@
-import type { AllChatPageDto, ConversationDecisionEventDto, DecisionDto, ResolveDecisionRequest, WorkspaceNotificationPageDto } from "@ponderosa/core";
+import type { InboxPageDto, ConversationDecisionEventDto, DecisionDto, ResolveDecisionRequest, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
@@ -14,7 +14,7 @@ const DECISION_REFRESH_KEYS = [
   queryKeys.workspaceDirectory.all,
   queryKeys.collaborationAll,
   queryKeys.conversations.detailAll,
-  queryKeys.allChatAll,
+  queryKeys.inboxAll,
 ] as const;
 
 export function useDecisionResponse(onSuccess?: () => void) {
@@ -54,14 +54,14 @@ export function useDecisionResponse(onSuccess?: () => void) {
     onSuccess: decision => {
       const update = <T extends { decision: DecisionDto }>(items: T[]) => items.map(item => item.decision.id === decision.id ? { ...item, decision } : item);
       // Cancel reads started before the save before replacing their old data.
-      for (const queryKey of [queryKeys.decisions.all, queryKeys.agents.detailAll, queryKeys.conversations.detailAll, queryKeys.allChatAll, queryKeys.notifications.all]) {
+      for (const queryKey of [queryKeys.decisions.all, queryKeys.agents.detailAll, queryKeys.conversations.detailAll, queryKeys.inboxAll, queryKeys.notifications.all]) {
         void queryClient.cancelQueries({ queryKey });
       }
       queryClient.setQueriesData<DecisionDto[]>({ queryKey: queryKeys.decisions.all }, current => current?.map(item => item.id === decision.id ? decision : item));
       for (const queryKey of [queryKeys.agents.detailAll, queryKeys.conversations.detailAll]) {
         queryClient.setQueriesData<{ decisionEvents?: ConversationDecisionEventDto[] }>({ queryKey }, current => current?.decisionEvents ? { ...current, decisionEvents: update(current.decisionEvents) } : current);
       }
-      queryClient.setQueriesData<AllChatPageDto>({ queryKey: queryKeys.allChatAll }, current => current?.decisions ? { ...current, decisions: update(current.decisions) } : current);
+      queryClient.setQueriesData<InboxPageDto>({ queryKey: queryKeys.inboxAll }, current => current?.decisions ? { ...current, decisions: update(current.decisions) } : current);
       queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, current => {
         if (!current) return current;
         const closing = current.items.filter(item => item.decision?.id === decision.id && (item.status ?? "open") === "open");

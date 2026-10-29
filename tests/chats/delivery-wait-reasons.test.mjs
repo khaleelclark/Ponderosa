@@ -32,7 +32,7 @@ async function receiptViews(f, chat, agent, eventId) {
   const from = messages => messages.find(m => m.communicationEventId === eventId)?.deliveryReceipts?.[0];
   const conversation = f.ok(await f.api('GET', `/api/conversations/${chat.id}?limit=100`));
   const detail = await f.detail(agent.id);
-  const all = f.ok(await f.api('GET', '/api/all-chat?limit=100'));
+  const all = f.ok(await f.api('GET', '/api/inbox?limit=100'));
   const refresh = f.ok(await f.api('POST', `/api/conversations/${chat.id}/message-delivery-receipts`, { communicationEventIds: [eventId], activationIds: [] }));
   return [from(conversation.messages), from(detail.messages), from(all.items), refresh.items[0]?.deliveryReceipts[0]];
 }

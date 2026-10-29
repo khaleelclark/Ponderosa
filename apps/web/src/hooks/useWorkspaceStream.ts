@@ -1,7 +1,7 @@
 import { useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type {
-  AllChatPageDto,
+  InboxPageDto,
   GlobalChatSearchResponseDto,
   ProjectDto,
   WorkspaceEvent,
@@ -13,7 +13,7 @@ import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import {
-  workspaceEventInvalidatesAllChat,
+  workspaceEventInvalidatesInbox,
   workspaceEventInvalidatesGlobalSearch,
   workspaceEventUpdatesLiveProgress,
 } from "../workspaceEventInvalidation";
@@ -142,8 +142,8 @@ export function reconcileDeletedProjectClientState(
         }
       : current,
   );
-  queryClient.setQueriesData<AllChatPageDto>(
-    { queryKey: queryKeys.allChatAll },
+  queryClient.setQueriesData<InboxPageDto>(
+    { queryKey: queryKeys.inboxAll },
     current => current
       ? {
           ...current,
@@ -169,7 +169,7 @@ export function reconcileDeletedProjectClientState(
     queryKeys.projects.all,
     queryKeys.notifications.all,
     queryKeys.globalSearch.all,
-    queryKeys.allChatAll,
+    queryKeys.inboxAll,
     queryKeys.workspaceDirectory.all,
     queryKeys.workspaceResourceRecency.all,
   ]) void queryClient.invalidateQueries({ queryKey });
@@ -495,7 +495,7 @@ export function useWorkspaceStream(
         invalidate(queryKeys.conversations.activeDeliveryReceiptsPrefix(id));
       }
       pendingProgressChats.clear();
-      invalidate(queryKeys.allChatAll);
+      invalidate(queryKeys.inboxAll);
     }, 1_000);
     const pendingTaskProjects = new Set<string>();
     const taskProjectionRefresh = createBoundedRefresh(() => {
@@ -520,11 +520,11 @@ export function useWorkspaceStream(
     let nextReplayChatAt = 0;
     const replayChatIds = new Set<string>();
     const replayReceiptIds = new Set<string>();
-    let replayAllChats = false;
+    let replayInboxs = false;
     let replayAllReceipts = false;
     const scheduleReplayChat = (conversationIds?: readonly string[], receipts = false) => {
       if (conversationIds) for (const id of conversationIds) replayChatIds.add(id);
-      else replayAllChats = true;
+      else replayInboxs = true;
       if (receipts) {
         if (conversationIds) for (const id of conversationIds) replayReceiptIds.add(id);
         else replayAllReceipts = true;
@@ -532,7 +532,7 @@ export function useWorkspaceStream(
       replayChatTimer ??= setTimeout(() => {
         replayChatTimer = undefined;
         nextReplayChatAt = Date.now() + 1_000;
-        if (replayAllChats) {
+        if (replayInboxs) {
           invalidate(queryKeys.conversations.detailAll);
           invalidate(queryKeys.collaborationAll);
         } else for (const id of replayChatIds) {
@@ -545,7 +545,7 @@ export function useWorkspaceStream(
         }
         replayChatIds.clear();
         replayReceiptIds.clear();
-        replayAllChats = false;
+        replayInboxs = false;
         replayAllReceipts = false;
       }, Math.max(250, nextReplayChatAt - Date.now()));
     };
@@ -751,7 +751,7 @@ export function useWorkspaceStream(
       invalidate(queryKeys.tokenUsage.all);
       invalidate(queryKeys.providerUsage.all);
       invalidate(queryKeys.globalSearch.all);
-      invalidate(queryKeys.allChatAll);
+      invalidate(queryKeys.inboxAll);
       invalidate(queryKeys.workspaceResourceRecency.all);
       invalidate(queryKeys.agentWork.all);
     };
@@ -822,7 +822,7 @@ export function useWorkspaceStream(
         return;
       }
       if (workspaceEventInvalidatesGlobalSearch(event)) communicationRefresh.schedule(queryKeys.globalSearch.all);
-      if (workspaceEventInvalidatesAllChat(event)) communicationRefresh.schedule(queryKeys.allChatAll);
+      if (workspaceEventInvalidatesInbox(event)) communicationRefresh.schedule(queryKeys.inboxAll);
       if (workspaceEventChangesResourceRecency(event) || preferenceStarsChanged) {
         workspaceRecencyInvalidator.schedule();
         // User navigation, authored Chat changes, and terminal lifecycle
@@ -860,7 +860,7 @@ export function useWorkspaceStream(
         invalidate(queryKeys.projects.all);
         if (event.action !== "used") {
           invalidate(queryKeys.agents.project(event.projectId));
-          invalidate(queryKeys.agents.allChat);
+          invalidate(queryKeys.agents.inbox);
           invalidate(queryKeys.agents.detailAll);
         }
         // Mark collapsed sibling pages stale as ownership may have changed,

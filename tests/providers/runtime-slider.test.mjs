@@ -123,7 +123,7 @@ test('MUI thumb focus during touch restores the editor and exact saved caret wit
 });
 
 test('reset owners resolve without overrides, save one complete tuple and skip unchanged saves', () => {
-  for (const name of ['ConversationView.tsx', 'AgentDetail.tsx', 'AllChatView.tsx']) {
+  for (const name of ['ConversationView.tsx', 'AgentDetail.tsx', 'InboxView.tsx']) {
     const text = source('components/' + name);
     const file = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     let declaration;
@@ -304,7 +304,7 @@ function queueHarness() {
     }, close: () => client.clear() };
 }
 async function until(predicate) { for (let i = 0; i < 100 && !predicate(); i++) await new Promise(resolve => setImmediate(resolve)); assert.ok(predicate()); }
-for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) for (const failures of [[true,true], [false,true], [true,false]]) test(`${name}: rapid queued edits stay optimistic, serialize, and reconcile ${failures}`, async t => {
+for (const name of ['AgentDetail', 'ConversationView', 'InboxView']) for (const failures of [[true,true], [false,true], [true,false]]) test(`${name}: rapid queued edits stay optimistic, serialize, and reconcile ${failures}`, async t => {
   const h = queueHarness(); t.after(h.close); h.seed('a');
   const state = {}, hydrated = {}; h.hydrate(name, 'a', state, hydrated);
   let save;
@@ -323,7 +323,7 @@ test('queued Agent saves retain their owner across navigation; the new surface i
   const h = queueHarness(); t.after(h.close); h.seed('a'); h.seed('b');
   const save = h.agent('a'); save.mutate({ activeEngine: 'fixture', model: 'M1', effort: 'high', speed: 'fast' }); save.mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'fast' });
   await until(() => h.calls.length === 1); h.agent('b');
-  for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) {
+  for (const name of ['AgentDetail', 'ConversationView', 'InboxView']) {
     const state = { model: 'prior-owner' }; const hydrated = { current: 'b' }; h.hydrate(name, 'a', state, hydrated); assert.equal(state.model, 'M2', name);
   }
   h.gates[0].resolve(); await until(() => h.calls.length === 2); assert.deepEqual(h.calls.map(call => call.id), ['a','a']); h.gates[1].resolve(); await Promise.all(h.promises); assert.equal(h.canonical.get('b').model, 'M0');
@@ -331,8 +331,8 @@ test('queued Agent saves retain their owner across navigation; the new surface i
 test('all surfaces share an Agent queue and a second surface can continue a pending choice', async t => {
   const h = queueHarness(); t.after(h.close); h.seed('a');
   h.agent('a').mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'standard' }); await until(() => h.calls.length === 1);
-  const state = {}; h.hydrate('AllChatView', 'a', state, {}); assert.equal(state.model, 'M2');
-  const all = h.view('AllChatView', 'updateRuntimeEngine', { selectedAgentId: 'a' }).result;
+  const state = {}; h.hydrate('InboxView', 'a', state, {}); assert.equal(state.model, 'M2');
+  const all = h.view('InboxView', 'updateRuntimeEngine', { selectedAgentId: 'a' }).result;
   all.mutate({ agentId: 'a', activeEngine: state.engine, model: state.model, effort: state.effort, speed: 'fast' }); await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.length, 1);
   h.gates[0].reject(Error('first failed')); await until(() => h.calls.length === 2); assert.equal(h.calls[1].patch.model, 'M2'); h.gates[1].resolve(); await Promise.all(h.promises); assert.equal(h.canonical.get('a').model, 'M2'); assert.equal(h.canonical.get('a').speed, 'fast');
 });
@@ -355,10 +355,10 @@ test('opening a pending Agent before its query loads waits for data, then hydrat
 test('pending manual Settings patch preserves an earlier queued speed when a new surface opens', async t => {
   const h = queueHarness(); t.after(h.close); h.seed('a'); const settings = h.agent('a');
   settings.mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'fast' }); settings.mutate(undefined); await until(() => h.calls.length === 1);
-  const state = {}; h.hydrate('AllChatView', 'a', state, {}); assert.equal(state.model, 'M0', 'latest manual model wins'); assert.equal(state.speed, 'fast', 'omitted speed preserves pending explicit choice');
+  const state = {}; h.hydrate('InboxView', 'a', state, {}); assert.equal(state.model, 'M0', 'latest manual model wins'); assert.equal(state.speed, 'fast', 'omitted speed preserves pending explicit choice');
   h.gates[0].resolve(); await until(() => h.calls.length === 2); h.gates[1].resolve(); await Promise.all(h.promises);
 });
-for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: retired saved effort resolves to an advertised default after catalog changes`, t => {
+for (const name of ['AgentDetail', 'ConversationView', 'InboxView']) test(`${name}: retired saved effort resolves to an advertised default after catalog changes`, t => {
   const h = queueHarness(); t.after(h.close); h.seed('a');
   const key = h.keys.agents.detail('a'), detail = h.client.getQueryData(key);
   const agent = { ...detail.agent, effort: 'retired-effort' };
@@ -367,7 +367,7 @@ for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${n
   const state = {}; h.hydrate(name, 'a', state, {});
   assert.equal(state.effort, 'low', 'Do not render or dispatch a reasoning level no longer advertised by this model');
 });
-for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: reasoning default belongs to the saved model when effort is inherited`, t => {
+for (const name of ['AgentDetail', 'ConversationView', 'InboxView']) test(`${name}: reasoning default belongs to the saved model when effort is inherited`, t => {
   const h = queueHarness(); t.after(h.close); h.seed('a');
   const agent = { ...h.canonical.get('a'), model: 'M1', effort: null };
   h.client.setQueryData(h.keys.agents.detail('a'), { agent });
@@ -378,7 +378,7 @@ for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${n
   ] });
   assert.equal(state.model, 'M1'); assert.equal(state.effort, 'high');
 });
-for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: confirmed saves refresh paged and searched Chat members beyond bounded detail`, async t => {
+for (const name of ['AgentDetail', 'ConversationView', 'InboxView']) test(`${name}: confirmed saves refresh paged and searched Chat members beyond bounded detail`, async t => {
   const h = queueHarness(); t.after(h.close); h.seed('a');
   const agent = { ...h.canonical.get('a'), handle: 'member' }, other = { id: 'other', handle: 'other' };
   h.canonical.set('a', agent);
@@ -405,7 +405,7 @@ for (const paged of [false, true]) test(`confirmed member publication rejects a 
   response.resolve(data); await reading;
   const current = h.client.getQueryData(key); assert.equal((paged ? current.pages[0] : current).items[0].model, 'M1');
 });
-for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: reconcile canonical members when a write commits but its response is lost`, async t => {
+for (const name of ['AgentDetail', 'ConversationView', 'InboxView']) test(`${name}: reconcile canonical members when a write commits but its response is lost`, async t => {
   const h = queueHarness(); t.after(h.close); h.seed('a'); h.lostResponses.add('a');
   const key = h.keys.conversations.members('a', 'target:member');
   const observer = new QueryObserver(h.client, { queryKey: key, queryFn: async () => ({ items: [h.canonical.get('a')], total: 1, limit: 100, hasMore: false }) });

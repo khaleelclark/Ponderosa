@@ -115,7 +115,7 @@ export const queryKeys = {
   },
   agents: {
     all: ["agents"] as const,
-    allChat: ["agents", "all-chat"] as const,
+    inbox: ["agents", "inbox"] as const,
     project: (projectId: string | undefined) => ["agents", projectId] as const,
     detailAll: ["agent"] as const,
     detailPrefix: (agentId: string) => ["agent", agentId] as const,
@@ -276,8 +276,8 @@ export const queryKeys = {
     detail: (projectId: string, rootsKey: string) =>
       ["agent-deletion-preview", projectId, rootsKey] as const,
   },
-  allChatAll: ["all-chat"] as const,
-  allChat: (limit: number) => ["all-chat", limit] as const,
+  inboxAll: ["inbox"] as const,
+  inbox: (limit: number) => ["inbox", limit] as const,
   projectFolders: ["project-folders"] as const,
   collaborationAll: ["collaboration-chat"] as const,
   collaborationPrefix: (conversationId: string | undefined) =>

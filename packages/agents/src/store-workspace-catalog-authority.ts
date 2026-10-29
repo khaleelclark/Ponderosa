@@ -108,7 +108,7 @@ export class AgentWorkspaceCatalogAuthority {
       conversationId: string,
       channel?: ConversationChannel,
     ) => ConversationMessageDto[],
-    private readonly refreshAllChatFeedProject: (projectId: string) => void,
+    private readonly refreshInboxFeedProject: (projectId: string) => void,
     private readonly setHistoryConversationVisibility: (
       projectId: string,
       conversationId: string,
@@ -1191,7 +1191,7 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   refreshConversationDeletionProjection(receipt: ConversationDeletionReceipt): void {
-    this.refreshAllChatFeedProject(receipt.projectId);
+    this.refreshInboxFeedProject(receipt.projectId);
   }
 
   markConversationDeletionServerCleanupComplete(id: string): void {

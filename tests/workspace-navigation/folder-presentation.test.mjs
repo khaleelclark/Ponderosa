@@ -80,7 +80,7 @@ test('10000 folder members use one activity and one unread request, retaining of
     const body = JSON.parse(init.body); calls.push({ kind: 'activity', body });
     return new Response(JSON.stringify({ conversations: { 'member-9999': { status: 'working' } }, chatFolders: {} }));
   };
-  api.getNotificationProjection = async body => { calls.push({ kind: 'unread', body }); return { workspace: {}, allMessages: {}, projects: {}, conversations: { 'member-9999': { totalCount: 3 } }, chatFolders: {} }; };
+  api.getNotificationProjection = async body => { calls.push({ kind: 'unread', body }); return { workspace: {}, inbox: {}, projects: {}, conversations: { 'member-9999': { totalCount: 3 } }, chatFolders: {} }; };
   let activity, unread;
   function Probe() { activity = useWorkspaceActivity([...members, 'ungrouped'], folders, true); unread = useNotificationProjection([], [...members, 'ungrouped'], folders); return null; }
   renderToStaticMarkup(React.createElement(QueryClientProvider, { client }, React.createElement(Probe)));

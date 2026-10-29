@@ -192,7 +192,7 @@ export function WorkspaceSidebar({
     (messageSearchTerm !== filter.trim() || messageSearch.isPending);
   const directorySearch = filter;
   useEffect(() => {
-    if (route.kind === "allChat" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
+    if (route.kind === "inbox" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
     if (route.kind === "manageAgents") setProjectSection("agents");
   }, [route]);
   const projectDirectoryQuery = useProjectRailDirectory();
@@ -350,7 +350,7 @@ export function WorkspaceSidebar({
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
       onOpenHome={() => showNavigation({ kind: "home" })}
-      onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
+      onOpenInbox={() => showNavigation({ kind: "inbox" })}
       onManageSection={section => showNavigation(
         section === "agents"
           ? { kind: "manageAgents" }
@@ -399,7 +399,7 @@ export function WorkspaceSidebar({
     <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? agentsHeading : "Chats"}</Typography>
     {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
   </Stack>;
-  const allChatRows = chatItems;
+  const inboxRows = chatItems;
   const activeChatRow =
     route.kind === "conversation" &&
     activeProject &&
@@ -443,11 +443,11 @@ export function WorkspaceSidebar({
       renderRow={item => globalChatResourceRows([item])}
       onChange={(chatFolders, customOrder) => onPreferences({ chatFolders, ...(customOrder ? {
         chatSort: "custom",
-        ...(chatSort === "custom" ? {} : { chatOrder: customOrderSeed(preferences.chatOrder, allChatRows.map(row => row.conversation.id)) }),
+        ...(chatSort === "custom" ? {} : { chatOrder: customOrderSeed(preferences.chatOrder, inboxRows.map(row => row.conversation.id)) }),
       } : {}) })}
       onRename={onRenameConversation} onDelete={onDeleteConversation}
       onReorder={(source, target, position, chatFolders) => {
-        const visibleIds = allChatRows.map(row => row.conversation.id);
+        const visibleIds = inboxRows.map(row => row.conversation.id);
         onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(chatSort === "custom" ? preferences.chatOrder : customOrderSeed(preferences.chatOrder, visibleIds), visibleIds, source, target, position), ...(chatFolders ? { chatFolders } : {}) });
       }}>
     {({ starredRows, allRows, openRows }) => (
@@ -489,7 +489,7 @@ export function WorkspaceSidebar({
           suppressEmpty={Boolean(filter.trim()) && (messageSearchPending || messageSearch.isError || Boolean(currentMessageResults?.results.length))} />
       </>}
       sort={chatSort}
-      onSort={value => setResourceSort("chat", value, allChatRows.map(row => row.conversation.id), preferences.chatOrder)}
+      onSort={value => setResourceSort("chat", value, inboxRows.map(row => row.conversation.id), preferences.chatOrder)}
       drawer={drawer}
     />)}
     </ChatFolders>

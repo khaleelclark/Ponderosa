@@ -605,7 +605,7 @@ export interface WorkspaceNotificationProjectionRequestDto {
 
 export interface WorkspaceNotificationProjectionDto {
   workspace: WorkspaceNotificationCountProjectionDto;
-  allMessages: WorkspaceNotificationCountProjectionDto;
+  inbox: WorkspaceNotificationCountProjectionDto;
   projects: Record<string, WorkspaceProjectNotificationProjectionDto>;
   conversations: Record<string, WorkspaceNotificationCountProjectionDto>;
   chatFolders?: Record<string, WorkspaceNotificationCountProjectionDto>;

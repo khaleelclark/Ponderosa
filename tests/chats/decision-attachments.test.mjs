@@ -49,7 +49,7 @@ for (const engine of ['codex', 'claude']) for (const text of ['', 'Attached evid
     await until(async () => (await f.detail(x.agent.id)).messages.some(m => m.text === marker), 'exact attachment continuation reply');
     await f.settled(x.agent.id);
     await download(f, file.downloadUrl, body);
-    const all = f.ok(await f.api('GET', '/api/all-chat?limit=100'));
+    const all = f.ok(await f.api('GET', '/api/inbox?limit=100'));
     assert.deepEqual(all.decisions.find(event => event.decision.id === x.decision.id && event.kind === "decision_response")?.decision.response.attachments, result.response.attachments);
     const bindings = store.sqlite.prepare('SELECT * FROM runtime_attachment_associations WHERE communication_id=?').all(`decision:${x.decision.id}:response`);
     assert.equal(bindings.length, 1); assert.equal(bindings[0].asset_id, file.id);
@@ -68,9 +68,9 @@ for (const engine of ['codex', 'claude']) for (const text of ['', 'Attached evid
     assert.equal((await f.api('GET', `/api/agents/${x.agent.id}`)).status, 404);
     await download(f, file.downloadUrl, body);
     await f.reopen(); await download(f, file.downloadUrl, body);
-    const retained = f.ok(await f.api('GET', '/api/all-chat?limit=100'));
+    const retained = f.ok(await f.api('GET', '/api/inbox?limit=100'));
     assert.deepEqual(retained.decisions.find(event => event.decision.id === x.decision.id && event.kind === 'decision_response')?.decision.response.attachments, result.response.attachments);
-    assert.equal(f.ok(await f.api('GET', '/api/branches/engine/all-chat?limit=100')).decisions.some(event=>event.decision.id===x.decision.id),false);
+    assert.equal(f.ok(await f.api('GET', '/api/branches/engine/inbox?limit=100')).decisions.some(event=>event.decision.id===x.decision.id),false);
     assert.equal((await f.api('GET',file.downloadUrl.replace('/api/','/api/branches/engine/'))).status,404);
   }, { diagnosticProvider: true, storeFactory: dataDir => (store = new AgentStore(dataDir)) });
 });

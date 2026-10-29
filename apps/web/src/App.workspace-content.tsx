@@ -24,7 +24,7 @@ type RemovableWorkspaceResourceRoute = Extract<
   { kind: "agent" | "conversation" }
 >;
 
-const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
+const loadInboxView = () => import("./components/InboxView").then(module => ({ default: module.InboxView }));
 const loadManageChatsWorkspace = () => import("./components/ManageChatsWorkspace").then(module => ({ default: module.ManageChatsWorkspace }));
 const loadManageAgentsWorkspace = () => import("./components/WorkspaceResourceViews").then(module => ({ default: module.AllAgentsWorkspace }));
 const loadHomeView = () => import("./components/HomeView").then(module => ({ default: module.HomeView }));
@@ -158,10 +158,10 @@ export function WorkspaceRouteOutlet({
         />
       ) : route.kind === "home" ? (
         <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, enginesLoaded, notifications, notificationCounts, notificationsLoadFailed, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />
-      ) : route.kind === "allChat" ? (
+      ) : route.kind === "inbox" ? (
         <RecoverableLazyRoute
-          key="all-chat"
-          load={loadAllChatView}
+          key="inbox"
+          load={loadInboxView}
           componentProps={{ onNavigate, notifications }}
         />
       ) : route.kind === "manageChats" ? (

@@ -1776,7 +1776,7 @@ export class WorkspaceStore {
     const requestedProjectIds = new Set(input.projectIds);
     const requestedConversationIds = new Set(input.conversationIds);
     const workspace = emptyNotificationProjectionAccumulator();
-    const allMessages = emptyNotificationProjectionAccumulator();
+    const inbox = emptyNotificationProjectionAccumulator();
     const projects = new Map<string, {
       total: NotificationProjectionAccumulator;
       chat: NotificationProjectionAccumulator;
@@ -1826,7 +1826,7 @@ export class WorkspaceStore {
         : new Set(item.conversationId ? [item.conversationId] : []);
       addNotificationProjection(workspace, item, kind);
       if (MESSAGE_NOTIFICATION_KINDS.has(item.kind) && conversationIds.size > 0) {
-        addNotificationProjection(allMessages, item, kind);
+        addNotificationProjection(inbox, item, kind);
       }
 
       if (item.projectId) {
@@ -1866,7 +1866,7 @@ export class WorkspaceStore {
     }
     return {
       workspace: notificationProjectionCounts(workspace),
-      allMessages: notificationProjectionCounts(allMessages),
+      inbox: notificationProjectionCounts(inbox),
       projects: Object.fromEntries([...projects].map(([projectId, project]) => {
         const projected: WorkspaceProjectNotificationProjectionDto = {
           ...notificationProjectionCounts(project.total),

@@ -57,7 +57,7 @@ export type Route =
       surface?: "workspace";
       creationKey?: string;
     }
-  | { kind: "allChat" }
+  | { kind: "inbox" }
   | { kind: "manageChats" }
   | { kind: "manageAgents" }
   | { kind: "settings"; returnTo?: string; section?: "profile" | "general" | "providers" | "notifications" | "activity" }
@@ -123,7 +123,7 @@ function parseRoutePath(pathname: string, search = ""): Route {
         : {}),
     };
   }
-  if (parts.length === 1 && parts[0] === "messages") return { kind: "allChat" };
+  if (parts.length === 1 && parts[0] === "messages") return { kind: "inbox" };
   if (parts.length === 2 && parts[0] === "manage" && parts[1] === "chats") {
     return { kind: "manageChats" };
   }
@@ -242,7 +242,7 @@ export function routeReturnTarget(returnTo: string | undefined, fallback: Route)
 }
 
 export function routeReturnLabel(target: Route): string {
-  return target.kind === "conversation" ? "Back to Chat" : target.kind === "agent" ? "Back to Agent" : target.kind === "allChat" ? "Back to Messages" : "Back to Home";
+  return target.kind === "conversation" ? "Back to Chat" : target.kind === "agent" ? "Back to Agent" : target.kind === "inbox" ? "Back to Messages" : "Back to Home";
 }
 
 export function parseRouteLocation(

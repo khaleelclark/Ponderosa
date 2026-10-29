@@ -240,7 +240,7 @@ export function MessageDeliveryStatus({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(receipt.targetAgentId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not change steering recovery.");
@@ -261,7 +261,7 @@ export function MessageDeliveryStatus({
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(receipt.targetAgentId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not retry message delivery.");
@@ -282,7 +282,7 @@ export function MessageDeliveryStatus({
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not cancel message delivery.");

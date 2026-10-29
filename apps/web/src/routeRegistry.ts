@@ -71,7 +71,7 @@ const ROUTE_REGISTRY = {
     scope: "global",
     initialSidebarSection: "home",
   },
-  allChat: {
+  inbox: {
     toPath: () => "/messages",
     scope: "global",
     initialSidebarSection: "home",

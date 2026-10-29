@@ -39,7 +39,7 @@ export function ProjectRail({
   attentionNotifications,
   unreadNotificationUpdates,
   onOpenHome,
-  onOpenAllMessages,
+  onOpenInbox,
   onManageSection,
   onOpenSearch,
   onOpenNotifications,
@@ -54,7 +54,7 @@ export function ProjectRail({
   attentionNotifications: number;
   unreadNotificationUpdates: number;
   onOpenHome(): void;
-  onOpenAllMessages(): void;
+  onOpenInbox(): void;
   onManageSection(section: ProjectSidebarSection): void;
   onOpenSearch(): void;
   onOpenNotifications(): void;
@@ -99,7 +99,7 @@ export function ProjectRail({
       <SidebarHeader drawer={drawer} hideTitle={drawer} homeLabel="Home" selected={route.kind === "home"} onHome={onOpenHome} onCollapse={drawer ? onClose : onCollapse} actions={<>
         {drawer ? (
           <Tooltip title="Inbox">
-            <IconButton aria-label="Inbox" aria-current={route.kind === "allChat" ? "page" : undefined} onClick={onOpenAllMessages}>
+            <IconButton aria-label="Inbox" aria-current={route.kind === "inbox" ? "page" : undefined} onClick={onOpenInbox}>
               <ForumOutlinedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
@@ -137,8 +137,8 @@ export function ProjectRail({
       >
         {!drawer ? <ButtonBase
           aria-label="Inbox"
-          aria-current={route.kind === "allChat" ? "page" : undefined}
-          onClick={onOpenAllMessages}
+          aria-current={route.kind === "inbox" ? "page" : undefined}
+          onClick={onOpenInbox}
           sx={{
             gridColumn: "1 / -1",
             minWidth: 0,

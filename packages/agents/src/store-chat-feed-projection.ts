@@ -3,8 +3,8 @@ import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import type {
   AgentDto,
-  AllChatItemDto,
-  AllChatPageDto,
+  InboxItemDto,
+  InboxPageDto,
   CommunicationEvent,
   CommunicationProjection,
   GlobalChatSearchAuthorDto,
@@ -104,7 +104,7 @@ export class AgentChatFeedProjection {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!chatKind || !message || !event || !this.communicationProjectionAllowed(projectId, projection)) {
       this.db.delete(chatSearchMessages).where(eq(chatSearchMessages.rowKey, rowKey)).run();
-      this.refreshAllChatFeedEvent(projectId, projection.eventId);
+      this.refreshInboxFeedEvent(projectId, projection.eventId);
       return;
     }
     const canonicalRole = event.sender.kind === "agent"
@@ -151,12 +151,12 @@ export class AgentChatFeedProjection {
         contextPolicy: behavior.contextPolicy,
       },
     }).run();
-    this.refreshAllChatFeedEvent(projectId, projection.eventId);
+    this.refreshInboxFeedEvent(projectId, projection.eventId);
   }
 
   /** Choose one active placement for a canonical communication. This work is
    * paid when a placement/lifecycle event changes, never on each Messages read. */
-  private refreshAllChatFeedEvent(projectId: string, eventId: string): void {
+  private refreshInboxFeedEvent(projectId: string, eventId: string): void {
     const row = this.client.prepare(`
       SELECT search.row_key AS rowKey, search.order_key AS orderKey
       FROM chat_search_messages search
@@ -191,12 +191,12 @@ export class AgentChatFeedProjection {
     `).run(projectId, eventId, row.rowKey, row.orderKey);
   }
 
-  refreshAllChatFeedProject(projectId: string): void {
+  refreshInboxFeedProject(projectId: string): void {
     const eventIds = this.client.prepare(`
       SELECT DISTINCT communication_event_id AS eventId
       FROM chat_search_messages WHERE project_id = ?
     `).all(projectId) as Array<{ eventId: string }>;
-    for (const { eventId } of eventIds) this.refreshAllChatFeedEvent(projectId, eventId);
+    for (const { eventId } of eventIds) this.refreshInboxFeedEvent(projectId, eventId);
   }
 
   /** Rebuild the disposable global Chat search index from canonical ledgers. */
@@ -374,13 +374,13 @@ export class AgentChatFeedProjection {
    * text is rematerialized from the canonical Communication ledger so edits are
    * reflected without making SQLite authoritative.
    */
-  getAllChatPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): AllChatPageDto {
+  getInboxPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): InboxPageDto {
     const limit = Math.max(1, Math.min(100, input.limit ?? 50));
     const cursorScope=input.productScope?`workspace:${input.productScope}`:"workspace";
     const boundary = input.cursor
-      ? this.decodeHistoryCursor(input.cursor, "all-chat", cursorScope)
+      ? this.decodeHistoryCursor(input.cursor, "inbox", cursorScope)
       : undefined;
-    type AllChatRow = {
+    type InboxRow = {
       rowKey: string;
       projectId: string;
       projectLabel: string;
@@ -426,14 +426,14 @@ export class AgentChatFeedProjection {
       LIMIT ?
     `).all(...(boundary
       ? [boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-      : [limit + 1])) as AllChatRow[];
+      : [limit + 1])) as InboxRow[];
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
     const agentByProject = new Map([...new Set(selected.map((row) => row.projectId))].map((projectId) => [
       projectId,
       new Map(this.listAgents(projectId).map((agent) => [agent.id, agent] as const)),
     ]));
-    const items = selected.flatMap((row): AllChatItemDto[] => {
+    const items = selected.flatMap((row): InboxItemDto[] => {
       const surface: CommunicationProjection["surface"] = row.chatKind === "conversation"
         ? "conversation"
         : row.chatKind === "collaboration"
@@ -483,7 +483,7 @@ export class AgentChatFeedProjection {
           : row.role === "system"
             ? { kind: "system", label: "System" }
             : { kind: "agent", label: "Agent" };
-      const source: AllChatItemDto["source"] = row.chatKind === "conversation"
+      const source: InboxItemDto["source"] = row.chatKind === "conversation"
         ? { kind: "project", conversationId: row.chatId, title: row.chatTitle }
         : row.chatKind === "collaboration"
           ? { kind: "team", conversationId: row.chatId, title: row.chatTitle }
@@ -521,7 +521,7 @@ export class AgentChatFeedProjection {
         hasMore,
         ...(hasMore && oldest ? {
           cursor: this.encodeHistoryCursor({
-            stream: "all-chat", scope: cursorScope, orderKey: oldest.orderKey, rowKey: oldest.rowKey,
+            stream: "inbox", scope: cursorScope, orderKey: oldest.orderKey, rowKey: oldest.rowKey,
           }),
         } : {}),
       },

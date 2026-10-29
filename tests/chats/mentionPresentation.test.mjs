@@ -218,7 +218,7 @@ test('All Messages keeps provider command output visible and uses shared feedbac
   const { readFile } = await import('node:fs/promises');
   const vm = await import('node:vm');
   const ts = await import('typescript');
-  const source = await readFile(new URL('../../apps/web/src/components/AllChatView.tsx', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../../apps/web/src/components/InboxView.tsx', import.meta.url), 'utf8');
   const ast = ts.createSourceFile('view.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let command;
   const visit = node => {

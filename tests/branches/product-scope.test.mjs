@@ -125,10 +125,10 @@ test('search, All Chat, file search, usage and preferences retain product owners
   const projectIds=products[product].map(item=>item.chat.projectId),chatIds=products[product].map(item=>item.chat.id);
   const search=f.ok(await f.api('GET',`${prefix(product)}/search?q=${marker}&limit=100`));assert.ok(search.results.length>=2);assert.ok(search.results.every(item=>projectIds.includes(item.project.id)));
   const files=f.ok(await f.api('GET',`${prefix(product)}/search/files?q=${marker}`));assert.equal(files.results.length,2);assert.ok(files.results.every(item=>chatIds.includes(item.conversationId)));
-  const feedBase=`${prefix(product)}/all-chat?limit=1`,seen=[];let cursor;
+  const feedBase=`${prefix(product)}/inbox?limit=1`,seen=[];let cursor;
   do{const page=f.ok(await f.api('GET',feedBase+(cursor?`&cursor=${encodeURIComponent(cursor)}`:'')));assert.ok(page.items.every(item=>projectIds.includes(item.project.id)));seen.push(...page.items.map(item=>item.communicationEventId));cursor=page.history.cursor;assert.ok(seen.length<30);}while(cursor);
   assert.ok(seen.length>=4);assert.equal(new Set(seen).size,seen.length);
-  const first=f.ok(await f.api('GET',feedBase)),other=product==='dev'?'branches':'dev';assert.equal((await f.api('GET',`${prefix(other)}/all-chat?limit=1&cursor=${encodeURIComponent(first.history.cursor)}`)).status,400);
+  const first=f.ok(await f.api('GET',feedBase)),other=product==='dev'?'branches':'dev';assert.equal((await f.api('GET',`${prefix(other)}/inbox?limit=1&cursor=${encodeURIComponent(first.history.cursor)}`)).status,400);
   const prefs=f.ok(await f.api('PATCH',`${prefix(product)}/workspace/preferences`,{starredResourceIds:products[product].map(item=>`conversation:${item.chat.id}`)}));assert.equal(prefs.starredResourceIds.length,2);
   const usage=f.ok(await f.api('GET',`${prefix(product)}/usage`));assert.equal(usage.finalizedRuns,2);assert.equal(usage.inputTokens,40);
  }
