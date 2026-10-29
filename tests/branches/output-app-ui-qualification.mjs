@@ -12,7 +12,7 @@ const require=createRequire(new URL('../../apps/server/package.json',import.meta
 const {chromium}=require('playwright-core');
 const root=fileURLToPath(new URL('../../',import.meta.url)),web=path.join(root,'apps/web/dist');
 const out=process.env.PONDEROSA_OUTPUT_QUALIFICATION_DIR??'/tmp/ponderosa-output-app-ui';await mkdir(out,{recursive:true});
-let browser,server;const f=await fixture();const errors=[],requests=[];
+let browser,server;const f=await fixture();const errors=[],requests=[],fileClicks=[];
 try{
  const api=await f.listen();
  const mime={'.js':'text/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2','.png':'image/png','.svg':'image/svg+xml','.json':'application/json','.webmanifest':'application/manifest+json'};
@@ -39,10 +39,33 @@ try{
  await page.getByRole('button',{name:'Settings',exact:true}).first().waitFor();
  await page.getByRole('textbox').first().waitFor({timeout:20000});
  const initial=f.ok(await f.api('GET','/api/branches/assistant'));
- f.plans.set(initial.app.agentId,[{run:async session=>assert.equal((await session.tool('ponderosa_message',{text:'OUTPUT_UI_REPLY'})).success,true)}]);
+ const {conversation}=f.ok(await f.api('GET',`/api/branches/engine/conversations/${initial.app.chatId}`));
+ await writeFile(path.join(conversation.workingDirectory,'output-report.md'),'# OUTPUT_FILE_CONTENT\n\n[Related report](related.md#details)\n');
+ await writeFile(path.join(conversation.workingDirectory,'related.md'),'# RELATED_FILE_CONTENT\n');
+ f.plans.set(initial.app.agentId,[{run:async session=>assert.equal((await session.tool('ponderosa_message',{text:'OUTPUT_UI_REPLY\n\n[Working report](output-report.md)'})).success,true)}]);
  await page.locator('[contenteditable="true"]').first().fill('Hello from the output app UI');
  await page.getByRole('button',{name:'Send message',exact:true}).click();
  await page.getByText('OUTPUT_UI_REPLY',{exact:true}).waitFor({timeout:20000});
+ // Click the actual authored file link and inspect the separate, fresh app tab.
+ for(const entry of ['/assistant',initial.app.url]){
+  await page.goto(origin+entry);
+  const link=page.getByRole('link',{name:'Working report',exact:true});await link.waitFor();
+  assert.equal(await link.getAttribute('target'),'_blank');
+  const href=await link.getAttribute('href'),url=new URL(href,origin),query=url.searchParams;
+  assert.equal(url.pathname,'/branches');assert.equal(query.get('branch'),initial.app.branchId);assert.equal(query.get('chat'),initial.app.chatId);
+  const nested=new URL(query.get('workspace'),origin);assert.equal(nested.searchParams.get('agentId'),initial.app.agentId);assert.equal(nested.searchParams.get('path'),'output-report.md');
+  const popupPromise=page.waitForEvent('popup');await link.click();const viewer=await popupPromise;
+  viewer.on('pageerror',error=>errors.push(error.message));await viewer.waitForLoadState();
+  await viewer.getByRole('heading',{name:'OUTPUT_FILE_CONTENT',exact:true}).waitFor({timeout:20000});
+  assert.equal(new URL(viewer.url()).pathname,'/branches');
+  const related=viewer.getByRole('link',{name:'Related report',exact:true});await related.waitFor();
+  const relatedHref=await related.getAttribute('href'),relatedQuery=new URL(relatedHref,origin).searchParams;
+  assert.equal(relatedQuery.get('branch'),initial.app.branchId);assert.equal(relatedQuery.get('chat'),initial.app.chatId);
+  assert.equal(new URL(relatedQuery.get('workspace'),origin).searchParams.get('agentId'),initial.app.agentId);
+  fileClicks.push({entry,href,openedUrl:viewer.url(),renderedContent:'OUTPUT_FILE_CONTENT',relatedHref});
+  await viewer.screenshot({path:path.join(out,entry==='/assistant'?'assistant-file.png':'output-file.png'),fullPage:true});await viewer.close();
+ }
+ await page.goto(origin+'/assistant');await page.getByRole('textbox').first().waitFor();
  await page.screenshot({path:path.join(out,'assistant-desktop.png'),fullPage:true});
  await page.getByRole('button',{name:'Settings',exact:true}).first().click();
  await page.getByLabel('Check every (minutes)').fill('20');await Promise.all([page.waitForResponse(response=>response.url().endsWith('/schedule')&&response.status()===200),page.getByRole('button',{name:'Save schedule',exact:true}).click()]);
@@ -52,7 +75,7 @@ try{
  const status=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(status.app.everyMs,1200000);
  await page.goto(origin+status.app.url);await page.getByRole('textbox').first().waitFor();
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'output-phone.png'),fullPage:true});
- assert.deepEqual(errors,[]);assert.ok(requests.some(item=>item.path.includes('/agents/')&&item.status===200));
- await writeFile(path.join(out,'result.json'),JSON.stringify({checksPassed:true,freshWorkspaceInitialization:true,app:status.app,errors,requests,screenshots:['assistant-desktop.png','assistant-settings.png','output-phone.png'],limit:'Controlled provider, not real phone audio, complete usability or blind judging.'},null,2));
+ assert.deepEqual(errors,[]);assert.deepEqual(requests.filter(item=>item.status>=400),[]);assert.ok(requests.some(item=>item.path.includes('/agents/')&&item.status===200));
+ await writeFile(path.join(out,'result.json'),JSON.stringify({checksPassed:true,freshWorkspaceInitialization:true,app:status.app,errors,requests,fileClicks,screenshots:['assistant-desktop.png','assistant-settings.png','output-phone.png','assistant-file.png','output-file.png'],limit:'Controlled provider, not real phone audio, complete usability or blind judging.'},null,2));
  console.log(JSON.stringify({checksPassed:true,out,requestCount:requests.length}));
 }finally{await browser?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}await f.dispose();}

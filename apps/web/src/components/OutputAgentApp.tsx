@@ -1,3 +1,4 @@
+import {setStandaloneWorkspaceOwner} from '../api/productScope';
 import {useEffect,useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {Alert,Box,Button,Dialog,DialogContent,DialogTitle,FormControlLabel,Stack,Switch,MenuItem,TextField,Typography} from '@mui/material';
@@ -21,7 +22,7 @@ export function OutputAgentApp():JSX.Element{
  const output=useQuery({queryKey:['output-app',id],enabled:!assistant&&Boolean(id),retry:false,queryFn:()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(id!)}`)});
  const engines=useQuery({queryKey:['output-app-engines'],queryFn:()=>realApi.listEngines()});
  const app=assistant?status.data?.app:output.data;
- useEffect(()=>{if(app){setAutomatic(app.automatic);setMinutes((app.everyMs??600000)/60000);setModel(app.model??'');setEngine(app.engine);setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId}});}},[app?.agentId]);
+ useEffect(()=>{if(app){setStandaloneWorkspaceOwner({branchId:app.branchId,chatId:app.chatId});setAutomatic(app.automatic);setMinutes((app.everyMs??600000)/60000);setModel(app.model??'');setEngine(app.engine);setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId}});}return()=>setStandaloneWorkspaceOwner(undefined);},[app?.agentId,app?.branchId,app?.chatId]);
  const refresh=async()=>{if(assistant)await status.refetch();else await output.refetch();};
  const act=async(work:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await work();await refresh();}catch(cause){setError((cause as Error).message);}finally{setBusy(false);}};
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled})}));
@@ -34,7 +35,7 @@ export function OutputAgentApp():JSX.Element{
   {(status.isError||output.isError)&&<Alert severity="error">{((status.error??output.error) as Error)?.message??'Output app unavailable'}</Alert>}
   {!app&&assistant&&status.data?.initialized&&<Stack spacing={1} sx={{p:2}}><Typography>Assistant is disabled</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
   {!app&&!error&&!status.isError&&!output.isError&&!status.data?.initialized&&<Typography role="status" sx={{p:2}}>Loading…</Typography>}
-  {app&&route&&<Box sx={{flex:1,minHeight:0,display:'flex'}}><BranchChats branchId={app.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} branchRoute={route} onNavigate={next=>{setRoute(next);return true;}}/></Box>}
+  {app&&route&&<Box sx={{flex:1,minHeight:0,display:'flex'}}><BranchChats branchId={app.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} branchRoute={route} onNavigate={next=>{setStandaloneWorkspaceOwner(next.branchId&&next.chatId?{branchId:next.branchId,chatId:next.chatId}:undefined);setRoute(next);return true;}}/></Box>}
   <Dialog open={settings} onClose={()=>setSettings(false)} fullWidth maxWidth="xs"><DialogTitle>Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
    {app&&<><FormControlLabel control={<Switch checked={automatic} onChange={(_,value)=>setAutomatic(value)}/>} label="Run automatically"/>
     <TextField label="Check every (minutes)" type="number" value={minutes} onChange={event=>setMinutes(Number(event.target.value))} inputProps={{min:1}}/>
@@ -47,4 +48,3 @@ export function OutputAgentApp():JSX.Element{
   </Stack></DialogContent></Dialog>
  </Box></WorkspaceConnectionProvider>;
 }
-

@@ -26,7 +26,7 @@ test('selected nested Chat retains the owning Branch identity and guarded action
 });
 const {WorkspacePreferencesWriter}=await import('../../apps/web/src/workspacePreferencesWriter.ts');
 const {branchRoutePath,parseBranchRoute,branchWorkspaceRoute}=await import('../../apps/web/src/branchesRouting.ts');
-const {productApiPath,productWorkspacePath,setStandaloneProductScope}=await import('../../apps/web/src/api/productScope.ts');
+const {productApiPath,productWorkspacePath,setStandaloneProductScope,setStandaloneWorkspaceOwner}=await import('../../apps/web/src/api/productScope.ts');
 
 test('a conflicting Branch folder move retries against current membership without losing a concurrent star',async()=>{
  const first={revision:1,branchFolders:[{id:'a',name:'One',expanded:true,branchIds:['x','y']},{id:'b',name:'Two',expanded:true,branchIds:['z']}]};
@@ -74,6 +74,32 @@ test('native file links preserve Branch context and encoded fragments instead of
   const pathOnly=new URL(productWorkspacePath('/projects/p/files/view?path=notes%2Fa.md#section'),'https://example.test');assert.equal(parseBranchRoute(pathOnly.search).workspace.path,'notes/a.md');
   window.location.pathname='/';assert.equal(productWorkspacePath(file),file);
  }finally{if(original===undefined)delete globalThis.window;else globalThis.window=original;}
+});
+
+test('standalone workspace links retain canonical ownership across all shared navigation callers',async()=>{
+ const {routeLinkPath}=await import('../../apps/web/src/routeRegistry.ts');
+ const {renderableWorkspaceMarkdownHref}=await import('../../apps/web/src/components/filePreview/workspaceMarkdownLinks.ts');
+ const original=globalThis.window;
+ const file='/projects/p/files/view?path=notes%2Fa.md&agentId=a#heading%20one';
+ try{
+  setStandaloneProductScope('branches');setStandaloneWorkspaceOwner({branchId:'canonical-branch',chatId:'canonical-chat'});
+  for(const pathname of ['/assistant','/apps/a']){
+   globalThis.window={location:{pathname,search:'?branch=untrusted&chat=untrusted&execution=untrusted&settings=profile'}};
+   for(const href of [productWorkspacePath(file),routeLinkPath({kind:'workspaceFile',projectId:'p',path:'notes/a.md',agentId:'a'}),renderableWorkspaceMarkdownHref('p','index.md',file,{agentId:'a'}),renderableWorkspaceMarkdownHref('p','index.md','notes/a.md#heading%20one',{agentId:'a'})]){
+    const url=new URL(href,'https://example.test'),route=parseBranchRoute(url.search);
+    assert.equal(url.pathname,'/branches');assert.equal(route.branchId,'canonical-branch');assert.equal(route.chatId,'canonical-chat');assert.equal(route.tab,'chats');assert.equal(route.executionId,undefined);assert.equal(route.global,undefined);
+    assert.equal(route.workspace.agentId,'a');assert.equal(route.workspace.path,'notes/a.md');
+   }
+   assert.equal(new URL(new URL(productWorkspacePath(file),'https://example.test').searchParams.get('workspace'),'https://example.test').hash,'#heading%20one');
+   const chatFile=productWorkspacePath('/projects/p/files/view?path=report.md&conversationId=canonical-chat');
+   assert.equal(parseBranchRoute(new URL(chatFile,'https://example.test').search).workspace.conversationId,'canonical-chat');
+   assert.equal(productWorkspacePath('/home'),'/home');
+  }
+  setStandaloneWorkspaceOwner({branchId:'moved-branch',chatId:'moved-chat'});
+  assert.equal(parseBranchRoute(new URL(productWorkspacePath(file),'https://example.test').search).branchId,'moved-branch');
+  setStandaloneWorkspaceOwner(undefined);setStandaloneProductScope(undefined);
+  window.location={pathname:'/projects/p',search:''};assert.equal(productWorkspacePath(file),file);assert.equal(routeLinkPath({kind:'workspaceFile',projectId:'p',path:'report.md',agentId:'a'}),'/projects/p/files/view?path=report.md&agentId=a');
+ }finally{setStandaloneWorkspaceOwner(undefined);setStandaloneProductScope(undefined);if(original===undefined)delete globalThis.window;else globalThis.window=original;}
 });
 
 test('absolute Markdown file anchors retain Branch navigation for normal and native new-tab clicks',async()=>{

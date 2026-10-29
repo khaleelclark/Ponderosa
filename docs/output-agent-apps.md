@@ -81,3 +81,5 @@ owner must review those actions before further Assistant capabilities are added.
 The scheduler catch-up fix is separately frozen on `phase2/branches-first-batch`;
 this slice starts from ui097 `c581d406604d9cec7fee69cb5e118ce024285d95` and does not
 include or modify those commits. Integration through Cliff remains required.
+
+Working-file links from `/assistant` and `/apps/<agent-id>` open the Branches file viewer in a new tab. The standalone shell supplies its canonical Branch/Chat owner; the nested workspace URL retains the file’s Agent or Chat owner, exact path and fragment. File-preview Markdown links and shared resource links use the same product navigation helper. Ordinary Core workspace links retain their original URLs.
