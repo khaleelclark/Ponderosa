@@ -37,17 +37,17 @@ test('application shutdown closes a Branch Script still waiting for external inp
  await f.close();assert.equal(recoveredRuntimeProcessHandle(identity,{label:'Observed test Script'}).isAlive(),false);f.pass();
 });
 
-test('application schedule intake stays fenced during deployment drain and admits one durable catch-up after resume',options,async t=>{
+test('application schedule intake stays fenced during deployment drain and admits each durable due time after resume',options,async t=>{
  const f=await fixture(t),owner=f.branches.create('Scheduled source','scheduled-source'),startsAt=new Date(Date.now()-120000).toISOString();
  const branch=f.branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'deploy',definition:{schema:'ponderosa.branch.v1',name:'Scheduled source',trigger:{kind:'schedule',configRef:'source'},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('scheduled result');"}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{workspace:f.root},triggers:{source:{sourceConfig:{scheduleKind:'interval',everyMs:60000,startsAt},enabled:true}}}},new Date().toISOString(),{sourceConfig:{scheduleKind:'interval',everyMs:60000,startsAt},nextFireAt:startsAt});
  await f.open();assert.equal(f.branches.triggers.listTriggerOccurrences(branch.triggerId).length,0);
  await f.api('POST','/api/deployment/resume');
- const event=await until(()=>f.branches.triggers.listTriggerOccurrences(branch.triggerId)[0],'application schedule admission');
- await until(()=>f.branches.execution(event.branchExecutionId).state==='completed','scheduled Script result');
+ await until(()=>f.branches.triggers.listTriggerOccurrences(branch.triggerId)[0],'application schedule admission');
+ await until(()=>{const events=f.branches.triggers.listTriggerOccurrences(branch.triggerId);return events.length===3&&events.every(item=>f.branches.execution(item.branchExecutionId).state==='completed')},'all scheduled Script results');
  await f.api('POST','/api/deployment/drain');
  await until(async()=>{const ready=await f.api('GET','/api/ready',undefined,503);return ready.deploymentDrain.readyForRestart},'source drain');
  f.branches.triggers.updateTriggerDefinition(branch.triggerId,{nextFireAt:startsAt});
- assert.equal(f.branches.triggers.listTriggerOccurrences(branch.triggerId).length,1);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
+ assert.deepEqual(f.branches.triggers.listTriggerOccurrences(branch.triggerId).map(item=>item.payload.scheduledTimes[0]).sort(),[0,1,2].map(index=>new Date(Date.parse(startsAt)+index*60000).toISOString()));assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
  await f.close();f.pass();
 });
 
