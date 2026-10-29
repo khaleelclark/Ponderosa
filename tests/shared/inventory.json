@@ -1624,6 +1624,14 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; standard library only; no provider account or browser"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-page-strip.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed Chromium via PONDEROSA_BROWSER_EXECUTABLE (default /usr/bin/google-chrome); rsbuild and playwright-core; loopback component fixture only",
+      "origin": "Browser tablist owned roles, adjacent add action, desktop/mobile themes and keyboard/management guards"
     }
   ],
   "retainedReleasePayload": [

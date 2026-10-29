@@ -27,8 +27,9 @@ export function BrowserPageStrip({
 }): JSX.Element | null {
   if (pages.length === 0) return null;
   return (
-    <Stack direction="row" spacing={0.25} role="tablist" aria-label="Browser pages"
-      sx={{ minWidth: 0, overflow: "hidden", height: 26 }}>
+    <Stack direction="row" spacing={0.25} sx={{ minWidth: 0, overflow: "hidden", height: 26 }}>
+      <Stack direction="row" spacing={0.25} role="tablist" aria-label="Browser pages"
+        sx={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
       {pages.map((page) => {
         const active = activePageId ? page.id === activePageId : page.active;
         const label = page.title?.trim() || (() => {
@@ -66,6 +67,7 @@ export function BrowserPageStrip({
           </Box>
         );
       })}
+      </Stack>
       {onNew ? <Tooltip title={canManage ? "New tab" : "Take control to open a tab"}><span style={{ flexShrink: 0 }}><IconButton size="small" sx={{ p: .5, "& svg": { fontSize: 16 } }} aria-label="New browser tab" disabled={!canManage || busy || pages.length >= 30} onClick={onNew}><AddIcon /></IconButton></span></Tooltip> : null}
     </Stack>
   );
