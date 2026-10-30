@@ -249,6 +249,10 @@ accepted message before resending. **Stop** cancels the selected active Run;
 it does not reverse file edits or external actions.
 
 **Pause** holds the selected work while preserving its history and reply route.
+The header shows **Paused**, including after reload. The interrupted execution
+remains **Cancelled** in history, with a receipt explaining that unfinished work
+is held until Resume. Current Resume or Stop rejections appear alongside any
+durable recovery error; an unknown outcome requires inspection before retry.
 **Resume** waits for cleanup, then continues through a fresh recovery execution.
 If a context handoff already committed, Resume keeps it and continues the original
 task once; it does not rerun the handoff. Messages arriving during the hold remain

@@ -103,3 +103,27 @@ resource/scope rejection, supported migrations and schema refusal. Controlled
 providers perform no inference. Passing tests do not establish native-provider
 or UI parity. Exact-head independent runtime review and subsequent UI review
 are required before integration.
+
+## Pause controls and held work
+
+The Agent header shows **Paused** for the durable human hold, including after
+reload. The interrupted Run retains its canonical **Cancelled** status; its work
+receipt explains that unfinished work is held until Resume and that Stop ends
+the held work. A recovery error and any current Resume or Stop rejection are
+shown together. An unknown submission outcome requires inspection before retry;
+showing a rejection does not clear the hold or imply that a retry is safe.
+
+For the bounded built UI regression, reuse installed dependencies and built
+server/runtime packages, build web, then run:
+
+```sh
+PONDEROSA_PAUSE_UI_EVIDENCE=/tmp/ponderosa-pause-ui-owned \
+  node --import ./tests/shared/workspace-resolution.mjs tests/context-recovery/pause-ui.browser.mjs
+```
+
+This explicit check needs existing `playwright-core` and Chrome (override the
+executable with `PONDEROSA_CHROME_PATH`). It checks desktop and emulated touch
+mobile in both themes, keyboard Pause, reload, canonical unknown-outcome Resume
+409, a controlled Stop 409, exact Run targets, durable errors, and successful
+Stop. It retains screenshots/HTML/text and API receipts in the chosen directory.
+It does not run native providers or establish full UI/accessibility parity.

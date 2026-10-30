@@ -123,6 +123,7 @@ function ChatPaneComponent({
   runOutput = [],
   runs = [],
   activeExecutionId,
+  pausedRunId,
   projectRoot,
   onOpenFile,
   focusId,
@@ -153,6 +154,7 @@ function ChatPaneComponent({
   runOutput?: RunOutputDto[];
   runs?: AgentRunDto[];
   activeExecutionId?: string;
+  pausedRunId?: string;
   projectRoot?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
   focusId?: string;
@@ -368,6 +370,7 @@ function ChatPaneComponent({
               key={item.id}
               agentName={agentName}
               run={item.run}
+              paused={item.run.id === pausedRunId}
               entries={activityByRun.get(item.run.id) ?? []}
               projectId={projectId}
               projectRoot={projectRoot}
@@ -465,6 +468,7 @@ function ChatPaneComponent({
                       key={`run:${run.id}`}
                       agentName={agentName}
                       run={run}
+                      paused={run.id === pausedRunId}
                       entries={activityByRun.get(run.id) ?? []}
                       projectId={projectId}
                       projectRoot={projectRoot}

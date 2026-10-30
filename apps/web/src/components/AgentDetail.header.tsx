@@ -56,8 +56,10 @@ function AgentRunState({
   phaseEvidenceFresh,
   startedAt,
   agentNameForId,
+  paused,
 }: {
   status: AgentStatus;
+  paused?: boolean;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -67,13 +69,18 @@ function AgentRunState({
   const mobile = useMediaQuery("(max-width: 899.95px)");
   const [detailAnchor, setDetailAnchor] = useState<HTMLElement | null>(null);
   const now = useAgentRunClock(startedAt);
-  const presentation = agentStatusPresentation(health, {
+  const presentation = paused ? {
+    status: "waiting" as const,
+    label: "Paused",
+    detail: "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+    accessibleLabel: "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+  } : agentStatusPresentation(health, {
     status,
     connectionStatus,
     phaseEvidenceFresh,
     agentNameForId,
   });
-  const elapsed = startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
+  const elapsed = !paused && startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
   const runState = elapsed
     ? `${presentation.label} · ${elapsed}`
     : presentation.label;
@@ -94,7 +101,7 @@ function AgentRunState({
   ].filter(Boolean).join(" · ");
   const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
   const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
-  if (mobile) return <>
+  if (mobile && !paused) return <>
     <Tooltip title={accessibleDetail}><IconButton size="small" aria-label={accessibleDetail}
       onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: 44, height: 44 }}>
       <Box component="span" sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: theme => semanticStatusColorToken(presentation.status, theme.palette.mode) }} />
@@ -239,6 +246,7 @@ export function AgentDetailHeader({
       status={<Stack direction="row" sx={{ alignItems: "center" }}>
         <AgentRunState
           status={status}
+          paused={paused}
           health={health}
           connectionStatus={connectionStatus}
           phaseEvidenceFresh={phaseEvidenceFresh}

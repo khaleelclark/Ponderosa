@@ -1036,11 +1036,15 @@ export function AgentDetail({
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
-        cancellationError={pause?.error ?? (pauseResume.isError ? `Pause or Resume failed. ${pauseResume.error instanceof Error?pauseResume.error.message:String(pauseResume.error)}` :
+        cancellationError={[
+          pause?.error,
+          pauseResume.isError
+            ? `Pause or Resume failed. ${pauseResume.error instanceof Error ? pauseResume.error.message : String(pauseResume.error)}`
+            : undefined,
           cancelRun.isError
-            ? `The active Run could not be cancelled. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
-            : undefined)
-        }
+            ? `Stop failed. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
+            : undefined,
+        ].filter(Boolean).join("\n") || undefined}
         providerUsageState={providerUsageState}
         agentId={agentId}
         onCloseProviderUsage={() => setProviderUsageState(undefined)}

@@ -135,6 +135,7 @@ export function AgentDetailPanels({
           activity={detail.activity}
           runOutput={detail.runOutput}
           runs={detail.runs}
+          pausedRunId={detail.coordinationV3?.pause?.runId}
           activeExecutionId={activeExecutionId}
           projectRoot={projectRoot}
           onOpenFile={onOpenFile}
