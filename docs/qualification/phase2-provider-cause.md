@@ -105,3 +105,31 @@ The exact independent red product expression and five-form probe are retained in
 the evidence alongside their green results. These finite cases are not an
 exhaustive malformed-language or native-provider qualification. Original-reviewer
 exact-head approval is required before integration; no full #14/#19 claim.
+
+
+## Compaction diagnostic serialization contract
+
+The canonical provider stream and Activity API retain safely inspected original
+causes, including harmless text that calls itself a private diagnostic. That prose
+is not a credential field or a separate Communication scope. Known secret values
+are redacted before canonical persistence and serialization; safe Unicode and tails
+remain available. The explicit `publicProviderFailureEvent` helper still creates a
+short summary for summary surfaces. Its name does not imply that authorized browser
+Activity/API inspection loses the full canonical cause.
+
+Automatic pre-work compact recovery has a separate contract: only the exact
+validated live event carries in-memory recovery provenance. Neither canonical
+JSON, a shallow clone, a summary projection nor a deserialized object acquires that
+authority from diagnostic prose or category. Interrupted/structured authentication
+failures refuse it. Existing scheduler checks additionally require no observed
+provider work and an observed old-root exit before one fresh retry; detailed logs
+do not authorize replay of completed effects.
+
+The maintained compaction regression previously required arbitrary harmless prose
+to disappear from the canonical stream. That expectation predates the independently
+approved cause-retention correction and contradicts the canonical contract. Its
+replacement explicitly tests both canonical retention and summary omission, known
+credential removal (plain/encoded/malformed), Unicode/tail preservation, and the
+previously unreachable serialization-authority assertion. Runtime implementation
+is unchanged. Original red full-suite evidence remains; scoped green results do
+not waive the configured full-suite gate or final independent review.
