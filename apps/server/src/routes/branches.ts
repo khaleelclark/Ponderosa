@@ -33,7 +33,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
     if(input.chatId)throw new Error('Branch ownership is independent of a working Chat');
     if(!input.branchId || !branches.getBranch(input.branchId))throw new Error('Create a Branch before publishing its definition');
     const previousConfiguration=branches.configuration(input.branchId);
-    configuration??=validateBranchConfiguration({parameters:Object.fromEntries(Object.entries(previousConfiguration.parameters).filter(([key])=>input.definition.parameters?.[key]?.type!=='secret'&&input.definition.parameters?.[key])),limits:previousConfiguration.limits,secretBindings:Object.fromEntries(Object.entries(previousConfiguration.secretBindings??{}).filter(([key])=>input.definition.parameters?.[key]?.type==='secret'))},input.definition);
+    configuration??=validateBranchConfiguration({parameters:Object.fromEntries(Object.entries(previousConfiguration.parameters).filter(([key])=>input.definition.parameters?.[key]?.type!=='secret'&&input.definition.parameters?.[key])),limits:previousConfiguration.limits,checkpointMode:previousConfiguration.checkpointMode,secretBindings:Object.fromEntries(Object.entries(previousConfiguration.secretBindings??{}).filter(([key])=>input.definition.parameters?.[key]?.type==='secret'))},input.definition);
     for(const step of input.definition.steps)if(step.kind==='script') {
       const directory=input.bindings.directories[step.cwdRef];
       const prefix=`Branch "${input.definition.name}" · Script "${step.label??step.id}": `;

@@ -58,7 +58,7 @@ test('lineage failure rolls back the new execution without changing source or it
  f.store.sqlite.exec('DROP TRIGGER fail_lineage');assert.ok(f.branches.rewindInitial(f.branch.id,source.id,checkpoint.id,checkpoint.contentHash,'rewind'));
 });
 
-test('owner mismatch, noncanceled and started sources cannot rewind',t=>{
+test('owner mismatch, noncanceled and started sources cannot rewind',async t=>{
  const f=fixture(t),{source,checkpoint}=canceled(f);
  assert.equal(f.branches.initialCheckpoint('another-branch',source.id),undefined);
  assert.throws(()=>f.branches.rewindInitial(f.branch.id,'wrong-execution',checkpoint.id,checkpoint.contentHash,'rewind'),/not found/);
@@ -66,7 +66,7 @@ test('owner mismatch, noncanceled and started sources cannot rewind',t=>{
  const active=f.branches.accept(f.branch.id,'active','active');
  assert.throws(()=>f.branches.saveInitialCheckpoint(f.branch.id,active.id),/never started/);
  f.store.sqlite.prepare("UPDATE branch_executions SET state='queued',cancel_requested=0 WHERE id=?").run(source.id);
- f.branches.advance();f.branches.cancel(source.id);
+ await f.branches.unitSaver.drain();f.branches.advance();f.branches.cancel(source.id);
  assert.throws(()=>f.branches.rewindInitial(f.branch.id,source.id,checkpoint.id,checkpoint.contentHash,'rewind'),/never started/);
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_initial_rewinds').get().n,0);
 });

@@ -290,7 +290,7 @@ test('a human-edited choice is validated by Route without re-running prior work'
  const edges=[edge('review','discover','choice'),edge('chosen','choice','route','approved'),edge('billing','route','billing','selected',{choice:'Billing'}),edge('otherwise','route','fallback','failure')];
  const f=fixture(t,{entry:'discover',steps,controls,edges}),execution=f.accept('input');
  f.branches.advance();const prior=f.branches.claimScript('worker');f.branches.settleScript(prior,{failed:false,output:'proposal'});f.branches.advance();f.branches.advance();
- const gate=f.branches.detail(execution.id).gates[0];f.branches.resolveGate(gate.id,{commandKey:'choose',expectedRevision:gate.revision,decision:'approve',output:'Billing'});f.branches.advance();
+ const gate=f.branches.detail(execution.id).gates[0];f.branches.resolveGate(gate.id,{commandKey:'choose',expectedRevision:gate.revision,decision:'approve',output:'Billing'});await f.branches.unitSaver.drain();f.branches.advance();f.branches.advance();
  const selected=f.branches.claimScript('worker');assert.equal(selected.input,'Billing');f.branches.settleScript(selected,{failed:false,output:'done'});f.branches.advance();
  assert.equal(f.branches.execution(execution.id).state,'completed');assert.equal(f.branches.detail(execution.id).steps.filter(step=>step.stepId==='discover').length,1);
  assert.ok(f.branches.detail(execution.id).decisions.some(decision=>decision.kind==='route_selected'));

@@ -1670,6 +1670,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built agents/server and existing SQLite dependency; private canonical stores; no provider processes",
       "origin": "Actual per-unit commit, exact owner closure and independent async saver failure regressions"
+    },
+    {
+      "path": "tests/branches/checkpoint-modes.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built core/agents/server; private stores and controlled leases/notification only; no provider process",
+      "origin": "#32 configurable modes owner barriers and exit lifecycle"
     }
   ],
   "retainedReleasePayload": [

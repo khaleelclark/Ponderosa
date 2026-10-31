@@ -87,15 +87,16 @@ test('preflight permits a shorter failure route under the configured budget',t=>
  assert.equal(f.branches.execution(f.execution.id).output,'recovered');
 });
 
-test('preflight permits a rejected gate to exclude an all-join arm',t=>{
+test('preflight permits a rejected gate to exclude an all-join arm',async t=>{
  const graph={entry:'fork',steps:[{id:'gate',kind:'human_gate',prompt:'Approve work?',editable:false},script('work'),script('side')],controls:[
   {id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['gated','side-arm']}],edges:[
    edge('gated','fork','gate','selected'),edge('side-arm','fork','side','selected'),edge('approved','gate','work','approved'),edge('work-in','work','join'),edge('side-in','side','join')]};
  const f=fixture(t,graph,{maxTraversals:4});
  f.branches.advance();
- const lease=f.branches.claimScript('worker');assert.ok(lease);f.branches.settleScript(lease,{failed:false,output:'side done'});f.branches.advance();
+ assert.equal(f.branches.claimScript('worker'),undefined); // Interrupt intent stops new sibling dispatch.
  const gate=f.branches.detail(f.execution.id).gates.find(g=>g.state==='waiting');assert.ok(gate);
- f.branches.resolveGate(gate.id,{commandKey:'reject-gate',expectedRevision:gate.revision,decision:'reject'});f.branches.advance();
+ f.branches.resolveGate(gate.id,{commandKey:'reject-gate',expectedRevision:gate.revision,decision:'reject'});await f.branches.unitSaver.drain();f.branches.advance();f.branches.advance();
+ const lease=f.branches.claimScript('worker');assert.ok(lease);f.branches.settleScript(lease,{failed:false,output:'side done'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).state,'completed');
  assert.equal(f.branches.execution(f.execution.id).budgetExhausted,false);
 });
@@ -174,12 +175,12 @@ test('unselected conditional arm does not block an all-join',t=>{
  assert.equal(f.branches.execution(f.execution.id).state,'completed');
 });
 
-test('durable gate edits input, replays exact resolution, and rejects conflicts',t=>{
+test('durable gate edits input, replays exact resolution, and rejects conflicts',async t=>{
  const f=fixture(t,{steps:[{id:'a',kind:'human_gate',prompt:'Review',editable:true},script('b')],edges:[edge('approved','a','b','approved')]});
- f.branches.advance();f.reopen();const gate=f.branches.detail(f.execution.id).gates[0];
+ f.branches.advance();await f.branches.unitSaver.drain();f.reopen();const gate=f.branches.detail(f.execution.id).gates[0];
  assert.equal(f.branches.execution(f.execution.id).state,'waiting');
  const input={commandKey:'approve',expectedRevision:gate.revision,decision:'approve',output:'edited'};
- const result=f.branches.resolveGate(gate.id,input);f.branches.advance();f.reopen();assert.deepEqual(f.branches.resolveGate(gate.id,input),result);
+ const result=f.branches.resolveGate(gate.id,input);await f.branches.unitSaver.drain();f.branches.advance();f.branches.advance();await f.branches.unitSaver.drain();f.reopen();assert.deepEqual(f.branches.resolveGate(gate.id,input),result);
  assert.throws(()=>f.branches.resolveGate(gate.id,{...input,output:'different'}),/idempotency/);
  assert.throws(()=>f.branches.resolveGate(gate.id,{...input,commandKey:'conflict'}),/conflict/);
  const lease=f.branches.claimScript('worker');assert.equal(lease.input,'edited');
@@ -195,10 +196,10 @@ test('gate rejection with no rejection route is skipped and canceled gates canno
  f.branches.cancel(next.id);assert.throws(()=>f.branches.resolveGate(second.id,{commandKey:'approve',expectedRevision:0,decision:'approve'}),/conflict/);
 });
 
-test('routed gate rejection preserves proposed text for its rejection path',t=>{
+test('routed gate rejection preserves proposed text for its rejection path',async t=>{
  const f=fixture(t,{steps:[{id:'a',kind:'human_gate',prompt:'Review',editable:false},script('b')],edges:[edge('rejected','a','b','rejected')]});
  f.branches.advance();const gate=f.branches.detail(f.execution.id).gates[0];
- f.branches.resolveGate(gate.id,{commandKey:'reject-route',expectedRevision:gate.revision,decision:'reject'});f.branches.advance();
+ f.branches.resolveGate(gate.id,{commandKey:'reject-route',expectedRevision:gate.revision,decision:'reject'});await f.branches.unitSaver.drain();f.branches.advance();f.branches.advance();
  const lease=f.branches.claimScript('worker');assert.equal(lease.input,'input');
  f.branches.settleScript(lease,{failed:false,output:'Handled rejection'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).output,'Handled rejection');
@@ -288,7 +289,7 @@ test('impossible quorum fails once and cancels unfinished paths',t=>{
  assert.throws(()=>f.branches.settleScript(c,{failed:false}),/fenced/);
 });
 
-test('manual retry uses runnable capacity while another execution waits at a human gate',t=>{
+test('manual retry uses runnable capacity while another execution waits at a human gate',async t=>{
  const f=fixture(t,{steps:[script('a'),{id:'review',kind:'human_gate',prompt:'Review',editable:false}],edges:[edge('review','a','review')],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}});
  f.branches.advance();const failedLease=f.branches.claimScript('worker');f.branches.settleScript(failedLease,{failed:true,output:'fix me'});
  assert.equal(f.branches.execution(f.execution.id).state,'failed');
@@ -296,27 +297,27 @@ test('manual retry uses runnable capacity while another execution waits at a hum
  const waitingLease=f.branches.claimScript('worker');f.branches.settleScript(waitingLease,{failed:false,output:'ready for review'});f.branches.advance();
  assert.equal(f.branches.execution(waiting.id).state,'waiting');assert.equal(f.branches.detail(waiting.id).gates[0].state,'waiting');
  const failed=f.branches.execution(f.execution.id);
- f.branches.intervene(f.execution.id,{commandKey:'retry-with-waiter',expectedRevision:failed.revision,action:'retry',attemptId:failedLease.attemptId,reason:'Corrected the failure'});
+ f.branches.intervene(f.execution.id,{commandKey:'retry-with-waiter',expectedRevision:failed.revision,action:'retry',attemptId:failedLease.attemptId,reason:'Corrected the failure'});await f.branches.unitSaver.drain();f.branches.advance();
  const retry=f.branches.claimScript('worker');assert.ok(retry);assert.equal(retry.executionId,f.execution.id);
 });
 
-test('failed Step asks a human before retry and preserves the earlier failure evidence',t=>{
+test('failed Step asks a human before retry and preserves the earlier failure evidence',async t=>{
  const f=fixture(t,{policy:{maxConcurrentExecutions:1,failure:{action:'ask_human'}}});f.branches.advance();f.branches.settleScript(f.branches.claimScript('worker'),{failed:true,output:'inspect this'});
- f.reopen();const gate=f.branches.detail(f.execution.id).gates[0];assert.equal(gate.purpose,'recovery');assert.equal(gate.proposal,'inspect this');
- f.branches.resolveGate(gate.id,{commandKey:'retry',expectedRevision:gate.revision,decision:'retry'});
+ await f.branches.unitSaver.drain();f.reopen();const gate=f.branches.detail(f.execution.id).gates[0];assert.equal(gate.purpose,'recovery');assert.equal(gate.proposal,'inspect this');
+ f.branches.resolveGate(gate.id,{commandKey:'retry',expectedRevision:gate.revision,decision:'retry'});await f.branches.unitSaver.drain();f.branches.advance();
  const lease=f.branches.claimScript('worker');f.branches.settleScript(lease,{failed:false,output:'fixed'});
  assert.equal(f.branches.execution(f.execution.id).state,'completed');assert.equal(f.branches.detail(f.execution.id).attempts[0].result.output,'inspect this');
 });
 
-test('rejecting a recovery gate seals the failed invocation before a later operator retry',t=>{
+test('rejecting a recovery gate seals the failed invocation before a later operator retry',async t=>{
  const f=fixture(t,{policy:{maxConcurrentExecutions:1,failure:{action:'ask_human'}}});f.branches.advance();
  const first=f.branches.claimScript('worker');f.branches.settleScript(first,{failed:true,output:'original failure'});
  const gate=f.branches.detail(f.execution.id).gates[0];
- f.branches.resolveGate(gate.id,{commandKey:'reject-recovery',expectedRevision:gate.revision,decision:'reject'});
+ f.branches.resolveGate(gate.id,{commandKey:'reject-recovery',expectedRevision:gate.revision,decision:'reject'});await f.branches.unitSaver.drain();f.branches.advance();
  const rejected=f.branches.detail(f.execution.id),oldStep=rejected.steps[0],oldResult=rejected.sealedResults[0];
  assert.equal(rejected.execution.state,'failed');assert.equal(rejected.sealedResults.length,1);
  assert.equal(oldResult.stepExecutionId,oldStep.id);assert.deepEqual(oldResult.result,{failed:true,output:'original failure'});
- f.branches.intervene(f.execution.id,{commandKey:'retry-after-rejection',expectedRevision:rejected.execution.revision,action:'retry',attemptId:first.attemptId,reason:'Reconciled the failed attempt'});
+ f.branches.intervene(f.execution.id,{commandKey:'retry-after-rejection',expectedRevision:rejected.execution.revision,action:'retry',attemptId:first.attemptId,reason:'Reconciled the failed attempt'});await f.branches.unitSaver.drain();f.branches.advance();
  const retry=f.branches.claimScript('worker');assert.ok(retry);f.branches.settleScript(retry,{failed:false,output:'fixed'});
  const final=f.branches.detail(f.execution.id);
  assert.equal(final.execution.state,'completed');assert.equal(final.steps.length,2);assert.equal(final.sealedResults.length,2);
@@ -366,28 +367,28 @@ test('an arrived failed path cannot be retried while an any join is still open',
  assert.equal(f.branches.execution(f.execution.id).output,'[b]\nwinner');
 });
 
-test('Agent recovery gate does not consume its terminal Request again across restart',t=>{
+test('Agent recovery gate does not consume its terminal Request again across restart',async t=>{
  const f=fixture(t,{steps:[{id:'a',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Work',failure:{action:'ask_human'}}]});
  f.branches.advance();const first=f.branches.detail(f.execution.id).attempts[0];
  f.coordination.updateRequest({requestId:first.requestId,updateId:'failed',kind:'failed',actor:{kind:'agent',id:f.agent.id},payload:{text:'needs review'}});
- f.branches.advance();f.branches.advance();f.reopen();f.branches.advance();
+ f.branches.advance();f.branches.advance();await f.branches.unitSaver.drain();f.reopen();f.branches.advance();
  const gate=f.branches.detail(f.execution.id).gates[0];
  assert.equal(gate.state,'waiting');assert.equal(f.branches.execution(f.execution.id).state,'waiting');
  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE transition_key=?").get(`settled:${first.id}`).n,1);
- f.branches.resolveGate(gate.id,{commandKey:'retry-agent',expectedRevision:gate.revision,decision:'retry'});
+ f.branches.resolveGate(gate.id,{commandKey:'retry-agent',expectedRevision:gate.revision,decision:'retry'});await f.branches.unitSaver.drain();f.branches.advance();
  f.branches.advance();const next=f.branches.detail(f.execution.id).attempts[1];
  assert.ok(next.requestId);assert.notEqual(next.requestId,first.requestId);
 });
 
 
-test('approval precedes a pinned notification Action and expired leases fence stale settlement',t=>{
+test('approval precedes a pinned notification Action and expired leases fence stale settlement',async t=>{
  const f=fixture(t,{steps:[{id:'a',kind:'human_gate',prompt:'Review notification',editable:true},{id:'notify',kind:'action',action:'notify',configRefs:[]}],edges:[edge('approve','a','notify','approved')]});
  f.branches.advance();assert.equal(f.branches.claimAction('early'),undefined);
- const gate=f.branches.detail(f.execution.id).gates[0];f.branches.resolveGate(gate.id,{commandKey:'approve',expectedRevision:gate.revision,decision:'approve',output:'Approved text'});f.branches.advance();
+ const gate=f.branches.detail(f.execution.id).gates[0];f.branches.resolveGate(gate.id,{commandKey:'approve',expectedRevision:gate.revision,decision:'approve',output:'Approved text'});await f.branches.unitSaver.drain();f.branches.advance();f.branches.advance();
  const first=f.branches.claimAction('first');assert.equal(first.input,'Approved text');assert.equal(first.title,'Graph');
  const definition=f.branches.version(f.branch.id,f.branch.versionId).definition;
  f.branches.deploy({branchId:f.branch.id,expectedVersionId:f.branch.versionId,chatId:f.branch.chatId,idempotencyKey:'rename',definition:{...definition,name:'New name'},bindings:f.branches.localConfiguration(f.branch.id)});
- f.reopen();assert.equal(f.branches.claimAction('too-early'),undefined);assert.throws(()=>f.branches.settleAction(first,'expired',new Date(Date.now()+31000).toISOString()),/fenced/);
+ await f.branches.unitSaver.drain();f.reopen();assert.equal(f.branches.claimAction('too-early'),undefined);assert.throws(()=>f.branches.settleAction(first,'expired',new Date(Date.now()+31000).toISOString()),/fenced/);
  const now=new Date(Date.now()+31000).toISOString(),retry=f.branches.claimAction('retry',now);assert.equal(retry.attemptId,first.attemptId);assert.equal(retry.title,'Graph');
  assert.throws(()=>f.branches.settleAction(first,'stale'),/fenced/);f.branches.settleAction(retry,'notification',now);
  assert.equal(f.branches.execution(f.execution.id).state,'completed');assert.equal(f.branches.execution(f.execution.id).output,'Approved text');assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);
@@ -398,15 +399,15 @@ test('cancellation fences an already leased notification Action',t=>{
  assert.throws(()=>f.branches.settleAction(action,'late'),/fenced/);assert.equal(f.branches.claimAction('retry',new Date(Date.now()+60000).toISOString()),undefined);
 });
 
-test('execution audit pages bound attempts and use execution-scoped restart-safe cursors',t=>{
+test('execution audit pages bound attempts and use execution-scoped restart-safe cursors',async t=>{
  const f=fixture(t,{policy:{maxConcurrentExecutions:8,failure:{action:'retry',maxAttempts:100,delayMs:0}}});
  for(let i=0;i<100;i++){f.branches.advance();const lease=f.branches.claimScript('test');assert.ok(lease);f.branches.settleScript(lease,{failed:true,output:'Known failure'})}
  const failed=f.branches.detail(f.execution.id),last=failed.attempts.at(-1);assert.equal(failed.attempts.length,100);
- f.branches.intervene(f.execution.id,{commandKey:'retry-page',expectedRevision:failed.execution.revision,action:'retry',attemptId:last.id,reason:'Retry after correction'});
+ f.branches.intervene(f.execution.id,{commandKey:'retry-page',expectedRevision:failed.execution.revision,action:'retry',attemptId:last.id,reason:'Retry after correction'});await f.branches.unitSaver.drain();f.branches.advance();
  f.branches.advance();f.branches.settleScript(f.branches.claimScript('test'),{failed:false,output:'Done'});
  const first=f.branches.detail(f.execution.id);assert.equal(first.attempts.length,100);assert.ok(first.nextCursor);assert.equal(first.attempts.at(-1).number,1);
  assert.equal(first.steps.length,2);assert.notEqual(first.steps[0].sealedResultId,first.steps[1].sealedResultId);
- f.reopen();const older=f.branches.detail(f.execution.id,first.nextCursor);assert.equal(older.attempts.length,1);assert.equal(older.attempts[0].number,1);assert.equal(older.nextCursor,undefined);assert.equal(older.steps.length,0);
+ await f.branches.unitSaver.drain();f.reopen();const older=f.branches.detail(f.execution.id,first.nextCursor);assert.equal(older.attempts.length,1);assert.equal(older.attempts[0].number,1);assert.equal(older.nextCursor,undefined);assert.equal(older.steps.length,0);
  const other=f.branches.accept(f.branch.id,'other','');assert.throws(()=>f.branches.detail(other.id,first.nextCursor),/cursor/);assert.throws(()=>f.branches.detail(f.execution.id,'invalid'),/JSON|Unexpected|cursor/);
 });
 

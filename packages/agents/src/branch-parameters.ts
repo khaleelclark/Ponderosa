@@ -7,7 +7,8 @@ export const DEFAULT_BRANCH_CONFIGURATION: BranchConfiguration = {
 export function validateBranchConfiguration(value: unknown, definition: BranchDefinition, requireConfigured=false): BranchConfiguration {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Branch configuration');
   const v = value as BranchConfiguration;
-  if (Object.keys(v).some(k => !['parameters','limits','secretBindings'].includes(k)) || !v.parameters || typeof v.parameters !== 'object' || Array.isArray(v.parameters)) throw new Error('Invalid Branch configuration');
+  if (Object.keys(v).some(k => !['parameters','limits','secretBindings','checkpointMode'].includes(k)) || !v.parameters || typeof v.parameters !== 'object' || Array.isArray(v.parameters)) throw new Error('Invalid Branch configuration');
+  if (v.checkpointMode !== undefined && !['async','sync','exit'].includes(v.checkpointMode)) throw new Error('Invalid checkpoint mode');
   const limits = { ...DEFAULT_BRANCH_CONFIGURATION.limits, ...v.limits };
   for (const [key,n] of Object.entries(limits)) if (!['maxCallDepth','maxLoopIterations','maxTraversals'].includes(key) || !Number.isSafeInteger(n) || n < 1 || n > 1_000_000) throw new Error(`Invalid limit: ${key}`);
   const parameters: BranchConfiguration['parameters'] = {};
@@ -27,7 +28,7 @@ export function validateBranchConfiguration(value: unknown, definition: BranchDe
     // Opaque Engine-owned bindings only; no credential values or Script consumers.
     secretBindings[key] = branchKey(binding);
   }
-  return { parameters, limits, ...(Object.keys(secretBindings).length ? {secretBindings} : {}) };
+  return { parameters, limits, ...(v.checkpointMode === undefined ? {} : {checkpointMode:v.checkpointMode}), ...(Object.keys(secretBindings).length ? {secretBindings} : {}) };
 }
 export function interpolateBranchText(text: string, definition: BranchDefinition, configuration: BranchConfiguration): string {
   return branchText(text.replace(/\{\{parameter:([a-zA-Z0-9_.:-]+)\}\}/gu, (_match,key: string) => {

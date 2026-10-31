@@ -82,9 +82,10 @@ export class BranchStore {
       try {
         result = this.sqlite.transaction(() => {
           const value = operation();
+          this.closeCheckpointInvocations(context);
           // Snapshot errors are data on the ticket, never primary transaction errors.
           try { candidates = this.unitSaver.freeze(context); }
-          catch(error) { candidates = [...context.written].sort().map(executionId=>({executionId,error})); }
+          catch(error) { candidates = [...context.written].sort().map(executionId=>{const invocation=this.checkpointInvocationRow(executionId);return {executionId,invocationId:invocation?.id,mode:invocation?.mode,error};}); }
           return value;
         })[mode]();
       } finally { this.unit = undefined; }
@@ -97,9 +98,70 @@ export class BranchStore {
     const wrapped = Object.assign(() => invoke('deferred'), {deferred:()=>invoke('deferred'), immediate:()=>invoke('immediate'), exclusive:()=>invoke('exclusive')});
     return wrapped;
   }
-  private selectedWrite(executionId: string): void { this.unit?.written.add(executionId); }
+  private selectedWrite(executionId: string): void {
+    if(!this.unit)return;
+    this.ensureCheckpointInvocation(executionId);
+    this.unit.written.add(executionId);
+  }
+  private ensureCheckpointInvocation(executionId:string):void {
+    if(this.checkpointInvocationRow(executionId))return;
+    const execution=this.row('SELECT configuration_json FROM branch_executions WHERE id=?',executionId);
+    if(execution)this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:1,mode:JSON.parse(execution.configuration_json).checkpointMode??'async',state:'active',durability:'pending'}),executionId);
+  }
+  private closeCheckpointInvocations(context:BranchUnitContext):void {
+    for(const id of context.written){
+      const invocation=this.checkpointInvocationRow(id);
+      if(!invocation)continue;
+      const execution=this.execution(id);if(!execution)continue;
+      const terminal=!['queued','running','waiting'].includes(execution.state);
+      const gate=this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",id);
+      if(!terminal&&!gate&&!['interrupting','interrupted'].includes(invocation.state))continue;
+      const outstanding=this.row(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+        WHERE s.execution_id=? AND (a.state IN ('leased','running','outcome_unknown') OR
+          (a.request_id IS NOT NULL AND a.state IN ('prepared','waiting')))
+        UNION ALL SELECT 1 FROM branch_executions WHERE parent_execution_id=? AND state IN ('queued','running','waiting') LIMIT 1`,id,id);
+      const state=terminal?'terminal':outstanding?'interrupting':'interrupted';
+      this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({...invocation,state,primary_outcome:terminal?execution.state:state}),id);
+    }
+  }
+  private checkpointInvocationRow(executionId:string):Row|undefined {
+    const row=this.row('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?',executionId);
+    return row?.checkpoint_invocation_json?JSON.parse(row.checkpoint_invocation_json):undefined;
+  }
+  checkpointInvocation(executionId:string):import('@ponderosa/core').BranchCheckpointInvocationDto|undefined {
+    const row=this.checkpointInvocationRow(executionId);
+    if(!row)return;
+    const staged=this.unit?.written.has(executionId);
+    const ticket=this.unitSaver.status(executionId),status=!staged&&ticket?.invocationId===row.id?ticket:undefined;
+    return {id:row.id,mode:row.mode,state:row.state,...(row.primary_outcome?{primaryOutcome:row.primary_outcome}:{}),durability:staged?'pending':status&&status.invocationId===row.id?status.state:row.durability==='failed'?'failed':row.durability==='saved'&&this.unitSaver.currentSavedMatches(executionId,row.id,row.saved_snapshot_id)?'saved':'coverage_unknown',
+      ...(status?.requiredWatermark!==undefined?{requiredWatermark:status.requiredWatermark}:{}),...(status?.state==='saved'?{savedSnapshotId:status.savedId,savedContentHash:status.contentHash}:{}),...(row.saved_snapshot_id?{lastSavedSnapshotId:row.saved_snapshot_id}:{})};
+  }
+  private resumeCheckpointInvocation(executionId:string):boolean {
+    const invocation=this.checkpointInvocationRow(executionId);
+    if(!invocation||!['interrupted','terminal'].includes(invocation.state)||invocation.durability!=='saved')return false;
+    const ticket=this.unitSaver.status(executionId);
+    if(ticket?(ticket.invocationId!==invocation.id||ticket.state!=='saved'):!this.unitSaver.currentSavedMatches(executionId,invocation.id,invocation.saved_snapshot_id))return false;
+    if(this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",executionId))return false;
+    this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:invocation.ordinal+1,mode:invocation.mode,state:'active',durability:'pending'}),executionId);
+    this.selectedWrite(executionId);return true;
+  }
+  checkpointDispatch(lease:BranchActionLease|BranchScriptLease,now=new Date().toISOString()):'ready'|'waiting'|'fenced' {
+    const valid=this.row(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+      JOIN branch_executions e ON e.id=s.execution_id JOIN branches b ON b.id=e.branch_id
+      WHERE a.id=? AND a.fence=? AND a.lease_owner=? AND a.lease_until>? AND a.state='leased' AND a.cancel_requested=0
+        AND s.execution_id=? AND e.state IN ('running','waiting') AND e.cancel_requested=0 AND b.deleting=0`,lease.attemptId,lease.fence,lease.workerId,now,lease.executionId);
+    if(!valid)return 'fenced';
+    const execution=this.execution(lease.executionId)!;
+    if(this.restricted(execution.branchId,'title' in lease?CAPABILITY_IDS.notifications:CAPABILITY_IDS.scripts))return 'fenced';
+    const branch=this.getBranch(execution.branchId)!;try{if(branch.chatId)this.chat(branch.chatId);}catch{return 'fenced';}
+    // No await between this current owner/ancestor check and fresh effect release.
+    return this.functionalReady(lease.executionId)?'ready':'waiting';
+  }
   private functionalReady(executionId: string): boolean {
-    return this.ancestors(executionId).every(owner => !this.unitSaver.failed(owner.id));
+    return this.ancestors(executionId).every(owner => {
+      const invocation=this.checkpointInvocationRow(owner.id);
+      return (!invocation||invocation.state==='active')&&this.unitSaver.ready(owner.id,invocation?.mode??JSON.parse(owner.configuration_json).checkpointMode??'async');
+    });
   }
   private row(sql: string, ...args: unknown[]): Row | undefined { return this.sqlite.prepare(sql).get(...args) as Row | undefined; }
   private rows(sql: string, ...args: unknown[]): Row[] { return this.sqlite.prepare(sql).all(...args) as Row[]; }
@@ -323,6 +385,7 @@ export class BranchStore {
           const validatedConfiguration=validateBranchConfiguration({
             parameters:Object.fromEntries(Object.entries(previousConfiguration.parameters).filter(([key])=>retainedParameterKeys.has(key))),
             limits:previousConfiguration.limits,
+            checkpointMode:previousConfiguration.checkpointMode,
             secretBindings:Object.fromEntries(Object.entries(previousConfiguration.secretBindings??{}).filter(([key])=>definition.parameters?.[key]?.type==='secret')),
           },definition);
           configuration={...validatedConfiguration,parameters:Object.fromEntries(Object.entries(validatedConfiguration.parameters).filter(([key])=>retainedParameterKeys.has(key)))};
@@ -655,7 +718,7 @@ export class BranchStore {
   }
   execution(id: string): BranchExecutionDto | undefined {
     const r = this.row("SELECT * FROM branch_executions WHERE id = ?", id);
-    return r && { id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, admissionSource:r.admission_source, ...(r.admitted_at?{admittedAt:r.admitted_at}:{}), ...(r.state==="queued"&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:"execution_budget" as const,branchId:r.branch_id}}:{}), budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
+    return r && { checkpointInvocation:this.checkpointInvocation(id), id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, admissionSource:r.admission_source, ...(r.admitted_at?{admittedAt:r.admitted_at}:{}), ...(r.state==="queued"&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:"execution_budget" as const,branchId:r.branch_id}}:{}), budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
   }
   private scriptEvidence(attemptId:string):import('@ponderosa/core').BranchAttemptDto['scriptEvidence'] {
     const evidence=this.row("SELECT evidence_json FROM branch_checkpoints WHERE kind='script_process_exit' AND transition_key GLOB ? ORDER BY id DESC LIMIT 1",`process-exit:${attemptId}:*`);
@@ -996,6 +1059,7 @@ export class BranchStore {
             }
             if(this.unit?.written.size){this.aggregate(execution.id,now);return;}
           }
+          if(this.resumeCheckpointInvocation(execution.id))return;
           if (!this.functionalReady(execution.id)) return;
           if(execution.state==='queued')execution=this.execution(this.executionBudgets.selectForStart(execution,now,id=>this.hasRunnableCapacity(id)))!;
           if (!this.functionalReady(execution.id)) return;
