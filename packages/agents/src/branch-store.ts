@@ -984,6 +984,18 @@ export class BranchStore {
             this.aggregate(execution.id, now); return;
           }
           try { if(branch.chatId)this.chat(branch.chatId); } catch { this.cancel(execution.id, now); return; }
+          if(this.unit?.written.size){this.aggregate(execution.id,now);return;}
+          for(const observed of this.rows(`SELECT a.*,s.step_id,s.input_text,s.path_id FROM branch_attempts a
+            JOIN branch_step_executions s ON s.id=a.step_execution_id
+            WHERE s.execution_id=? AND a.state IN ('prepared','waiting') AND a.cancel_requested=0
+              AND NOT EXISTS(SELECT 1 FROM branch_gates g WHERE g.attempt_id=a.id AND g.state='waiting')`,execution.id)){
+            if(observed.request_id)this.reduceObservedRequest(execution,observed,now);
+            else {
+              const step=this.definition(execution).steps.find(s=>s.id===observed.step_id)!;
+              if(step.kind==='branch_call'&&this.row("SELECT 1 FROM branch_executions WHERE parent_attempt_id=? AND state IN ('completed','failed','canceled','skipped','merged')",observed.id))this.advanceCall(execution,observed,step,now);
+            }
+            if(this.unit?.written.size){this.aggregate(execution.id,now);return;}
+          }
           if (!this.functionalReady(execution.id)) return;
           if(execution.state==='queued')execution=this.execution(this.executionBudgets.selectForStart(execution,now,id=>this.hasRunnableCapacity(id)))!;
           if (!this.functionalReady(execution.id)) return;
@@ -1065,39 +1077,6 @@ export class BranchStore {
               this.run("UPDATE branch_paths SET state = 'active' WHERE id = ?", attempt.path_id);
               this.selectedWrite(execution.id);
               this.checkpoint(execution.id, `request:${attempt.id}`, "request_bound", { requestId: result.requestIds[0], attemptId: attempt.id }, now);
-            } else if (attempt.request_id) {
-              const request = this.row("SELECT state,project_id,conversation_id,recipient_agent_id FROM coordination_requests WHERE id = ?", attempt.request_id);
-              if (!request || request.state === "outcome_unknown" || request.state === "superseded") {
-                this.waitPath(attempt.path_id);
-                this.run("UPDATE branch_attempts SET error = ? WHERE id = ?", `Request ${request?.state ?? "unavailable"}; explicit reconciliation required`, attempt.id); continue;
-              }
-              if (!TERMINAL_REQUEST_STATES.has(request.state as CoordinationRequestState)) continue;
-              const update = this.row("SELECT payload_json FROM coordination_request_updates WHERE request_id = ? AND resulting_state = ? ORDER BY resulting_version DESC LIMIT 1", attempt.request_id, request.state);
-              const payload = update ? JSON.parse(update.payload_json) : null;
-              if(request.state==='completed'&&step.kind==='agent'&&step.requireUserCommunication){
-                const id=payload?.communicationEventId;
-                const event=typeof id==='string'&&id.length<=256?this.communicationEvent?.(request.project_id,id):undefined;
-                const authored=event?.sender.kind==='agent'&&event.sender.agentId===request.recipient_agent_id&&
-                  event.conversationId===request.conversation_id&&event.intent==='user_dm'&&
-                  (event.audience.kind==='user'||event.audience.kind==='user_agent'&&event.audience.agentId===request.recipient_agent_id)&&
-                  Boolean(event.sender.executionId&&this.row(`SELECT 1 FROM activation_sources source
-                    JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
-                    JOIN provider_inputs submitted ON submitted.scheduler_run_id=attached.run_id
-                    WHERE source.source_kind='request' AND source.source_id=? AND submitted.execution_id=? AND submitted.agent_id=?`,
-                    attempt.request_id,event.sender.executionId,request.recipient_agent_id));
-                if(!authored){this.run("UPDATE branch_attempts SET error='Required user Communication is missing or belongs to another Request Run' WHERE id=?",attempt.id);this.finish(attempt.id,{failed:true},now);continue;}
-                this.checkpoint(execution.id,`communication:${attempt.id}`,'user_communication_verified',{attemptId:attempt.id,requestId:attempt.request_id,communicationEventId:event!.eventId},now);
-              }
-              let output: string | undefined;
-              try { output = typeof payload?.text === "string" ? branchText(payload.text) : undefined; }
-              catch { this.waitPath(attempt.path_id); this.run("UPDATE branch_attempts SET error = 'Request output exceeds inline contract; explicit artifact reference required' WHERE id = ?", attempt.id); continue; }
-              let reason:string|undefined;
-              if(request.state!=="completed"&&typeof payload?.reason==='string'){
-                try { reason=branchText(Array.from(payload.reason).slice(0,2000).join('')); }
-                catch { reason='The Agent Request failed; its reason could not be displayed.'; }
-              }
-              if(request.state!=="completed"&&reason)this.run("UPDATE branch_attempts SET error=? WHERE id=?",reason,attempt.id);
-              this.finish(attempt.id, { failed: request.state !== "completed", ...(output !== undefined ? { output } : {}) }, now);
             }
           }
           this.aggregate(execution.id, now);
@@ -1107,6 +1086,45 @@ export class BranchStore {
         if (this.sqlite.inTransaction) break;
       }
     }
+  }
+  /** Already-observed outcomes bypass functional checkpoint permits and ready controls. */
+  private reduceObservedRequest(execution:BranchExecutionDto,attempt:Row,now:string):void {
+    const step=this.definition(execution).steps.find(s=>s.id===attempt.step_id)!;
+    if(step.kind!=='agent'&&attempt.purpose!=='recovery')return;
+
+    const request = this.row("SELECT state,project_id,conversation_id,recipient_agent_id FROM coordination_requests WHERE id = ?", attempt.request_id);
+    if (!request || request.state === "outcome_unknown" || request.state === "superseded") {
+      this.waitPath(attempt.path_id);
+      this.run("UPDATE branch_attempts SET error = ? WHERE id = ?", `Request ${request?.state ?? "unavailable"}; explicit reconciliation required`, attempt.id); return;
+    }
+    if (!TERMINAL_REQUEST_STATES.has(request.state as CoordinationRequestState)) return;
+    const update = this.row("SELECT payload_json FROM coordination_request_updates WHERE request_id = ? AND resulting_state = ? ORDER BY resulting_version DESC LIMIT 1", attempt.request_id, request.state);
+    const payload = update ? JSON.parse(update.payload_json) : null;
+    if(request.state==='completed'&&step.kind==='agent'&&step.requireUserCommunication){
+      const id=payload?.communicationEventId;
+      const event=typeof id==='string'&&id.length<=256?this.communicationEvent?.(request.project_id,id):undefined;
+      const authored=event?.sender.kind==='agent'&&event.sender.agentId===request.recipient_agent_id&&
+        event.conversationId===request.conversation_id&&event.intent==='user_dm'&&
+        (event.audience.kind==='user'||event.audience.kind==='user_agent'&&event.audience.agentId===request.recipient_agent_id)&&
+        Boolean(event.sender.executionId&&this.row(`SELECT 1 FROM activation_sources source
+          JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
+          JOIN provider_inputs submitted ON submitted.scheduler_run_id=attached.run_id
+          WHERE source.source_kind='request' AND source.source_id=? AND submitted.execution_id=? AND submitted.agent_id=?`,
+          attempt.request_id,event.sender.executionId,request.recipient_agent_id));
+      if(!authored){this.run("UPDATE branch_attempts SET error='Required user Communication is missing or belongs to another Request Run' WHERE id=?",attempt.id);this.finish(attempt.id,{failed:true},now);return;}
+      this.checkpoint(execution.id,`communication:${attempt.id}`,'user_communication_verified',{attemptId:attempt.id,requestId:attempt.request_id,communicationEventId:event!.eventId},now);
+    }
+    let output: string | undefined;
+    try { output = typeof payload?.text === "string" ? branchText(payload.text) : undefined; }
+    catch { this.waitPath(attempt.path_id); this.run("UPDATE branch_attempts SET error = 'Request output exceeds inline contract; explicit artifact reference required' WHERE id = ?", attempt.id); return; }
+    let reason:string|undefined;
+    if(request.state!=="completed"&&typeof payload?.reason==='string'){
+      try { reason=branchText(Array.from(payload.reason).slice(0,2000).join('')); }
+      catch { reason='The Agent Request failed; its reason could not be displayed.'; }
+    }
+    if(request.state!=="completed"&&reason)this.run("UPDATE branch_attempts SET error=? WHERE id=?",reason,attempt.id);
+    this.finish(attempt.id, { failed: request.state !== "completed", ...(output !== undefined ? { output } : {}) }, now);
+
   }
   /** Reuse occurrence admission and exact scheduler steering; held checks are not executions. */
   private advanceScheduledChecks(now:string):void {

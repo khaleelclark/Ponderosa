@@ -12,14 +12,15 @@ const script=id=>({id,kind:'script',runtime:'node',source:'// never executed',cw
 const condition=(id,otherwise='work')=>({id,kind:'condition',predicate:{source:'input',equals:'input'},otherwise});
 const edge=(id,from,to,on='success',extra={})=>({id,from,to,on,...extra});
 function fixture(t,graph={}){
- const dir=mkdtempSync(join(tmpdir(),'branch-unit-handoff-')),store=new AgentStore(dir),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+ const dir=mkdtempSync(join(tmpdir(),'branch-unit-handoff-')),store=new AgentStore(dir),coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
  const observer=new Database(store.sqlite.name,{readonly:true,fileMustExist:true});
  t.after(async()=>{if(branches.unitSaver)await branches.unitSaver.drain().catch(()=>{});observer.close();store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Boundary',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Boundary'});
+ const agent=store.createAgent(project.id,{title:'Controlled',engine:'codex',conversationId:chat.id});
  const definition={schema:'ponderosa.branch.v1',name:'Boundary',trigger:{kind:'manual'},entry:'work',steps:[script('work')],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}},...graph};
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{},directories:{root:dir}}});
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{root:dir}}});
  const execution=branches.accept(branch.id,'input','input');
- return {store,branches,observer,branch,execution};
+ return {store,branches,coordination,agent,observer,branch,execution,dir};
 }
 const snapshots=f=>f.store.sqlite.prepare('SELECT * FROM branch_unit_snapshots ORDER BY id').all().map(r=>({...r,snapshot:JSON.parse(r.snapshot_json)}));
 const settlementGraph={entry:'a',steps:[script('a'),script('b')],controls:[condition('c','b')],edges:[edge('a-c','a','c'),edge('yes','c','b','selected'),edge('no','c','b','failure')]};
@@ -157,4 +158,33 @@ test('freeze follows command receipt and snapshot errors including thrown undefi
  f.branches.unitSaver.freeze=()=>{throw undefined};f.branches.cancel(f.execution.id);
  await assert.rejects(f.branches.unitSaver.drain(),error=>error instanceof AggregateError&&error.errors.length===1&&error.errors[0]===undefined);
  assert.equal(f.branches.execution(f.execution.id).state,'canceled');
+});
+
+test('already-observed Agent result seals despite saver failure, before suffix dispatch',async t=>{
+ const f=fixture(t,{entry:'agent',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_organization',ref:'worker'},instructions:'Controlled only'},script('work')],edges:[edge('next','agent','work')]});
+ f.branches.advance();const attempt=f.branches.detail(f.execution.id).attempts[0];assert.ok(attempt.requestId);await f.branches.unitSaver.drain();
+ f.store.sqlite.exec("CREATE TRIGGER fail_agent_snapshot BEFORE INSERT ON branch_unit_snapshots BEGIN SELECT RAISE(ABORT,'agent saver failed'); END");
+ f.branches.unitTransaction(()=>f.branches.chargeTraversal(f.execution.id))();await assert.rejects(f.branches.unitSaver.drain());
+ f.coordination.updateRequest({requestId:attempt.requestId,updateId:'known-agent-result',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'known'}});
+ assert.doesNotThrow(()=>f.branches.advance());
+ const detail=f.branches.detail(f.execution.id);assert.equal(detail.attempts[0].state,'completed');assert.equal(detail.steps[0].result.output,'known');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results').get().n,1);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_step_executions WHERE step_id='work'").get().n,0);
+ assert.equal(f.coordination.getRequest(attempt.requestId).state,'completed');
+});
+
+test('completed called execution is observed through public admission despite failed parent saver',async t=>{
+ const f=fixture(t);
+ const parent=f.branches.deploy({chatId:f.agent.conversationId,idempotencyKey:'parent',definition:{schema:'ponderosa.branch.v1',name:'Parent',trigger:{kind:'manual'},entry:'call',steps:[{id:'call',kind:'branch_call',branchRef:'child'},script('after')],controls:[],edges:[edge('after-call','call','after')],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:f.dir},branches:{child:f.branch.id}}});
+ const execution=f.branches.accept(parent.id,'parent','input');let child;
+ for(let n=0;n<5&&!child;n++){f.branches.advance();child=f.branches.listExecutions(f.branch.id).find(e=>e.parentExecutionId===execution.id)}
+ assert.ok(child);f.branches.advance();let lease,childLease;
+ while((lease=f.branches.claimScript('controlled'))){if(lease.executionId===child.id)childLease=lease}
+ assert.ok(childLease);await f.branches.unitSaver.drain();
+ f.store.sqlite.exec(`CREATE TRIGGER fail_parent_snapshot BEFORE INSERT ON branch_unit_snapshots WHEN NEW.execution_id='${execution.id}' BEGIN SELECT RAISE(ABORT,'parent saver failed'); END`);
+ f.branches.unitTransaction(()=>f.branches.chargeTraversal(execution.id))();await assert.rejects(f.branches.unitSaver.drain());
+ f.branches.settleScript(childLease,{failed:false,output:'child known'});assert.equal(f.branches.execution(child.id).state,'completed');
+ assert.doesNotThrow(()=>f.branches.advance());const detail=f.branches.detail(execution.id);
+ assert.equal(detail.steps[0].state,'completed');assert.equal(detail.steps[0].result.output,'child known');
+ assert.equal(detail.steps.length,1);assert.equal(f.branches.claimScript('parent suffix'),undefined);
 });
