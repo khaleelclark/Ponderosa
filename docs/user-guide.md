@@ -7,8 +7,12 @@ guide](learning/index.html) explains how agents, assignments and saved work fit 
 Ponderosa supports continuing work with agents, including research, coordination,
 creative projects and software development. Linux, macOS and Windows are
 beta platforms, and the internal browser is included. Local browser connection
-and extension pairing are deferred beyond beta. Branches and Pinecone are future
-features; Wiki and Automations are excluded.
+and extension pairing are deferred beyond beta. The linked v0.1.1 download excludes
+Branches, Pinecone, Wiki and Automations. Current source/private candidates also
+provide Branches at `/branches`; use the [current Branches and memory startup
+guide](BRANCHES_MEMORY_UNIFIED.md) for their explicit Node, Chroma and model
+prerequisites. This source capability does not change the contents or platform
+qualification of the linked v0.1.1 installer.
 
 Ponderosa is model agnostic with Codex and Claude Code. You can use either or configure
 both; they use their own subscription sign-ins and do not have identical models,

@@ -43,3 +43,7 @@ Chat settings keeps over-limit instructions editable and marks the Instructions 
 Available, unrestricted permission chips retain their green icon/border and “Allowed” label, with theme primary text applied only to `.MuiChip-label` for readable label contrast on the containing Paper. The root keeps its success color so the icon inherits green; warning and unavailable states receive no primary-text override. This shared editor serves product, workflow, Chat and Agent settings. Mounted Chat settings exposed the original Core light-theme label at 3.85:1; corrected-build mounted verification remains required.
 
 Workflow-owned Chats: Delete opens “Workflow-owned Chat” with an explicit whole-workflow removal explanation and “Open workflow settings” link; it never offers an independent Delete Chat confirmation. Ordinary Core Chats retain member-reviewed deletion.
+
+### Global search input accessibility
+
+Composing IME keys (including legacy keyCode229) do not move or activate suggestions. A persistent polite status announces searching, partial failure or the number of loaded suggestions; it never reports that count as the total matching corpus. Native browser zoom and existing light/dark controls remain the personalization mechanism. These source contracts require the final mounted keyboard/IME, accessibility-tree and real screen-reader checks; no new qualification is implied.

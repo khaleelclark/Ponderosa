@@ -139,7 +139,7 @@ const ReactQuery = await import('@tanstack/react-query');
 const { normalizeResetPages, uniqueBy } = await import('../../apps/web/src/collections.ts');
 const { routeToPath, routeLinkPath } = await import('../../apps/web/src/routeRegistry.ts');
 const { phaseQueryMatchesProject } = await import('../../apps/web/src/workspaceDirectoryScope.ts');
-function searchSetup(t) {
+function searchSetup(t, activeIndex = -1) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false, refetchOnMount: false, gcTime: Infinity } } });
   t.after(() => client.clear());
   const query = 'needle';
@@ -151,7 +151,7 @@ function searchSetup(t) {
     history: { limit: 25, hasMore: Boolean(cursor), ...(cursor ? { cursor } : {}) } });
   client.setQueryData(queryKeys.globalSearch.results(query, 25, 'agent'), { results: [], recentChats: [] });
   client.setQueryData(key, { pages: [page(items.slice(0, 25), 'owned-next')], pageParams: [undefined] });
-  const mocks = { react: { ...React, useState: initial => React.useState(initial === '' ? query : initial === 'all' ? 'agents' : initial) },
+  const mocks = { react: { ...React, useState: initial => React.useState(initial === '' ? query : initial === 'all' ? 'agents' : initial === -1 ? activeIndex : initial) },
     '@tanstack/react-query': ReactQuery, '../api': { api }, '../queryKeys': { queryKeys }, '../collections': { normalizeResetPages, uniqueBy },
     '../routeRegistry': { routeToPath, routeLinkPath }, '../nativeNavigation': { isUnmodifiedPrimaryClick: () => true },
     '../hooks/queries': { useNotifications: () => ({}) }, '../hooks/useWorkspaceFileSearch': { useWorkspaceFileSearch: () => ({ results: [] }) },
@@ -215,4 +215,31 @@ test('F10: failed continuation retains matches and can retry; reset pages drop s
   const recovered = f.render().html;
   assert.match(recovered, /Owning Chat 25/); assert.doesNotMatch(recovered, /Owning Chat 24|Some search results could not load/);
   assert.equal((recovered.match(/role="option"/g) ?? []).length, 1);
+});
+
+// IME Enter commits composition, not the highlighted search destination.
+test('global search leaves composing Enter and arrow keys to the input method', t => {
+  const f = searchSetup(t, 0), input = [...f.walk(f.render().tree)].find(node => node.props.inputProps?.role === 'combobox');
+  assert.ok(input);
+  for (const key of ['Enter', 'ArrowDown', 'ArrowUp']) {
+    for (const nativeEvent of [{ isComposing: true, keyCode: 13 }, { isComposing: false, keyCode: 229 }]) {
+      let prevented = false;
+      input.props.onKeyDown({ key, nativeEvent, preventDefault() { prevented = true; } });
+      assert.equal(prevented, false);
+      assert.equal(f.selected.length, 0);
+    }
+  }
+  let prevented = false;
+  input.props.onKeyDown({ key: 'Enter', nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(f.selected.length, 1);
+  assert.equal(f.selected[0].chat.id, 'agent-0');
+});
+
+test('global search announces the loaded suggestion count without claiming a total', t => {
+  const f = searchSetup(t), {tree} = f.render();
+  const status = [...f.walk(tree)].find(node => node.props.role === 'status');
+  assert.ok(status);
+  assert.equal(status.props['aria-atomic'], true);
+  assert.equal(status.props.children, '25 suggestions available.');
 });

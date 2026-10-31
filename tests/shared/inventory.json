@@ -1710,6 +1710,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Installed TypeScript; offline actual TSX callbacks with host hooks/UI leaves stubbed; mounted lifecycle evidence remains separate",
       "origin": "Workflow-owned Chat deletion route regression"
+    },
+    {
+      "path": "tests/memory/tool-guidance.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built server catalog; offline metadata/validator contracts only, no Chroma/model/provider",
+      "origin": "First-use combined-search and provenance guidance"
     }
   ],
   "retainedReleasePayload": [

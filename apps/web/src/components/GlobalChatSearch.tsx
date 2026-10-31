@@ -334,6 +334,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
     chooseSelection({ projectId: recent.project.id, chat: recent.chat });
   };
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     const action = globalSearchKeyboardAction(event, activeIndex, entries.length);
     if (!action) return;
     event.preventDefault();
@@ -377,6 +378,9 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
         {(["all", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
       </Stack>
+      <Box role="status" aria-atomic="true" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>
+        {isSearching ? "Searching…" : searchFailed ? "Some search results could not load." : `${entries.length} suggestion${entries.length === 1 ? "" : "s"} available.`}
+      </Box>
       {isSearching ? <LinearProgress aria-label="Searching Ponderosa" sx={{ mb: 1 }} /> : null}
       {searchFailed ? <Alert severity="error" sx={{ mb: 1 }}>Some search results could not load. Any available results remain below. Check the connection and try again.</Alert> : null}
       <Box id="global-search-results" role="listbox" aria-label="Global search suggestions">
