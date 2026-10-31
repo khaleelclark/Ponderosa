@@ -125,7 +125,10 @@ export class BranchStore {
       ) SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN owned o ON o.id=s.execution_id
         WHERE a.state IN ('running','outcome_unknown') OR
           (a.state='leased' AND a.process_identity_json IS NOT NULL) OR
-          (a.request_id IS NOT NULL AND a.state IN ('prepared','waiting')) LIMIT 1`,id);
+          (a.request_id IS NOT NULL AND a.state IN ('prepared','waiting'))
+        UNION ALL SELECT 1 FROM branch_resources r JOIN owned o ON o.id=r.execution_id JOIN branch_commands c ON c.execution_id=r.execution_id
+          AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
+          WHERE json_extract(c.result_json,'$.state') IN ('running','unknown') LIMIT 1`,id);
       // Queued/prepared children and unstarted leases are safe frontiers, not live effects.
       const state=terminal?'terminal':outstanding?'interrupting':'interrupted';
       const next={...invocation,state,primary_outcome:terminal?execution.state:state};
@@ -683,7 +686,7 @@ export class BranchStore {
     const rows=this.rows(`SELECT r.rowid position,r.* FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id
       WHERE r.state='reserved' AND e.cancel_requested=0 AND EXISTS(SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=r.step_execution_id AND a.state='prepared' AND a.cancel_requested=0 AND a.available_at<=? AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 1`, new Date().toISOString(),this.provisionCursor);
     if(rows.length)this.provisionCursor=rows[0]!.position;
-    return rows.filter(r=>this.functionalReady(r.execution_id)&&this.hasRunnableCapacity(r.execution_id)).map(r => {
+    return rows.filter(r=>this.resourceRelease(r.step_execution_id,r.creation_key)==='ready'&&!['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(r.step_execution_id,phase as 'chat'|'import')?.state))).map(r => {
       const execution = this.execution(r.execution_id)!;
       const bindings=this.bindings(execution),template=this.definition(execution).templates![r.template_ref]!;
       const root=template.agents.find(a=>a.ref===template.rootRef)!;
@@ -691,6 +694,87 @@ export class BranchStore {
         stepExecutionId: r.step_execution_id, projectId: r.chat_id?this.chat(r.chat_id).project_id:'', chatId: r.chat_id??'', creationKey: r.creation_key,
         template: this.definition(execution).templates![r.template_ref]!, engineMapping: this.bindings(execution).engines! };
     });
+  }
+  resourceRelease(stepExecutionId:string,creationKey?:string):'ready'|'waiting'|'fenced' {
+    const r=this.row(`SELECT r.*,e.branch_id,e.cancel_requested,e.state execution_state,b.deleting,b.chat_id owner_chat_id FROM branch_resources r
+      JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id WHERE r.step_execution_id=?`,stepExecutionId);
+    if(!r||r.state!=='reserved'||r.cancel_requested||r.deleting||creationKey&&r.creation_key!==creationKey
+      ||!['running','waiting'].includes(r.execution_state)||this.restricted(r.branch_id,CAPABILITY_IDS.managedAgentCreate)
+      ||!this.row("SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=? AND a.state='prepared' AND a.cancel_requested=0 AND a.available_at<=? AND NOT EXISTS(SELECT 1 FROM branch_attempts n WHERE n.step_execution_id=a.step_execution_id AND n.number>a.number)",stepExecutionId,new Date().toISOString()))return 'fenced';
+    try{if(r.owner_chat_id)this.chat(r.owner_chat_id);if(r.chat_id)this.chat(r.chat_id);}catch{return 'fenced';}
+    return this.functionalReady(r.execution_id)&&this.hasRunnableCapacity(r.execution_id)?'ready':'waiting';
+  }
+  async waitResourceCheckpoint(stepExecutionId:string):Promise<void> {
+    const resource=this.row('SELECT execution_id FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+    if(!resource)throw Error('Resource reservation unavailable');
+    await this.unitSaver.waitFor(this.ancestors(resource.execution_id).map(owner=>owner.id));
+  }
+  resourceOperation(stepExecutionId:string,phase:'chat'|'import'):Row|undefined {
+    const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);if(!r)return;
+    const receipt=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,`resource-operation:${r.creation_key}:${phase}`);
+    if(!receipt)return;
+    const operation=JSON.parse(receipt.result_json);
+    if(receipt.input_hash!==payloadHash({creationKey:r.creation_key,phase})||operation.schema!=='branch-resource-operation.v1'||operation.phase!==phase
+      ||typeof operation.token!=='string'||!['running','unknown','completed','rolled_back'].includes(operation.state))throw Error('Resource operation receipt integrity failure');
+    return operation;
+  }
+  private writeResourceOperation(r:Row,phase:'chat'|'import',operation:Row):void {
+    const now=new Date().toISOString(),key=`resource-operation:${r.creation_key}:${phase}`;
+    this.run(`INSERT INTO branch_commands VALUES(?,?,?,?,?) ON CONFLICT(execution_id,command_key) DO UPDATE SET result_json=excluded.result_json`,r.execution_id,key,payloadHash({creationKey:r.creation_key,phase}),stableJson(operation),now);
+    this.checkpoint(r.execution_id,`${key}:${operation.token}:${operation.state}:${randomUUID()}`,'resource_operation',operation,now);
+    this.selectedWrite(r.execution_id);
+  }
+  beginResourceOperation(stepExecutionId:string,creationKey:string,phase:'chat'|'import'):string|undefined {
+    if(this.sqlite.inTransaction)throw Error('Resource effects require an actual root COMMIT');
+    return this.unitTransaction(()=>{
+      if(this.resourceRelease(stepExecutionId,creationKey)!=='ready')return;
+      const previous=this.resourceOperation(stepExecutionId,phase);
+      if(previous&&previous.state!=='rolled_back')return;
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId)!,token=randomUUID();
+      this.writeResourceOperation(r,phase,{schema:'branch-resource-operation.v1',phase,token,state:'running'});return token;
+    }).immediate();
+  }
+  observeResourceImportPlan(stepExecutionId:string,token:string,creationOperationId?:string):void {
+    if(!creationOperationId)return;
+    this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),operation=this.resourceOperation(stepExecutionId,'import');
+      const receipt=this.row("SELECT * FROM agent_creation_operations WHERE id=? AND kind='import'",creationOperationId);
+      if(!r||operation?.token!==token||operation.state!=='running'||!receipt||receipt.project_id!==this.chat(r.chat_id).project_id
+        ||operation.creationOperationId&&operation.creationOperationId!==creationOperationId)throw Error('Resource import receipt is fenced');
+      if(operation.creationOperationId!==creationOperationId)this.writeResourceOperation(r,'import',{...operation,creationOperationId});
+    })();
+  }
+  completeResourceOperation(stepExecutionId:string,phase:'chat'|'import',token:string,result:Row):void {
+    this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),operation=this.resourceOperation(stepExecutionId,phase);
+      if(!r||!operation||operation.token!==token||operation.state!=='running')throw Error('Resource operation is fenced');
+      // Observation/custody survives a gate, cancellation or failed saver; opening work does not.
+      if(phase==='chat')this.bindResourceChat(stepExecutionId,result.chatId);
+      else{
+        const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?',stepExecutionId).map(m=>m.agent_id);
+        if(!members.includes(result.rootAgentId)||members.length!==result.agentIds.length||result.agentIds.some((id:string)=>!members.includes(id)))throw Error('Resource completion identities do not match the tracked plan');
+        this.run('UPDATE branch_resources SET root_agent_id=? WHERE step_execution_id=?',result.rootAgentId,stepExecutionId);
+        this.run('UPDATE branch_ephemeral_contexts SET agent_ids_json=? WHERE step_execution_id=? AND generation=?',stableJson(result.agentIds),stepExecutionId,r.generation);
+      }
+      this.writeResourceOperation(r,phase,{...operation,state:'completed',result});
+    })();
+  }
+  finishResourceOperation(stepExecutionId:string,phase:'chat'|'import',token:string,error?:unknown):void {
+    this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),operation=this.resourceOperation(stepExecutionId,phase);
+      if(!r||operation?.token!==token)return;
+      const message=error instanceof Error?error.message:error===undefined?'Resource operation returned without a durable completion':String(error);
+      if(operation.state==='completed'){
+        if(error!==undefined){
+          if(operation.error!==message)this.writeResourceOperation(r,phase,{...operation,error:message});
+          this.resourceError(stepExecutionId,message);
+        }
+        return;
+      }
+      const creation=operation.creationOperationId?this.row('SELECT status FROM agent_creation_operations WHERE id=?',operation.creationOperationId):undefined;
+      this.writeResourceOperation(r,phase,{...operation,state:creation?.status==='rolled_back'?'rolled_back':'unknown',error:message});
+      this.resourceError(stepExecutionId,message);
+    })();
   }
   bindResourceChat(stepExecutionId:string,chatId:string):void {
     this.unitTransaction(()=>{
@@ -703,18 +787,27 @@ export class BranchStore {
       this.run("INSERT OR IGNORE INTO branch_ephemeral_contexts(step_execution_id,generation,chat_id) VALUES(?,?,?)",stepExecutionId,r.generation,chatId);
     })();
   }
-  planResource(stepExecutionId: string, agentIds: string[]): void {
+  planResource(stepExecutionId:string,agentIds:string[],token?:string):void {
+    this.unitTransaction(()=>{
     const r = this.row("SELECT r.*,e.cancel_requested FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?", stepExecutionId);
     if (!r || r.state !== "reserved" || r.cancel_requested || agentIds.length !== r.requested_count || new Set(agentIds).size !== agentIds.length) throw new Error("Branch resource reservation is no longer available");
+    if(this.resourceRelease(stepExecutionId)!=='ready')throw Error('Resource plan release is held by current authority or checkpoint coverage');
+    const operation=this.resourceOperation(stepExecutionId,'import');
+    if(operation?.state!=='running'||operation.token!==token)throw Error('Resource import operation is fenced');
     // A fully rolled-back tracked import can allocate a replacement plan. Live identities never change.
     if (this.row("SELECT 1 FROM branch_resource_members m JOIN agents a ON a.id=m.agent_id WHERE m.step_execution_id=? AND a.deleted_at IS NULL", stepExecutionId)) throw new Error("Resource creation already has live identities");
     this.run("DELETE FROM branch_resource_members WHERE step_execution_id=?", stepExecutionId);
     for (const id of agentIds) this.run("INSERT INTO branch_resource_members VALUES(?,?,'template')", id, stepExecutionId);
+    this.selectedWrite(r.execution_id);
+    })();
   }
   bindResource(stepExecutionId: string, result: ImportAgentPackageResponse, now = new Date().toISOString()): void {
     this.unitTransaction(() => {
       const r = this.row("SELECT r.*,e.cancel_requested FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?", stepExecutionId);
       if (!r || r.state !== "reserved" || r.cancel_requested) throw new Error("Branch resource creation is fenced");
+      if(this.resourceRelease(stepExecutionId)!=='ready')throw Error('Resource opening release is held by current authority or checkpoint coverage');
+      const operation=this.resourceOperation(stepExecutionId,'import');
+      if(operation?.state!=='completed'||stableJson(operation.result)!==stableJson(result))throw Error('Resource opening requires its known committed import result');
       const members = this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?", stepExecutionId).map(m=>m.agent_id);
       if (!members.includes(result.rootAgentId) || members.length !== result.agentIds.length || result.agentIds.some(id=>!members.includes(id))) throw new Error("Tracked resource identities do not match reservation");
       const execution = this.execution(r.execution_id)!, chat = this.chat(r.chat_id);
@@ -742,7 +835,17 @@ export class BranchStore {
       if(attempt?.state==='prepared' && !attempt.cancel_requested && !this.row("SELECT 1 FROM branch_resource_members m JOIN agents a ON a.id=m.agent_id WHERE m.step_execution_id=? AND a.deleted_at IS NULL",stepExecutionId)) this.finish(attempt.id,{failed:true,output:branchText(error)},new Date().toISOString());
     })();
   }
-  resourceError(stepExecutionId: string, error: string): void { this.run("UPDATE branch_resources SET error=? WHERE step_execution_id=?", branchText(error), stepExecutionId); }
+  resourceError(stepExecutionId:string,error:string):void {
+    this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);if(!r)return;
+      const message=branchText(error);if(r.error===message)return;
+      this.run('UPDATE branch_resources SET error=? WHERE step_execution_id=?',message,stepExecutionId);this.selectedWrite(r.execution_id);
+    })();
+  }
+  resourceErrors():Error[] {return this.rows(`SELECT error FROM branch_resources WHERE error IS NOT NULL
+    UNION SELECT json_extract(c.result_json,'$.error') error FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id
+      AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
+      WHERE json_extract(c.result_json,'$.error') IS NOT NULL`).map(r=>new Error(r.error));}
   private resourceCleanupQuery = `FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id
     JOIN branch_step_executions s ON s.id=r.step_execution_id JOIN branch_paths path ON path.id=s.path_id
     WHERE ((r.state!='retired' AND (r.retry_draining=1 OR e.cancel_requested=1 OR path.state='canceled' OR NOT EXISTS
@@ -756,6 +859,7 @@ export class BranchStore {
     return rows.map(r=>({stepExecutionId:r.step_execution_id,chatId:r.chat_id??undefined,branchId:this.execution(r.execution_id)!.branchId,executionId:r.execution_id,agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",r.step_execution_id).map(m=>m.agent_id)}));
   }
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
+    if(['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(stepExecutionId,phase as 'chat'|'import')?.state)))return false;
     if(!this.row(`SELECT 1 ${this.resourceCleanupQuery} AND r.step_execution_id=?`,stepExecutionId)
       && !this.row("SELECT 1 FROM branch_resources WHERE step_execution_id=? AND state='retired'",stepExecutionId))return false;
     return stableJson([...agentIds].sort())===stableJson(this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",stepExecutionId).map(m=>m.agent_id));

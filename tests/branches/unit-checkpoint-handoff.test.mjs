@@ -137,7 +137,7 @@ test('actual service reports notification saver failure outside delivery catch, 
  f.branches.advance();await f.branches.unitSaver.drain();
  f.store.sqlite.exec("CREATE TRIGGER fail_notification_snapshot BEFORE INSERT ON branch_unit_snapshots BEGIN SELECT RAISE(ABORT,'notification saver failed'); END");
  let notified=0,cleanup=0;
- const service=new BranchScriptService(f.branches,f.store,'controlled',{notifyAction:()=>{notified++;return 'known-notification';},resources:{tick:async admit=>{if(!admit)cleanup++;}}});
+ const service=new BranchScriptService(f.branches,f.store,'controlled',{notifyAction:()=>{notified++;return 'known-notification';},resources:{errors:()=>[],tick:async admit=>{if(!admit)cleanup++;}}});
  await service.tick(true);await assert.rejects(f.branches.unitSaver.drain());
  await assert.rejects(service.tick(false),/durability failed/);assert.equal(cleanup,1);
  await assert.rejects(service.tick(true),/durability failed/);assert.equal(notified,1);

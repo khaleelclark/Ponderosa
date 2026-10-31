@@ -5,13 +5,15 @@ import {resolve} from 'node:path';
 import type { AgentStore, BranchStore, BranchResourceProvision } from '@ponderosa/agents';
 import type { ImportAgentPackageResponse } from '@ponderosa/core';
 export type BranchTemplateImporter = (input: BranchResourceProvision, hooks: {
-  plan(agentIds: string[]): void; commit(result: ImportAgentPackageResponse): void;
+  plan(agentIds: string[],creationOperationId?:string): void | Promise<void>; commit(result: ImportAgentPackageResponse): void;
+  transaction?(operation:()=>void):void;
 }, signal: AbortSignal) => Promise<void>;
 const IMPORT_DEADLINE_MS = 5 * 60 * 1000;
 /** Existing tracked template imports, driven only by the existing scheduler cycle. */
 export class BranchResourceService {
   private importer?: BranchTemplateImporter;
   private pending?: Promise<void>;
+  private maintenance?:Promise<void>;
   private importController?: AbortController;
   private stopped = false;
   constructor(private readonly branches: BranchStore, private readonly store: AgentStore,
@@ -19,7 +21,7 @@ export class BranchResourceService {
     private readonly deleteChat: (chatId: string) => Promise<void>) {}
   setImporter(importer: BranchTemplateImporter): void { this.importer = importer; }
   async tick(admit: boolean): Promise<void> {
-    if (this.pending) return this.pending;
+    if (this.pending) {await this.maintain();return this.pending;}
     const operation = this.work(admit && !this.stopped); this.pending = operation;
     try { await operation; } finally { if (this.pending === operation) this.pending = undefined; }
   }
@@ -40,7 +42,10 @@ export class BranchResourceService {
       const controller = new AbortController();
       this.importController = controller;
       const timer = setTimeout(() => controller.abort(new Error('Temporary Agent import exceeded its deadline')), IMPORT_DEADLINE_MS);
+      let phase:'chat'|'import'|undefined,token:string|undefined;
       try {
+        const imported=this.branches.resourceOperation(provision.stepExecutionId,'import');
+        if(imported?.state==='completed'){this.branches.bindResource(provision.stepExecutionId,imported.result as ImportAgentPackageResponse);continue;}
         if(!provision.chatId){
           const configuredDirectory=provision.workingDirectory?.trim();
           let hostPath:string|undefined;
@@ -51,34 +56,48 @@ export class BranchResourceService {
             throw Object.assign(new Error('Temporary Agent working directory is unavailable or is not a directory'),{provisionRejected:true});
           }
           if(!provision.defaultEngine)throw Object.assign(new Error('Choose an Engine for the temporary Agent template'),{provisionRejected:true});
+          phase='chat';token=this.branches.beginResourceOperation(provision.stepExecutionId,provision.creationKey,phase);if(!token)continue;
           const chat=await this.createChat({label:'Temporary workflow organization',hostPath,defaultEngine:provision.defaultEngine},
             'branch-resource-'+createHash('sha256').update(provision.creationKey).digest('hex'),{branchId:provision.branchId,executionId:provision.executionId},controller.signal);
-          this.branches.bindResourceChat(provision.stepExecutionId,chat.id);
+          this.branches.completeResourceOperation(provision.stepExecutionId,phase,token,{chatId:chat.id});
+          token=undefined;phase=undefined;
           provision={...provision,projectId:chat.projectId,chatId:chat.id};
         }
         if (this.stopped) break;
         controller.signal.throwIfAborted();
-        // Chat creation may yield to cancellation. The tracked import still
-        // revalidates in planResource before committing any Agent identities.
-        if (!this.store.sqlite.prepare(`SELECT 1 FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id
-          WHERE r.step_execution_id=? AND r.creation_key=? AND r.state='reserved' AND e.cancel_requested=0
-            AND EXISTS(SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=r.step_execution_id
-              AND a.state='prepared' AND a.cancel_requested=0
-              AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number))`)
-          .get(provision.stepExecutionId,provision.creationKey)) continue;
+        // Every new effect revalidates current owner/ancestor release after the previous await.
+        phase='import';token=this.branches.beginResourceOperation(provision.stepExecutionId,provision.creationKey,phase);if(!token)continue;
+        const importToken=token;
         await this.importer(provision, {
-          plan: ids => this.branches.unitTransaction(()=>this.branches.planResource(provision.stepExecutionId,ids))(),
-          commit: result => this.branches.bindResource(provision.stepExecutionId,result),
+          plan: async(ids,creationOperationId) => {
+            this.branches.observeResourceImportPlan(provision.stepExecutionId,importToken,creationOperationId);
+            // The start/receipt markers must be covered before a later plan/effect boundary.
+            await this.branches.waitResourceCheckpoint(provision.stepExecutionId);controller.signal.throwIfAborted();
+            this.branches.planResource(provision.stepExecutionId,ids,importToken);
+          },
+          commit: result => this.branches.completeResourceOperation(provision.stepExecutionId,'import',importToken,result),
+          transaction: operation=>this.branches.unitTransaction(operation)(),
         }, controller.signal);
+        this.branches.finishResourceOperation(provision.stepExecutionId,phase,importToken);
+        token=undefined;phase=undefined;
       } catch (error) {
         const message=error instanceof Error ? error.message : 'Template creation failed';
-        this.branches.resourceError(provision.stepExecutionId,message);
+        if(phase&&token)this.branches.finishResourceOperation(provision.stepExecutionId,phase,token,error);
+        else this.branches.resourceError(provision.stepExecutionId,message);
         if (error && typeof error === 'object' && 'provisionRejected' in error && error.provisionRejected) this.branches.resourceRejected(provision.stepExecutionId,message);
       } finally {
         clearTimeout(timer);
         if (this.importController === controller) this.importController = undefined;
       }
     }
+    await this.maintain();
+  }
+  private async maintain():Promise<void> {
+    if(this.maintenance)return this.maintenance;
+    const operation=this.cleanup();this.maintenance=operation;
+    try{await operation;}finally{if(this.maintenance===operation)this.maintenance=undefined;}
+  }
+  private async cleanup():Promise<void> {
     for (const resource of this.branches.resourceCleanupCandidates()) {
       try {
         this.branches.cancelResourceWork(resource.stepExecutionId);
@@ -115,10 +134,11 @@ export class BranchResourceService {
       }
     }
   }
-  activeOperationCount():number{return Number(Boolean(this.pending));}
+  errors():Error[]{return this.branches.resourceErrors();}
+  activeOperationCount():number{return Number(Boolean(this.pending))+Number(Boolean(this.maintenance));}
   requestStop(): void {
     this.stopped=true;
     this.importController?.abort(new Error('Branch workflow shutdown interrupted temporary Agent import'));
   }
-  async stop(): Promise<void> { this.requestStop();await this.pending; }
+  async stop(): Promise<void> { this.requestStop();await this.pending;await this.maintenance; }
 }

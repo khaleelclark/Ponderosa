@@ -22,7 +22,7 @@ const selections: Record<string,string> = {
   "bundles": "SELECT id,execution_id,fork_invocation_id,content_text,content_hash FROM branch_result_bundles WHERE execution_id=? ORDER BY id",
   "gates": "SELECT id,step_execution_id,state,proposal_text,choices_json,revision,response_json,purpose,attempt_id,prompt_text FROM branch_gates WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) ORDER BY id",
   "actions": "SELECT attempt_id,state,notification_id FROM branch_actions WHERE attempt_id IN (SELECT a.id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?) ORDER BY attempt_id",
-  "resources": "SELECT step_execution_id,execution_id,template_ref,state,requested_count,root_agent_id,chat_id,generation,retry_draining FROM branch_resources WHERE execution_id=? ORDER BY step_execution_id"
+  "resources": "SELECT step_execution_id,execution_id,template_ref,state,requested_count,root_agent_id,chat_id,generation,retry_draining,error,creation_key,(SELECT result_json FROM branch_commands c WHERE c.execution_id=r.execution_id AND c.command_key='resource-operation:'||r.creation_key||':chat') chat_operation_json,(SELECT result_json FROM branch_commands c WHERE c.execution_id=r.execution_id AND c.command_key='resource-operation:'||r.creation_key||':import') import_operation_json FROM branch_resources r WHERE execution_id=? ORDER BY step_execution_id"
 };
 
 /** Mode-aware after-commit saver; only explicitly encoded supported frontiers are executable. */

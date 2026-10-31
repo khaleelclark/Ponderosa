@@ -127,7 +127,7 @@ test('service exit notification failure is separate from effect catch and still 
  const {BranchScriptService}=await import('../../apps/server/dist/branch-script-service.js');
  const f=fixture(t,'exit',{entry:'notify',steps:[{id:'notify',kind:'action',action:'notify',configRefs:[]}]});
  f.branches.advance();f.store.sqlite.exec("CREATE TEMP TRIGGER fail_exit BEFORE INSERT ON branch_unit_snapshots BEGIN SELECT RAISE(ABORT,'exit failed'); END");
- let notified=0,cleanup=0;const service=new BranchScriptService(f.branches,f.store,'inert',{notifyAction:()=>{notified++;return 'known-notification'},resources:{tick:async admit=>{if(!admit)cleanup++}}});
+ let notified=0,cleanup=0;const service=new BranchScriptService(f.branches,f.store,'inert',{notifyAction:()=>{notified++;return 'known-notification'},resources:{errors:()=>[],tick:async admit=>{if(!admit)cleanup++}}});
  await service.tick(true);await assert.rejects(f.branches.unitSaver.drain(),/durability failed/);assert.equal(notified,1);
  assert.deepEqual(f.store.sqlite.prepare('SELECT state,notification_id FROM branch_actions').get(),{state:'delivered',notification_id:'known-notification'});
  await assert.rejects(service.tick(false),/durability failed/);assert.equal(cleanup,1);assert.equal(notified,1);
@@ -175,7 +175,7 @@ test('actual service never awaits a held sync owner: unrelated notification and 
  for(let n=0;n<4;n++){await f.branches.unitSaver.drain();f.branches.advance();}await f.branches.unitSaver.drain();
  let release;f.branches.unitSaver.lanes.set(f.execution.id,new Promise(resolve=>{release=resolve}));
  f.configure('async');const x=f.branches.accept(f.branch.id,'X','input');const delivered=[],cleanups=[];
- const service=new BranchScriptService(f.branches,f.store,'inert',{notifyAction:input=>{delivered.push(input.branchExecutionId);return 'known-'+input.branchExecutionId},resources:{tick:async admit=>{if(!admit)cleanups.push('cleanup')}}});
+ const service=new BranchScriptService(f.branches,f.store,'inert',{notifyAction:input=>{delivered.push(input.branchExecutionId);return 'known-'+input.branchExecutionId},resources:{errors:()=>[],tick:async admit=>{if(!admit)cleanups.push('cleanup')}}});
  await service.tick(true);assert.deepEqual(delivered,[x.id]);assert.equal(invocation(f).durability,'pending');
  assert.equal(f.store.sqlite.prepare('SELECT a.state FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?').get(f.execution.id).state,'leased');
  f.branches.cancel(f.execution.id);await service.tick(false);assert.deepEqual(cleanups,['cleanup']);
