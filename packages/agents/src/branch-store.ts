@@ -1,3 +1,4 @@
+import {scriptAuditSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
@@ -531,6 +532,84 @@ export class BranchStore {
         VALUES(?,?,?,?,?,?,?)`,executionId,checkpointId,checkpoint.contentHash,commandKey,commandHash,next.id,now);
       this.checkpoint(next.id,'rewind-origin','initial_rewind',{sourceExecutionId:executionId,checkpointId,checkpointHash:checkpoint.contentHash,commandKey},now);
       return next;
+    }).immediate();
+  }
+  /** Saved rows only; pagination never manufactures a capture or saver acknowledgement. */
+  historicalCheckpoints(branchId:string,executionId:string,before=Number.MAX_SAFE_INTEGER):import('@ponderosa/core').BranchHistoricalCheckpointDto[] {
+    if(!Number.isSafeInteger(before)||before<1)throw Error('Invalid checkpoint cursor');
+    const branch=this.getBranch(branchId),execution=this.execution(executionId);
+    if(!branch||!execution||execution.branchId!==branchId||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting)throw Error('Branch execution unavailable');
+    if(branch.chatId)this.chat(branch.chatId);
+    return this.rows("SELECT * FROM branch_unit_snapshots WHERE execution_id=? AND id<? AND json_extract(snapshot_json,'$.schema')='branch-unit-selected.v2' ORDER BY id DESC LIMIT 100",executionId,before).map(row=>{
+      const snapshot=JSON.parse(row.snapshot_json);
+      if(payloadHash(snapshot)!==row.content_hash||stableJson(snapshot)!==row.snapshot_json)throw Error('Historical checkpoint integrity failure');
+      const c=snapshot.continuation,version=c?this.row('SELECT * FROM branch_versions WHERE id=? AND branch_id=?',c.versionId,branchId):undefined;
+      const supported=snapshot.restore_supported===true&&c?.schema==='ponderosa.branch.script-continuation.v1'
+        &&stableJson(c.compatibility)===stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)&&!!version
+        &&payloadHash(JSON.parse(version.definition_json))===c.versionHash&&scriptAuditSupported(c.audit)
+        &&!Object.hasOwn(c.configuration,'secretBindings')&&scriptFrontierSupported(snapshot.selected,JSON.parse(version.definition_json));
+      return {id:row.id,executionId,branchId,contentHash:row.content_hash,restoreSupported:supported,
+        eligibility:supported?'script_control_frontier':'unsupported_dependency'};
+    });
+  }
+  rewindHistorical(branchId:string,executionId:string,checkpointId:number,expectedHash:string,commandKey:string,now=new Date().toISOString()):BranchExecutionDto {
+    branchKey(commandKey);
+    if(!Number.isSafeInteger(checkpointId)||checkpointId<1||!/^[a-f0-9]{64}$/.test(expectedHash))throw Error('Invalid historical checkpoint identity');
+    return this.unitTransaction(()=>{
+      const branch=this.getBranch(branchId),source=this.execution(executionId);
+      if(!branch?.enabled||!source||source.branchId!==branchId||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting)throw Error('Branch execution unavailable');
+      if(branch.chatId)this.chat(branch.chatId);
+      const row=this.row('SELECT * FROM branch_unit_snapshots WHERE id=? AND execution_id=?',checkpointId,executionId);
+      if(!row)throw Error('Historical checkpoint not found in this execution');
+      const snapshot=JSON.parse(row.snapshot_json);
+      if(row.content_hash!==expectedHash||payloadHash(snapshot)!==expectedHash||stableJson(snapshot)!==row.snapshot_json)throw Error('Historical checkpoint hash integrity failure');
+      const commandHash=payloadHash({executionId,checkpointId,expectedHash}),receiptKey=`historical-rewind:${payloadHash(commandKey)}`;
+      const prior=this.row('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,receiptKey);
+      if(prior){
+        if(prior.input_hash!==commandHash)throw Error('Rewind command idempotency conflict');
+        const result=JSON.parse(prior.result_json),lineage=this.row('SELECT * FROM branch_unit_snapshots WHERE id=? AND execution_id=?',result.lineageId,result.executionId);
+        if(!lineage||payloadHash(JSON.parse(lineage.snapshot_json))!==lineage.content_hash)throw Error('Rewind lineage unavailable');
+        const origin=JSON.parse(lineage.snapshot_json);
+        if(origin.schema!=='ponderosa.branch.rewind-lineage.v1'||origin.commandHash!==commandHash||origin.sourceExecutionId!==executionId||origin.checkpointId!==checkpointId||origin.checkpointHash!==expectedHash||origin.commandKey!==commandKey||origin.executionId!==result.executionId)throw Error('Rewind lineage integrity failure');
+        const existing=this.execution(result.executionId);if(!existing||existing.branchId!==branchId)throw Error('Rewind execution unavailable');
+        return existing;
+      }
+      const c=snapshot.continuation,e=snapshot.selected?.execution?.[0];
+      if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||c?.schema!=='ponderosa.branch.script-continuation.v1'
+        ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY))throw Error('Historical continuation or runtime compatibility unsupported');
+      if(!e||e.id!==executionId||e.branch_id!==branchId||e.version_id!==c.versionId||e.binding_revision_id!==c.bindingRevisionId)throw Error('Historical checkpoint owner/pin integrity failure');
+      const version=this.row('SELECT * FROM branch_versions WHERE id=? AND branch_id=?',c.versionId,branchId),binding=this.row('SELECT * FROM branch_bindings WHERE id=? AND branch_id=?',c.bindingRevisionId,branchId);
+      if(!version||!binding||version.content_hash!==c.versionHash||binding.content_hash!==c.bindingHash||payloadHash(JSON.parse(version.definition_json))!==c.versionHash||payloadHash(JSON.parse(binding.bindings_json))!==c.bindingHash)throw Error('Historical checkpoint owned pins failed verification');
+      const definition=JSON.parse(version.definition_json) as BranchDefinition,selected=snapshot.selected as Selected;
+      if(!scriptFrontierSupported(selected,definition)||Object.hasOwn(c.configuration,'secretBindings')||stableJson(validateBranchConfiguration(c.configuration,definition,true))!==stableJson(c.configuration)
+        ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||!scriptAuditSupported(c.audit))throw Error('Historical continuation dependency or integrity unsupported');
+      if(!['completed','failed','canceled'].includes(source.state)||source.parentExecutionId||this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND a.state IN ('leased','running','outcome_unknown')",executionId))throw Error('Historical rewind requires a settled standalone source');
+      if(branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Historical rewind pins changed; current authority must be reconciled');
+      if(this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');
+      // Fresh acceptance, admission and leases own authority; no old lease/process/secret is restored.
+      const next=this.accept(branchId,`historical-rewind:${randomUUID()}`,e.input_text,now),ids=new Map<string,string>();
+      for(const key of ['paths','steps','attempts','sealedResults'])for(const old of selected[key]!)ids.set(old.id,randomUUID());
+      const mapped=(id:string|null)=>id===null?null:ids.get(id)??(()=>{throw Error('Incomplete continuation ID map');})();
+      const path=selected.paths![0]!;
+      this.run(`INSERT INTO branch_paths(id,execution_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id)
+        VALUES(?,?,'active',?,?,?,?,?,0,?)`,mapped(path.id),next.id,path.node_id,mapped(path.step_execution_id),path.input_text,path.result_json,path.traversals,mapped(path.last_result_id));
+      for(const step of selected.steps!)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),next.id,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
+      for(const a of selected.attempts!)this.run(`INSERT INTO branch_attempts(id,step_execution_id,number,state,fence,input_hash,result_json,error,created_at,updated_at,available_at,purpose)
+        VALUES(?,?,?,?,0,?,?,?,?,?,?,'step')`,mapped(a.id),mapped(a.step_execution_id),a.number,a.state,a.input_hash,a.result_json,a.error,now,now,a.available_at);
+      for(const r of selected.sealedResults!)this.run('INSERT INTO branch_sealed_results(id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash,created_at) VALUES(?,?,?,?,?,?,?,?)',mapped(r.id),next.id,mapped(r.path_id),mapped(r.step_execution_id),mapped(r.terminal_attempt_id),r.result_json,r.content_hash,now);
+      for(const r of selected.loops!)this.run('INSERT INTO branch_loop_counts(execution_id,path_id,edge_id,iterations) VALUES(?,?,?,?)',next.id,mapped(r.path_id),r.edge_id,r.iterations);
+      this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',e.traversals,e.loop_iterations,e.depth_ceiling,next.id);
+      for(const audit of c.audit){
+        if(!Number.isSafeInteger(audit.id)||typeof audit.kind!=='string'||typeof audit.transition_key!=='string'||typeof audit.created_at!=='string'||typeof audit.evidence_json!=='string')throw Error('Historical audit prefix integrity failure');
+        JSON.parse(audit.evidence_json);
+        this.checkpoint(next.id,`restored-prefix:${audit.id}`,'restored_prefix',{sourceExecutionId:executionId,sourceAudit:audit},now);
+      }
+      const lineage={schema:'ponderosa.branch.rewind-lineage.v1',sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,executionId:next.id,compatibility:c.compatibility,idMap:Object.fromEntries(ids)};
+      const receipt=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(next.id,stableJson(lineage),payloadHash(lineage));
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,receiptKey,commandHash,stableJson({executionId:next.id,lineageId:Number(receipt.lastInsertRowid)}),now);
+      this.checkpoint(next.id,'rewind-origin','historical_rewind',{sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,lineageId:Number(receipt.lastInsertRowid)},now);
+      this.selectedWrite(next.id);
+      return this.execution(next.id)!;
     }).immediate();
   }
   private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call"): BranchExecutionDto {
@@ -1092,7 +1171,8 @@ export class BranchStore {
             if(execution.budgetWait)this.checkpoint(execution.id,`budget-released:${execution.revision+1}`,"execution_budget_released",{},now);
             this.checkpoint(execution.id,"workflow-started","workflow_started",{admission:JSON.parse(this.row("SELECT admission_json FROM branch_executions WHERE id=?",execution.id)!.admission_json)},now);
             this.state(execution.id, "running", now);
-            this.run("INSERT INTO branch_paths(id,execution_id,state,node_id,input_text) VALUES(?,?,'active',?,?)", randomUUID(), execution.id, definition.entry, execution.input);
+            if(!this.row("SELECT 1 FROM branch_paths WHERE execution_id=?",execution.id))
+              this.run("INSERT INTO branch_paths(id,execution_id,state,node_id,input_text) VALUES(?,?,'active',?,?)", randomUUID(), execution.id, definition.entry, execution.input);
             return;
           }
           if (!cursor.preferAttempt && this.drivePaths(execution.id, now)) {

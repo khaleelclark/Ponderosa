@@ -377,6 +377,17 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
       const result=branches.rewindInitial(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey);notify();return result;
     }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Initial rewind failed'});}
   });
+  app.get<{Params:{id:string;executionId:string};Querystring:{before?:string}}>('/api/branches/:id/executions/:executionId/historical-checkpoints',async(request,reply)=>{
+    try{return branches.historicalCheckpoints(request.params.id,request.params.executionId,request.query.before===undefined?undefined:Number(request.query.before));}
+    catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical checkpoints unavailable'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:{checkpointId:number;expectedHash:string;commandKey:string}}>('/api/branches/:id/executions/:executionId/rewind-historical',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Historical rewind');exactObjectFields(body,['checkpointId','expectedHash','commandKey'],'Historical rewind');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.commandKey!=='string')throw Error('Invalid historical rewind command');
+      const result=branches.rewindHistorical(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical rewind failed'});}
+  });
   app.post<{ Params: { id: string }; Body: BranchGateResolution }>('/api/branch-gates/:id/resolve', async (request, reply) => {
     try { const result = branches.resolveGate(request.params.id, request.body); notify(); return result; }
     catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Gate resolution failed' }); }

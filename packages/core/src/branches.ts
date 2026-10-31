@@ -287,3 +287,9 @@ export interface BranchInitialCheckpointDto {
   frontier:'before_entry'; restoreSupported:boolean;
   eligibility:'canceled_before_start_with_unchanged_pins';
 }
+
+/** Saved historical frontier; unsupported dependencies stay explicit. */
+export interface BranchHistoricalCheckpointDto {
+  id:number; executionId:string; branchId:string; contentHash:string; restoreSupported:boolean;
+  eligibility:'script_control_frontier'|'unsupported_dependency';
+}

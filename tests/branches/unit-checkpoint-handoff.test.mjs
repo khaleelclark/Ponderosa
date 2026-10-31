@@ -37,7 +37,7 @@ test('B1 each control exposes a committed frontier before the following control 
  await f.branches.unitSaver.drain();
  const frontiers=snapshots(f).map(r=>r.snapshot.selected.paths[0]?.node_id);
  assert.deepEqual(frontiers,[undefined,'c1','c2','work','work']);
- assert.ok(snapshots(f).every(r=>r.snapshot.restore_supported===false));
+ assert.ok(snapshots(f).every(r=>r.snapshot.restore_supported===Boolean(r.snapshot.continuation)));
  for(const row of snapshots(f))assert.equal(createHash('sha256').update(row.snapshot_json).digest('hex'),row.content_hash);
  assert.equal(f.branches.unitSaver.status(f.execution.id).contentHash,snapshots(f).at(-1).content_hash);
 });
