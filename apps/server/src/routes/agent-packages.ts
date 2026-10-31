@@ -66,7 +66,8 @@ import type {BranchInstallationService} from "../branch-installation-service.js"
 
 export type BranchPackageEngine = Parameters<BranchInstallationService["setEngine"]>[0];
 export interface BranchImportHooks {
-  plan(agentIds: string[], creationOperationId?: string): void;
+  plan(agentIds: string[], creationOperationId?: string): void | Promise<void>;
+  transaction?(operation:()=>void):void;
   commit(result: ImportAgentPackageResponse): void;
 }
 
@@ -1390,13 +1391,14 @@ export function registerAgentPackageRoutes(
           for (const agentId of operationAgentIds) deletingAgentIds.add(agentId);
         }
       }
-      branchHooks?.plan(operationAgentIds, creationOperationId);
+
       if(packageMemory.length){
         const memoryPlan=localMemoryFor(app)!.prepareImportMemory(creationOperationId!,packageMemory);
         store.updateAgentCreationOperation(creationOperationId!,{result:{phase:'prepared_memory',memoryPlan}});
       }
 
       })();
+      await branchHooks?.plan(operationAgentIds, creationOperationId);
       signal?.throwIfAborted();
       await onPhase?.("importing_artifacts");
       signal?.throwIfAborted();
@@ -1552,12 +1554,13 @@ export function registerAgentPackageRoutes(
         }
         signal?.throwIfAborted();
         if(roleIntent)outputApps!.checkImport(roleIntent.reviewId,roleIntent.binding,creationOperationId);
-        store.sqlite.transaction(() => {
+        const commit=()=>{
           branchHooks?.commit(response);
           store.updateAgentCreationOperation(creationOperationId!, {
             status: "completed", result: response, lastError: null,
           });
-        })();
+        };
+        if(branchHooks?.transaction)branchHooks.transaction(commit);else store.sqlite.transaction(commit)();
         for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
         finishRoles(creationOperationId);
       }

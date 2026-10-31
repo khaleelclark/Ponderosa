@@ -61,7 +61,8 @@ export type BranchTarget =
   | { kind: "ephemeral_agent" | "ephemeral_organization"; templateRef: string };
 export interface BranchParameter { type: "text" | "number" | "boolean" | "path" | "secret"; label?: string; help?: string; required?: boolean; default?: string | number | boolean }
 export interface BranchLimits { maxCallDepth: number; maxLoopIterations: number; maxTraversals: number }
-export interface BranchConfiguration { parameters: Record<string, string | number | boolean>; limits: BranchLimits; secretBindings?: Record<string, string> }
+export type BranchCheckpointMode = 'async' | 'sync' | 'exit';
+export interface BranchConfiguration { checkpointMode?: BranchCheckpointMode; parameters: Record<string, string | number | boolean>; limits: BranchLimits; secretBindings?: Record<string, string> }
 export interface BranchRuntimeOutcome { kind: "child_canceled" | "limit_exhausted"; limit?: keyof BranchLimits; configured?: number; observed?: number }
 interface StepBase { id: string; label?: string; failure?: BranchFailurePolicy }
 export type BranchStep =
@@ -108,7 +109,13 @@ export interface BranchDto {
  id: string; chatId: string; enabled?: boolean; name: string; versionId: string; bindingRevisionId: string;
  triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; runCounts?:BranchRunCountsDto; createdAt: string;
 }
+export interface BranchCheckpointInvocationDto {
+  id:string; mode:BranchCheckpointMode; state:'active'|'interrupting'|'interrupted'|'terminal';
+  interruptionId?:string; primaryOutcome?:string; durability:'pending'|'coalesced'|'saved'|'failed'|'coverage_unknown'|'suppressed';
+  requiredWatermark?:number; savedSnapshotId?:number; savedContentHash?:string; lastSavedSnapshotId?:number;
+}
 export interface BranchExecutionDto {
+  checkpointInvocation?:BranchCheckpointInvocationDto;
   id: string; branchId: string; versionId: string; bindingRevisionId: string;
   parentExecutionId?: string; parentAttemptId?: string; callDepth?: number; configuration?: BranchConfiguration;
   occurrenceKey: string; input: string; inputHash: string; state: BranchExecutionState;
@@ -273,3 +280,16 @@ export interface OutputAgentAppDto {
   automatic: boolean; everyMs?: number;
 }
 export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto }
+
+/** INITIAL-only executable checkpoint slice; runtime checkpoints use a future continuation schema. */
+export interface BranchInitialCheckpointDto {
+  id:number; executionId:string; branchId:string; contentHash:string; createdAt:string;
+  frontier:'before_entry'; restoreSupported:boolean;
+  eligibility:'canceled_before_start_with_unchanged_pins';
+}
+
+/** Saved historical frontier; unsupported dependencies stay explicit. */
+export interface BranchHistoricalCheckpointDto {
+  id:number; executionId:string; branchId:string; contentHash:string; restoreSupported:boolean;
+  eligibility:'script_control_frontier'|'unsupported_dependency';
+}

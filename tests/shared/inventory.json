@@ -1656,6 +1656,46 @@
       "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
     },
     {
+      "path": "tests/branches/initial-checkpoint-rewind.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built own core/agents/server with existing native-host and better-sqlite3; private canonical stores, Fastify inject and controlled leases only, no provider or Script process",
+      "origin": "Initial-frontier checkpoint/rewind slice: actual persistence, lineage, restart, rollback, owner/pin/secret/deletion fences"
+    },
+    {
+      "path": "tests/branches/unit-checkpoint-handoff.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built agents/server and existing SQLite dependency; private canonical stores; no provider processes",
+      "origin": "Actual per-unit commit, exact owner closure and independent async saver failure regressions"
+    },
+    {
+      "path": "tests/branches/checkpoint-modes.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built core/agents/server; private stores and controlled leases/notification only; no provider process",
+      "origin": "#32 configurable modes owner barriers and exit lifecycle"
+    },
+    {
+      "path": "tests/branches/historical-checkpoint-rewind.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built own core/agents/server with existing native-host and better-sqlite3; private canonical stores, Fastify inject and controlled leases only, no provider or Script process",
+      "origin": "Executable noninitial Script/control history, fresh continuation, immutable lineage, current authority and refusal regressions"
+    },
+    {
+      "path": "tests/branches/resource-checkpoint-safety.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, own agents/server builds and existing dependencies; deferred inert Chat/import boundaries and controlled dispatch only; no real import/provider/Script/network",
+      "origin": "Durable async resource operation uncertainty and current ancestor checkpoint release regressions"
+    },
+    {
       "path": "tests/workspace-navigation/chat-instruction-limit.test.mjs",
       "feature": "workspace-navigation",
       "lane": "web",

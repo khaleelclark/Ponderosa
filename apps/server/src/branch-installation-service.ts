@@ -28,7 +28,7 @@ interface PackageEngine {
  setOutputApps(owner:OutputAgentApps):void;
  validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
  exportAgent(id:string,mode:'template'|'full'):Promise<AgentPortablePackageDto>;
- importAgent(projectId:string,chatId:string,pkg:AgentPortablePackageDto,engines:Record<string,string>,key:string,options?:{signal?:AbortSignal;branchHooks?:{plan(agentIds:string[],creationOperationId?:string):void;commit(result:ImportAgentPackageResponse):void}}):Promise<ImportAgentPackageResponse>;
+ importAgent(projectId:string,chatId:string,pkg:AgentPortablePackageDto,engines:Record<string,string>,key:string,options?:{signal?:AbortSignal;branchHooks?:{plan(agentIds:string[],creationOperationId?:string):void|Promise<void>;commit(result:ImportAgentPackageResponse):void;transaction?(operation:()=>void):void}}):Promise<ImportAgentPackageResponse>;
 }
 /** Coordinates existing Chat/Agent lifecycle operations. It never creates provider Runs. */
 export class BranchInstallationService {
