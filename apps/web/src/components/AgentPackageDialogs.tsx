@@ -28,6 +28,8 @@ import { agentBelongsToConversation } from "../agents";
 
 import { ChatInstructionsImportChoice, chatInstructionsResolution, type ChatInstructionsAction } from "./ChatInstructionsImportChoice";
 
+import {fullPackageExportWarning} from './PackageExportDisclosure';
+
 type PackageMode = "template" | "full";
 
 function selectedAgents(source: AgentDto, agents: AgentDto[], organization: boolean): AgentDto[] {
@@ -84,7 +86,7 @@ function PackageChoices({
     <Typography variant="body2" color="text.secondary">
       {agentCount} Agent{agentCount === 1 ? "" : "s"} selected. Credentials are excluded.
     </Typography>
-    {mode === "full" ? <Alert severity="warning">History and stored data may contain sensitive information.</Alert> : null}
+    {mode === "full" ? <Alert severity="warning">{fullPackageExportWarning}</Alert> : null}
   </Stack>;
 }
 

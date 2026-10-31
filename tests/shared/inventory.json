@@ -1718,6 +1718,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24 and built server catalog; offline metadata/validator contracts only, no Chroma/model/provider",
       "origin": "First-use combined-search and provenance guidance"
+    },
+    {
+      "path": "tests/workspace-navigation/package-export-disclosure.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed TypeScript; actual TSX dialog callbacks with UI leaves stubbed; no browser/service",
+      "origin": "Combined migration omission disclosure and explicit workflow full-export confirmation"
     }
   ],
   "retainedReleasePayload": [
