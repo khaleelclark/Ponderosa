@@ -1044,3 +1044,71 @@ for(const kind of ['foreignChat','foreignAgent','changedReceipt'])test(`resource
  if(kind==='changedReceipt'){const token=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(token);await f.branches.unitSaver.drain();db.prepare("UPDATE branch_commands SET result_json=json_set(result_json,'$.token','foreign-token') WHERE execution_id=? AND command_key=?").run(next.id,`resource-operation:${r.creation_key}:chat`);}
  const before=allocationCounts(f);assert.equal(f.branches.resourceRelease(r.step_execution_id),'fenced');assert.equal(f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat'),undefined);assert.deepEqual(allocationCounts(f),before);
 });
+
+for(const mode of ['async','sync','exit'])for(const kind of ['empty-context-members','missing-source-member','incomplete-cleanup','missing-import-receipt'])test(`resource custody regression ${mode} ${kind} refuses before allocation`,async t=>{
+ const {f,a,effects}=await completedReservationHistory(t,mode),db=f.store.sqlite,r=f.reservation(f.source.id);
+ const immutableBytes=db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(a.id).snapshot_json;
+ const originalContext=db.prepare('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=?').get(r.step_execution_id);
+ const originalMembers=db.prepare('SELECT * FROM branch_resource_members WHERE step_execution_id=?').all(r.step_execution_id);
+ if(kind==='empty-context-members')db.prepare("UPDATE branch_ephemeral_contexts SET agent_ids_json='[]' WHERE step_execution_id=? AND generation=?").run(r.step_execution_id,r.generation);
+ if(kind==='missing-source-member')db.prepare('DELETE FROM branch_resource_members WHERE step_execution_id=?').run(r.step_execution_id);
+ if(kind==='incomplete-cleanup')db.prepare('UPDATE conversation_deletion_receipts SET storage_cleanup_completed=0 WHERE conversation_id=?').run(effects.chatId);
+ if(kind==='missing-import-receipt')db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-operation:${r.creation_key}:import`);
+ await f.reopen();const current=f.store.sqlite,before=allocationCounts(f);let next,error,token,released;
+ try{next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'independent-custody');}catch(e){error=e.message;}
+ const after=allocationCounts(f);
+ if(next){await f.advance(next.id);const target=f.reservation(next.id);token=f.branches.beginResourceOperation(target.step_execution_id,target.creation_key,'chat');if(token){await f.branches.unitSaver.drain();released=f.branches.releaseResourceChat(target.step_execution_id,target.creation_key,token);}}
+ console.log(JSON.stringify({mode,kind,accepted:!!next,error,before,after,originalContext,originalMembers,currentContext:current.prepare('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=?').get(r.step_execution_id),currentMembers:current.prepare('SELECT * FROM branch_resource_members WHERE step_execution_id=?').all(r.step_execution_id),sourceImport:f.branches.resourceOperation(r.step_execution_id,'import'),nextId:next?.id,freshChatToken:token,actualChatRelease:released,immutableBytesUnchanged:immutableBytes===current.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(a.id).snapshot_json,knownSourcePrefix:f.branches.detail(f.source.id).steps[0].result}));
+ assert.equal(!!next,false,'source custody identities must match actual owned phase result before rewind');assert.deepEqual(after,before);
+});
+for(const mode of ['async','sync','exit'])test(`resource custody regression ${mode} source context change after rewind fences next release`,async t=>{
+ const {f,a}=await completedReservationHistory(t,mode),next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'independent-postrewind');await f.advance(next.id);
+ const source=f.reservation(f.source.id),target=f.reservation(next.id);assert.equal(f.branches.resourceRelease(target.step_execution_id),'ready','legitimate target ready before source corruption');f.store.sqlite.prepare("UPDATE branch_ephemeral_contexts SET agent_ids_json='[]' WHERE step_execution_id=?").run(source.step_execution_id);
+ const before=allocationCounts(f),readiness=f.branches.resourceRelease(target.step_execution_id),token=f.branches.beginResourceOperation(target.step_execution_id,target.creation_key,'chat');let released;
+ if(token){await f.branches.unitSaver.drain();released=f.branches.releaseResourceChat(target.step_execution_id,target.creation_key,token);}
+ console.log(JSON.stringify({mode,kind:'postrewind-source-context',readiness,token,actualChatRelease:released,before,after:allocationCounts(f)}));
+ assert.equal(token,undefined,'post-rewind source custody mismatch must fence fresh resource command');assert.deepEqual(allocationCounts(f),before);
+});
+for(const boundary of ['rewind','release'])for(const kind of ['duplicateContext','foreignContext','nonArrayContext','duplicateReceipt','foreignRoot','wrongCount','wrongGeneration','foreignChat','foreignCreation','missingMember','foreignMember','memberOrigin','liveAgent','runningCustody','leasedCustody'])test(`resource custody exact set ${boundary} ${kind}`,async t=>{
+ const {f,a,effects}=await completedReservationHistory(t),db=f.store.sqlite,source=f.reservation(f.source.id);
+ let target;
+ if(boundary==='release'){const next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'exact-set-target');await f.advance(next.id);target=f.reservation(next.id);assert.equal(f.branches.resourceRelease(target.step_execution_id),'ready');}
+ const command=`resource-operation:${source.creation_key}:import`,mutateReceipt=change=>{const op=f.branches.resourceOperation(source.step_execution_id,'import');change(op);db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(JSON.stringify(op),f.source.id,command);};
+ if(kind==='duplicateContext')db.prepare('UPDATE branch_ephemeral_contexts SET agent_ids_json=? WHERE step_execution_id=?').run(JSON.stringify([effects.agentId,effects.agentId]),source.step_execution_id);
+ if(kind==='foreignContext'||kind==='nonArrayContext')db.prepare('UPDATE branch_ephemeral_contexts SET agent_ids_json=? WHERE step_execution_id=?').run(JSON.stringify(kind==='foreignContext'?[randomUUID()]:{}),source.step_execution_id);
+ if(kind==='duplicateReceipt')mutateReceipt(op=>op.result.agentIds.push(effects.agentId));
+ if(kind==='foreignRoot')db.prepare('UPDATE branch_resources SET root_agent_id=? WHERE step_execution_id=?').run(randomUUID(),source.step_execution_id);
+ if(kind==='wrongCount')db.prepare('UPDATE branch_resources SET requested_count=requested_count+1 WHERE step_execution_id=?').run(source.step_execution_id);
+ if(kind==='wrongGeneration')db.prepare('UPDATE branch_ephemeral_contexts SET generation=generation+1 WHERE step_execution_id=?').run(source.step_execution_id);
+ if(kind==='foreignChat')db.prepare('UPDATE branch_ephemeral_contexts SET chat_id=? WHERE step_execution_id=?').run(f.branch.chatId,source.step_execution_id);
+ if(kind==='foreignCreation')mutateReceipt(op=>op.creationOperationId=randomUUID());
+ if(kind==='missingMember')db.prepare('DELETE FROM branch_resource_members WHERE step_execution_id=?').run(source.step_execution_id);
+ if(kind==='foreignMember'){db.prepare('DELETE FROM branch_resource_members WHERE step_execution_id=?').run(source.step_execution_id);db.prepare("INSERT INTO branch_resource_members VALUES(?,?,'template')").run(randomUUID(),source.step_execution_id);}
+ if(kind==='memberOrigin')db.prepare("UPDATE branch_resource_members SET origin='descendant' WHERE step_execution_id=?").run(source.step_execution_id);
+ if(kind==='liveAgent')db.prepare('UPDATE agents SET deleted_at=NULL WHERE id=?').run(effects.agentId);
+ if(kind==='runningCustody'||kind==='leasedCustody'){
+  const now=new Date().toISOString();db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at) VALUES(?,?,?,?,'inert',?,1,'injected',?,?,?)").run(randomUUID(),f.store.getConversation(f.branch.chatId).projectId,effects.agentId,kind==='runningCustody'?'running':'leased',now,now,now,now);
+ }
+ const before=allocationCounts(f),invocation=f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(f.source.id).checkpoint_invocation_json,checkpoint=db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(a.id).snapshot_json;
+ if(boundary==='rewind'){if(kind!=='liveAgent')await f.reopen();else assert.equal(f.store.sqlite.prepare('SELECT deleted_at FROM agents WHERE id=?').get(effects.agentId).deleted_at,null);assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'exact-set-refusal'),/custody/);}
+ else{assert.equal(f.branches.resourceRelease(target.step_execution_id),'fenced');assert.equal(f.branches.beginResourceOperation(target.step_execution_id,target.creation_key,'chat'),undefined);}
+ assert.deepEqual(allocationCounts(f),before);assert.equal(f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(f.source.id).checkpoint_invocation_json,invocation);assert.equal(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(a.id).snapshot_json,checkpoint);assert.equal(f.branches.claimScript('must-not-dispatch'),undefined);
+});
+for(const mode of ['async','sync','exit'])test(`resource custody ${mode} settled reopen preserves A B and second rewind`,async t=>{
+ const {f,a,effects}=await completedReservationHistory(t,mode);await f.reopen();
+ const source=f.reservation(f.source.id),op=f.branches.resourceOperation(source.step_execution_id,'import');
+ assert.deepEqual(op.result.agentIds,[effects.agentId]);assert.equal(op.result.rootAgentId,effects.agentId);
+ const first=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'custody-positive-A');await f.advance(first.id);const b=await f.capture(first.id);assert.ok(b);f.resume(first.id);const fresh=await f.finish(first.id);assert.notEqual(fresh.agentId,effects.agentId);await f.reopen();
+ const second=f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'custody-positive-B');await f.advance(second.id);const latest=await f.finish(second.id);assert.notEqual(latest.agentId,fresh.agentId);await f.reopen();const before=allocationCounts(f);assert.equal(f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'custody-positive-B').id,second.id);assert.deepEqual(allocationCounts(f),before);
+});
+for(const kind of ['duplicateIds','emptyId','nonArrayIds','rootOutsideSet'])test(`resource custody malformed owned import ${kind} refuses before allocation`,async t=>{
+ const {f,a}=await completedReservationHistory(t),db=f.store.sqlite,r=f.reservation(f.source.id),op=f.branches.resourceOperation(r.step_execution_id,'import');
+ if(kind==='duplicateIds')op.result.agentIds.push(op.result.rootAgentId);
+ if(kind==='emptyId')op.result.agentIds=[''];
+ if(kind==='nonArrayIds')op.result.agentIds={};
+ if(kind==='rootOutsideSet')op.result.rootAgentId=randomUUID();
+ const stable=v=>Array.isArray(v)?v.map(stable):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,stable(v[k])])):v,bytes=JSON.stringify(stable(op)),key=`resource-operation:${r.creation_key}:import`;
+ db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(bytes,f.source.id,key);
+ const event=db.prepare("SELECT id FROM branch_checkpoints WHERE execution_id=? AND kind='resource_operation' AND substr(transition_key,1,?)=? ORDER BY id DESC LIMIT 1").get(f.source.id,key.length+1,key+':');assert.ok(event);db.prepare('UPDATE branch_checkpoints SET evidence_json=? WHERE id=?').run(bytes,event.id);
+ const before=allocationCounts(f),invocation=f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(f.source.id).checkpoint_invocation_json;await f.reopen();assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'malformed-owned-import'),/custody/);assert.deepEqual(allocationCounts(f),before);assert.equal(f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(f.source.id).checkpoint_invocation_json,invocation);assert.equal(f.branches.claimScript('must-not-dispatch'),undefined);
+});

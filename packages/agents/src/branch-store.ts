@@ -740,9 +740,29 @@ export class BranchStore {
       const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?',r.step_execution_id).map(m=>m.agent_id);
       const chat=this.resourceOperation(r.step_execution_id,'chat'),imported=this.resourceOperation(r.step_execution_id,'import');
       if(!this.resourceOperationAuditMatches(r,'chat',chat)||!this.resourceOperationAuditMatches(r,'import',imported))return false;
-      if(r.chat_id&&(chat?.state!=='completed'||chat.result?.chatId!==r.chat_id)||r.root_agent_id&&(imported?.state!=='completed'||imported.result?.rootAgentId!==r.root_agent_id))return false;
-      if(r.chat_id){const context=this.row('SELECT chat_id FROM branch_ephemeral_contexts WHERE step_execution_id=? AND generation=?',r.step_execution_id,r.generation),receipt=this.row('SELECT storage_cleanup_completed,server_cleanup_completed FROM conversation_deletion_receipts WHERE conversation_id=?',r.chat_id);
-        if(context?.chat_id!==r.chat_id||receipt?.storage_cleanup_completed!==1||receipt.server_cleanup_completed!==1||this.row('SELECT 1 FROM conversations WHERE id=?',r.chat_id))return false;}
+      // Retained mutable lists cannot erase identities from the owned completed import audit.
+      const contexts=this.rows('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=?',r.step_execution_id);
+      const context=contexts[0],ids=imported?.state==='completed'?imported.result?.agentIds:[];
+      if(this.row("SELECT 1 FROM branch_resource_members WHERE step_execution_id=? AND origin!='template'",r.step_execution_id))return false;
+      if(!Array.isArray(ids)||ids.some((id:unknown)=>typeof id!=='string'||!id.length)||new Set(ids).size!==ids.length
+        ||stableJson([...ids].sort())!==stableJson([...members].sort())
+        ||ids.length&&(ids.length!==r.requested_count||!ids.includes(r.root_agent_id)||!r.chat_id||typeof imported?.creationOperationId!=='string'||!imported.creationOperationId)
+        ||r.root_agent_id&&(imported?.state!=='completed'||imported.result?.rootAgentId!==r.root_agent_id)
+        ||imported?.state==='completed'&&(!ids.length||imported.result?.rootAgentId!==r.root_agent_id))return false;
+      if(r.chat_id){
+        if(!context||contexts.length!==1||context.generation!==r.generation||context.chat_id!==r.chat_id||chat?.state!=='completed'
+          ||chat.result?.chatId!==r.chat_id||chat.generation!==r.generation)return false;
+        const contextIds=JSON.parse(context.agent_ids_json);
+        if(!Array.isArray(contextIds)||contextIds.some((id:unknown)=>typeof id!=='string'||!id.length)||new Set(contextIds).size!==contextIds.length
+          ||stableJson([...contextIds].sort())!==stableJson([...ids].sort()))return false;
+        const receipt=this.row('SELECT storage_cleanup_completed,server_cleanup_completed FROM conversation_deletion_receipts WHERE conversation_id=?',r.chat_id);
+        if(receipt?.storage_cleanup_completed!==1||receipt.server_cleanup_completed!==1||this.row('SELECT 1 FROM conversations WHERE id=?',r.chat_id))return false;
+      }else if(contexts.length||ids.length)return false;
+      for(const id of ids){
+        const agent=this.row('SELECT conversation_id,deleted_at FROM agents WHERE id=?',id);
+        if(agent&&(agent.deleted_at===null||agent.conversation_id!==null&&agent.conversation_id!==r.chat_id)
+          ||this.row("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')",id))return false;
+      }
       if(r.state!=='retired'||!this.resourceCanRetire(r.step_execution_id,members)
         ||this.row('SELECT 1 FROM branch_resource_members m JOIN agents a ON a.id=m.agent_id WHERE m.step_execution_id=? AND a.deleted_at IS NULL',r.step_execution_id))return false;
     }
