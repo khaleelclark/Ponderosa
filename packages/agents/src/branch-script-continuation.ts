@@ -294,6 +294,10 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(v.pathId!==p.id||v.edgeId!==pendingLoop||v.iteration!==count)return false;
           loops.set(v.edgeId,count);pendingLoop=undefined;break;
         }
+        case 'checkpoint_restore_held':
+          if(!context?.parent||!seed||started||!accepted||interruption||configuration.checkpointMode!=='exit'
+            ||typeof v.interruptionId!=='string'||typeof v.invocationId!=='string'||v.ordinal!==1)return false;
+          interruption=v;break;
         case 'checkpoint_interrupt_requested':
           if(configuration.checkpointMode!=='exit'||!started||interruption||typeof v.interruptionId!=='string'||typeof v.invocationId!=='string'
             ||!Number.isSafeInteger(v.ordinal)||v.ordinal<1||!v.commandKey

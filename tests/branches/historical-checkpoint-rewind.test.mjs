@@ -673,8 +673,8 @@ for(const mode of ['async','sync'])test(`tree ${mode} idempotence preserves late
 });
 
 const unfinishedPoint=(f,id)=>f.branches.historicalCheckpoints(f.root.id,id).find(cp=>cp.restoreSupported&&captureBytes(f,cp.id).continuation?.owners?.some(o=>o.executionId!==id&&o.selected.execution[0].state!=='completed'));
-async function unfinishedFixture(t,mode='async',childMode='async',nested=false,loop=false){
- const f=treeFixture(t,mode,nested,childMode,false,loop,true);
+async function unfinishedFixture(t,mode='async',childMode='async',nested=false,loop=false,middleMode=childMode){
+ const f=treeFixture(t,mode,nested,middleMode,false,loop,true);
  if(nested)f.branches.configure(f.leaf.id,{...f.branches.configuration(f.leaf.id),checkpointMode:childMode},1);
  const prefix=await f.claim();assert.equal(prefix.executionId,f.source.id);f.settle(prefix);
  const child=await f.claim();assert.notEqual(child.executionId,f.source.id);f.settle(child);await f.branches.unitSaver.drain();
@@ -757,4 +757,135 @@ for(const kind of ['policy','pins','cancel','unknown','gate'])test(`unfinished-c
  if(kind==='unknown'){f.branches.authorizeScript(lease,inertIdentity);f.branches.markScriptUnknown(lease,'inert unknown suffix');await f.branches.unitSaver.drain();assert.equal(f.branches.claimScript('no-unknown-replay'),undefined);const before=allocationCounts(f);assert.throws(()=>f.branches.rewindHistorical(f.root.id,next.id,currentCut.id,currentCut.contentHash,'no-unknown-transfer'),/checkpoint|owner|settled|live|uncertain|integrity/i);assert.deepEqual(allocationCounts(f),before);return;}
  // Use the actual gate authority, preserving the unstarted lease as a held frontier.
  f.branches.unitTransaction(()=>{const attempt=f.store.sqlite.prepare('SELECT * FROM branch_attempts WHERE id=?').get(lease.attemptId);f.branches.openGate(attempt,lease.executionId,'Explicit test gate','held',undefined,'approval',new Date().toISOString());})();await f.branches.unitSaver.drain();assert.notEqual(f.branches.checkpointDispatch(lease),'ready');assert.equal(f.branches.claimScript('no-autoapproval'),undefined);assert.equal(f.branches.detail(lease.executionId).gates[0].state,'waiting');
+});
+
+
+async function interruptExitChild(f,id,key){
+ const e=f.branches.execution(id),inv=e.checkpointInvocation;
+ let hold;assert.doesNotThrow(()=>{hold=f.branches.checkpointInterruption(e.branchId,id,'interrupt',inv.id,key).checkpointInvocation;},'actual tracked EXIT child interruption must be supported');
+ await f.branches.unitSaver.completeExits();return hold;
+}
+function resumeExitChild(f,id,hold,key){const e=f.branches.execution(id);return f.branches.checkpointInterruption(e.branchId,id,'resume',hold.interruptionId,key);}
+for(const mode of ['async','sync'])for(const nested of [false,true])test(`exit-child ${mode} nested=${nested} actual closing A and restored B execute only fresh suffix`,async t=>{
+ const f=await unfinishedFixture(t,mode,'exit',nested,false,nested?'async':'exit'),original=f.branches.execution(f.childId).checkpointInvocation;
+ assert.equal(f.branches.historicalCheckpoints(f.leaf.id,f.childId).length,0,'EXIT has no intermediate saved identity');
+ assert.equal(unfinishedPoint(f,f.source.id),undefined,'active EXIT child cannot be relabeled async');
+ const hold=await interruptExitChild(f,f.childId,'child-close-A');
+ const a=unfinishedPoint(f,f.source.id);assert.ok(a,'actual interrupted EXIT child must yield executable ancestor tree capture');
+ assert.equal(f.branches.claimScript('held-exit-child'),undefined);assert.equal(hold.state,'interrupted');
+ resumeExitChild(f,f.childId,hold,'child-resume-A');await f.finish(f.source.id);
+ const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'exit-child-rewind-A');
+ const restored=f.store.sqlite.prepare("SELECT id FROM branch_executions WHERE json_extract(checkpoint_invocation_json,'$.interruptionId') IS NOT NULL AND state='queued'").all();assert.equal(restored.length,1);
+ const newHold=f.branches.execution(restored[0].id).checkpointInvocation;assert.notEqual(newHold.interruptionId,hold.interruptionId);
+ const inherited=f.store.sqlite.prepare('SELECT a.* FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?').all(restored[0].id);assert.ok(inherited.length);assert.ok(inherited.every(a=>a.fence===0&&a.lease_owner===null&&a.process_identity_json===null));
+ await f.branches.unitSaver.drain();f.branches.advance();assert.equal(f.branches.claimScript('no-automatic-child-resume'),undefined);resumeExitChild(f,restored[0].id,newHold,'fresh-resume-A');
+ const lease=await f.claim();assert.ok(lease.source.includes('leaf2'));assert.notEqual(lease.executionId,f.childId);assert.equal(lease.fence,1);
+ const fresh=f.branches.execution(lease.executionId).checkpointInvocation;assert.notEqual(fresh.id,original.id);assert.equal(fresh.interruptionId,undefined);
+ f.settle(lease);await f.branches.unitSaver.drain();
+ const secondHold=await interruptExitChild(f,lease.executionId,'child-close-B'),b=unfinishedPoint(f,first.id);assert.ok(b,'restored EXIT child must yield executable second ancestor capture');
+ assert.equal(captureBytes(f,b.id).continuation.provenance.length,1);
+ resumeExitChild(f,lease.executionId,secondHold,'child-resume-B');await f.finish(first.id);await f.reopen();
+ const before=allocationCounts(f);assert.equal(f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'exit-child-rewind-A').id,first.id);assert.deepEqual(allocationCounts(f),before);
+ const second=f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'exit-child-rewind-B');await f.branches.unitSaver.drain();
+ const held=f.store.sqlite.prepare("SELECT id FROM branch_executions WHERE state='queued' AND json_extract(checkpoint_invocation_json,'$.interruptionId') IS NOT NULL").get();assert.ok(held);resumeExitChild(f,held.id,f.branches.execution(held.id).checkpointInvocation,'fresh-resume-B');const last=await f.claim();assert.ok(last.source.includes('leaf3'));assert.equal(last.fence,1);f.settle(last);await f.finish(second.id);await f.reopen();
+ assert.equal(f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'exit-child-rewind-B').id,second.id);
+ for(const root of [first.id,second.id]){assert.equal(f.branches.detail(root).steps.filter(s=>s.stepId==='call').length,1);assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='child_completed'").get(root).n,1);assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='script_leased' AND json_extract(evidence_json,'$.attemptId') IN (SELECT a.id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND s.step_id='prefix')").get(root,root).n,0);}
+ assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
+});
+
+test('exit-child exact late process proof closes child and ancestor without INITIAL or unknown release',async t=>{
+ const f=await unfinishedFixture(t,'sync','exit'),lease=await f.claim();assert.ok(lease.source.includes('leaf2'));f.branches.authorizeScript(lease,inertIdentity);
+ const inv=f.branches.execution(f.childId).checkpointInvocation,hold=f.branches.checkpointInterruption(f.leaf.id,f.childId,'interrupt',inv.id,'late-child-hold').checkpointInvocation;
+ assert.equal(hold.state,'interrupting');await f.branches.unitSaver.drain();assert.equal(f.branches.historicalCheckpoints(f.leaf.id,f.childId).length,0);assert.equal(unfinishedPoint(f,f.source.id),undefined);
+ assert.equal(f.branches.claimScript('late-child-held'),undefined);assert.throws(()=>resumeExitChild(f,f.childId,hold,'too-early'),/saved quiescence/);
+ f.branches.settleScript(lease,{failed:false,output:'exact late child'});await f.branches.unitSaver.drain();assert.equal(f.branches.execution(f.childId).checkpointInvocation.state,'interrupting');assert.equal(unfinishedPoint(f,f.source.id),undefined);
+ f.branches.recordScriptEvidence({...lease,fence:lease.fence+1},inertIdentity,{stdout:'exact late child',outputHash:hash('exact late child'),code:0});await f.branches.unitSaver.drain();assert.equal(f.branches.execution(f.childId).checkpointInvocation.state,'interrupting');
+ f.branches.recordScriptEvidence(lease,inertIdentity,{stdout:'exact late child',outputHash:hash('exact late child'),code:0});await f.branches.unitSaver.completeExits();assert.equal(f.branches.execution(f.childId).checkpointInvocation.state,'interrupted');assert.ok(unfinishedPoint(f,f.source.id));
+ assert.ok(f.branches.historicalCheckpoints(f.leaf.id,f.childId).every(cp=>captureBytes(f,cp.id).closing));resumeExitChild(f,f.childId,hold,'late-child-resume');await f.finish(f.source.id);
+});
+test('exit-child parent EXIT and nested EXIT holds stay independent through restore',async t=>{
+ const f=await unfinishedFixture(t,'exit','exit',true),leafHold=await interruptExitChild(f,f.childId,'nested-leaf-close');
+ const middle=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(f.source.id);
+ const middleHold=await interruptExitChild(f,middle.id,'nested-middle-close'),rootHold=await interruptExitChild(f,f.source.id,'nested-root-close');
+ const a=unfinishedPoint(f,f.source.id);assert.ok(a);resumeExitChild(f,f.childId,leafHold,'nested-leaf-resume');assert.equal(f.branches.claimScript('parent-still-held'),undefined);
+ await f.branches.unitSaver.completeExits();resumeExitChild(f,middle.id,middleHold,'nested-middle-resume');assert.equal(f.branches.claimScript('root-still-held'),undefined);await f.branches.unitSaver.completeExits();resumeExitChild(f,f.source.id,rootHold,'nested-root-resume');await f.finish(f.source.id);
+ const next=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'nested-all-exit');await f.branches.unitSaver.drain();
+ const children=f.store.sqlite.prepare("SELECT id FROM branch_executions WHERE state='queued' AND json_extract(checkpoint_invocation_json,'$.interruptionId') IS NOT NULL ORDER BY call_depth").all();assert.equal(children.length,2);
+ for(const child of children){await f.branches.unitSaver.drain();resumeExitChild(f,child.id,f.branches.execution(child.id).checkpointInvocation,`nested-fresh-${child.id}`);}
+ const suffix=await f.claim();assert.ok(suffix.source.includes('leaf2'));f.settle(suffix);await f.finish(next.id);await f.branches.unitSaver.completeExits();
+});
+async function closedExitChild(t,mode='async'){
+ const f=await unfinishedFixture(t,mode,'exit'),hold=await interruptExitChild(f,f.childId,'close-corruption'),a=unfinishedPoint(f,f.source.id);assert.ok(a);
+ resumeExitChild(f,f.childId,hold,'resume-corruption');await f.finish(f.source.id);return {f,a,hold};
+}
+for(const kind of ['invocation','ordinal','interruption','primaryOutcome','missingPause','childAudit','counter','coverageMissing','coverageForeign','coverageTampered','proofMissing','proofWrongFence','mapMissing','receiptMissing'])test(`exit-child ${kind} refuses before restore allocation`,async t=>{
+ const {f,a}=await closedExitChild(t),snapshot=captureBytes(f,a.id),child=snapshot.continuation.owners.find(o=>o.executionId===f.childId),inv=child.invocation;
+ const {stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ if(kind==='invocation')inv.id='foreign-invocation';if(kind==='ordinal')inv.ordinal++;if(kind==='interruption')inv.interruptionId='foreign-interruption';if(kind==='primaryOutcome')inv.primaryOutcome='completed';
+ if(kind==='missingPause')child.audit=child.audit.filter(a=>a.kind!=='checkpoint_interrupt_requested');if(kind==='childAudit')child.audit=child.audit.filter(a=>a.kind!=='script_authorized');if(kind==='counter')child.selected.execution[0].traversals++;
+ if(kind.startsWith('coverage')){
+  const rows=f.store.sqlite.prepare("SELECT id,snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.invocationId')=? AND json_extract(snapshot_json,'$.closing')=1").all(f.childId,inv.id);assert.ok(rows.length);
+  for(const row of rows){const cp=JSON.parse(row.snapshot_json);f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(row.id);if(kind==='coverageForeign')f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,row.snapshot_json,hash(row.snapshot_json));if(kind==='coverageTampered'){cp.selected.execution[0].traversals++;const bytes=stableJson(cp);f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.childId,bytes,hash(bytes));}}
+ }
+ if(kind.startsWith('proof')){
+  const proof=child.audit.find(a=>a.kind==='script_process_exit');assert.ok(proof);if(kind==='proofMissing'){f.store.sqlite.prepare('DELETE FROM branch_checkpoints WHERE id=?').run(proof.id);}else{proof.transition_key=proof.transition_key.replace(/:(\d+)$/,(_,n)=>`:${Number(n)+1}`);f.store.sqlite.prepare('UPDATE branch_checkpoints SET transition_key=? WHERE id=?').run(proof.transition_key,proof.id);}
+ }
+ if(kind==='mapMissing'||kind==='receiptMissing'){
+  const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'exit-corrupt-map');await f.branches.unitSaver.drain();
+  if(kind==='receiptMissing')f.store.sqlite.prepare("DELETE FROM branch_commands WHERE execution_id=? AND command_key LIKE 'tree-historical-rewind:%'").run(f.source.id);
+  else{const lineRow=f.store.sqlite.prepare("SELECT id,snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").get(first.id),line=JSON.parse(lineRow.snapshot_json);delete line.idMap[f.childId];const bytes=stableJson(line),id=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(first.id,bytes,hash(bytes)).lastInsertRowid);f.store.sqlite.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key LIKE 'tree-historical-rewind:%'").run(stableJson({executionId:first.id,lineageId:id}),f.source.id);}
+  const childId=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(first.id).id,held=f.branches.execution(childId).checkpointInvocation,before=allocationCounts(f);assert.throws(()=>resumeExitChild(f,childId,held,'corrupt-resume'),/saved quiescence and authority/);assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.claimScript('corrupt-held'),undefined);return;
+ }
+ const bytes=stableJson(snapshot),id=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,hash(bytes)).lastInsertRowid),before=allocationCounts(f);
+ assert.equal(f.branches.historicalCheckpoints(f.root.id,f.source.id).find(cp=>cp.id===id).restoreSupported,false);assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,id,hash(bytes),'exit-child-corrupt'),/integrity|unsupported/);assert.deepEqual(allocationCounts(f),before);
+});
+test('exit-child closing saver failure stays visible and cannot become ancestor coverage',async t=>{
+ const f=await unfinishedFixture(t,'async','exit');f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_child_close BEFORE INSERT ON branch_unit_snapshots WHEN NEW.execution_id='${f.childId}' BEGIN SELECT RAISE(ABORT,'child closing failure'); END`);
+ const inv=f.branches.execution(f.childId).checkpointInvocation,hold=f.branches.checkpointInterruption(f.leaf.id,f.childId,'interrupt',inv.id,'failed-child-close').checkpointInvocation;
+ await assert.rejects(f.branches.unitSaver.completeExits(),/durability failed/);assert.equal(f.branches.execution(f.childId).checkpointInvocation.durability,'failed');assert.equal(unfinishedPoint(f,f.source.id),undefined);assert.equal(f.branches.detail(f.childId).steps[0].result.failed,false);assert.throws(()=>resumeExitChild(f,f.childId,hold,'failed-close-resume'),/supports only|saved quiescence/);assert.equal(f.branches.claimScript('failed-child-held'),undefined);
+});
+for(const kind of ['policy','parentPolicy','pins','cancel','parentCancel','gate','missingCoverage'])test(`exit-child restored ${kind} blocks explicit resume and fresh effects`,async t=>{
+ const {f,a}=await closedExitChild(t),next=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'held-authority');await f.branches.unitSaver.drain();
+ const child=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(next.id),hold=f.branches.execution(child.id).checkpointInvocation;
+ if(kind==='policy'||kind==='parentPolicy')new CapabilityPolicyStore(f.store.sqlite).put({scopeKind:'branch',scopeId:kind==='policy'?f.leaf.id:f.root.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.scripts]});
+ if(kind==='pins')f.branches.configure(f.leaf.id,{...f.branches.configuration(f.leaf.id),limits:{...f.branches.configuration(f.leaf.id).limits,maxTraversals:99}},1);
+ if(kind==='cancel'||kind==='parentCancel')f.branches.cancel(kind==='cancel'?child.id:next.id);
+ if(kind==='gate'){const attempt=f.store.sqlite.prepare('SELECT a.*,s.path_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?').get(child.id);f.branches.unitTransaction(()=>f.branches.openGate(attempt,child.id,'still requires human','',[],'approval',new Date().toISOString()))();}
+ if(kind==='missingCoverage'){const saved=f.branches.execution(child.id).checkpointInvocation.savedSnapshotId;assert.ok(saved);f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(saved);await f.reopen();}
+ const before=allocationCounts(f);assert.throws(()=>resumeExitChild(f,child.id,hold,`blocked-${kind}`),/supports only|saved quiescence/);assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.claimScript('held-authority'),undefined);
+});
+test('exit-child required fresh hold insertion failure atomically rolls back all owners and lineage',async t=>{
+ const {f,a}=await closedExitChild(t),before=allocationCounts(f);f.store.sqlite.exec("CREATE TEMP TRIGGER fail_fresh_hold BEFORE INSERT ON branch_checkpoints WHEN NEW.kind='checkpoint_restore_held' BEGIN SELECT RAISE(ABORT,'fresh child hold failure'); END");
+ assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'atomic-fresh-hold'),/fresh child hold failure/);await f.branches.unitSaver.drain();assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.claimScript('rollback-hold'),undefined);
+});
+
+test('exit-child reopened fresh hold requires explicit resume with saved current bytes',async t=>{
+ const {f,a}=await closedExitChild(t),next=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'reopen-fresh-hold');await f.branches.unitSaver.drain();
+ const child=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(next.id),hold=f.branches.execution(child.id).checkpointInvocation;await f.reopen();
+ assert.equal(f.branches.claimScript('reopened-held-child'),undefined);const resumed=resumeExitChild(f,child.id,hold,'reopened-explicit-resume');assert.notEqual(resumed.checkpointInvocation.id,hold.id);
+ const same=resumeExitChild(f,child.id,hold,'reopened-explicit-resume');assert.equal(same.checkpointInvocation.id,resumed.checkpointInvocation.id);
+ const suffix=await f.claim();assert.ok(suffix.source.includes('leaf2'));assert.equal(suffix.fence,1);f.settle(suffix);await f.finish(next.id);
+ assert.throws(()=>f.store.sqlite.prepare("UPDATE branch_unit_snapshots SET snapshot_json='{}' WHERE execution_id=?").run(child.id),/immutable/);
+});
+test('exit-child unknown running effect remains held without completion or replay',async t=>{
+ const f=await unfinishedFixture(t,'async','exit'),lease=await f.claim();f.branches.authorizeScript(lease,inertIdentity);f.branches.markScriptUnknown(lease,'inert unknown');
+ const inv=f.branches.execution(f.childId).checkpointInvocation,hold=f.branches.checkpointInterruption(f.leaf.id,f.childId,'interrupt',inv.id,'unknown-exit-child').checkpointInvocation;await f.branches.unitSaver.drain();
+ assert.equal(hold.state,'interrupting');assert.equal(unfinishedPoint(f,f.source.id),undefined);assert.throws(()=>resumeExitChild(f,f.childId,hold,'unknown-resume'),/saved quiescence/);assert.equal(f.branches.claimScript('unknown-no-release'),undefined);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM branch_attempts WHERE id=?').get(lease.attemptId).state,'outcome_unknown');assert.equal(f.branches.execution(f.source.id).state,'waiting');
+});
+test('exit-child pending closing save cannot count as ancestor coverage',async t=>{
+ const f=await unfinishedFixture(t,'async','exit');let release;const barrier=new Promise(resolve=>{release=resolve;});f.branches.unitSaver.lanes.set(f.childId,barrier);
+ const inv=f.branches.execution(f.childId).checkpointInvocation,hold=f.branches.checkpointInterruption(f.leaf.id,f.childId,'interrupt',inv.id,'pending-child-close').checkpointInvocation;
+ await f.branches.unitSaver.waitFor([f.source.id]);assert.equal(unfinishedPoint(f,f.source.id),undefined);assert.throws(()=>resumeExitChild(f,f.childId,hold,'pending-resume'),/saved quiescence/);
+ release();await f.branches.unitSaver.completeExits();assert.ok(unfinishedPoint(f,f.source.id));resumeExitChild(f,f.childId,hold,'pending-now-saved');await f.finish(f.source.id);
+});
+test('exit-child EXIT parent keeps independent A and B closing boundaries across second rewind',async t=>{
+ const f=await unfinishedFixture(t,'exit','exit'),childA=await interruptExitChild(f,f.childId,'both-child-A'),rootA=await interruptExitChild(f,f.source.id,'both-root-A'),a=unfinishedPoint(f,f.source.id);assert.ok(a);
+ resumeExitChild(f,f.childId,childA,'both-child-resume-A');assert.equal(f.branches.claimScript('root-A-held'),undefined);await f.branches.unitSaver.completeExits();resumeExitChild(f,f.source.id,rootA,'both-root-resume-A');await f.finish(f.source.id);
+ const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'both-rewind-A');await f.branches.unitSaver.drain();const child=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(first.id);resumeExitChild(f,child.id,f.branches.execution(child.id).checkpointInvocation,'both-fresh-A');
+ const suffix=await f.claim();assert.ok(suffix.source.includes('leaf2'));f.settle(suffix);await f.branches.unitSaver.drain();assert.equal(f.branches.historicalCheckpoints(f.root.id,first.id).length,0);
+ const childB=await interruptExitChild(f,child.id,'both-child-B'),rootB=await interruptExitChild(f,first.id,'both-root-B'),b=unfinishedPoint(f,first.id);assert.ok(b);
+ resumeExitChild(f,child.id,childB,'both-child-resume-B');await f.branches.unitSaver.completeExits();resumeExitChild(f,first.id,rootB,'both-root-resume-B');await f.finish(first.id);
+ const second=f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'both-rewind-B');await f.branches.unitSaver.drain();const lastChild=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(second.id);resumeExitChild(f,lastChild.id,f.branches.execution(lastChild.id).checkpointInvocation,'both-fresh-B');
+ const last=await f.claim();assert.ok(last.source.includes('leaf3'));assert.equal(last.fence,1);f.settle(last);await f.finish(second.id);await f.branches.unitSaver.completeExits();
 });

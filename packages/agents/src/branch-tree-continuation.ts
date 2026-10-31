@@ -33,7 +33,7 @@ function owner(db:Database.Database,id:string,selected:Selected):Row|undefined {
     invocation:{id:inv.id,ordinal:inv.ordinal,mode:inv.mode,state:inv.state,primaryOutcome:inv.primary_outcome??null,interruptionId:inv.interruptionId??null}};
 }
 function checkpoint(o:Row):Row|undefined {
-  if(o.invocation.mode!=='exit'||o.selected.execution[0].parent_execution_id)return;
+  if(o.invocation.mode!=='exit')return;
   const v=o.invocation;return {invocationId:v.id,mode:v.mode,closing:true,invocation:{id:v.id,ordinal:v.ordinal,mode:v.mode,state:v.state,primaryOutcome:v.primaryOutcome,interruptionId:v.interruptionId}};
 }
 /** Quiescent Script/control owners only; unfinished calls retain their waiting frontier. */
@@ -46,7 +46,7 @@ export function encodeScriptTreeContinuation(db:Database.Database,id:string,sele
     const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[]};
     const provenance=compose(db,c,true);return provenance?{...c,provenance}:undefined;
 }
-function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>}>):boolean {
+function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>}>,encoding=false):boolean {
   const owners=c.owners as Row[];
   if(!Array.isArray(owners)||owners.length<2||new Set(owners.map(o=>o.executionId)).size!==owners.length||stableJson(c.compatibility)!==stableJson(TREE_COMPATIBILITY))return false;
   const root=owners.find(o=>o.executionId===c.rootExecutionId);if(!root)return false;
@@ -69,7 +69,12 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const descendant=o.executionId!==c.rootExecutionId,terminal=e.state==='completed';
     if(terminal?(!descendant||inv.state!=='terminal'||inv.primaryOutcome!=='completed'):!['running','waiting'].includes(e.state))return false;
     if(!descendant&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
-    if(!terminal&&(inv.mode==='exit'?descendant||inv.state!=='interrupted'||!inv.interruptionId:inv.state!=='active'))return false;
+    if(!terminal&&(inv.mode==='exit'?inv.state!=='interrupted'||!inv.interruptionId:inv.state!=='active'))return false;
+    if(descendant&&!terminal&&inv.mode==='exit'&&!encoding){
+      // The ancestor cut cannot acknowledge a failed or missing child closing save.
+      const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:false,invocationId:inv.id,mode:'exit',closing:true,selected:o.selected});
+      if(!db.prepare('SELECT 1 FROM branch_unit_snapshots WHERE execution_id=? AND content_hash=? AND snapshot_json=?').get(o.executionId,payloadHash(JSON.parse(content)),content))return false;
+    }
     const direct=owners.filter(child=>child.selected.execution[0].parent_execution_id===o.executionId);
     const actualChildren=db.prepare(`SELECT e.id FROM branch_executions e WHERE e.parent_execution_id=? AND EXISTS(SELECT 1 FROM branch_checkpoints a WHERE a.execution_id=e.id AND a.kind='trigger_accepted' AND a.id<=?) ORDER BY e.id`).all(o.executionId,boundary) as Row[];
     if(stableJson(actualChildren.map(r=>r.id))!==stableJson(direct.map(r=>r.executionId).sort()))return false;
@@ -92,7 +97,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       while(current?.executionId!==c.rootExecutionId){if(!current||visited.has(current.executionId))return false;visited.add(current.executionId);current=owners.find(row=>row.executionId===current!.selected.execution[0].parent_execution_id);}
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
     const waiting=Object.values(children).some(child=>!child.completed);
-    if(!terminal&&(e.state!==(waiting?'waiting':'running')||descendant&&inv.mode==='exit'))return false;
+    if(!terminal&&(e.state!==(waiting?'waiting':'running')))return false;
     const context:ScriptOwnerContext={terminal,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state==='completed'};
     if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context))return false;
   }
@@ -139,7 +144,7 @@ function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
     for(const frame of frames.reverse()){
       if(frame.ref)flat.push(frame.ref);
       if(!(encoding&&frame.c===c)&&stableJson(frame.c.provenance??[])!==stableJson(flat))return;
-      if(!validateOwners(db,frame.c,frame.seeds))return;
+      if(!validateOwners(db,frame.c,frame.seeds,encoding&&frame.c===c))return;
     }
     return flat;
   }catch{return;}

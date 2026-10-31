@@ -166,7 +166,7 @@ export class BranchStore {
     this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:invocation.ordinal+1,mode:invocation.mode,state:'active',durability:'pending'}),executionId);
     this.selectedWrite(executionId);return true;
   }
-  /** Finite manual root interruption; the ancestor hold also fences unfinished descendants. */
+  /** Explicit owner interruption; the hold also fences unfinished descendants. */
   checkpointInterruption(branchId:string,executionId:string,action:'interrupt'|'resume',expectedId:string,commandKey:string,now=new Date().toISOString()):BranchExecutionDto {
     branchKey(commandKey);branchKey(expectedId);
     this.unitTransaction(()=>{
@@ -176,9 +176,10 @@ export class BranchStore {
       const key=`checkpoint-interruption:${action}:${payloadHash(commandKey)}`,hash=payloadHash({branchId,executionId,action,expectedId});
       const prior=this.row('SELECT input_hash FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
       if(prior){if(prior.input_hash!==hash)throw Error('Checkpoint interruption idempotency conflict');return;}
-      if(!['interrupt','resume'].includes(action)||!invocation||invocation.mode!=='exit'||!['running','waiting'].includes(execution.state)||execution.parentExecutionId
-        ||execution.admissionSource!=='manual'||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',executionId)?.cancel_requested
-        ||!scriptDefinitionSupported(this.definition(execution),true)||this.rows("WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT id FROM owned",executionId).some(owner=>{const child=this.execution(owner.id)!;return !['queued','running','waiting','completed'].includes(child.state)||!scriptDefinitionSupported(this.definition(child),true)||Object.keys(child.configuration?.secretBindings??{}).length;})||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live nonsecret exit Script/control roots and supported descendants');
+      if(!['interrupt','resume'].includes(action)||!invocation||invocation.mode!=='exit'||!(['running','waiting'].includes(execution.state)||action==='resume'&&execution.state==='queued'&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='checkpoint_restore_held'",executionId))
+        ||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',executionId)?.cancel_requested
+        ||!scriptDefinitionSupported(this.definition(execution),true)||this.rows("WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT id FROM owned",executionId).some(owner=>{const child=this.execution(owner.id)!;return !['queued','running','waiting','completed'].includes(child.state)||!scriptDefinitionSupported(this.definition(child),true)||Object.keys(child.configuration?.secretBindings??{}).length;})||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live nonsecret exit Script/control owners and supported descendants');
+      if(!this.checkpointOwnerChainSupported(executionId))throw Error(action==='resume'?'Checkpoint resume requires current saved quiescence and authority':'Checkpoint interruption supports only current nonsecret Script/control owner chains');
       if(action==='interrupt'){
         if(invocation.id!==expectedId||invocation.state!=='active'||invocation.interruptionId)throw Error('Checkpoint invocation changed');
         const interruptionId=randomUUID();
@@ -193,6 +194,41 @@ export class BranchStore {
       this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,hash,stableJson({accepted:true}),now);
     }).immediate();
     return this.execution(executionId)!;
+  }
+  private checkpointOwnerChainSupported(executionId:string):boolean {
+    const chain=this.ancestors(executionId);
+    return chain.every((owner,index)=>{
+      const execution=this.execution(owner.id)!,branch=this.getBranch(owner.branch_id);
+      if(!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',owner.branch_id)?.deleting||owner.cancel_requested
+        ||!(['running','waiting'].includes(owner.state)||owner.state==='queued'&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",owner.id))||!scriptDefinitionSupported(this.definition(execution),true)
+        ||Object.keys(execution.configuration?.secretBindings??{}).length||this.restricted(owner.branch_id,CAPABILITY_IDS.scripts)||this.restricted(owner.branch_id,CAPABILITY_IDS.branchCalls)
+        ||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration)
+        ||this.unitSaver.failed(owner.id)||this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",owner.id))return false;
+      if(branch.chatId)this.chat(branch.chatId);
+      if(!owner.parent_execution_id)return index===chain.length-1&&owner.admission_source==='manual';
+      const parent=chain[index+1],attempt=this.row('SELECT * FROM branch_attempts WHERE id=?',owner.parent_attempt_id);
+      const step=attempt&&this.row('SELECT * FROM branch_step_executions WHERE id=?',attempt.step_execution_id);
+      const path=step&&this.row('SELECT * FROM branch_paths WHERE id=?',step.path_id);
+      const definition=parent&&this.definition(this.execution(parent.id)!);
+      const call=definition?.steps.find(s=>s.id===step?.step_id);
+      const admitted=parent&&this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='child_admitted' AND transition_key=?",parent.id,`call:${owner.parent_attempt_id}`);
+      // Inherited membership is proved by the immutable tree origin, not a fabricated admission.
+      const inherited=()=>{
+        const root=chain.at(-1)!,origin=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",root.id);
+        if(!origin)return false;
+        try{
+          const evidence=JSON.parse(origin.evidence_json),source=this.execution(evidence.sourceRootId);
+          // Only the existing idempotent command may prove inherited target membership.
+          if(!source||!this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',source.id,`tree-historical-rewind:${payloadHash(evidence.commandKey)}`))return false;
+          return this.rewindHistorical(source.branchId,source.id,evidence.checkpointId,evidence.checkpointHash,evidence.commandKey).id===root.id;
+        }catch{return false;}
+      };
+      return !!parent&&['queued','running','waiting'].includes(parent.state)&&owner.admission_source==='call'&&attempt?.state==='waiting'&&step?.state==='waiting'
+        &&step.execution_id===parent.id&&path!==undefined&&path.execution_id===parent.id&&path.state==='waiting'&&path.step_execution_id===step.id
+        &&owner.input_text===step.input_text&&owner.input_hash===payloadHash({parentAttempt:owner.parent_attempt_id,input:step.input_text})
+        &&owner.call_depth===parent.call_depth+1&&call?.kind==='branch_call'&&this.bindings(this.execution(parent.id)!).branches?.[call.branchRef]===owner.branch_id
+        &&!!(admitted&&admitted.evidence_json===stableJson({attemptId:owner.parent_attempt_id,childExecutionId:owner.id,definitionId:owner.version_id})||inherited());
+    });
   }
   checkpointDispatch(lease:BranchActionLease|BranchScriptLease,now=new Date().toISOString()):'ready'|'waiting'|'fenced' {
     const valid=this.row(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
@@ -720,6 +756,13 @@ export class BranchStore {
       if(o!==root){const childLine=childTreeLineage(line,lineageId,o.executionId,target);childLineageId=Number(this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(target,stableJson(childLine),payloadHash(childLine)).lastInsertRowid);}
       const evidence={sourceRootId:executionId,sourceExecutionId:o.executionId,checkpointId,checkpointHash:expectedHash,commandKey,lineageId,...(childLineageId?{childLineageId}:{})};
       this.checkpoint(target,'tree-restored-prefix','tree_restored_prefix',evidence,now);this.checkpoint(target,'tree-rewind-origin','tree_historical_rewind',evidence,now);
+      if(o!==root&&o.selected.execution[0].state!=='completed'&&o.invocation.mode==='exit'){
+        // Rewind restores data, while an explicit resume owns the fresh child invocation.
+        const invocation=this.checkpointInvocationRow(target)!,interruptionId=randomUUID();
+        this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({...invocation,state:'interrupting',interruptionId}),target);
+        this.checkpoint(target,`restore-held:${interruptionId}`,'checkpoint_restore_held',{interruptionId,invocationId:invocation.id,ordinal:invocation.ordinal},now);
+        this.selectedWrite(target);
+      }
     }
     this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,commandHash,stableJson({executionId:next.id,lineageId}),now);
     return this.execution(next.id)!;
