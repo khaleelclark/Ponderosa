@@ -2262,6 +2262,14 @@ export class BranchStore {
     }
   }
   claimScript(workerId: string, now = new Date().toISOString()): BranchScriptLease | undefined {
+    const prepared = this.claimPreparedScript(workerId, now);
+    if (prepared || this.sqlite.inTransaction) return prepared;
+    // A settled result commits before its next Step is prepared. An empty worker
+    // poll drives one ordinary bounded scheduler batch, never an inline suffix.
+    this.advance(now);
+    return this.claimPreparedScript(workerId, now);
+  }
+  private claimPreparedScript(workerId: string, now: string): BranchScriptLease | undefined {
     return this.unitTransaction(() => {
       // Frozen Script kinds select this lane. Rotate bounded batches past full
       // executions; a blocked row must not reserve every future claim scan.
