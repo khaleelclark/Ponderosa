@@ -188,3 +188,14 @@ test('completed called execution is observed through public admission despite fa
  assert.equal(detail.steps[0].state,'completed');assert.equal(detail.steps[0].result.output,'child known');
  assert.equal(detail.steps.length,1);assert.equal(f.branches.claimScript('parent suffix'),undefined);
 });
+
+test('failed saver COMMIT publishes no saved identity and cannot undo primary cancellation',async t=>{
+ const f=fixture(t);await f.branches.unitSaver.drain();const before=snapshots(f).length;
+ f.store.sqlite.exec(`CREATE TABLE saver_parent(id TEXT PRIMARY KEY);
+  CREATE TABLE saver_child(id TEXT REFERENCES saver_parent(id) DEFERRABLE INITIALLY DEFERRED);
+  CREATE TRIGGER fail_saver_commit AFTER INSERT ON branch_unit_snapshots BEGIN INSERT INTO saver_child VALUES('missing'); END`);
+ f.branches.cancel(f.execution.id);assert.equal(f.branches.execution(f.execution.id).state,'canceled');
+ await assert.rejects(f.branches.unitSaver.drain(),/durability failed/);
+ const status=f.branches.unitSaver.status(f.execution.id);assert.equal(status.state,'failed');assert.equal(status.savedId,undefined);assert.equal(status.contentHash,undefined);
+ assert.equal(snapshots(f).length,before);assert.equal(f.branches.execution(f.execution.id).state,'canceled');
+});

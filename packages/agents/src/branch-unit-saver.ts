@@ -53,12 +53,14 @@ export class BranchUnitSaver {
         if(this.sqlite.inTransaction)throw new Error('Checkpoint saver cannot join a primary transaction');
         if(Object.hasOwn(candidate,'error'))throw candidate.error;
         // Deletion can run between commit and the async saver. Never recreate ownership.
-        this.sqlite.transaction(()=>{
+        const savedId=this.sqlite.transaction(()=>{
           const owner=this.sqlite.prepare('SELECT b.deleting FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=?').get(id) as {deleting:number}|undefined;
-          if(!owner||owner.deleting){Object.assign(ticket,{state:'suppressed'});return;}
+          if(!owner||owner.deleting)return;
           const result=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,candidate.content!,candidate.hash!);
-          Object.assign(ticket,{state:'saved',savedId:Number(result.lastInsertRowid),contentHash:candidate.hash});
+          return Number(result.lastInsertRowid);
         }).immediate();
+        if(savedId===undefined)Object.assign(ticket,{state:'suppressed'});
+        else Object.assign(ticket,{state:'saved',savedId,contentHash:candidate.hash});
       });
       // Keep the rejecting lane: later saves cannot bypass a failed predecessor.
       this.lanes.set(id,save);
