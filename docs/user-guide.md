@@ -292,6 +292,7 @@ Deleting Chats or clearing data/browser storage is not a routine recovery step.
 | Provider not found or access rejected | Read **Provider Settings** and **AI provider status** in the web app. Use **Recheck sign-in** where offered. Confirm the chosen CLI is installed and signed in for the Engine account; read account/limit details. **Test Access** makes a live request. |
 | New Chat creation is unconfirmed | Use **Retry** on that attempt or **Recover earlier Chat** if offered. Keep browser storage available for recovery. |
 | Send unconfirmed or a draft reappears | Check Chat for the accepted message, then use that submission's recovery controls. Review **Restore**, **Discard** and attachment notices before resending. |
+| **Sent** or **Queued** with **Clean up** | The server accepted the message; only its recovery record needs cleanup. Cleanup resumes when you reopen the composer or reconnect. **Clean up** does not send the message again. Unconfirmed sends still use **Retry** with their original identity. |
 | **Updates delayed** | Open its details and choose **Retry**, or allow reconnection. The notice does not mean an agent stopped. |
 | **This view could not be loaded** | Choose **Try Again**, then **Reload Ponderosa** if offered. Preserve unsent input first. |
 | Work active or queued | Read the Agent's status, work log and queue receipt. Use **Stop** only when you intend to cancel the selected work. |

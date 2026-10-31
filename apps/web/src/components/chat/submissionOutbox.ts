@@ -71,6 +71,14 @@ export async function withCapturedSubmissionLock<T>(item: CapturedSubmission, ru
 const transports = new Map<string, Promise<unknown>>();
 const running = new Map<string, Promise<unknown>>();
 export function capturedSubmissionRunning(id: string): boolean { return running.has(id); }
+
+/** Only an observed receipt permits automatic cleanup, never automatic resend. */
+export function recoverAcceptedSubmissions(scope: string, ownerId: string, recover: (item: CapturedSubmission) => void): void {
+  for (const item of readCapturedSubmissions(scope, ownerId)) {
+    if (item.status === "accepted" && !capturedSubmissionRunning(item.pending.idempotencyKey)) recover(item);
+  }
+}
+
 export function runCapturedSubmission(item: CapturedSubmission, execute: () => Promise<unknown>): Promise<unknown> {
   const id = item.pending.idempotencyKey;
   const existing = running.get(id);

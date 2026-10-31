@@ -66,9 +66,9 @@ export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, 
           <Tooltip title={[item.text, ...item.attachmentNames, item.error].filter(Boolean).join(" · ")}>
             <Typography tabIndex={0} noWrap variant="body2" sx={{ flex: 1, minWidth: 0 }}>{item.text || item.attachmentNames.join(", ")}</Typography>
           </Tooltip>
-          <Tooltip title={item.error ?? (inFlight ? "Awaiting acceptance; not confirmed queued." : "Retry reconciles this exact operation.")}><Typography tabIndex={0} variant="caption" color={item.status === "failed" ? "error" : "text.secondary"}>{inFlight ? "Pending" : item.status === "accepted" ? "Saved" : item.status === "failed" ? "Failed" : "Unconfirmed"}</Typography></Tooltip>
+          <Tooltip title={item.error ?? (item.status === "accepted" ? "The server accepted this message. Only recovery cleanup remains; this does not send it again." : inFlight ? "Awaiting acceptance; not confirmed queued." : "Retry reconciles this exact operation.")}><Typography tabIndex={0} variant="caption" color={item.status === "failed" ? "error" : "text.secondary"}>{item.status === "accepted" ? item.action === "queue" ? "Queued" : "Sent" : inFlight ? "Pending" : item.status === "failed" ? "Failed" : "Unconfirmed"}</Typography></Tooltip>
           {item.attachmentNames.length ? <Typography variant="caption" aria-label={`${item.attachmentNames.length} attachments`}>+{item.attachmentNames.length}</Typography> : null}
-          <Button size="small" disabled={inFlight} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-retry", { detail: id }))}>Retry</Button>
+          <Button size="small" disabled={inFlight} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-retry", { detail: id }))}>{item.status === "accepted" ? inFlight ? "Cleaning up…" : "Clean up" : "Retry"}</Button>
           {item.status === "failed" ? <Tooltip title="Discard definitely rejected input"><span><IconButton aria-label="Discard rejected message" disabled={inFlight || !navigator.locks} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-discard", { detail: id }))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip> : null}
         </Box>;
       })}

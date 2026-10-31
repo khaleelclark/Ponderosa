@@ -152,13 +152,113 @@ test('UI004 exact receipts replace retry lineages, clear authorized empties and 
   assert.deepEqual(sources[0].deliveryReceipts, [old], 'Canonical paginated data is not mutated');
 });
 test('UI004 routine phases require this exact acknowledged turn, preserving terminal uncertainty', () => {
-  for (const state of ['queued', 'retrying', 'steering']) assert.equal(messageDeliveryPhase({ state }), 'Waiting');
+  for (const [state, label] of [['queued', 'Queued'], ['retrying', 'Retrying delivery'], ['steering', 'Awaiting acknowledgement']]) assert.equal(messageDeliveryPhase({ state }), label);
   for (const state of ['preparing', 'started']) assert.equal(messageDeliveryPhase({ state }), 'Starting');
   const acknowledged = { state: 'delivered', injectionKind: 'turn', providerAcknowledged: true, injectionId: 'i', executionId: 'e' };
   assert.equal(messageDeliveryPhase(acknowledged), 'Working');
   for (const field of ['providerAcknowledged', 'injectionId', 'executionId']) assert.equal(messageDeliveryPhase({ ...acknowledged, [field]: undefined }), undefined);
   assert.equal(messageDeliveryPhase({ ...acknowledged, injectionKind: 'steer' }), undefined);
   for (const state of ['processed', 'cancelled', 'run_unconfirmed', 'recovered', 'failed', 'unconfirmed']) assert.equal(messageDeliveryPhase({ ...acknowledged, state }), undefined);
+});
+
+test('mobile delivery badges show the actual wait reason instead of a generic Waiting', () => {
+  for (const [extra, label] of [
+    [{ state: 'queued' }, 'Queued'],
+    [{ state: 'retrying' }, 'Retrying delivery'],
+    [{ state: 'steering' }, 'Awaiting acknowledgement'],
+    [{ state: 'queued', steeringWaitReason: 'provider_not_ready' }, 'Waiting for provider'],
+    [{ state: 'retrying', steeringWaitReason: 'context_refresh' }, 'Waiting for context refresh'],
+    [{ state: 'waiting_for_run' }, 'Waiting for current run'],
+  ]) {
+    const nodes = status(extra)();
+    assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === label), label);
+  }
+});
+
+test('accepted recovery retries one metadata CAS from fresh content without overwriting a newer draft', async () => {
+  const pending = { fingerprint: 'a'.repeat(64), idempotencyKey: 'already-sent' };
+  let current = { revision: 4, clientId: 'other-tab', text: 'First draft', attachmentIds: [], mentionBindings: [], pendingSubmissions: [pending] };
+  const calls = [];
+  const module = load('components/chat/capturedDraftSubmissions.ts', {
+    '../../api': { api: {
+      getConversationDraft: async () => current,
+      putConversationDraft: async (scope, body) => {
+        calls.push({ scope, ...body });
+        if (calls.length === 1) {
+          current = { ...current, revision: 5, text: 'Newer unsent draft 🙂\n\nKeep this', attachmentIds: ['new-file'], mentionBindings: [{ agentId: 'new-recipient' }] };
+          throw new ApiRequestError(409, 'draft revision conflict');
+        }
+        return { ...body, revision: 6, pendingSubmissions: [], retiredPendingSubmissionIds: [{ idempotencyKey: pending.idempotencyKey }] };
+      },
+    } },
+    '../../api/types': { ApiRequestError },
+    './submissionOutbox': { readCapturedSubmissions: () => [] },
+  });
+  const result = await module.persistCapturedDraftSubmission('chat', 'owner', 'original-tab', pending, true, 4);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].expectedRevision, 5);
+  assert.equal(calls[1].text, current.text);
+  assert.deepEqual(calls[1].attachmentIds, current.attachmentIds);
+  assert.deepEqual(calls[1].mentionBindings, current.mentionBindings);
+  assert.deepEqual(Array.from(calls[1].retirePendingSubmissionIds), ['already-sent']);
+  assert.equal(calls[1].clientId, 'other-tab');
+  assert.equal(result.mayAdvanceDraftRevision, false, 'Metadata cleanup cannot grant the old editor authority over the newer draft');
+});
+
+test('captured metadata cleanup is bounded and does not retry network or validation failures', async () => {
+  for (const code of [409, 503, 422]) {
+    let reads = 0, writes = 0;
+    const module = load('components/chat/capturedDraftSubmissions.ts', {
+      '../../api': { api: {
+        getConversationDraft: async () => ({ revision: ++reads, text: 'Keep', attachmentIds: [], pendingSubmissions: [] }),
+        putConversationDraft: async () => { writes++; throw new ApiRequestError(code, 'visible cause'); },
+      } },
+      '../../api/types': { ApiRequestError }, './submissionOutbox': { readCapturedSubmissions: () => [] },
+    });
+    await assert.rejects(module.persistCapturedDraftSubmission('chat', 'owner', 'tab', { idempotencyKey: 'sent' }, true), /visible cause/u);
+    assert.equal(writes, code === 409 ? 2 : 1);
+    assert.equal(reads, writes);
+  }
+});
+
+test('automatic recovery selects only accepted, idle operations in this exact owner scope', async t => {
+  const previous = globalThis.window, window = Object.assign(new EventTarget(), { localStorage: new Storage() });
+  globalThis.window = window;
+  t.after(() => { if (previous === undefined) delete globalThis.window; else globalThis.window = previous; });
+  const outbox = load('components/chat/submissionOutbox.ts', { '../../chatState.js': chatState }, { window });
+  const item = (id, status, extra = {}) => ({ version: 1, scope: 'chat', storageKey: 'draft', ownerId: 'owner', clientId: 'tab', createdAt: 1,
+    action: 'send', text: id, editorText: id, attachmentNames: [], mentionedAgents: [], newAgentRequested: false,
+    pending: { fingerprint: 'a'.repeat(64), idempotencyKey: id }, status, ...extra });
+  for (const record of [item('sent', 'accepted'), item('queued', 'accepted', { action: 'queue' }), item('unknown', 'unknown'),
+    item('failed', 'failed'), item('pending', 'pending'), item('other-owner', 'accepted', { ownerId: 'other' }), item('other-chat', 'accepted', { scope: 'elsewhere' })]) outbox.saveCapturedSubmission(record);
+  const selected = [];
+  outbox.recoverAcceptedSubmissions('chat', 'owner', record => selected.push(record.pending.idempotencyKey));
+  assert.deepEqual(selected.sort(), ['queued', 'sent']);
+  let release;
+  const inFlight = outbox.runCapturedSubmission(item('sent', 'accepted'), () => new Promise(resolve => { release = resolve; }));
+  await new Promise(setImmediate);
+  selected.length = 0;
+  outbox.recoverAcceptedSubmissions('chat', 'owner', record => selected.push(record.pending.idempotencyKey));
+  assert.deepEqual(selected, ['queued']);
+  release(); await inFlight;
+  assert.equal(outbox.readCapturedSubmissions('chat', 'owner').find(record => record.status === 'unknown').pending.idempotencyKey, 'unknown');
+});
+
+test('recovery tray distinguishes accepted cleanup from unconfirmed message Retry', () => {
+  const h = hooks();
+  const records = ['accepted', 'unknown'].map((status, i) => ({ action: 'send', status, text: status, attachmentNames: [], pending: { idempotencyKey: 'id-' + i } }));
+  const module = load('components/chat/QueuedMessageTray.tsx', {
+    react: h.react, './Composer.styles': { composerSurfaceWidth: '100%' },
+    './submissionOutbox': { readCapturedSubmissions: () => records, capturedSubmissionRunning: () => false },
+  });
+  const nodes = [...walk(h.render(() => module.QueuedMessageTray({ scope: 'chat', messages: [], onSteer() {}, onEdit() {}, onDelete() {} })))];
+  const rows = nodes.filter(node => node.props['data-operation-id']);
+  assert.equal(rows.length, 2);
+  const accepted = [...walk(rows[0])], unknown = [...walk(rows[1])];
+  assert.ok(accepted.some(node => node.type === mui.Typography && text(node) === 'Sent'));
+  assert.ok(accepted.some(node => node.type === mui.Button && text(node) === 'Clean up'));
+  assert.ok(!accepted.some(node => node.type === mui.Button && text(node) === 'Retry'));
+  assert.ok(unknown.some(node => node.type === mui.Button && text(node) === 'Retry'));
 });
 test('UI004 footer never borrows an earlier busy Run for a later queued message', () => {
   const h = hooks(), module = load('components/ConversationComposerStatus.tsx', {

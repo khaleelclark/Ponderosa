@@ -152,7 +152,7 @@ import {
 import { composerSurfaceSx } from "./Composer.styles";
 import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
-import { CapturedSubmissionOrderError, withCapturedSubmissionLock, capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent, runCapturedSubmission, saveCapturedSubmission, removeCapturedSubmission, type CapturedSubmission } from "./submissionOutbox";
+import { CapturedSubmissionOrderError, withCapturedSubmissionLock, capturedSubmissionRunning, readCapturedSubmissions, recoverAcceptedSubmissions, submissionOutboxEvent, runCapturedSubmission, saveCapturedSubmission, removeCapturedSubmission, type CapturedSubmission } from "./submissionOutbox";
 import { persistCapturedDraftSubmission, withCapturedDraftSubmissions } from "./capturedDraftSubmissions";
 import { useOutgoingMessage } from "./OutgoingMessage";
 
@@ -2355,13 +2355,23 @@ export function Composer({
         (error instanceof CapturedSubmissionOrderError || (error instanceof ApiRequestError &&
         durableSubmissionMayBeReleased(item.pending, error.status, error.message)));
       item = { ...item, status: accepted ? "accepted" : definitive ? "failed" : "unknown", error: accepted
-        ? "This message was saved. Retry to finish clearing its recovery record."
+        ? `Message ${item.action === "queue" ? "queued" : "sent"}; recovery cleanup failed. ${error instanceof Error ? error.message : "Try cleanup again."}`
         : error instanceof Error ? error.message : "Acceptance could not be confirmed. Retry this captured message." };
       try { saveCapturedSubmission(item); } catch { /* Existing captured bytes remain recoverable. */ }
     }).finally(() => { if (outgoingId) outgoing?.finish(outgoingId); });
     // Register transport before optimistic rendering can expose the captured send in the recovery tray.
     outgoingId = item.action === "send" && item.status !== "accepted" ? outgoing?.begin(item.text, item.attachmentNames) : undefined;
   };
+  useEffect(() => {
+    if (!conversationDraftId) return;
+    // One attempt on entering this owner surface or regaining connectivity.
+    // Do not subscribe to outbox changes: a persistent failure must not loop.
+    const recover = () => recoverAcceptedSubmissions(conversationDraftId, draftOwnerId,
+      item => executeCaptured(item, onSend, draftWriteChain.current));
+    recover();
+    window.addEventListener("online", recover);
+    return () => window.removeEventListener("online", recover);
+  }, [conversationDraftId, draftOwnerId]);
   useEffect(() => {
     const retry = (event: Event) => {
       const id = (event as CustomEvent<string>).detail;

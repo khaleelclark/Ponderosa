@@ -67,10 +67,10 @@ function deliveryLabel(
 }
 
 function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
-  const phase = messageDeliveryPhase(receipt);
-  if (phase) return phase;
   const waiting = steeringWaitLabel(receipt);
   if (waiting) return waiting.compact;
+  const phase = messageDeliveryPhase(receipt);
+  if (phase) return phase;
   switch (receipt.state) {
     case "queued": return "Queued";
     case "preparing": return "Preparing";
@@ -81,7 +81,7 @@ function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
     case "run_unconfirmed": return "Work unconfirmed";
     case "processed": return "Processed";
     case "unconfirmed": return receipt.providerAcknowledged ? "Work unconfirmed" : "Delivery unconfirmed";
-    case "waiting_for_run": return "Waiting";
+    case "waiting_for_run": return "Waiting for current run";
     case "recovery_queued": return "Recovery queued";
     case "recovering": return "Recovering";
     case "recovered": return "Recovered";
