@@ -7,6 +7,13 @@ type Row=Record<string,any>;
 export const TREE_SCHEMA='ponderosa.branch.script-tree-continuation.v1';
 export const TREE_COMPATIBILITY={format:'completed-child-script-tree.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
 export const treeIds=(owners:Row[])=>owners.flatMap(o=>[o.executionId,...['paths','steps','attempts','sealedResults'].flatMap(key=>o.selected[key].map((r:Row)=>r.id))]) as string[];
+export function treeIdMapSupported(owners:Row[],map:Row,sourceRoot:string,targetRoot:string):boolean {
+  const ids=treeIds(owners);
+  return !!map&&typeof map==='object'&&!Array.isArray(map)&&new Set(ids).size===ids.length
+    &&stableJson(Object.keys(map).sort())===stableJson([...ids].sort())
+    &&Object.values(map).every(id=>typeof id==='string'&&!!id&&!ids.includes(id))
+    &&new Set(Object.values(map)).size===ids.length&&map[sourceRoot]===targetRoot;
+}
 export const childTreeLineage=(line:Row,lineageId:number,sourceId:string,targetId:string)=>({schema:'ponderosa.branch.child-tree-lineage.v1',rootLineageId:lineageId,sourceRootId:line.sourceExecutionId,sourceExecutionId:sourceId,executionId:targetId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash,idMap:line.idMap});
 const audit=(db:Database.Database,id:string)=>db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(id);
 function read(db:Database.Database,id:number,owner:string):{value:Row;hash:string}|undefined {
@@ -103,8 +110,8 @@ function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
       if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||old?.schema!==TREE_SCHEMA||!treeSnapshotMetadata(snapshot,old)||old.rootExecutionId!==line.sourceExecutionId)return;
       const receipt=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(line.sourceExecutionId,`tree-historical-rewind:${payloadHash(line.commandKey)}`) as Row|undefined;
       if(!receipt||receipt.input_hash!==line.commandHash||receipt.result_json!==stableJson({executionId:current.rootExecutionId,lineageId:evidence.lineageId}))return;
-      const ids=treeIds(old.owners),map=line.idMap;
-      if(!map||stableJson(Object.keys(map).sort())!==stableJson([...ids].sort())||Object.values(map).some(id=>typeof id!=='string'||!id||ids.includes(id as string))||new Set(Object.values(map)).size!==ids.length||map[old.rootExecutionId]!==current.rootExecutionId)return;
+      const map=line.idMap;
+      if(!treeIdMapSupported(old.owners,map,old.rootExecutionId,current.rootExecutionId))return;
       const seeds=new Map<string,{selected:Selected;idMap:Record<string,string>}>();
       for(const previous of old.owners){
         const target=current.owners.find((o:Row)=>o.executionId===map[previous.executionId]);if(!target)return;

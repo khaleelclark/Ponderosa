@@ -638,3 +638,36 @@ test('completed-child tree idempotent replay requires the actual target prefix r
  assert.equal(f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'target-prefix-tree').id,next.id);f.store.sqlite.prepare("DELETE FROM branch_checkpoints WHERE execution_id=? AND kind='tree_restored_prefix'").run(next.id);const before=allocationCounts(f);
  assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'target-prefix-tree'),/lineage/);assert.deepEqual(allocationCounts(f),before);
 });
+
+for(const mode of ['async','sync'])for(const kind of ['missing-step','alias','source-alias','empty','extra','wrong-root','foreign-step'])test(`maintained ${mode} ${kind} idempotent target requires complete lineage ID map`,async t=>{
+ const f=treeFixture(t,mode),cp=await f.prefix();await f.finish(f.source.id);const target=f.branches.rewindHistorical(f.root.id,f.source.id,cp.id,cp.contentHash,'review-map');await f.finish(target.id);await f.reopen();
+ const decoy=kind==='wrong-root'?f.branches.accept(f.root.id,'unrelated-review','unrelated input'):undefined;await f.branches.unitSaver.drain();
+ const db=f.store.sqlite,{stableJson,payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const receipt=db.prepare('SELECT * FROM branch_commands WHERE execution_id=?').get(f.source.id),result=JSON.parse(receipt.result_json),line=captureBytes(f,result.lineageId),source=captureBytes(f,cp.id);
+ const removed=source.selected.steps[0].id;assert.ok(line.idMap[removed]);if(kind==='missing-step')delete line.idMap[removed];
+ else if(kind==='alias')line.idMap[removed]=line.idMap[source.selected.paths[0].id];
+ else if(kind==='source-alias')line.idMap[removed]=removed;
+ else if(kind==='empty')line.idMap[removed]='';
+ else if(kind==='extra')line.idMap.extra='unused-destination';
+ else if(kind==='foreign-step')line.idMap[removed]=removed;
+ else line.executionId=decoy.id;
+ if(kind==='foreign-step'){const foreign=f.branches.detail(f.source.id).steps.find(s=>!Object.hasOwn(line.idMap,s.id));assert.ok(foreign);line.idMap[removed]=foreign.id;}
+ const insert=(id,value)=>Number(db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,stableJson(value),payloadHash(value)).lastInsertRowid);
+ const newId=insert(decoy?.id??target.id,line);
+ for(const old of source.continuation.owners){const id=line.idMap[old.executionId],events=db.prepare("SELECT * FROM branch_checkpoints WHERE execution_id=? AND kind IN ('tree_restored_prefix','tree_historical_rewind')").all(id);assert.equal(events.length,2);const evidence=JSON.parse(events[0].evidence_json);evidence.lineageId=newId;
+  if(evidence.childLineageId){const child=captureBytes(f,evidence.childLineageId);child.rootLineageId=newId;child.idMap=line.idMap;evidence.childLineageId=insert(id,child);}
+  for(const event of events)db.prepare('UPDATE branch_checkpoints SET evidence_json=? WHERE id=?').run(stableJson(evidence),event.id);
+ }
+ db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson({executionId:decoy?.id??target.id,lineageId:newId}),f.source.id,receipt.command_key);
+ const before=allocationCounts(f);let accepted=false,error,returned;try{returned=f.branches.rewindHistorical(f.root.id,f.source.id,cp.id,cp.contentHash,'review-map');accepted=!!returned;}catch(e){error=e.message;}
+ console.log(JSON.stringify({probe:'incomplete target map',mode,kind,removed,accepted,returnedId:returned?.id,expectedId:target.id,decoyId:decoy?.id,error,before,after:allocationCounts(f)}));assert.equal(accepted,false,'incomplete target ID map must not certify idempotent tree lineage');assert.deepEqual(allocationCounts(f),before);
+});
+
+for(const mode of ['async','sync'])test(`tree ${mode} idempotence preserves later progress and reopened target identity`,async t=>{
+ const f=treeFixture(t,mode),cp=await f.prefix();await f.finish(f.source.id);
+ const target=f.branches.rewindHistorical(f.root.id,f.source.id,cp.id,cp.contentHash,'target-progress');
+ const lease=await f.claim();assert.equal(lease.executionId,target.id);f.settle(lease);await f.branches.unitSaver.drain();
+ let before=allocationCounts(f);assert.equal(f.branches.rewindHistorical(f.root.id,f.source.id,cp.id,cp.contentHash,'target-progress').id,target.id);assert.deepEqual(allocationCounts(f),before);
+ await f.finish(target.id);await f.reopen();before=allocationCounts(f);
+ assert.equal(f.branches.rewindHistorical(f.root.id,f.source.id,cp.id,cp.contentHash,'target-progress').id,target.id);assert.deepEqual(allocationCounts(f),before);
+});

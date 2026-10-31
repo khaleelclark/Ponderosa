@@ -1,4 +1,4 @@
-import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,childTreeLineage} from './branch-tree-continuation.js';
+import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts} from './branch-run-status.js';
@@ -660,11 +660,21 @@ export class BranchStore {
       if(!row||payloadHash(JSON.parse(row.snapshot_json))!==row.content_hash)throw Error('Tree lineage unavailable');
       const line=JSON.parse(row.snapshot_json);
       if(line.schema!=='ponderosa.branch.tree-rewind-lineage.v1'||line.commandHash!==commandHash||line.commandKey!==commandKey||line.sourceExecutionId!==executionId||line.checkpointId!==checkpointId||line.checkpointHash!==expectedHash||line.executionId!==result.executionId)throw Error('Tree lineage integrity failure');
+      if(!treeIdMapSupported(c.owners,line.idMap,executionId,result.executionId))throw Error('Tree lineage ID map integrity failure');
       for(const o of c.owners){
-        const target=line.idMap?.[o.executionId],origin=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",target);
-        const prefix=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_restored_prefix' AND transition_key='tree-restored-prefix'",target),owner=this.row('SELECT parent_execution_id,parent_attempt_id FROM branch_executions WHERE id=?',target),old=o.selected.execution[0];
+        const target=line.idMap[o.executionId],origin=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",target);
+        const prefix=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_restored_prefix' AND transition_key='tree-restored-prefix'",target),owner=this.row('SELECT * FROM branch_executions WHERE id=?',target),old=o.selected.execution[0];
+        const references=this.rows("SELECT kind,transition_key FROM branch_checkpoints WHERE execution_id=? AND kind IN ('tree_restored_prefix','tree_historical_rewind') ORDER BY id",target);
+        if(references.length!==2||references[0]?.kind!=='tree_restored_prefix'||references[0]?.transition_key!=='tree-restored-prefix'||references[1]?.kind!=='tree_historical_rewind'||references[1]?.transition_key!=='tree-rewind-origin')throw Error('Tree owner prefix lineage identity failure');
         if(!origin||!prefix||prefix.evidence_json!==origin.evidence_json||!owner||owner.parent_execution_id!==(old.parent_execution_id?line.idMap[old.parent_execution_id]:null)||owner.parent_attempt_id!==(old.parent_attempt_id?line.idMap[old.parent_attempt_id]:null))throw Error('Tree owner lineage unavailable');const evidence=JSON.parse(origin.evidence_json);
         if(evidence.commandKey!==commandKey||evidence.lineageId!==result.lineageId||evidence.sourceExecutionId!==o.executionId||evidence.sourceRootId!==executionId||evidence.checkpointId!==checkpointId||evidence.checkpointHash!==expectedHash)throw Error('Tree owner lineage integrity failure');
+        if(['branch_id','version_id','binding_revision_id','input_text','call_depth','depth_ceiling'].some(key=>owner[key]!==old[key]))throw Error('Tree mapped owner identity failure');
+        if(owner.input_hash!==(old.parent_attempt_id?payloadHash({parentAttempt:line.idMap[old.parent_attempt_id],input:old.input_text}):old.input_hash))throw Error('Tree mapped input identity failure');
+        const map=line.idMap;
+        for(const p of o.selected.paths){const row=this.row('SELECT execution_id FROM branch_paths WHERE id=?',map[p.id]);if(row?.execution_id!==target)throw Error('Tree mapped path ownership failure');}
+        for(const step of o.selected.steps){const row=this.row('SELECT * FROM branch_step_executions WHERE id=?',map[step.id]);if(!row||row.execution_id!==target||row.path_id!==map[step.path_id]||['step_id','invocation','input_text'].some(key=>row[key]!==step[key]))throw Error('Tree mapped Step ownership failure');}
+        for(const a of o.selected.attempts){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',map[a.id]);if(!row||row.step_execution_id!==map[a.step_execution_id]||row.number!==a.number||row.input_hash!==a.input_hash)throw Error('Tree mapped attempt ownership failure');}
+        for(const r of o.selected.sealedResults){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=?',map[r.id]);if(!row||row.execution_id!==target||row.path_id!==map[r.path_id]||row.step_execution_id!==map[r.step_execution_id]||row.terminal_attempt_id!==map[r.terminal_attempt_id]||row.result_json!==r.result_json||row.content_hash!==r.content_hash)throw Error('Tree mapped result ownership failure');}
         if(o.executionId!==executionId){const child=this.row('SELECT * FROM branch_unit_snapshots WHERE id=? AND execution_id=?',evidence.childLineageId,target);
           if(!child||payloadHash(JSON.parse(child.snapshot_json))!==child.content_hash||child.snapshot_json!==stableJson(childTreeLineage(line,result.lineageId,o.executionId,target)))throw Error('Tree child lineage unavailable');}
       }
