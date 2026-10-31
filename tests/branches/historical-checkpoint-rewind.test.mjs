@@ -5,7 +5,7 @@ import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainHistory=false){
@@ -943,4 +943,104 @@ for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutab
  await f.reopen();const before=allocationCounts(f),bytes=f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(child.id).checkpoint_invocation_json;
  for(let n=0;n<4;n++){f.branches.advance();assert.equal(f.branches.claimScript('no-auto-held'),undefined);await f.branches.unitSaver.drain();}
  assert.deepEqual(allocationCounts(f),before);assert.equal(f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(child.id).checkpoint_invocation_json,bytes);
+});
+
+// Resource replay stops before any external Chat/import release; suffix work uses fresh custody.
+async function reservationHistoryFixture(t,mode='async'){
+ const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
+ const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
+ t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
+ const project=store.createProject({label:'Inert resource history',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Owner'}),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
+ const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:permissions}]};
+ const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result'},script('suffix')],controls:[],edges:[{id:'to-team',from:'prefix',to:'team',on:'success'},{id:'to-suffix',from:'team',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
+ if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
+ const source=branches.accept(branch.id,'resource-source','input');
+ const claim=async()=>{for(let n=0;n<60;n++){await branches.unitSaver.drain();branches.advance();const lease=branches.claimScript('resource-inert');if(lease){await branches.unitSaver.drain();assert.equal(branches.checkpointDispatch(lease),'ready');return lease;}}assert.fail('expected resource Script lease');};
+ const settle=lease=>{branches.authorizeScript(lease,inertIdentity);branches.recordScriptEvidence(lease,inertIdentity,{stdout:'known',outputHash:hash('known'),code:0});branches.settleScript(lease,{failed:false,output:'known'});};
+ const reservation=id=>store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(id);
+ const advance=async id=>{for(let n=0;n<30;n++){await branches.unitSaver.drain();branches.advance();if(reservation(id)&&branches.execution(id).state==='waiting')break;}await branches.unitSaver.drain();assert.ok(reservation(id));};
+ const capture=async id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;assert.doesNotThrow(()=>branches.checkpointInterruption(branch.id,id,'interrupt',inv.id,`close-${id}`),'actual resource EXIT interruption must be supported');await branches.unitSaver.completeExits();}return branches.historicalCheckpoints(branch.id,id).find(c=>c.restoreSupported&&captureBytes({store},c.id).selected.resources.length===1);};
+ const resume=id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;branches.checkpointInterruption(branch.id,id,'resume',inv.interruptionId,`resume-${id}`);}};
+ const finish=async id=>{
+  await advance(id);for(let n=0;n<6&&branches.resourceRelease(reservation(id).step_execution_id)!=='ready';n++){await branches.unitSaver.drain();branches.advance();}
+  const r=reservation(id),chatToken=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(chatToken);await branches.unitSaver.drain();assert.equal(branches.releaseResourceChat(r.step_execution_id,r.creation_key,chatToken),true);
+  const p=store.createProject({label:'Inert owned resource',hostPath:dir,defaultEngine:'codex',chatOwned:true,branchId:branch.id,executionId:id}),temporary=store.getConversation(p.lastConversationId);
+  branches.completeResourceOperation(r.step_execution_id,'chat',chatToken,{chatId:temporary.id});await branches.unitSaver.drain();
+  const token=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'import');assert.ok(token);await branches.unitSaver.drain();
+  const operation=store.beginAgentCreationOperation({projectId:p.id,conversationId:temporary.id,actorScope:'resource-history-inert',kind:'import',idempotencyKey:r.creation_key,payloadHash:'inert'}).operation,agentId=randomUUID();store.addAgentCreationOperationMember(operation.id,agentId,0);
+  branches.observeResourceImportPlan(r.step_execution_id,token,operation.id);await branches.unitSaver.drain();branches.planResource(r.step_execution_id,[agentId],token);
+  const agent=store.createAgent(p.id,{title:'Inert fixture identity',engine:'codex',conversationId:temporary.id},undefined,agentId),result={rootAgentId:agent.id,agentIds:[agent.id]};
+  branches.unitTransaction(()=>{branches.completeResourceOperation(r.step_execution_id,'import',token,result);store.updateAgentCreationOperation(operation.id,{status:'completed',result});})();await branches.unitSaver.drain();branches.bindResource(r.step_execution_id,result);
+  const request=store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id;
+  coordination.updateRequest({requestId:request,updateId:`result-${id}`,kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'known resource result'}});
+  const suffix=await claim();assert.equal(suffix.executionId,id);assert.ok(suffix.source.includes('suffix'));assert.equal(suffix.fence,1);settle(suffix);await branches.unitSaver.drain();
+  const preview=store.previewAgentDeletion([agent.id]);store.deleteAgentSubtrees([agent.id],preview.previewHash,x=>coordination.handleAgentDeletion(x));
+  const receipt=store.commitConversationDeletion(temporary.id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(temporary.id);branches.resourceRetired(r.step_execution_id);await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');
+  return {chatId:temporary.id,agentId,chatToken,token};
+ };
+ return {get store(){return store},get branches(){return branches},branch,source,claim,settle,reservation,advance,capture,resume,finish,async reopen(){await branches.unitSaver.drain();store.close();open();}};
+}
+for(const mode of ['async','sync','exit'])test(`resource reservation ${mode} executable A and restored B with fresh custody`,async t=>{
+ const f=await reservationHistoryFixture(t,mode),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);const a=await f.capture(f.source.id);assert.ok(a,'actual resource reservation unit must be executable');
+ const snapshot=captureBytes(f,a.id);f.resume(f.source.id);const sourceEffects=await f.finish(f.source.id);
+ const first=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'resource-A');await f.advance(first.id);const b=await f.capture(first.id);assert.ok(b,'restored reservation must yield second executable capture');
+ const line=JSON.parse(f.store.sqlite.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").get(first.id).snapshot_json),sourceIds=[f.source.id,...['paths','steps','attempts','sealedResults'].flatMap(k=>snapshot.selected[k].map(r=>r.id))];
+ assert.deepEqual(Object.keys(line.idMap).sort(),sourceIds.sort());assert.equal(new Set(Object.values(line.idMap)).size,sourceIds.length);assert.equal(Object.values(line.idMap).every(id=>!sourceIds.includes(id)),true);assert.equal(line.idMap[f.source.id],first.id);
+ for(const result of snapshot.selected.sealedResults){const current=f.store.sqlite.prepare('SELECT execution_id,result_json,content_hash FROM branch_sealed_results WHERE id=?').get(line.idMap[result.id]);assert.deepEqual(current,{execution_id:first.id,result_json:result.result_json,content_hash:result.content_hash});}
+ assert.notEqual(f.reservation(first.id).step_execution_id,snapshot.selected.resources[0].step_execution_id);assert.notEqual(f.reservation(first.id).creation_key,snapshot.selected.resources[0].creation_key);
+ for(const a of f.branches.detail(first.id).attempts){assert.equal(a.fence,0);const row=f.store.sqlite.prepare('SELECT lease_owner,lease_until,process_identity_json FROM branch_attempts WHERE id=?').get(a.id);assert.deepEqual(row,{lease_owner:null,lease_until:null,process_identity_json:null});}
+ f.resume(first.id);const firstEffects=await f.finish(first.id);assert.notEqual(firstEffects.agentId,sourceEffects.agentId);assert.notEqual(firstEffects.chatId,sourceEffects.chatId);assert.notEqual(firstEffects.token,sourceEffects.token);
+ const second=f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'resource-B');await f.advance(second.id);const secondEffects=await f.finish(second.id);assert.notEqual(secondEffects.token,firstEffects.token);assert.notEqual(secondEffects.agentId,firstEffects.agentId);await f.reopen();const counts=allocationCounts(f);assert.equal(f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'resource-B').id,second.id);assert.deepEqual(allocationCounts(f),counts);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_step_executions WHERE execution_id=? AND step_id='prefix'").get(second.id).n,1);assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
+});
+async function completedReservationHistory(t,mode='async'){
+ const f=await reservationHistoryFixture(t,mode),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);const a=await f.capture(f.source.id);assert.ok(a);f.resume(f.source.id);const effects=await f.finish(f.source.id);return {f,a,effects};
+}
+for(const mode of ['async','sync','exit'])for(const kind of ['policy','pins','cancel','gate','missingCoverage','missingLineage','wrongResourceKey'])test(`resource reservation ${mode} restored ${kind} refuses fresh authority`,async t=>{
+ const {f,a}=await completedReservationHistory(t,mode),next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'resource-authority');await f.advance(next.id);const r=f.reservation(next.id),db=f.store.sqlite;
+ if(kind==='policy')new CapabilityPolicyStore(db).put({scopeKind:'branch',scopeId:f.branch.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.managedAgentCreate]});
+ if(kind==='pins')f.branches.configure(f.branch.id,{...f.branches.configuration(f.branch.id),limits:{...f.branches.configuration(f.branch.id).limits,maxTraversals:99}},mode==='async'?0:1);
+ if(kind==='cancel')f.branches.cancel(next.id);
+ if(kind==='missingCoverage')db.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(a.id);
+ if(kind==='missingLineage')db.prepare("DELETE FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").run(next.id);
+ if(kind==='wrongResourceKey')db.prepare("UPDATE branch_resources SET creation_key='foreign-key' WHERE step_execution_id=?").run(r.step_execution_id);
+ if(kind==='gate')f.branches.unitTransaction(()=>{const attempt=db.prepare('SELECT id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id);db.prepare("INSERT INTO branch_gates(id,step_execution_id,state,proposal_text,revision,purpose,attempt_id,prompt_text) VALUES(?,?,'waiting','',1,'approval',?,'Hold')").run(randomUUID(),r.step_execution_id,attempt.id);f.branches.selectedWrite(next.id);})();
+ await f.branches.unitSaver.drain();const before=allocationCounts(f),inv=db.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(next.id).checkpoint_invocation_json;
+ assert.notEqual(f.branches.resourceRelease(r.step_execution_id),'ready');assert.equal(f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat'),undefined);assert.deepEqual(allocationCounts(f),before);assert.equal(db.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(next.id).checkpoint_invocation_json,inv);assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_ephemeral_contexts WHERE step_execution_id=?').get(r.step_execution_id).n,0);
+});
+for(const kind of ['count','generation','foreignStep','resourceAudit','missingAudit','lease','result','counter'])test(`resource reservation ${kind} prefix corruption refuses without allocation`,async t=>{
+ const {f,a}=await completedReservationHistory(t),cp=captureBytes(f,a.id),o=cp.continuation.owners[0],r=o.selected.resources[0];
+ if(kind==='count')r.requested_count++;if(kind==='generation')r.generation++;if(kind==='foreignStep')r.step_execution_id='foreign-step';if(kind==='resourceAudit'){const audit=o.audit.find(a=>a.kind==='resource_reserved');audit.evidence_json=JSON.stringify({count:99,templateRef:r.template_ref});}if(kind==='missingAudit')o.audit=o.audit.filter(a=>a.kind!=='resource_reserved');if(kind==='lease')o.selected.attempts.find(a=>a.state==='prepared').fence=1;if(kind==='result')o.selected.sealedResults[0].content_hash='bad';if(kind==='counter')o.selected.execution[0].traversals++;
+ cp.selected=o.selected;const {stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js'),bytes=stableJson(cp),id=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,hash(bytes)).lastInsertRowid),before=allocationCounts(f);
+ assert.equal(f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(c=>c.id===id).restoreSupported,false);assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash(bytes),'bad-resource-prefix'),/integrity unsupported/);assert.deepEqual(allocationCounts(f),before);
+});
+for(const mode of ['async','sync','exit'])test(`resource reservation ${mode} unknown released Chat keeps custody and cannot rewind`,async t=>{
+ const {f,a}=await completedReservationHistory(t,mode),next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'resource-unknown');await f.advance(next.id);const b=await f.capture(next.id);assert.ok(b);f.resume(next.id);await f.branches.unitSaver.drain();const r=f.reservation(next.id),token=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(token);await f.branches.unitSaver.drain();assert.equal(f.branches.releaseResourceChat(r.step_execution_id,r.creation_key,token),true);
+ f.branches.finishResourceOperation(r.step_execution_id,'chat',token,Error('inert uncertain Chat'));await f.branches.unitSaver.drain();const before=allocationCounts(f);assert.equal(f.branches.resourceOperation(r.step_execution_id,'chat').state,'unknown');assert.equal(f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat'),undefined);assert.equal(f.branches.resourceCanRetire(r.step_execution_id,[]),false);assert.throws(()=>f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'unknown-resource'),/custody|settled/);assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.historicalCheckpoints(f.branch.id,next.id).filter(c=>c.restoreSupported).every(c=>captureBytes(f,c.id).selected.resources[0].chat_operation_json===null),true);
+});
+for(const kind of ['retirement','deletionReceipt','releasedUnknown'])test(`resource reservation source ${kind} custody refuses before restore`,async t=>{
+ const {f,a,effects}=await completedReservationHistory(t),r=f.reservation(f.source.id),db=f.store.sqlite;
+ if(kind==='retirement')db.prepare("UPDATE branch_resources SET state='active' WHERE step_execution_id=?").run(r.step_execution_id);
+ if(kind==='deletionReceipt')db.prepare('UPDATE conversation_deletion_receipts SET server_cleanup_completed=0 WHERE conversation_id=?').run(effects.chatId);
+ if(kind==='releasedUnknown')db.prepare("UPDATE branch_commands SET result_json=json_set(result_json,'$.state','unknown') WHERE execution_id=? AND command_key=?").run(f.source.id,`resource-operation:${r.creation_key}:chat`);
+ const before=allocationCounts(f);assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'custody-refusal'),/custody/);assert.deepEqual(allocationCounts(f),before);
+});
+test('resource reservation allocation rollback preserves primary sealed result and no receipt',async t=>{
+ const {f,a}=await completedReservationHistory(t),before=allocationCounts(f);f.store.sqlite.exec("CREATE TEMP TRIGGER fail_resource_restore BEFORE INSERT ON branch_resources BEGIN SELECT RAISE(ABORT,'resource restore failure'); END");
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'resource-rollback'),/resource restore failure/);await f.branches.unitSaver.drain();assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.detail(f.source.id).steps[0].result.failed,false);
+});
+for(const kind of ['resourceRow','chatReceipt','importReceipt','context'])test(`resource reservation source missing ${kind} refuses custody`,async t=>{
+ const {f,a}=await completedReservationHistory(t),r=f.reservation(f.source.id),db=f.store.sqlite;
+ if(kind==='resourceRow'){db.prepare('DELETE FROM branch_resource_members WHERE step_execution_id=?').run(r.step_execution_id);db.prepare('DELETE FROM branch_resources WHERE step_execution_id=?').run(r.step_execution_id);}
+ else if(kind==='context')db.prepare('DELETE FROM branch_ephemeral_contexts WHERE step_execution_id=?').run(r.step_execution_id);
+ else db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-operation:${r.creation_key}:${kind==='chatReceipt'?'chat':'import'}`);
+ const before=allocationCounts(f);assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'missing-custody'),/custody/);assert.deepEqual(allocationCounts(f),before);
+});
+for(const kind of ['foreignChat','foreignAgent','changedReceipt'])test(`resource reservation restored ${kind} custody refuses current operation`,async t=>{
+ const {f,a}=await completedReservationHistory(t),next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'target-custody');await f.advance(next.id);const r=f.reservation(next.id),db=f.store.sqlite;
+ if(kind==='foreignChat'){const p=f.store.createProject({label:'Foreign inert owner',hostPath:f.branches.localConfiguration(f.branch.id).directories.root,defaultEngine:'codex',chatOwned:true,branchId:f.branch.id,executionId:f.source.id});db.prepare('UPDATE branch_resources SET chat_id=? WHERE step_execution_id=?').run(p.lastConversationId,r.step_execution_id);}
+ if(kind==='foreignAgent'){const agent=f.store.createAgent(f.store.getConversation(f.branch.chatId).projectId,{title:'Foreign inert fixture',engine:'codex',conversationId:f.branch.chatId});db.prepare("INSERT INTO branch_resource_members VALUES(?,?,'template')").run(agent.id,r.step_execution_id);}
+ if(kind==='changedReceipt'){const token=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(token);await f.branches.unitSaver.drain();db.prepare("UPDATE branch_commands SET result_json=json_set(result_json,'$.token','foreign-token') WHERE execution_id=? AND command_key=?").run(next.id,`resource-operation:${r.creation_key}:chat`);}
+ const before=allocationCounts(f);assert.equal(f.branches.resourceRelease(r.step_execution_id),'fenced');assert.equal(f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat'),undefined);assert.deepEqual(allocationCounts(f),before);
 });

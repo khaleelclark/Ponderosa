@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import type {BranchDefinition} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {replayScriptCut,scriptDefinitionSupported,type Selected,type ScriptOwnerContext} from './branch-script-continuation.js';
+import {replayScriptCut,scriptDefinitionSupported,resourceReservationSupported,type Selected,type ScriptOwnerContext} from './branch-script-continuation.js';
 type Row=Record<string,any>;
 export const TREE_SCHEMA='ponderosa.branch.script-tree-continuation.v1';
 export const TREE_COMPATIBILITY={format:'completed-child-script-tree.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
@@ -40,7 +40,9 @@ function checkpoint(o:Row):Row|undefined {
 export function encodeScriptTreeContinuation(db:Database.Database,id:string,selected:Selected):Row|undefined {
     if(selected.execution![0]?.parent_execution_id)return;
     const ids=db.prepare(`WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT id FROM tree ORDER BY id`).all(id) as Row[];
-    if(ids.length<2)return;
+    if(ids.length<2&&!selected.resources?.length)return;
+    // An unstarted reservation owns no released Chat/import effect or external identity.
+    if(selected.resources?.length&&db.prepare('SELECT 1 FROM branch_resource_members WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) UNION ALL SELECT 1 FROM branch_ephemeral_contexts WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) LIMIT 1').get(id,id))return;
     const owners=ids.map(row=>owner(db,row.id,row.id===id?selected:selectBranchUnit(db,row.id)));
     if(owners.some(row=>!row))return;
     const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[]};
@@ -48,7 +50,7 @@ export function encodeScriptTreeContinuation(db:Database.Database,id:string,sele
 }
 function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>}>,encoding=false):boolean {
   const owners=c.owners as Row[];
-  if(!Array.isArray(owners)||owners.length<2||new Set(owners.map(o=>o.executionId)).size!==owners.length||stableJson(c.compatibility)!==stableJson(TREE_COMPATIBILITY))return false;
+  if(!Array.isArray(owners)||owners.length<1||new Set(owners.map(o=>o.executionId)).size!==owners.length||stableJson(c.compatibility)!==stableJson(TREE_COMPATIBILITY))return false;
   const root=owners.find(o=>o.executionId===c.rootExecutionId);if(!root)return false;
   const allIds=treeIds(owners);if(new Set(allIds).size!==allIds.length)return false;
   const boundary=owners.reduce((last,o)=>Math.max(last,o.audit.at(-1)?.id??NaN),0);if(!Number.isSafeInteger(boundary))return false;
@@ -65,7 +67,9 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       ||Object.hasOwn(o.configuration,'secretBindings')||Object.keys(JSON.parse(actual.configuration_json).secretBindings??{}).length)return false;
     const {secretBindings,...safe}=JSON.parse(actual.configuration_json);if(stableJson(safe)!==stableJson(o.configuration))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
-    if(!scriptDefinitionSupported(definition,true)||inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1)return false;
+    const resourceFrontier=owners.length===1&&resourceReservationSupported(o.selected,definition);
+    if(owners.length===1&&!resourceFrontier)return false;
+    if(!scriptDefinitionSupported(definition,true,resourceFrontier)||inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1)return false;
     const descendant=o.executionId!==c.rootExecutionId,terminal=e.state==='completed';
     if(terminal?(!descendant||inv.state!=='terminal'||inv.primaryOutcome!=='completed'):!['running','waiting'].includes(e.state))return false;
     if(!descendant&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
@@ -96,9 +100,9 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       const visited=new Set<string>();let current:Row|undefined=o;
       while(current?.executionId!==c.rootExecutionId){if(!current||visited.has(current.executionId))return false;visited.add(current.executionId);current=owners.find(row=>row.executionId===current!.selected.execution[0].parent_execution_id);}
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
-    const waiting=Object.values(children).some(child=>!child.completed);
+    const waiting=resourceFrontier||Object.values(children).some(child=>!child.completed);
     if(!terminal&&(e.state!==(waiting?'waiting':'running')))return false;
-    const context:ScriptOwnerContext={terminal,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state==='completed'};
+    const context:ScriptOwnerContext={resourceFrontier,terminal,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state==='completed'};
     if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context))return false;
   }
   return true;

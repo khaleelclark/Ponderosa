@@ -1,5 +1,6 @@
+import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,childTreeLineage} from './branch-tree-continuation.js';
-import {scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
+import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
@@ -206,7 +207,7 @@ export class BranchStore {
       if(prior){if(prior.input_hash!==hash)throw Error('Checkpoint interruption idempotency conflict');return;}
       if(!['interrupt','resume'].includes(action)||!invocation||invocation.mode!=='exit'||!(['running','waiting'].includes(execution.state)||action==='resume'&&execution.state==='queued'&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='checkpoint_restore_held'",executionId))
         ||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',executionId)?.cancel_requested
-        ||!scriptDefinitionSupported(this.definition(execution),true)||this.rows("WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT id FROM owned",executionId).some(owner=>{const child=this.execution(owner.id)!;return !['queued','running','waiting','completed'].includes(child.state)||!scriptDefinitionSupported(this.definition(child),true)||Object.keys(child.configuration?.secretBindings??{}).length;})||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live nonsecret exit Script/control owners and supported descendants');
+        ||!this.checkpointDefinitionSupported(execution.id)||this.rows("WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT id FROM owned",executionId).some(owner=>{const child=this.execution(owner.id)!;return !['queued','running','waiting','completed'].includes(child.state)||!this.checkpointDefinitionSupported(child.id)||Object.keys(child.configuration?.secretBindings??{}).length;})||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live nonsecret exit Script/control owners and supported descendants');
       if(!this.checkpointOwnerChainSupported(executionId))throw Error(action==='resume'?'Checkpoint resume requires current saved quiescence and authority':'Checkpoint interruption supports only current nonsecret Script/control owner chains');
       if(action==='interrupt'){
         if(invocation.id!==expectedId||invocation.state!=='active'||invocation.interruptionId)throw Error('Checkpoint invocation changed');
@@ -223,13 +224,17 @@ export class BranchStore {
     }).immediate();
     return this.execution(executionId)!;
   }
+  private checkpointDefinitionSupported(executionId:string):boolean {
+    const execution=this.execution(executionId)!,definition=this.definition(execution);
+    return scriptDefinitionSupported(definition,true)||!execution.parentExecutionId&&scriptDefinitionSupported(definition,false,true)&&resourceReservationSupported(selectBranchUnit(this.sqlite,executionId),definition);
+  }
   private checkpointOwnerChainSupported(executionId:string):boolean {
     const chain=this.ancestors(executionId);
     return chain.every((owner,index)=>{
       const execution=this.execution(owner.id)!,branch=this.getBranch(owner.branch_id);
       if(!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',owner.branch_id)?.deleting||owner.cancel_requested
-        ||!(['running','waiting'].includes(owner.state)||owner.state==='queued'&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",owner.id))||!scriptDefinitionSupported(this.definition(execution),true)
-        ||Object.keys(execution.configuration?.secretBindings??{}).length||this.restricted(owner.branch_id,CAPABILITY_IDS.scripts)||this.restricted(owner.branch_id,CAPABILITY_IDS.branchCalls)
+        ||!(['running','waiting'].includes(owner.state)||owner.state==='queued'&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",owner.id))||!this.checkpointDefinitionSupported(execution.id)
+        ||Object.keys(execution.configuration?.secretBindings??{}).length||this.restricted(owner.branch_id,CAPABILITY_IDS.scripts)||this.restricted(owner.branch_id,CAPABILITY_IDS.branchCalls)||this.row('SELECT 1 FROM branch_resources WHERE execution_id=?',owner.id)&&this.restricted(owner.branch_id,CAPABILITY_IDS.managedAgentCreate)
         ||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration)
         ||this.unitSaver.failed(owner.id)||this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",owner.id))return false;
       if(branch.chatId)this.chat(branch.chatId);
@@ -713,10 +718,48 @@ export class BranchStore {
       return this.execution(next.id)!;
     }).immediate();
   }
-  /** Quiescent owner tree: completed descendants or running Script/control suffixes. */
+  private resourceOperationAuditMatches(r:Row,phase:'chat'|'import',operation:Row|undefined):boolean {
+    const prefix=`resource-operation:${r.creation_key}:${phase}:`,event=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='resource_operation' AND substr(transition_key,1,?)=? ORDER BY id DESC LIMIT 1",r.execution_id,prefix.length,prefix);
+    return operation?event?.evidence_json===stableJson(operation):!event;
+  }
+  private restoredResourceCustodySupported(r:Row):boolean {
+    const chat=this.resourceOperation(r.step_execution_id,'chat'),imported=this.resourceOperation(r.step_execution_id,'import');
+    if(!this.resourceOperationAuditMatches(r,'chat',chat)||!this.resourceOperationAuditMatches(r,'import',imported))return false;
+    if(r.chat_id){const owner=this.row('SELECT branch_id,branch_execution_id FROM conversations WHERE id=?',r.chat_id);
+      if(!owner||owner.branch_id!==r.branch_id||owner.branch_execution_id!==r.execution_id||chat?.state!=='completed'||chat.result?.chatId!==r.chat_id)return false;}
+    const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id',r.step_execution_id).map(m=>m.agent_id);
+    if(members.length&&!imported)return false;
+    if(r.root_agent_id){
+      if(imported?.state!=='completed'||imported.result?.rootAgentId!==r.root_agent_id||stableJson([...imported.result.agentIds].sort())!==stableJson(members))return false;
+      if(members.some(id=>this.row('SELECT conversation_id,deleted_at FROM agents WHERE id=?',id)?.conversation_id!==r.chat_id||this.row('SELECT deleted_at FROM agents WHERE id=?',id)?.deleted_at!==null))return false;
+    }
+    return true;
+  }
+  private resourceHistoryCustodySettled(executionId:string):boolean {
+    for(const r of this.rows('SELECT * FROM branch_resources WHERE execution_id=?',executionId)){
+      const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?',r.step_execution_id).map(m=>m.agent_id);
+      const chat=this.resourceOperation(r.step_execution_id,'chat'),imported=this.resourceOperation(r.step_execution_id,'import');
+      if(!this.resourceOperationAuditMatches(r,'chat',chat)||!this.resourceOperationAuditMatches(r,'import',imported))return false;
+      if(r.chat_id&&(chat?.state!=='completed'||chat.result?.chatId!==r.chat_id)||r.root_agent_id&&(imported?.state!=='completed'||imported.result?.rootAgentId!==r.root_agent_id))return false;
+      if(r.chat_id){const context=this.row('SELECT chat_id FROM branch_ephemeral_contexts WHERE step_execution_id=? AND generation=?',r.step_execution_id,r.generation),receipt=this.row('SELECT storage_cleanup_completed,server_cleanup_completed FROM conversation_deletion_receipts WHERE conversation_id=?',r.chat_id);
+        if(context?.chat_id!==r.chat_id||receipt?.storage_cleanup_completed!==1||receipt.server_cleanup_completed!==1||this.row('SELECT 1 FROM conversations WHERE id=?',r.chat_id))return false;}
+      if(r.state!=='retired'||!this.resourceCanRetire(r.step_execution_id,members)
+        ||this.row('SELECT 1 FROM branch_resource_members m JOIN agents a ON a.id=m.agent_id WHERE m.step_execution_id=? AND a.deleted_at IS NULL',r.step_execution_id))return false;
+    }
+    return !this.row(`SELECT 1 FROM branch_ephemeral_contexts c JOIN branch_step_executions s ON s.id=c.step_execution_id
+      LEFT JOIN conversation_deletion_receipts d ON d.conversation_id=c.chat_id
+      WHERE s.execution_id=? AND (d.conversation_id IS NULL OR d.storage_cleanup_completed!=1 OR d.server_cleanup_completed!=1
+        OR EXISTS(SELECT 1 FROM conversations chat WHERE chat.id=c.chat_id)
+        OR EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id IN (SELECT value FROM json_each(c.agent_ids_json)) AND run.status IN ('leased','running')))`,executionId);
+  }
+  /** Quiescent owner tree, including an unstarted resource reservation without transferred effects. */
   private rewindHistoricalTree(branchId:string,executionId:string,checkpointId:number,expectedHash:string,commandKey:string,snapshot:Row,now:string):BranchExecutionDto {
     if(!scriptTreeSnapshotSupported(this.sqlite,executionId,snapshot))throw Error('Historical tree continuation integrity unsupported');
     const c=snapshot.continuation,commandHash=payloadHash({executionId,checkpointId,expectedHash}),key=`tree-historical-rewind:${payloadHash(commandKey)}`;
+    if(c.owners.some((o:Row)=>o.selected.resources.length)){
+      for(const o of c.owners)for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',resource.step_execution_id);if(!row||row.execution_id!==o.executionId||['template_ref','requested_count','creation_key','generation'].some(k=>row[k]!==resource[k]))throw Error('Historical resource custody identity unavailable');}
+      if(!this.resourceHistoryCustodySettled(executionId))throw Error('Historical resource custody is not retired or verified');
+    }
     const prior=this.row('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
     if(prior){
       if(prior.input_hash!==commandHash)throw Error('Rewind command idempotency conflict');
@@ -739,6 +782,7 @@ export class BranchStore {
         for(const step of o.selected.steps){const row=this.row('SELECT * FROM branch_step_executions WHERE id=?',map[step.id]);if(!row||row.execution_id!==target||row.path_id!==map[step.path_id]||['step_id','invocation','input_text'].some(key=>row[key]!==step[key]))throw Error('Tree mapped Step ownership failure');}
         for(const a of o.selected.attempts){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',map[a.id]);if(!row||row.step_execution_id!==map[a.step_execution_id]||row.number!==a.number||row.input_hash!==a.input_hash)throw Error('Tree mapped attempt ownership failure');}
         for(const r of o.selected.sealedResults){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=?',map[r.id]);if(!row||row.execution_id!==target||row.path_id!==map[r.path_id]||row.step_execution_id!==map[r.step_execution_id]||row.terminal_attempt_id!==map[r.terminal_attempt_id]||row.result_json!==r.result_json||row.content_hash!==r.content_hash)throw Error('Tree mapped result ownership failure');}
+        for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',map[resource.step_execution_id]);if(!row||row.execution_id!==target||row.template_ref!==resource.template_ref||row.requested_count!==resource.requested_count||row.creation_key!==`branch-resource:${map[resource.step_execution_id]}`)throw Error('Tree mapped resource ownership failure');}
         if(o.executionId!==executionId){const child=this.row('SELECT * FROM branch_unit_snapshots WHERE id=? AND execution_id=?',evidence.childLineageId,target);
           if(!child||payloadHash(JSON.parse(child.snapshot_json))!==child.content_hash||child.snapshot_json!==stableJson(childTreeLineage(line,result.lineageId,o.executionId,target)))throw Error('Tree child lineage unavailable');}
       }
@@ -754,7 +798,7 @@ export class BranchStore {
       if(!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',e.branch_id)?.deleting)throw Error('Tree Branch unavailable');
       if(branch.chatId)this.chat(branch.chatId);
       if(branch.versionId!==o.versionId||branch.bindingRevisionId!==o.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(o.configuration))throw Error('Tree current pins changed');
-      if(this.restricted(branch.id,CAPABILITY_IDS.scripts)||this.restricted(branch.id,CAPABILITY_IDS.branchCalls))throw Error('Tree current authority is restricted');
+      if(this.restricted(branch.id,CAPABILITY_IDS.scripts)||this.restricted(branch.id,CAPABILITY_IDS.branchCalls)||o.selected.resources.length&&this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate))throw Error('Tree current authority is restricted');
     }
     const ids=new Map<string,string>(treeIds(c.owners).map(id=>[id,randomUUID()]));
     const next=this.accept(branchId,`tree-rewind:${randomUUID()}`,root.selected.execution[0].input_text,now);ids.set(executionId,next.id);
@@ -774,6 +818,7 @@ export class BranchStore {
       for(const step of o.selected.steps)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),target,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
       for(const a of o.selected.attempts)this.run(`INSERT INTO branch_attempts(id,step_execution_id,number,state,fence,input_hash,result_json,error,created_at,updated_at,available_at,purpose) VALUES(?,?,?,?,0,?,?,?,?,?,?,'step')`,mapped(a.id),mapped(a.step_execution_id),a.number,a.state,a.input_hash,a.result_json,a.error,now,now,a.available_at);
       for(const result of o.selected.sealedResults)this.run('INSERT INTO branch_sealed_results(id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash,created_at) VALUES(?,?,?,?,?,?,?,?)',mapped(result.id),target,mapped(result.path_id),mapped(result.step_execution_id),mapped(result.terminal_attempt_id),result.result_json,result.content_hash,now);
+      for(const resource of o.selected.resources)this.run("INSERT INTO branch_resources(step_execution_id,execution_id,template_ref,state,requested_count,creation_key) VALUES(?,?,?,'reserved',?,?)",mapped(resource.step_execution_id),target,resource.template_ref,resource.requested_count,`branch-resource:${mapped(resource.step_execution_id)}`);
       for(const loop of o.selected.loops)this.run('INSERT INTO branch_loop_counts(execution_id,path_id,edge_id,iterations) VALUES(?,?,?,?)',target,mapped(loop.path_id),loop.edge_id,loop.iterations);
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',e.traversals,e.loop_iterations,e.depth_ceiling,target);this.selectedWrite(target);
     }
@@ -878,6 +923,15 @@ export class BranchStore {
   resourceRelease(stepExecutionId:string,creationKey?:string):'ready'|'waiting'|'fenced' {
     const r=this.row(`SELECT r.*,e.branch_id,e.cancel_requested,e.state execution_state,b.deleting,b.chat_id owner_chat_id FROM branch_resources r
       JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id WHERE r.step_execution_id=?`,stepExecutionId);
+    if(r&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",r.execution_id)){
+      try{
+        if(!this.restoredResourceCustodySupported(r))return 'fenced';
+        const origin=JSON.parse(this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",r.execution_id)!.evidence_json),source=this.execution(origin.sourceRootId)!;
+        const current=this.getBranch(r.branch_id)!,execution=this.execution(r.execution_id)!;
+        if(!source||current.versionId!==execution.versionId||current.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(r.branch_id))!==stableJson(execution.configuration)
+          ||this.rewindHistorical(source.branchId,source.id,origin.checkpointId,origin.checkpointHash,origin.commandKey).id!==r.execution_id)return 'fenced';
+      }catch{return 'fenced';}
+    }
     if(!r||r.state!=='reserved'||r.cancel_requested||r.deleting||creationKey&&r.creation_key!==creationKey
       ||!['running','waiting'].includes(r.execution_state)||this.restricted(r.branch_id,CAPABILITY_IDS.managedAgentCreate)
       ||!this.row("SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=? AND a.state='prepared' AND a.cancel_requested=0 AND a.available_at<=? AND NOT EXISTS(SELECT 1 FROM branch_attempts n WHERE n.step_execution_id=a.step_execution_id AND n.number>a.number)",stepExecutionId,new Date().toISOString()))return 'fenced';
