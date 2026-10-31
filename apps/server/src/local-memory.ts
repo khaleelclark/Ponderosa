@@ -1,3 +1,6 @@
+import {globalMemoryHash,selectGlobalMemory} from './portable-global-memory.js';
+import {MEMORY_SNAPSHOT_MAX_BYTES} from './portable-memory-snapshot.js';
+import type {GlobalMemorySelectionDto} from '@ponderosa/core';
 import path from 'node:path';
 import fs from '@ponderosa/native-host/fs';
 import Database from 'better-sqlite3';
@@ -254,6 +257,28 @@ export class LocalMemoryService{
   const promise=this.perform(operation,parsed,authority);this.calls.add(promise);try{return await promise;}finally{this.calls.delete(promise);}
  }
 
+ /** Separate human-only selected global data transport, not Agent package authority. */
+ async globalTransfer(request:FastifyRequest,action:'inventory'|'export'|'preview'|'import',body:Record<string,unknown>={}){
+  this.operator(request);
+  const allowed=action==='inventory'?[]:action==='export'?['selection','inventoryHash','acknowledge']:action==='preview'?['snapshot','selection']:['snapshot','selection','reviewHash','acknowledge'];
+  if(Object.keys(body).some(k=>!allowed.includes(k)))throw new MemoryDenied('Unsupported global transfer arguments',400);
+  if((action==='export'||action==='import')&&body.acknowledge!==true)throw new MemoryDenied('Explicit review acknowledgement required',409);
+  await this.ready();const guard=async()=>{this.operator(request);};
+  const pending=(async()=>{
+   const inventory=await this.core.database.exportGlobalMemory(guard);
+   if(action==='inventory')return {snapshot:inventory,inventoryHash:globalMemoryHash(inventory)};
+   if(action==='export'){
+    if(body.inventoryHash!==globalMemoryHash(inventory))throw new MemoryDenied('Global records changed; reload and review selection',409);
+    return selectGlobalMemory(inventory,body.selection as GlobalMemorySelectionDto,this.core.database.raw.signature);
+   }
+   const snapshot=selectGlobalMemory(body.snapshot,body.selection as GlobalMemorySelectionDto,this.core.database.raw.signature);
+   if(action==='preview')return {snapshot,destination:inventory,reviewHash:globalMemoryHash({snapshot,destination:inventory})};
+   if(typeof body.reviewHash!=='string'||!/^[a-f0-9]{64}$/.test(body.reviewHash))throw new MemoryDenied('Exact reviewed transfer required',409);
+   return this.core.database.importGlobalMemory(snapshot,body.reviewHash,guard);
+  })();
+  this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+ }
+
  /** Host package inventory only. Callers must complete their human import/export admission first. */
  async exportPackageMemory(chatId:string,agentIds:string[]){
   const guard=async()=>{this.chat(chatId);for(const id of agentIds){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Package Agent ownership changed');}};
@@ -309,6 +334,14 @@ export function registerLocalMemory(app:FastifyInstance,ports:Ports){
  app.addHook('onReady',()=>memory.ready());app.addHook('preClose',async()=>memory.fence());app.addHook('onClose',()=>memory.close());
  app.addHook('onSend',async(request,reply)=>{if(!['GET','HEAD'].includes(request.method)&&reply.statusCode<300)memory.checkSpeechAuthorities();if(request.method==='POST'&&reply.statusCode<300&&['/api/chats','/api/branches/:id/chats','/api/branches/installations/:id/confirm'].includes(request.routeOptions.url??''))await memory.provisionInventory();});
  const error=(reply:any,e:unknown)=>reply.code(e instanceof MemoryDenied?e.statusCode:500).send({error:e instanceof Error?e.message:String(e)});
+ app.get('/api/local-memory/global-transfer',async(request,reply)=>{try{return await memory.globalTransfer(request,'inventory');}catch(e){return error(reply,e);}});
+ app.post<{Params:{action:string};Body:Record<string,unknown>}>('/api/local-memory/global-transfer/:action',{bodyLimit:MEMORY_SNAPSHOT_MAX_BYTES+65536},async(request,reply)=>{
+  try{
+   const action=request.params.action,body=request.body;
+   if(!['export','preview','import'].includes(action)||!body||typeof body!=='object'||Array.isArray(body))throw new MemoryDenied('Invalid global transfer request',400);
+   return await memory.globalTransfer(request,action as 'export'|'preview'|'import',body);
+  }catch(e){if(!(e instanceof MemoryDenied))return reply.code(409).send({error:e instanceof Error?e.message:String(e)});return error(reply,e);}
+ });
  app.post('/api/agent-local-memory',async(request,reply)=>{try{const body=request.body as Record<string,unknown>;if(!body||typeof body!=='object'||Array.isArray(body))throw new MemoryDenied('Invalid memory call',400);const {operation,...args}=body;return await memory.executeAgent(request.headers.authorization?.replace(/^Bearer\s+/i,'')??'',String(operation),args);}catch(e){return error(reply,e);}});
  app.post('/api/local-memory/global',async(request,reply)=>{try{const body=request.body as Record<string,unknown>;if(!body||typeof body!=='object'||Array.isArray(body))throw new MemoryDenied('Invalid global memory call',400);const {operation,...args}=body;return await memory.executeOperator(request,String(operation),args);}catch(e){return error(reply,e);}});
  app.get<{Params:{chatId:string}}>('/api/local-memory/grants/:chatId',async(request,reply)=>{try{memory.operator(request);return memory.getGrant(request.params.chatId,requestProduct(request));}catch(e){return error(reply,e);}});

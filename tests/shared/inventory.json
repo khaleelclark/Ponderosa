@@ -1726,6 +1726,22 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Installed TypeScript; actual TSX dialog callbacks with UI leaves stubbed; no browser/service",
       "origin": "Combined migration omission disclosure and explicit workflow full-export confirmation"
+    },
+    {
+      "path": "tests/memory/global-transfer.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Fresh built workspaces, owned Chroma and local inference prerequisites; inert fixtures; no provider account",
+      "origin": "Model A selected global-memory transport: explicit review, preserved authority/conflicts, safe retry/refusals"
+    },
+    {
+      "path": "tests/workspace-navigation/global-memory-transfer.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Existing TypeScript transpiler; actual TSX component with transport/hooks/download stubs",
+      "origin": "Selected global-memory UI: selection, explicit review, cancellation, error retry and file limits"
     }
   ],
   "retainedReleasePayload": [

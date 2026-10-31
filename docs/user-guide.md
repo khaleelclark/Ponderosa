@@ -598,10 +598,16 @@ review and are refused explicitly.
 Installation capability restrictions/history and memory access grants stay at the
 destination; Agent management settings and workflow execution policy are separate
 portable setup. See [combined package migration](combined-migration-contract.md)
-for the inclusion table and remaining full-machine migration decision.
+for the inclusion table and selected-record transfer contract.
 
-Installation-global memory is explicitly excluded; a separate selected-global
-transfer flow is still needed. Cross-Chat organizations require separate packages
+Installation-global memory is excluded from Agent packages. Use Settings → General →
+Transfer selected global memory to choose local facts, required earlier versions and
+conflicts, review sensitive content, and download a separate file. At the destination,
+choose that file, select records again and review them alongside destination records
+before importing. Nothing is selected automatically. Destination policies and read
+grants remain local. Facts and conflicts are added in parallel for explicit resolution;
+existing records are never overwritten or automatically reconciled. If a transfer fails
+after some writes, review again to finish the exact selection without duplicating it. Cross-Chat organizations require separate packages
 and destination Chats. Provider-native sessions, exact provider inputs and
 historical Branch execution Chats are not migrated. Full machine-to-machine recreation
 remains incomplete. Execution logs share the existing 64 MiB managed-file and

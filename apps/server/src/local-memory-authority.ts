@@ -1,3 +1,5 @@
+import {validateGlobalMemory,globalMemoryHash} from './portable-global-memory.js';
+import type {PortableGlobalMemorySnapshotDto} from '@ponderosa/core';
 import {withoutPortableSecrets} from './portable-secrets.js';
 import {createHash} from 'node:crypto';
 import {MEMORY_SNAPSHOT_MAX_BYTES,validateMemorySnapshot,type PortableMemorySnapshot,type PortableMemoryRow} from './portable-memory-snapshot.js';
@@ -84,6 +86,63 @@ export class AuthorityStorage implements MemoryStorage{
     }
    }
    return validateMemorySnapshot(snapshot,this.raw.signature);
+  });
+ }
+ /** Operator-only inventory. Foreign/unclassified rows fail closed, never become portable data. */
+ async exportGlobalMemory(guard:()=>Promise<void>):Promise<PortableGlobalMemorySnapshotDto>{
+  return this.raw.exclusive(async()=>{
+   const snapshot:PortableGlobalMemorySnapshotDto={schema:'ponderosa.selected-global-memory.v1',signature:this.raw.signature,sourcePrincipal:this.principal,chunks:[],conflicts:[]};let bytes=0;
+   for(const log of [false,true]){
+    const c=await checkedCollection(this.raw,'global',log,guard);
+    for(let offset=0;;offset+=100){
+     await guard();const rows=await c.get({offset,limit:100,include:['documents','metadatas','embeddings'] as any});await guard();
+     for(let i=0;i<rows.ids.length;i++){
+      const m:any=rows.metadatas[i],stamp=this.parse(rows.ids[i]!,'global',log?{...m,host_source_authority:m?.host_conflict_authority}:m);
+      if(!stamp)throw Error('Global memory transfer: foreign or unclassified record');
+      const metadata={...m};delete metadata.host_source_authority;delete metadata.host_conflict_authority;delete metadata.host_package_operation;
+      const row={id:rows.ids[i]!,text:rows.documents[i] as string,embedding:this.vector(rows.embeddings?.[i]),metadata:withoutPortableSecrets(metadata) as Record<string,string|number|boolean>,stamp:withoutPortableSecrets(stamp) as SourceStamp};
+      bytes+=Buffer.byteLength(JSON.stringify(row));if(bytes>MEMORY_SNAPSHOT_MAX_BYTES||snapshot.chunks.length+snapshot.conflicts.length>=10000)throw Error('Global memory transfer: inventory bound exceeded');
+      (log?snapshot.conflicts:snapshot.chunks).push(row);
+     }
+     if(rows.ids.length<100)break;
+    }
+   }
+   snapshot.chunks.sort((a,b)=>a.id.localeCompare(b.id));snapshot.conflicts.sort((a,b)=>a.id.localeCompare(b.id));
+   return validateGlobalMemory(snapshot,this.raw.signature);
+  });
+ }
+ /** Add parallel facts/conflicts only: no reconciliation, overwrites, grants or source authority. */
+ async importGlobalMemory(value:unknown,reviewHash:string,guard:()=>Promise<void>){
+  const snapshot=validateGlobalMemory(value,this.raw.signature);
+  return this.raw.exclusive(async()=>{
+   const destination=await this.exportGlobalMemory(guard);
+   if(globalMemoryHash({snapshot,destination})!==reviewHash)throw Error('Global memory transfer: destination or selection changed; review again');
+   const namespace=globalMemoryHash(snapshot),id=(kind:string,sourceId:string)=>globalMemoryHash([this.principal,'global-transfer',namespace,kind,sourceId]);
+   const prepared=[snapshot.chunks,snapshot.conflicts].map((rows,index)=>rows.map(row=>{
+    const metadata={...row.metadata},destinationId=id(index?'conflict':'chunk',row.id);
+    if(metadata.supersedes)metadata.supersedes=id('chunk',String(metadata.supersedes));
+    if(index){const refs=JSON.parse(String(metadata.chunk_ids_affected??metadata.chunk_ids)).map((ref:string)=>id('chunk',ref));metadata.chunk_ids=JSON.stringify(refs);metadata.chunk_ids_affected=JSON.stringify(refs);metadata.log_id=destinationId;metadata.chunks_affected=refs.length;}
+    metadata.package_source_stamp=metadata.package_source_stamp??JSON.stringify(row.stamp);
+    const stamp:SourceStamp={...row.stamp,principal:this.principal,id:destinationId,provenance:{actor:{kind:row.stamp.sourceType==='ai_inference'?'agent':'user',id:row.stamp.sourceType==='ai_inference'?'historical-global-import:'+this.principal:this.principal},runId:'global-transfer:'+namespace,fenceToken:'historical',at:row.stamp.provenance.at},origin:row.stamp.origin??row.stamp.provenance};
+    metadata[index?'host_conflict_authority':'host_source_authority']=JSON.stringify(stamp);
+    return {id:destinationId,text:row.text,metadata,embedding:row.embedding.map(Math.fround)};
+   }));
+   // Keep every partial prefix readable so a failed transfer can be re-reviewed without a repair path.
+   const chunks=new Map(prepared[0]!.map(row=>[row.id,row])),depth=new Map<string,number>();
+   for(const row of prepared[0]!){let current=row,level=0;while(current.metadata.supersedes){current=chunks.get(String(current.metadata.supersedes))!;level++;}depth.set(row.id,level);}
+   prepared[0]!.sort((a,b)=>depth.get(a.id)!-depth.get(b.id)!||a.id.localeCompare(b.id));
+   const pending:Array<{c:Awaited<ReturnType<typeof checkedCollection>>;row:typeof prepared[number][number]}>=[];
+   for(const index of [0,1]){
+    const c=await checkedCollection(this.raw,'global',Boolean(index),guard);
+    for(const row of prepared[index]!){
+     await guard();const existing=await c.get({ids:[row.id],include:['documents','metadatas','embeddings'] as any});await guard();
+     if(existing.ids.length){if(existing.ids.length!==1||existing.ids[0]!==row.id||existing.documents[0]!==row.text||globalMemoryHash(existing.metadatas[0])!==globalMemoryHash(row.metadata)||globalMemoryHash(this.vector(existing.embeddings?.[0]).map(Math.fround))!==globalMemoryHash(row.embedding))throw Error('Global memory transfer: destination collision; existing record preserved');}
+     else pending.push({c,row});
+    }
+   }
+   // Same ordinary-memory contract: multiwrite failure may leave partial additions; re-review retries exact IDs.
+   for(const {c,row}of pending){await guard();await c.upsert({ids:[row.id],documents:[row.text],metadatas:[row.metadata],embeddings:[row.embedding]});this.onMutation?.('global',row.id);await guard();}
+   return {chunkIds:prepared[0]!.map(row=>row.id),conflictIds:prepared[1]!.map(row=>row.id),added:pending.length};
   });
  }
  /** Import only adds deterministic package-owned IDs; retries never overwrite another source. */
