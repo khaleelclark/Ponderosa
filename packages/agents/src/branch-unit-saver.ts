@@ -14,6 +14,9 @@ type Status = {state:'pending'|'coalesced'|'saved'|'failed'|'coverage_unknown'|'
 
 /** Mode-aware after-commit saver; only explicitly encoded supported frontiers are executable. */
 export class BranchUnitSaver {
+  // Exact async cuts cannot be coalesced. Pause fresh work until their bytes drain.
+  private pendingBytes = 0;
+  private readonly maxPendingBytes = 32 * 1024 * 1024;
   private readonly lanes = new Map<string,Promise<void>>();
   private readonly failures = new Map<string,unknown>();
   private readonly statuses = new Map<string,Status>();
@@ -57,6 +60,8 @@ export class BranchUnitSaver {
       }
       this.coalesced.delete(id);
       const previous=this.lanes.get(id)??Promise.resolve();
+      const bytes=(candidate.content?.length??0)*2;
+      this.pendingBytes+=bytes;
       const save=previous.then(()=>{
         if(this.sqlite.inTransaction)throw new Error('Checkpoint saver cannot join a primary transaction');
         if(Object.hasOwn(candidate,'error'))throw candidate.error;
@@ -74,6 +79,8 @@ export class BranchUnitSaver {
       });
       // Keep the rejecting lane: later saves cannot bypass a failed predecessor.
       this.lanes.set(id,save);
+      // Release the accounting on either outcome; a failed predecessor stays rejecting.
+      void save.then(()=>{this.pendingBytes-=bytes;},()=>{this.pendingBytes-=bytes;});
       void save.catch(error=>{
         this.failures.set(id,error);Object.assign(ticket,{state:'failed',error});
         // Reporting failure must itself remain outside the primary effect channel.
@@ -91,7 +98,7 @@ export class BranchUnitSaver {
     } catch { return false; } // A failed verification is unknown coverage, never a saved acknowledgement.
   }
   ready(id:string,mode:BranchCheckpointMode):boolean {
-    if(this.failed(id))return false;
+    if(this.failed(id)||this.pendingBytes>=this.maxPendingBytes)return false;
     const ticket=this.statuses.get(id);
     return mode!=='sync'||ticket?.state==='saved';
   }

@@ -90,7 +90,7 @@ test('failed process-authority commit closes the waiting child before any Script
 test('shutdown during asynchronous resource work cannot claim or launch a pending Script',options,async t=>{
  let release,entered,stopped=false;
  const ready=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
- const resources={async tick(){entered();await gate},requestStop(){stopped=true},async stop(){stopped=true}};
+ const resources={errors:()=>[],async tick(){entered();await gate},requestStop(){stopped=true},async stop(){stopped=true}};
  const f=fixture(t,"import {writeFileSync} from 'node:fs';writeFileSync('late-effect','effect');",{resources});
  const pending=f.service.tick(true);
  try{await ready;f.service.requestStop();assert.equal(stopped,true)}finally{release();await pending}

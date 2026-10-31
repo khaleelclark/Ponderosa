@@ -1,13 +1,26 @@
 # Script polling, schedules and runtime stall evidence
 
 Script settlement commits the known result and outgoing edge before any suffix
-preparation. A worker first claims already prepared work. If that scan is empty,
-`BranchStore.claimScript` runs one ordinary bounded `advance` batch and scans
-again. Each frontier still commits separately, existing checkpoint permits and
-fairness cursors still apply, and a caller-owned transaction never drives this
-extra batch. A Script claim is a scheduler/worker operation; it must not be used
-as a read-only readiness probe. It does not execute user code or bypass leases,
-loop ceilings, policy, concurrency or teardown.
+preparation. A worker first claims already prepared work. An empty scan may
+prepare one direct Script suffix from a committed sealed Script result on the
+same active path, then scan again. This uses the same traversal and Step budgets
+as ordinary path preparation, in a separate commit. It cannot admit queued work,
+reduce controls, resume a checkpoint or drive unrelated executions. Both claim
+and suffix scans rotate bounded batches. A caller-owned transaction cannot
+prepare this extra suffix. Explicit scheduler advance still owns all other work.
+
+An accepted operator retry opens a fresh invocation after a terminal failure;
+the failed cut and its save remain immutable. Explicit checkpoint interruptions
+still require their own resume authority. Failed saver lanes remain blocking.
+
+The exact async saver applies backpressure at 32 MiB of queued immutable string
+storage (conservative UTF-16 bytes). It pauses fresh functional work until the
+queued saves settle; known results, cancellation and cleanup still commit. It
+does not coalesce or discard cuts, raise V8 limits, or make unsupported Map cuts
+restorable. One transaction/known-result batch can exceed the threshold; total
+host memory and snapshot disk retention are not bounded by this queue budget.
+Fixture loops must allow committed frontier progress while awaiting saver drain,
+then reject a no-lease poll with no new committed watermark as a stall.
 
 Repeating schedules enumerate distinct due times through the persisted cursor.
 Clock catch-up and busy-work policy are separate: `queue_all` accepts each run;

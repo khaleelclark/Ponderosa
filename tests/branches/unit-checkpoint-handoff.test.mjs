@@ -251,9 +251,54 @@ test('Script claim never advances a frontier inside a caller-owned transaction',
  assert.deepEqual(f.branches.detail(f.execution.id),before);
 });
 
-test('an empty Script claim stays bounded beside a live control loop and does not exhaust its ceiling',t=>{
+test('an empty Script claim cannot admit or advance a queued control loop',t=>{
  const f=fixture(t,{entry:'loop',controls:[condition('loop')],edges:[edge('again','loop','loop','selected',{loop:true}),edge('exit','loop','work','failure')]},true);
  assert.equal(f.branches.claimScript('controlled'),undefined);
  const counters=f.store.sqlite.prepare('SELECT traversals,loop_iterations,state FROM branch_executions WHERE id=?').get(f.execution.id);
- assert.equal(counters.state,'running');assert.ok(counters.traversals>0&&counters.traversals<=250);assert.ok(counters.loop_iterations<10000);
+ assert.equal(counters.state,'queued');assert.equal(counters.traversals,0);assert.equal(counters.loop_iterations,0);
+});
+
+
+test('a direct Script suffix poll leaves unrelated queued work and controls unchanged',async t=>{
+ const f=fixture(t,{edges:[edge('again','work','work','success',{loop:true})]});
+ f.branches.advance();const first=f.branches.claimScript('controlled');assert.ok(first);
+ f.branches.settleScript(first,{failed:false,output:'known'});
+ const other=f.branches.accept(f.branch.id,'unrelated','untouched');
+ const before=f.branches.detail(other.id);
+ const suffix=f.branches.claimScript('controlled');assert.ok(suffix);assert.equal(suffix.executionId,first.executionId);
+ assert.deepEqual(f.branches.detail(other.id),before);
+ await f.branches.unitSaver.drain();
+});
+
+test('pending exact snapshot bytes backpressure fresh work without dropping committed cuts',async t=>{
+ const f=fixture(t);await f.branches.unitSaver.drain();
+ const saver=f.branches.unitSaver,original=saver.freeze({written:new Set([f.execution.id])})[0];
+ // Repeated real frozen cuts exercise the saver queue without high-cardinality setup.
+ const bytes=original.content.length*2,count=Math.ceil(saver.maxPendingBytes/bytes);
+ const before=snapshots(f).length;
+ saver.publish(Array.from({length:count},()=>({...original})));
+ assert.equal(saver.ready(f.execution.id,'async'),false);
+ assert.equal(f.branches.claimScript('before-admission'),undefined);
+ assert.equal(f.branches.execution(f.execution.id).state,'queued');
+ await saver.drain();assert.equal(saver.pendingBytes,0);assert.equal(saver.ready(f.execution.id,'async'),true);
+ assert.equal(snapshots(f).length,before+count);
+ assert.ok(snapshots(f).slice(before).every(row=>row.snapshot_json===original.content&&row.content_hash===original.hash));
+ f.branches.advance();assert.ok(f.branches.claimScript('after-drain'));
+});
+
+test('operator retry replaces a terminal invocation while preserving its failed cut and counter',async t=>{
+ const f=fixture(t);f.branches.advance();const first=f.branches.claimScript('controlled');assert.ok(first);
+ f.branches.settleScript(first,{failed:true,output:'known failure'});await f.branches.unitSaver.drain();
+ const failed=f.branches.detail(f.execution.id),cut=snapshots(f).at(-1);
+ assert.equal(failed.execution.checkpointInvocation.state,'terminal');
+ const admitted=f.branches.execution(f.execution.id).admittedAt;
+ f.branches.intervene(f.execution.id,{commandKey:'retry-terminal',expectedRevision:failed.execution.revision,action:'retry',attemptId:first.attemptId,reason:'explicit operator retry'});
+ const retried=f.branches.execution(f.execution.id);
+ assert.equal(retried.checkpointInvocation.state,'active');assert.notEqual(retried.checkpointInvocation.id,failed.execution.checkpointInvocation.id);
+ assert.equal(retried.admittedAt,admitted);
+ const next=f.branches.claimScript('controlled');assert.ok(next);assert.notEqual(next.attemptId,first.attemptId);
+ f.branches.settleScript(next,{failed:false,output:'recovered'});await f.branches.unitSaver.drain();
+ assert.equal(f.branches.execution(f.execution.id).state,'completed');
+ assert.equal(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cut.id).snapshot_json,cut.snapshot_json);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM branch_attempts WHERE id=?').get(first.attemptId).state,'failed');
 });
