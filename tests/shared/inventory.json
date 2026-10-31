@@ -1654,6 +1654,14 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-instruction-limit.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed TypeScript; offline actual TSX component callbacks with host hooks/UI leaves stubbed; no browser or service",
+      "origin": "Chat instruction limit field feedback regression"
     }
   ],
   "retainedReleasePayload": [
