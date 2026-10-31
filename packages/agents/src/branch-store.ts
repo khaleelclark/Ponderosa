@@ -103,8 +103,8 @@ export class BranchStore {
   }
   private selectedWrite(executionId: string): void {
     if(!this.unit)return;
-    this.ensureCheckpointInvocation(executionId);
-    this.unit.written.add(executionId);
+    // A descendant write changes the executable owner-tree cut in the same transaction.
+    for(const owner of this.ancestors(executionId)){this.ensureCheckpointInvocation(owner.id);this.unit.written.add(owner.id);}
   }
   private ensureCheckpointInvocation(executionId:string):void {
     if(this.checkpointInvocationRow(executionId))return;
@@ -166,7 +166,7 @@ export class BranchStore {
     this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:invocation.ordinal+1,mode:invocation.mode,state:'active',durability:'pending'}),executionId);
     this.selectedWrite(executionId);return true;
   }
-  /** Finite manual root interruption; tracked descendants must already be completed. */
+  /** Finite manual root interruption; the ancestor hold also fences unfinished descendants. */
   checkpointInterruption(branchId:string,executionId:string,action:'interrupt'|'resume',expectedId:string,commandKey:string,now=new Date().toISOString()):BranchExecutionDto {
     branchKey(commandKey);branchKey(expectedId);
     this.unitTransaction(()=>{
@@ -178,7 +178,7 @@ export class BranchStore {
       if(prior){if(prior.input_hash!==hash)throw Error('Checkpoint interruption idempotency conflict');return;}
       if(!['interrupt','resume'].includes(action)||!invocation||invocation.mode!=='exit'||!['running','waiting'].includes(execution.state)||execution.parentExecutionId
         ||execution.admissionSource!=='manual'||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',executionId)?.cancel_requested
-        ||!scriptDefinitionSupported(this.definition(execution),true)||this.row("WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT 1 FROM branch_executions WHERE id IN (SELECT id FROM owned) AND id!=? AND state!='completed'",executionId,executionId)||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live nonsecret exit Script/control roots with completed descendants');
+        ||!scriptDefinitionSupported(this.definition(execution),true)||this.rows("WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT id FROM owned",executionId).some(owner=>{const child=this.execution(owner.id)!;return !['queued','running','waiting','completed'].includes(child.state)||!scriptDefinitionSupported(this.definition(child),true)||Object.keys(child.configuration?.secretBindings??{}).length;})||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live nonsecret exit Script/control roots and supported descendants');
       if(action==='interrupt'){
         if(invocation.id!==expectedId||invocation.state!=='active'||invocation.interruptionId)throw Error('Checkpoint invocation changed');
         const interruptionId=randomUUID();
@@ -649,7 +649,7 @@ export class BranchStore {
       return this.execution(next.id)!;
     }).immediate();
   }
-  /** Finite tree slice: a live root with only known successful, fully sealed descendants. */
+  /** Quiescent owner tree: completed descendants or running Script/control suffixes. */
   private rewindHistoricalTree(branchId:string,executionId:string,checkpointId:number,expectedHash:string,commandKey:string,snapshot:Row,now:string):BranchExecutionDto {
     if(!scriptTreeSnapshotSupported(this.sqlite,executionId,snapshot))throw Error('Historical tree continuation integrity unsupported');
     const c=snapshot.continuation,commandHash=payloadHash({executionId,checkpointId,expectedHash}),key=`tree-historical-rewind:${payloadHash(commandKey)}`;
@@ -704,7 +704,7 @@ export class BranchStore {
         const child=this.acceptInput(e.branch_id,`call:${attemptId}`,e.input_text,payloadHash({parentAttempt:attemptId,input:e.input_text}),{source:'historical_child',parentExecutionId:parentId,parentAttemptId:attemptId},now,'call');
         // Acceptance owns the execution ID; all dependent references use this final mapping.
         ids.set(e.id,child.id);target=child.id;
-        this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state='completed',output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,e.output_text,target);
+        this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,e.state==='completed'?'completed':'queued',e.output_text,target);
       }
       for(const p of o.selected.paths)this.run('INSERT INTO branch_paths(id,execution_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id) VALUES(?,?,?,?,?,?,?,?,?,?)',mapped(p.id),target,p.state,p.node_id,mapped(p.step_execution_id),p.input_text,p.result_json,p.traversals,p.handling_limit,mapped(p.last_result_id));
       for(const step of o.selected.steps)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),target,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
@@ -2187,7 +2187,7 @@ export class BranchStore {
       const key = `process-exit:${lease.attemptId}:${lease.fence}`;
       if (!this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id = ? AND transition_key = ?", lease.executionId, key)) {
         this.checkpoint(lease.executionId, key, "script_process_exit", evidence, now);
-        if(this.checkpointInvocationRow(lease.executionId)?.interruptionId)this.selectedWrite(lease.executionId);
+        if(this.ancestors(lease.executionId).some(owner=>this.checkpointInvocationRow(owner.id)?.interruptionId))this.selectedWrite(lease.executionId);
       }
     })();
   }

@@ -36,7 +36,7 @@ function checkpoint(o:Row):Row|undefined {
   if(o.invocation.mode!=='exit'||o.selected.execution[0].parent_execution_id)return;
   const v=o.invocation;return {invocationId:v.id,mode:v.mode,closing:true,invocation:{id:v.id,ordinal:v.ordinal,mode:v.mode,state:v.state,primaryOutcome:v.primaryOutcome,interruptionId:v.interruptionId}};
 }
-/** Actual completed descendants only; live/unknown/gated owners are not certified as sealed. */
+/** Quiescent Script/control owners only; unfinished calls retain their waiting frontier. */
 export function encodeScriptTreeContinuation(db:Database.Database,id:string,selected:Selected):Row|undefined {
     if(selected.execution![0]?.parent_execution_id)return;
     const ids=db.prepare(`WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT id FROM tree ORDER BY id`).all(id) as Row[];
@@ -51,9 +51,11 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
   if(!Array.isArray(owners)||owners.length<2||new Set(owners.map(o=>o.executionId)).size!==owners.length||stableJson(c.compatibility)!==stableJson(TREE_COMPATIBILITY))return false;
   const root=owners.find(o=>o.executionId===c.rootExecutionId);if(!root)return false;
   const allIds=treeIds(owners);if(new Set(allIds).size!==allIds.length)return false;
-  const boundary=root.audit.at(-1)?.id;if(!Number.isSafeInteger(boundary))return false;
+  const boundary=owners.reduce((last,o)=>Math.max(last,o.audit.at(-1)?.id??NaN),0);if(!Number.isSafeInteger(boundary))return false;
   for(const o of owners){
     const e=o.selected.execution[0],inv=o.invocation;
+    const prefix=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(o.executionId,boundary);
+    if(stableJson(prefix)!==stableJson(o.audit))return false;
     const actual=db.prepare('SELECT * FROM branch_executions WHERE id=?').get(o.executionId) as Row|undefined;
     const v=db.prepare('SELECT definition_json,content_hash FROM branch_versions WHERE id=? AND branch_id=?').get(o.versionId,e.branch_id) as Row|undefined;
     const b=db.prepare('SELECT bindings_json,content_hash FROM branch_bindings WHERE id=? AND branch_id=?').get(o.bindingRevisionId,e.branch_id) as Row|undefined;
@@ -64,29 +66,34 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const {secretBindings,...safe}=JSON.parse(actual.configuration_json);if(stableJson(safe)!==stableJson(o.configuration))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     if(!scriptDefinitionSupported(definition,true)||inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1)return false;
-    const terminal=o.executionId!==c.rootExecutionId;
-    if(terminal?(e.state!=='completed'||inv.state!=='terminal'||inv.primaryOutcome!=='completed'):(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
-    if(!terminal&&(inv.mode==='exit'?inv.state!=='interrupted'||!inv.interruptionId:inv.state!=='active'))return false;
+    const descendant=o.executionId!==c.rootExecutionId,terminal=e.state==='completed';
+    if(terminal?(!descendant||inv.state!=='terminal'||inv.primaryOutcome!=='completed'):!['running','waiting'].includes(e.state))return false;
+    if(!descendant&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
+    if(!terminal&&(inv.mode==='exit'?descendant||inv.state!=='interrupted'||!inv.interruptionId:inv.state!=='active'))return false;
     const direct=owners.filter(child=>child.selected.execution[0].parent_execution_id===o.executionId);
     const actualChildren=db.prepare(`SELECT e.id FROM branch_executions e WHERE e.parent_execution_id=? AND EXISTS(SELECT 1 FROM branch_checkpoints a WHERE a.execution_id=e.id AND a.kind='trigger_accepted' AND a.id<=?) ORDER BY e.id`).all(o.executionId,boundary) as Row[];
     if(stableJson(actualChildren.map(r=>r.id))!==stableJson(direct.map(r=>r.executionId).sort()))return false;
     const children:ScriptOwnerContext['children']={};
     for(const child of direct){
       const ce=child.selected.execution[0],step=o.selected.steps.find((s:Row)=>s.id===o.selected.attempts.find((a:Row)=>a.id===ce.parent_attempt_id)?.step_execution_id),call=definition.steps.find(s=>s.id===step?.step_id);
-      if(!step||step.state!=='completed'||call?.kind!=='branch_call'||JSON.parse(b.bindings_json).branches?.[call.branchRef]!==ce.branch_id
+      const completed=ce.state==='completed';
+      if(!step||step.state!==(completed?'completed':'waiting')||call?.kind!=='branch_call'||JSON.parse(b.bindings_json).branches?.[call.branchRef]!==ce.branch_id
         ||ce.call_depth!==e.call_depth+1||ce.depth_ceiling!==Math.min(e.depth_ceiling,ce.call_depth+child.configuration.limits.maxCallDepth)||ce.input_text!==step.input_text
-        ||ce.occurrence_key!==`call:${ce.parent_attempt_id}`||JSON.parse(step.result_json).failed!==false||JSON.parse(step.result_json).output!==(ce.output_text??undefined)||children[ce.parent_attempt_id])return false;
-      children[ce.parent_attempt_id]={executionId:child.executionId,versionId:child.versionId,output:ce.output_text};
+        ||ce.occurrence_key!==`call:${ce.parent_attempt_id}`||children[ce.parent_attempt_id]
+        ||(completed?(JSON.parse(step.result_json).failed!==false||JSON.parse(step.result_json).output!==(ce.output_text??undefined)):(step.result_json!==null||ce.output_text!==null)))return false;
+      children[ce.parent_attempt_id]={executionId:child.executionId,versionId:child.versionId,output:ce.output_text,completed};
     }
     if(o.selected.steps.some((s:Row)=>definition.steps.find(step=>step.id===s.step_id)?.kind==='branch_call'&&!children[o.selected.attempts.find((a:Row)=>a.step_execution_id===s.id)?.id]))return false;
     let parent:ScriptOwnerContext['parent'];
-    if(terminal){
+    if(descendant){
       const p=owners.find(row=>row.executionId===e.parent_execution_id),a=p?.selected.attempts.find((a:Row)=>a.id===e.parent_attempt_id),s=p?.selected.steps.find((s:Row)=>s.id===a?.step_execution_id);
       if(!p||!a||!s||e.admission_source!=='call')return false;parent={executionId:p.executionId,attemptId:a.id,input:s.input_text};
       const visited=new Set<string>();let current:Row|undefined=o;
       while(current?.executionId!==c.rootExecutionId){if(!current||visited.has(current.executionId))return false;visited.add(current.executionId);current=owners.find(row=>row.executionId===current!.selected.execution[0].parent_execution_id);}
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
-    const context:ScriptOwnerContext={terminal,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.has(o.executionId)};
+    const waiting=Object.values(children).some(child=>!child.completed);
+    if(!terminal&&(e.state!==(waiting?'waiting':'running')||descendant&&inv.mode==='exit'))return false;
+    const context:ScriptOwnerContext={terminal,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state==='completed'};
     if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context))return false;
   }
   return true;
