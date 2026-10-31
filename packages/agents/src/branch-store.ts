@@ -50,6 +50,8 @@ export class BranchStore {
   private advanceCeiling = 0;
   private scriptCursor = 0;
   private scriptCeiling = 0;
+  private suffixCursor = 0;
+  private suffixCeiling = 0;
   private provisionCursor = 0;
   private cleanupCursor = 0;
   private cleanupCeiling = 0;
@@ -1835,16 +1837,11 @@ export class BranchStore {
         cursor.path = selected.position;
         const path = this.row("SELECT * FROM branch_paths WHERE id = ?", selected.id)!;
         if (path.state !== "active" || path.step_execution_id) continue;
+        const step = definition.steps.find(s => s.id === path.node_id);
+        if (step) { this.preparePathStep(execution, path, step.id, now); continue; }
         const exhausted=this.chargeTraversal(executionId,Boolean(path.handling_limit));
         if(exhausted){ this.limitPath(path,exhausted,now);continue; }
         this.run("UPDATE branch_paths SET traversals=traversals+1 WHERE id=?",path.id);
-        const step = definition.steps.find(s => s.id === path.node_id);
-        if (step) {
-          if (this.row("SELECT COUNT(*) AS n FROM branch_step_executions WHERE execution_id = ?", executionId)!.n >= (definition.policy.maxStepInvocations ?? 1000)) {
-            this.movePath(path.id, undefined, "Step invocation budget exhausted", { failed: true, output: "Step invocation budget exhausted" }, now);
-          } else this.prepare(execution, step.id, path.id, path.input_text, now);
-          continue;
-        }
         const control = definition.controls.find(c => c.id === path.node_id);
         if (!control) throw new Error("Path references an unavailable node");
         if (control.kind === "route") {
@@ -1880,6 +1877,14 @@ export class BranchStore {
       }
     }
     return true;
+  }
+  private preparePathStep(execution: BranchExecutionDto, path: Row, stepId: string, now: string): void {
+    const exhausted=this.chargeTraversal(execution.id,Boolean(path.handling_limit));
+    if(exhausted){this.limitPath(path,exhausted,now);return;}
+    this.run("UPDATE branch_paths SET traversals=traversals+1 WHERE id=?",path.id);
+    if(this.row("SELECT COUNT(*) n FROM branch_step_executions WHERE execution_id=?",execution.id)!.n >= (this.definition(execution).policy.maxStepInvocations??1000))
+      this.movePath(path.id,undefined,"Step invocation budget exhausted",{failed:true,output:"Step invocation budget exhausted"},now);
+    else this.prepare(execution,stepId,path.id,path.input_text,now);
   }
   private waitPath(pathId:string):void {
     const path=this.row('SELECT execution_id,state FROM branch_paths WHERE id=?',pathId)!;
@@ -2116,6 +2121,10 @@ export class BranchStore {
         if (unknown && (input.externalEffectsReconciled !== true || attempt.process_identity_json)) throw new Error("Reconcile external effects and drain process authority before intervention");
         const definition = this.definition(execution), step = definition.steps.find(s => s.id === attempt.step_id)!;
         if (execution.state === "failed" && !this.hasRunnableCapacity(execution.id)) throw new Error("Branch concurrency budget is full");
+        const invocation=this.checkpointInvocationRow(id);
+        if(input.action==='retry'&&invocation?.interruptionId)throw new Error('Resolve the explicit checkpoint interruption before retrying');
+        // An authorized retry opens a fresh invocation; the failed cut stays immutable.
+        if(input.action==='retry'&&invocation?.state==='terminal')this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:invocation.ordinal+1,mode:invocation.mode,state:'active',durability:'pending'}),id);
         this.state(id, "running", now);
         for(const gate of this.rows("SELECT id,revision FROM branch_gates WHERE step_execution_id=? AND state='waiting'",attempt.step_execution_id)){
           this.run("UPDATE branch_gates SET state='canceled',revision=revision+1 WHERE id=?",gate.id);
@@ -2264,9 +2273,36 @@ export class BranchStore {
   claimScript(workerId: string, now = new Date().toISOString()): BranchScriptLease | undefined {
     const prepared = this.claimPreparedScript(workerId, now);
     if (prepared || this.sqlite.inTransaction) return prepared;
-    // A settled result commits before its next Step is prepared. An empty worker
-    // poll drives one ordinary bounded scheduler batch, never an inline suffix.
-    this.advance(now);
+    // Only an already committed Script result can supply a direct Script suffix.
+    // Claiming is not scheduler admission, control reduction or checkpoint resume.
+    this.unitTransaction(() => {
+      const candidates = `FROM branch_paths p
+        JOIN branch_executions e ON e.id=p.execution_id
+        JOIN branch_sealed_results r ON r.id=p.last_result_id AND r.path_id=p.id
+        JOIN branch_step_executions s ON s.id=r.step_execution_id
+        JOIN branch_versions v ON v.id=e.version_id
+        WHERE p.state='active' AND p.step_execution_id IS NULL AND e.state IN ('running','waiting')
+          AND e.cancel_requested=0
+          AND EXISTS(SELECT 1 FROM json_each(v.definition_json,'$.steps') node
+            WHERE json_extract(node.value,'$.id')=s.step_id AND json_extract(node.value,'$.kind')='script')
+          AND EXISTS(SELECT 1 FROM json_each(v.definition_json,'$.steps') node
+            WHERE json_extract(node.value,'$.id')=p.node_id AND json_extract(node.value,'$.kind')='script')
+        AND p.rowid > ? AND p.rowid <= ? ORDER BY p.rowid LIMIT 100`;
+      const batch=()=>this.rows(`SELECT p.rowid position,p.* ${candidates}`,this.suffixCursor,this.suffixCeiling);
+      let paths=batch();
+      if(!paths.length){
+        this.suffixCursor=0;
+        this.suffixCeiling=this.row('SELECT COALESCE(MAX(rowid),0) n FROM branch_paths')!.n;
+        paths=batch();
+      }
+      for (const path of paths) {
+        this.suffixCursor=path.position;
+        if (!this.functionalReady(path.execution_id) || !this.hasRunnableCapacity(path.execution_id)) continue;
+        this.preparePathStep(this.execution(path.execution_id)!, path, path.node_id, now);
+        this.aggregate(path.execution_id, now);
+        break;
+      }
+    }).immediate();
     return this.claimPreparedScript(workerId, now);
   }
   private claimPreparedScript(workerId: string, now: string): BranchScriptLease | undefined {

@@ -21,11 +21,12 @@ function fixture(t,{source='list',maxItems=100,maxConcurrentItems=Math.min(4,max
 }
 async function settleAll(f,executionId,{failure}={}){
  for(let pass=0;pass<3000;pass++){
+  const before=f.branches.unitSaver.status(executionId)?.requiredWatermark;
   f.branches.advance();let lease,worked=false;
   while((lease=f.branches.claimScript('map-test'))){worked=true;f.branches.settleScript(lease,{failed:failure?.(lease.input)??false,output:lease.input});}
   await f.branches.unitSaver.drain();
   if(['completed','failed','canceled'].includes(f.branches.execution(executionId).state))return;
-  if(!worked&&pass>2)throw new Error(`Map stalled: ${f.branches.execution(executionId).waitReason}`);
+  if(!worked&&pass>2&&f.branches.unitSaver.status(executionId)?.requiredWatermark===before)throw new Error(`Map stalled: ${f.branches.execution(executionId).waitReason}`);
  }
  throw new Error('Map did not settle');
 }
