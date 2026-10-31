@@ -118,3 +118,60 @@ test('historical HTTP list/rewind enforce exact shape and commit a queued lineag
  const result=await app.inject({method:'POST',url:`${base}/rewind-historical`,payload:command});assert.equal(result.statusCode,200,result.body);assert.equal(result.json().state,'queued');assert.equal(notified,1);
  assert.equal((await app.inject({method:'POST',url:`${base}/rewind-historical`,payload:command})).json().id,result.json().id);
 });
+
+test('nonempty audit with a missing sealed-result event must refuse',async t=>{
+ const f=fixture(t),cp=await f.prefix();await f.finish();
+ const snapshot=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);
+ const original=snapshot.continuation.audit;
+ const sealed=original.find(r=>r.kind==='result_sealed');assert.ok(sealed);
+ snapshot.continuation.audit=original.filter(r=>r.id!==sealed.id);
+ const {stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');const bytes=stableJson(snapshot);
+ const bad=f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,hash(bytes));
+ const id=Number(bad.lastInsertRowid);
+ const before={owners:f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,snapshots:f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n};
+ let next,error;try{next=f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash(bytes),'missing-one-audit');}catch(e){error=e.message;}
+ assert.equal(f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(r=>r.id===id).restoreSupported,false);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands WHERE execution_id=?').get(f.source.id).n,0);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,before.owners);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n,before.snapshots);
+ assert.ok(error,'rewind accepted a nonempty but incomplete exact audit prefix');
+});
+
+test('rehash must not redirect a sealed-prefix frontier back to its completed Script',async t=>{
+ const f=fixture(t),cp=await f.prefix();await f.finish();
+ const s=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);
+ assert.equal(s.selected.paths[0].node_id,'c');s.selected.paths[0].node_id='a';
+ const {stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');const bytes=stableJson(s);
+ const bad=f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,hash(bytes));const id=Number(bad.lastInsertRowid);
+ const before={owners:f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,snapshots:f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n};
+ let next,error;try{next=f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash(bytes),'redirect-prefix');}catch(e){error=e.message;}
+ let claim;if(next)claim=await f.claim();
+ assert.equal(f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(r=>r.id===id).restoreSupported,false);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands WHERE execution_id=?').get(f.source.id).n,0);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,before.owners);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n,before.snapshots);
+ assert.ok(error,'rewind accepted redirected frontier and issued a fresh lease for already sealed Script a');
+});
+
+for(const [name,mutate] of [
+ ['missing interior lease',s=>{s.continuation.audit=s.continuation.audit.filter(r=>r.kind!=='script_leased');}],
+ ['changed audit evidence',s=>{s.continuation.audit[0].evidence_json='{}';}],
+ ['selected owner',s=>{s.selected.execution[0].branch_id='foreign';}],
+ ['selected path input',s=>{s.selected.paths[0].input_text='corrupt';}],
+ ['selected original input',s=>{s.selected.execution[0].input_text='corrupt';}],
+ ['selected last result',s=>{s.selected.paths[0].last_result_id=null;}],
+ ['selected invocation',s=>{s.selected.steps[0].invocation++;}],
+ ['selected traversal total',s=>{s.selected.paths[0].traversals++;s.selected.execution[0].traversals++;}],
+ ['selected prepared input',s=>{const step=s.selected.steps[0];step.input_text='corrupt';s.selected.attempts[0].input_hash=hash('corrupt');}],
+])test(`audit/frontier semantic mismatch refuses ${name} without allocating`,async t=>{
+ const f=fixture(t),cp=await f.prefix();await f.finish();
+ const snapshot=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);
+ mutate(snapshot);
+ const {stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');const bytes=stableJson(snapshot);
+ const inserted=f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,hash(bytes));
+ const id=Number(inserted.lastInsertRowid),owners=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n;
+ assert.equal(f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(r=>r.id===id).restoreSupported,false);
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash(bytes),`bad-${name}`));
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,owners);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands WHERE execution_id=?').get(f.source.id).n,0);
+});

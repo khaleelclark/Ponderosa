@@ -1,4 +1,4 @@
-import {scriptAuditSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
+import {scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
@@ -546,7 +546,7 @@ export class BranchStore {
       const c=snapshot.continuation,version=c?this.row('SELECT * FROM branch_versions WHERE id=? AND branch_id=?',c.versionId,branchId):undefined;
       const supported=snapshot.restore_supported===true&&c?.schema==='ponderosa.branch.script-continuation.v1'
         &&stableJson(c.compatibility)===stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)&&!!version
-        &&payloadHash(JSON.parse(version.definition_json))===c.versionHash&&scriptAuditSupported(c.audit)
+        &&payloadHash(JSON.parse(version.definition_json))===c.versionHash&&scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit)
         &&!Object.hasOwn(c.configuration,'secretBindings')&&scriptFrontierSupported(snapshot.selected,JSON.parse(version.definition_json));
       return {id:row.id,executionId,branchId,contentHash:row.content_hash,restoreSupported:supported,
         eligibility:supported?'script_control_frontier':'unsupported_dependency'};
@@ -582,7 +582,7 @@ export class BranchStore {
       if(!version||!binding||version.content_hash!==c.versionHash||binding.content_hash!==c.bindingHash||payloadHash(JSON.parse(version.definition_json))!==c.versionHash||payloadHash(JSON.parse(binding.bindings_json))!==c.bindingHash)throw Error('Historical checkpoint owned pins failed verification');
       const definition=JSON.parse(version.definition_json) as BranchDefinition,selected=snapshot.selected as Selected;
       if(!scriptFrontierSupported(selected,definition)||Object.hasOwn(c.configuration,'secretBindings')||stableJson(validateBranchConfiguration(c.configuration,definition,true))!==stableJson(c.configuration)
-        ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||!scriptAuditSupported(c.audit))throw Error('Historical continuation dependency or integrity unsupported');
+        ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit))throw Error('Historical continuation dependency or integrity unsupported');
       if(!['completed','failed','canceled'].includes(source.state)||source.parentExecutionId||this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND a.state IN ('leased','running','outcome_unknown')",executionId))throw Error('Historical rewind requires a settled standalone source');
       if(branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Historical rewind pins changed; current authority must be reconciled');
       if(this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');

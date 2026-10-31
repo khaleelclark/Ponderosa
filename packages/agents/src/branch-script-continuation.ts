@@ -1,9 +1,9 @@
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type {BranchDefinition} from '@ponderosa/core';
+import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {branchText} from './branch-definition.js';
-import {validateBranchConfiguration} from './branch-parameters.js';
+import {interpolateBranchText,validateBranchConfiguration} from './branch-parameters.js';
 
 type Row=Record<string,any>;
 export type Selected=Record<string,Row[]>;
@@ -57,10 +57,12 @@ export function encodeScriptContinuation(db:Database.Database,executionId:string
   const {secretBindings,...safeConfiguration}=configuration;
   if(stableJson(validateBranchConfiguration(safeConfiguration,definition,true))!==stableJson(safeConfiguration))return;
   if(payloadHash(definition)!==owner.version_hash||payloadHash(JSON.parse(owner.bindings_json))!==owner.binding_hash)throw Error('Continuation pins failed verification');
+  const audit=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(executionId);
+  if(!scriptCutSupported(db,executionId,selected,definition,safeConfiguration,audit))return;
   const e=selected.execution![0]!;
   return {schema:'ponderosa.branch.script-continuation.v1',compatibility:SCRIPT_CONTINUATION_COMPATIBILITY,
     versionId:e.version_id,versionHash:owner.version_hash,bindingRevisionId:e.binding_revision_id,bindingHash:owner.binding_hash,configuration:safeConfiguration,
-    audit:db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(executionId)};
+    audit};
 }
 
 export function scriptAuditSupported(audit:unknown):boolean {
@@ -70,4 +72,93 @@ export function scriptAuditSupported(audit:unknown):boolean {
     if(!Number.isSafeInteger(r.id)||r.id<=previous||typeof r.kind!=='string'||typeof r.transition_key!=='string'||keys.has(r.transition_key)||typeof r.created_at!=='string'||typeof r.evidence_json!=='string'||stableJson(JSON.parse(r.evidence_json))!==r.evidence_json)return false;
     previous=r.id;keys.add(r.transition_key);return true;
   });}catch{return false;}
+}
+
+/** The audit and inventory must describe the same committed single-path cut. */
+export function scriptCutSupported(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown):boolean {
+  try {
+    if(!scriptFrontierSupported(selected,definition)||!scriptAuditSupported(audit))return false;
+    const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
+    const owner=db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
+    if(!owner||e.id!==executionId||['branch_id','version_id','binding_revision_id','input_hash'].some(key=>e[key]!==owner[key])
+      ||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})
+      ||stableJson(configuration)!==stableJson(JSON.parse(owner.configuration_json)))return false;
+    // A prefix must include every owned event through its boundary, not just its last ID.
+    const owned=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
+    if(stableJson(owned)!==stableJson(events))return false;
+    let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
+    let started=false,accepted=false,pendingLoop:string|undefined;
+    const seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
+    const text=(value:string)=>interpolateBranchText(value,definition,configuration);
+    const follow=(edge:BranchDefinition['edges'][number]|undefined,output:string)=>{
+      pendingLoop=edge?.loop?edge.id:undefined;
+      node=edge?.to;input=edge?.input?.kind==='literal'?text(edge.input.text):output;
+    };
+    for(const event of events){
+      const v=JSON.parse(event.evidence_json);
+      if(pendingLoop&&event.kind!=='loop_traversed')return false;
+      switch(event.kind){
+        case 'trigger_accepted':
+          if(accepted||started||v.versionId!==e.version_id||v.bindingRevisionId!==e.binding_revision_id||v.inputHash!==e.input_hash)return false;
+          accepted=true;break;
+        case 'workflow_started':if(!accepted||started)return false;started=true;break;
+        case 'step_prepared':{
+          if(!started||current||v.stepId!==node||seen.has(v.stepExecutionId))return false;
+          const s=selected.steps!.find(s=>s.id===v.stepExecutionId);
+          if(!s||s.step_id!==node||s.input_text!==input||s.invocation!==(invocations.get(node!)??0)+1)return false;
+          invocations.set(node!,s.invocation);seen.add(s.id);current=s;settled=false;traversals++;break;
+        }
+        case 'script_leased':case 'script_authorized':case 'script_process_exit':case 'script_cleanup_observed':{
+          const attemptId=event.kind==='script_process_exit'?event.transition_key.slice('process-exit:'.length).replace(/:[0-9]+$/u,''):v.attemptId;
+          const a=selected.attempts!.find(a=>a.id===attemptId);
+          const step=selected.steps!.find(s=>s.id===a?.step_execution_id);
+          if(!a||!step||!seen.has(step.id)||step.state!=='completed')return false;
+          if(!['script_cleanup_observed','script_process_exit'].includes(event.kind)&&current?.id!==step.id)return false;
+          if(event.kind==='script_leased'){
+            if(v.fence!==(fences.get(a.id)??0)+1||v.sourceHash!==hash((definition.steps.find(s=>s.id===step.step_id) as Extract<BranchDefinition['steps'][number],{kind:'script'}>).source))return false;
+            fences.set(a.id,v.fence);
+          }
+          break;
+        }
+        case 'step_settled':{
+          const a=selected.attempts!.find(a=>a.id===v.attemptId);
+          if(!current||settled||!a||a.step_execution_id!==current.id||stableJson(v.result)!==current.result_json)return false;
+          settled=true;break;
+        }
+        case 'result_sealed':{
+          const r=selected.sealedResults!.find(r=>r.id===v.resultId);
+          if(!current||!settled||!r||r.step_execution_id!==current.id||v.stepExecutionId!==current.id||v.terminalAttemptId!==r.terminal_attempt_id||v.contentHash!==r.content_hash)return false;
+          last=r.id;const result=JSON.parse(current.result_json);
+          follow(definition.edges.find(edge=>edge.from===node&&edge.on==='success'),result.output??'');current=undefined;break;
+        }
+        case 'condition_selected':case 'route_selected':case 'route_invalid':{
+          if(!started||current||v.pathId!==p.id)return false;
+          const c=definition.controls.find(c=>c.id===node);if(!c)return false;
+          let edge:BranchDefinition['edges'][number]|undefined;
+          if(c.kind==='condition'){
+            if(event.kind!=='condition_selected')return false;
+            edge=definition.edges.find(edge=>edge.from===node&&edge.on===(input===text(c.predicate.equals)?'selected':'failure'));
+          }else if(c.kind==='route'){
+            const match=definition.edges.find(edge=>edge.from===node&&edge.on==='selected'&&edge.choice?.toLowerCase()===input.trim().toLowerCase());
+            if(v.routeId!==node||v.choice!==input.trim()||event.kind!==(match?'route_selected':'route_invalid'))return false;
+            edge=match??definition.edges.find(edge=>edge.from===node&&edge.on==='failure');
+          }else return false;
+          if(!edge||v.edgeId!==edge.id)return false;
+          traversals++;follow(edge,input);break;
+        }
+        case 'loop_traversed':{
+          const count=(loops.get(v.edgeId)??0)+1;
+          if(v.pathId!==p.id||v.edgeId!==pendingLoop||v.iteration!==count)return false;
+          loops.set(v.edgeId,count);pendingLoop=undefined;break;
+        }
+        case 'execution_budget_held':case 'execution_budget_released':break;
+        default:return false;
+      }
+    }
+    if(!started||pendingLoop||current&&current.state!=='prepared'||seen.size!==selected.steps!.length)return false;
+    if(p.node_id!==node||p.input_text!==input||p.last_result_id!==last||p.step_execution_id!==(current?.id??null)||p.traversals!==traversals)return false;
+    if(selected.attempts!.some(a=>a.fence!==(fences.get(a.id)??0)))return false;
+    if(selected.loops!.length!==loops.size||selected.loops!.some(r=>loops.get(r.edge_id)!==r.iterations))return false;
+    return true;
+  }catch{return false;}
 }
