@@ -33,3 +33,13 @@ No whole-UI, zero-paragraph, zero-moderate, Safari or screen-reader completion v
 The [WebKitGTK qualification](ui-webkit-qualification.md) adds both themes and desktop/narrow-window coverage for Core and Branches. Actual caller chain: Core App or BranchesApp → ProjectShell → shared Composer → DictationControls → VoiceConversation. Captured conditional states are unsupported dictation/read-aloud, initial unavailable call, expanded transcript/typing, an unsent local turn and its loss warning, then End call. No speech starts or call turn is sent. Settings exact rejection, immediate-save outage and rename outage are deliberately injected against disposable API fixtures. Raw DOM/text/screenshots and the finite state matrix are retained.
 
 Remaining conditional states are explicit: supported-speech remote-processing consent; microphone permission denial and recording errors; recognition finalization; queued/waiting/streaming/speaking replies; uncertain call-send retention/24-hour expiry/reload; reply cancellation failure; browser sign-in/profile replacement; package import/update conflict and sensitive-history consent; file preview truncation/unavailability; user/provider-authored dynamic content; future integrated Assistant/output routes. Preserve their meaning and exact failures. No source-only candidate is promoted to rendered compliance by this extension.
+
+### Chat instruction limit feedback
+
+Chat settings keeps over-limit instructions editable and marks the Instructions field with “Use 100,000 characters or fewer.” Save becomes available again at the existing server boundary (100,000 JavaScript string units); the draft is not truncated. Core and Branches use the same `ChatContextSettings` through `ConversationView`. The focused offline component contract checks the error, exact boundary and corrected whole-text submission; it does not qualify browser or screen-reader behavior.
+
+### Permission status contrast
+
+Available, unrestricted permission chips retain their green icon/border and “Allowed” label, with theme primary text applied only to `.MuiChip-label` for readable label contrast on the containing Paper. The root keeps its success color so the icon inherits green; warning and unavailable states receive no primary-text override. This shared editor serves product, workflow, Chat and Agent settings. Mounted Chat settings exposed the original Core light-theme label at 3.85:1; corrected-build mounted verification remains required.
+
+Workflow-owned Chats: Delete opens “Workflow-owned Chat” with an explicit whole-workflow removal explanation and “Open workflow settings” link; it never offers an independent Delete Chat confirmation. Ordinary Core Chats retain member-reviewed deletion.

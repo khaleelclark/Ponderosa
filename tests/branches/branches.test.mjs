@@ -162,16 +162,19 @@ test('Request creation and binding roll back together at a failed dispatch commi
  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_binding BEFORE UPDATE OF request_id ON branch_attempts BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END`);
  assert.throws(()=>f.branches.advance(),/injected binding/);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0);
- assert.equal(f.branches.execution(e.id).state,'queued');
+ assert.equal(f.branches.execution(e.id).state,'running');
+ assert.equal(f.branches.detail(e.id).attempts[0].state,'prepared');
  f.reopen();f.branches.advance();f.branches.advance();
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,1);
 });
 
-test('terminal reduction and successor preparation are atomic across restart',t=>{
+test('known terminal reduction survives a failed successor unit across restart',t=>{
  const f=fixture(t),e=f.branches.accept(f.branch.id,'atomic-next','input');f.branches.advance();complete(f,e.id);
  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_next BEFORE INSERT ON branch_step_executions WHEN NEW.step_id='script' BEGIN SELECT RAISE(ABORT, 'injected successor failure'); END`);
  assert.throws(()=>f.branches.advance(),/injected successor/);
- assert.equal(f.branches.detail(e.id).steps[0].state,'waiting');
+ assert.equal(f.branches.detail(e.id).steps[0].state,'completed');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results WHERE execution_id=?').get(e.id).n,1);
+ assert.equal(f.branches.detail(e.id).steps.length,1);
  f.reopen();f.branches.advance();f.reopen();f.branches.advance();
  assert.equal(f.branches.detail(e.id).steps.length,2);
  assert.equal(f.branches.claimScript('worker').input,'result');

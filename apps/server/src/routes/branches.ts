@@ -33,7 +33,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
     if(input.chatId)throw new Error('Branch ownership is independent of a working Chat');
     if(!input.branchId || !branches.getBranch(input.branchId))throw new Error('Create a Branch before publishing its definition');
     const previousConfiguration=branches.configuration(input.branchId);
-    configuration??=validateBranchConfiguration({parameters:Object.fromEntries(Object.entries(previousConfiguration.parameters).filter(([key])=>input.definition.parameters?.[key]?.type!=='secret'&&input.definition.parameters?.[key])),limits:previousConfiguration.limits,secretBindings:Object.fromEntries(Object.entries(previousConfiguration.secretBindings??{}).filter(([key])=>input.definition.parameters?.[key]?.type==='secret'))},input.definition);
+    configuration??=validateBranchConfiguration({parameters:Object.fromEntries(Object.entries(previousConfiguration.parameters).filter(([key])=>input.definition.parameters?.[key]?.type!=='secret'&&input.definition.parameters?.[key])),limits:previousConfiguration.limits,checkpointMode:previousConfiguration.checkpointMode,secretBindings:Object.fromEntries(Object.entries(previousConfiguration.secretBindings??{}).filter(([key])=>input.definition.parameters?.[key]?.type==='secret'))},input.definition);
     for(const step of input.definition.steps)if(step.kind==='script') {
       const directory=input.bindings.directories[step.cwdRef];
       const prefix=`Branch "${input.definition.name}" · Script "${step.label??step.id}": `;
@@ -359,6 +359,41 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
   app.post<{ Params: { id: string }; Body: { occurrenceKey: string; input: string } }>('/api/branches/:id/executions', async (request, reply) => {
     try { const execution = branches.accept(request.params.id, request.body.occurrenceKey, request.body.input); notify(); return execution; }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch input' }); }
+  });
+  app.post<{Params:{id:string;executionId:string}}>('/api/branches/:id/executions/:executionId/initial-checkpoint',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body??{},'Initial checkpoint');exactObjectFields(body,[],'Initial checkpoint');
+      return branches.saveInitialCheckpoint(request.params.id,request.params.executionId);
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Initial checkpoint capture failed'});}
+  });
+  app.get<{Params:{id:string;executionId:string}}>('/api/branches/:id/executions/:executionId/initial-checkpoint',async(request,reply)=>{
+    try{return branches.initialCheckpoint(request.params.id,request.params.executionId)??reply.code(404).send({error:'Initial checkpoint not found'});}
+    catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Invalid initial checkpoint'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:{checkpointId:number;expectedHash:string;commandKey:string}}>('/api/branches/:id/executions/:executionId/rewind-initial',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Initial rewind');exactObjectFields(body,['checkpointId','expectedHash','commandKey'],'Initial rewind');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.commandKey!=='string')throw new Error('Invalid initial rewind command');
+      const result=branches.rewindInitial(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Initial rewind failed'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/checkpoint-interruption',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Checkpoint interruption');exactObjectFields(body,['action','expectedId','commandKey'],'Checkpoint interruption');
+      if(!['interrupt','resume'].includes(String(body.action))||typeof body.expectedId!=='string'||typeof body.commandKey!=='string')throw Error('Invalid checkpoint interruption command');
+      const result=branches.checkpointInterruption(request.params.id,request.params.executionId,body.action as 'interrupt'|'resume',body.expectedId,body.commandKey);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Checkpoint interruption failed'});}
+  });
+  app.get<{Params:{id:string;executionId:string};Querystring:{before?:string}}>('/api/branches/:id/executions/:executionId/historical-checkpoints',async(request,reply)=>{
+    try{return branches.historicalCheckpoints(request.params.id,request.params.executionId,request.query.before===undefined?undefined:Number(request.query.before));}
+    catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical checkpoints unavailable'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:{checkpointId:number;expectedHash:string;commandKey:string}}>('/api/branches/:id/executions/:executionId/rewind-historical',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Historical rewind');exactObjectFields(body,['checkpointId','expectedHash','commandKey'],'Historical rewind');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.commandKey!=='string')throw Error('Invalid historical rewind command');
+      const result=branches.rewindHistorical(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical rewind failed'});}
   });
   app.post<{ Params: { id: string }; Body: BranchGateResolution }>('/api/branch-gates/:id/resolve', async (request, reply) => {
     try { const result = branches.resolveGate(request.params.id, request.body); notify(); return result; }

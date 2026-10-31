@@ -1,4 +1,4 @@
-import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
 import type { ConversationDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
@@ -22,12 +22,23 @@ export function ChatDeletionDialog({
   const agentsQuery = useQuery({
     queryKey: ["chat-deletion-agents", conversation?.id],
     queryFn: () => api.listConversationMembers(conversation!.id),
-    enabled: open && Boolean(conversation),
+    enabled: open && Boolean(conversation) && !conversation?.branchId,
     staleTime: 0,
     retry: false,
   });
   const agents = [...(agentsQuery.data ?? [])].sort((a, b) =>
     a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+
+  if (conversation?.branchId) return <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
+    <DialogTitle>Workflow-owned Chat</DialogTitle>
+    <DialogContent>
+      <Typography>This Chat belongs to a workflow and cannot be deleted separately. To remove it, open workflow settings and review deleting the entire workflow, including its other Chats and Agents.</Typography>
+    </DialogContent>
+    <DialogActions>
+      <Button onClick={onClose}>Cancel</Button>
+      <Button href={`/branches?branch=${encodeURIComponent(conversation.branchId)}&tab=settings`}>Open workflow settings</Button>
+    </DialogActions>
+  </Dialog>;
 
   return <ResourceDeletionDialog
     open={open}

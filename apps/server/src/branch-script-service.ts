@@ -3,7 +3,7 @@ import type { BranchResourceService } from "./branch-resource-service.js";
 import type { Writable } from "node:stream";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import type { BranchStore, BranchScriptLease, AgentStore } from "@ponderosa/agents";
+import type { BranchStore, BranchScriptLease, BranchActionLease, AgentStore } from "@ponderosa/agents";
 import { branchScriptFailureSummary, normalizeCanonicalText, unicodeCodePointLength, INLINE_TEXT_MAX_CODE_POINTS, type RuntimeProcessHandle, type WorkspaceEvent, type ReadinessDto } from "@ponderosa/core";
 import { recoveredRuntimeProcessHandle, runtimeEnvironment, runtimeProcessHandle, spawnContainedCli } from "@ponderosa/engines";
 
@@ -20,6 +20,9 @@ await import('data:text/javascript;base64,' + Buffer.from(source).toString('base
 /** Supervised operations driven by the existing scheduler; no independent polling loop. */
 export class BranchScriptService {
   private stopped = false;
+  private readonly resourceFailures:unknown[]=[];
+  private readonly pendingActions = new Map<string,BranchActionLease>();
+  private readonly pendingScripts = new Map<string,BranchScriptLease>();
   private readonly active = new Map<string, { handle: RuntimeProcessHandle; done: Promise<void> }>();
   constructor(private readonly branches: BranchStore, private readonly store: AgentStore, private readonly workerId: string,
     private readonly options: { notifyAction?: (input: {dedupeKey:string;branchId:string;branchExecutionId:string;projectId?:string;chatId?:string;title:string;body:string})=>string; notifyGate?: (input:{dedupeKey:string;branchId:string;branchExecutionId:string;title:string;body:string})=>void; resolveGateNotification?: (dedupeKey:string)=>void; resources?: BranchResourceService; installations?:BranchInstallationService; maxConcurrentScripts?: number; appendAudit?: (event: WorkspaceEvent) => unknown } = {}) {
@@ -43,24 +46,50 @@ export class BranchScriptService {
   async tick(admit: boolean): Promise<void> {
     await this.recoverScripts();
     this.publishAudit();
-    if (this.stopped || !admit) { this.reconcileGateNotifications(); await this.options.resources?.tick(false); return; }
+    if (this.stopped || !admit) { this.reconcileGateNotifications(); this.driveResources(false); this.checkpointErrors(); return; }
     void this.options.installations?.tick().catch(() => undefined);
     this.branches.advance();
     this.reconcileGateNotifications();
-    await this.options.resources?.tick(admit);
+    this.driveResources(admit);
     if (this.stopped) return;
-    if (this.options.notifyAction) for(let index=0;index<100;index++) {
-      const action=this.branches.claimAction(this.workerId);if(!action)break;
-      try { const id=this.options.notifyAction({dedupeKey:`branch-action:${action.attemptId}`,branchId:action.branchId,branchExecutionId:action.executionId,projectId:action.projectId,chatId:action.chatId,title:action.title,body:action.input});this.branches.settleAction(action,id); }
-      catch(error) { this.branches.actionDeliveryFailed(action,error instanceof Error?error.message:'Notification delivery remains pending'); /* Retry the same durable notification identity after lease expiry. */ }
+    if(this.options.notifyAction){
+      for(const action of this.pendingActions.values())this.dispatchAction(action);
+      for(let index=0;index<100;index++){
+        const action=this.branches.claimAction(this.workerId);if(!action)break;
+        this.pendingActions.set(action.attemptId,action);this.dispatchAction(action);
+      }
     }
-    // Host process budget; Branch admission has its own persisted policy.
-    while (!this.stopped && this.active.size < (this.options.maxConcurrentScripts ?? 4)) {
-      const lease = this.branches.claimScript(this.workerId);
-      if (!lease) break;
-      await this.launch(lease);
+    // Waiting saver tickets consume no process slot and never await the global tick.
+    for(const lease of this.pendingScripts.values()){
+      if(this.active.size >= (this.options.maxConcurrentScripts??4))break;
+      await this.dispatchScript(lease);
+    }
+    for(let index=0;!this.stopped&&index<(this.options.maxConcurrentScripts??4)&&this.active.size<(this.options.maxConcurrentScripts??4);index++){
+      const lease=this.branches.claimScript(this.workerId);if(!lease)break;
+      this.pendingScripts.set(lease.attemptId,lease);await this.dispatchScript(lease);
     }
     this.publishAudit();
+    this.checkpointErrors();
+  }
+  private dispatchAction(action:BranchActionLease):void {
+    const readiness=this.branches.checkpointDispatch(action);
+    if(readiness==='waiting')return;
+    this.pendingActions.delete(action.attemptId);if(readiness==='fenced')return;
+    try { const id=this.options.notifyAction!({dedupeKey:`branch-action:${action.attemptId}`,branchId:action.branchId,branchExecutionId:action.executionId,projectId:action.projectId,chatId:action.chatId,title:action.title,body:action.input});this.branches.settleAction(action,id); }
+    catch(error) { this.branches.actionDeliveryFailed(action,error instanceof Error?error.message:'Notification delivery remains pending'); }
+  }
+  private async dispatchScript(lease:BranchScriptLease):Promise<void> {
+    const readiness=this.branches.checkpointDispatch(lease);
+    if(readiness==='waiting')return;
+    this.pendingScripts.delete(lease.attemptId);if(readiness==='fenced')return;
+    await this.launch(lease);
+  }
+  private driveResources(admit:boolean):void {
+    void this.options.resources?.tick(admit).catch(error=>this.resourceFailures.push(error));
+  }
+  private checkpointErrors():void {
+    const errors=[...this.branches.unitSaver.errors(),...(this.options.resources?.errors()??[]),...this.resourceFailures];
+    if(errors.length)throw new AggregateError(errors,'Branch checkpoint durability failed');
   }
   private async recoverScripts(includeOwned = false): Promise<unknown[]> {
     const failures: unknown[] = [];
@@ -177,7 +206,9 @@ export class BranchScriptService {
     const failures = results.flatMap(r => r.status === 'rejected' ? [r.reason] : []);
     // Shutdown may precede the first tick; durable identities must also drain.
     failures.push(...await this.recoverScripts(true));
-    if (failures.length) throw new AggregateError(failures, 'Branch Script cleanup remains pending');
+    // Drain after mandatory cleanup; saver failures never enter markUnknown/deliveryFailed.
+    try { await this.branches.unitSaver.drain(); await this.branches.unitSaver.completeExits(); } catch(error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, 'Branch Script cleanup or checkpoint durability remains pending');
     this.publishAudit();
   }
 }
