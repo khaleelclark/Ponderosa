@@ -42,6 +42,7 @@ export class BranchStore {
   readonly unitSaver: BranchUnitSaver;
   private unit?: BranchUnitContext;
   private unitGeneration = 0;
+  private readonly functionalCursors = new Map<string, {preferAttempt:boolean; path:number}>();
   private advanceCursor = 0;
   private advanceCeiling = 0;
   private scriptCursor = 0;
@@ -1027,6 +1028,9 @@ export class BranchStore {
   }
   /** Only the existing scheduler calls this reducer. A bounded scan is not runtime authority. */
   advance(now = new Date().toISOString()): void {
+    for (const id of this.functionalCursors.keys()) {
+      if (!this.row("SELECT 1 FROM branch_executions WHERE id=? AND state IN ('queued','running','waiting')", id)) this.functionalCursors.delete(id);
+    }
     this.advanceScheduledChecks(now);
     let batch = this.rows("SELECT rowid AS position, id FROM branch_executions WHERE state IN ('queued','running','waiting') AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 100", this.advanceCursor, this.advanceCeiling);
     if (!batch.length) {
@@ -1036,6 +1040,8 @@ export class BranchStore {
     }
     for (const row of batch) {
       this.advanceCursor = row.position;
+      const cursor = this.functionalCursors.get(row.id) ?? {preferAttempt:false, path:0};
+      this.functionalCursors.set(row.id, cursor);
       for (let turn = 0; turn < 250; turn++) {
         const generation = this.unitGeneration;
         this.unitTransaction(() => {
@@ -1080,7 +1086,10 @@ export class BranchStore {
             this.run("INSERT INTO branch_paths(id,execution_id,state,node_id,input_text) VALUES(?,?,'active',?,?)", randomUUID(), execution.id, definition.entry, execution.input);
             return;
           }
-          if (this.drivePaths(execution.id, now)) { this.aggregate(execution.id, now); return; }
+          if (!cursor.preferAttempt && this.drivePaths(execution.id, now)) {
+            cursor.preferAttempt = true;
+            this.aggregate(execution.id, now); return;
+          }
           for (const attempt of this.rows(`SELECT a.*, s.step_id, s.input_text, s.path_id FROM branch_attempts a
             JOIN branch_step_executions s ON s.id = a.step_execution_id WHERE s.execution_id = ? AND a.state IN ('prepared','waiting') AND a.cancel_requested = 0 AND NOT EXISTS (SELECT 1 FROM branch_gates g WHERE g.attempt_id = a.id AND g.state = 'waiting')`, execution.id)) {
             if (this.unit?.written.size) break;
@@ -1143,6 +1152,8 @@ export class BranchStore {
               this.checkpoint(execution.id, `request:${attempt.id}`, "request_bound", { requestId: result.requestIds[0], attemptId: attempt.id }, now);
             }
           }
+          if (this.unit?.written.size) cursor.preferAttempt = false;
+          else if (this.drivePaths(execution.id, now)) cursor.preferAttempt = true;
           this.aggregate(execution.id, now);
         }).immediate();
         if (generation === this.unitGeneration) break;
@@ -1347,12 +1358,15 @@ export class BranchStore {
   }
   private drivePaths(executionId: string, now: string): boolean {
     const execution = this.execution(executionId)!, definition = this.definition(execution);
+    const cursor = this.functionalCursors.get(executionId)!;
     this.dispatchMaps(executionId,now);
     if(this.unit?.written.size)return true;
     {
-      const paths = this.rows("SELECT * FROM branch_paths WHERE execution_id = ? AND state = 'active' AND step_execution_id IS NULL", executionId);
+      const paths = this.rows("SELECT rowid position,* FROM branch_paths WHERE execution_id = ? AND state = 'active' AND step_execution_id IS NULL ORDER BY rowid", executionId);
       if (!paths.length) return false;
-      for (const selected of paths.slice(0,1)) {
+      // Scheduling cursors are hints only: rollback never publishes candidate state.
+      for (const selected of [paths.find(path => path.position > cursor.path) ?? paths[0]!]) {
+        cursor.path = selected.position;
         const path = this.row("SELECT * FROM branch_paths WHERE id = ?", selected.id)!;
         if (path.state !== "active" || path.step_execution_id) continue;
         const exhausted=this.chargeTraversal(executionId,Boolean(path.handling_limit));

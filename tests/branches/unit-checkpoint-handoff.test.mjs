@@ -11,7 +11,7 @@ const Database=require('better-sqlite3');
 const script=id=>({id,kind:'script',runtime:'node',source:'// never executed',cwdRef:'root',timeoutMs:5000});
 const condition=(id,otherwise='work')=>({id,kind:'condition',predicate:{source:'input',equals:'input'},otherwise});
 const edge=(id,from,to,on='success',extra={})=>({id,from,to,on,...extra});
-function fixture(t,graph={}){
+function fixture(t,graph={},highCeilings=false){
  const dir=mkdtempSync(join(tmpdir(),'branch-unit-handoff-')),store=new AgentStore(dir),coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
  const observer=new Database(store.sqlite.name,{readonly:true,fileMustExist:true});
  t.after(async()=>{if(branches.unitSaver)await branches.unitSaver.drain().catch(()=>{});observer.close();store.close();rmSync(dir,{recursive:true,force:true});});
@@ -19,6 +19,7 @@ function fixture(t,graph={}){
  const agent=store.createAgent(project.id,{title:'Controlled',engine:'codex',conversationId:chat.id});
  const definition={schema:'ponderosa.branch.v1',name:'Boundary',trigger:{kind:'manual'},entry:'work',steps:[script('work')],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}},...graph};
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{root:dir}}});
+ if(highCeilings)branches.configure(branch.id,{...branches.configuration(branch.id),limits:{...branches.configuration(branch.id).limits,maxTraversals:10000,maxLoopIterations:10000}},0);
  const execution=branches.accept(branch.id,'input','input');
  return {store,branches,coordination,agent,observer,branch,execution,dir};
 }
@@ -198,4 +199,30 @@ test('failed saver COMMIT publishes no saved identity and cannot undo primary ca
  await assert.rejects(f.branches.unitSaver.drain(),/durability failed/);
  const status=f.branches.unitSaver.status(f.execution.id);assert.equal(status.state,'failed');assert.equal(status.savedId,undefined);assert.equal(status.contentHash,undefined);
  assert.equal(snapshots(f).length,before);assert.equal(f.branches.execution(f.execution.id).state,'canceled');
+});
+
+// Both orderings distinguish class fairness from active-path rotation.
+for(const loopFirst of [false,true])test(`ready Agent progresses beside a live loop, loopFirst=${loopFirst}`,async t=>{
+ const arms=[edge('agent-arm','fork','agent','selected'),edge('loop-arm','fork','loop','selected')];
+ if(loopFirst)arms.reverse();
+ const f=fixture(t,{entry:'fork',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_organization',ref:'worker'},instructions:'Controlled only'}],controls:[{id:'fork',kind:'fork',joinId:'join'},condition('loop','join'),{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['agent-arm','loop-arm']}],edges:[...arms,edge('agent-join','agent','join'),edge('again','loop','loop','selected',{loop:true}),edge('exit','loop','join','failure')]},true);
+ const prior=f.observer.prepare("SELECT a.state,a.request_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?");
+ const observations=[];
+ f.store.sqlite.function('observe_dispatch',()=>{observations.push(prior.get(f.execution.id));return 1;});
+ f.store.sqlite.exec("CREATE TEMP TRIGGER observe_dispatch BEFORE UPDATE OF request_id ON branch_attempts WHEN NEW.request_id IS NOT NULL BEGIN SELECT observe_dispatch(); END");
+ for(let n=0;n<2;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1,'ready sibling must dispatch before exhaustion');
+ assert.deepEqual(observations,[{state:'prepared',request_id:null}],'preparation must already be committed at dispatch');
+ const counters=f.store.sqlite.prepare('SELECT traversals,loop_iterations FROM branch_executions WHERE id=?').get(f.execution.id);
+ assert.ok(counters.traversals<1000&&counters.loop_iterations>0);
+ assert.equal(f.store.sqlite.prepare("SELECT state FROM branch_paths WHERE execution_id=? AND node_id='loop'").get(f.execution.id).state,'active');
+});
+
+test('two active looping paths both advance without exhausting either ceiling',async t=>{
+ const f=fixture(t,{entry:'fork',steps:[script('work')],controls:[{id:'fork',kind:'fork',joinId:'join'},condition('left','join'),condition('right','join'),{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['left-arm','right-arm']}],edges:[edge('join-work','join','work'),edge('left-arm','fork','left','selected'),edge('right-arm','fork','right','selected'),...['left','right'].flatMap(id=>[edge(`${id}-again`,id,id,'selected',{loop:true}),edge(`${id}-exit`,id,'join','failure')])]},true);
+ f.branches.advance();await f.branches.unitSaver.drain();
+ const paths=f.store.sqlite.prepare("SELECT node_id,state,traversals FROM branch_paths WHERE execution_id=? AND node_id IN ('left','right') ORDER BY node_id").all(f.execution.id);
+ assert.equal(paths.length,2);
+ for(const path of paths){assert.equal(path.state,'active');assert.ok(path.traversals>50&&path.traversals<200);}
+ assert.ok(Math.abs(paths[0].traversals-paths[1].traversals)<=1);
 });
