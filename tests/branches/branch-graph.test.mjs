@@ -81,8 +81,8 @@ test('preflight warns on an explicit graph loop without claiming a fixed travers
 test('preflight permits a shorter failure route under the configured budget',t=>{
  const graph={steps:[script('a'),script('b'),script('c'),script('rescue')],edges:[edge('a-next','a','b'),edge('b-next','b','c'),edge('a-rescue','a','rescue','failure')]};
  const f=fixture(t,graph,{maxTraversals:2});
- f.branches.advance();f.branches.settleScript(f.branches.claimScript('worker'),{failed:true,output:'use rescue'});
- f.branches.settleScript(f.branches.claimScript('worker'),{failed:false,output:'recovered'});
+ f.branches.advance();f.branches.settleScript(f.branches.claimScript('worker'),{failed:true,output:'use rescue'});f.branches.advance();
+ f.branches.settleScript(f.branches.claimScript('worker'),{failed:false,output:'recovered'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).state,'completed');
  assert.equal(f.branches.execution(f.execution.id).output,'recovered');
 });
@@ -93,9 +93,9 @@ test('preflight permits a rejected gate to exclude an all-join arm',t=>{
    edge('gated','fork','gate','selected'),edge('side-arm','fork','side','selected'),edge('approved','gate','work','approved'),edge('work-in','work','join'),edge('side-in','side','join')]};
  const f=fixture(t,graph,{maxTraversals:4});
  f.branches.advance();
- const lease=f.branches.claimScript('worker');assert.ok(lease);f.branches.settleScript(lease,{failed:false,output:'side done'});
+ const lease=f.branches.claimScript('worker');assert.ok(lease);f.branches.settleScript(lease,{failed:false,output:'side done'});f.branches.advance();
  const gate=f.branches.detail(f.execution.id).gates.find(g=>g.state==='waiting');assert.ok(gate);
- f.branches.resolveGate(gate.id,{commandKey:'reject-gate',expectedRevision:gate.revision,decision:'reject'});
+ f.branches.resolveGate(gate.id,{commandKey:'reject-gate',expectedRevision:gate.revision,decision:'reject'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).state,'completed');
  assert.equal(f.branches.execution(f.execution.id).budgetExhausted,false);
 });
@@ -140,15 +140,15 @@ test('parallel all-join uses definition order, survives restart, and settles onc
 test('parallel join labels combined text with frozen path names',t=>{
  const graph=forkGraph();graph.steps[0].label='Frontend review';graph.steps[1].label='Backend review';
  const f=fixture(t,graph),[a,b]=runTwo(f);
- f.branches.settleScript(b,{failed:false,output:'B'});f.branches.settleScript(a,{failed:false,output:'A'});
+ f.branches.settleScript(b,{failed:false,output:'B'});f.branches.advance();f.branches.settleScript(a,{failed:false,output:'A'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).output,'[Frontend review]\nA\n\n[Backend review]\nB');
 });
 
 test('any-join with finish remainder waits for losing work but never changes selected output',t=>{
  const f=fixture(t,forkGraph('any')),[a,b]=runTwo(f);
- f.branches.settleScript(b,{failed:false,output:'winner'});
+ f.branches.settleScript(b,{failed:false,output:'winner'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).state,'running');
- f.branches.settleScript(a,{failed:false,output:'later'});
+ f.branches.settleScript(a,{failed:false,output:'later'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).state,'completed');
  assert.equal(f.branches.execution(f.execution.id).output,'[b]\nwinner');
 });
@@ -156,7 +156,7 @@ test('any-join with finish remainder waits for losing work but never changes sel
 test('any-join cancels exact losing Script and waits for its observed cleanup',t=>{
  const f=fixture(t,forkGraph('any','cancel')),[a,b]=runTwo(f);
  f.branches.authorizeScript(a,{pid:123,pgid:123,birthMarker:'test:fake'});
- f.branches.settleScript(b,{failed:false,output:'winner'});
+ f.branches.settleScript(b,{failed:false,output:'winner'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).state,'waiting');
  assert.throws(()=>f.branches.settleScript(a,{failed:false,output:'stale'}),/fenced/);
  f.branches.recoverScript(a.attemptId);
@@ -169,7 +169,7 @@ test('unselected conditional arm does not block an all-join',t=>{
  graph.edges[0]=edge('a-arm','fork','choose','selected');graph.edges.push(edge('yes','choose','a','selected'),edge('no','choose','join','failure'));
  const f=fixture(t,graph);f.branches.advance();const lease=f.branches.claimScript('worker');
  assert.equal(f.branches.detail(f.execution.id).steps.length,1);
- f.branches.settleScript(lease,{failed:false,output:'selected'});
+ f.branches.settleScript(lease,{failed:false,output:'selected'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).output,'[b]\nselected');
  assert.equal(f.branches.execution(f.execution.id).state,'completed');
 });
@@ -179,11 +179,11 @@ test('durable gate edits input, replays exact resolution, and rejects conflicts'
  f.branches.advance();f.reopen();const gate=f.branches.detail(f.execution.id).gates[0];
  assert.equal(f.branches.execution(f.execution.id).state,'waiting');
  const input={commandKey:'approve',expectedRevision:gate.revision,decision:'approve',output:'edited'};
- const result=f.branches.resolveGate(gate.id,input);f.reopen();assert.deepEqual(f.branches.resolveGate(gate.id,input),result);
+ const result=f.branches.resolveGate(gate.id,input);f.branches.advance();f.reopen();assert.deepEqual(f.branches.resolveGate(gate.id,input),result);
  assert.throws(()=>f.branches.resolveGate(gate.id,{...input,output:'different'}),/idempotency/);
  assert.throws(()=>f.branches.resolveGate(gate.id,{...input,commandKey:'conflict'}),/conflict/);
  const lease=f.branches.claimScript('worker');assert.equal(lease.input,'edited');
- f.branches.settleScript(lease,{failed:false,output:lease.input});assert.equal(f.branches.execution(f.execution.id).output,'edited');
+ f.branches.settleScript(lease,{failed:false,output:lease.input});f.branches.advance();assert.equal(f.branches.execution(f.execution.id).output,'edited');
 });
 
 test('gate rejection with no rejection route is skipped and canceled gates cannot resolve',t=>{
@@ -198,9 +198,9 @@ test('gate rejection with no rejection route is skipped and canceled gates canno
 test('routed gate rejection preserves proposed text for its rejection path',t=>{
  const f=fixture(t,{steps:[{id:'a',kind:'human_gate',prompt:'Review',editable:false},script('b')],edges:[edge('rejected','a','b','rejected')]});
  f.branches.advance();const gate=f.branches.detail(f.execution.id).gates[0];
- f.branches.resolveGate(gate.id,{commandKey:'reject-route',expectedRevision:gate.revision,decision:'reject'});
+ f.branches.resolveGate(gate.id,{commandKey:'reject-route',expectedRevision:gate.revision,decision:'reject'});f.branches.advance();
  const lease=f.branches.claimScript('worker');assert.equal(lease.input,'input');
- f.branches.settleScript(lease,{failed:false,output:'Handled rejection'});
+ f.branches.settleScript(lease,{failed:false,output:'Handled rejection'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).output,'Handled rejection');
 });
 
@@ -273,9 +273,9 @@ test('recovery policy creates an ordinary canonical Request and waits for its te
 test('nested fork instances join independently and compose deterministic output',t=>{
  const graph=forkGraph();graph.steps.push(script('c'),script('d'));graph.controls.push({id:'inner',kind:'fork',joinId:'inner-join'},{id:'inner-join',kind:'join',forkId:'inner',mode:'all',remainder:'finish',inputOrder:['c-arm','d-arm']});
  graph.edges=graph.edges.filter(e=>e.id!=='a-in');graph.edges.push(edge('a-inner','a','inner'),edge('c-arm','inner','c','selected'),edge('d-arm','inner','d','selected'),edge('c-in','c','inner-join'),edge('d-in','d','inner-join'),edge('inner-out','inner-join','join'));
- const f=fixture(t,graph),[a,b]=runTwo(f);f.branches.settleScript(a,{failed:false,output:'A'});
+ const f=fixture(t,graph),[a,b]=runTwo(f);f.branches.settleScript(a,{failed:false,output:'A'});f.branches.advance();
  const c=f.branches.claimScript('worker'),d=f.branches.claimScript('worker');
- f.branches.settleScript(d,{failed:false,output:'D'});f.branches.settleScript(b,{failed:false,output:'B'});f.reopen();f.branches.settleScript(c,{failed:false,output:'C'});
+ f.branches.settleScript(d,{failed:false,output:'D'});f.branches.advance();f.branches.settleScript(b,{failed:false,output:'B'});f.branches.advance();f.reopen();f.branches.settleScript(c,{failed:false,output:'C'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).output,'[a]\n[c]\nC\n\n[d]\nD\n\n[b]\nB');
  assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM branch_forks WHERE state='closed'").get().n,2);
 });
@@ -359,9 +359,9 @@ test('a join cancel cannot resurrect a losing path from a stale reducer batch',t
 
 test('an arrived failed path cannot be retried while an any join is still open',t=>{
  const f=fixture(t,forkGraph('any')),[a,b]=runTwo(f);
- f.branches.settleScript(a,{failed:true,output:'failed arm'});
+ f.branches.settleScript(a,{failed:true,output:'failed arm'});f.branches.advance();
  assert.throws(()=>f.branches.intervene(f.execution.id,{commandKey:'retry-arrived',expectedRevision:f.branches.execution(f.execution.id).revision,action:'retry',attemptId:a.attemptId,reason:'Retry failed arm'}),/already arrived/);
- f.branches.settleScript(b,{failed:false,output:'winner'});
+ f.branches.settleScript(b,{failed:false,output:'winner'});f.branches.advance();
  assert.equal(f.branches.execution(f.execution.id).state,'completed');
  assert.equal(f.branches.execution(f.execution.id).output,'[b]\nwinner');
 });
@@ -422,6 +422,6 @@ test('inspection projects condition choices, skipped arms, fork start and join e
  assert.ok(detail.decisions.some(d=>d.kind==='condition_selected'&&/false.*did not select path to “a”/.test(d.message)));
  assert.ok(detail.decisions.some(d=>d.kind==='fork_started'));
  assert.ok(detail.waits.some(w=>w.kind==='join'&&/b/.test(w.message)));
- const lease=f.branches.claimScript('inspect');f.branches.settleScript(lease,{failed:false,output:'B'});f.reopen();detail=f.branches.detail(f.execution.id);
+ const lease=f.branches.claimScript('inspect');f.branches.settleScript(lease,{failed:false,output:'B'});f.branches.advance();f.reopen();detail=f.branches.detail(f.execution.id);
  assert.ok(detail.decisions.some(d=>d.kind==='join_resolved'&&/satisfied: 1 of 2/.test(d.message)));
 });

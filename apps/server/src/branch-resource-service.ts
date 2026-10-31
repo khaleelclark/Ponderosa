@@ -67,7 +67,7 @@ export class BranchResourceService {
               AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number))`)
           .get(provision.stepExecutionId,provision.creationKey)) continue;
         await this.importer(provision, {
-          plan: ids => this.store.sqlite.transaction(()=>this.branches.planResource(provision.stepExecutionId,ids))(),
+          plan: ids => this.branches.unitTransaction(()=>this.branches.planResource(provision.stepExecutionId,ids))(),
           commit: result => this.branches.bindResource(provision.stepExecutionId,result),
         }, controller.signal);
       } catch (error) {

@@ -1,3 +1,4 @@
+import type {BranchUnitTransaction} from "./branch-unit-saver.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig } from "@ponderosa/core";
@@ -13,7 +14,8 @@ type Row = Record<string, any>;
  * and its workflow execution commit together. Only the scheduler creates Runs. */
 export class BranchTriggerStore {
   constructor(readonly sqlite: Database.Database, private readonly accept: (input: BranchTriggerIntake) => string,
-    private readonly cancelUndeliveredUpdate?: (occurrenceId:string,now:string)=>boolean) {}
+    private readonly cancelUndeliveredUpdate?: (occurrenceId:string,now:string)=>boolean,
+    private readonly transaction:BranchUnitTransaction = operation=>sqlite.transaction(operation)) {}
 
   private requireBranch(branchId: string): void {
     if (!branchId || !this.sqlite.prepare("SELECT 1 FROM branches WHERE id=? AND deleting=0").get(branchId)) {
@@ -34,7 +36,7 @@ export class BranchTriggerStore {
     this.text(input.name, input.instructions);
     if (input.targetAgentId !== undefined || input.runBudget !== undefined) throw new Error("Branch triggers cannot target Agents or grant provider Run budgets");
     const now = input.now ?? new Date().toISOString(), id = input.id ?? randomUUID();
-    return this.sqlite.transaction(() => {
+    return this.transaction(() => {
       this.requireBranch(input.branchId);
       this.sqlite.prepare(`INSERT INTO trigger_definitions
         (id,project_id,conversation_id,branch_id,name,instructions,source_kind,source_config_json,enabled,next_fire_at,created_at,updated_at)
@@ -56,7 +58,7 @@ export class BranchTriggerStore {
   updateTriggerDefinition(id: string, input: UpdateTriggerDefinitionInput): TriggerDefinitionDto | undefined {
     if (input.targetAgentId !== undefined || input.runBudget !== undefined) throw new Error("Branch triggers cannot target Agents or grant provider Run budgets");
     const now = input.now ?? new Date().toISOString();
-    return this.sqlite.transaction(() => {
+    return this.transaction(() => {
       const row = this.row(id); if (!row) return undefined;
       if (input.branchId !== undefined && input.branchId !== row.branch_id) throw new Error("Branch trigger destination is immutable");
       // Disabling must remain possible while the Branch itself is deleting.
@@ -83,7 +85,7 @@ export class BranchTriggerStore {
   }
 
   deleteTriggerDefinition(id: string, now = new Date().toISOString()): boolean {
-    return this.sqlite.transaction(() => {
+    return this.transaction(() => {
       this.cancelPending(id,"Automation deleted",now);
       return this.sqlite.prepare("DELETE FROM trigger_definitions WHERE id=?").run(id).changes === 1;
     })();
@@ -121,7 +123,7 @@ export class BranchTriggerStore {
     if(!input.path||input.path.length>4096||!['add','addDir','change','unlink','unlinkDir'].includes(input.eventType))throw new Error('Invalid filesystem Branch trigger event');
     if(!Number.isSafeInteger(input.maxCapturedPaths)||input.maxCapturedPaths<1||input.maxCapturedPaths>500)throw new Error('Filesystem Branch triggers capture between 1 and 500 paths');
     const now=input.now??new Date().toISOString();
-    return this.sqlite.transaction(()=>{
+    return this.transaction(()=>{
       const definition=this.row(input.triggerId);
       if(!definition||!definition.enabled||definition.source_kind!=='filesystem')throw new Error('Filesystem Branch trigger is unavailable');
       this.requireBranch(definition.branch_id);
@@ -139,7 +141,7 @@ export class BranchTriggerStore {
     })();
   }
   flushFilesystemTriggerBurst(triggerId:string,now=new Date().toISOString()):TriggerOccurrenceResult|undefined {
-    return this.sqlite.transaction(()=>{
+    return this.transaction(()=>{
       const burst=this.getFilesystemTriggerBurst(triggerId);if(!burst)return;
       const result=this.recordTriggerOccurrence({triggerId,occurrenceKey:burst.occurrenceKey,now,
         payload:{changes:burst.changes,lowLevelEventCount:burst.eventCount,capturedPathCount:burst.changes.length,startedAt:burst.startedAt,endedAt:burst.lastAt,
@@ -153,7 +155,7 @@ export class BranchTriggerStore {
   recordTriggerOccurrence(input: RecordTriggerOccurrenceInput): TriggerOccurrenceResult {
     if (!input.triggerId.trim() || !input.occurrenceKey.trim() || !input.provenance.source?.trim()) throw new Error("Trigger identity, occurrence key and provenance source are required");
     const now = input.now ?? new Date().toISOString();
-    return this.sqlite.transaction(() => {
+    return this.transaction(() => {
       const definition = this.row(input.triggerId);
       if (!definition) throw new Error("Automation not found");
       if (!definition.enabled && !input.allowDisabled) throw new Error("Automation is disabled");
@@ -183,7 +185,7 @@ export class BranchTriggerStore {
   }
 
   recordScheduledTriggerOccurrence(input: RecordTriggerOccurrenceInput & {expectedNextFireAt:string;nextFireAt?:string;lastFiredAt:string}): TriggerOccurrenceResult {
-    return this.sqlite.transaction(() => {
+    return this.transaction(() => {
       const row = this.row(input.triggerId);
       if (!row || !row.enabled || row.source_kind !== "schedule") throw new Error("Scheduled Automation is unavailable");
       if (row.next_fire_at !== input.expectedNextFireAt) throw new Error("Scheduled Automation cursor changed");
@@ -227,7 +229,7 @@ export class BranchTriggerStore {
 
   /** Called only inside the scheduler's admission transaction after capacity is checked. */
   combineHeldScheduleChecks(olderId:string,newerId:string,now:string):boolean {
-    return this.sqlite.transaction(()=>{
+    return this.transaction(()=>{
       const get=(id:string)=>this.sqlite.prepare("SELECT * FROM trigger_occurrences WHERE id=? AND state='pending' AND activation_id IS NULL").get(id) as Row|undefined;
       const older=get(olderId),newer=get(newerId);
       if(!older||!newer||older.id===newer.id||older.trigger_id!==newer.trigger_id||older.branch_id!==newer.branch_id)return false;

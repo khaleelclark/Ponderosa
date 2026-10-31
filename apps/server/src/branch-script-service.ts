@@ -43,7 +43,7 @@ export class BranchScriptService {
   async tick(admit: boolean): Promise<void> {
     await this.recoverScripts();
     this.publishAudit();
-    if (this.stopped || !admit) { this.reconcileGateNotifications(); await this.options.resources?.tick(false); return; }
+    if (this.stopped || !admit) { this.reconcileGateNotifications(); await this.options.resources?.tick(false); this.checkpointErrors(); return; }
     void this.options.installations?.tick().catch(() => undefined);
     this.branches.advance();
     this.reconcileGateNotifications();
@@ -61,6 +61,11 @@ export class BranchScriptService {
       await this.launch(lease);
     }
     this.publishAudit();
+    this.checkpointErrors();
+  }
+  private checkpointErrors():void {
+    const errors=this.branches.unitSaver.errors();
+    if(errors.length)throw new AggregateError(errors,'Branch checkpoint durability failed');
   }
   private async recoverScripts(includeOwned = false): Promise<unknown[]> {
     const failures: unknown[] = [];
@@ -177,7 +182,9 @@ export class BranchScriptService {
     const failures = results.flatMap(r => r.status === 'rejected' ? [r.reason] : []);
     // Shutdown may precede the first tick; durable identities must also drain.
     failures.push(...await this.recoverScripts(true));
-    if (failures.length) throw new AggregateError(failures, 'Branch Script cleanup remains pending');
+    // Drain after mandatory cleanup; saver failures never enter markUnknown/deliveryFailed.
+    try { await this.branches.unitSaver.drain(); } catch(error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, 'Branch Script cleanup or checkpoint durability remains pending');
     this.publishAudit();
   }
 }
