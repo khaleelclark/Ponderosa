@@ -9,27 +9,28 @@ type Row=Record<string,any>;
 export type Selected=Record<string,Row[]>;
 export const SCRIPT_CONTINUATION_COMPATIBILITY={format:'script-control-frontier.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
-export function scriptDefinitionSupported(definition:BranchDefinition):boolean {
-  return !definition.steps.some(s=>s.kind!=='script'||s.runtime!=='node'||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
+export function scriptDefinitionSupported(definition:BranchDefinition,calls=false):boolean {
+  return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||calls&&s.kind==='branch_call')||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
-export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition):boolean {
+export type ScriptOwnerContext={terminal:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null}>};
+export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext):boolean {
   try {
     const tables=['execution','paths','steps','attempts','forks','joins','loops','maps','items','sealedResults','bundles','gates','actions','resources'];
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
-    const e=selected.execution![0],p=selected.paths![0];
-    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!=='running'||e.admission_source!=='manual'
-      ||e.parent_execution_id||e.parent_attempt_id||e.cancel_requested||e.budget_exhausted||e.recovery_traversals||e.call_depth
-      ||e.output_text!==null||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||p.result_json!==null
-      ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!=='active'||p.handling_limit||p.traversals<1)return false;
-    if(!scriptDefinitionSupported(definition))return false;
+    const e=selected.execution![0],p=selected.paths![0],terminal=context?.terminal===true;
+    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?'completed':'running')||e.admission_source!==(context?.parent?'call':'manual')
+      ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
+      ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
+      ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?'completed':'active')||p.handling_limit||p.traversals<1)return false;
+    if(!scriptDefinitionSupported(definition,!!context))return false;
     if(['forks','joins','maps','items','bundles','gates','actions','resources'].some(key=>selected[key]!.length))return false;
     if(!definition.steps.some(s=>s.id===p.node_id)&&!definition.controls.some(c=>c.id===p.node_id))return false;
     const ids=new Set<string>();
     for(const row of [p,...selected.steps!,...selected.attempts!,...selected.sealedResults!]){if(typeof row.id!=='string'||ids.has(row.id))return false;ids.add(row.id);}
     const prepared=selected.steps!.filter(s=>s.state==='prepared');
-    if(prepared.length!==(p.step_execution_id?1:0)||p.step_execution_id&&prepared[0]?.id!==p.step_execution_id)return false;
+    if(prepared.length!==(!terminal&&p.step_execution_id?1:0)||!terminal&&p.step_execution_id&&prepared[0]?.id!==p.step_execution_id)return false;
     if(selected.attempts!.length!==selected.steps!.length)return false;
     for(const s of selected.steps!){
       if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed'].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
@@ -47,7 +48,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     }
     if(selected.sealedResults!.length!==selected.steps!.filter(s=>s.state==='completed').length||p.last_result_id&&!selected.sealedResults!.some(r=>r.id===p.last_result_id))return false;
     for(const r of selected.loops!){if(r.execution_id!==e.id||r.path_id!==p.id||!definition.edges.some(edge=>edge.id===r.edge_id&&edge.loop)||!Number.isSafeInteger(r.iterations)||r.iterations<1)return false;}
-    if(e.traversals!==p.traversals||e.loop_iterations!==selected.loops!.reduce((total,r)=>total+r.iterations,0))return false;
+    if(e.traversals!==p.traversals+(context?.descendantTraversals??0)||e.loop_iterations!==selected.loops!.reduce((total,r)=>total+r.iterations,0)+(context?.descendantLoops??0))return false;
     return [e.traversals,e.loop_iterations,e.recovery_traversals,p.traversals].every(n=>Number.isSafeInteger(n)&&n>=0);
   }catch{return false;}
 }
@@ -74,8 +75,8 @@ export function encodeScriptContinuation(db:Database.Database,executionId:string
     audit,provenance,...(checkpoint?{checkpoint}:{})};
 }
 
-export function scriptAuditSupported(audit:unknown):boolean {
-  if(!Array.isArray(audit)||!audit.some(r=>r.kind==='trigger_accepted')||!audit.some(r=>r.kind==='workflow_started'))return false;
+export function scriptAuditSupported(audit:unknown,preservedTerminal=false):boolean {
+  if(!Array.isArray(audit)||!audit.some(r=>r.kind==='trigger_accepted')||!preservedTerminal&&!audit.some(r=>r.kind==='workflow_started'))return false;
   let previous=0;const keys=new Set<string>();
   try{return audit.every(r=>{
     if(!Number.isSafeInteger(r.id)||r.id<=previous||typeof r.kind!=='string'||typeof r.transition_key!=='string'||keys.has(r.transition_key)||typeof r.created_at!=='string'||typeof r.evidence_json!=='string'||stableJson(JSON.parse(r.evidence_json))!==r.evidence_json)return false;
@@ -154,26 +155,28 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
 }
 
 /** The audit and inventory must describe the same committed single-path cut. */
-function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>}):boolean {
+export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>},context?:ScriptOwnerContext):boolean {
   try {
-    if(!scriptFrontierSupported(selected,definition)||!scriptAuditSupported(audit))return false;
+    if(!scriptFrontierSupported(selected,definition,context)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const closing=checkpoint?.invocation;
-    if(configuration.checkpointMode==='exit'){
+    if(configuration.checkpointMode==='exit'&&!context?.terminal){
       if(!closing||stableJson(Object.keys(checkpoint!).sort())!==stableJson(['closing','invocation','invocationId','mode'])
         ||stableJson(Object.keys(closing).sort())!==stableJson(['id','interruptionId','mode','ordinal','primaryOutcome','state'])
         ||checkpoint!.mode!=='exit'||checkpoint!.closing!==true||checkpoint!.invocationId!==closing.id||closing.mode!=='exit'
         ||closing.state!=='interrupted'||closing.primaryOutcome!=='interrupted'||typeof closing.id!=='string'||typeof closing.interruptionId!=='string'
         ||!Number.isSafeInteger(closing.ordinal)||closing.ordinal<1)return false;
-    }else if(checkpoint)return false;
+    }else if(checkpoint&&!context?.terminal)return false;
     const owner=db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
     if(!owner||e.id!==executionId||['branch_id','version_id','binding_revision_id','input_hash'].some(key=>e[key]!==owner[key])
-      ||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})
+      ||e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'}))
       ||stableJson(configuration)!==stableJson(JSON.parse(owner.configuration_json)))return false;
     // A prefix must include every owned event through its boundary, not just its last ID.
     const owned=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
     if(stableJson(owned)!==stableJson(events))return false;
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
+    let finished:Row|undefined,terminalObserved=false;
+    const admitted=new Set<string>(),completedChildren=new Set<string>();
     let started=false,accepted=false,pendingLoop:string|undefined,interruption:Row|undefined,activeInvocation:Row|undefined;
     const authorized=new Map<string,number>(),exited=new Set<string>(),seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
     if(seed){
@@ -197,7 +200,9 @@ function replayScriptCut(db:Database.Database,executionId:string,selected:Select
           ||result.terminal_attempt_id!==ids[oldResult.terminal_attempt_id]||result.result_json!==oldResult.result_json||result.content_hash!==oldResult.content_hash)return false;
       }
       node=sp.node_id;input=sp.input_text;traversals=sp.traversals;last=sp.last_result_id?ids[sp.last_result_id]!:null;
-      current=sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
+      current=old.execution![0]!.state!=='completed'&&sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
+      if(context?.restoredTerminal){finished={node:sp.node_id,input:sp.input_text,stepId:ids[sp.step_execution_id],result:JSON.parse(sp.result_json)};terminalObserved=true;}
+      for(const attempt of old.attempts!){if(context?.children[ids[attempt.id]!]){admitted.add(ids[attempt.id]!);completedChildren.add(ids[attempt.id]!);}}
       for(const loop of old.loops!)loops.set(loop.edge_id,loop.iterations);
     }
     const text=(value:string)=>interpolateBranchText(value,definition,configuration);
@@ -214,6 +219,7 @@ function replayScriptCut(db:Database.Database,executionId:string,selected:Select
           accepted=true;break;
         case 'workflow_started':if(!accepted||started)return false;started=true;break;
         case 'restored_prefix':case 'historical_rewind':if(!seed||!accepted||started)return false;break;
+        case 'tree_restored_prefix':case 'tree_historical_rewind':if(!context||!seed||!accepted||started)return false;if(event.kind==='tree_historical_rewind'&&context.restoredTerminal)started=true;break;
         case 'step_prepared':{
           if(interruption||!started||current||v.stepId!==node||seen.has(v.stepExecutionId))return false;
           const s=selected.steps!.find(s=>s.id===v.stepExecutionId);
@@ -235,7 +241,7 @@ function replayScriptCut(db:Database.Database,executionId:string,selected:Select
           if(event.kind==='script_process_exit'){
             // Other-generation observations remain evidence, never proof of this cut's exit.
             if(event.transition_key===`process-exit:${a.id}:${a.fence}`&&authorized.get(a.id)===a.fence&&fences.get(a.id)===a.fence){
-              if(configuration.checkpointMode==='exit'&&(v.code!==0||v.error||v.stdout!==JSON.parse(step.result_json).output||v.outputHash!==hash(v.stdout)))return false;
+              if((configuration.checkpointMode==='exit'||context?.terminal)&&(v.code!==0||v.error||v.stdout!==JSON.parse(step.result_json).output||v.outputHash!==hash(v.stdout)))return false;
               exited.add(a.id);
             }
           }
@@ -245,16 +251,27 @@ function replayScriptCut(db:Database.Database,executionId:string,selected:Select
           }
           break;
         }
+        case 'child_admitted':case 'child_completed':{
+          const child=context?.children[v.attemptId],a=selected.attempts!.find(row=>row.id===v.attemptId),step=selected.steps!.find(row=>row.id===a?.step_execution_id);
+          if(!child||!current||step?.id!==current.id||!definition.steps.some(row=>row.id===step!.step_id&&row.kind==='branch_call')||child.executionId!==v.childExecutionId)return false;
+          if(event.kind==='child_admitted'){if(admitted.has(a!.id)||v.definitionId!==child.versionId)return false;admitted.add(a!.id);}
+          else {if(!admitted.has(a!.id)||completedChildren.has(a!.id)||v.versionId!==child.versionId||v.state!=='completed')return false;completedChildren.add(a!.id);}
+          break;
+        }
+        case 'completed':
+          if(!context?.terminal||!finished||terminalObserved||v.output!==e.output_text)return false;terminalObserved=true;break;
         case 'step_settled':{
           const a=selected.attempts!.find(a=>a.id===v.attemptId);
           if(!current||settled||!a||a.step_execution_id!==current.id||stableJson(v.result)!==current.result_json)return false;
+          if(definition.steps.find(row=>row.id===current!.step_id)?.kind==='branch_call'&&(!completedChildren.has(a.id)||stableJson(v.result)!==stableJson({failed:false,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})})))return false;
           settled=true;break;
         }
         case 'result_sealed':{
           const r=selected.sealedResults!.find(r=>r.id===v.resultId);
           if(!current||!settled||!r||r.step_execution_id!==current.id||v.stepExecutionId!==current.id||v.terminalAttemptId!==r.terminal_attempt_id||v.contentHash!==r.content_hash)return false;
-          last=r.id;const result=JSON.parse(current.result_json);
-          follow(definition.edges.find(edge=>edge.from===node&&edge.on==='success'),result.output??'');current=undefined;break;
+          last=r.id;const result=JSON.parse(current.result_json),edge=definition.edges.find(edge=>edge.from===node&&edge.on==='success');
+          if(!edge)finished={node,input,stepId:current.id,result};
+          follow(edge,result.output??'');current=undefined;break;
         }
         case 'condition_selected':case 'route_selected':case 'route_invalid':{
           if(interruption||!started||current||v.pathId!==p.id)return false;
@@ -289,10 +306,14 @@ function replayScriptCut(db:Database.Database,executionId:string,selected:Select
         default:return false;
       }
     }
-    if(configuration.checkpointMode==='exit'&&(!interruption||interruption.interruptionId!==closing.interruptionId
+    if(configuration.checkpointMode==='exit'&&!context?.terminal&&(!interruption||interruption.interruptionId!==closing.interruptionId
       ||interruption.invocationId!==closing.id||interruption.ordinal!==closing.ordinal||[...authorized.keys()].some(id=>!exited.has(id))))return false;
+    if(context?.terminal&&[...authorized.keys()].some(id=>!exited.has(id)))return false;
     if(!started||pendingLoop||current&&current.state!=='prepared'||seen.size!==selected.steps!.length)return false;
-    if(p.node_id!==node||p.input_text!==input||p.last_result_id!==last||p.step_execution_id!==(current?.id??null)||p.traversals!==traversals)return false;
+    if(context?.terminal){
+      if(!finished||!terminalObserved||p.node_id!==finished.node||p.input_text!==finished.input||p.step_execution_id!==finished.stepId||p.result_json!==stableJson(finished.result)||e.output_text!==(finished.result.output??null))return false;
+    }else if(p.node_id!==node||p.input_text!==input||p.step_execution_id!==(current?.id??null))return false;
+    if(p.last_result_id!==last||p.traversals!==traversals||context&&Object.keys(context.children).some(id=>!completedChildren.has(id)))return false;
     if(selected.attempts!.some(a=>a.fence!==(fences.get(a.id)??0)))return false;
     if(selected.loops!.length!==loops.size||selected.loops!.some(r=>loops.get(r.edge_id)!==r.iterations))return false;
     return true;

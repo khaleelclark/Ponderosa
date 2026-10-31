@@ -1,3 +1,5 @@
+import {selectBranchUnit} from './branch-unit-selection.js';
+import {encodeScriptTreeContinuation} from './branch-tree-continuation.js';
 import {encodeScriptContinuation,type Selected} from './branch-script-continuation.js';
 import {createHash} from 'node:crypto';
 import type {BranchCheckpointMode} from '@ponderosa/core';
@@ -8,22 +10,7 @@ export type BranchUnitTransaction = <T>(operation:()=>T)=>{():T;deferred:()=>T;i
 export interface BranchUnitContext {written: Set<string>}
 type Candidate = {executionId:string; invocationId?:string; mode?:BranchCheckpointMode; closing?:boolean; content?:string; hash?:string; error?:unknown};
 type Status = {state:'pending'|'coalesced'|'saved'|'failed'|'coverage_unknown'|'suppressed'; mode?:BranchCheckpointMode; invocationId?:string; requiredWatermark?:number; savedId?:number; contentHash?:string; error?:unknown};
-const selections: Record<string,string> = {
-  "execution": "SELECT id,branch_id,version_id,binding_revision_id,occurrence_key,input_text,input_hash,state,wait_reason,cancel_requested,output_text,merged_into,requested_outcome,parent_execution_id,parent_attempt_id,call_depth,depth_ceiling,traversals,budget_exhausted,recovery_traversals,loop_iterations,admission_source FROM branch_executions WHERE id=? ORDER BY id",
-  "paths": "SELECT id,execution_id,parent_path_id,fork_invocation_id,edge_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id FROM branch_paths WHERE execution_id=? ORDER BY id",
-  "steps": "SELECT id,execution_id,step_id,path_id,invocation,state,input_text,result_json FROM branch_step_executions WHERE execution_id=? ORDER BY id",
-  "attempts": "SELECT id,step_execution_id,number,state,request_id,fence,input_hash,result_json,available_at,purpose,recovery_of_request_id,cancel_requested,runtime_outcome_json,error,created_at,updated_at FROM branch_attempts WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) ORDER BY id",
-  "forks": "SELECT id,execution_id,parent_path_id,fork_id,join_id,state,selected_paths_json,result_json FROM branch_forks WHERE execution_id=? ORDER BY id",
-  "joins": "SELECT execution_id,fork_invocation_id,join_id,path_id,outcome,output_text FROM branch_join_arrivals WHERE execution_id=? ORDER BY fork_invocation_id,join_id,path_id",
-  "loops": "SELECT execution_id,path_id,edge_id,iterations FROM branch_loop_counts WHERE execution_id=? ORDER BY path_id,edge_id",
-  "maps": "SELECT id,execution_id,map_id,parent_path_id,join_id,source_result_id,item_count,items_hash,state FROM branch_map_invocations WHERE execution_id=? ORDER BY id",
-  "items": "SELECT id,map_invocation_id,item_index,path_id,input_text,input_hash,dispatched FROM branch_map_items WHERE map_invocation_id IN (SELECT id FROM branch_map_invocations WHERE execution_id=?) ORDER BY id",
-  "sealedResults": "SELECT id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash FROM branch_sealed_results WHERE execution_id=? ORDER BY id",
-  "bundles": "SELECT id,execution_id,fork_invocation_id,content_text,content_hash FROM branch_result_bundles WHERE execution_id=? ORDER BY id",
-  "gates": "SELECT id,step_execution_id,state,proposal_text,choices_json,revision,response_json,purpose,attempt_id,prompt_text FROM branch_gates WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) ORDER BY id",
-  "actions": "SELECT attempt_id,state,notification_id FROM branch_actions WHERE attempt_id IN (SELECT a.id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?) ORDER BY attempt_id",
-  "resources": "SELECT step_execution_id,execution_id,template_ref,state,requested_count,root_agent_id,chat_id,generation,retry_draining,error,creation_key,(SELECT result_json FROM branch_commands c WHERE c.execution_id=r.execution_id AND c.command_key='resource-operation:'||r.creation_key||':chat') chat_operation_json,(SELECT result_json FROM branch_commands c WHERE c.execution_id=r.execution_id AND c.command_key='resource-operation:'||r.creation_key||':import') import_operation_json FROM branch_resources r WHERE execution_id=? ORDER BY step_execution_id"
-};
+
 
 /** Mode-aware after-commit saver; only explicitly encoded supported frontiers are executable. */
 export class BranchUnitSaver {
@@ -45,9 +32,9 @@ export class BranchUnitSaver {
       const invocation=row?.checkpoint_invocation_json?JSON.parse(row.checkpoint_invocation_json) as {id:string;mode:BranchCheckpointMode;state:string}:undefined;
       const metadata={invocationId:invocation?.id,mode:invocation?.mode??'async' as BranchCheckpointMode,closing:invocation?.state==='interrupted'||invocation?.state==='terminal'};
       try {
-        const selected=Object.fromEntries(Object.entries(selections).map(([key,sql])=>[key,this.sqlite.prepare(sql).all(executionId)]));
+        const selected=selectBranchUnit(this.sqlite,executionId);
         // Fixed SQL/column inventory excludes secretBindings and operational authority.
-        const continuation=encodeScriptContinuation(this.sqlite,executionId,selected as Selected);
+        const continuation=encodeScriptContinuation(this.sqlite,executionId,selected as Selected)??encodeScriptTreeContinuation(this.sqlite,executionId,selected as Selected);
         const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:!!continuation,...metadata,selected,...(continuation?{continuation}:{})});
         return {executionId,...metadata,content,hash:createHash('sha256').update(content).digest('hex')};
       } catch(error) { return {executionId,...metadata,error}; }

@@ -496,3 +496,145 @@ test('chained lineage insertion failure rolls back all new prefix ownership befo
  assert.throws(()=>f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'chain-atomic'),/chain lineage failed/);await f.branches.unitSaver.drain();assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.claimScript('no-candidate'),undefined);
  f.store.sqlite.exec('DROP TRIGGER fail_chain_lineage');const second=f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'chain-atomic');await finishOwned(f,second.id);assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
 });
+
+function treeFixture(t,mode='async',nested=true,childMode='sync',futureCall=false,childLoop=false){
+ const dir=mkdtempSync(join(tmpdir(),'tree-history-'));let store,branches;const open=()=>{store=new AgentStore(dir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));};open();
+ t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
+ const project=store.createProject({label:'Tree history',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Tree history'});
+ const script=id=>({id,kind:'script',runtime:'node',source:`// tree ${id} never executed`,cwdRef:'root',timeoutMs:5000});
+ const deploy=(name,steps,bindings={},edges=steps.slice(0,-1).map((step,i)=>({id:`edge-${i}`,from:step.id,to:steps[i+1].id,on:'success'})),controls=[])=>branches.deploy({chatId:chat.id,idempotencyKey:name,definition:{schema:'ponderosa.branch.v1',name,trigger:{kind:'manual'},entry:steps[0].id,steps,controls,edges,policy:{maxConcurrentExecutions:10,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir},...bindings}});
+ const leaf=childLoop?deploy('tree-leaf',[script('leaf1'),script('leaf2')],{},[{id:'to-check',from:'leaf1',to:'check',on:'success'},{id:'again',from:'check',to:'leaf1',on:'selected',loop:true},{id:'done',from:'check',to:'leaf2',on:'failure'}],[{id:'check',kind:'condition',predicate:{source:'input',equals:'again'},otherwise:'leaf2'}]):deploy('tree-leaf',[script('leaf1'),script('leaf2')]);
+ const middle=nested?deploy('tree-middle',[{id:'inner',kind:'branch_call',branchRef:'leaf'},script('middle')],{branches:{leaf:leaf.id}}):leaf;
+ const root=deploy('tree-root',[script('prefix'),{id:'call',kind:'branch_call',branchRef:'child'},script('suffix1'),...(futureCall?[{id:'call-again',kind:'branch_call',branchRef:'child'}]:[]),script('suffix2'),script('suffix3')],{branches:{child:middle.id}});
+ for(const [branch,m] of [[root,mode],[middle,childMode],...(nested?[[leaf,'exit']]:[])])if(m!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:m},0);
+ const source=branches.accept(root.id,'tree-source','tree input');
+ const settle=(lease,output='tree known')=>{if(childLoop&&lease.source.includes('leaf1'))output=branches.detail(lease.executionId).steps.find(s=>s.state==='leased').invocation===1?'again':'done';branches.authorizeScript(lease,inertIdentity);branches.recordScriptEvidence(lease,inertIdentity,{stdout:output,outputHash:hash(output),code:0});branches.settleScript(lease,{failed:false,output});};
+ const claim=async()=>{for(let n=0;n<80;n++){await branches.unitSaver.drain();branches.advance();const lease=branches.claimScript('tree-inert');if(lease){await branches.unitSaver.drain();assert.equal(branches.checkpointDispatch(lease),'ready');return lease;}}assert.fail('expected fresh tree suffix lease');};
+ const point=id=>branches.historicalCheckpoints(root.id,id).find(cp=>cp.restoreSupported&&captureBytes({store},cp.id).continuation?.schema==='ponderosa.branch.script-tree-continuation.v1');
+ return {get store(){return store},get branches(){return branches},dir,chat,root,middle,leaf,source,settle,claim,point,
+  async prefix(){const first=await claim();assert.equal(first.executionId,source.id);settle(first);for(let n=0;n<100;n++){await branches.unitSaver.drain();branches.advance();await branches.unitSaver.drain();const cp=point(source.id);if(cp)return cp;const lease=branches.claimScript('tree-inert');if(lease){if(lease.executionId===source.id){assert.ok(lease.source.includes('suffix1'));return {pendingRoot:lease};}await branches.unitSaver.drain();settle(lease);}}assert.fail('expected completed-child tree frontier');},
+  async finish(id){for(let n=0;n<20&&branches.execution(id).state!=='completed';n++){const lease=await claim();let owner=branches.execution(lease.executionId);while(owner.parentExecutionId)owner=branches.execution(owner.parentExecutionId);assert.equal(owner.id,id);settle(lease);}await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');},
+  async reopen(){await branches.unitSaver.drain();store.close();open();}};
+}
+for(const mode of ['async','sync'])for(const nested of [false,true])test(`completed-child tree ${mode} captures/restores/remaps nested=${nested} and captures a second rewind`,async t=>{
+ const f=treeFixture(t,mode,nested),a=await f.prefix();assert.ok(a.id,'actual completed children must produce executable parent history');
+ const original=captureBytes(f,a.id),owners=original.continuation.owners;assert.equal(owners.length,nested?3:2);assert.ok(owners.filter(o=>o.executionId!==f.source.id).every(o=>o.selected.execution[0].state==='completed'));
+ await f.finish(f.source.id);const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-A');assert.equal(first.state,'queued');assert.equal(f.branches.claimScript('before-tree-admission'),undefined);
+ const mappedOwners=f.store.sqlite.prepare('SELECT * FROM branch_executions WHERE parent_execution_id=?').all(first.id);assert.equal(mappedOwners.length,1);assert.equal(mappedOwners[0].state,'completed');
+ const suffix=await f.claim();assert.equal(suffix.executionId,first.id);assert.ok(suffix.source.includes('suffix1'),'no sealed child or parent prefix effect replay');assert.equal(suffix.fence,1);f.settle(suffix);
+ await f.branches.unitSaver.drain();const b=f.point(first.id);assert.ok(b,'restored tree must capture an executable second point');const nextCut=captureBytes(f,b.id);assert.equal(nextCut.continuation.provenance.length,1);
+ assert.ok(nextCut.continuation.owners.filter(o=>o.executionId!==first.id).every(o=>o.selected.attempts.every(a=>a.fence===0)));
+ await f.finish(first.id);await f.reopen();assert.equal(f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-A').id,first.id);
+ const second=f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'tree-B');const next=await f.claim();assert.equal(next.executionId,second.id);assert.ok(next.source.includes('suffix2'));f.settle(next);await f.finish(second.id);
+ await f.reopen();assert.equal(f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'tree-B').id,second.id);
+ const descendants=f.store.sqlite.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT e.id FROM branch_executions e JOIN owned ON e.id=owned.id`).all(second.id);assert.equal(descendants.length,owners.length);
+ assert.equal(f.branches.detail(second.id).steps.length,5);assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
+});
+test('completed-child tree exit closing history uses actual interrupt and fresh root suffix',async t=>{
+ const f=treeFixture(t,'exit',true,'async'),pending=await f.prefix();assert.ok(pending.pendingRoot);const lease=pending.pendingRoot;await f.branches.unitSaver.drain();assert.equal(f.branches.historicalCheckpoints(f.root.id,f.source.id).length,0,'exit progress remains coalesced');
+ f.branches.authorizeScript(lease,inertIdentity);const active=f.branches.execution(f.source.id).checkpointInvocation,hold=f.branches.checkpointInterruption(f.root.id,f.source.id,'interrupt',active.id,'tree-exit-hold').checkpointInvocation;
+ f.branches.recordScriptEvidence(lease,inertIdentity,{stdout:'known suffix',outputHash:hash('known suffix'),code:0});f.branches.settleScript(lease,{failed:false,output:'known suffix'});await f.branches.unitSaver.completeExits();const a=f.point(f.source.id);assert.ok(a);
+ f.branches.checkpointInterruption(f.root.id,f.source.id,'resume',hold.interruptionId,'tree-exit-resume');await f.finish(f.source.id);const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-exit-A');
+ const next=await f.claim();assert.equal(next.executionId,first.id);assert.ok(next.source.includes('suffix2'));f.branches.authorizeScript(next,inertIdentity);const invocation=f.branches.execution(first.id).checkpointInvocation;assert.notEqual(invocation.id,active.id);
+ const secondHold=f.branches.checkpointInterruption(f.root.id,first.id,'interrupt',invocation.id,'tree-exit-hold-B').checkpointInvocation;
+ f.branches.recordScriptEvidence(next,inertIdentity,{stdout:'second known',outputHash:hash('second known'),code:0});f.branches.settleScript(next,{failed:false,output:'second known'});await f.branches.unitSaver.completeExits();const b=f.point(first.id);assert.ok(b);
+ f.branches.checkpointInterruption(f.root.id,first.id,'resume',secondHold.interruptionId,'tree-exit-resume-B');await f.finish(first.id);await f.reopen();const second=f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'tree-exit-B');const suffix=await f.claim();assert.equal(suffix.executionId,second.id);assert.ok(suffix.source.includes('suffix3'));f.settle(suffix);await f.branches.unitSaver.completeExits();assert.equal(f.branches.execution(second.id).state,'completed');
+});
+async function capturedRestoredTree(t){
+ const f=treeFixture(t),a=await f.prefix();assert.ok(a.id);await f.finish(f.source.id);const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-corrupt-A');const lease=await f.claim();f.settle(lease);await f.branches.unitSaver.drain();const b=f.point(first.id);assert.ok(b);await f.finish(first.id);return {f,a,first,b};
+}
+for(const kind of ['missingOwner','foreignChild','parentAttempt','childAudit','parentAudit','sealedResult','counters','childInput','childGate','missingSource','missingRootLineage','missingChildLineage','receipt','provenance','mapMissing','mapAlias','foreignLineage'])test(`completed-child tree ${kind} corruption refuses all allocation`,async t=>{
+ const {f,first,b}=await capturedRestoredTree(t),snapshot=captureBytes(f,b.id),c=snapshot.continuation,root=c.owners.find(o=>o.executionId===first.id),child=c.owners.find(o=>o.executionId!==first.id),{stableJson,payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const ref=c.provenance[0];
+ if(kind==='missingOwner')c.owners=c.owners.filter(o=>o!==child);
+ if(kind==='foreignChild')child.selected.execution[0].branch_id='foreign';
+ if(kind==='parentAttempt')child.selected.execution[0].parent_attempt_id=root.selected.attempts.find(a=>a.fence===1).id;
+ if(kind==='childAudit')child.audit=child.audit.filter(a=>a.kind!=='tree_restored_prefix');
+ if(kind==='parentAudit')root.audit=root.audit.filter(a=>a.kind!=='tree_restored_prefix');
+ if(kind==='sealedResult'){
+  const s=child.selected.steps[0],a=child.selected.attempts.find(a=>a.step_execution_id===s.id),r=child.selected.sealedResults.find(r=>r.step_execution_id===s.id);s.result_json=stableJson({failed:false,output:'forged inherited result'});a.result_json=s.result_json;r.result_json=s.result_json;r.content_hash=hash(s.result_json);
+ }
+ if(kind==='counters'){child.selected.paths[0].traversals++;child.selected.execution[0].traversals++;let parent=child;while(parent.selected.execution[0].parent_execution_id){parent=c.owners.find(o=>o.executionId===parent.selected.execution[0].parent_execution_id);parent.selected.execution[0].traversals++;}}
+ if(kind==='childInput')child.selected.execution[0].input_text='foreign input';
+ if(kind==='childGate')child.selected.gates.push({id:'invented-gate',state:'waiting'});
+ if(kind==='missingSource')f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(ref.checkpointId);
+ if(kind==='missingRootLineage')f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(ref.lineageId);
+ if(kind==='missingChildLineage'){const origin=JSON.parse(child.audit.find(a=>a.kind==='tree_historical_rewind').evidence_json);f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(origin.childLineageId);}
+ if(kind==='receipt')f.store.sqlite.prepare('UPDATE branch_commands SET input_hash=? WHERE execution_id=?').run('0'.repeat(64),f.source.id);
+ if(kind==='provenance')c.provenance=[];
+ if(['mapMissing','mapAlias','foreignLineage'].includes(kind)){
+  // New rehashed private lineage/child receipts and exact owned audit references; immutable guards stay enabled.
+  const line=captureBytes(f,ref.lineageId),keys=Object.keys(line.idMap);
+  if(kind==='mapMissing')delete line.idMap[keys[0]];
+  if(kind==='mapAlias')line.idMap[keys[0]]=line.idMap[keys[1]];
+  if(kind==='foreignLineage')line.executionId='foreign-owner';
+  const bytes=stableJson(line),lineageId=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(first.id,bytes,hash(bytes)).lastInsertRowid);
+  for(const o of c.owners){const origin=JSON.parse(o.audit.find(a=>a.kind==='tree_historical_rewind').evidence_json);origin.lineageId=lineageId;
+   if(o!==root){const old=captureBytes(f,origin.childLineageId);old.rootLineageId=lineageId;old.idMap=line.idMap;const content=stableJson(old);origin.childLineageId=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(o.executionId,content,hash(content)).lastInsertRowid);}
+   for(const event of o.audit.filter(a=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))){event.evidence_json=stableJson(origin);f.store.sqlite.prepare('UPDATE branch_checkpoints SET evidence_json=? WHERE id=?').run(event.evidence_json,event.id);}
+  }
+  f.store.sqlite.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=?').run(stableJson({executionId:first.id,lineageId}),f.source.id);ref.lineageId=lineageId;ref.lineageHash=payloadHash(line);
+ }
+ snapshot.selected=root.selected;
+ const bytes=stableJson(snapshot),id=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(first.id,bytes,hash(bytes)).lastInsertRowid),before=allocationCounts(f);
+ assert.equal(f.branches.historicalCheckpoints(f.root.id,first.id).find(cp=>cp.id===id).restoreSupported,false);
+ assert.throws(()=>f.branches.rewindHistorical(f.root.id,first.id,id,hash(bytes),'bad-tree'),/integrity|unsupported/);assert.deepEqual(allocationCounts(f),before);
+});
+test('completed-child tree child lineage failure rolls back root and every remapped owner',async t=>{
+ const f=treeFixture(t),a=await f.prefix();await f.finish(f.source.id);const before=allocationCounts(f);
+ f.store.sqlite.exec("CREATE TEMP TRIGGER fail_child_lineage BEFORE INSERT ON branch_unit_snapshots WHEN json_extract(NEW.snapshot_json,'$.schema')='ponderosa.branch.child-tree-lineage.v1' BEGIN SELECT RAISE(ABORT,'child lineage failed'); END");
+ assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'atomic-tree'),/child lineage failed/);await f.branches.unitSaver.drain();assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.claimScript('no-child-candidate'),undefined);
+ f.store.sqlite.exec('DROP TRIGGER fail_child_lineage');const next=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'atomic-tree');await f.finish(next.id);assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
+});
+test('completed-child tree current descendant policy/configuration and lineage replay require current owned proof',async t=>{
+ const f=treeFixture(t),a=await f.prefix();await f.finish(f.source.id);const policies=new CapabilityPolicyStore(f.store.sqlite),before=allocationCounts(f);
+ policies.put({scopeKind:'branch',scopeId:f.leaf.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.scripts]});assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-policy'),/restricted/);assert.deepEqual(allocationCounts(f),before);
+ policies.put({scopeKind:'branch',scopeId:f.leaf.id,expectedRevision:1,restrictedCapabilityIds:[]});const next=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-once');await f.finish(next.id);await f.reopen();assert.equal(f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-once').id,next.id);
+ const lineage=f.store.sqlite.prepare("SELECT id FROM branch_unit_snapshots WHERE execution_id IN (SELECT id FROM branch_executions WHERE parent_execution_id=?) AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.child-tree-lineage.v1'").get(next.id);assert.ok(lineage);assert.throws(()=>f.store.sqlite.prepare("UPDATE branch_unit_snapshots SET content_hash='bad' WHERE id=?").run(lineage.id),/immutable/);f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(lineage.id);const after=allocationCounts(f);assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-once'),/lineage/);assert.deepEqual(allocationCounts(f),after);
+ f.branches.configure(f.leaf.id,{...f.branches.configuration(f.leaf.id),checkpointMode:'sync'},1);assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'changed-child'),/pins changed/);assert.deepEqual(allocationCounts(f),after);
+});
+for(const unknown of [false,true])test(`completed-child tree live child remains unsupported and never invents completion, unknown=${unknown}`,async t=>{
+ const f=treeFixture(t,'async',true,'async'),first=await f.claim();f.settle(first);const child=await f.claim();assert.notEqual(child.executionId,f.source.id);if(unknown){f.branches.authorizeScript(child,inertIdentity);f.branches.markScriptUnknown(child,'inert uncertain effect');}
+ await f.branches.unitSaver.drain();assert.ok(f.branches.historicalCheckpoints(f.root.id,f.source.id).every(cp=>!cp.restoreSupported));assert.notEqual(f.branches.execution(child.executionId).state,'completed');assert.equal(f.branches.claimScript('cannot-repeat-child'),undefined);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results WHERE execution_id=?').get(child.executionId).n,0);
+});
+
+for(const mode of ['async','sync'])test(`completed-child tree ${mode} fresh suffix admits a new tracked child without reopening inherited children`,async t=>{
+ const f=treeFixture(t,mode,true,'async',true),a=await f.prefix();assert.ok(a.id);await f.finish(f.source.id);const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'fresh-child-A');
+ const inherited=f.store.sqlite.prepare('SELECT id,parent_attempt_id FROM branch_executions WHERE parent_execution_id=?').all(first.id);assert.equal(inherited.length,1);
+ let b;for(let n=0;n<10&&!b;n++){const lease=await f.claim();f.settle(lease);await f.branches.unitSaver.drain();b=f.branches.historicalCheckpoints(f.root.id,first.id).find(cp=>cp.restoreSupported&&captureBytes(f,cp.id).continuation.owners.length===5);}
+ assert.ok(b,'second actual call and nested child must become part of the next coherent cut');
+ assert.ok(f.branches.detail(first.id).steps.some(s=>s.stepId==='call-again'&&s.state==='completed'));
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind=?').get(inherited[0].id,'script_leased').n,0,'inherited child has no new effect lease');
+ await f.finish(first.id);const next=f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'fresh-child-B');await f.finish(next.id);assert.equal(f.branches.detail(next.id).steps.length,6);
+});
+test('completed-child tree actual unresolved gate remains held without automatic approval',async t=>{
+ const f=treeFixture(t,'exit',true,'async'),version=f.branches.version(f.leaf.id,f.leaf.versionId);
+ f.branches.deploy({chatId:f.chat.id,branchId:f.leaf.id,expectedVersionId:version.id,idempotencyKey:'tree-real-gate',definition:{...version.definition,entry:'gate',steps:[{id:'gate',kind:'human_gate',prompt:'Explicit approval',editable:false}],edges:[]},bindings:{agents:{},directories:{root:f.dir}}});
+ const prefix=await f.claim();f.settle(prefix);for(let n=0;n<15;n++){await f.branches.unitSaver.drain();f.branches.advance();}
+ const child=f.branches.listExecutions(f.leaf.id)[0];assert.ok(child);const gate=f.branches.detail(child.id).gates[0];assert.equal(gate.state,'waiting');assert.equal(f.branches.claimScript('no-autoapproval'),undefined);
+ const invocation=f.branches.execution(f.source.id).checkpointInvocation;assert.throws(()=>f.branches.checkpointInterruption(f.root.id,f.source.id,'interrupt',invocation.id,'live-tree-interrupt'),/supports only/);assert.equal(f.branches.detail(child.id).gates[0].state,'waiting');assert.ok(f.branches.historicalCheckpoints(f.root.id,f.source.id).every(cp=>!cp.restoreSupported));
+});
+test('completed-child tree failed child saver preserves known result and leaves independent owners usable',async t=>{
+ const f=treeFixture(t,'async',false,'async'),prefix=await f.claim();f.settle(prefix);const child=await f.claim();assert.notEqual(child.executionId,f.source.id);
+ f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_tree_child_save BEFORE INSERT ON branch_unit_snapshots WHEN NEW.execution_id='${child.executionId}' BEGIN SELECT RAISE(ABORT,'tree child save failed'); END`);
+ f.settle(child);await assert.rejects(()=>f.branches.unitSaver.drain(),/durability failed/);assert.equal(f.branches.detail(child.executionId).sealedResults.length,1);assert.equal(f.branches.detail(child.executionId).steps[0].state,'completed');assert.ok(f.branches.historicalCheckpoints(f.root.id,f.source.id).every(cp=>!cp.restoreSupported));
+ const other=f.branches.accept(f.root.id,'independent-tree','independent');let lease;for(let n=0;n<10&&!lease;n++){await f.branches.unitSaver.waitFor([other.id]);f.branches.advance();lease=f.branches.claimScript('independent-tree');}assert.ok(lease);assert.equal(lease.executionId,other.id);f.settle(lease);await f.branches.unitSaver.waitFor([other.id]);assert.equal(f.branches.detail(other.id).sealedResults.length,1);await assert.rejects(()=>f.branches.unitSaver.drain(),/durability failed/);
+});
+test('completed-child tree capture error stays a saver error after the primary known-result commit',async t=>{
+ const f=treeFixture(t),a=await f.prefix();assert.ok(a.id);const lease=await f.claim();assert.equal(lease.executionId,f.source.id);f.branches.authorizeScript(lease,inertIdentity);f.branches.recordScriptEvidence(lease,inertIdentity,{stdout:'committed known',outputHash:hash('committed known'),code:0});await f.branches.unitSaver.drain();
+ const db=f.store.sqlite,prepare=db.prepare;db.prepare=function(sql){if(sql.startsWith('WITH RECURSIVE tree(id)'))throw Error('inert tree capture read failure');return prepare.call(this,sql);};
+ try{f.branches.settleScript(lease,{failed:false,output:'committed known'});}finally{db.prepare=prepare;}
+ await assert.rejects(()=>f.branches.unitSaver.drain(),/durability failed/);assert.equal(f.branches.detail(f.source.id).steps.find(s=>s.stepId==='suffix1').result.output,'committed known');assert.equal(f.branches.execution(f.source.id).checkpointInvocation.durability,'failed');assert.equal(f.branches.claimScript('failed-tree-saver'),undefined);
+});
+
+for(const mode of ['async','sync'])test(`completed-child tree ${mode} nested control/loop counters survive two remappings`,async t=>{
+ const f=treeFixture(t,mode,true,'async',false,true),a=await f.prefix();assert.ok(a.id);assert.equal(captureBytes(f,a.id).selected.execution[0].loop_iterations,1);await f.finish(f.source.id);
+ const first=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-loop-A'),lease=await f.claim();assert.ok(lease.source.includes('suffix1'));f.settle(lease);await f.branches.unitSaver.drain();const b=f.point(first.id);assert.ok(b);await f.finish(first.id);const second=f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'tree-loop-B');await f.finish(second.id);
+ assert.equal(f.store.sqlite.prepare('SELECT loop_iterations FROM branch_executions WHERE id=?').get(second.id).loop_iterations,1);
+ const leaf=f.store.sqlite.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT e.id FROM branch_executions e JOIN owned ON e.id=owned.id WHERE e.branch_id=?`).get(second.id,f.leaf.id);assert.equal(f.branches.detail(leaf.id).steps.length,3);assert.equal(f.store.sqlite.prepare('SELECT iterations FROM branch_loop_counts WHERE execution_id=?').get(leaf.id).iterations,1);assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='script_leased'").get(leaf.id).n,0);
+});
+test('completed-child tree idempotent replay requires the actual target prefix receipt after reopen',async t=>{
+ const f=treeFixture(t),a=await f.prefix();await f.finish(f.source.id);const next=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'target-prefix-tree');await f.finish(next.id);await f.reopen();
+ assert.equal(f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'target-prefix-tree').id,next.id);f.store.sqlite.prepare("DELETE FROM branch_checkpoints WHERE execution_id=? AND kind='tree_restored_prefix'").run(next.id);const before=allocationCounts(f);
+ assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'target-prefix-tree'),/lineage/);assert.deepEqual(allocationCounts(f),before);
+});
