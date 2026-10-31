@@ -157,9 +157,37 @@ export class BranchStore {
     return {id:row.id,mode:row.mode,state:row.state,...(row.interruptionId?{interruptionId:row.interruptionId}:{}),...(row.primary_outcome?{primaryOutcome:row.primary_outcome}:{}),durability:staged?'pending':status&&status.invocationId===row.id?status.state:row.durability==='failed'?'failed':row.durability==='saved'&&this.unitSaver.currentSavedMatches(executionId,row.id,row.saved_snapshot_id)?'saved':'coverage_unknown',
       ...(status?.requiredWatermark!==undefined?{requiredWatermark:status.requiredWatermark}:{}),...(status?.state==='saved'?{savedSnapshotId:status.savedId,savedContentHash:status.contentHash}:{}),...(row.saved_snapshot_id?{lastSavedSnapshotId:row.saved_snapshot_id}:{})};
   }
+  // Child saved bytes omit interruption identity; owned hold history must authorize resume.
+  private checkpointHoldIdentitySupported(executionId:string,invocation:Row):boolean {
+    try {
+      let held:Row|undefined,active:Row|undefined;
+      const invocations=new Set<string>(),interruptions=new Set<string>();
+      for(const event of this.rows("SELECT kind,transition_key,evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind IN ('checkpoint_restore_held','checkpoint_interrupt_requested','checkpoint_interrupt_resumed') ORDER BY id",executionId)){
+        const v=JSON.parse(event.evidence_json);
+        if(event.kind==='checkpoint_interrupt_resumed'){
+          if(!held||v.interruptionId!==held.interruptionId||v.invocationId!==held.invocationId
+            ||event.transition_key!==`checkpoint-resume:${v.interruptionId}`||v.nextOrdinal!==held.ordinal+1
+            ||typeof v.nextInvocationId!=='string'||!v.nextInvocationId||invocations.has(v.nextInvocationId))return false;
+          invocations.add(v.nextInvocationId);active={id:v.nextInvocationId,ordinal:v.nextOrdinal};held=undefined;
+        }else{
+          if(held||typeof v.interruptionId!=='string'||!v.interruptionId||interruptions.has(v.interruptionId)
+            ||typeof v.invocationId!=='string'||!v.invocationId||!Number.isSafeInteger(v.ordinal)||v.ordinal<1
+            ||event.transition_key!==`${event.kind==='checkpoint_restore_held'?'restore-held':'checkpoint-interrupt'}:${v.interruptionId}`)return false;
+          if(event.kind==='checkpoint_restore_held'){
+            if(active||invocations.size||v.ordinal!==1||!this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",executionId))return false;
+          }else if(!v.commandKey||(active?(active.id!==v.invocationId||active.ordinal!==v.ordinal):v.ordinal!==1))return false;
+          if(!active&&invocations.has(v.invocationId))return false;
+          invocations.add(v.invocationId);interruptions.add(v.interruptionId);held=v;active=undefined;
+        }
+      }
+      return !!held&&held.invocationId===invocation.id&&held.interruptionId===invocation.interruptionId&&held.ordinal===invocation.ordinal;
+    }catch{return false;}
+  }
   private resumeCheckpointInvocation(executionId:string,interruptionId?:string):boolean {
     const invocation=this.checkpointInvocationRow(executionId);
     if(!invocation||invocation.interruptionId&&invocation.interruptionId!==interruptionId||!['interrupted','terminal'].includes(invocation.state)||invocation.durability!=='saved')return false;
+    const lastHold=this.row("SELECT kind FROM branch_checkpoints WHERE execution_id=? AND kind IN ('checkpoint_restore_held','checkpoint_interrupt_requested','checkpoint_interrupt_resumed') ORDER BY id DESC LIMIT 1",executionId);
+    if(invocation.mode==='exit'&&(invocation.interruptionId||lastHold&&lastHold.kind!=='checkpoint_interrupt_resumed')&&!this.checkpointHoldIdentitySupported(executionId,invocation))return false;
     const ticket=this.unitSaver.status(executionId);
     if(ticket?(ticket.invocationId!==invocation.id||ticket.state!=='saved'):!this.unitSaver.currentSavedMatches(executionId,invocation.id,invocation.saved_snapshot_id))return false;
     if(this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",executionId))return false;

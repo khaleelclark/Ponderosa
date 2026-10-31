@@ -889,3 +889,58 @@ test('exit-child EXIT parent keeps independent A and B closing boundaries across
  const second=f.branches.rewindHistorical(f.root.id,first.id,b.id,b.contentHash,'both-rewind-B');await f.branches.unitSaver.drain();const lastChild=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(second.id);resumeExitChild(f,lastChild.id,f.branches.execution(lastChild.id).checkpointInvocation,'both-fresh-B');
  const last=await f.claim();assert.ok(last.source.includes('leaf3'));assert.equal(last.fence,1);f.settle(last);await f.finish(second.id);await f.branches.unitSaver.completeExits();
 });
+
+for(const mode of ['async','sync'])for(const kind of ['forged-interruption','forged-ordinal','foreign-saved-hold','foreign-receipt','wrong-human-id'])test(`maintained hold identity ${mode} ${kind} held child refusal`,async t=>{
+ const {f,a}=await closedExitChild(t,mode),root=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'independent-A');await f.branches.unitSaver.drain();
+ let db=f.store.sqlite;const child=db.prepare('SELECT * FROM branch_executions WHERE parent_execution_id=?').get(root.id),old=JSON.parse(child.checkpoint_invocation_json);
+ let expected=old.interruptionId;
+ if(kind==='forged-interruption'){
+  expected='never-issued-human-hold';db.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.interruptionId',?) WHERE id=?").run(expected,child.id);
+ }
+ if(kind==='forged-ordinal')db.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.ordinal',99) WHERE id=?").run(child.id);
+ if(kind==='foreign-saved-hold'||kind==='foreign-receipt'){
+  const second=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'independent-B');await f.branches.unitSaver.drain();const foreign=db.prepare('SELECT * FROM branch_executions WHERE parent_execution_id=?').get(second.id);
+  if(kind==='foreign-saved-hold'){db.prepare('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?').run(foreign.checkpoint_invocation_json,child.id);expected=JSON.parse(foreign.checkpoint_invocation_json).interruptionId;}
+  else{const ev=db.prepare("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'").get(second.id);db.prepare("UPDATE branch_checkpoints SET evidence_json=? WHERE execution_id=? AND kind='tree_historical_rewind'").run(ev.evidence_json,root.id);}
+ }
+ if(kind==='wrong-human-id')expected='never-issued-human-hold';
+ await f.reopen();db=f.store.sqlite;const savedBytes=db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(old.saved_snapshot_id).snapshot_json;const holdEvent=db.prepare("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='checkpoint_restore_held'").get(child.id);const before=allocationCounts(f),invBefore=f.branches.execution(child.id).checkpointInvocation;let accepted=false,error;
+ try{f.branches.checkpointInterruption(f.leaf.id,child.id,'resume',expected,'independent-resume');accepted=true;}catch(e){error=e.message;}
+ let suffix;if(accepted){suffix=await f.claim();assert.equal(suffix.executionId,child.id);assert.ok(suffix.source.includes('leaf2'));assert.equal(suffix.fence,1);}
+ console.log(JSON.stringify({mode,kind,accepted,error,before,after:allocationCounts(f),invBefore,invAfter:f.branches.execution(child.id).checkpointInvocation,ownedHold:JSON.parse(holdEvent.evidence_json),savedBytesUnchanged:savedBytes===db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(old.saved_snapshot_id).snapshot_json,suffix:suffix&&{executionId:suffix.executionId,fence:suffix.fence,source:suffix.source}}));
+ assert.equal(accepted,false,'foreign or never issued fresh child hold must not authorize resume');assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.claimScript('held-independent'),undefined);
+});
+for(const mode of ['async','sync'])for(const kind of ['invocation','missingHold','mismatchedHold','missingResume','changedResume','laterOrdinal'])test(`current EXIT hold ${mode} ${kind} refuses unchanged`,async t=>{
+ const {f,a}=await closedExitChild(t,mode),root=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'hold-chain');await f.branches.unitSaver.drain();
+ const child=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(root.id);let hold=f.branches.execution(child.id).checkpointInvocation;
+ if(['missingResume','changedResume','laterOrdinal'].includes(kind)){
+  resumeExitChild(f,child.id,hold,'chain-first-resume');const lease=await f.claim();assert.equal(lease.executionId,child.id);f.settle(lease);await f.branches.unitSaver.completeExits();
+  hold=await interruptExitChild(f,child.id,'chain-second-hold');
+ }
+ const db=f.store.sqlite;
+ if(kind==='invocation')db.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.id','forged-current-invocation') WHERE id=?").run(child.id);
+ if(kind==='missingHold')db.prepare("DELETE FROM branch_checkpoints WHERE execution_id=? AND kind='checkpoint_restore_held'").run(child.id);
+ if(kind==='mismatchedHold')db.prepare("UPDATE branch_checkpoints SET evidence_json=json_set(evidence_json,'$.ordinal',99) WHERE execution_id=? AND kind='checkpoint_restore_held'").run(child.id);
+ if(kind==='missingResume')db.prepare("DELETE FROM branch_checkpoints WHERE execution_id=? AND kind='checkpoint_interrupt_resumed'").run(child.id);
+ if(kind==='changedResume')db.prepare("UPDATE branch_checkpoints SET evidence_json=json_set(evidence_json,'$.nextInvocationId','foreign-next') WHERE execution_id=? AND kind='checkpoint_interrupt_resumed'").run(child.id);
+ if(kind==='laterOrdinal')db.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.ordinal',99) WHERE id=?").run(child.id);
+ await f.reopen();const before=allocationCounts(f),bytes=f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(child.id).checkpoint_invocation_json;
+ assert.throws(()=>resumeExitChild(f,child.id,hold,'chain-invalid-resume'),/saved quiescence and authority|supports only live/);assert.deepEqual(allocationCounts(f),before);assert.equal(f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(child.id).checkpoint_invocation_json,bytes);assert.equal(f.branches.claimScript('invalid-chain'),undefined);
+});
+for(const mode of ['async','sync'])test(`current EXIT hold ${mode} repeated genuine interruption survives reopen`,async t=>{
+ const {f,a}=await closedExitChild(t,mode),root=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'legal-chain');await f.branches.unitSaver.drain();
+ const child=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(root.id);let hold=f.branches.execution(child.id).checkpointInvocation;
+ await f.reopen();resumeExitChild(f,child.id,hold,'legal-first');const lease=await f.claim();assert.equal(lease.executionId,child.id);assert.ok(lease.source.includes('leaf2'));assert.equal(lease.fence,1);f.settle(lease);await f.branches.unitSaver.completeExits();
+ hold=await interruptExitChild(f,child.id,'legal-second');await f.reopen();resumeExitChild(f,child.id,hold,'legal-second-resume');await f.finish(root.id);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='child_completed'").get(root.id).n,1);
+});
+
+for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutable interruption cannot auto resume`,async t=>{
+ const {f,a}=await closedExitChild(t,mode),root=f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'no-auto-resume');await f.branches.unitSaver.drain();
+ const child=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(root.id);
+ for(let n=0;n<4;n++){f.branches.advance();assert.equal(f.branches.claimScript('genuine-held'),undefined);await f.branches.unitSaver.drain();}
+ f.store.sqlite.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_remove(checkpoint_invocation_json,'$.interruptionId') WHERE id=?").run(child.id);
+ await f.reopen();const before=allocationCounts(f),bytes=f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(child.id).checkpoint_invocation_json;
+ for(let n=0;n<4;n++){f.branches.advance();assert.equal(f.branches.claimScript('no-auto-held'),undefined);await f.branches.unitSaver.drain();}
+ assert.deepEqual(allocationCounts(f),before);assert.equal(f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(child.id).checkpoint_invocation_json,bytes);
+});
