@@ -237,9 +237,11 @@ test('global search leaves composing Enter and arrow keys to the input method', 
 });
 
 test('global search announces the loaded suggestion count without claiming a total', t => {
-  const f = searchSetup(t), {tree} = f.render();
+  const f = searchSetup(t), {tree, html} = f.render();
   const status = [...f.walk(tree)].find(node => node.props.role === 'status');
   assert.ok(status);
-  assert.equal(status.props['aria-atomic'], true);
+  assert.equal(status.props['aria-atomic'], 'true');
   assert.equal(status.props.children, '25 suggestions available.');
+  // role=status supplies implicit polite announcements; verify the serialized atomic region too.
+  assert.match(html, /<[^>]*role="status"[^>]*aria-atomic="true"[^>]*>25 suggestions available\.<\//);
 });
