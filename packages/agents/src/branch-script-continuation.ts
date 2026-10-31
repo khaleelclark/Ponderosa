@@ -104,7 +104,7 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
     if(stableJson(owned)!==stableJson(events))return false;
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let started=false,accepted=false,pendingLoop:string|undefined,interruption:Row|undefined,activeInvocation:Row|undefined;
-    const authorized=new Set<string>(),exited=new Set<string>(),seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
+    const authorized=new Map<string,number>(),exited=new Set<string>(),seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
     const text=(value:string)=>interpolateBranchText(value,definition,configuration);
     const follow=(edge:BranchDefinition['edges'][number]|undefined,output:string)=>{
       pendingLoop=edge?.loop?edge.id:undefined;
@@ -131,13 +131,20 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
           if(!a||!step||!seen.has(step.id)||step.state!=='completed')return false;
           if(!['script_cleanup_observed','script_process_exit'].includes(event.kind)&&current?.id!==step.id)return false;
           if(interruption&&['script_leased','script_authorized'].includes(event.kind))return false;
-          if(event.kind==='script_authorized')authorized.add(a.id);
+          if(event.kind==='script_authorized'){
+            const fence=fences.get(a.id);
+            if(!fence||fence!==a.fence||event.transition_key!==`launched:${a.id}:${fence}`)return false;
+            authorized.set(a.id,fence);
+          }
           if(event.kind==='script_process_exit'){
-            if(configuration.checkpointMode==='exit'&&(!authorized.has(a.id)||v.code!==0||v.error||v.stdout!==JSON.parse(step.result_json).output||v.outputHash!==hash(v.stdout)))return false;
-            exited.add(a.id);
+            // Other-generation observations remain evidence, never proof of this cut's exit.
+            if(event.transition_key===`process-exit:${a.id}:${a.fence}`&&authorized.get(a.id)===a.fence&&fences.get(a.id)===a.fence){
+              if(configuration.checkpointMode==='exit'&&(v.code!==0||v.error||v.stdout!==JSON.parse(step.result_json).output||v.outputHash!==hash(v.stdout)))return false;
+              exited.add(a.id);
+            }
           }
           if(event.kind==='script_leased'){
-            if(v.fence!==(fences.get(a.id)??0)+1||v.sourceHash!==hash((definition.steps.find(s=>s.id===step.step_id) as Extract<BranchDefinition['steps'][number],{kind:'script'}>).source))return false;
+            if(event.transition_key!==`leased:${a.id}:${v.fence}`||v.fence!==(fences.get(a.id)??0)+1||v.sourceHash!==hash((definition.steps.find(s=>s.id===step.step_id) as Extract<BranchDefinition['steps'][number],{kind:'script'}>).source))return false;
             fences.set(a.id,v.fence);
           }
           break;
@@ -187,7 +194,7 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
       }
     }
     if(configuration.checkpointMode==='exit'&&(!interruption||interruption.interruptionId!==closing.interruptionId
-      ||interruption.invocationId!==closing.id||interruption.ordinal!==closing.ordinal||[...authorized].some(id=>!exited.has(id))))return false;
+      ||interruption.invocationId!==closing.id||interruption.ordinal!==closing.ordinal||[...authorized.keys()].some(id=>!exited.has(id))))return false;
     if(!started||pendingLoop||current&&current.state!=='prepared'||seen.size!==selected.steps!.length)return false;
     if(p.node_id!==node||p.input_text!==input||p.last_result_id!==last||p.step_execution_id!==(current?.id??null)||p.traversals!==traversals)return false;
     if(selected.attempts!.some(a=>a.fence!==(fences.get(a.id)??0)))return false;

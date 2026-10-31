@@ -347,3 +347,34 @@ test('exit interruption and historical continuation are usable through exact-sha
  const d=await f.claim();f.branches.settleScript(d,{failed:false,output:'http later'});await f.branches.unitSaver.completeExits();
  const next=await app.inject({method:'POST',url:`${base}/rewind-historical`,payload:{checkpointId:cp.id,expectedHash:cp.contentHash,commandKey:'http-exit-rewind'}});assert.equal(next.statusCode,200,next.body);assert.equal(next.json().state,'queued');assert.equal(notifications,3);
 });
+
+for(const boundary of ['list','rewind'])test(`historical exit proof must match the selected current attempt fence (${boundary})`,async t=>{
+ const f=await exitCut(t,false,false);
+ const wrong={...f.lease,fence:f.lease.fence+1};
+ f.branches.recordScriptEvidence(wrong,inertIdentity,{stdout:'stopped',outputHash:hash('stopped'),code:0});
+ f.branches.settleScript(f.lease,{failed:false,output:'stopped'});
+ await f.branches.unitSaver.drain();
+ assert.equal(f.current().state,'interrupting','wrong-fence proof cannot close actual runtime');
+ f.observe();await f.branches.unitSaver.completeExits();const cp=f.point();assert.ok(cp);
+ const s=captureBytes(f,cp.id);
+ const correct=s.continuation.audit.findIndex(e=>e.kind==='script_process_exit'&&e.transition_key===`process-exit:${f.lease.attemptId}:${f.lease.fence}`);
+ assert.ok(correct>0);s.continuation.audit=s.continuation.audit.slice(0,correct);
+ const {stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');const bytes=stableJson(s),id=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,hash(bytes)).lastInsertRowid);
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ const listed=f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(c=>c.id===id);
+ const counts=()=>['branch_executions','branch_commands','branch_unit_snapshots'].map(table=>f.store.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n);const before=counts();
+ let accepted=false;try{f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash(bytes),'wrong-fence-cut');accepted=true;}catch{}
+ assert.deepEqual(counts(),before,'refusal allocates no execution, receipt or lineage');
+ console.log(JSON.stringify({actualFence:f.lease.fence,wrongProofFence:wrong.fence,auditKinds:s.continuation.audit.map(e=>[e.kind,e.transition_key]),listed,accepted}));
+ if(boundary==='list')assert.equal(listed.restoreSupported,false,'historical eligibility accepted stale/wrong-fence process proof');
+ else assert.equal(accepted,false,'historical allocation accepted stale/wrong-fence process proof');
+});
+
+ test('late exact exit generation closes despite earlier wrong-generation evidence',async t=>{
+ const f=await exitCut(t,false,false);
+ f.branches.recordScriptEvidence({...f.lease,fence:f.lease.fence+1},inertIdentity,{stdout:'stopped',outputHash:hash('stopped'),code:0});
+ f.branches.settleScript(f.lease,{failed:false,output:'stopped'});await f.branches.unitSaver.drain();
+ assert.equal(f.current().state,'interrupting');f.observe();await f.branches.unitSaver.completeExits();
+ const cp=f.point();assert.ok(cp);f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ assert.ok(f.branches.rewindHistorical(f.branch.id,f.source.id,cp.id,cp.contentHash,'exact-generation'));
+ });
