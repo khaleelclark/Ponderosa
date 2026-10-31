@@ -13,6 +13,7 @@ export function ChatContextSettings({ chat, open, onClose }: {
   const extension=useContext(ResourceSettingsContext);
   const close=()=>{if(extension.confirmClose?.()!==false)onClose();};
   const [instructions, setInstructions] = useState(chat.instructions ?? "");
+  const instructionsTooLong = instructions.length > 100000;
   const client = useQueryClient();
   const save = useMutation({
     mutationFn: () => api.updateConversation(chat.id, { instructions }),
@@ -27,13 +28,14 @@ export function ChatContextSettings({ chat, open, onClose }: {
       <ResourceNotificationSettings kind="conversation" id={chat.id} />
       <TextField label="Instructions" multiline minRows={5} value={instructions}
         onChange={event=>setInstructions(event.target.value)} disabled={save.isPending}
-        helperText="Only this Chat and its Agents." />
+        error={instructionsTooLong}
+        helperText={instructionsTooLong ? "Use 100,000 characters or fewer." : "Only this Chat and its Agents."} />
       {extension.render?.("chat",chat.id)}
       <TextField label="Working folder" value={chat.workingDirectory ?? ""} slotProps={{input:{readOnly:true}}}
         helperText="Working folder · Not a filesystem sandbox." />
       {save.isError ? <Alert severity="error">{String(save.error)}</Alert> : null}
     </Stack></DialogContent>
     <DialogActions><Button onClick={close} disabled={save.isPending}>Cancel</Button>
-      <Button onClick={()=>save.mutate()} disabled={save.isPending || instructions.length > 100000}>Save</Button></DialogActions>
+      <Button onClick={()=>save.mutate()} disabled={save.isPending || instructionsTooLong}>Save</Button></DialogActions>
   </Dialog>;
 }
