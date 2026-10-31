@@ -237,3 +237,134 @@ test('current resource policy is checked again after Chat creation yields',{time
  release.resolve();await pending;
  assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'chat').state,'completed');assert.equal(imports,0);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,0);
 });
+
+test('sync Chat effect must await latest operation-intent checkpoint coverage',async t=>{
+ const f=await fixture(t,'sync');let observed,calls=0;
+ const r=f.service(async(...args)=>{
+   calls++;
+   observed={release:f.branches.resourceRelease(f.resource.step_execution_id),invocation:f.branches.execution(f.resource.execution_id).checkpointInvocation,operation:f.branches.resourceOperation(f.resource.step_execution_id,'chat'),inTransaction:f.store.sqlite.inTransaction};
+   return f.create(...args);
+ });
+ r.setImporter(async()=>{throw Error('not expected before next saved checkpoint');});
+ await r.tick(true);await f.branches.unitSaver.waitFor([f.resource.execution_id]);
+ console.log(JSON.stringify({calls,observed}));
+ assert.equal(calls,1);
+ assert.equal(observed.inTransaction,false,'primary running intent committed');
+ assert.equal(observed.release,'ready','fresh Chat effect released while newest sync operation-intent coverage is pending');
+});
+
+test('sync intent saver failure must prevent a fresh Chat effect',async t=>{
+ const f=await fixture(t,'sync');let calls=0;
+ const r=f.service(async(...args)=>{calls++;return f.create(...args);});r.setImporter(async()=>assert.fail('no import'));
+ f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_new_intent BEFORE INSERT ON branch_unit_snapshots WHEN NEW.execution_id='${f.resource.execution_id}' BEGIN SELECT RAISE(ABORT,'sync intent save failed'); END`);
+ await r.tick(true);
+ let saveError;try{await f.branches.unitSaver.waitFor([f.resource.execution_id]);}catch(e){saveError=e.message;}
+ const operation=f.branches.resourceOperation(f.resource.step_execution_id,'chat');
+ console.log(JSON.stringify({calls,saveError,operation,temporaryChats:f.store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_execution_id=?').get(f.resource.execution_id).n}));
+ assert.ok(saveError);assert.equal(calls,0,'Chat effect ran although latest sync intent snapshot never committed');
+ assert.equal(operation.state,'rolled_back','provably never invoked is not unknown');
+ assert.equal(f.branches.resourceErrors()[0].message,'Branch checkpoint durability failed');
+ const fresh=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));
+ assert.equal(fresh.resourceOperation(f.resource.step_execution_id,'chat').state,'rolled_back');
+ assert.ok(fresh.unitSaver.failed(f.resource.execution_id));
+ await r.tick(true);assert.equal(calls,0);
+});
+
+// Hold only the service's post-intent wait; real owner/ancestor saver work still runs.
+function holdChatRelease(f){
+ const entered=deferred(),release=deferred(),wait=f.branches.waitResourceCheckpoint.bind(f.branches);
+ let held=false;
+ f.branches.waitResourceCheckpoint=async id=>{await wait(id);if(!held){held=true;entered.resolve();await release.promise;}};
+ return {entered,release};
+}
+for(const mode of ['async','sync','exit'])test(`unreleased Chat intent permits finite gate close and requires fresh continuation (${mode})`,{timeout:15000},async t=>{
+ const f=await fixture(t,mode),hold=holdChatRelease(f);let calls=0,imports=0;
+ const r=f.service(async(...args)=>{calls++;return f.create(...args);});r.setImporter(async()=>{imports++;});
+ const pending=r.tick(true);await hold.entered.promise;
+ try{
+  assert.equal(calls,0);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'chat').state,'running');
+  const closing=await f.openGate();assert.equal(closing.state,'interrupted','unreleased work cannot hold ancestor interruption');
+  await f.branches.unitSaver.drain();assert.equal(f.branches.execution(f.pe.id).checkpointInvocation.durability,'saved');
+ }finally{hold.release.resolve();await pending;}
+ assert.equal(calls,0);assert.equal(imports,0);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'chat').state,'rolled_back');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_execution_id=?').get(f.resource.execution_id).n,0);
+ const closed=f.branches.execution(f.pe.id).checkpointInvocation.id;
+ await r.tick(true);assert.equal(calls,0);f.approve();await r.tick(true);assert.equal(calls,0);
+ for(let n=0;n<30&&!calls;n++){await f.step();await r.tick(true);}
+ assert.equal(calls,1);assert.notEqual(f.branches.execution(f.pe.id).checkpointInvocation.id,closed);
+});
+
+test('cancel during Chat intent coverage wait retires provably uninvoked work without uncertainty',{timeout:15000},async t=>{
+ const f=await fixture(t,'sync'),hold=holdChatRelease(f);let calls=0;
+ const r=f.service(async(...args)=>{calls++;return f.create(...args);});r.setImporter(async()=>assert.fail('no import'));
+ const pending=r.tick(true);await hold.entered.promise;
+ try{f.branches.cancel(f.pe.id);assert.equal(f.branches.resourceCanRetire(f.resource.step_execution_id,[]),true);}
+ finally{hold.release.resolve();await pending;}
+ assert.equal(calls,0);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'chat').state,'rolled_back');
+ await r.tick(false);assert.equal(f.store.sqlite.prepare('SELECT state FROM branch_resources').get().state,'retired');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,0);
+ const fresh=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));
+ assert.equal(fresh.resourceOperation(f.resource.step_execution_id,'chat').state,'rolled_back');
+});
+
+for(const change of ['policy','owner Chat deletion','generation','creation key'])test(`Chat release revalidates ${change} after intent coverage wait`,{timeout:15000},async t=>{
+ const f=await fixture(t,'sync'),hold=holdChatRelease(f);let calls=0;
+ const r=f.service(async(...args)=>{calls++;return f.create(...args);});r.setImporter(async()=>assert.fail('no import'));
+ const pending=r.tick(true);await hold.entered.promise;
+ try{
+  if(change==='policy')new CapabilityPolicyStore(f.store.sqlite).put({scopeKind:'branch',scopeId:f.child.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.managedAgentCreate]});
+  if(change==='owner Chat deletion')f.store.markConversationDeletionPending(f.store.sqlite.prepare('SELECT chat_id FROM branches WHERE id=?').get(f.child.id).chat_id);
+  if(change==='generation'||change==='creation key')f.branches.unitTransaction(()=>{f.store.sqlite.prepare(change==='generation'?"UPDATE branch_resources SET generation=generation+1 WHERE step_execution_id=?":"UPDATE branch_resources SET creation_key=creation_key||':new' WHERE step_execution_id=?").run(f.resource.step_execution_id);f.branches.selectedWrite(f.resource.execution_id);})();
+ }finally{hold.release.resolve();await pending;}
+ assert.equal(calls,0);assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_commands WHERE command_key LIKE 'resource-release:%'").get().n,0);
+});
+
+test('an unrelated failed saver cannot poison fresh sync Chat intent coverage',{timeout:15000},async t=>{
+ const f=await fixture(t,'sync');let calls=0;
+ const x=f.branches.accept(f.child.id,'failed-chat-X','input');
+ f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_chat_unrelated BEFORE INSERT ON branch_unit_snapshots WHEN NEW.execution_id='${x.id}' BEGIN SELECT RAISE(ABORT,'unrelated Chat X saver'); END`);
+ await assert.rejects(f.branches.unitSaver.waitFor([x.id]));
+ const r=f.service(async(...args)=>{calls++;assert.equal(f.branches.resourceRelease(f.resource.step_execution_id),'ready');return f.create(...args);});
+ r.setImporter(async(p,h)=>{const plan=await f.importPlan(p,h);f.importCommit(p,h,plan);});
+ await r.tick(true);assert.equal(calls,1);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'chat').state,'completed');
+ assert.equal(r.errors().length,0);assert.ok(f.branches.unitSaver.failed(x.id));
+});
+
+test('Chat release marker commits once after coverage and is outside selected frontier authority',{timeout:15000},async t=>{
+ const f=await fixture(t,'sync'),id=f.resource.step_execution_id,key=f.resource.creation_key;
+ const token=f.branches.beginResourceOperation(id,key,'chat');assert.ok(token);
+ assert.equal(f.branches.releaseResourceChat(id,key,token),false,'new intent is not yet covered');
+ assert.equal(f.branches.releaseResourceChat(id,key,'wrong-token'),false);
+ await f.branches.waitResourceCheckpoint(id);
+ const before=f.branches.unitSaver.status(f.resource.execution_id),snapshots=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n;
+ assert.throws(()=>f.store.sqlite.transaction(()=>f.branches.releaseResourceChat(id,key,token))(),/root COMMIT/);
+ assert.equal(f.branches.releaseResourceChat(id,key,token),true);assert.equal(f.store.sqlite.inTransaction,false);
+ assert.equal(f.branches.unitSaver.status(f.resource.execution_id),before,'operational release does not generate an uncovered selected write');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n,snapshots);
+ assert.equal(f.branches.releaseResourceChat(id,key,token),false,'token cannot release twice');
+ const fresh=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));
+ assert.equal(fresh.releaseResourceChat(id,key,token),false);fresh.finishResourceOperation(id,'chat',token,Error('lost after release'));
+ assert.equal(fresh.resourceOperation(id,'chat').state,'unknown','durable release marker survives store reopen');
+ assert.equal(fresh.resourceCanRetire(id,[]),false);
+});
+
+for(const owner of ['owner','ancestor'])test(`Chat release refuses a newer ${owner} sync ticket at the final synchronous boundary`,{timeout:15000},async t=>{
+ const f=await fixture(t,'sync');let calls=0;
+ const release=f.branches.releaseResourceChat.bind(f.branches);
+ f.branches.releaseResourceChat=(...args)=>{
+  f.branches.unitTransaction(()=>f.branches.selectedWrite(owner==='owner'?f.resource.execution_id:f.pe.id))();
+  return release(...args);
+ };
+ const r=f.service(async(...args)=>{calls++;return f.create(...args);});r.setImporter(async()=>assert.fail('no import'));
+ await r.tick(true);assert.equal(calls,0);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'chat').state,'rolled_back');
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_commands WHERE command_key LIKE 'resource-release:%'").get().n,0);
+});
+
+test('failed durable Chat release marker cannot invoke an effect or turn unreleased work unknown',{timeout:15000},async t=>{
+ const f=await fixture(t,'sync');let calls=0;
+ f.store.sqlite.exec("CREATE TEMP TRIGGER fail_release_marker BEFORE INSERT ON branch_commands WHEN NEW.command_key LIKE 'resource-release:%' BEGIN SELECT RAISE(ABORT,'Chat release marker failed'); END");
+ const r=f.service(async(...args)=>{calls++;return f.create(...args);});r.setImporter(async()=>assert.fail('no import'));
+ await r.tick(true);assert.equal(calls,0);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'chat').state,'rolled_back');
+ assert.match(r.errors()[0].message,/release marker failed/);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_commands WHERE command_key LIKE 'resource-release:%'").get().n,0);
+});

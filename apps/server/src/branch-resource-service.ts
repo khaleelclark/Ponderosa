@@ -57,6 +57,12 @@ export class BranchResourceService {
           }
           if(!provision.defaultEngine)throw Object.assign(new Error('Choose an Engine for the temporary Agent template'),{provisionRejected:true});
           phase='chat';token=this.branches.beginResourceOperation(provision.stepExecutionId,provision.creationKey,phase);if(!token)continue;
+          await this.branches.waitResourceCheckpoint(provision.stepExecutionId);
+          controller.signal.throwIfAborted();
+          if(!this.branches.releaseResourceChat(provision.stepExecutionId,provision.creationKey,token)){
+            this.branches.finishResourceOperation(provision.stepExecutionId,phase,token,new Error('Chat release held by current authority or checkpoint coverage'));
+            token=undefined;phase=undefined;continue;
+          }
           const chat=await this.createChat({label:'Temporary workflow organization',hostPath,defaultEngine:provision.defaultEngine},
             'branch-resource-'+createHash('sha256').update(provision.creationKey).digest('hex'),{branchId:provision.branchId,executionId:provision.executionId},controller.signal);
           this.branches.completeResourceOperation(provision.stepExecutionId,phase,token,{chatId:chat.id});

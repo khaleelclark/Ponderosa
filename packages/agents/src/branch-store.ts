@@ -128,7 +128,10 @@ export class BranchStore {
           (a.request_id IS NOT NULL AND a.state IN ('prepared','waiting'))
         UNION ALL SELECT 1 FROM branch_resources r JOIN owned o ON o.id=r.execution_id JOIN branch_commands c ON c.execution_id=r.execution_id
           AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
-          WHERE json_extract(c.result_json,'$.state') IN ('running','unknown') LIMIT 1`,id);
+          WHERE json_extract(c.result_json,'$.state') IN ('running','unknown')
+            AND (json_extract(c.result_json,'$.releaseRequired') IS NOT 1 OR EXISTS(
+              SELECT 1 FROM branch_commands released WHERE released.execution_id=r.execution_id
+                AND released.command_key='resource-release:'||r.creation_key||':'||json_extract(c.result_json,'$.token'))) LIMIT 1`,id);
       // Queued/prepared children and unstarted leases are safe frontiers, not live effects.
       const state=terminal?'terminal':outstanding?'interrupting':'interrupted';
       const next={...invocation,state,primary_outcome:terminal?execution.state:state};
@@ -731,7 +734,24 @@ export class BranchStore {
       const previous=this.resourceOperation(stepExecutionId,phase);
       if(previous&&previous.state!=='rolled_back')return;
       const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId)!,token=randomUUID();
-      this.writeResourceOperation(r,phase,{schema:'branch-resource-operation.v1',phase,token,state:'running'});return token;
+      this.writeResourceOperation(r,phase,{schema:'branch-resource-operation.v1',phase,token,state:'running',...(phase==='chat'?{releaseRequired:true,generation:r.generation}:{})});return token;
+    }).immediate();
+  }
+  private resourceOperationReleased(r:Row,operation:Row):boolean {
+    return operation.releaseRequired!==true||!!this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',
+      r.execution_id,`resource-release:${r.creation_key}:${operation.token}`);
+  }
+  /** Operational dispatch authority, like a process lease; not a new selected frontier. */
+  releaseResourceChat(stepExecutionId:string,creationKey:string,token:string):boolean {
+    if(this.sqlite.inTransaction)throw Error('Resource effects require an actual root COMMIT');
+    return this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),operation=this.resourceOperation(stepExecutionId,'chat');
+      if(!r||r.chat_id||operation?.token!==token||operation.state!=='running'||operation.releaseRequired!==true||operation.generation!==r.generation
+        ||this.resourceOperationReleased(r,operation)||this.resourceRelease(stepExecutionId,creationKey)!=='ready')return false;
+      // Persist possible release before invoking; process loss from here is conservatively uncertain.
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',r.execution_id,`resource-release:${r.creation_key}:${token}`,
+        payloadHash({creationKey,token}),stableJson({phase:'chat',token,generation:r.generation}),new Date().toISOString());
+      return true;
     }).immediate();
   }
   observeResourceImportPlan(stepExecutionId:string,token:string,creationOperationId?:string):void {
@@ -747,7 +767,7 @@ export class BranchStore {
   completeResourceOperation(stepExecutionId:string,phase:'chat'|'import',token:string,result:Row):void {
     this.unitTransaction(()=>{
       const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),operation=this.resourceOperation(stepExecutionId,phase);
-      if(!r||!operation||operation.token!==token||operation.state!=='running')throw Error('Resource operation is fenced');
+      if(!r||!operation||operation.token!==token||operation.state!=='running'||!this.resourceOperationReleased(r,operation))throw Error('Resource operation is fenced');
       // Observation/custody survives a gate, cancellation or failed saver; opening work does not.
       if(phase==='chat')this.bindResourceChat(stepExecutionId,result.chatId);
       else{
@@ -772,7 +792,7 @@ export class BranchStore {
         return;
       }
       const creation=operation.creationOperationId?this.row('SELECT status FROM agent_creation_operations WHERE id=?',operation.creationOperationId):undefined;
-      this.writeResourceOperation(r,phase,{...operation,state:creation?.status==='rolled_back'?'rolled_back':'unknown',error:message});
+      this.writeResourceOperation(r,phase,{...operation,state:!this.resourceOperationReleased(r,operation)||creation?.status==='rolled_back'?'rolled_back':'unknown',error:message});
       this.resourceError(stepExecutionId,message);
     })();
   }
@@ -859,7 +879,9 @@ export class BranchStore {
     return rows.map(r=>({stepExecutionId:r.step_execution_id,chatId:r.chat_id??undefined,branchId:this.execution(r.execution_id)!.branchId,executionId:r.execution_id,agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",r.step_execution_id).map(m=>m.agent_id)}));
   }
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
-    if(['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(stepExecutionId,phase as 'chat'|'import')?.state)))return false;
+    const resource=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+    if(resource&&['chat','import'].some(phase=>{const operation=this.resourceOperation(stepExecutionId,phase as 'chat'|'import');
+      return operation&&['running','unknown'].includes(operation.state)&&this.resourceOperationReleased(resource,operation);}))return false;
     if(!this.row(`SELECT 1 ${this.resourceCleanupQuery} AND r.step_execution_id=?`,stepExecutionId)
       && !this.row("SELECT 1 FROM branch_resources WHERE step_execution_id=? AND state='retired'",stepExecutionId))return false;
     return stableJson([...agentIds].sort())===stableJson(this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",stepExecutionId).map(m=>m.agent_id));
