@@ -1710,6 +1710,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Installed TypeScript; offline actual TSX callbacks with host hooks/UI leaves stubbed; mounted lifecycle evidence remains separate",
       "origin": "Workflow-owned Chat deletion route regression"
+    },
+    {
+      "path": "tests/workspace-navigation/package-export-disclosure.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed TypeScript; actual TSX dialog callbacks with UI leaves stubbed; no browser/service",
+      "origin": "Combined migration omission disclosure and explicit workflow full-export confirmation"
     }
   ],
   "retainedReleasePayload": [

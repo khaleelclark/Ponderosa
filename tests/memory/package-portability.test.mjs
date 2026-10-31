@@ -81,3 +81,29 @@ test('exact pending import membership allows restoration but denies visibility; 
 test('unconfigured memory destination explicitly refuses a memory-bearing package before creating Agents',async t=>{
  const source=await instance(t),destination=await instance(t,false,false);await seed(source);const pkg=await exported(source,false),result=await imported(destination,pkg);assert.equal(result.status,409,result.raw);assert.match(result.body.error,/configure destination local memory/);assert.equal(destination.store.listAgents(destination.project.id).length,2);noRuns(destination);
 });
+
+test('combined organization migration keeps memory and historical execution together while destination policy remains authoritative',async t=>{
+ const {CapabilityPolicyStore}=await import('@ponderosa/agents');const {CAPABILITY_IDS}=await import('@ponderosa/core');
+ const {EXECUTION_ARCHIVE_MEDIA_TYPE}=await import('../../apps/server/dist/portable-execution-archive.js');
+ const source=await instance(t),destination=await instance(t);await seed(source);await seed(destination);
+ source.store.updateAgentOrganization(source.b.id,{managerAgentId:source.a.id});
+ source.store.updateAgent(source.a.id,{managementPermissions:{allowAutomaticDescendantDeletion:true,allowAutomaticDescendantReorganization:false}});
+ source.memory.setGrant(source.chat.id,true,0,'dev');destination.memory.setGrant(destination.chat.id,false,0,'dev');
+ const sourcePolicy=new CapabilityPolicyStore(source.store.sqlite),destPolicy=new CapabilityPolicyStore(destination.store.sqlite);
+ sourcePolicy.put({scopeKind:'agent',scopeId:source.a.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.scripts],actor:'operator',reason:'Source-only policy'});
+ destPolicy.put({scopeKind:'global',scopeId:'ponderosa',expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite],actor:'operator',reason:'Destination policy'});
+ const policyBefore=destination.store.sqlite.prepare('SELECT * FROM capability_policies ORDER BY scope_kind,scope_id').all(),grantBefore=destination.memory.getGrant(destination.chat.id,'dev');
+ const globalCollection=await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('global').memory}),globalBefore=await globalCollection.get({include:['documents','metadatas','embeddings']});
+ source.store.appendEvent(source.a.id,{type:'command',command:'COMBINED_HISTORICAL_COMMAND',cwd:'/source-only'});
+ const at=new Date().toISOString(),runId=randomUUID();source.store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at) VALUES(?,?,?,'running','EXCLUDED_SOURCE_LEASE',?,1,'injected',?,?,?)").run(runId,source.project.id,source.a.id,at,at,at,at);
+ const pkg=await exported(source),archives=p=>p.agents.flatMap(a=>a.artifacts??[]).filter(a=>a.mediaType===EXECUTION_ARCHIVE_MEDIA_TYPE),archive=archives(pkg)[0];assert.ok(archive);assert.equal(archives(pkg).length,1);
+ const evidence=JSON.parse(Buffer.from(archive.dataBase64,'base64'));assert.equal(evidence.runs[0].id,runId);assert.equal(evidence.runs[0].status,'running');assert.match(JSON.stringify(evidence),/COMBINED_HISTORICAL_COMMAND/);
+ assert.doesNotMatch(JSON.stringify(pkg),/EXCLUDED_GLOBAL_FACT|EXCLUDED_SOURCE_LEASE|Source-only policy/);assert.deepEqual(pkg.memory[0].snapshot.excludedScopes,['global']);
+ const key=randomUUID(),result=await imported(destination,pkg,key);assert.equal(result.status,201,result.raw);const root=result.body.rootAgentId,child=result.body.agentIds.find(id=>id!==root);assert.notEqual(root,source.a.id);assert.equal(destination.store.getAgent(child).managerAgentId,root);assert.deepEqual(destination.store.getAgent(root).managementPermissions,pkg.agents.find(a=>a.ref===pkg.rootRef).managementPermissions);
+ const actual=await read(destination,root);assert.equal(actual.filter(r=>r.text==='Included private fact').length,1);assert.equal(actual.some(r=>r.text==='EXCLUDED_PRIVATE_FACT'),false);
+ for(const row of actual.filter(r=>r.text==='Included private fact')){const stamp=JSON.parse(row.metadata.host_source_authority);assert.equal(stamp.principal,destination.memory.principalId);assert.equal(stamp.ownerChat,destination.chat.id);assert.equal(stamp.origin.runId,'source-not-a-live-run');}
+ const assertDestinationAuthority=async()=>{assert.deepEqual(destination.store.sqlite.prepare('SELECT * FROM capability_policies ORDER BY scope_kind,scope_id').all(),policyBefore);assert.deepEqual(destination.memory.getGrant(destination.chat.id,'dev'),grantBefore);assert.deepEqual(await (await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('global').memory})).get({include:['documents','metadatas','embeddings']}),globalBefore);noRuns(destination);};
+ await assertDestinationAuthority();assert.equal((await imported(destination,pkg,key)).status,200);await destination.reopen();await assertDestinationAuthority();
+ const next=await api(destination,'GET',`/api/agents/${root}/export?mode=full&organization=true`);assert.equal(next.status,200,next.raw);assert.ok(archives(next.body).some(a=>a.dataBase64===archive.dataBase64),'execution log bytes survive combined restore/reopen/re-export');assert.ok(next.body.memory[0].snapshot.chunks.some(r=>r.text==='Included private fact'));
+ const invalid=structuredClone(pkg);invalid.memory[0].snapshot.grants={readGlobal:true};const before=destination.store.listAgents(destination.project.id).length;assert.ok((await imported(destination,invalid)).status>=400);assert.equal(destination.store.listAgents(destination.project.id).length,before);await assertDestinationAuthority();
+});

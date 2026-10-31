@@ -591,6 +591,11 @@ contain no memory. Fresh Branch workflow installations use the same path;
 memory-bearing updates to existing workflows currently require separate migration
 review and are refused explicitly.
 
+Installation capability restrictions/history and memory access grants stay at the
+destination; Agent management settings and workflow execution policy are separate
+portable setup. See [combined package migration](combined-migration-contract.md)
+for the inclusion table and remaining full-machine migration decision.
+
 Installation-global memory is explicitly excluded; a separate selected-global
 transfer flow is still needed. Cross-Chat organizations require separate packages
 and destination Chats. Provider-native sessions, exact provider inputs and
