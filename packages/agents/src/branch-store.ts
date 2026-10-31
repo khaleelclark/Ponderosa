@@ -326,6 +326,100 @@ export class BranchStore {
     const input = branchText(value), hash = payloadHash({ input, source: "manual" });
     return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual");
   }
+  /** Explicit snapshot command, never part of primary acceptance/settlement or runtime durability modes. */
+  saveInitialCheckpoint(branchId:string,executionId:string,now=new Date().toISOString()):import('@ponderosa/core').BranchInitialCheckpointDto {
+    return this.sqlite.transaction(()=>{
+      const branch=this.getBranch(branchId),execution=this.execution(executionId);
+      if(!branch||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting
+        ||!execution||execution.branchId!==branchId)throw new Error('Branch execution is unavailable');
+      if(branch.chatId)this.chat(branch.chatId);
+      const accepted=this.row('SELECT * FROM branch_executions WHERE id=?',executionId)!;
+      if(execution.state!=='canceled'||accepted.parent_execution_id||accepted.admission_source!=='manual'||accepted.admitted_at
+        ||this.row('SELECT 1 FROM branch_paths WHERE execution_id=?',executionId)
+        ||this.row('SELECT 1 FROM branch_step_executions WHERE execution_id=?',executionId))throw new Error('Initial capture requires a canceled manual execution that never started');
+      const prior=this.initialCheckpoint(branchId,executionId);if(prior)return prior;
+      const version=this.row('SELECT * FROM branch_versions WHERE id=? AND branch_id=?',execution.versionId,branchId)!;
+      const binding=this.row('SELECT * FROM branch_bindings WHERE id=? AND branch_id=?',execution.bindingRevisionId,branchId)!;
+      const {secretBindings,...configuration}=execution.configuration!;
+      if(!version||!binding)throw new Error('Initial checkpoint owned pins are unavailable');
+      const definition=JSON.parse(version.definition_json) as BranchDefinition;
+      if(payloadHash(definition)!==version.content_hash||payloadHash(JSON.parse(binding.bindings_json))!==binding.content_hash)throw new Error('Initial checkpoint owned pins failed verification');
+      const continuationSupported=!Object.keys(secretBindings??{}).length
+        && !Object.values(definition.parameters??{}).some(p=>p.type==='secret')
+        && definition.steps.every(step=>step.kind==='script'&&step.failure?.action!=='recover')
+        && definition.policy.failure.action!=='recover';
+      const snapshot={continuationSupported,schema:'ponderosa.branch.initial.v1',executionId:execution.id,branchId,versionId:version.id,
+        versionHash:version.content_hash,bindingRevisionId:binding.id,bindingHash:binding.content_hash,
+        input:execution.input,inputHash:execution.inputHash,configuration,secretBindingsOmitted:Boolean(Object.keys(secretBindings??{}).length),
+        depthCeiling:accepted.depth_ceiling,frontier:'before_entry',admissionSource:'manual'};
+      this.run('INSERT INTO branch_initial_checkpoints(execution_id,snapshot_json,content_hash,created_at) VALUES(?,?,?,?)',execution.id,stableJson(snapshot),payloadHash(snapshot),now);
+      return this.initialCheckpoint(branchId,executionId)!;
+    }).immediate();
+  }
+  private initialSnapshot(row:Row,branchId:string,executionId:string):Row {
+    const snapshot=JSON.parse(row.snapshot_json);
+    const fields=['continuationSupported','schema','executionId','branchId','versionId','versionHash','bindingRevisionId','bindingHash',
+      'input','inputHash','configuration','secretBindingsOmitted','depthCeiling','frontier','admissionSource'];
+    if(!snapshot||typeof snapshot!=='object'||Array.isArray(snapshot)||Object.keys(snapshot).length!==fields.length
+      ||fields.some(key=>!Object.hasOwn(snapshot,key))||payloadHash(snapshot)!==row.content_hash
+      ||stableJson(snapshot)!==row.snapshot_json||snapshot.schema!=='ponderosa.branch.initial.v1'
+      ||snapshot.executionId!==executionId||snapshot.branchId!==branchId||snapshot.frontier!=='before_entry'
+      ||snapshot.admissionSource!=='manual'||typeof snapshot.continuationSupported!=='boolean'
+      ||typeof snapshot.secretBindingsOmitted!=='boolean'||!Number.isSafeInteger(snapshot.depthCeiling)
+      ||snapshot.depthCeiling<1||typeof snapshot.input!=='string'
+      ||snapshot.inputHash!==payloadHash({input:branchText(snapshot.input),source:'manual'})
+      ||['versionId','versionHash','bindingRevisionId','bindingHash'].some(key=>typeof snapshot[key]!=='string'||!snapshot[key]))throw new Error('Initial checkpoint integrity failure');
+    return snapshot;
+  }
+  /** This first executable slice supports the INITIAL frontier only, not runtime history. */
+  initialCheckpoint(branchId:string,executionId:string):import('@ponderosa/core').BranchInitialCheckpointDto|undefined {
+    const row=this.row(`SELECT c.* FROM branch_initial_checkpoints c JOIN branch_executions e ON e.id=c.execution_id
+      JOIN branches b ON b.id=e.branch_id WHERE e.branch_id=? AND e.id=? AND b.deleting=0`,branchId,executionId);
+    if(!row)return;
+    const snapshot=this.initialSnapshot(row,branchId,executionId);
+    return {id:row.id,executionId,branchId,contentHash:row.content_hash,createdAt:row.created_at,frontier:'before_entry',
+      restoreSupported:snapshot.continuationSupported===true,eligibility:'canceled_before_start_with_unchanged_pins'};
+  }
+  rewindInitial(branchId:string,executionId:string,checkpointId:number,expectedHash:string,commandKey:string,now=new Date().toISOString()):BranchExecutionDto {
+    branchKey(commandKey);
+    if(!Number.isSafeInteger(checkpointId)||checkpointId<1||typeof expectedHash!=='string'||!/^[a-f0-9]{64}$/.test(expectedHash))throw new Error('Invalid checkpoint identity');
+    return this.sqlite.transaction(()=>{
+      const branch=this.getBranch(branchId);
+      if(!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting)throw new Error('Branch is unavailable');
+      if(branch.chatId)this.chat(branch.chatId);
+      const checkpoint=this.initialCheckpoint(branchId,executionId);
+      if(!checkpoint || checkpoint.id!==checkpointId)throw new Error('Initial checkpoint not found in this execution');
+      if(checkpoint.contentHash!==expectedHash)throw new Error('Initial checkpoint hash changed');
+      const commandHash=payloadHash({executionId,checkpointId,contentHash:expectedHash});
+      const prior=this.row('SELECT * FROM branch_initial_rewinds WHERE source_execution_id=? AND command_key=?',executionId,commandKey);
+      if(prior){if(prior.input_hash!==commandHash)throw new Error('Rewind command idempotency conflict');return this.execution(prior.execution_id)!;}
+      const source=this.row('SELECT * FROM branch_executions WHERE id=? AND branch_id=?',executionId,branchId)!;
+      if(source.state!=='canceled'||source.parent_execution_id||source.admitted_at
+        ||this.row('SELECT 1 FROM branch_paths WHERE execution_id=?',executionId)
+        ||this.row('SELECT 1 FROM branch_step_executions WHERE execution_id=?',executionId))throw new Error('Initial rewind requires a canceled execution that never started');
+      const stored=this.row('SELECT * FROM branch_initial_checkpoints WHERE id=?',checkpointId)!;
+      const snapshot=this.initialSnapshot(stored,branchId,executionId);
+      const version=this.row('SELECT * FROM branch_versions WHERE branch_id=? AND id=?',branchId,snapshot.versionId);
+      const binding=this.row('SELECT * FROM branch_bindings WHERE branch_id=? AND id=?',branchId,snapshot.bindingRevisionId);
+      if(!version||!binding||payloadHash(JSON.parse(version.definition_json))!==snapshot.versionHash
+        ||payloadHash(JSON.parse(binding.bindings_json))!==snapshot.bindingHash)throw new Error('Initial checkpoint owned pins failed verification');
+      const definition=JSON.parse(version.definition_json) as BranchDefinition;
+      if(stableJson(validateBranchConfiguration(snapshot.configuration,definition,true))!==stableJson(snapshot.configuration)
+        ||Object.hasOwn(snapshot.configuration,'secretBindings')||snapshot.configuration.limits.maxCallDepth!==snapshot.depthCeiling)throw new Error('Initial checkpoint configuration integrity failure');
+      // ponytail: only an untouched manual Script frontier; expand after continuation/authority reconciliation exists.
+      if(snapshot.secretBindingsOmitted||Object.values(definition.parameters??{}).some(p=>p.type==='secret')
+        ||definition.steps.some(step=>step.kind!=='script'||step.failure?.action==='recover')
+        ||definition.policy.failure.action==='recover')throw new Error('Initial rewind continuation is unsupported for these bindings or Steps');
+      if(branch.versionId!==snapshot.versionId||branch.bindingRevisionId!==snapshot.bindingRevisionId
+        ||stableJson(this.configuration(branchId))!==stableJson(snapshot.configuration))throw new Error('Initial rewind pins changed; current authority must be reconciled');
+      const next=this.accept(branchId,`rewind:${randomUUID()}`,snapshot.input,now);
+      if(next.inputHash!==snapshot.inputHash)throw new Error('Initial rewind input integrity failure');
+      this.run(`INSERT INTO branch_initial_rewinds(source_execution_id,checkpoint_id,checkpoint_hash,command_key,input_hash,execution_id,created_at)
+        VALUES(?,?,?,?,?,?,?)`,executionId,checkpointId,checkpoint.contentHash,commandKey,commandHash,next.id,now);
+      this.checkpoint(next.id,'rewind-origin','initial_rewind',{sourceExecutionId:executionId,checkpointId,checkpointHash:checkpoint.contentHash,commandKey},now);
+      return next;
+    }).immediate();
+  }
   private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call"): BranchExecutionDto {
     return this.sqlite.transaction(() => {
       const prior = this.row("SELECT id, input_hash, admission_source FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
@@ -1670,6 +1764,8 @@ export class BranchStore {
         last_error='Workflow deleted after runtime cleanup; any unconfirmed delivery remains in the audit record.'
         WHERE branch_id=? AND state='pending'`,deletedAt,deletedAt,id);
       this.run("UPDATE branch_executions SET parent_attempt_id=NULL,parent_execution_id=NULL WHERE parent_execution_id IN (SELECT id FROM branch_executions WHERE branch_id=?) OR branch_id=?",id,id);
+      this.run('DELETE FROM branch_initial_rewinds WHERE source_execution_id IN (SELECT id FROM branch_executions WHERE branch_id=?)',id);
+      this.run('DELETE FROM branch_initial_checkpoints WHERE execution_id IN (SELECT id FROM branch_executions WHERE branch_id=?)',id);
       const executions = this.rows("SELECT id FROM branch_executions WHERE branch_id = ?", id);
       for (const e of executions) {
         this.run('DELETE FROM branch_loop_counts WHERE execution_id=?',e.id);

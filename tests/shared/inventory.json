@@ -1654,6 +1654,14 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
+    },
+    {
+      "path": "tests/branches/initial-checkpoint-rewind.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built own core/agents/server with existing native-host and better-sqlite3; private canonical stores, Fastify inject and controlled leases only, no provider or Script process",
+      "origin": "Initial-frontier checkpoint/rewind slice: actual persistence, lineage, restart, rollback, owner/pin/secret/deletion fences"
     }
   ],
   "retainedReleasePayload": [

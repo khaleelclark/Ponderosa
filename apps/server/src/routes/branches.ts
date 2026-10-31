@@ -360,6 +360,23 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
     try { const execution = branches.accept(request.params.id, request.body.occurrenceKey, request.body.input); notify(); return execution; }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch input' }); }
   });
+  app.post<{Params:{id:string;executionId:string}}>('/api/branches/:id/executions/:executionId/initial-checkpoint',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body??{},'Initial checkpoint');exactObjectFields(body,[],'Initial checkpoint');
+      return branches.saveInitialCheckpoint(request.params.id,request.params.executionId);
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Initial checkpoint capture failed'});}
+  });
+  app.get<{Params:{id:string;executionId:string}}>('/api/branches/:id/executions/:executionId/initial-checkpoint',async(request,reply)=>{
+    try{return branches.initialCheckpoint(request.params.id,request.params.executionId)??reply.code(404).send({error:'Initial checkpoint not found'});}
+    catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Invalid initial checkpoint'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:{checkpointId:number;expectedHash:string;commandKey:string}}>('/api/branches/:id/executions/:executionId/rewind-initial',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Initial rewind');exactObjectFields(body,['checkpointId','expectedHash','commandKey'],'Initial rewind');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.commandKey!=='string')throw new Error('Invalid initial rewind command');
+      const result=branches.rewindInitial(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Initial rewind failed'});}
+  });
   app.post<{ Params: { id: string }; Body: BranchGateResolution }>('/api/branch-gates/:id/resolve', async (request, reply) => {
     try { const result = branches.resolveGate(request.params.id, request.body); notify(); return result; }
     catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Gate resolution failed' }); }

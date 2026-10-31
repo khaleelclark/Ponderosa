@@ -273,3 +273,10 @@ export interface OutputAgentAppDto {
   automatic: boolean; everyMs?: number;
 }
 export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto }
+
+/** INITIAL-only executable checkpoint slice; runtime checkpoints use a future continuation schema. */
+export interface BranchInitialCheckpointDto {
+  id:number; executionId:string; branchId:string; contentHash:string; createdAt:string;
+  frontier:'before_entry'; restoreSupported:boolean;
+  eligibility:'canceled_before_start_with_unchanged_pins';
+}

@@ -66,6 +66,7 @@ const schemaExtensions = [
   "0028_capability_policy_history.sql",
   "0029_assistant_workspace.sql",
   "0030_agent_run_pauses.sql",
+  "0031_branch_initial_checkpoints.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
