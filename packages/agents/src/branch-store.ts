@@ -110,19 +110,28 @@ export class BranchStore {
     if(execution)this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:1,mode:JSON.parse(execution.configuration_json).checkpointMode??'async',state:'active',durability:'pending'}),executionId);
   }
   private closeCheckpointInvocations(context:BranchUnitContext):void {
-    for(const id of context.written){
+    // A descendant observation can quiesce a closing ancestor without terminating the child.
+    const owners = new Set([...context.written].flatMap(id => this.ancestors(id).map(owner => owner.id)));
+    for(const id of owners){
       const invocation=this.checkpointInvocationRow(id);
       if(!invocation)continue;
       const execution=this.execution(id);if(!execution)continue;
       const terminal=!['queued','running','waiting'].includes(execution.state);
       const gate=this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",id);
       if(!terminal&&!gate&&!['interrupting','interrupted'].includes(invocation.state))continue;
-      const outstanding=this.row(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
-        WHERE s.execution_id=? AND (a.state IN ('leased','running','outcome_unknown') OR
-          (a.request_id IS NOT NULL AND a.state IN ('prepared','waiting')))
-        UNION ALL SELECT 1 FROM branch_executions WHERE parent_execution_id=? AND state IN ('queued','running','waiting') LIMIT 1`,id,id);
+      const outstanding=this.row(`WITH RECURSIVE owned(id) AS (
+        SELECT ? UNION ALL SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id
+      ) SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN owned o ON o.id=s.execution_id
+        WHERE a.state IN ('running','outcome_unknown') OR
+          (a.state='leased' AND a.process_identity_json IS NOT NULL) OR
+          (a.request_id IS NOT NULL AND a.state IN ('prepared','waiting')) LIMIT 1`,id);
+      // Queued/prepared children and unstarted leases are safe frontiers, not live effects.
       const state=terminal?'terminal':outstanding?'interrupting':'interrupted';
-      this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({...invocation,state,primary_outcome:terminal?execution.state:state}),id);
+      const next={...invocation,state,primary_outcome:terminal?execution.state:state};
+      if(stableJson(next)!==stableJson(invocation)){
+        this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson(next),id);
+        context.written.add(id);
+      }
     }
   }
   private checkpointInvocationRow(executionId:string):Row|undefined {

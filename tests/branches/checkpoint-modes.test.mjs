@@ -94,11 +94,11 @@ test('exit human interrupt saves complete frontier; explicit resolution resumes 
  assert.equal(rows(f).length,3);assert.equal(f.store.sqlite.prepare("SELECT json_extract(checkpoint_invocation_json,'$.ordinal') n FROM branch_executions WHERE id=?").get(f.execution.id).n,2);
 });
 
-test('exit interruption stops new arms but lets an already leased sibling settle before final capture',async t=>{
+test('exit interruption stops new arms but lets an authorized sibling settle before final capture',async t=>{
  const f=fixture(t,'exit',{entry:'fork',steps:[script('work'),{id:'gate',kind:'human_gate',prompt:'Approve?',editable:false}],controls:[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['left','right']}],edges:[edge('left','fork','work','selected'),edge('right','fork','gate','selected'),edge('work-done','work','join'),edge('gate-done','gate','join','approved')]});
  let lease;
  for(let n=0;n<8&&!lease;n++){one(f);lease=f.branches.claimScript('inert');}
- assert.ok(lease);f.branches.advance();assert.equal(invocation(f).state,'interrupting');await f.branches.unitSaver.drain();assert.equal(rows(f).length,0);
+ assert.ok(lease);f.branches.authorizeScript(lease,{pid:2147483647,pgid:2147483647,birthMarker:'controlled-no-process'});f.branches.advance();assert.equal(invocation(f).state,'interrupting');await f.branches.unitSaver.drain();assert.equal(rows(f).length,0);
  f.branches.settleScript(lease,{failed:false,output:'observed'});assert.equal(invocation(f).state,'interrupted');
  await f.branches.unitSaver.completeExits();assert.equal(rows(f).length,1);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results').get().n,1);
 });
@@ -210,4 +210,115 @@ test('persisted saver failure stays visible after lifecycle reopen and only bloc
  f.branches.unitTransaction(()=>f.branches.chargeTraversal(f.execution.id))();await assert.rejects(f.branches.unitSaver.drain());
  const reopened=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));assert.equal(reopened.unitSaver.errors().length,1);assert.equal(reopened.functionalReady(f.execution.id),false);assert.equal(reopened.execution(f.execution.id).checkpointInvocation.durability,'failed');
  const x=reopened.accept(f.branch.id,'X','input');reopened.advance();assert.equal(reopened.claimScript('inert').executionId,x.id);await assert.rejects(reopened.unitSaver.drain());
+});
+
+for(const mode of ['async','sync','exit'])test(`parent gate and accepted child must resume after approval (${mode})`,async t=>{
+ const dir=mkdtempSync(join(tmpdir(),'review-child-interrupt-')),store=new AgentStore(dir),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+ t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
+ const project=store.createProject({label:'Review',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Review'});
+ const base={schema:'ponderosa.branch.v1',trigger:{kind:'manual'},controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}};
+ const child=branches.deploy({chatId:chat.id,idempotencyKey:'child',definition:{...base,name:'Child',entry:'work',steps:[{id:'work',kind:'script',runtime:'node',source:'// inert',cwdRef:'root',timeoutMs:5000}]},bindings:{agents:{},directories:{root:dir}}});
+ const edge=(id,from,to,on='success')=>({id,from,to,on});
+ const parent=branches.deploy({chatId:chat.id,idempotencyKey:'parent',definition:{...base,name:'Parent',entry:'fork',steps:[{id:'call',kind:'branch_call',branchRef:'child'},{id:'gate',kind:'human_gate',prompt:'Approve?',editable:false}],controls:[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['call-arm','gate-arm']}],edges:[edge('call-arm','fork','call','selected'),edge('gate-arm','fork','gate','selected'),edge('call-end','call','join'),edge('gate-end','gate','join','approved')]},bindings:{agents:{},directories:{},branches:{child:child.id}}});
+ branches.configure(parent.id,{...branches.configuration(parent.id),checkpointMode:mode},0);
+ const pe=branches.accept(parent.id,'parent','input');
+ for(let n=0;n<12;n++){await branches.unitSaver.drain();branches.advance();}
+ const ce=branches.listExecutions(child.id)[0],gate=branches.detail(pe.id).gates[0];
+ assert.ok(ce);assert.ok(gate);assert.equal(gate.state,'waiting');
+ branches.resolveGate(gate.id,{commandKey:'approve',expectedRevision:gate.revision,decision:'approve'});
+ for(let n=0;n<12;n++){await branches.unitSaver.drain();branches.advance();}
+ const lease=branches.claimScript('inert');
+ assert.ok(lease,'approved parent must permit its already accepted child to progress');
+ branches.settleScript(lease,{failed:false,output:'known'});
+});
+
+function callGateFixture(t,mode){
+ const dir=mkdtempSync(join(tmpdir(),'child-frontier-')),store=new AgentStore(dir),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+ t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
+ const project=store.createProject({label:'Frontier',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Frontier'});
+ const base={schema:'ponderosa.branch.v1',trigger:{kind:'manual'},controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}};
+ const child=branches.deploy({chatId:chat.id,idempotencyKey:'child',definition:{...base,name:'Child',entry:'work',steps:[script('work'),script('after')],edges:[edge('after-work','work','after')]},bindings:{agents:{},directories:{root:dir}}});
+ const delays=Array.from({length:8},(_,i)=>`delay${i}`);
+ const parent=branches.deploy({chatId:chat.id,idempotencyKey:'parent',definition:{...base,name:'Parent',entry:'fork',steps:[{id:'call',kind:'branch_call',branchRef:'child'},{id:'gate',kind:'human_gate',prompt:'Approve?',editable:false}],controls:[{id:'fork',kind:'fork',joinId:'join'},...delays.map(id=>({id,kind:'condition',predicate:{source:'input',equals:'input'},otherwise:'gate'})),{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['call-arm','gate-arm']}],edges:[edge('call-arm','fork','call','selected'),edge('gate-arm','fork',delays[0],'selected'),...delays.flatMap((id,i)=>[edge(`${id}-yes`,id,delays[i+1]??'gate','selected'),edge(`${id}-no`,id,'gate','failure')]),edge('call-end','call','join'),edge('gate-end','gate','join','approved')]},bindings:{agents:{},directories:{},branches:{child:child.id}}});
+ for(const branch of [parent,child])branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
+ const pe=branches.accept(parent.id,'parent','input');
+ const step=async()=>{await branches.unitSaver.drain();branches.advance();};
+ // Delay only this prepared gate's eligibility so a real child lease can precede opening it.
+ const gateAvailability=value=>branches.unitTransaction(()=>{
+  store.sqlite.prepare("UPDATE branch_attempts SET available_at=? WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=? AND step_id='gate')").run(value,pe.id);
+  branches.selectedWrite(pe.id);
+ })();
+ const holdGate=async()=>{
+  for(let n=0;n<40&&!store.sqlite.prepare("SELECT 1 FROM branch_step_executions WHERE execution_id=? AND step_id='gate'").get(pe.id);n++){
+   await branches.unitSaver.drain();branches.unitTransaction(()=>branches.advance())();
+  }
+  assert.equal(branches.detail(pe.id).gates.length,0);
+  gateAvailability('2099-01-01T00:00:00.000Z');
+ };
+ const approve=()=>{const gate=branches.detail(pe.id).gates[0];return branches.resolveGate(gate.id,{commandKey:'approve',expectedRevision:gate.revision,decision:'approve'});};
+ return {store,branches,child,pe,step,approve,holdGate,releaseGate:()=>gateAvailability(null)};
+}
+for(const mode of ['async','sync','exit'])for(const approveFirst of [false,true])test(`active child reaches safe frontier without terminality (${mode}, approveFirst=${approveFirst})`,async t=>{
+ const f=callGateFixture(t,mode);await f.holdGate();let lease;
+ for(let n=0;n<40&&!lease;n++){await f.step();lease=f.branches.claimScript('controlled');}
+ assert.ok(lease);await f.branches.unitSaver.drain();assert.equal(f.branches.checkpointDispatch(lease),'ready');
+ f.branches.authorizeScript(lease,{pid:2147483647,pgid:2147483647,birthMarker:'controlled-no-process'});
+ f.releaseGate();for(let n=0;n<30&&!f.branches.detail(f.pe.id).gates.length;n++)await f.step();
+ const initial=f.branches.execution(f.pe.id).checkpointInvocation;
+ assert.equal(initial.state,'interrupting');
+ if(approveFirst){f.approve();await f.branches.unitSaver.drain();f.branches.advance();assert.equal(f.branches.execution(f.pe.id).checkpointInvocation.state,'interrupting');}
+ // Observed settlement bypasses the ancestor interrupt even though the child is unfinished.
+ f.branches.settleScript(lease,{failed:false,output:'known'});
+ const closing=f.branches.execution(f.pe.id).checkpointInvocation;
+ assert.equal(closing.state,'interrupted');assert.equal(closing.id,initial.id);assert.equal(closing.durability,'pending');
+ assert.equal(f.store.sqlite.prepare('SELECT node_id FROM branch_paths WHERE execution_id=?').get(lease.executionId).node_id,'after');
+ assert.notEqual(f.branches.execution(lease.executionId).state,'completed');
+ await f.branches.unitSaver.drain();assert.equal(f.branches.execution(f.pe.id).checkpointInvocation.durability,'saved');
+ if(!approveFirst){for(let n=0;n<3;n++)await f.step();assert.equal(f.branches.claimScript('controlled'),undefined);assert.equal(f.branches.execution(f.pe.id).checkpointInvocation.id,initial.id);f.approve();}
+ if(!approveFirst){f.branches.advance();assert.equal(f.branches.execution(f.pe.id).checkpointInvocation.id,initial.id,'latest resolved frontier must save before resume');}
+ let after;
+ for(let n=0;n<40&&!after;n++){await f.step();after=f.branches.claimScript('controlled');}
+ assert.ok(after);assert.equal(after.executionId,lease.executionId);assert.notEqual(f.branches.execution(f.pe.id).checkpointInvocation.id,initial.id);
+ f.branches.settleScript(after,{failed:false,output:'after'});
+ for(let n=0;n<40&&f.branches.execution(f.pe.id).state!=='completed';n++)await f.step();
+ assert.equal(f.branches.execution(f.pe.id).state,'completed');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results WHERE execution_id=?').get(lease.executionId).n,2);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE state='outcome_unknown'").get().n,0);
+});
+for(const mode of ['async','sync','exit'])test(`unstarted child lease is quiescent and cannot dispatch through unresolved gate (${mode})`,async t=>{
+ const f=callGateFixture(t,mode);await f.holdGate();let lease;
+ for(let n=0;n<40&&!lease;n++){await f.step();lease=f.branches.claimScript('controlled');}assert.ok(lease);
+ f.releaseGate();for(let n=0;n<30&&!f.branches.detail(f.pe.id).gates.length;n++)await f.step();
+ await f.branches.unitSaver.drain();const before=f.branches.execution(f.pe.id).checkpointInvocation;
+ assert.equal(before.state,'interrupted');assert.equal(before.durability,'saved');assert.equal(f.branches.checkpointDispatch(lease),'waiting');
+ f.approve();let ready=false;
+ for(let n=0;n<30&&!ready;n++){await f.step();ready=f.branches.checkpointDispatch(lease)==='ready';}
+ assert.equal(ready,true);assert.notEqual(f.branches.execution(f.pe.id).checkpointInvocation.id,before.id);
+ assert.equal(f.store.sqlite.prepare('SELECT state,fence FROM branch_attempts WHERE id=?').get(lease.attemptId).fence,lease.fence);
+ f.branches.settleScript(lease,{failed:false,output:'known'});
+});
+
+test('child safe-frontier rollback publishes nothing; ancestor saver failure preserves known child result and cleanup',async t=>{
+ const f=callGateFixture(t,'sync');await f.holdGate();let lease;
+ for(let n=0;n<40&&!lease;n++){await f.step();lease=f.branches.claimScript('controlled');}assert.ok(lease);
+ await f.branches.unitSaver.drain();f.branches.authorizeScript(lease,{pid:2147483647,pgid:2147483647,birthMarker:'controlled-no-process'});
+ f.releaseGate();for(let n=0;n<30&&!f.branches.detail(f.pe.id).gates.length;n++)await f.step();
+ await f.branches.unitSaver.drain();const before=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n;
+ assert.throws(()=>f.branches.unitTransaction(()=>{f.branches.settleScript(lease,{failed:false,output:'discarded'});throw Error('rollback frontier');})(),/rollback frontier/);
+ await f.branches.unitSaver.drain();assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n,before);
+ assert.equal(f.branches.execution(f.pe.id).checkpointInvocation.state,'interrupting');
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM branch_attempts WHERE id=?').get(lease.attemptId).state,'running');
+ f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_parent_snapshot BEFORE INSERT ON branch_unit_snapshots WHEN NEW.execution_id='${f.pe.id}' BEGIN SELECT RAISE(ABORT,'parent snapshot failed'); END`);
+ const freeze=f.branches.unitSaver.freeze.bind(f.branches.unitSaver);let owners;
+ f.branches.unitSaver.freeze=context=>{owners=[...context.written].sort();return freeze(context);};
+ f.branches.settleScript(lease,{failed:false,output:'known'});
+ assert.deepEqual(owners,[f.pe.id,lease.executionId].sort(),'changed ancestor invocation joins exact final owner freeze');
+ await assert.rejects(f.branches.unitSaver.drain(),/durability failed/);
+ assert.equal(f.branches.execution(f.pe.id).checkpointInvocation.durability,'failed');
+ assert.equal(f.store.sqlite.prepare('SELECT state,result_json FROM branch_attempts WHERE id=?').get(lease.attemptId).result_json,'{"failed":false,"output":"known"}');
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE state='outcome_unknown'").get().n,0);
+ assert.doesNotThrow(()=>f.branches.cancel(lease.executionId));assert.equal(f.branches.execution(lease.executionId).state,'canceled');
+ const x=f.branches.accept(f.child.id,'unrelated','input');
+ for(let n=0;n<8;n++){try{await f.branches.unitSaver.drain();}catch(error){assert.ok(error instanceof AggregateError);}f.branches.advance();}
+ const unrelated=f.branches.claimScript('controlled');assert.ok(unrelated);assert.equal(unrelated.executionId,x.id);
 });
