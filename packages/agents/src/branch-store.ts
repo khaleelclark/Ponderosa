@@ -1,4 +1,4 @@
-import {scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
+import {scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
@@ -125,13 +125,16 @@ export class BranchStore {
       ) SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN owned o ON o.id=s.execution_id
         WHERE a.state IN ('running','outcome_unknown') OR
           (a.state='leased' AND a.process_identity_json IS NOT NULL) OR
+          (?=1 AND a.state='completed' AND a.process_identity_json IS NOT NULL AND NOT EXISTS(
+            SELECT 1 FROM branch_checkpoints proof WHERE proof.execution_id=s.execution_id AND proof.kind='script_process_exit'
+              AND proof.transition_key='process-exit:'||a.id||':'||a.fence)) OR
           (a.request_id IS NOT NULL AND a.state IN ('prepared','waiting'))
         UNION ALL SELECT 1 FROM branch_resources r JOIN owned o ON o.id=r.execution_id JOIN branch_commands c ON c.execution_id=r.execution_id
           AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
           WHERE json_extract(c.result_json,'$.state') IN ('running','unknown')
             AND (json_extract(c.result_json,'$.releaseRequired') IS NOT 1 OR EXISTS(
               SELECT 1 FROM branch_commands released WHERE released.execution_id=r.execution_id
-                AND released.command_key='resource-release:'||r.creation_key||':'||json_extract(c.result_json,'$.token'))) LIMIT 1`,id);
+                AND released.command_key='resource-release:'||r.creation_key||':'||json_extract(c.result_json,'$.token'))) LIMIT 1`,id,invocation.interruptionId?1:0);
       // Queued/prepared children and unstarted leases are safe frontiers, not live effects.
       const state=terminal?'terminal':outstanding?'interrupting':'interrupted';
       const next={...invocation,state,primary_outcome:terminal?execution.state:state};
@@ -150,17 +153,45 @@ export class BranchStore {
     if(!row)return;
     const staged=this.unit?.written.has(executionId);
     const ticket=this.unitSaver.status(executionId),status=!staged&&ticket?.invocationId===row.id?ticket:undefined;
-    return {id:row.id,mode:row.mode,state:row.state,...(row.primary_outcome?{primaryOutcome:row.primary_outcome}:{}),durability:staged?'pending':status&&status.invocationId===row.id?status.state:row.durability==='failed'?'failed':row.durability==='saved'&&this.unitSaver.currentSavedMatches(executionId,row.id,row.saved_snapshot_id)?'saved':'coverage_unknown',
+    return {id:row.id,mode:row.mode,state:row.state,...(row.interruptionId?{interruptionId:row.interruptionId}:{}),...(row.primary_outcome?{primaryOutcome:row.primary_outcome}:{}),durability:staged?'pending':status&&status.invocationId===row.id?status.state:row.durability==='failed'?'failed':row.durability==='saved'&&this.unitSaver.currentSavedMatches(executionId,row.id,row.saved_snapshot_id)?'saved':'coverage_unknown',
       ...(status?.requiredWatermark!==undefined?{requiredWatermark:status.requiredWatermark}:{}),...(status?.state==='saved'?{savedSnapshotId:status.savedId,savedContentHash:status.contentHash}:{}),...(row.saved_snapshot_id?{lastSavedSnapshotId:row.saved_snapshot_id}:{})};
   }
-  private resumeCheckpointInvocation(executionId:string):boolean {
+  private resumeCheckpointInvocation(executionId:string,interruptionId?:string):boolean {
     const invocation=this.checkpointInvocationRow(executionId);
-    if(!invocation||!['interrupted','terminal'].includes(invocation.state)||invocation.durability!=='saved')return false;
+    if(!invocation||invocation.interruptionId&&invocation.interruptionId!==interruptionId||!['interrupted','terminal'].includes(invocation.state)||invocation.durability!=='saved')return false;
     const ticket=this.unitSaver.status(executionId);
     if(ticket?(ticket.invocationId!==invocation.id||ticket.state!=='saved'):!this.unitSaver.currentSavedMatches(executionId,invocation.id,invocation.saved_snapshot_id))return false;
     if(this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",executionId))return false;
     this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:invocation.ordinal+1,mode:invocation.mode,state:'active',durability:'pending'}),executionId);
     this.selectedWrite(executionId);return true;
+  }
+  /** Finite manual safe-point interruption for the supported standalone exit Script/control slice. */
+  checkpointInterruption(branchId:string,executionId:string,action:'interrupt'|'resume',expectedId:string,commandKey:string,now=new Date().toISOString()):BranchExecutionDto {
+    branchKey(commandKey);branchKey(expectedId);
+    this.unitTransaction(()=>{
+      const branch=this.getBranch(branchId),execution=this.execution(executionId),invocation=this.checkpointInvocationRow(executionId);
+      if(!branch?.enabled||!execution||execution.branchId!==branchId||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting)throw Error('Branch execution unavailable');
+      if(branch.chatId)this.chat(branch.chatId);
+      const key=`checkpoint-interruption:${action}:${payloadHash(commandKey)}`,hash=payloadHash({branchId,executionId,action,expectedId});
+      const prior=this.row('SELECT input_hash FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
+      if(prior){if(prior.input_hash!==hash)throw Error('Checkpoint interruption idempotency conflict');return;}
+      if(!['interrupt','resume'].includes(action)||!invocation||invocation.mode!=='exit'||!['running','waiting'].includes(execution.state)||execution.parentExecutionId
+        ||execution.admissionSource!=='manual'||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',executionId)?.cancel_requested
+        ||!scriptDefinitionSupported(this.definition(execution))||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live standalone nonsecret exit Script/control executions');
+      if(action==='interrupt'){
+        if(invocation.id!==expectedId||invocation.state!=='active'||invocation.interruptionId)throw Error('Checkpoint invocation changed');
+        const interruptionId=randomUUID();
+        this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({...invocation,state:'interrupting',interruptionId}),executionId);
+        this.selectedWrite(executionId);
+        this.checkpoint(executionId,`checkpoint-interrupt:${interruptionId}`,'checkpoint_interrupt_requested',{interruptionId,invocationId:invocation.id,ordinal:invocation.ordinal,commandKey},now);
+      }else{
+        if(invocation.interruptionId!==expectedId||this.restricted(branchId,CAPABILITY_IDS.scripts)||!this.resumeCheckpointInvocation(executionId,expectedId))throw Error('Checkpoint resume requires current saved quiescence and authority');
+        const next=this.checkpointInvocationRow(executionId)!;
+        this.checkpoint(executionId,`checkpoint-resume:${expectedId}`,'checkpoint_interrupt_resumed',{interruptionId:expectedId,invocationId:invocation.id,nextInvocationId:next.id,nextOrdinal:next.ordinal},now);
+      }
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,hash,stableJson({accepted:true}),now);
+    }).immediate();
+    return this.execution(executionId)!;
   }
   checkpointDispatch(lease:BranchActionLease|BranchScriptLease,now=new Date().toISOString()):'ready'|'waiting'|'fenced' {
     const valid=this.row(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
@@ -551,8 +582,8 @@ export class BranchStore {
       if(payloadHash(snapshot)!==row.content_hash||stableJson(snapshot)!==row.snapshot_json)throw Error('Historical checkpoint integrity failure');
       const c=snapshot.continuation,version=c?this.row('SELECT * FROM branch_versions WHERE id=? AND branch_id=?',c.versionId,branchId):undefined;
       const supported=snapshot.restore_supported===true&&c?.schema==='ponderosa.branch.script-continuation.v1'
-        &&stableJson(c.compatibility)===stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)&&!!version
-        &&payloadHash(JSON.parse(version.definition_json))===c.versionHash&&scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit)
+        &&stableJson(c.compatibility)===stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)&&(!c.checkpoint||snapshot.invocationId===c.checkpoint.invocationId&&snapshot.mode===c.checkpoint.mode&&snapshot.closing===c.checkpoint.closing)&&!!version
+        &&payloadHash(JSON.parse(version.definition_json))===c.versionHash&&scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit,c.checkpoint)
         &&!Object.hasOwn(c.configuration,'secretBindings')&&scriptFrontierSupported(snapshot.selected,JSON.parse(version.definition_json));
       return {id:row.id,executionId,branchId,contentHash:row.content_hash,restoreSupported:supported,
         eligibility:supported?'script_control_frontier':'unsupported_dependency'};
@@ -582,13 +613,13 @@ export class BranchStore {
       }
       const c=snapshot.continuation,e=snapshot.selected?.execution?.[0];
       if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||c?.schema!=='ponderosa.branch.script-continuation.v1'
-        ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY))throw Error('Historical continuation or runtime compatibility unsupported');
+        ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||c.checkpoint&&(snapshot.invocationId!==c.checkpoint.invocationId||snapshot.mode!==c.checkpoint.mode||snapshot.closing!==c.checkpoint.closing))throw Error('Historical continuation or runtime compatibility unsupported');
       if(!e||e.id!==executionId||e.branch_id!==branchId||e.version_id!==c.versionId||e.binding_revision_id!==c.bindingRevisionId)throw Error('Historical checkpoint owner/pin integrity failure');
       const version=this.row('SELECT * FROM branch_versions WHERE id=? AND branch_id=?',c.versionId,branchId),binding=this.row('SELECT * FROM branch_bindings WHERE id=? AND branch_id=?',c.bindingRevisionId,branchId);
       if(!version||!binding||version.content_hash!==c.versionHash||binding.content_hash!==c.bindingHash||payloadHash(JSON.parse(version.definition_json))!==c.versionHash||payloadHash(JSON.parse(binding.bindings_json))!==c.bindingHash)throw Error('Historical checkpoint owned pins failed verification');
       const definition=JSON.parse(version.definition_json) as BranchDefinition,selected=snapshot.selected as Selected;
       if(!scriptFrontierSupported(selected,definition)||Object.hasOwn(c.configuration,'secretBindings')||stableJson(validateBranchConfiguration(c.configuration,definition,true))!==stableJson(c.configuration)
-        ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit))throw Error('Historical continuation dependency or integrity unsupported');
+        ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit,c.checkpoint))throw Error('Historical continuation dependency or integrity unsupported');
       if(!['completed','failed','canceled'].includes(source.state)||source.parentExecutionId||this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND a.state IN ('leased','running','outcome_unknown')",executionId))throw Error('Historical rewind requires a settled standalone source');
       if(branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Historical rewind pins changed; current authority must be reconciled');
       if(this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');
@@ -610,7 +641,7 @@ export class BranchStore {
         JSON.parse(audit.evidence_json);
         this.checkpoint(next.id,`restored-prefix:${audit.id}`,'restored_prefix',{sourceExecutionId:executionId,sourceAudit:audit},now);
       }
-      const lineage={schema:'ponderosa.branch.rewind-lineage.v1',sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,executionId:next.id,compatibility:c.compatibility,idMap:Object.fromEntries(ids)};
+      const lineage={schema:'ponderosa.branch.rewind-lineage.v1',sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,executionId:next.id,compatibility:c.compatibility,...(c.checkpoint?{sourceCheckpointInvocation:c.checkpoint.invocation}:{}),idMap:Object.fromEntries(ids)};
       const receipt=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(next.id,stableJson(lineage),payloadHash(lineage));
       this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,receiptKey,commandHash,stableJson({executionId:next.id,lineageId:Number(receipt.lastInsertRowid)}),now);
       this.checkpoint(next.id,'rewind-origin','historical_rewind',{sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,lineageId:Number(receipt.lastInsertRowid)},now);
@@ -2081,6 +2112,7 @@ export class BranchStore {
       const key = `process-exit:${lease.attemptId}:${lease.fence}`;
       if (!this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id = ? AND transition_key = ?", lease.executionId, key)) {
         this.checkpoint(lease.executionId, key, "script_process_exit", evidence, now);
+        if(this.checkpointInvocationRow(lease.executionId)?.interruptionId)this.selectedWrite(lease.executionId);
       }
     })();
   }

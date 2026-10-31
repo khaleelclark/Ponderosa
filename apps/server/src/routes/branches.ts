@@ -377,6 +377,13 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
       const result=branches.rewindInitial(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey);notify();return result;
     }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Initial rewind failed'});}
   });
+  app.post<{Params:{id:string;executionId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/checkpoint-interruption',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Checkpoint interruption');exactObjectFields(body,['action','expectedId','commandKey'],'Checkpoint interruption');
+      if(!['interrupt','resume'].includes(String(body.action))||typeof body.expectedId!=='string'||typeof body.commandKey!=='string')throw Error('Invalid checkpoint interruption command');
+      const result=branches.checkpointInterruption(request.params.id,request.params.executionId,body.action as 'interrupt'|'resume',body.expectedId,body.commandKey);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Checkpoint interruption failed'});}
+  });
   app.get<{Params:{id:string;executionId:string};Querystring:{before?:string}}>('/api/branches/:id/executions/:executionId/historical-checkpoints',async(request,reply)=>{
     try{return branches.historicalCheckpoints(request.params.id,request.params.executionId,request.query.before===undefined?undefined:Number(request.query.before));}
     catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical checkpoints unavailable'});}

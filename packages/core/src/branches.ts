@@ -111,7 +111,7 @@ export interface BranchDto {
 }
 export interface BranchCheckpointInvocationDto {
   id:string; mode:BranchCheckpointMode; state:'active'|'interrupting'|'interrupted'|'terminal';
-  primaryOutcome?:string; durability:'pending'|'coalesced'|'saved'|'failed'|'coverage_unknown'|'suppressed';
+  interruptionId?:string; primaryOutcome?:string; durability:'pending'|'coalesced'|'saved'|'failed'|'coverage_unknown'|'suppressed';
   requiredWatermark?:number; savedSnapshotId?:number; savedContentHash?:string; lastSavedSnapshotId?:number;
 }
 export interface BranchExecutionDto {
