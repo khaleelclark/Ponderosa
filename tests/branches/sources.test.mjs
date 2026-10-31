@@ -8,13 +8,13 @@ import {BranchTriggerSourceService,normalizeTriggerSourceConfig} from '../../app
 import {triggerSourceConfig} from '../../apps/server/dist/branch-trigger-config.js';
 import {until} from '../shared/fixture.mjs';
 
-async function fixture(t,kind,config,{nextFireAt}={}){
+async function fixture(t,kind,config,{nextFireAt,scriptTimeoutMs=1000}={}){
  const root=await mkdtemp(path.join(tmpdir(),'branch-source-current-')),dataDir=path.join(root,'data'),workspace=path.join(root,'work');await mkdir(workspace);
  let store,branches,sources,passed=false,available=true;const notices=[],failures=[];
  const open=()=>{store=new AgentStore(dataDir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));sources=new BranchTriggerSourceService({store,triggers:branches.triggers,notify:id=>notices.push(id),sourceAvailable:()=>available,onSourceFailure:value=>failures.push(value)})};open();
  t.after(async()=>{let clean=false;try{await sources.stop();clean=true}finally{store.close();if(passed&&clean)await rm(root,{recursive:true,force:true});else t.diagnostic(`Retained source fixture: ${root}`)}});
  const owner=branches.create('Source','source');
- const definition={schema:'ponderosa.branch.v1',name:'Source',trigger:{kind,configRef:'source'},entry:'work',steps:[{id:'work',kind:'script',runtime:'node',source:'process.stdout.write("unused")',cwdRef:'workspace',timeoutMs:1000}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+ const definition={schema:'ponderosa.branch.v1',name:'Source',trigger:{kind,configRef:'source'},entry:'work',steps:[{id:'work',kind:'script',runtime:'node',source:'process.stdout.write("unused")',cwdRef:'workspace',timeoutMs:scriptTimeoutMs}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
  const bindings={agents:{},directories:{workspace},triggers:{source:{sourceConfig:config,enabled:true}}};
  const branch=branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'deploy',definition,bindings},new Date().toISOString(),{sourceConfig:config,...(nextFireAt?{nextFireAt}:{})});
  return {root,workspace,branch,definition,bindings,notices,failures,get store(){return store},get branches(){return branches},get sources(){return sources},get triggers(){return branches.triggers},pause(){available=false},resume(){available=true},async reopen(){await sources.stop();store.close();open()},pass(){passed=true},noProviderWork(){assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0)}};
@@ -202,5 +202,37 @@ test('webhook trigger reads project only active columns from historical credenti
  }finally{db.prepare=original;}
  assert.ok(queries.length>0);
  for(const sql of queries){assert.doesNotMatch(sql,/SELECT\s+\*|secret_ciphertext|secret_fingerprint/i);}
+ f.noProviderWork();f.pass();
+});
+
+for(const whenRunning of ['queue_all','run_latest','update_current'])test(`actual schedule source preserves clock-jump identities with ${whenRunning} overlap`,async t=>{
+ const base=Date.parse('2030-01-01T10:00:00Z');t.mock.timers.enable({apis:['Date'],now:base});
+ const startsAt=new Date(base).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt,whenRunning},{nextFireAt:startsAt,scriptTimeoutMs:600000});
+ t.mock.timers.setTime(base+55000);await f.sources.processDueSchedules();f.branches.advance();
+ const held=f.branches.claimScript('controlled');assert.ok(held);
+ const first=f.triggers.listTriggerOccurrences(f.branch.triggerId)[0];assert.equal(first.payload.scheduledTimes[0],startsAt);
+ assert.ok(Date.parse(first.createdAt)-base<60000,'normal admission meets the accepted 60-second target');
+ t.mock.timers.setTime(base+3*60000+55000);await f.sources.processDueSchedules();
+ const occurrences=f.triggers.listTriggerOccurrences(f.branch.triggerId);
+ assert.equal(occurrences.length,4);assert.equal(new Set(occurrences.map(o=>o.id)).size,4);
+ assert.deepEqual(occurrences.map(o=>o.payload.scheduledTimes[0]).sort(),Array.from({length:4},(_,i)=>new Date(base+i*60000).toISOString()));
+ for(const o of occurrences){assert.equal(o.payload.missedCount,1);assert.equal(o.payload.collapsedRecovery,false);assert.equal(o.provenance.source,'schedule');}
+ const pending=occurrences.filter(o=>o.state==='pending');
+ assert.equal(pending.length,whenRunning==='queue_all'?0:1);
+ if(pending.length)assert.equal(pending[0].schedule.eventCount,3);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,whenRunning==='queue_all'?4:1);
+ f.branches.settleScript(held,{failed:false,output:'known result'});f.branches.advance();
+ if(whenRunning!=='queue_all'){
+  const replacement=f.branches.claimScript('controlled');assert.ok(replacement);assert.notEqual(replacement.executionId,held.executionId);
+  const input=JSON.parse(replacement.input);assert.equal(input.occurrenceId,pending[0].id);
+  f.branches.settleScript(replacement,{failed:false,output:'latest result'});
+ }
+ const before=f.store.sqlite.prepare('SELECT id,input_hash FROM trigger_occurrences ORDER BY id').all();
+ const executions=f.store.sqlite.prepare('SELECT id FROM branch_executions ORDER BY id').all();
+ await f.reopen();t.mock.timers.setTime(base+60000);await f.sources.processDueSchedules();
+ t.mock.timers.setTime(base+3*60000+55000);await f.sources.processDueSchedules();f.branches.advance();
+ assert.deepEqual(f.store.sqlite.prepare('SELECT id,input_hash FROM trigger_occurrences ORDER BY id').all(),before);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT id FROM branch_executions ORDER BY id').all(),executions);
+ assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,new Date(base+4*60000).toISOString());
  f.noProviderWork();f.pass();
 });

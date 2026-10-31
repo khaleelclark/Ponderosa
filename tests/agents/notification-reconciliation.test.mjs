@@ -8,6 +8,7 @@ import { setImmediate as immediate } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import { AgentStore, WorkspaceStore, CoordinationV3Store } from '@ponderosa/agents';
 import { createOperationalNotifications } from '../../apps/server/dist/operational-notifications.js';
+import { createRuntimeEventAuthority } from '../../apps/server/dist/runtime-event-authority.js';
 import { createServerReadModels } from '../../apps/server/dist/server-read-models.js';
 import { AgentWorkProjection } from '../../apps/server/dist/routes/agent-work.js';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
@@ -393,4 +394,32 @@ test('short provider cause is retained in scoped diagnostics and redacted before
   assert.ok(!JSON.stringify(await read(other.projectId, otherAgent.id)).includes(cause));
   assert.equal((await f.api('GET', `/api/projects/${other.projectId}/agent-work/items/run/${run.recordId}`)).status, 404);
  });
+});
+
+test('runtime event-consumer stall surfaces at 30 seconds and clears only after actual persistence',async t=>{
+ const now=Date.parse('2030-01-01T00:00:00Z');t.mock.timers.enable({apis:['Date'],now});
+ const agent={id:'owned',projectId:'project',conversationId:'chat',updatedAt:new Date(now).toISOString()};
+ const run={startedAt:agent.updatedAt,executionId:'execution',v3SchedulerRunId:'scheduler',ownershipState:'running',leaseExpiresAt:new Date(now+3600000).toISOString()};
+ const activeRuns=new Map([[agent.id,run]]),persisted=[],published=[];
+ const authority=createRuntimeEventAuthority({opts:{},activeRuns,store:{appendEvent:(id,event)=>{persisted.push({id,event});return {...event,ts:new Date().toISOString()}}},
+  ownsActiveRunForAuditDrain:(id,current)=>activeRuns.get(id)===current,publish:(id,event)=>published.push({id,event})});
+ const models=createServerReadModels({activeRuns,scheduledSessionRollovers:new Map(),runtimeStallAfterMs:30000,
+  workspace:{listDecisions:()=>[]},store:{latestHealthObservation:()=>undefined,getRunHealthSummaries:()=>[],activeExecutionPhase:()=>undefined},
+  coordinationV3:{activeContextRollovers:()=>[],getAgentAvailability:()=> 'running',providerBlockedState:()=>undefined},
+  transitionRun:authority.transitionRun,reusableRuntime:()=>undefined});
+ const health=()=>models.agentHealth({type:'project',id:'project'},[agent]).agents[0];
+ assert.equal(authority.receiveRuntimeEvent(agent.id,run),true);
+ t.mock.timers.setTime(now+29999);assert.equal(health().status,'running');
+ t.mock.timers.setTime(now+30000);const stalled=health();
+ assert.equal(stalled.status,'stalled');assert.equal(stalled.reason,'runtime_event_consumer_stalled');
+ assert.equal(stalled.attention.reason,'runtime_event_consumer_stalled');assert.equal(stalled.executionId,'execution');
+ assert.equal(run.ownershipState,'stalled');assert.equal(persisted.length,0,'health cannot invent provider output or finish the task');
+ await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'Controlled input',executionId:'execution'});
+ assert.equal(persisted.length,1);assert.equal(published.length,1);assert.equal(health().status,'running');
+ assert.equal(run.ownershipState,'running');assert.equal(run.lastEventPersistedAt,new Date(now+30000).toISOString());
+ // Quiet native commands are not proof of a blocked event consumer.
+ t.mock.timers.setTime(now+360000);assert.equal(health().status,'running');assert.equal(persisted.length,1);
+ run.ownershipState='cancelling';assert.equal(authority.receiveRuntimeEvent(agent.id,run),false);
+ assert.equal(await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'late',executionId:'execution'}),undefined);
+ assert.equal(persisted.length,1);
 });
