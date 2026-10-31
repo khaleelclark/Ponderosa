@@ -66,11 +66,12 @@ export function encodeScriptContinuation(db:Database.Database,executionId:string
     invocationId:invocation.id,mode:invocation.mode,closing:invocation.state==='interrupted'||invocation.state==='terminal',
     invocation:{id:invocation.id,ordinal:invocation.ordinal,mode:invocation.mode,state:invocation.state,primaryOutcome:invocation.primary_outcome,interruptionId:invocation.interruptionId}
   }:undefined;
-  if(!scriptCutSupported(db,executionId,selected,definition,safeConfiguration,audit,checkpoint))return;
+  const provenance=composeScriptCut(db,executionId,selected,definition,safeConfiguration,audit,checkpoint,undefined,true);
+  if(!provenance)return;
   const e=selected.execution![0]!;
   return {schema:'ponderosa.branch.script-continuation.v1',compatibility:SCRIPT_CONTINUATION_COMPATIBILITY,
     versionId:e.version_id,versionHash:owner.version_hash,bindingRevisionId:e.binding_revision_id,bindingHash:owner.binding_hash,configuration:safeConfiguration,
-    audit,...(checkpoint?{checkpoint}:{})};
+    audit,provenance,...(checkpoint?{checkpoint}:{})};
 }
 
 export function scriptAuditSupported(audit:unknown):boolean {
@@ -82,8 +83,78 @@ export function scriptAuditSupported(audit:unknown):boolean {
   });}catch{return false;}
 }
 
+type Cut={executionId:string;selected:Selected;audit:Row[];checkpoint?:Row;provenance?:unknown;seed?:{selected:Selected;idMap:Record<string,string>};reference?:Row};
+
+/** Resolve owned immutable links iteratively; wrapped text never supplies replay authority. */
+function composeScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,provenance?:unknown,encoding=false):Row[]|undefined {
+  try {
+    const frames:Cut[]=[],visited=new Set<string>();
+    let cut:Cut={executionId,selected,audit:audit as Row[],checkpoint,provenance};
+    const readSnapshot=(id:number,owner:string)=>{
+      if(!Number.isSafeInteger(id)||id<1||typeof owner!=='string'||!owner)return;
+      const row=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(id,owner) as Row|undefined;
+      if(!row)return;
+      const value=JSON.parse(row.snapshot_json);
+      if(stableJson(value)!==row.snapshot_json||payloadHash(value)!==row.content_hash)return;
+      return {value,hash:row.content_hash};
+    };
+    for(;;){
+      if(visited.has(cut.executionId)||!scriptAuditSupported(cut.audit))return;
+      visited.add(cut.executionId);frames.push(cut);
+      const e=cut.selected.execution?.[0];
+      const owner=db.prepare('SELECT branch_id,version_id,binding_revision_id FROM branch_executions WHERE id=?').get(cut.executionId) as Row|undefined;
+      const root=selected.execution?.[0];
+      if(!e||!owner||e.id!==cut.executionId||e.branch_id!==root?.branch_id||e.version_id!==root?.version_id||e.binding_revision_id!==root?.binding_revision_id
+        ||['branch_id','version_id','binding_revision_id'].some(key=>owner[key]!==e[key])||e.input_text!==root?.input_text||e.depth_ceiling!==configuration.limits.maxCallDepth)return;
+      const origins=cut.audit.filter(row=>row.kind==='historical_rewind'),wrappers=cut.audit.filter(row=>row.kind==='restored_prefix');
+      if(!origins.length){if(wrappers.length)return;break;}
+      if(origins.length!==1||wrappers.length!==1||cut.audit[0]?.kind!=='trigger_accepted'||cut.audit[1]!==wrappers[0]||cut.audit[2]!==origins[0]
+        ||origins[0]!.transition_key!=='rewind-origin')return;
+      const origin=JSON.parse(origins[0]!.evidence_json),stored=readSnapshot(origin.lineageId,cut.executionId);
+      if(!stored)return;
+      const line=stored.value,source=readSnapshot(line.checkpointId,line.sourceExecutionId);
+      if(!source||line.schema!=='ponderosa.branch.rewind-lineage.v1'||line.executionId!==cut.executionId||source.hash!==line.checkpointHash
+        ||typeof line.commandKey!=='string'||!line.commandKey||stableJson(line.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)
+        ||line.commandHash!==payloadHash({executionId:line.sourceExecutionId,checkpointId:line.checkpointId,expectedHash:line.checkpointHash})
+        ||stableJson(origin)!==stableJson({sourceExecutionId:line.sourceExecutionId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash,commandKey:line.commandKey,lineageId:origin.lineageId})
+        ||wrappers[0]!.transition_key!=='restored-prefix'
+        ||wrappers[0]!.evidence_json!==stableJson({sourceExecutionId:line.sourceExecutionId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash,lineageId:origin.lineageId}))return;
+      const receipt=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(line.sourceExecutionId,`historical-rewind:${payloadHash(line.commandKey)}`) as Row|undefined;
+      if(!receipt||receipt.input_hash!==line.commandHash||receipt.result_json!==stableJson({executionId:cut.executionId,lineageId:origin.lineageId}))return;
+      const snapshot=source.value,c=snapshot.continuation,se=snapshot.selected?.execution?.[0];
+      if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||c?.schema!=='ponderosa.branch.script-continuation.v1'
+        ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||!se||se.id!==line.sourceExecutionId||se.version_id!==c.versionId||se.binding_revision_id!==c.bindingRevisionId
+        ||c.checkpoint&&(snapshot.invocationId!==c.checkpoint.invocationId||snapshot.mode!==c.checkpoint.mode||snapshot.closing!==c.checkpoint.closing)
+        ||stableJson(line.sourceCheckpointInvocation??null)!==stableJson(c.checkpoint?.invocation??null)
+        ||stableJson(c.configuration)!==stableJson(configuration)||Object.hasOwn(c.configuration,'secretBindings'))return;
+      const version=db.prepare('SELECT content_hash,definition_json FROM branch_versions WHERE id=? AND branch_id=?').get(c.versionId,se.branch_id) as Row|undefined;
+      const binding=db.prepare('SELECT content_hash,bindings_json FROM branch_bindings WHERE id=? AND branch_id=?').get(c.bindingRevisionId,se.branch_id) as Row|undefined;
+      if(!version||!binding||version.content_hash!==c.versionHash||payloadHash(JSON.parse(version.definition_json))!==c.versionHash||payloadHash(definition)!==c.versionHash
+        ||binding.content_hash!==c.bindingHash||payloadHash(JSON.parse(binding.bindings_json))!==c.bindingHash)return;
+      const keys=['paths','steps','attempts','sealedResults'].flatMap(key=>snapshot.selected[key].map((row:Row)=>row.id));
+      const ids=line.idMap;
+      if(!ids||Array.isArray(ids)||stableJson(Object.keys(ids).sort())!==stableJson([...keys].sort())
+        ||Object.values(ids).some(id=>typeof id!=='string'||!id||keys.includes(id))||new Set(Object.values(ids)).size!==keys.length)return;
+      cut.seed={selected:snapshot.selected,idMap:ids};
+      cut.reference={executionId:cut.executionId,lineageId:origin.lineageId,lineageHash:stored.hash,sourceExecutionId:line.sourceExecutionId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash};
+      cut={executionId:line.sourceExecutionId,selected:snapshot.selected,audit:c.audit,checkpoint:c.checkpoint,provenance:c.provenance};
+    }
+    const composed:Row[]=[];
+    for(const frame of frames.reverse()){
+      if(frame.reference)composed.push(frame.reference);
+      if(!(encoding&&frame.executionId===executionId)&&stableJson(frame.provenance??[])!==stableJson(composed))return;
+      if(!replayScriptCut(db,frame.executionId,frame.selected,definition,configuration,frame.audit,frame.checkpoint,frame.seed))return;
+    }
+    return composed;
+  }catch{return;}
+}
+
+export function scriptCutSupported(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,provenance?:unknown):boolean {
+  return composeScriptCut(db,executionId,selected,definition,configuration,audit,checkpoint,provenance)!==undefined;
+}
+
 /** The audit and inventory must describe the same committed single-path cut. */
-export function scriptCutSupported(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row):boolean {
+function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>}):boolean {
   try {
     if(!scriptFrontierSupported(selected,definition)||!scriptAuditSupported(audit))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
@@ -105,6 +176,30 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let started=false,accepted=false,pendingLoop:string|undefined,interruption:Row|undefined,activeInvocation:Row|undefined;
     const authorized=new Map<string,number>(),exited=new Set<string>(),seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
+    if(seed){
+      const old=seed.selected,ids=seed.idMap,sp=old.paths![0]!;
+      if(p.id!==ids[sp.id])return false;
+      for(const oldStep of old.steps!){
+        const step=selected.steps!.find(row=>row.id===ids[oldStep.id]);
+        if(!step||step.path_id!==ids[oldStep.path_id]||['step_id','invocation','input_text'].some(key=>step[key]!==oldStep[key])
+          ||oldStep.state==='completed'&&(step.state!=='completed'||step.result_json!==oldStep.result_json))return false;
+        seen.add(step.id);invocations.set(step.step_id,Math.max(invocations.get(step.step_id)??0,step.invocation));
+      }
+      for(const oldAttempt of old.attempts!){
+        const attempt=selected.attempts!.find(row=>row.id===ids[oldAttempt.id]);
+        if(!attempt||attempt.step_execution_id!==ids[oldAttempt.step_execution_id]||['number','input_hash','purpose'].some(key=>attempt[key]!==oldAttempt[key])
+          ||oldAttempt.state==='completed'&&(attempt.state!=='completed'||attempt.fence!==0||attempt.result_json!==oldAttempt.result_json))return false;
+        fences.set(attempt.id,0);
+      }
+      for(const oldResult of old.sealedResults!){
+        const result=selected.sealedResults!.find(row=>row.id===ids[oldResult.id]);
+        if(!result||result.path_id!==ids[oldResult.path_id]||result.step_execution_id!==ids[oldResult.step_execution_id]
+          ||result.terminal_attempt_id!==ids[oldResult.terminal_attempt_id]||result.result_json!==oldResult.result_json||result.content_hash!==oldResult.content_hash)return false;
+      }
+      node=sp.node_id;input=sp.input_text;traversals=sp.traversals;last=sp.last_result_id?ids[sp.last_result_id]!:null;
+      current=sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
+      for(const loop of old.loops!)loops.set(loop.edge_id,loop.iterations);
+    }
     const text=(value:string)=>interpolateBranchText(value,definition,configuration);
     const follow=(edge:BranchDefinition['edges'][number]|undefined,output:string)=>{
       pendingLoop=edge?.loop?edge.id:undefined;
@@ -118,6 +213,7 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
           if(accepted||started||v.versionId!==e.version_id||v.bindingRevisionId!==e.binding_revision_id||v.inputHash!==e.input_hash)return false;
           accepted=true;break;
         case 'workflow_started':if(!accepted||started)return false;started=true;break;
+        case 'restored_prefix':case 'historical_rewind':if(!seed||!accepted||started)return false;break;
         case 'step_prepared':{
           if(interruption||!started||current||v.stepId!==node||seen.has(v.stepExecutionId))return false;
           const s=selected.steps!.find(s=>s.id===v.stepExecutionId);

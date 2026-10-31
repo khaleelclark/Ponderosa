@@ -8,13 +8,14 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
-function fixture(t,mode='async',loop=false,secret=false,exitHistory=false){
+function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainHistory=false){
  const dir=mkdtempSync(join(tmpdir(),'historical-rewind-'));let store,branches;
  const open=()=>{store=new AgentStore(dir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'History',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'History'});
  const definition={schema:'ponderosa.branch.v1',name:'Historical',trigger:{kind:'manual'},entry:'a',steps:['a','b'].map(id=>({id,kind:'script',runtime:'node',source:`// ${id} never executed`,cwdRef:'root',timeoutMs:5000})),controls:[{id:'c',kind:'condition',predicate:{source:'input',equals:'prefix'},otherwise:'b'}],edges:[{id:'a-c',from:'a',to:'c',on:'success'},{id:'yes',from:'c',to:loop?'a':'b',on:'selected',...(loop?{loop:true}:{})},{id:'no',from:'c',to:'b',on:'failure'}],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}},...(secret?{parameters:{private:{type:'secret'}}}:{})};
  if(exitHistory){definition.steps.push({id:'d',kind:'script',runtime:'node',source:'// d never executed',cwdRef:'root',timeoutMs:5000});definition.edges.push({id:'b-d',from:'b',to:'d',on:'success'});}
+ if(chainHistory){definition.steps.push(...['e','f'].map(id=>({id,kind:'script',runtime:'node',source:`// ${id} never executed`,cwdRef:'root',timeoutMs:5000})));definition.edges.push({id:'d-e',from:'d',to:'e',on:'success'},{id:'e-f',from:'e',to:'f',on:'success'});}
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{},directories:{root:dir}}});
  branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode,...(secret?{secretBindings:{private:'opaque-never-embed'}}:{})},0);
  const source=branches.accept(branch.id,'source','input');
@@ -34,7 +35,7 @@ for(const mode of ['async','sync'])test(`noninitial ${mode} capture -> later pro
  const restored=f.branches.detail(next.id);assert.equal(restored.steps.length,1);assert.equal(restored.steps[0].state,'completed');assert.equal(restored.steps[0].result.output,'prefix');
  assert.notEqual(restored.steps[0].id,prefix.selected.steps[0].id);assert.notEqual(restored.attempts[0].id,prefix.selected.attempts[0].id);assert.equal(restored.attempts[0].fence,0);
  assert.equal(f.store.sqlite.prepare('SELECT node_id FROM branch_paths WHERE execution_id=?').get(next.id).node_id,'c');
- assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind=?').get(next.id,'restored_prefix').n,prefix.continuation.audit.length);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind=?').get(next.id,'restored_prefix').n,1);
  assert.equal(f.branches.claimScript('too-early'),undefined,'lineage commits before scheduler admission or fresh dispatch');
  assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,cp.id,cp.contentHash,'selected').id,next.id);
  const suffix=await f.claim();assert.equal(suffix.executionId,next.id);assert.ok(suffix.source.includes('// b'));
@@ -181,8 +182,8 @@ for(const [name,mutate] of [
 
 const inertIdentity={pid:2147483647,pgid:2147483647,birthMarker:'controlled-no-process'};
 const captureBytes=(f,id)=>JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(id).snapshot_json);
-async function exitCut(t,loop=false,settle=true){
- const f=fixture(t,'exit',loop,false,true);
+async function exitCut(t,loop=false,settle=true,chain=false){
+ const f=fixture(t,'exit',loop,false,true,chain);
  await f.prefix();assert.equal(f.branches.historicalCheckpoints(f.branch.id,f.source.id).length,0,'earlier exit progress is coalesced, never SAVED');
  const lease=await f.claim();f.branches.authorizeScript(lease,inertIdentity);
  const before=f.branches.execution(f.source.id).checkpointInvocation;
@@ -378,3 +379,120 @@ for(const boundary of ['list','rewind'])test(`historical exit proof must match t
  const cp=f.point();assert.ok(cp);f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
  assert.ok(f.branches.rewindHistorical(f.branch.id,f.source.id,cp.id,cp.contentHash,'exact-generation'));
  });
+
+async function finishOwned(f,id){
+ for(let n=0;n<10&&f.branches.execution(id).state!=='completed';n++){
+  const lease=await f.claim();assert.equal(lease.executionId,id);f.branches.settleScript(lease,{failed:false,output:'stop'});
+ }
+ await f.branches.unitSaver.drain();assert.equal(f.branches.execution(id).state,'completed');
+}
+async function restoredCut(t,mode='async',loop=false){
+ const f=fixture(t,mode,loop,false,true,true),a=await f.prefix();assert.ok(a);await finishOwned(f,f.source.id);
+ const next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'chain-A');
+ const lease=await f.claim();assert.equal(lease.executionId,next.id);assert.ok(lease.source.includes(loop?'// a':'// b'));
+ f.branches.settleScript(lease,{failed:false,output:'stop'});await f.branches.unitSaver.drain();
+ const b=f.branches.historicalCheckpoints(f.branch.id,next.id).find(cp=>{const s=captureBytes(f,cp.id);return cp.restoreSupported&&s.selected.steps.length===2&&s.selected.steps.every(row=>row.state==='completed');});
+ assert.ok(b,'continued restored execution must capture an executable checkpoint');
+ return {f,a,next,b};
+}
+for(const mode of ['async','sync'])for(const loop of [false,true])test(`chained ${mode} history: capture A -> rewind A -> capture B -> rewind B, loop=${loop}`,async t=>{
+ const {f,a,next,b}=await restoredCut(t,mode,loop),snapshot=captureBytes(f,b.id);
+ assert.equal(snapshot.continuation.provenance.length,1);assert.equal(snapshot.continuation.provenance[0].checkpointId,a.id);
+ assert.equal(snapshot.continuation.audit.filter(row=>row.kind==='restored_prefix').length,1);
+ assert.ok(snapshot.continuation.audit.filter(row=>row.kind==='restored_prefix').every(row=>!JSON.parse(row.evidence_json).sourceAudit),'no recursively nested audit prose');
+ await finishOwned(f,next.id);await f.reopen();
+ assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'chain-A').id,next.id);
+ const second=f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'chain-B');assert.equal(second.state,'queued');
+ assert.equal(f.branches.claimScript('before-admission'),undefined);
+ assert.equal(f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'chain-B').id,second.id);
+ const suffix=await f.claim();assert.equal(suffix.executionId,second.id);assert.ok(suffix.source.includes(loop?'// b':'// d'),'both committed prefix effects stay sealed');assert.equal(suffix.fence,1);
+ f.branches.settleScript(suffix,{failed:false,output:'stop'});await f.branches.unitSaver.drain();
+ const c=f.branches.historicalCheckpoints(f.branch.id,second.id).find(cp=>{const s=captureBytes(f,cp.id);return cp.restoreSupported&&s.selected.steps.length===3&&s.selected.steps.every(row=>row.state==='completed');});assert.ok(c);
+ assert.equal(captureBytes(f,c.id).continuation.provenance.length,2,'canonical provenance is a flat vector');
+ await finishOwned(f,second.id);await f.reopen();assert.equal(f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'chain-B').id,second.id);const third=f.branches.rewindHistorical(f.branch.id,second.id,c.id,c.contentHash,'chain-C');
+ await finishOwned(f,third.id);assert.equal(f.branches.detail(third.id).sealedResults.length,loop?6:5);
+ assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
+});
+for(const loop of [false,true])test(`chained exit interruption history uses fresh invocation and exact owned proof, loop=${loop}`,async t=>{
+ const f=await exitCut(t,loop,true,true),a=f.point();assert.ok(a);f.resume();await finishOwned(f,f.source.id);
+ const first=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'exit-chain-A');
+ const lease=await f.claim();assert.equal(lease.executionId,first.id);assert.ok(lease.source.includes(loop?'// b':'// d'));f.branches.authorizeScript(lease,inertIdentity);
+ const active=f.branches.execution(first.id).checkpointInvocation;assert.notEqual(active.id,f.before.id);
+ const hold=f.branches.checkpointInterruption(f.branch.id,first.id,'interrupt',active.id,'exit-chain-hold').checkpointInvocation;
+ f.branches.recordScriptEvidence(lease,inertIdentity,{stdout:'stop',outputHash:hash('stop'),code:0});f.branches.settleScript(lease,{failed:false,output:'stop'});await f.branches.unitSaver.completeExits();
+ const b=f.branches.historicalCheckpoints(f.branch.id,first.id).find(cp=>cp.restoreSupported);assert.ok(b,'closing save on restored exit execution must be executable');
+ assert.equal(captureBytes(f,b.id).continuation.provenance.length,1);assert.equal(f.branches.execution(first.id).checkpointInvocation.state,'interrupted');
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'live-chain'),/settled standalone/);
+ f.branches.checkpointInterruption(f.branch.id,first.id,'resume',hold.interruptionId,'exit-chain-resume');await finishOwned(f,first.id);await f.reopen();
+ const second=f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'exit-chain-B');assert.notEqual(second.checkpointInvocation.id,active.id);assert.equal(second.checkpointInvocation.interruptionId,undefined);
+ const suffix=await f.claim();assert.equal(suffix.executionId,second.id);assert.ok(suffix.source.includes(loop?'// d':'// e'));assert.equal(suffix.fence,1);f.branches.settleScript(suffix,{failed:false,output:'stop'});await finishOwned(f,second.id);
+ assert.equal(f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'exit-chain-B').id,second.id);
+});
+const allocationCounts=f=>['branch_executions','branch_commands','branch_unit_snapshots'].map(table=>f.store.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n);
+for(const kind of ['provenance','audit','wrappedProse','counters','prefixResult','prefixFence','missingLineage','missingCheckpoint','receipt','idMap','mapAlias','foreignLineage','ancestorAudit','ancestorCounters','ancestorHash'])test(`chained historical ${kind} corruption refuses before allocation`,async t=>{
+ const {f,next,b}=await restoredCut(t);await finishOwned(f,next.id);
+ const snapshot=captureBytes(f,b.id),{stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const ref=snapshot.continuation.provenance[0];
+ if(kind==='provenance')snapshot.continuation.provenance=[];
+ if(kind==='audit')snapshot.continuation.audit=snapshot.continuation.audit.filter(row=>row.kind!=='restored_prefix');
+ if(kind==='wrappedProse'){const event=snapshot.continuation.audit.find(row=>row.kind==='restored_prefix');event.evidence_json=stableJson({sourceExecutionId:f.source.id,sourceAudit:{kind:'step_settled',evidence_json:'{}'}});f.store.sqlite.prepare('UPDATE branch_checkpoints SET evidence_json=? WHERE id=?').run(event.evidence_json,event.id);}
+ if(kind==='counters'){snapshot.selected.execution[0].traversals++;snapshot.selected.paths[0].traversals++;}
+ if(kind==='prefixResult'){
+  const step=snapshot.selected.steps.find(row=>row.invocation===1&&row.step_id==='a'),attempt=snapshot.selected.attempts.find(row=>row.step_execution_id===step.id),result=snapshot.selected.sealedResults.find(row=>row.step_execution_id===step.id);
+  step.result_json=stableJson({failed:false,output:'forged'});attempt.result_json=step.result_json;result.result_json=step.result_json;result.content_hash=hash(step.result_json);
+ }
+ if(kind==='prefixFence')snapshot.selected.attempts.find(row=>row.state==='completed'&&row.fence===0).fence=1;
+ if(kind==='missingLineage')f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(ref.lineageId);
+ if(kind==='missingCheckpoint')f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(ref.checkpointId);
+ if(kind==='receipt')f.store.sqlite.prepare('UPDATE branch_commands SET input_hash=? WHERE execution_id=?').run('0'.repeat(64),f.source.id);
+ if(['idMap','mapAlias','foreignLineage','ancestorAudit','ancestorCounters','ancestorHash'].includes(kind)){
+  // New private canonical lineage and matching owned references, never weakening immutable UPDATE guards.
+  const line=captureBytes(f,ref.lineageId);
+  if(kind==='idMap')delete line.idMap[Object.keys(line.idMap)[0]];
+  if(kind==='mapAlias'){const keys=Object.keys(line.idMap);line.idMap[keys[0]]=line.idMap[keys[1]];}
+  if(kind==='foreignLineage')line.executionId='foreign-owner';
+  if(kind.startsWith('ancestor')){
+   const ancestor=captureBytes(f,line.checkpointId);
+   if(kind==='ancestorAudit')ancestor.continuation.audit=ancestor.continuation.audit.filter(row=>row.kind!=='result_sealed');
+   if(kind==='ancestorCounters'){ancestor.selected.execution[0].traversals++;ancestor.selected.paths[0].traversals++;}
+   const content=stableJson(ancestor);line.checkpointId=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,content,hash(content)).lastInsertRowid);line.checkpointHash=kind==='ancestorHash'?'0'.repeat(64):hash(content);
+   const {payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');line.commandHash=payloadHash({executionId:line.sourceExecutionId,checkpointId:line.checkpointId,expectedHash:line.checkpointHash});
+   ref.checkpointId=line.checkpointId;ref.checkpointHash=line.checkpointHash;
+  }
+  const bytes=stableJson(line),lineageId=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(next.id,bytes,hash(bytes)).lastInsertRowid);
+  for(const event of snapshot.continuation.audit.filter(row=>['restored_prefix','historical_rewind'].includes(row.kind))){const v=JSON.parse(event.evidence_json);v.lineageId=lineageId;v.checkpointId=line.checkpointId;v.checkpointHash=line.checkpointHash;event.evidence_json=stableJson(v);f.store.sqlite.prepare('UPDATE branch_checkpoints SET evidence_json=? WHERE id=? AND execution_id=?').run(event.evidence_json,event.id,next.id);}
+  f.store.sqlite.prepare('UPDATE branch_commands SET result_json=?,input_hash=? WHERE execution_id=?').run(stableJson({executionId:next.id,lineageId}),line.commandHash,f.source.id);ref.lineageId=lineageId;ref.lineageHash=hash(bytes);
+ }
+ const bytes=stableJson(snapshot),id=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(next.id,bytes,hash(bytes)).lastInsertRowid),before=allocationCounts(f);
+ assert.equal(f.branches.historicalCheckpoints(f.branch.id,next.id).find(cp=>cp.id===id).restoreSupported,false);
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,next.id,id,hash(bytes),'bad-chain'),/unsupported|integrity/);assert.deepEqual(allocationCounts(f),before);
+});
+
+for(const mode of ['async','sync'])test(`chained ${mode} history resumes an inherited prepared Step exactly once`,async t=>{
+ const f=fixture(t,mode,true,false,true,true);await f.prefix();let a;
+ for(let n=0;n<4&&!a;n++){f.branches.advance();await f.branches.unitSaver.drain();a=f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(cp=>{const s=captureBytes(f,cp.id);return cp.restoreSupported&&s.selected.steps.length===2&&s.selected.steps.some(row=>row.state==='prepared');});}
+ assert.ok(a);await finishOwned(f,f.source.id);const first=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'prepared-A');
+ const lease=await f.claim();assert.ok(lease.source.includes('// a'));assert.equal(f.branches.detail(first.id).steps.length,2);assert.equal(f.branches.detail(first.id).steps.find(row=>row.state==='leased').invocation,2);
+ f.branches.settleScript(lease,{failed:false,output:'stop'});await f.branches.unitSaver.drain();const b=f.branches.historicalCheckpoints(f.branch.id,first.id).find(cp=>{const s=captureBytes(f,cp.id);return cp.restoreSupported&&s.selected.steps.every(row=>row.state==='completed');});assert.ok(b);
+ await finishOwned(f,first.id);const next=f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'prepared-B');const suffix=await f.claim();assert.equal(suffix.executionId,next.id);assert.ok(suffix.source.includes('// b'));f.branches.settleScript(suffix,{failed:false,output:'stop'});await finishOwned(f,next.id);
+});
+test('chained current authority and pins refuse before lineage allocation, preserving immutable receipts',async t=>{
+ const {f,next,b}=await restoredCut(t);await finishOwned(f,next.id);const before=allocationCounts(f),policies=new CapabilityPolicyStore(f.store.sqlite);
+ policies.put({scopeKind:'branch',scopeId:f.branch.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.scripts]});assert.throws(()=>f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'policy-chain'),/restricted/);assert.deepEqual(allocationCounts(f),before);
+ policies.put({scopeKind:'branch',scopeId:f.branch.id,expectedRevision:1,restrictedCapabilityIds:[]});f.branches.configure(f.branch.id,{...f.branches.configuration(f.branch.id),checkpointMode:'sync'},1);
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'pins-chain'),/pins changed/);assert.deepEqual(allocationCounts(f),before);
+ assert.throws(()=>f.store.sqlite.prepare("UPDATE branch_unit_snapshots SET snapshot_json='{}' WHERE id=?").run(captureBytes(f,b.id).continuation.provenance[0].lineageId),/immutable/);
+});
+
+test('chained idempotent command rechecks source ancestry after reopen without allocating',async t=>{
+ const {f,next,b}=await restoredCut(t);await finishOwned(f,next.id);const second=f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'idempotent-chain');await finishOwned(f,second.id);await f.reopen();
+ assert.equal(f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'idempotent-chain').id,second.id);
+ const ref=captureBytes(f,b.id).continuation.provenance[0];f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(ref.lineageId);const before=allocationCounts(f);
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'idempotent-chain'),/integrity/);assert.deepEqual(allocationCounts(f),before);
+});
+test('chained lineage insertion failure rolls back all new prefix ownership before dispatch',async t=>{
+ const {f,next,b}=await restoredCut(t);await finishOwned(f,next.id);const before=allocationCounts(f);
+ f.store.sqlite.exec("CREATE TEMP TRIGGER fail_chain_lineage BEFORE INSERT ON branch_unit_snapshots WHEN json_extract(NEW.snapshot_json,'$.schema')='ponderosa.branch.rewind-lineage.v1' BEGIN SELECT RAISE(ABORT,'chain lineage failed'); END");
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'chain-atomic'),/chain lineage failed/);await f.branches.unitSaver.drain();assert.deepEqual(allocationCounts(f),before);assert.equal(f.branches.claimScript('no-candidate'),undefined);
+ f.store.sqlite.exec('DROP TRIGGER fail_chain_lineage');const second=f.branches.rewindHistorical(f.branch.id,next.id,b.id,b.contentHash,'chain-atomic');await finishOwned(f,second.id);assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
+});
