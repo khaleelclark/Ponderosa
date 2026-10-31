@@ -1662,6 +1662,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Installed TypeScript; offline actual TSX component callbacks with host hooks/UI leaves stubbed; no browser or service",
       "origin": "Chat instruction limit field feedback regression"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-lifecycle.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed TypeScript; offline actual TSX callbacks with host hooks/UI leaves stubbed; mounted lifecycle evidence remains separate",
+      "origin": "Workflow-owned Chat deletion route regression"
     }
   ],
   "retainedReleasePayload": [
