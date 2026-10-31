@@ -46,11 +46,11 @@ export class BranchScriptService {
   async tick(admit: boolean): Promise<void> {
     await this.recoverScripts();
     this.publishAudit();
-    if (this.stopped || !admit) { this.reconcileGateNotifications(); this.driveResources(false); this.checkpointErrors(); return; }
+    if (this.stopped || !admit) { this.reconcileGateNotifications(); await this.driveResources(false); this.checkpointErrors(); return; }
     void this.options.installations?.tick().catch(() => undefined);
     this.branches.advance();
     this.reconcileGateNotifications();
-    this.driveResources(admit);
+    await this.driveResources(admit);
     if (this.stopped) return;
     if(this.options.notifyAction){
       for(const action of this.pendingActions.values())this.dispatchAction(action);
@@ -84,8 +84,10 @@ export class BranchScriptService {
     this.pendingScripts.delete(lease.attemptId);if(readiness==='fenced')return;
     await this.launch(lease);
   }
-  private driveResources(admit:boolean):void {
-    void this.options.resources?.tick(admit).catch(error=>this.resourceFailures.push(error));
+  private async driveResources(admit:boolean):Promise<void> {
+    // The outer scheduler tracks this pass independently of Run/cancellation work.
+    try { await this.options.resources?.tick(admit); }
+    catch(error) { this.resourceFailures.push(error); }
   }
   private checkpointErrors():void {
     const errors=[...this.branches.unitSaver.errors(),...(this.options.resources?.errors()??[]),...this.resourceFailures];
