@@ -1108,7 +1108,8 @@ function neighborhoodRows(
     .slice(0, MAX_HISTORY_READ_MESSAGES);
 }
 
-/** Primary progress is mandatory; optional neighbors never displace its next chunk. */
+/** Shared bounded chunk presentation for canonical and imported reads. Primary
+ * progress is mandatory; optional neighbors never displace its next chunk. */
 export function fitHistoryReadChunk(
   response: {utf8Bytes:number},
   message: {text:string;startCodePoint:number;endCodePoint:number;totalCodePoints:number;totalUtf8Bytes:number;complete:boolean;continuation?:string},

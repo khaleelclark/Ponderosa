@@ -99,3 +99,37 @@ The task's `private-windows-optins-20261013/QUALIFICATION.json` and `HANDOFF.jso
 ## Beta scope correction: local browser deferred
 
 The human clarified that local browser connection and its extension are deferred until after beta. At `a4d16a9d518c465a16f3337772ca075dc44d8abd`, new pairing is deliberately refused with HTTP409 `browser_profile_isolation_required` in `apps/server/src/routes/local-browsers.ts`; the beta UI has no reachable local setup entrypoint. The earlier disabled menu placeholder/help suggestion was removed by merged `b29d8a44df194908ada0163346f638eb9252541d`. Dormant setup/transport/extension implementation and maintained tests remain. Their pending live qualification is post-beta work, not a current beta blocker. The internal browser stays in beta scope. This corrects the outdated remaining-work classification without changing the accepted110 test behaviors or removing assertions. Roster search is a known nonblocking beta bug; failed check43 stays tracked.
+
+### Clipboard and first UI fix batch
+
+After building, the installed-Chromium regression uses real clipboard writes and
+Control+V on Core/Branches shared and direct Chat and Inbox, on desktop and Android
+identity/touch emulation. It asserts LF/CRLF content, blank lines, Unicode and the
+last-line sentinel in the draft and canonical dispatch; paste and Shift+Enter never
+submit. Desktop Enter and mobile Return follow the current documented policy.
+It also checks rename Enter/IME suppression, sidebar keyboard resizing, and the
+mobile disabled Executions tab's semantic parent. The fixture uses a controlled
+provider and temporary data; it never loads a provider profile or live service.
+
+```sh
+CHROME_PATH=/usr/bin/google-chrome node --import ./tests/shared/workspace-resolution.mjs tests/chats/composer-clipboard-qualification.mjs
+```
+
+Optional `AXE_CORE_PATH` points to an already installed axe-core browser script;
+`QUALIFICATION_REPORT` writes its full results. Selected shared surfaces run in
+both themes; critical findings fail, and other severities remain in the report.
+The check does not qualify physical iPhone, native IME, the future Assistant,
+provider inference or a production release.
+
+The second UI batch adds a native Chrome zoom/keyboard qualification (Linux host
+with existing Xvfb and xdotool). It uses 100%, 200% and 400% browser zoom, asserts
+actual DPR and theme, walks compose/send/rename and instructions by keyboard,
+and saves complete axe results and screenshots. Set `AXE_CORE_PATH` to an existing
+axe-core script; no package is installed by the runner.
+
+```sh
+AXE_CORE_PATH=/path/to/axe.min.js QUALIFICATION_DIRECTORY=/tmp/ui-a11y node --import ./tests/shared/workspace-resolution.mjs tests/workspace-navigation/accessibility-qualification.mjs
+```
+
+This finite native-browser matrix does not substitute for a screen reader,
+Safari qualification, every dialog state, or independent visual comparison.

@@ -8,6 +8,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { refreshLatestAgentProviderUsage } from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 
 export function useAgentProviderCommands({
   agentId,
@@ -19,6 +20,7 @@ export function useAgentProviderCommands({
   onNotice(value: string): void;
 }) {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const [providerUsageState, setProviderUsageState] =
     useState<ProviderUsageStateDto>();
   const invokeAgentCommand = async (
@@ -63,10 +65,8 @@ export function useAgentProviderCommands({
       ...(argumentsText ? { argumentsText } : {}),
     });
     if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
-    onNotice(
-      result.message ??
-        `/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`,
-    );
+    if (result.message) onNotice(result.message);
+    else notify({ key: "provider-command", message: `/${command.name} Invoked` });
   };
   return {
     invokeAgentCommand,

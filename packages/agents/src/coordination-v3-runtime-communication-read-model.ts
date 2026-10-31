@@ -1,4 +1,4 @@
-import { PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
+import { providerResetAt, PROVIDER_QUOTA_LIMITS, type ProviderQuotaLimit, PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
 import type Database from "better-sqlite3";
 import type {
   RuntimeArtifactV3,
@@ -44,7 +44,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       SELECT run.status,
         EXISTS (SELECT 1 FROM context_rollovers rollover
           WHERE rollover.agent_id = run.agent_id
-            AND rollover.state IN ('requested', 'handoff_committed', 'session_retiring', 'continuation_ready')) AS rollover,
+            AND (rollover.state IN ('handoff_committed', 'session_retiring', 'continuation_ready')
+              OR rollover.state = 'requested' AND rollover.source_run_id <> run.id)) AS rollover,
         EXISTS (SELECT 1 FROM scheduler_prompt_injections injection
           WHERE injection.run_id = run.id AND injection.kind = 'steer'
             AND injection.state IN ('pending', 'submitted')) AS prior_steering,
@@ -569,6 +570,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     const selected = [...latestByCommunication.values()].flatMap(recipients =>
       [...recipients.values()].map(({ activation }) => activation));
     const injections = latestInjections(selected.map(activation => activation.id));
+    const failures = this.deliveryProviderFailures(projectId, selected.map(activation => activation.id));
     const recoveries = new Map(selected.map(activation => {
       const injection = injections.get(activation.id);
       const recovery = injection
@@ -639,6 +641,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         return {
           activationId: activation.id,
           targetAgentId: activation.agent_id,
+          ...(failures.has(activation.id) ? { providerFailure: { ...failures.get(activation.id)!, ...(requiredReplyExhausted ? { recovery: "stopped" as const, nextRetryAt: undefined } : {}) } } : {}),
           ...(runtime ? { runtime } : {}),
           ...(injection?.execution_id ? { executionId: injection.execution_id } : {}),
           ...(recoveryInjection?.execution_id
@@ -692,6 +695,63 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       receiptsByCommunication.set(communicationEventId, receipts);
     }
     return receiptsByCommunication;
+  }
+
+  private deliveryProviderFailures(projectId: string, ids: string[]): Map<string, NonNullable<MessageDeliveryReceiptDto["providerFailure"]>> {
+    const failures = new Map<string, NonNullable<MessageDeliveryReceiptDto["providerFailure"]>>();
+    if (!ids.length) return failures;
+    // One exact-lineage batch; never use latest Agent failure or selected model
+    // as evidence for a different message. Canonical recovery owns every clock.
+    const rows = this.sqlite.prepare(`
+      WITH RECURSIVE chain(root, id) AS (
+        SELECT value, value FROM json_each(?)
+        UNION
+        SELECT chain.root, retry.predecessor_activation_id FROM chain
+        JOIN activation_delivery_retry_lineage retry ON retry.successor_activation_id = chain.id
+        UNION
+        SELECT chain.root, reply.recovery_activation_id FROM chain
+        JOIN required_reply_obligations reply ON reply.source_activation_id = chain.id
+        JOIN agent_activations root ON root.id = chain.root
+        WHERE reply.recovery_activation_id IS NOT NULL AND reply.project_id = root.project_id
+          AND reply.agent_id = root.agent_id AND reply.scope_key = root.scope_key
+      )
+      SELECT chain.root, run.id, run.status, run.provider_failure_json,
+        wake.state AS wake_state, wake.available_at, wake.terminal_outcome,
+        selected.state AS selected_state, selected.available_at AS selected_available_at
+      FROM chain JOIN agent_activations selected ON selected.id = chain.root
+      JOIN scheduler_run_activations attached ON attached.activation_id = chain.id
+      JOIN scheduler_runs run ON run.id = attached.run_id AND run.project_id = ?
+      LEFT JOIN required_reply_obligations reply ON reply.run_id = run.id AND reply.source_activation_id = chain.id
+      JOIN agent_activations wake ON wake.id = COALESCE(reply.recovery_activation_id, chain.id)
+      ORDER BY chain.root, run.created_at DESC, run.rowid DESC
+    `).all(JSON.stringify(ids), projectId) as Array<{root:string;id:string;status:string;provider_failure_json:string|null;wake_state:string;available_at:string;terminal_outcome:string|null;selected_state:string;selected_available_at:string}>;
+    const latest = new Map<string, typeof rows[number]>();
+    const classified = new Set<string>();
+    for (const row of rows) {
+      if (!latest.has(row.root)) latest.set(row.root, row);
+      const current = latest.get(row.root)!;
+      if (classified.has(row.root) || current.status === "completed") continue;
+      let detail: Record<string, unknown>;
+      try { detail = JSON.parse(row.provider_failure_json ?? "null"); } catch { continue; }
+      if (!detail || typeof detail !== "object") continue;
+      classified.add(row.root);
+      if (!["quota_exhausted", "rate_limit", "throttled", "capacity"].includes(String(detail.category))) continue;
+      const resetAt = detail.category === "quota_exhausted" ? providerResetAt(detail.quotaResetAt) : undefined;
+      const selectedPending = current.selected_state === "pending" || current.selected_state === "retry_pending";
+      const pending = selectedPending || current.wake_state === "pending" || current.wake_state === "retry_pending";
+      failures.set(row.root, {
+        category: detail.category as "quota_exhausted" | "rate_limit" | "throttled" | "capacity",
+        runId: row.id,
+        ...(typeof detail.engineId === "string" && /^[a-z][a-z0-9_-]{0,63}$/u.test(detail.engineId) ? { providerId: detail.engineId } : {}),
+        ...(typeof detail.model === "string" && detail.model.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(detail.model) ? { model: detail.model } : {}),
+        ...(resetAt ? { resetAt } : {}),
+        ...(detail.category === "quota_exhausted" && PROVIDER_QUOTA_LIMITS.includes(detail.quotaLimit as ProviderQuotaLimit) ? { quotaLimit: detail.quotaLimit as ProviderQuotaLimit } : {}),
+        recovery: current.status === "leased" || current.status === "running" ? "retrying"
+          : pending ? "scheduled" : current.terminal_outcome === "retry_exhausted" ? "stopped" : "action_required",
+        ...(pending ? { nextRetryAt: selectedPending ? current.selected_available_at : current.available_at } : {}),
+      });
+    }
+    return failures;
   }
 
   communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {

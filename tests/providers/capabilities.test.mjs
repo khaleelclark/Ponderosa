@@ -75,6 +75,24 @@ test('aborted managed MCP discovery reports cancellation and observes owned root
   assert.ok(handles.every(handle => !handle.isAlive()));
 });
 
+test('existing provider inventories retain bounded tool names/descriptions without changing usability or exact counts',async()=>{
+ const {normalizeCodexProviderDiscovery,normalizeClaudeInitCapabilities}=await import('../../packages/engines/dist/capabilities.js');
+ const {projectProviderCapabilities}=await import('../../apps/server/dist/provider-success-projection.js');
+ const codex=normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'records',tools:{lookup:{name:'lookup',description:'Look up a record'}}}]}});
+ assert.deepEqual(projectProviderCapabilities(codex).mcpServers[0].tools,[{name:'lookup',description:'Look up a record'}]);
+ const claude=normalizeClaudeInitCapabilities({type:'system',subtype:'init',mcp_servers:[{name:'records',status:'connected'}],tools:[{name:'mcp__records__lookup',description:'Claude record lookup'},'mcp__records__list']});
+ assert.deepEqual(projectProviderCapabilities(claude).mcpServers[0].tools,[{name:'mcp__records__lookup',description:'Claude record lookup'},{name:'mcp__records__list'}]);
+ const inventory=Object.fromEntries(Array.from({length:1000},(_,i)=>['tool_'+i,{description:'x'.repeat(2000)}]));
+ const large=projectProviderCapabilities(normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'large',tools:inventory},{name:'next',tools:inventory}]}}));
+ assert.equal(large.mcpServers[0].toolCount,1000);assert.equal(large.mcpServers[1].toolCount,1000);assert.ok(large.mcpServers[0].tools.length>0&&large.mcpServers[0].tools.length<1000);assert.equal(large.mcpServers[1].tools.length,0);assert.ok(large.mcpServers.every(s=>s.usable));
+ for(const name of ['a'.repeat(513),'bad\0name']){const normalized=projectProviderCapabilities(normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'odd',tools:{[name]:{description:'Diagnostic only'}}}]}}));assert.equal(normalized.mcpServers[0].toolCount,1);assert.equal(normalized.mcpServers[0].usable,true);assert.deepEqual(normalized.mcpServers[0].tools,[])}
+ const oddDescription=projectProviderCapabilities(normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'odd',tools:{lookup:{description:'bad\0description'},unicode:{description:'🌲'.repeat(1000)}}}]}}));assert.deepEqual(oddDescription.mcpServers[0].tools[0],{name:'lookup'});assert.ok(oddDescription.mcpServers[0].tools[1].description.length<=513);
+ const bad=structuredClone(codex);bad.mcpServers[0].tools[0].extra='invalid';assert.throws(()=>projectProviderCapabilities(bad),/invalid structured data/);
+ let accessed=false;const getter=structuredClone(codex);Object.defineProperty(getter.mcpServers[0].tools[0],'description',{get(){accessed=true;return'unsafe'}});assert.throws(()=>projectProviderCapabilities(getter),/invalid structured data/);assert.equal(accessed,false);
+ const wrong=structuredClone(codex);wrong.mcpServers[0].tools[0].description={nested:'bad'};assert.throws(()=>projectProviderCapabilities(wrong),/invalid structured data/);
+});
+
+
 test('Codex occupancy and capacity observations stay with their exact provider thread', async () => {
   const { CodexAppServerSession } = await import('../../packages/engines/dist/codex-app-server.js');
   const session = Object.create(CodexAppServerSession.prototype);

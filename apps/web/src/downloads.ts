@@ -1,3 +1,5 @@
+import {AGENT_PACKAGE_MAX_BYTES} from "@ponderosa/core";
+import {productApiPath} from "./api/productScope.js";
 import { noteBackgroundRateLimit } from "./api/backgroundCooldown.js";
 
 /** Keep the URL alive until the browser has consumed the download handoff. */
@@ -15,14 +17,12 @@ export function downloadBlob(blob: Blob, filename: string, feedbackHandled = fal
 export interface DownloadProgress { receivedBytes: number; totalBytes?: number }
 
 export async function prepareDownload(url: string, filename: string, signal?: AbortSignal, onProgress?: (progress: DownloadProgress) => void): Promise<void> {
-  const response = await fetch(url, { credentials: "same-origin", signal });
+  const response = await fetch(productApiPath(url), { credentials: "same-origin", signal });
   if (response.status === 429) noteBackgroundRateLimit(response.headers.get("Retry-After"));
   if (!response.ok) throw new Error(response.status === 429 ? "Downloads are temporarily busy. Wait a moment and try again." : `Download could not start (${response.status}). Try again.`);
-  // Portable packages encode up to 64 MiB of artifact bytes as base64; keep
-  // their existing 96 MiB import/export envelope rather than imposing the
-  // separate 80 MiB single-file limit on that encoded container.
-  const limitMiB = /\/api\/agents\/[^/?#]+\/export(?:[?#]|$)/u.test(url) ? 96 : 80;
-  const maximum = limitMiB * 1024 * 1024;
+  const packageDownload=/\/api\/(?:branches\/engine\/)?agents\/[^/?#]+\/export(?:[?#]|$)/u.test(url);
+  const maximum=packageDownload?AGENT_PACKAGE_MAX_BYTES:80*1024*1024;
+  const limitMiB=maximum/(1024*1024);
   const limitError = () => new Error(`This download exceeds Ponderosa's ${limitMiB} MiB limit.`);
   const length = Number(response.headers.get("Content-Length"));
   if (length > maximum) { await response.body?.cancel(); throw limitError(); }

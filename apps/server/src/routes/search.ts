@@ -1,4 +1,5 @@
-import { collaborationPresentation, type AllChatPageDto } from "@ponderosa/core";
+import {requestProduct,resourceInProduct,decisionInProduct} from '../product-scope.js';
+import { collaborationPresentation, type InboxPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
 import { searchWorkspaceFiles } from "../file-search.js";
@@ -11,7 +12,7 @@ import {
 
 export function registerSearchRoutes(
   app: FastifyInstance,
-  { globalChatSearch, store, workspace, coordinationV3 }: SearchRoutesContext,
+  { globalChatSearch, store, workspace, deliveryReceiptsForCommunications }: SearchRoutesContext,
 ): void {
   let filesInFlight = 0;
   app.get<{ Querystring: { q?: string; limit?: string; projectId?: string; conversationId?: string; cursor?: string } }>("/api/search/files", async (request, reply) => {
@@ -24,7 +25,7 @@ export function registerSearchRoutes(
     if (request.query.projectId && !projects.length) return reply.code(404).send({ error: "Project not found" });
     // Discover registered Chat roots, never the mutable legacy namespace root.
     let roots = projects.flatMap(project => store.listConversations(project.id)
-      .filter(chat => chat.projectId === project.id && !chat.deletedAt && chat.workingDirectory)
+      .filter(chat => chat.projectId === project.id && !chat.deletedAt && chat.workingDirectory && resourceInProduct(store,'conversation',chat.id,requestProduct(request)))
       .map(chat => ({ ...project, hostPath: chat.workingDirectory!, label: chat.title, conversationId: chat.id })));
     if (request.query.conversationId) {
       const conversation = store.getConversation(request.query.conversationId);
@@ -41,13 +42,13 @@ export function registerSearchRoutes(
   app.get<{ Querystring: { q?: string; limit?: string; kind?: string; distinct?: string } }>("/api/search", async (request, reply) => {
     try {
       if (request.query.distinct !== undefined && request.query.distinct !== "chats") throw new Error("invalid search grouping");
-      return globalChatSearch(request.query);
+      return globalChatSearch({...request.query,productScope:requestProduct(request)});
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
     }
   });
 
-  app.get<{ Querystring: { limit?: string; cursor?: string } }>("/api/all-chat", async (request, reply) => {
+  app.get<{ Querystring: { limit?: string; cursor?: string } }>("/api/inbox", async (request, reply) => {
     const requestedLimit = Number(request.query.limit ?? 50);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(100, Math.floor(requestedLimit))) : 50;
     if (request.query.cursor !== undefined && (!request.query.cursor || request.query.cursor.length > 4096)) {
@@ -56,6 +57,7 @@ export function registerSearchRoutes(
     try {
       type CombinedCursor = {
         v: 1;
+        productScope:'dev'|'branches';
         messages?: string;
         messagesDone?: boolean;
         decisions?: { createdAt: string; id: string };
@@ -64,17 +66,17 @@ export function registerSearchRoutes(
       let combined: CombinedCursor | undefined;
       if (request.query.cursor) {
         const parsed = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
-        if (parsed.v !== 1) throw new Error("invalid All Chat cursor");
+        if (parsed.v !== 1 || parsed.productScope!==requestProduct(request)) throw new Error("invalid Inbox cursor");
         combined = parsed as CombinedCursor;
       }
       const messagePage = combined?.messagesDone
         ? { items: [], history: { limit, hasMore: false } }
-        : store.getAllChatPage({ limit, cursor: combined?.messages });
+        : store.getInboxPage({ limit, cursor: combined?.messages,productScope:requestProduct(request) });
       const receiptMaps = new Map([...new Set(
         messagePage.items.map(item => item.project.id),
       )].map(projectId => [
         projectId,
-        coordinationV3.deliveryReceiptsForCommunications(
+        deliveryReceiptsForCommunications(
           projectId,
           messagePage.items.flatMap(item =>
             item.project.id === projectId ? [item.communicationEventId] : []
@@ -121,7 +123,7 @@ export function registerSearchRoutes(
       });
       const decisionPage = combined?.decisionsDone
         ? { events: [], hasMore: false as const }
-        : workspace.listDecisionEventPage({ limit, before: combined?.decisions });
+        : workspace.listDecisionEventPage({ limit, before: combined?.decisions,visible:decision=>decisionInProduct(store,decision,requestProduct(request)) });
       const decisions = decisionPage.events
         .flatMap((event) => {
           const decision = event.decision;
@@ -138,6 +140,7 @@ export function registerSearchRoutes(
       const hasMore = messagePage.history.hasMore || decisionPage.hasMore;
       const nextCursor: CombinedCursor = {
         v: 1,
+        productScope:requestProduct(request),
         ...(messagePage.history.hasMore && messagePage.history.cursor
           ? { messages: messagePage.history.cursor }
           : { messagesDone: true }),
@@ -153,9 +156,9 @@ export function registerSearchRoutes(
           hasMore,
           ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}),
         },
-      } satisfies AllChatPageDto;
+      } satisfies InboxPageDto;
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid All Chat cursor" });
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid Inbox cursor" });
     }
   });
 }

@@ -1,4 +1,7 @@
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
+import {useMutationNotification} from "./MutationNotifications";
+import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
+import {currentProductScope} from "../api/productScope";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { BrowserVoiceSettings } from "./speech/BrowserVoiceSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
@@ -67,7 +70,7 @@ import { useUnsavedForm } from "../reloadSafety";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
-  "Applies to every Agent on the next fresh provider session. Chat and Agent instructions follow it. Behavioral preferences, such as preferred models, are guidance rather than guaranteed structural routing.";
+  "Applies to all Agents on their next fresh provider session.";
 
 function SettingsHeader({
   profile = false,
@@ -126,13 +129,11 @@ function GeneralSettingsSection({
   onLimit,
   onSaveAgentDefaults,
   agentDefaultsSaving,
-  agentDefaultsSaved,
   agentDefaultsSaveError,
   onRolloverTokens,
   onRolloverFraction,
   onSaveRollover,
   rolloverSaving,
-  rolloverSaved,
   rolloverSaveError,
 }: {
   preferences: WorkspacePreferencesDto;
@@ -149,13 +150,11 @@ function GeneralSettingsSection({
   onLimit(value: string): void;
   onSaveAgentDefaults(): void;
   agentDefaultsSaving: boolean;
-  agentDefaultsSaved: boolean;
   agentDefaultsSaveError?: string;
   onRolloverTokens(value: string): void;
   onRolloverFraction(value: string): void;
   onSaveRollover(tokens: number, fraction: number): void;
   rolloverSaving: boolean;
-  rolloverSaved: boolean;
   rolloverSaveError?: string;
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
@@ -180,8 +179,9 @@ function GeneralSettingsSection({
   return (
     <Stack spacing={2.5}>
       <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
+      {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></Paper>}
       <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
+        <Typography variant="h6" component="h2" fontWeight={800} sx={{ mb: 1.5 }}>
           Appearance
         </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
@@ -209,7 +209,7 @@ function GeneralSettingsSection({
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800}>
+        <Typography variant="h6" component="h2" fontWeight={800}>
           Agent Defaults
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -243,11 +243,6 @@ function GeneralSettingsSection({
           >
             {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
           </Button>
-          {agentDefaultsSaved ? (
-            <Alert severity="success" role="status">
-              Agent defaults saved successfully.
-            </Alert>
-          ) : null}
           {agentDefaultsSaveError ? (
             <Alert severity="error" role="alert">
               {agentDefaultsSaveError}
@@ -256,13 +251,8 @@ function GeneralSettingsSection({
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800}>
+        <Typography variant="h6" component="h2" fontWeight={800}>
           Provider Session Rollover
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          When a session passes either limit, Ponderosa asks the Agent to write
-          a short handoff, then starts a fresh provider session at the next safe
-          boundary. The provider&apos;s own compaction remains the fallback.
         </Typography>
         <Stack spacing={2}>
           <FormControlLabel
@@ -285,7 +275,7 @@ function GeneralSettingsSection({
             error={Boolean(rolloverTokensError)}
             helperText={
               rolloverTokensError ??
-              "Minimum 75,000. Fresh Ponderosa sessions already consume substantial context, so lower values can cause repeated rollover. Default 150,000."
+              "Minimum 75,000; default 150,000 tokens."
             }
           />
           <TextField
@@ -297,7 +287,7 @@ function GeneralSettingsSection({
             error={Boolean(rolloverFractionError)}
             helperText={
               rolloverFractionError ??
-              "Applies only to providers that report a window size (Codex does; Claude does not). Catches sessions configured with a small window, where the token ceiling above would never be reached."
+              "Requires a provider-reported context window size."
             }
           />
           <Button
@@ -311,7 +301,7 @@ function GeneralSettingsSection({
           >
             {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
           </Button>
-          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : rolloverSaved ? <Alert severity="success" role="status">Rollover limits saved</Alert> : null}
+          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : null}
         </Stack>
       </Paper>
     </Stack>
@@ -348,11 +338,11 @@ function NotificationSettingsSection({
       : "info" as const;
   return (
     <Paper variant="outlined" sx={{ p: 2.5 }}>
-      <Typography variant="h6" fontWeight={800}>
+      <Typography variant="h6" component="h2" fontWeight={800}>
         Notifications
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Choose which Agent updates appear in Notifications and browser push. Chat and Agent notification settings can further limit these alerts, including those that need attention.
+        Choose alerts for Notifications and browser push.
       </Typography>
       <Stack>
         {NOTIFICATION_LABELS.map(([key, label]) => (
@@ -496,10 +486,7 @@ function ClaudeModelOptionsSettings({
         </Stack>
       ) : (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          No specific versions are pinned by the environment. Set
-          {" "}ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
-          ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_DEFAULT_FABLE_MODEL, or
-          ANTHROPIC_CUSTOM_MODEL_OPTION to add host-managed choices.
+          No environment-pinned model versions.
         </Typography>
       )}
       <Stack spacing={1} sx={{ mt: 2 }}>
@@ -669,12 +656,11 @@ function ProviderSettingsSection({
       ) : null}
       {usageProviders.length > 1 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
-          <Typography variant="h6" fontWeight={800}>
+          <Typography variant="h6" component="h2" fontWeight={800}>
             Provider Usage
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Choose which provider appears in the usage button by default.
-            Agent pages can temporarily show that Agent&apos;s active provider.
+            Default provider for the usage button.
           </Typography>
           <FormControl fullWidth>
             <InputLabel id="settings-default-usage-provider">
@@ -822,7 +808,7 @@ function ProviderSettingsSection({
             {engine.configuredModels !== undefined ? (
               <>
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
-                  Latest aliases follow future Claude upgrades. Pinned exact IDs stay on the selected version.
+                  Latest follows upgrades; exact IDs stay pinned.
                 </Typography>
                 <ClaudeModelOptionsSettings
                   engine={engine}
@@ -870,6 +856,7 @@ function ProviderSettingsSection({
 }
 
 export function WorkspaceSettingsView({
+  showHeader=true,
   preferences,
   engines,
   projects,
@@ -879,9 +866,11 @@ export function WorkspaceSettingsView({
   onSavePreferences,
   section = "general",
   activityProjectId,
+  activityWorkflows=false,
   onReturn,
   returnLabel,
 }: {
+  showHeader?:boolean;
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   projects: ProjectDto[];
@@ -893,10 +882,12 @@ export function WorkspaceSettingsView({
   ): Promise<WorkspacePreferencesDto>;
   section?: "profile" | "general" | "providers" | "notifications" | "activity";
   activityProjectId?: string;
+  activityWorkflows?: boolean;
   onReturn?(): void;
   returnLabel?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const validationProject = projects[0];
   const modelCatalogQuery = useEngineModelCatalogs(validationProject?.id, engines);
   const readinessQuery = useQuery({
@@ -1055,6 +1046,9 @@ export function WorkspaceSettingsView({
         limitRef.current,
         String(submitted.maxConcurrentAgentRuns),
       ));
+      if (instructionsRef.current === submitted.globalInstructions && limitRef.current === String(submitted.maxConcurrentAgentRuns)) {
+        notify({ key: "workspace-agent-defaults", message: "Settings Saved" });
+      }
     },
   });
   const saveRollover = useMutation({
@@ -1062,17 +1056,11 @@ export function WorkspaceSettingsView({
     onSuccess: (_saved, submitted) => {
       setRolloverTokensDirty(rolloverTokensRef.current !== String(submitted.contextRolloverTokens));
       setRolloverFractionDirty(rolloverFractionRef.current !== String(submitted.contextRolloverWindowFraction));
+      if (rolloverTokensRef.current === String(submitted.contextRolloverTokens) && rolloverFractionRef.current === String(submitted.contextRolloverWindowFraction)) {
+        notify({ key: "workspace-rollover-limits", message: "Settings Saved" });
+      }
     },
   });
-  useEffect(() => {
-    if (!saveAgentDefaults.isSuccess) return;
-
-    const timeoutId = window.setTimeout(() => {
-      saveAgentDefaults.reset();
-    }, 3_000);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [saveAgentDefaults.isSuccess, saveAgentDefaults.reset]);
   const setPushFrom = (action: () => Promise<WebPushState>) => {
     setPushBusy(true);
     void action()
@@ -1081,8 +1069,8 @@ export function WorkspaceSettingsView({
   };
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
-      <SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />
-      <Box sx={{ maxWidth: 900, mx: "auto", p: { xs: 2, md: 4 } }}>
+      {showHeader&&<SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />}
+      <Box sx={{ maxWidth: section === "general" ? undefined : 900, mx: "auto", p: { xs: 2, md: 4 } }}>
         {section === "profile" ? (
           <OperatorProfileSettingsSection
             preferences={preferences}
@@ -1119,7 +1107,6 @@ export function WorkspaceSettingsView({
               })
             }
             agentDefaultsSaving={saveAgentDefaults.isPending}
-            agentDefaultsSaved={saveAgentDefaults.isSuccess}
             agentDefaultsSaveError={
               saveAgentDefaults.isError
                 ? saveAgentDefaults.error instanceof Error
@@ -1142,7 +1129,6 @@ export function WorkspaceSettingsView({
               });
             }}
             rolloverSaving={saveRollover.isPending}
-            rolloverSaved={saveRollover.isSuccess && !rolloverTokensDirty && !rolloverFractionDirty}
             rolloverSaveError={saveRollover.isError ? saveRollover.error instanceof Error ? saveRollover.error.message : "Rollover limits could not be saved. Try again." : undefined}
           />
         ) : null}
@@ -1194,7 +1180,7 @@ export function WorkspaceSettingsView({
         {section === "activity" ? (
           <Stack spacing={2.5}>
             <Paper variant="outlined" sx={{ p: 2.5 }}>
-              <Typography variant="h6" fontWeight={800}>Provider Status</Typography>
+              <Typography variant="h6" component="h2" fontWeight={800}>Provider Status</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                 Sign-in, runtime access, and network availability for configured AI providers.
               </Typography>
@@ -1214,6 +1200,7 @@ export function WorkspaceSettingsView({
             <ProviderActivitySettingsSection
               projects={projects}
               projectId={activityProjectId}
+              workflows={activityWorkflows}
             />
           </Stack>
         ) : null}
@@ -1247,14 +1234,24 @@ function OperatorProfileSettingsSection({
   onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
 }): JSX.Element {
   const form = useOperatorProfileForm(preferences.profile);
-  const save = useMutation({ mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }) });
+  const notify = useMutationNotification();
+  const currentProfile = useRef(form.profile);
+  currentProfile.current = form.profile;
+  const save = useMutation({
+    mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }),
+    onSuccess: (_saved, submitted) => {
+      if (JSON.stringify(submitted) === JSON.stringify(currentProfile.current)) {
+        notify({ key: "operator-profile", message: "Settings Saved" });
+      }
+    },
+  });
   return (
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
       <OperatorProfileEditor
         form={form}
         avatarSize={72}
         nameLabel="What Agents Call You"
-        handleHelperText="# identifies people and Agents; @ references files. Historical mentions continue to follow your stable identity."
+        handleHelperText="# for people and Agents; @ for files."
         pictureLabelId="profile-picture"
         avatarFirst
         showDescription
@@ -1267,7 +1264,7 @@ function OperatorProfileSettingsSection({
       >
         {save.isPending ? "Saving…" : "Save Profile"}
       </Button>
-      {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : save.isSuccess && JSON.stringify(save.variables) === JSON.stringify(form.profile) ? <Alert severity="success" role="status" sx={{ mt: 1 }}>Profile saved</Alert> : null}
+      {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : null}
     </Paper>
   );
 }

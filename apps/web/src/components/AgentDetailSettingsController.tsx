@@ -16,7 +16,6 @@ interface AgentDetailSettingsControllerProps {
   settingsModels: ComponentProps<typeof AgentSettingsPane>["settingsModels"];
   settingsEfforts: ComponentProps<typeof AgentSettingsPane>["settingsEfforts"];
   runtimeSettingsDirty: boolean;
-  runtimeSettingsNotice?: string;
   runtimeSettingsPending: boolean;
   runtimeSettingsError: unknown;
   recheckPending: boolean;
@@ -32,7 +31,6 @@ interface AgentDetailSettingsControllerProps {
   onSettingsEngine(value: string): void;
   onSettingsModel(value: string): void;
   onSettingsEffort(value: string): void;
-  onNotice(value?: string): void;
   onSaveRuntimeSettings(): void;
   onRecheckEngine(): void;
   onOpenMaster(conversationId: string): void;
@@ -54,7 +52,6 @@ export function AgentDetailSettingsController({
   settingsModels,
   settingsEfforts,
   runtimeSettingsDirty,
-  runtimeSettingsNotice,
   runtimeSettingsPending,
   runtimeSettingsError,
   recheckPending,
@@ -70,7 +67,6 @@ export function AgentDetailSettingsController({
   onSettingsEngine,
   onSettingsModel,
   onSettingsEffort,
-  onNotice,
   onSaveRuntimeSettings,
   onRecheckEngine,
   onOpenMaster,
@@ -91,7 +87,6 @@ export function AgentDetailSettingsController({
       settingsModels={settingsModels}
       settingsEfforts={settingsEfforts}
       runtimeSettingsDirty={runtimeSettingsDirty}
-      runtimeSettingsNotice={runtimeSettingsNotice}
       runtimeSettingsPending={runtimeSettingsPending}
       runtimeSettingsError={runtimeSettingsError}
       recheckPending={recheckPending}
@@ -111,7 +106,6 @@ export function AgentDetailSettingsController({
         onSettingsEngine(value);
         onSettingsModel("");
         onSettingsEffort("");
-        onNotice(undefined);
       }}
       onSettingsModelChange={value => {
         onSettingsModel(value);
@@ -124,12 +118,8 @@ export function AgentDetailSettingsController({
         ) {
           onSettingsEffort("");
         }
-        onNotice(undefined);
       }}
-      onSettingsEffortChange={value => {
-        onSettingsEffort(value);
-        onNotice(undefined);
-      }}
+      onSettingsEffortChange={onSettingsEffort}
       onSaveRuntimeSettings={onSaveRuntimeSettings}
       onRecheckEngine={onRecheckEngine}
       onStartFreshSession={() => {

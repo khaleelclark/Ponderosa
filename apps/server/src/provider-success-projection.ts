@@ -396,7 +396,7 @@ function command(value: unknown, budget: ProjectionBudget, depth: number): Engin
 function mcpServer(value: unknown, budget: ProjectionBudget, depth: number): EngineMcpServer {
   const record = dataRecord(value, [
     "name", "configured", "initialization", "usable", "toolsDiscovered", "toolCount",
-    "health", "detail",
+    "health", "detail", "tools",
   ], "capabilities", budget, depth);
   const detail = optionalString(record, "detail", MAX_DESCRIPTION_CHARACTERS, "capabilities", budget, depth + 1);
   return {
@@ -410,6 +410,11 @@ function mcpServer(value: unknown, budget: ProjectionBudget, depth: number): Eng
     toolCount: finiteNumber(record, "toolCount", 0, 1_000_000, "capabilities", budget, depth + 1),
     health: enumString(record, "health", ["healthy", "unhealthy", "unknown"] as const, "capabilities", budget, depth + 1),
     ...(detail === undefined ? {} : { detail }),
+    ...(record.get("tools") === undefined ? {} : {tools:projectedArray(record.get("tools"), MAX_CAPABILITY_ROWS, "capabilities", budget, depth + 1, (entry, entryDepth) => {
+      const tool=dataRecord(entry,["name","description"],"capabilities",budget,entryDepth);
+      const description=optionalString(tool,"description",MAX_DESCRIPTION_CHARACTERS,"capabilities",budget,entryDepth+1);
+      return {name:requiredString(tool,"name",MAX_IDENTIFIER_CHARACTERS,"capabilities",budget,entryDepth+1),...(description===undefined?{}:{description})};
+    })}),
   };
 }
 

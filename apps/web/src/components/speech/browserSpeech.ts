@@ -39,6 +39,7 @@ export interface BrowserSpeechRecognition {
   lang: string;
   maxAlternatives: number;
   unspokenPunctuation?: boolean;
+  onspeechend?: (() => void) | null;
   onend: (() => void) | null;
   onerror: ((event: BrowserSpeechRecognitionErrorEvent) => void) | null;
   onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null;

@@ -1,3 +1,4 @@
+import {runtimeCapabilityAllows} from "../runtime-capability-policy.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PONDEROSA_MANAGE_TOOL, canonicalizeProviderText, type CommitAgentDeletionResponse, type ModelOption } from "@ponderosa/core";
 import { stableJson, type AgentManagementAuthorization, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from "@ponderosa/agents";
@@ -21,7 +22,6 @@ interface AgentManagementRoutesContext {
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   publishWorkspaceSince(cursor: number): void;
   notifyScheduler(): void;
-  authToken?: string;
 }
 
 const ACTION_FIELDS = {
@@ -95,7 +95,7 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
   const { store, coordinationV3, workspace, engines, managementPlans, activeRuns,
     agentMessageCapabilities, deletingAgentIds, cachedModelOptions,
     capabilityOwnsAuthoritativeRun, publicManagementOperations, commitAgentDeletion,
-    appendWorkspace, publishWorkspaceSince, notifyScheduler, authToken } = context;
+    appendWorkspace, publishWorkspaceSince, notifyScheduler } = context;
   const durableStore = store as AgentStore & Partial<Pick<AgentStore,
     "getAgentManagementPlan" | "findAgentManagementPlan" | "createAgentManagementPlan" | "updateAgentManagementPlan">>;
   const loadPlan = (id: string) => durableStore.getAgentManagementPlan?.(id) ?? managementPlans.get(id);
@@ -143,13 +143,15 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
     if (!hasOnlyFields(body, ACTION_FIELDS[action])) return reply.code(400).send({ error: `${action} request contains an unknown field` });
 
     if (action === "describe") {
+      let creationAllowed=false;
+      try{creationAllowed=runtimeCapabilityAllows(store,capability,'ponderosa_create_managed_agent');}catch{/* An unavailable policy grants no creation authority. */}
       const descendants = store.listAgentSubtree(owner.id).slice(1);
       return {
         owner: { agentId: owner.id, title: owner.title }, conversationId: capability.conversationId,
         descendants: descendants.map((agent) => ({ agentId: agent.id, title: agent.title,
           managerAgentId: agent.managerAgentId, engine: agent.activeEngine, state: agent.state })),
         permissions: {
-          autonomous: ["create_agent", "rename_agent", "stop_agent",
+          autonomous: [...(creationAllowed?["create_agent"]:[]), "rename_agent", "stop_agent",
             ...(owner.managementPermissions.allowAutomaticDescendantDeletion ? ["delete_agent"] : []),
             ...(owner.managementPermissions.allowAutomaticDescendantReorganization ? ["set_manager"] : [])],
           requiresApprovalDecision: [
@@ -312,7 +314,6 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
             }
             if (!targetRunId || coordinationV3.agentSnapshot(targetId).activeRun?.id !== targetRunId) throw new Error("the exact Run bound to this stop_agent plan is no longer active");
             const response = await app.inject({ method: "POST", url: `/api/agents/${encodeURIComponent(targetId)}/cancel`,
-              headers: authToken ? { authorization: `Bearer ${authToken}` } : undefined,
               payload: { targetRunId, idempotencyKey: cancellationKey } });
             if (response.statusCode >= 400) throw new Error(response.json().error ?? "Agent stop failed");
             const receipt = coordinationV3.cancellationReceipt(targetId, cancellationKey);

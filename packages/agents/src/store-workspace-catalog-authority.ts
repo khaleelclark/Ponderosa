@@ -1,3 +1,4 @@
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
 import { join } from "node:path";
@@ -74,7 +75,7 @@ interface ConversationDeletionIdentity {
   ownershipToken: string;
 }
 
-function creationId(kind: "project" | "conversation", scope: string, key: string): string {
+export function creationId(kind: "project" | "conversation", scope: string, key: string): string {
   const hash = createHash("sha256").update(`${kind}\0${scope}\0${key}`).digest("hex");
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${
     ((Number.parseInt(hash[16]!, 16) & 3) | 8).toString(16)
@@ -107,12 +108,13 @@ export class AgentWorkspaceCatalogAuthority {
       conversationId: string,
       channel?: ConversationChannel,
     ) => ConversationMessageDto[],
-    private readonly refreshAllChatFeedProject: (projectId: string) => void,
+    private readonly refreshInboxFeedProject: (projectId: string) => void,
     private readonly setHistoryConversationVisibility: (
       projectId: string,
       conversationId: string,
       visible: boolean,
     ) => void,
+    private readonly progress: ProjectionProgress,
   ) {}
 
   private assertProjectMetadataMutable(projectId: string): void {
@@ -135,12 +137,13 @@ export class AgentWorkspaceCatalogAuthority {
     let canonicalCommitted = false;
     let result: T | undefined;
     try {
-      this.db.transaction(() => {
+      const commit = () => this.db.transaction(() => {
         this.assertProjectMetadataMutable(projectId);
         result = writeCanonical();
         canonicalCommitted = true;
         writeProjection();
       });
+      this.progress.run([projectJsonPath(this.dataDir, projectId)], commit);
     } catch (error) {
       if (!canonicalCommitted) throw error;
       try { writeProjection(); } catch { /* canonical metadata remains authoritative */ }
@@ -357,14 +360,31 @@ export class AgentWorkspaceCatalogAuthority {
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
       hostPath: string;
       chatOwned?: boolean;
+      branchId?: string;
+      executionId?: string;
       managedWorkspaceName?: string;
       creationHostPath?: string;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
   ): ProjectDto {
+    const validateBranchOwner = (): void => {
+      if (input.executionId && !input.branchId) throw new Error("An execution-owned Chat requires its Branch");
+      if (!input.branchId) return;
+      if (!input.chatOwned || !this.db.get(sql`SELECT 1 FROM branches WHERE id=${input.branchId} AND deleting=0`)) {
+        throw new Error("Branch Chat owner is unavailable");
+      }
+      if (input.executionId && !this.db.get(sql`SELECT 1 FROM branch_executions WHERE id=${input.executionId} AND branch_id=${input.branchId}`)) {
+        throw new Error("Branch Chat execution owner is unavailable");
+      }
+    };
+    validateBranchOwner();
     const replay = identity ? this.getProjectCreation(identity) : undefined;
-    if (replay) return replay;
+    if (replay) {
+      const chat = replay.lastConversationId ? this.getConversation(replay.lastConversationId,{includeDeleting:true}) : undefined;
+      if (chat?.branchId !== input.branchId || chat?.executionId !== input.executionId) throw new Error("Chat creation replay belongs to a different Branch owner");
+      return replay;
+    }
     const id = identity ? creationId("project", "workspace", identity.idempotencyKey) : randomUUID();
     const conversationId = identity
       ? creationId("conversation", id, `${identity.idempotencyKey}:default`)
@@ -390,6 +410,8 @@ export class AgentWorkspaceCatalogAuthority {
       } : {}),
     };
     const conversation: ConversationJson = {
+      ...(input.branchId ? {branchId:input.branchId} : {}),
+      ...(input.executionId ? {executionId:input.executionId} : {}),
       id: conversationId, projectId: id, title: input.chatOwned ? input.label : "New Chat", defaultEngine,
       workingDirectory: input.hostPath, instructions: "",
       ...(input.managedWorkspaceName ? { managedWorkspaceName: input.managedWorkspaceName } : {}),
@@ -437,8 +459,9 @@ export class AgentWorkspaceCatalogAuthority {
       publishedIdentity = { dev: staged.dev, ino: staged.ino };
       fsyncDirectory(projectsDir(this.dataDir));
       this.db.transaction((tx) => {
+        validateBranchOwner();
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: input.chatOwned ? input.label : "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, branchId:input.branchId ?? null, executionId:input.executionId ?? null, title: input.chatOwned ? input.label : "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now }).run();
         for (const event of presets) {
           tx.insert(agentPresets).values({ ...event.preset, enabled: 1 }).run();
         }
@@ -978,6 +1001,8 @@ export class AgentWorkspaceCatalogAuthority {
     const result: ConversationDto = {
       id: row.id,
       projectId: row.projectId,
+      ...(row.branchId ? {branchId:row.branchId} : {}),
+      ...(row.executionId ? {executionId:row.executionId} : {}),
       title: next.title,
       workingDirectory: canonical.workingDirectory,
       instructions: next.instructions,
@@ -1026,6 +1051,7 @@ export class AgentWorkspaceCatalogAuthority {
     return row ? {
       conversationId: row.conversationId,
       projectId: row.projectId,
+      ...(row.branchId ? {branchId:row.branchId} : {}),
       ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
       removalStarted: row.removalStarted === 1,
@@ -1046,6 +1072,7 @@ export class AgentWorkspaceCatalogAuthority {
       .map(row => ({
         conversationId: row.conversationId,
         projectId: row.projectId,
+        ...(row.branchId ? {branchId:row.branchId} : {}),
         ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
         ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
         removalStarted: row.removalStarted === 1,
@@ -1069,6 +1096,7 @@ export class AgentWorkspaceCatalogAuthority {
     this.db.insert(conversationDeletionReceipts).values({
       conversationId: id,
       projectId: row.projectId,
+      branchId: row.branchId,
       tombstoneName: `.${id}.deleting-${ownershipToken}`,
       ownershipToken,
       removalStarted: 0,
@@ -1163,7 +1191,7 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   refreshConversationDeletionProjection(receipt: ConversationDeletionReceipt): void {
-    this.refreshAllChatFeedProject(receipt.projectId);
+    this.refreshInboxFeedProject(receipt.projectId);
   }
 
   markConversationDeletionServerCleanupComplete(id: string): void {
@@ -1262,6 +1290,8 @@ export class AgentWorkspaceCatalogAuthority {
     return {
       id: row.id,
       projectId: row.projectId,
+      ...(row.branchId ? {branchId:row.branchId} : {}),
+      ...(row.executionId ? {executionId:row.executionId} : {}),
       title: row.title,
       workingDirectory: context.workingDirectory,
       instructions: context.instructions,

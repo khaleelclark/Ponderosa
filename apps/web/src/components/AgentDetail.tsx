@@ -1,3 +1,6 @@
+import { createClientId } from "../clientId";
+import {ResourceSettingsContext} from "./ResourceSettingsContext";
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import {
   Alert,
@@ -13,7 +16,7 @@ import type {
   ResponseFileActivityDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import {
   AGENT_HISTORY_PAGE_SIZE,
@@ -23,7 +26,6 @@ import {
 } from "../agents";
 import {
   useAgent,
-  useNotifications,
   useProjects,
   useWorkspacePreferences,
 } from "../hooks/queries";
@@ -94,6 +96,7 @@ export function AgentDetail({
   initialView,
   onViewChange,
   onOpenTechnicalDetails,
+  decisionReviewAction,
   engines,
   modelCatalogLoading,
   engineCapabilities,
@@ -116,9 +119,10 @@ export function AgentDetail({
   onDeleted,
   onAgentsDeleted,
 }: AgentDetailProps): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
+  const settingsExtension=useContext(ResourceSettingsContext);
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
-  const notificationsQuery = useNotifications();
   const browserChatId = agentQuery.data?.agent.conversationId;
   const activeBrowsersQuery = useQuery({
     queryKey: queryKeys.agentBrowsers.agent(browserChatId ? chatBrowserOwnerId(browserChatId) : projectId, agentId),
@@ -146,6 +150,7 @@ export function AgentDetail({
       ? (saved as AgentTab)
       : "chat";
   });
+  const changeTab=(value:typeof tab)=>{if(onViewChange?.(value)!==false)setTab(value);};
   useEffect(() => setOlderTelemetryError(undefined), [tab]);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -158,7 +163,6 @@ export function AgentDetail({
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsEffort, setSettingsEffort] = useState("");
-  const [runtimeSettingsNotice, setRuntimeSettingsNotice] = useState<string>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
@@ -232,7 +236,6 @@ export function AgentDetail({
   } = useAgentPackageActions({
     agentId,
     title: detail?.agent.title,
-    onNotice: setQueuedMessageNotice,
   });
 
   useEffect(() => {
@@ -524,8 +527,13 @@ export function AgentDetail({
 
   const { cancelRun, stopActiveRun } = useAgentRunCancellation(
     agentId,
-    runtimeActivity?.executionId,
+    runtimeActivity?.executionId ?? detail?.coordinationV3?.pause?.runId,
   );
+  const pause=detail?.coordinationV3?.pause;
+  const pauseResume=useMutation({
+    mutationFn:()=>api.controlRun(agentId,pause?'resume':'pause',pause?{pauseId:pause.id,idempotencyKey:createClientId()}:{targetRunId:runtimeActivity?.executionId,idempotencyKey:createClientId()}),
+    onSettled:()=>{void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(agentId)});void queryClient.invalidateQueries({queryKey:queryKeys.agents.healthAll});},
+  });
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => api.recheckEngine(engineId),
     onSuccess: updated => {
@@ -550,7 +558,6 @@ export function AgentDetail({
     settingsEffort,
     onRenameClosed: () => setRenameOpen(false),
     onOrganizationClosed: () => setOrganizationOpen(false),
-    onRuntimeSettingsNotice: setRuntimeSettingsNotice,
   });
 
   const loadOlderCombinedTimeline = useCallback(async () => {
@@ -841,9 +848,9 @@ export function AgentDetail({
   />;
 
   const openTechnicalDetails = (focusId?: string) => {
+    if(onOpenTechnicalDetails(focusId)===false)return;
     setAgentWorkFocus(focusId);
     setTab("technical");
-    onOpenTechnicalDetails(focusId);
   };
 
   const openActivityFile = (file: ResponseFileActivityDto) => {
@@ -852,7 +859,7 @@ export function AgentDetail({
     else onOpenReview(file.path, file.executionId);
   };
   const activeBrowser = activeBrowsersQuery.data?.find(session => session.agentId === agentId);
-  const settingsPane = (
+  const settingsPane = (<>
     <AgentDetailSettingsController
       agent={detail.agent}
       engines={engines}
@@ -864,7 +871,6 @@ export function AgentDetail({
       settingsModels={settingsModels}
       settingsEfforts={settingsEfforts}
       runtimeSettingsDirty={runtimeSettingsDirty}
-      runtimeSettingsNotice={runtimeSettingsNotice}
       runtimeSettingsPending={runtimeSaving}
       runtimeSettingsError={updateRuntimeSettings.error}
       recheckPending={recheckEngine.isPending}
@@ -880,7 +886,6 @@ export function AgentDetail({
       onSettingsEngine={setSettingsEngine}
       onSettingsModel={setSettingsModel}
       onSettingsEffort={setSettingsEffort}
-      onNotice={setRuntimeSettingsNotice}
       onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}
@@ -893,7 +898,8 @@ export function AgentDetail({
         setOrganizationOpen(true);
       }}
     />
-  );
+    {!auditOnly&&settingsExtension.render?.("agent",detail.agent.id)}
+  </>);
 
   return (
     <OutgoingMessageProvider scope={agentId} profile={preferencesQuery.data?.profile}><Box
@@ -924,9 +930,9 @@ export function AgentDetail({
         phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
         startedAt={status === "running" ? runtimeActivity?.startedAt : undefined}
         agentNameForId={agentNameForId}
-        running={running}
+        running={running||Boolean(pause)}
         stopping={cancelRun.isPending}
-        tab={tab}
+        tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         showSubagents={showSubagents}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
@@ -934,9 +940,12 @@ export function AgentDetail({
         onOpenChat={onOpenMaster}
         onOpenAgent={onOpenAgent}
         onStop={stopActiveRun}
+        paused={Boolean(pause)}
+        pausePending={pauseResume.isPending||pause?.state==='resume_requested'}
+        onPauseResume={()=>pauseResume.mutate()}
+
         onExportPackage={() => setExportOpen(true)}
         onDuplicate={conversations.length ? () => setDuplicateOpen(true) : undefined}
-        onNotice={setQueuedMessageNotice}
         onOpenTechnical={() => openTechnicalDetails()}
         onRename={() => {
           setRenameValue(detail.agent.title);
@@ -948,10 +957,7 @@ export function AgentDetail({
           setOrganizationOpen(true);
         }}
         onDelete={() => setDeleteOpen(true)}
-        onTabChange={value => {
-          setTab(value);
-          onViewChange?.(value);
-        }}
+        onTabChange={changeTab}
       />
 
       {activeBrowser || detailRefreshFailed ? (
@@ -990,7 +996,7 @@ export function AgentDetail({
       ) : null}
 
       <AgentDetailPanels
-        tab={tab}
+        tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         detail={detail}
         chatMessages={visibleChatMessages}
         agentId={agentId}
@@ -999,7 +1005,7 @@ export function AgentDetail({
         engines={engines}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        notifications={notificationsQuery.data?.items ?? []}
+        decisionReviewAction={decisionReviewAction}
         operatorProfile={preferencesQuery.data?.profile}
         agentNameForId={agentNameForId}
         agentIdForHandle={agentIdForHandle}
@@ -1012,7 +1018,7 @@ export function AgentDetail({
         focusTelemetry={focusTelemetry}
         projectRoot={project?.hostPath}
         delegatedAgentCount={relationships.delegatedAgentCount}
-        onCloseTechnical={() => { setTab("chat"); onViewChange?.("chat"); }}
+        onCloseTechnical={() => changeTab("chat")}
         agentWorkFocus={agentWorkFocus}
         settingsPane={settingsPane}
         onOpenAgent={onOpenAgent}
@@ -1023,19 +1029,22 @@ export function AgentDetail({
         onOpenFile={openActivityFile}
         onNewSubagent={onNewSubagent}
         onAgentsDeleted={onAgentsDeleted}
-        onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
       />
 
-      <AgentDetailComposer
+      {auditOnly?<Alert severity="info" sx={{m:1}}>This Agent belongs to a workflow execution. Control its work from the execution view.</Alert>:<AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
-        cancellationError={
+        cancellationError={[
+          pause?.error,
+          pauseResume.isError
+            ? `Pause or Resume failed. ${pauseResume.error instanceof Error ? pauseResume.error.message : String(pauseResume.error)}`
+            : undefined,
           cancelRun.isError
-            ? `The active Run could not be cancelled. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
-            : undefined
-        }
+            ? `Stop failed. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
+            : undefined,
+        ].filter(Boolean).join("\n") || undefined}
         providerUsageState={providerUsageState}
         agentId={agentId}
         onCloseProviderUsage={() => setProviderUsageState(undefined)}
@@ -1076,6 +1085,13 @@ export function AgentDetail({
             ? engineCapability?.composerCapabilities
             : [],
           enableVoiceDictation: true,
+          voiceContext: tab === "chat" && detail.agent.conversationId ? {
+            projectId: detail.agent.projectId,
+            conversationId: detail.agent.conversationId,
+            agents: [detail.agent],
+            selectedAgentId: detail.agent.id,
+            lockAgent: true,
+          } : undefined,
           onCapabilitiesOpen: () =>
             onRefreshCapabilities({ engineId: engine?.id, model, agentId }),
           projectId: detail.agent.projectId,
@@ -1101,9 +1117,9 @@ export function AgentDetail({
           onQueue: submitAgentMessage("queue"),
           onCancel: stopActiveRun,
         }}
-      />
+      />}
 
-      <AgentDetailDialogs
+      {!auditOnly&&<AgentDetailDialogs
         recheckEngine={{
           open: recheckEngineOpen,
           pending: recheckEngine.isPending,
@@ -1147,23 +1163,23 @@ export function AgentDetail({
           agents,
           updateOrganization,
         }}
-      />
-      <AgentPackageExportDialog
+      />}
+      {!auditOnly&&<AgentPackageExportDialog
         open={exportOpen}
         source={detail.agent}
         agents={agents}
         onClose={() => setExportOpen(false)}
         onCopy={copyAgentPackage}
         onDownload={downloadAgentPackage}
-      />
-      <AgentDuplicateDialog
+      />}
+      {!auditOnly&&<AgentDuplicateDialog
         open={duplicateOpen}
         source={detail.agent}
         agents={agents}
         conversations={conversations}
         onClose={() => setDuplicateOpen(false)}
         onCreated={onOpenAgent}
-      />
+      />}
     </Box></OutgoingMessageProvider>
   );
 }

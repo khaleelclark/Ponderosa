@@ -127,7 +127,7 @@ export function ManageChatsWorkspace({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.workspaceDirectory.kind("conversation"),
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll });
       projectIds.forEach(projectId => {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.conversations.project(projectId),

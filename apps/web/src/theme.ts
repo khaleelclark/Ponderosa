@@ -1,10 +1,9 @@
-import { alpha, createTheme } from "@mui/material/styles";
+import { alpha, createTheme, getContrastRatio } from "@mui/material/styles";
 import type { Theme } from "@mui/material/styles";
 import { readBrowserStorage } from "./browserStorage";
 
-export type ColorMode = "light" | "dark";
-
-export const COLOR_MODE_STORAGE_KEY = "ponderosa-color-mode";
+import {COLOR_MODE_STORAGE_KEY, THEME_BACKGROUNDS, resolveColorMode, type ColorMode} from "./browserTheme";
+export {COLOR_MODE_STORAGE_KEY, type ColorMode} from "./browserTheme";
 
 const ponderosaFocusIndicator = {
   light: "#123126",
@@ -39,7 +38,7 @@ export function workspaceHeaderSurfaceSx(
 
 const ponderosaColorTokens = {
   light: {
-    background: "#FBFCFB",
+    background: THEME_BACKGROUNDS.light,
     rail: "#17221E",
     topbar: "#1D2A26",
     railBorder: "#354542",
@@ -67,7 +66,7 @@ const ponderosaColorTokens = {
     userMessage: "#EFF2F0",
   },
   dark: {
-    background: "#101312",
+    background: THEME_BACKGROUNDS.dark,
     rail: "#151A18",
     topbar: "#181D1B",
     railBorder: "#343B38",
@@ -102,13 +101,7 @@ export function loadColorMode(): ColorMode {
   }
 
   const savedMode = readBrowserStorage("localStorage", COLOR_MODE_STORAGE_KEY);
-  if (savedMode === "light" || savedMode === "dark") {
-    return savedMode;
-  }
-
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
+  return resolveColorMode(savedMode, window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
 }
 
 export function createPonderosaTheme(mode: ColorMode) {
@@ -202,6 +195,14 @@ export function createPonderosaTheme(mode: ColorMode) {
             backgroundColor: dark
               ? "rgba(124,191,138,.28)"
               : "rgba(92,138,101,.22)",
+          },
+        },
+      },
+      MuiAlert: {
+        styleOverrides: {
+          filled: ({ theme, ownerState }) => {
+            const background = theme.palette[ownerState.color ?? ownerState.severity ?? "success"][theme.palette.mode === "dark" ? "dark" : "main"];
+            return { color: getContrastRatio(background, "#FFFFFF") >= 4.5 ? "#FFFFFF" : "#000000" };
           },
         },
       },

@@ -8,6 +8,9 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import vm from 'node:vm';
 import { AssetStore } from '../../apps/server/dist/assets.js';
+import { AgentStore } from '../../packages/agents/dist/index.js';
+import { createServer } from '../../apps/server/dist/app.js';
+import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url)), ts = require('typescript');
 const source = ts.createSourceFile('assets.ts', readFileSync(new URL('../../apps/server/src/assets.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
 const owner = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'AssetStore');
@@ -122,4 +125,93 @@ test('Q07 staging cannot acknowledge success when closing its owned directory fa
 for (const operation of ['claim', 'reserve']) test('Q07 hosted ' + operation + ' cannot acknowledge success when close fails', async () => {
   const failure = Error('Owned close refusal'), p = hosted('none', async () => { throw failure; });
   await assert.rejects(p[operation](operation === 'claim' ? '/owned-claim' : 123), error => error === failure); assert.equal(p.calls.close, 1);
+});
+
+test('historical Communication recovery starts after the required startup asset pass', fixtureTestOptions, t => withFixture(t, async f => {
+  const chat = await f.createChat('Startup maintenance order');
+  await f.createIdleAgent(chat, 'Retained owner');
+  let reconcilingAssets = false, assetPasses = 0, overlappingHistoryReads = 0, laterHistoryReads = 0;
+  const reconcile = AssetStore.prototype.reconcile, read = AgentStore.prototype.readCommunicationEvents;
+  AssetStore.prototype.reconcile = async function (...args) {
+    reconcilingAssets = true;
+    try { await new Promise(setImmediate); return await reconcile.apply(this, args); }
+    finally { reconcilingAssets = false; assetPasses++; }
+  };
+  AgentStore.prototype.readCommunicationEvents = function (...args) {
+    if (reconcilingAssets) overlappingHistoryReads++;
+    if (assetPasses > 0 && !reconcilingAssets) laterHistoryReads++;
+    return read.apply(this, args);
+  };
+  try {
+    await f.reopen();
+    assert.equal(overlappingHistoryReads, 0, 'Historical recovery must not compete with readiness-required asset work');
+    assert.equal((await f.api('GET', '/api/health')).status, 200);
+    await until(() => laterHistoryReads > 0, 'historical recovery after startup asset work');
+    assert.equal((await f.api('GET', '/api/health')).status, 200);
+  } finally {
+    AssetStore.prototype.reconcile = reconcile; AgentStore.prototype.readCommunicationEvents = read;
+  }
+}));
+
+test('historical recovery waits for later startup hooks before scanning any project', fixtureTestOptions, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-late-startup-hook-'));
+  const store = new AgentStore(root);
+  store.createProject({ label: 'Later startup owner', hostPath: root, defaultEngine: 'codex' });
+  let app, laterHookCompleted = false, prematureScans = 0, completedScans = 0;
+  const reconcile = AgentStore.prototype.reconcileCommunicationEvents;
+  AgentStore.prototype.reconcileCommunicationEvents = function (...args) {
+    if (!laterHookCompleted) prematureScans++; else completedScans++;
+    return reconcile.apply(this, args);
+  };
+  try {
+    app = createServer({ dataDir: root, store, engines: [], logger: false, allowedBrowseRoots: [root] });
+    app.addHook('onReady', async () => {
+      await new Promise(setImmediate);
+      await new Promise(setImmediate);
+      laterHookCompleted = true;
+    });
+    await app.ready();
+    await until(() => completedScans > 0, 'historical repair after all startup hooks');
+    assert.equal(prematureScans, 0, 'Another startup owner was still inside its readiness barrier');
+  } finally {
+    if (app) { app.prepareForShutdown(); await app.close(); } else store.close();
+    AgentStore.prototype.reconcileCommunicationEvents = reconcile;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('attachment maintenance reads scoped, deduplicated IDs without hydrating message history', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-attachment-projection-'));
+  let store = new AgentStore(root);
+  const assets = new AssetStore(root);
+  let passed = false;
+  try {
+    const project = store.createProject({ label: 'Attachment projection', hostPath: root, defaultEngine: 'codex' });
+    const chat = store.createConversation(project.id, { title: 'Scoped attachment references' });
+    const agents = ['First', 'Second'].map(title => store.createAgent(project.id, { title, engine: 'codex', conversationId: chat.id }));
+    const staged = [];
+    for (const agent of agents) staged.push(await assets.stage({ projectId: project.id, agentId: agent.id, body: Buffer.from(agent.id), name: 'retained.txt' }));
+    for (const [index, agent] of agents.entries()) {
+      store.appendEvent(agent.id, { type: 'user_message', text: 'Retained attachment', attachments: [staged[index], staged[index]] });
+      store.appendEvent(agent.id, { type: 'user_message', text: 'Plain message without attachments' });
+    }
+    store.getMessages = () => { throw Error('Attachment maintenance must not hydrate message history'); };
+    for (const [index, agent] of agents.entries()) assert.deepEqual([...store.getMessageAttachmentIds(agent.id)], [staged[index].id]);
+    assert.deepEqual([...store.getMessageAttachmentIds('missing-agent')], []);
+    store.sqlite.exec('SAVEPOINT empty_attachment_projection');
+    try {
+      for (const value of ['null', '']) {
+        store.sqlite.prepare('UPDATE messages SET attachments_json=? WHERE agent_id=? AND attachments_json IS NULL').run(value, agents[0].id);
+        assert.deepEqual([...store.getMessageAttachmentIds(agents[0].id)], [staged[0].id]);
+        store.sqlite.prepare('UPDATE messages SET attachments_json=NULL WHERE agent_id=? AND attachments_json=?').run(agents[0].id, value);
+      }
+    } finally { store.sqlite.exec('ROLLBACK TO empty_attachment_projection; RELEASE empty_attachment_projection'); }
+    store.close(); store = new AgentStore(root);
+    for (const [index, agent] of agents.entries()) assert.deepEqual([...store.getMessageAttachmentIds(agent.id)], [staged[index].id]);
+    passed = true;
+  } finally {
+    assets.close(); store.close();
+    if (passed) await rm(root, { recursive: true, force: true });
+    else t.diagnostic('Retained attachment projection fixture: ' + root);
+  }
 });

@@ -1,3 +1,7 @@
+import { restoreOverlayFocus } from "./overlayFocus";
+import { PreferenceSaveFeedback } from "./preferenceSaveFeedback";
+import {useWorkspaceFont} from "./hooks/useWorkspaceFont";
+import {isBranchesPath} from "./api/productScope.js";
 import { stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
@@ -93,7 +97,7 @@ function routeDocumentTitle(route: Route): string {
   switch (route.kind) {
     case "home": return "Home";
     case "create": return route.resource === "chat" ? "New Chat" : "New Agent";
-    case "allChat": return "Messages Across Ponderosa";
+    case "inbox": return "Inbox";
     case "manageChats": return "Manage Chats";
     case "manageAgents": return "Manage Agents";
     case "settings": return "Settings";
@@ -137,7 +141,6 @@ export default function App({
         void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
       }
     },
-    onError: () => notify({ key: "workspace-preferences", message: "Workspace settings could not be saved.", severity: "error" }),
   });
   const { route, navigate } = useRoute();
   const [pageVisible, setPageVisible] = useState(
@@ -284,31 +287,10 @@ export default function App({
       ? document.activeElement
       : undefined;
   };
-  const restoreFocus = (previous: HTMLElement | undefined) => {
-    window.requestAnimationFrame(() => {
-      if (
-        previous?.isConnected &&
-        previous.getClientRects().length > 0 &&
-        !previous.closest('[aria-hidden="true"]')
-      ) {
-        previous.focus();
-        return;
-      }
-      const stableNavigationTarget = [
-        ...document.querySelectorAll<HTMLElement>(
-          '[aria-label="Open workspace navigation"], nav[aria-label="Workspace sections"] [aria-label="Open All Chats"]',
-        ),
-      ].find(candidate => (
-        candidate.getClientRects().length > 0 &&
-        !candidate.closest('[aria-hidden="true"]')
-      ));
-      stableNavigationTarget?.focus();
-    });
-  };
   const restoreOverlayTrigger = () => {
     const previous = overlayReturnFocus.current;
     overlayReturnFocus.current = undefined;
-    restoreFocus(previous);
+    restoreOverlayFocus(previous);
   };
   const openGlobalSearch = (initial?: { query: string; scope: "chats" }) => {
     rememberOverlayTrigger();
@@ -326,10 +308,6 @@ export default function App({
     setNotificationPanelOpen(false);
     restoreOverlayTrigger();
   };
-  const openEngineStatus = () => {
-    stopSpeech();
-    navigate({ kind: "settings", section: "activity" });
-  };
   const setMobileNavigationOpen = (open: boolean) => {
     if (open) rememberOverlayTrigger();
     setMobileNavOpen(open);
@@ -342,7 +320,7 @@ export default function App({
     setMobileNavOpen(false);
     // Let the Drawer transition release its focus trap before moving focus to
     // the equivalent desktop navigation control.
-    const focusTimer = window.setTimeout(() => restoreFocus(drawerTrigger), 400);
+    const focusTimer = window.setTimeout(() => restoreOverlayFocus(drawerTrigger), 400);
     return () => window.clearTimeout(focusTimer);
   }, [mobileWorkspace]);
   useEffect(() => {
@@ -493,7 +471,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { revision: 0, projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: true, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: preferencesQuery.isError ? "Profile unavailable" : "Loading profile…", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { revision: 0, projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: false, broadcasts: false }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: true, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: preferencesQuery.isError ? "Profile unavailable" : "Loading profile…", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const defaultUsageProvider = engines.some(engine =>
     engine.id === preferences.defaultUsageProvider &&
     engine.enabled !== false &&
@@ -503,24 +481,20 @@ export default function App({
     : engines.find(engine =>
         engine.enabled !== false && Boolean(engine.providerUsageCommand)
       )?.id;
+  const preferenceFeedback = useRef(new PreferenceSaveFeedback());
+  const reportPreferenceSave = (field: string, error?: string) => notify({
+    key: `workspace-preferences:${field}`,
+    message: error ?? "Settings Saved",
+    severity: error ? "error" : "success",
+  });
   const savePreferences = (patch: Partial<typeof preferences>) => {
-    preferencesWriter.current!.enqueue(patch);
+    void preferenceFeedback.current.track(patch,
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, true, preferences).catch(() => {});
   };
   const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
-    preferencesWriter.current!.enqueueAndWait(patch);
-  useEffect(() => {
-    const families = {
-      inter:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      system:
-        'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      sans: "Arial, Helvetica, sans-serif",
-    } as const;
-    document.documentElement.style.setProperty(
-      "--ponderosa-font-family",
-      families[preferences.fontFamily],
-    );
-  }, [preferences.fontFamily]);
+    preferenceFeedback.current.track(patch,
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, false, preferences);
+  useWorkspaceFont(preferences.fontFamily);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -542,10 +516,11 @@ export default function App({
       );
     }
   };
-  const navigateWorkspace = (next: Route) => {
+  const navigateWorkspace = (next: Route, options?: {replace?: boolean}) => {
+    if (!navigate(next, {replace: options?.replace ?? (route.kind === "create" && route.resource === "chat" && next.kind === "conversation")})) return false;
     stopSpeech();
     recordWorkspaceRouteUse(next);
-    navigate(next, { replace: route.kind === "create" && route.resource === "chat" && next.kind === "conversation" });
+    return true;
   };
   useEffect(() => {
     if (route.kind === "create" && route.resource === "chat" && !route.creationKey) {
@@ -603,7 +578,7 @@ export default function App({
       )
         return;
       const target = new URL(event.data.url, window.location.origin);
-      if (target.origin !== window.location.origin) return;
+      if (target.origin !== window.location.origin || isBranchesPath(target.pathname)) return;
       navigateWorkspace(parseRoute(target.pathname, target.search));
     };
     navigator.serviceWorker?.addEventListener("message", openNotificationRoute);
@@ -623,9 +598,6 @@ export default function App({
       : current.kind === "agent" && current.projectId === removedRoute.projectId && current.agentId === removedRoute.agentId;
     if (!removedCurrent) return;
     navigateWorkspace({ kind: "home" });
-  };
-  const handleProjectDeleted = (projectId: string) => {
-    reconcileDeletedProject(projectId);
   };
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
@@ -844,9 +816,6 @@ export default function App({
                     onCreate={openCreationForm}
                     onCancelCreate={cancelCreationWorkspace}
                     onOpenInbox={openNotifications}
-                    onProjectDeleted={handleProjectDeleted}
-                    onConversationAction={openSidebarConversationAction}
-                    onOpenEngineStatus={openEngineStatus}
                     onBrowserRequestHandled={requestId =>
                       setProjectBrowserRequest(current =>
                         consumeProjectBrowserRequest(current, requestId),

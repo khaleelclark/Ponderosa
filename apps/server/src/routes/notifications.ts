@@ -1,4 +1,8 @@
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import {
+  notificationInProduct,notificationProductPredicate,
+  requestProduct,
+} from "../product-scope.js";
+import type { AgentStore, ProductScope, WorkspaceStore } from "@ponderosa/agents";
 import type {
   WebPushSubscriptionDto,
   WorkspaceNotificationPageDto,
@@ -20,7 +24,7 @@ export interface NotificationRoutesOptions {
     | "readNotificationsForCommunicationEvents"
     | "setNotificationStatus"
   >;
-  readonly store: Pick<AgentStore, "getAgentTitleProjection" | "getProject" | "getConversation">;
+  readonly store: Pick<AgentStore, "getAgentTitleProjection" | "getProject" | "getConversation" | "sqlite">;
   readonly publishWorkspaceSince: (cursor: number) => void;
 }
 
@@ -38,6 +42,32 @@ export interface PushRoutesOptions {
   };
 }
 
+/** Shared bounded notification owner for the inbox and product Home previews. */
+export function workspaceNotificationPage(
+  options: Pick<NotificationRoutesOptions, "workspace" | "store">,
+  product: ProductScope,
+  input: Omit<Parameters<WorkspaceStore["listNotificationPage"]>[0], "include">,
+): ReturnType<WorkspaceStore["listNotificationPage"]> {
+  const page = options.workspace.listNotificationPage({...input,include:notificationProductPredicate(options.store,product)});
+  const agentTitles = options.store.getAgentTitleProjection(page.items.flatMap(item=>item.agentId?[item.agentId]:[]));
+  const projectLabels = new Map([...new Set(page.items.flatMap(item=>item.projectId?[item.projectId]:[]))]
+    .map(id=>[id,options.store.getProject(id)?.label]));
+  const chats = new Map([...new Set(page.items.flatMap(item=>item.conversationId?[item.conversationId]:[]))]
+    .map(id=>[id,options.store.getConversation(id)]));
+  const items = page.items.map(notification=>{
+    const chatIds=notification.conversationId?[notification.conversationId]:notification.conversationIds??[];
+    const owners=!notification.branchId&&product==='branches'
+      ?chatIds.map(id=>options.store.sqlite.prepare('SELECT branch_id FROM conversations WHERE id=?').get(id) as {branch_id:string|null}|undefined):[];
+    const branchId=owners.length&&owners.every(owner=>owner?.branch_id&&owner.branch_id===owners[0]?.branch_id)?owners[0]!.branch_id:undefined;
+    const agentTitle=notification.agentId?agentTitles.get(notification.agentId):undefined;
+    const projectLabel=notification.projectId?projectLabels.get(notification.projectId):undefined;
+    const chat=notification.conversationId?chats.get(notification.conversationId):undefined;
+    const conversationTitle=chat?.projectId===notification.projectId?chat?.title:undefined;
+    return {...notification,...(branchId?{branchId}:{}),...(agentTitle?{agentTitle}:{}),...(projectLabel?{projectLabel}:{}),...(conversationTitle?{conversationTitle}:{})};
+  });
+  return {...page,items};
+}
+
 export function registerNotificationListRoute(
   app: FastifyInstance,
   options: NotificationRoutesOptions,
@@ -52,10 +82,11 @@ export function registerNotificationListRoute(
       try {
         if (request.query.cursor.length > 512) throw new Error("cursor is too long");
         const decoded = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as {
+          product?: unknown;
           createdAt?: unknown;
           id?: unknown;
         };
-        if (typeof decoded.createdAt !== "string" || decoded.createdAt.length > 64 ||
+        if (decoded.product !== requestProduct(request) || typeof decoded.createdAt !== "string" || decoded.createdAt.length > 64 ||
           typeof decoded.id !== "string" || !decoded.id || decoded.id.length > 200) {
           throw new Error("cursor fields are invalid");
         }
@@ -64,38 +95,17 @@ export function registerNotificationListRoute(
         return reply.code(400).send({ error: "cursor is invalid" });
       }
     }
-    const page = options.workspace.listNotificationPage({
+    const page = workspaceNotificationPage(options,requestProduct(request),{
       limit: requestedLimit,
       ...(before ? { before } : {}),
     });
-    const agentTitles = options.store.getAgentTitleProjection(
-      page.items.flatMap((notification) => notification.agentId ? [notification.agentId] : []),
-    );
-    // Resolve only this bounded page's distinct scopes; no per-card browser
-    // requests, all-Project collectors or notification-history scan.
-    const projectIds = new Set(page.items.flatMap(item => item.projectId ? [item.projectId] : []));
-    const projectLabels = new Map([...projectIds].map(id => [id, options.store.getProject(id)?.label]));
-    const chats = new Map([...new Set(page.items.flatMap(item => item.conversationId ? [item.conversationId] : []))]
-      .map(id => [id, options.store.getConversation(id)]));
-    const items = page.items.map((notification) => {
-      const agentTitle = notification.agentId ? agentTitles.get(notification.agentId) : undefined;
-      const projectLabel = notification.projectId ? projectLabels.get(notification.projectId) : undefined;
-      const chat = notification.conversationId ? chats.get(notification.conversationId) : undefined;
-      const conversationTitle = chat?.projectId === notification.projectId ? chat?.title : undefined;
-      return {
-        ...notification,
-        ...(agentTitle ? { agentTitle } : {}),
-        ...(projectLabel ? { projectLabel } : {}),
-        ...(conversationTitle ? { conversationTitle } : {}),
-      };
-    });
     return {
-      items,
+      items:page.items,
       openActionCount: page.openActionCount,
       unacknowledgedActionCount: page.unacknowledgedActionCount,
       unreadUpdateCount: page.unreadUpdateCount,
       ...(page.nextCursor
-        ? { nextCursor: Buffer.from(JSON.stringify(page.nextCursor)).toString("base64url") }
+        ? { nextCursor: Buffer.from(JSON.stringify({ ...page.nextCursor, product: requestProduct(request) })).toString("base64url") }
         : {}),
     } satisfies WorkspaceNotificationPageDto;
   });
@@ -106,8 +116,14 @@ export function registerNotificationListRoute(
       notificationIds.some((id) => typeof id !== "string" || !id || id.length > 200)) {
       return reply.code(400).send({ error: "notificationIds must contain at most 100 notification IDs" });
     }
+    const product = requestProduct(request);
+    const uniqueIds = [...new Set(notificationIds)];
+    if (uniqueIds.some((id) => {
+      const notification = options.workspace.getNotification(id);
+      return !notification || !notificationInProduct(options.store, notification, product);
+    })) return reply.code(404).send({ error: "notification not found" });
     return {
-      activeNotificationIds: options.workspace.activeNotificationIds([...new Set(notificationIds)]),
+      activeNotificationIds: options.workspace.activeNotificationIds(uniqueIds),
     };
   });
 
@@ -137,6 +153,7 @@ export function registerNotificationListRoute(
         })) return reply.code(400).send({ error: "chatFolders must contain at most 200 unique groups and 10000 total member IDs" });
       }
       return options.workspace.notificationProjection({
+        include: notificationProductPredicate(options.store,requestProduct(request)),
         projectIds: [...new Set(projectIds)],
         conversationIds: [...new Set(conversationIds)],
         ...(chatFolders ? { chatFolders } : {}),
@@ -156,7 +173,7 @@ export function registerNotificationMutationRoutes(
         return reply.code(400).send({ error: "kind must be attention or updates" });
       }
       const cursor = options.workspace.cursor();
-      const dismissed = options.workspace.dismissNotifications(request.body.kind);
+      const dismissed = options.workspace.dismissNotifications(request.body.kind, notificationProductPredicate(options.store,requestProduct(request)));
       options.publishWorkspaceSince(cursor);
       return { dismissed };
     },
@@ -167,6 +184,10 @@ export function registerNotificationMutationRoutes(
     async (request, reply) => {
       if (request.body?.status !== "resolved" && request.body?.status !== "dismissed") {
         return reply.code(400).send({ error: "status must be resolved or dismissed" });
+      }
+      const existing = options.workspace.getNotification(request.params.id);
+      if (!existing || !notificationInProduct(options.store, existing, requestProduct(request))) {
+        return reply.code(404).send({ error: "notification not found" });
       }
       const cursor = options.workspace.cursor();
       const notification = options.workspace.setNotificationStatus(request.params.id, request.body.status);
@@ -179,6 +200,10 @@ export function registerNotificationMutationRoutes(
   app.post<{ Params: { id: string } }>(
     "/api/notifications/:id/read",
     async (request, reply) => {
+      const existing = options.workspace.getNotification(request.params.id);
+      if (!existing || !notificationInProduct(options.store, existing, requestProduct(request))) {
+        return reply.code(404).send({ error: "notification not found" });
+      }
       const cursor = options.workspace.cursor();
       const notification = options.workspace.readNotification(request.params.id);
       if (!notification) {
@@ -201,10 +226,14 @@ export function registerNotificationMutationRoutes(
           error: "notificationIds must contain at most 100 notification IDs",
         });
       }
+      const uniqueIds = [...new Set(notificationIds as string[])];
+      const product = requestProduct(request);
+      if (uniqueIds.some((id) => {
+        const notification = options.workspace.getNotification(id);
+        return !notification || !notificationInProduct(options.store, notification, product);
+      })) return reply.code(404).send({ error: "notification not found" });
       const cursor = options.workspace.cursor();
-      const acknowledged = options.workspace.acknowledgeNotifications(
-        [...new Set(notificationIds as string[])],
-      );
+      const acknowledged = options.workspace.acknowledgeNotifications(uniqueIds);
       options.publishWorkspaceSince(cursor);
       return { acknowledged };
     },
@@ -220,9 +249,15 @@ export function registerNotificationMutationRoutes(
           error: "notificationIds must contain at most 100 notification IDs",
         });
       }
+      const uniqueIds = [...new Set(notificationIds as string[])];
+      const product = requestProduct(request);
+      if (uniqueIds.some((id) => {
+        const notification = options.workspace.getNotification(id);
+        return !notification || !notificationInProduct(options.store, notification, product);
+      })) return reply.code(404).send({ error: "notification not found" });
       const cursor = options.workspace.cursor();
       let read = 0;
-      for (const id of new Set(notificationIds as string[])) {
+      for (const id of uniqueIds) {
         if (options.workspace.readNotification(id)) read += 1;
       }
       options.publishWorkspaceSince(cursor);
@@ -243,6 +278,7 @@ export function registerNotificationMutationRoutes(
       const cursor = options.workspace.cursor();
       const read = options.workspace.readNotificationsForCommunicationEvents(
         [...new Set(communicationEventIds as string[])],
+        notificationProductPredicate(options.store,requestProduct(request)),
       );
       options.publishWorkspaceSince(cursor);
       return { read };

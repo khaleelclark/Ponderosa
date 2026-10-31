@@ -31,6 +31,7 @@ export class CoordinationV3DeletionAuthority {
         idempotencyKey: `agent-delete:${agentId}`,
         now,
       });
+      this.sqlite.prepare("DELETE FROM agent_run_pauses WHERE agent_id=?").run(agentId);
       this.sqlite.prepare(`
         UPDATE required_reply_obligations
         SET state = 'cancelled', updated_at = ?, terminal_at = ?

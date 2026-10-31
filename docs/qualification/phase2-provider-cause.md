@@ -1,0 +1,135 @@
+# Provider failure diagnostic retention
+
+This bounded correction addresses the independently reproduced unknown streamed
+provider failure that discarded its harmless exact cause before canonical
+storage. It does not certify all of Behavior Bible #14 or #19.
+
+The server's shared canonical provider failure boundary retains the existing
+classification, code, remediation and short headline. Its Activity error message
+then includes the original validated diagnostic after credential redaction. The
+existing Agent Activity API and mounted Activity row show that message; no second
+log, schema or diagnostic store is introduced. Chat interruption banners and
+notifications still use their short category summaries. Run inspection exposes
+the associated canonical Activity rather than a new Run field.
+
+Named credentials use the shared portable-secret field policy, including provider
+environment names, plus existing browser text redaction for URLs and bearer
+values. Plain assignments, quoted/container values, JSON and encoded JSON are
+inspected before persistence. Unrelated Unicode remains intact. Structured
+inspection exhaustion or a diagnostic over 4 MiB yields an explicit omission
+message, never an uninspected fallback. Existing provider event validation and
+exception-property limits still apply. Error Activity has no preview truncation:
+accepted message text remains available through existing paginated Activity;
+ordinary tool-output and Run-output retrieval contracts are unchanged.
+
+The same boundary naturally covers projected root-exit terminal events and
+provider-operation exceptions. Root stderr and the guarded exception's retained
+log detail are redacted too. Tests of these paths are bounded projection checks;
+they are not a qualification of every native provider crash or logger callsite.
+Unstructured confidential prose without a recognizable credential field or bearer
+or URL credential remains diagnostic content; this is not a general DLP filter.
+
+Regression coverage in `tests/providers/provider-access.test.mjs` proves that an
+actual scheduler Run with a controlled provider stream stores the harmless marker
+and Unicode in its canonical event journal, retains the complete roughly 60 kB diagnostic
+through Activity API pagination and server reopen, and does not replay provider
+work. A recursive scan of the owned data root and seven HTTP inspections reject
+the explicitly synthetic credential. Focused checks cover redaction, encoded
+metadata, redaction idempotency, structured inspection refusal and root/thrown
+projections. The prior test that required all root-exit prose suppression now
+requires harmless-cause retention and named-secret absence instead.
+
+The writer's evidence includes a Chromium mount of the actual Activity projection
+and CompactActivityRow using reopened product API data, plus DOM text, screenshot,
+canonical journal and disk scan. This is a real mounted row, not a full Agent-panel
+navigation test. No provider subscription, inference, credentials, installation,
+production service or full-suite claim is involved. Independent original-reviewer
+approval and integration qualification remain required.
+
+
+## Encoded-span correction after blocking review
+
+The first frozen implementation missed an encoded JSON object following ordinary
+prose. Independent review demonstrated that a known provider credential reached
+the journal, SQLite/WAL and API. Its earlier passing simpler fixtures remain
+historical evidence and do not qualify that case.
+
+The corrective inspector now scans JSON string/container spans anywhere in the
+diagnostic, recursively applies the same known-field policy to decoded values,
+and carries one 16 MiB inspection budget through every span and decoded layer.
+The existing 4 MiB input bound and depth limit still apply. Exhaustion yields the
+explicit omission message, with no uninspected text fallback. Safe surrounding
+prose, Unicode and tails remain exact; unchanged encoded spans retain their bytes.
+Plain structured export/import semantics remain unchanged and share the same
+inspection implementation, without enabling diagnostic scanning for history.
+
+The exact independent streamed-error expression, plus `api_key`, now has targeted
+canonical-journal/SQLite/API/reopen regressions. Helper cases cover prose-wrapped
+objects, double/triple-encoded strings, nested diagnostic strings, exact safe
+bytes, depth refusal and cumulative budget exhaustion across individually small
+spans. No wider-suite or full #14/#19 claim is added. This correction needs the
+original independent reviewer's approval at its exact head before integration.
+
+Governing standard: pinned Behavior Bible-2 attachment SHA256
+`ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
+The older workspace text is superseded. Emulators/simulators qualify; physical
+mobile hardware is not a mandatory blocker. Genuine human-only checks remain a
+separate handoff checklist. No #21 performance or #22 first-run trial is claimed
+or rerun here; their pinned mobile 4x CPU/eight fresh sessions/active-agent load
+and installer-downloaded/provider-signed-in boundaries remain governing. #32
+uses its finite pinned capability set. Exceptions require human approval and
+recorded scope/reason/test; resource delays are not permission changes.
+
+
+## Malformed encoded-assignment correction
+
+A second independent review found that removing the final outer quote from
+`JSON.stringify(JSON.stringify({OPENAI_API_KEY:syntheticValue}))` bypassed the
+failed-JSON fallback; a single-quoted escaped object had the same helper defect.
+The earlier candidate remains blocked as a standalone integration choice.
+
+The shared diagnostic assignment scanner now recognizes backslash-escaped field
+quotes and scans an escaped quoted credential value through its matching escape
+level. This also handles damaged containers without a second decoder or budget.
+Recognizable assignments use the same known-field policy. Harmless prefix,
+Unicode and the tail after the credential delimiter remain exact. If that value
+itself has no closing delimiter, its ambiguous remainder is explicitly omitted;
+it cannot safely be separated into credential and prose. The scanner charges the
+same cumulative inspection budget. Export/import behavior is unchanged.
+
+Permanent tests cover both known fields in actual scheduler persistence/API/all
+owned stores/reopen/no-replay trials. A finite 50-case helper matrix covers one to
+five encoding levels, two truncations, single quotes, broken outer objects and
+arrays, plus harmless malformed text and explicit unterminated-value omission.
+The exact independent red product expression and five-form probe are retained in
+the evidence alongside their green results. These finite cases are not an
+exhaustive malformed-language or native-provider qualification. Original-reviewer
+exact-head approval is required before integration; no full #14/#19 claim.
+
+
+## Compaction diagnostic serialization contract
+
+The canonical provider stream and Activity API retain safely inspected original
+causes, including harmless text that calls itself a private diagnostic. That prose
+is not a credential field or a separate Communication scope. Known secret values
+are redacted before canonical persistence and serialization; safe Unicode and tails
+remain available. The explicit `publicProviderFailureEvent` helper still creates a
+short summary for summary surfaces. Its name does not imply that authorized browser
+Activity/API inspection loses the full canonical cause.
+
+Automatic pre-work compact recovery has a separate contract: only the exact
+validated live event carries in-memory recovery provenance. Neither canonical
+JSON, a shallow clone, a summary projection nor a deserialized object acquires that
+authority from diagnostic prose or category. Interrupted/structured authentication
+failures refuse it. Existing scheduler checks additionally require no observed
+provider work and an observed old-root exit before one fresh retry; detailed logs
+do not authorize replay of completed effects.
+
+The maintained compaction regression previously required arbitrary harmless prose
+to disappear from the canonical stream. That expectation predates the independently
+approved cause-retention correction and contradicts the canonical contract. Its
+replacement explicitly tests both canonical retention and summary omission, known
+credential removal (plain/encoded/malformed), Unicode/tail preservation, and the
+previously unreachable serialization-authority assertion. Runtime implementation
+is unchanged. Original red full-suite evidence remains; scoped green results do
+not waive the configured full-suite gate or final independent review.

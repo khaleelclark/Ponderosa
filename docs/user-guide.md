@@ -196,6 +196,30 @@ You can start an ordinary Chat without first creating a team.
 Shared Chat contains authored messages. Inspect tools and execution details in
 Agent views such as **Work log**.
 
+### Editing and input
+
+Rename a Chat from its actions menu. **Enter** saves; **Cancel** leaves the name
+unchanged. The shared rename dialog ignores Enter while an IME composition is active.
+
+Pasting multiline text keeps the complete text in the draft until you submit it.
+After you begin interacting with the next draft, background replies do not add a
+reply destination to it. Existing and explicitly selected destinations remain.
+On desktop, **Enter** sends and **Shift+Enter** inserts a newline. On Android and
+iOS, **Return** inserts a newline; use **Send** to submit.
+
+Global Agent instructions accept up to 100,000 UTF-16 code units. An oversized save
+shows an error and leaves saved instructions unchanged; shorten the unsaved draft
+before saving again. Immediate settings errors stay visible until dismissed or that
+setting saves successfully. Saving a different setting does not clear the failure,
+including another notification toggle, provider’s saved model, or saved reasoning
+control.
+
+Browser voice uses the browser's read-aloud voice and the device's speech recognition;
+availability varies by browser and device. Speaking speed is adjustable in settings.
+Token Usage shows provider-reported counts, with cached input separate where available;
+provider account limits appear in Provider usage. These counts are not cost estimates.
+The Engine's truncated log label reports the size of the returned tail, not the full log.
+
 ### Attachments and saved results
 
 Attach files through the composer or use `@` references to available working-folder
@@ -223,6 +247,20 @@ If submission is **Unconfirmed** or **Failed**, use its **Retry** control to
 reconcile that attempt instead of composing a duplicate. Check Chat for an
 accepted message before resending. **Stop** cancels the selected active Run;
 it does not reverse file edits or external actions.
+
+**Pause** holds the selected work while preserving its history and reply route.
+The header shows **Paused**, including after reload. The interrupted execution
+remains **Cancelled** in history, with a receipt explaining that unfinished work
+is held until Resume. Current Resume or Stop rejections appear alongside any
+durable recovery error; an unknown outcome requires inspection before retry.
+**Resume** waits for cleanup, then continues through a fresh recovery execution.
+If a context handoff already committed, Resume keeps it and continues the original
+task once; it does not rerun the handoff. Messages arriving during the hold remain
+queued. A preparation error leaves the
+work paused and shows its cause. Once the cause is repaired and cleanup finishes,
+Resume retries a saved continuation packet exactly. An audit projection error
+requires the restart shown by that error. Inspect uncertain external effects before
+retrying. **Stop** cancels paused work as well.
 
 ### Answer a Decision or skip it
 
@@ -501,3 +539,86 @@ accepts `providers.codex.executable` and `providers.claude.executable`. Use an
 absolute path and valid JSON; on Windows use forward slashes or escaped
 backslashes. This file holds executable paths, not tokens or passwords. Restart
 Engine after changing it and check the web provider status again.
+
+### Sidebar accessibility and browser text size
+
+Sidebar folders and their contents are nested lists. Resource links, star buttons
+and context menus remain separately reachable by keyboard. Settings navigation
+is a named navigation region. Active message placeholders use readable secondary
+text in both themes. Browser zoom remains enabled; use your browser's zoom controls
+for larger text and the normal theme controls for light/dark appearance.
+
+Session rollover requests a short Agent handoff when either configured limit is
+reached, then starts a fresh provider session at the next safe boundary. The
+provider's own compaction remains the fallback. Provider Activity's input figures
+include instructions, tool definitions, context and cached reuse; they are
+reported tokens, not subscription quota, remaining context or cost estimates.
+
+Your profile identity controls how Agents address you throughout Ponderosa.
+Pictures are stored in managed workspace data. Use PNG, JPEG, WebP, GIF or AVIF
+(up to 10 MiB); HEIC is unsupported because browser rendering is inconsistent.
+
+For a local browser, use a dedicated Chrome/Edge window with extension 0.4.1.
+Pairing can happen before sign-in. Existing and new application tabs in that
+window are included; other windows stay outside access. Agent actions show a
+temporary cursor. Sign-in pauses control while retaining the pairing; complete
+sign-in directly, then use Resume browser access in the extension. Manual pause
+is available anytime. Agents can attach PDF, DOCX and text files from their Chat
+(up to 10 MiB).
+
+Opening Rename from the Chat menu keeps keyboard focus in the name field, including
+at larger browser zoom. Menu actions wait for the menu to close before opening the
+next dialog or popover.
+
+Detailed settings, package, browser and call behavior: [UI detail reference](ui-detail-reference.md). Save failure presentation and remaining text review: [UI text inventory](ui-text-inventory.md).
+### Exported execution history
+
+Full Agent and organization exports include execution history as a saved JSON log
+file for each Agent with persisted execution events or Runs. The same applies to
+Agent packages inside Branches workflows. After import, open the log in the
+Agent's Files & Results. Re-export preserves its bytes. Template exports contain
+no history.
+
+The log records original source identities, normalized events, and Run status
+and times. A source Run marked running remains a historical observation; import
+does not start or resume it. Known credential fields are removed, but free-form
+history can contain sensitive text, as the full-export warning states.
+
+With local memory configured, full packages also transfer the selected Chat
+team memory and included Agents' private memory, including versions and conflicts.
+The destination needs compatible local models and memory storage. Templates
+contain no memory. Fresh Branch workflow installations use the same path;
+memory-bearing updates to existing workflows currently require separate migration
+review and are refused explicitly.
+
+Installation-global memory is explicitly excluded; a separate selected-global
+transfer flow is still needed. Cross-Chat organizations require separate packages
+and destination Chats. Provider-native sessions, exact provider inputs and
+historical Branch execution Chats are not migrated. Full machine-to-machine recreation
+remains incomplete. Execution logs share the existing 64 MiB managed-file and
+aggregate package artifact limits; export fails explicitly rather than dropping
+records when a limit is exceeded. Unsupported execution-archive versions and
+malformed envelopes are refused before destination Agents are created.
+
+### Branch webhook intake
+
+Publish or install a webhook workflow with an empty source configuration (`{}`).
+POST JSON to the webhook URL shown in the workflow, with a stable
+`X-Ponderosa-Event-Id` header (1–200 characters). Intake uses ordinary Origin
+checks and the 1 MiB request limit. It does not require an operator token,
+signing secret, HMAC signature, or timestamp freshness header. Provider sign-in
+is separate and unchanged.
+
+Keep the same event ID when retrying the same event. Equivalent canonical JSON
+returns the original occurrence; different input under the same ID returns a
+conflict. Give a new event a new ID. Event data remains untrusted and cannot
+select an Agent or claim manual execution authority. Pause intake with the
+workflow's intake control.
+
+`replayWindowSeconds` is retired network admission configuration, including
+nondefault values. Existing intake no longer applies it. For a new publication
+or package installation, remove that field and use `{}`. If a workflow needs a
+business rule about event age, express it as a workflow condition using event
+payload data. Existing occurrence records and their historical provenance are
+retained. Historical database credential columns and old local key files are
+inert; this change neither reads nor deletes those files.

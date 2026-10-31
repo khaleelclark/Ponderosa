@@ -1,3 +1,4 @@
+import {projectProductSql,requestProduct} from '../product-scope.js';
 import { constants as fsConstants, promises as fs } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import type { FastifyReply } from "fastify";
@@ -25,10 +26,6 @@ import { applyCollectionPageHeaders, sendCollectionPageError, sqliteCollectionPa
 import { projectedProjectCount } from "../readiness.js";
 import { browserResidueCleanupStatus } from "../browser-session-residue.js";
 import type { ServerMetrics } from "../server-metrics.js";
-import { secretEqual } from "../security.js";
-import { browserSessionCookie } from "../launcher-security.js";
-export { browserSessionCookie } from "../launcher-security.js";
-
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
   serverContext: ServerContext;
@@ -36,13 +33,6 @@ interface ServerControlRoutesContext {
   coordinationV3: CoordinationV3Store;
   engines: ReadonlyMap<string, EngineRegistration>;
   activeRuns: Map<string, ActiveRun>;
-  launcherNow(): number;
-  launcherRandomToken(): string;
-  launcherBootstrapTtlMs: number;
-  launcherSessionTtlMs: number;
-  launcherBootstraps: Map<string, number>;
-  issueLauncherSession(): string;
-  purgeLauncherSecurityState(): void;
   networkSecurity: ReadinessDto["networkSecurity"];
   artifactFilesystem: ReadinessCheckDto;
   processContainment: ReadinessCheckDto;
@@ -136,13 +126,6 @@ export function registerServerControlRoutes(
     coordinationV3,
     engines,
     activeRuns,
-    launcherNow,
-    launcherRandomToken,
-    launcherBootstrapTtlMs,
-    launcherSessionTtlMs,
-    launcherBootstraps,
-    issueLauncherSession,
-    purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
     processContainment,
@@ -200,85 +183,17 @@ app.get<{ Querystring: { stream?: string } }>(
   },
 );
 
-app.post("/api/launcher/bootstrap", async (_request, reply) => {
-  reply.header("Cache-Control", "no-store");
-  purgeLauncherSecurityState();
-  const token = launcherRandomToken();
-  launcherBootstraps.set(token, launcherNow() + launcherBootstrapTtlMs);
-  return { token, expiresInMs: launcherBootstrapTtlMs };
-});
-
-app.post<{ Body: { token?: string } }>("/api/launcher/session-exchange", async (request, reply) => {
-  reply.header("Cache-Control", "no-store");
-  const reverseProxyBootstrap = networkSecurity.mode === "reverse_proxy" && Boolean(opts.authToken);
-  if (!opts.launcherSecurity && !reverseProxyBootstrap) {
-    return reply.code(404).send({ error: "browser session bootstrap is disabled" });
-  }
-  purgeLauncherSecurityState();
-  const token = request.body?.token;
-  const expiresAt = typeof token === "string" ? launcherBootstraps.get(token) : undefined;
-  const validLauncherBootstrap = Boolean(
-    opts.launcherSecurity && token && expiresAt && expiresAt > launcherNow(),
-  );
-  const validReverseProxyBootstrap = Boolean(
-    reverseProxyBootstrap && token && opts.authToken && secretEqual(token, opts.authToken),
-  );
-  if (!validLauncherBootstrap && !validReverseProxyBootstrap) {
-    if (token && opts.launcherSecurity) launcherBootstraps.delete(token);
-    return reply.code(401).send({ error: "browser bootstrap is invalid or expired" });
-  }
-  // Consume launcher bootstraps before issuing the browser session. The
-  // operator bearer remains a host-managed secret and is cleared from the URL
-  // fragment by the bootstrap page before this request is made.
-  if (validLauncherBootstrap) launcherBootstraps.delete(token!);
-  const session = issueLauncherSession();
-  const trustedHttpsProxy = networkSecurity.mode === "reverse_proxy" &&
-    Boolean(opts.operatorOrigins?.some((origin) => origin.startsWith("https://")));
-  const secure = request.protocol === "https" || trustedHttpsProxy;
-  reply.header(
-    "Set-Cookie",
-    browserSessionCookie(
-      session,
-      Math.floor(launcherSessionTtlMs / 1_000),
-      secure,
-    ),
-  );
-  return reply.code(204).send();
-});
-
+// Refresh an installed worker before opening the app; no browser credentials.
 app.get("/__ponderosa_bootstrap", async (_request, reply) => reply
   .type("text/html; charset=utf-8")
   .header("Cache-Control", "no-store")
-  .send(`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<title>Opening Ponderosa…</title>
-</head>
-<body>
-<main><h1>Opening Ponderosa…</h1><p id="status">Securing this browser session.</p></main>
-<script src="/__ponderosa_bootstrap.js"></script>
-</body>
-</html>`));
-
+  .send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Opening Ponderosa…</title></head><body><main role="status">Opening Ponderosa…</main><script src="/__ponderosa_bootstrap.js"></script></body></html>`));
 app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
   .type("text/javascript; charset=utf-8")
   .header("Cache-Control", "no-store")
   .send(`(async()=>{
-const status=document.getElementById("status");
-const token=decodeURIComponent(location.hash.slice(1));
-const destination="/";
-history.replaceState(null,"","/__ponderosa_bootstrap"+location.search);
-if(!token){location.replace(destination);return}
+const destination=new URLSearchParams(location.search).get("next")==="/branches"?"/branches":"/";
 try{
-  const response=await fetch("/api/launcher/session-exchange",{
-    method:"POST",
-    headers:{"content-type":"application/json"},
-    body:JSON.stringify({token})
-  });
-  if(!response.ok)throw new Error("exchange failed");
   if("serviceWorker" in navigator){
     try{
       const registration=await navigator.serviceWorker.getRegistration("/");
@@ -312,10 +227,8 @@ try{
       }
     }catch{}
   }
-  location.replace(destination);
-}catch{
-  status.textContent="This launch link expired or was already used. Open Ponderosa Engine again.";
-}
+}catch{}
+location.replace(destination);
 })();`));
 
 let shutdownQueued = false;
@@ -724,14 +637,15 @@ app.get<{ Querystring: CollectionQuery }>("/api/projects", async (request, reply
       baseSql: `
         SELECT id, label AS title, COALESCE(last_used_at, created_at) AS updated_at
         FROM projects
-        ${normalizedSearch ? "WHERE lower(label || ' ' || host_path) LIKE ? ESCAPE '\\\\'" : ""}
+        WHERE ${projectProductSql('projects.id',requestProduct(request))}
+        ${normalizedSearch ? "AND lower(label || ' ' || host_path) LIKE ? ESCAPE char(92)" : ""}
       `,
       params: normalizedSearch
         ? [`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
         : [],
       order: "updated",
-      scope: "projects",
-      generationKeys: ["projects"],
+      scope: `projects:${requestProduct(request)}`,
+      generationKeys: ["projects","conversations"],
       hydrate: id => store.getProject(id),
     });
     applyCollectionPageHeaders(reply, page);

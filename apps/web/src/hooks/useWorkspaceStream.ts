@@ -1,7 +1,7 @@
 import { useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type {
-  AllChatPageDto,
+  InboxPageDto,
   GlobalChatSearchResponseDto,
   ProjectDto,
   WorkspaceEvent,
@@ -13,7 +13,7 @@ import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import {
-  workspaceEventInvalidatesAllChat,
+  workspaceEventInvalidatesInbox,
   workspaceEventInvalidatesGlobalSearch,
   workspaceEventUpdatesLiveProgress,
 } from "../workspaceEventInvalidation";
@@ -142,8 +142,8 @@ export function reconcileDeletedProjectClientState(
         }
       : current,
   );
-  queryClient.setQueriesData<AllChatPageDto>(
-    { queryKey: queryKeys.allChatAll },
+  queryClient.setQueriesData<InboxPageDto>(
+    { queryKey: queryKeys.inboxAll },
     current => current
       ? {
           ...current,
@@ -169,7 +169,7 @@ export function reconcileDeletedProjectClientState(
     queryKeys.projects.all,
     queryKeys.notifications.all,
     queryKeys.globalSearch.all,
-    queryKeys.allChatAll,
+    queryKeys.inboxAll,
     queryKeys.workspaceDirectory.all,
     queryKeys.workspaceResourceRecency.all,
   ]) void queryClient.invalidateQueries({ queryKey });
@@ -359,8 +359,8 @@ function createDirectoryInvalidator(queryClient: QueryClient) {
   };
 }
 
-/** Coalesces workspace fallbacks for Agent-detail surfaces that do not mount
- * their own Agent stream, such as Project review. */
+/** Coalesces scoped detail refreshes, including coordination invalidations
+ * whose unchanged snapshot needs no additional durable Agent event. */
 function createAgentDetailInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   delayMs = 5_000,
@@ -480,8 +480,10 @@ export function useWorkspaceStream(
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
-    const notificationRefresh = createRateLimitedRefresh(() =>
-      invalidate(queryKeys.notifications.all), 5_000);
+    const notificationRefresh = createRateLimitedRefresh(() => {
+      invalidate(queryKeys.notifications.all);
+      invalidate(queryKeys.branchesHome.all);
+    }, 5_000);
     const providerUsageRefresh = createRateLimitedRefresh(() =>
       invalidate(queryKeys.providerUsage.all), 5_000);
     const engineStatusRefresh = createRateLimitedRefresh(() =>
@@ -493,7 +495,7 @@ export function useWorkspaceStream(
         invalidate(queryKeys.conversations.activeDeliveryReceiptsPrefix(id));
       }
       pendingProgressChats.clear();
-      invalidate(queryKeys.allChatAll);
+      invalidate(queryKeys.inboxAll);
     }, 1_000);
     const pendingTaskProjects = new Set<string>();
     const taskProjectionRefresh = createBoundedRefresh(() => {
@@ -518,11 +520,11 @@ export function useWorkspaceStream(
     let nextReplayChatAt = 0;
     const replayChatIds = new Set<string>();
     const replayReceiptIds = new Set<string>();
-    let replayAllChats = false;
+    let replayInboxs = false;
     let replayAllReceipts = false;
     const scheduleReplayChat = (conversationIds?: readonly string[], receipts = false) => {
       if (conversationIds) for (const id of conversationIds) replayChatIds.add(id);
-      else replayAllChats = true;
+      else replayInboxs = true;
       if (receipts) {
         if (conversationIds) for (const id of conversationIds) replayReceiptIds.add(id);
         else replayAllReceipts = true;
@@ -530,7 +532,7 @@ export function useWorkspaceStream(
       replayChatTimer ??= setTimeout(() => {
         replayChatTimer = undefined;
         nextReplayChatAt = Date.now() + 1_000;
-        if (replayAllChats) {
+        if (replayInboxs) {
           invalidate(queryKeys.conversations.detailAll);
           invalidate(queryKeys.collaborationAll);
         } else for (const id of replayChatIds) {
@@ -543,7 +545,7 @@ export function useWorkspaceStream(
         }
         replayChatIds.clear();
         replayReceiptIds.clear();
-        replayAllChats = false;
+        replayInboxs = false;
         replayAllReceipts = false;
       }, Math.max(250, nextReplayChatAt - Date.now()));
     };
@@ -735,6 +737,7 @@ export function useWorkspaceStream(
       invalidate(queryKeys.queuedMessages.agentsAll);
       invalidate(["targeted-next-run"]);
       invalidate(queryKeys.workspaceDirectory.all);
+      invalidate(queryKeys.branchesHome.all);
       invalidate(["engine-capabilities"]);
       invalidate(queryKeys.notifications.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
@@ -748,7 +751,7 @@ export function useWorkspaceStream(
       invalidate(queryKeys.tokenUsage.all);
       invalidate(queryKeys.providerUsage.all);
       invalidate(queryKeys.globalSearch.all);
-      invalidate(queryKeys.allChatAll);
+      invalidate(queryKeys.inboxAll);
       invalidate(queryKeys.workspaceResourceRecency.all);
       invalidate(queryKeys.agentWork.all);
     };
@@ -819,7 +822,7 @@ export function useWorkspaceStream(
         return;
       }
       if (workspaceEventInvalidatesGlobalSearch(event)) communicationRefresh.schedule(queryKeys.globalSearch.all);
-      if (workspaceEventInvalidatesAllChat(event)) communicationRefresh.schedule(queryKeys.allChatAll);
+      if (workspaceEventInvalidatesInbox(event)) communicationRefresh.schedule(queryKeys.inboxAll);
       if (workspaceEventChangesResourceRecency(event) || preferenceStarsChanged) {
         workspaceRecencyInvalidator.schedule();
         // User navigation, authored Chat changes, and terminal lifecycle
@@ -830,6 +833,8 @@ export function useWorkspaceStream(
           workspaceRecencyInvalidator.flush();
         }
       }
+      if (event.type === "resource_used" && event.kind === "conversation") directoryInvalidator.schedule("conversation");
+      if (event.type === "resource_used" && event.kind === "branch") communicationRefresh.schedule(["branches"]);
       if (event.type === "preferences_updated") {
         engineStatusRefresh.schedule();
         for (const kind of preferenceDirectoryKinds) {
@@ -855,7 +860,7 @@ export function useWorkspaceStream(
         invalidate(queryKeys.projects.all);
         if (event.action !== "used") {
           invalidate(queryKeys.agents.project(event.projectId));
-          invalidate(queryKeys.agents.allChat);
+          invalidate(queryKeys.agents.inbox);
           invalidate(queryKeys.agents.detailAll);
         }
         // Mark collapsed sibling pages stale as ownership may have changed,
@@ -899,6 +904,7 @@ export function useWorkspaceStream(
         agentWorkInvalidator.flush();
       }
       else if (event.type === "coordination_changed") {
+        agentDetailInvalidator.schedule(event.agentId);
         queueAgentRoster(event.projectId);
         agentWorkInvalidator.schedule(event.projectId);
         collaborationChatInvalidator.schedule(event.conversationIds);

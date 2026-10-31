@@ -1,8 +1,8 @@
+import { canonicalProviderFailureEvent, redactProviderDiagnostic } from "./provider-failure-event.js";
 import { isProxy } from "node:util/types";
 import {
   classifyProviderFailure,
   publicProviderFailure,
-  publicProviderFailureEvent,
   type AgentEvent,
   type RuntimeProcessIdentity,
   type RuntimeProcessHandle,
@@ -206,7 +206,7 @@ export class ProviderRuntimeBoundaryError extends Error {
     super(publicFailure.summary);
     this.name = "ProviderRuntimeBoundaryError";
     this.operation = operation;
-    this.restrictedDetail = detail;
+    this.restrictedDetail = redactProviderDiagnostic(detail);
     this.code = code;
     this.category = category;
     providerBoundaryErrors.add(this);
@@ -303,7 +303,7 @@ export function providerEventStream(
           try {
             const event = projectAgentEvent(result.value);
             yield event.type === "error"
-              ? preserveEngineSessionRecoverySignal(event, publicProviderFailureEvent(event))
+              ? preserveEngineSessionRecoverySignal(event, canonicalProviderFailureEvent(event))
               : event;
           } catch (error) {
             throw boundaryError("project provider event", error);
@@ -347,14 +347,14 @@ export function projectProviderRootExitDetail(value: unknown): ProviderRootExitD
       detail.signal = member as string | null;
     } else if (key === "stderr") {
       if (typeof member !== "string" || member.length > 8192) throw new Error(INVALID_PROVIDER_STRUCTURE);
-      detail.stderr = member;
+      detail.stderr = redactProviderDiagnostic(member);
     } else if (key === "outputDraining") {
       if (typeof member !== "boolean") throw new Error(INVALID_PROVIDER_STRUCTURE);
       detail.outputDraining = member;
     } else {
       const event = projectAgentEvent(member);
       if (event.type !== "error") throw new Error(INVALID_PROVIDER_STRUCTURE);
-      detail.terminalEvent = preserveEngineSessionRecoverySignal(event, publicProviderFailureEvent(event));
+      detail.terminalEvent = preserveEngineSessionRecoverySignal(event, canonicalProviderFailureEvent(event));
     }
   }
   return detail;

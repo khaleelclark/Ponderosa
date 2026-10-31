@@ -1,4 +1,4 @@
-import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
+import { Box, Chip, Stack, Typography } from "@mui/material";
 import type { TokenUsageSummaryDto } from "@ponderosa/core";
 
 function formatTokens(value = 0): string {
@@ -56,11 +56,9 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
     <Box>
       <Typography variant="subtitle2" sx={{ mb: 1 }}>Usage by Provider</Typography>
       {providerUsage.length ? <Stack spacing={1}>{providerUsage.map((provider) => <Stack key={provider.engine} direction="row" spacing={2} sx={{ alignItems: "baseline", justifyContent: "space-between" }}><Box><Typography variant="body2" sx={{ textTransform: "capitalize", fontWeight: 700 }}>{provider.engine}</Typography><Typography variant="caption" color="text.secondary">{provider.models.size ? [...provider.models].join(", ") : "Runtime default"}</Typography></Box><Box sx={{ textAlign: "right" }}><Typography variant="body2">{formatTokens(provider.totalTokens)} tokens</Typography><Typography variant="caption" color="text.secondary">{runsLabel(provider.runs)}</Typography></Box></Stack>)}</Stack> : <Typography variant="body2" color="text.secondary">No provider has reported usage in this range.</Typography>}
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>These are tokens reported for this Run. Provider-account limits, when supported, appear in Provider usage. Token counts are not a cost estimate.</Typography>
     </Box>
-    <Alert severity={data.unreportedRuns ? "warning" : "info"}>Provider usage was reported for {data.reportedRuns} of {data.finalizedRuns} finalized Runs.{data.unreportedRuns ? ` ${data.unreportedRuns} older or unsupported Runs have no usage data.` : ""}</Alert>
+    <Typography variant="caption" color="text.secondary">Usage reported: {data.reportedRuns} / {data.finalizedRuns} finalized Runs</Typography>
     {data.wakeCauses.length ? <Box><Typography variant="subtitle2" sx={{ mb: 0.75 }}>Why Runs Started</Typography><Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">{data.wakeCauses.map((item) => <Chip key={item.cause} size="small" variant="outlined" label={`${item.cause.replaceAll("_", " ")} · ${item.runs} ${item.runs === 1 ? "Run" : "Runs"}${item.activations !== item.runs ? ` · ${item.activations} wake-ups` : ""}`} />)}</Stack></Box> : null}
     {data.breakdown?.length ? <Box><Typography variant="subtitle2" sx={{ mb: 1 }}>Usage by Chat and Agent</Typography>{data.breakdown.map((item) => <Stack key={`${item.projectId}:${item.conversationId ?? ""}:${item.agentId}:${item.engine}:${item.model ?? ""}`} direction="row" justifyContent="space-between" spacing={2} sx={{ py: .5 }}><Typography variant="body2" noWrap>{item.agentTitle} · {item.engine}{item.model ? ` / ${item.model}` : ""} · {runsLabel(item.runs)}</Typography><Typography variant="caption" color="text.secondary">{formatTokens(item.usage.totalTokens)} tokens</Typography></Stack>)}</Box> : null}
-    <Typography variant="caption" color="text.secondary">Input can include instructions, tool definitions, conversation context, and cached reuse. Cached input is shown separately where the provider reports it, so experiment comparisons can distinguish reuse from new context.</Typography>
   </Stack>;
 }

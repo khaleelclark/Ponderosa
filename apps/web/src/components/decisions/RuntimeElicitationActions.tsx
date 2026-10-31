@@ -231,6 +231,8 @@ export function RuntimeElicitationActions({
           size="small"
           label={field.label}
           required={field.required}
+          multiline={field.type === "string" && !field.options?.length}
+          minRows={field.type === "string" && !field.options?.length ? 2 : undefined}
           type={field.type === "number" || field.type === "integer" ? "number" : "text"}
           value={String(values[field.name] ?? "")}
           error={Boolean(fieldErrors[field.name])}

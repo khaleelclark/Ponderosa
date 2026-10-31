@@ -79,6 +79,9 @@ export interface ProviderInputSourceManifestV3 {
     toolDefinitionsUtf8Bytes: number;
     estimatedInputTokens: number;
   };
+  /** Reviewed voice session boundary; memory integration stays fail-closed until bound. */
+  memorySessionResetSeq?: number;
+  memoryScopes?: [];
   schemaVersion: 3;
   environmentFacts?: RuntimeEnvironmentFactsDto;
   /** History messages represented in the exact text submitted for this Run. */
@@ -91,7 +94,7 @@ export interface ProviderInputSourceManifestV3 {
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "policy" | "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment";
+    kind: "policy" | "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment" | "pause_checkpoint";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";
@@ -131,7 +134,7 @@ export interface ProviderInputDto {
   updatedAt: string;
 }
 
-export type TokenUsageScope = "overall" | "project" | "agent" | "conversation";
+export type TokenUsageScope = "overall" | "project" | "agent" | "conversation" | "branch";
 
 export type TokenUsageMetric = "inputTokens" | "cachedInputTokens" | "cacheWriteInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens";
 

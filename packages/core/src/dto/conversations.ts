@@ -11,7 +11,7 @@ import type {
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
 import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artifacts.js";
-import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
+import type { HistoryWindowDto, ProviderBlockedWorkDto, QueuedAdmissionBlockerDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
 import type { OutcomeCause } from "../outcome-cause.js";
@@ -22,6 +22,10 @@ import type { OutcomeCause } from "../outcome-cause.js";
 export interface ConversationDto {
   id: string;
   projectId: string;
+  /** Present only for a Chat owned by this Branch installation. */
+  branchId?: string;
+  /** Temporary workflow context; absent for persistent Branch Chats. */
+  executionId?: string;
   title: string;
   /** Chat-owned execution context. Legacy projectId only locates stored history. */
   workingDirectory?: string;
@@ -103,6 +107,8 @@ export interface CollaborationRecipientDto {
 
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
+  /** Exact bounded authored communication text before display-only scope tags. */
+  authoredText?: string;
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
@@ -191,6 +197,9 @@ export interface MessageDeliveryReceiptDto {
   /** Observed admission barrier, not provider acknowledgement or comprehension. */
   steeringWaitReason?: "context_refresh" | "prior_steering" | "revision_pending" |
     "provider_not_ready" | "provider_unsupported" | "preparation_retry" | "run_starting" | "scheduler_pending";
+  /** Current shared health/admission projection for an unstarted delivery;
+   * never evidence that this message reached an earlier Run. */
+  queueWaitReason?: QueuedAdmissionBlockerDto["kind"] | "current_run" | "provider_retry";
   /** Temporary, bounded public commentary for this exact acknowledged delivery.
    * Not authored Communication, completion, or proof of semantic understanding. */
   liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string;
@@ -199,6 +208,17 @@ export interface MessageDeliveryReceiptDto {
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;
+  /** Current failure/recovery of this exact work's Run lineage, never the Agent's current selection. */
+  providerFailure?: {
+    category: "quota_exhausted" | "rate_limit" | "throttled" | "capacity";
+    providerId?: string;
+    model?: string;
+    resetAt?: string;
+    quotaLimit?: import("../provider-failure-summary.js").ProviderQuotaLimit;
+    recovery: "scheduled" | "retrying" | "action_required" | "stopped";
+    nextRetryAt?: string;
+    runId: string;
+  };
   /** Exact runtime selection attached to this delivery. */
   runtime?: {
     engine?: string;
@@ -431,6 +451,8 @@ export interface CoordinationRequestUpdateDto {
 /** Canonical, read-only lifecycle of one scoped coordination Request. */
 export interface CoordinationRequestLifecycleDto {
   request: {
+    /** Current canonical eligibility; the retry route remains authoritative. */
+    retryAvailable?: boolean;
     id: string;
     requesterAgentId?: string;
     recipientAgentId: string;
@@ -461,6 +483,9 @@ export interface ConversationDecisionEventDto {
 }
 
 export interface ConversationDetailDto {
+  /** Unresolved provider failures outside the paginated message window. */
+  providerFailureMessages?: ConversationMessageDto[];
+  providerFailuresHasMore?: true;
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
   /** Bounded initial member page. Use the scoped members endpoint for more. */
@@ -558,6 +583,8 @@ export type CreateCollaborationMessageResponse =
   | RecoveringCollaborationMessageResponse;
 
 export interface CreateMultiAgentDirectMessageRequest {
+  /** Explicit call input; only one queued recipient, never inferred from prose. */
+  voiceReply?: true;
   text: string;
   recipients: Array<{ agentId: string; attachmentIds?: string[] }>;
   /** Stable across retries; one user action creates one message and N deliveries. */
@@ -864,7 +891,7 @@ export type WorkspaceFileOwnerDto =
 
 // ─── Messages ───────────────────────────────────────────────────────────────────────
 
-export type AllChatSourceDto =
+export type InboxSourceDto =
   | { kind: "project" | "team"; conversationId: string; title: string }
   | {
       kind: "agent";
@@ -875,7 +902,7 @@ export type AllChatSourceDto =
     };
 
 /** One canonical authored communication in the workspace-wide aggregate view. */
-export interface AllChatItemDto {
+export interface InboxItemDto {
   communicationEventId: string;
   messageId: string;
   communicationIntent: CommunicationIntent;
@@ -886,7 +913,7 @@ export interface AllChatItemDto {
   /** Authored routing handles bound to their stable Direct recipients. */
   agentMentions?: AgentMentionBindingDto[];
   project: Pick<ProjectDto, "id" | "label">;
-  source: AllChatSourceDto;
+  source: InboxSourceDto;
   author: GlobalChatSearchAuthorDto;
   text: string;
   createdAt: string;
@@ -899,7 +926,7 @@ export interface AllChatItemDto {
 }
 
 /** One canonical Decision event projected into the workspace-wide aggregate timeline. */
-export interface AllChatDecisionEventDto {
+export interface InboxDecisionEventDto {
   kind: "decision" | "decision_response";
   id: string;
   createdAt: string;
@@ -909,9 +936,9 @@ export interface AllChatDecisionEventDto {
   source: { kind: "project"; conversationId: string; title: string };
 }
 
-/** GET /api/all-chat response. Canonical items are oldest-first for timeline prepend. */
-export interface AllChatPageDto {
-  items: AllChatItemDto[];
-  decisions?: AllChatDecisionEventDto[];
+/** GET /api/inbox response. Canonical items are oldest-first for timeline prepend. */
+export interface InboxPageDto {
+  items: InboxItemDto[];
+  decisions?: InboxDecisionEventDto[];
   history: HistoryWindowDto;
 }

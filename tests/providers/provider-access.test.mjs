@@ -25,7 +25,7 @@ test('check 31: provider status reads do not test access; explicit recheck probe
 import { publicProviderFailure, publicProviderFailureEvent, publicProviderFailureSummary, publicProviderFailureRemediation, outcomeCauseExplanation } from '@ponderosa/core';
 import { mapClaudeEvent } from '../../packages/engines/dist/claude-events.js';
 import { ClaudeModelCatalogProbe } from '../../packages/engines/dist/claude-models.js';
-import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -238,6 +238,124 @@ test('retained session inventory cannot replace a newly installed CLI catalog or
   } finally { await plane.drainEngineModelCatalogDiscoveries(); await app.close(); }
 });
 
+test('deferred sign-in checks stay checking during host pressure and recover without authorizing stale credentials', async t => {
+  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-01-01T00:00:00Z')});
+  const app=Fastify({logger:false}),auth=new EngineAuthStatusCache();
+  let reads=0,answer={authenticated:true},resources={state:'held',protected:true,reason:'host_resource_pressure'};
+  const registration=defaultEngineRegistrations().find(r=>r.adapter.id==='claude');
+  registration.isInstalled=()=>true;registration.authStatus=async()=>{reads++;return answer;};
+  const plane=createEngineControlPlane({engines:new Map([['claude',registration]]),store:{listAgents:()=>[]},workspace:{},engineAuthStatuses:auth,engineAvailability:{get(){},denial(){},servingBuildRevision:'test',servingInstanceId:'test'},providerUsage:{},providerEnabled:()=>true,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,deletingProjectIds:new Set(),isClosed:()=>false,providerProcessAuthority:{count:()=>0,register(){assert.fail('Unexpected provider process')}},resourceAdmission:{snapshot:()=>resources}});
+  try {
+    await auth.get('claude',registration.authStatus);t.mock.timers.tick(31000);
+    const held=await plane.runtimeStatus('claude',registration);
+    assert.equal(reads,1);assert.equal(held.authentication,'checking');assert.equal(held.intakeReady,false);
+    assert.equal(held.authLastKnown.authenticated,true);assert.equal(held.resourceAdmission.state,'held');
+    assert.match(held.authDetail,/deferred.*host resources/i);assert.match(held.availabilityDetail,/host resources/i);
+    assert.equal(plane.runtimeAdmissionBlocker('claude',registration).kind,'host_resource_pressure');
+    resources={state:'ready',protected:true,reason:'within_budget'};
+    const recovered=await plane.runtimeStatus('claude',registration);
+    assert.equal(reads,2);assert.equal(recovered.authentication,'authenticated');assert.equal(recovered.intakeReady,true);
+    auth.invalidate('claude');answer={authenticated:false};
+    const signedOut=await plane.runtimeStatus('claude',registration);
+    assert.equal(signedOut.authentication,'unauthenticated');assert.equal(signedOut.intakeReady,false);assert.match(signedOut.authDetail,/required/);
+    auth.invalidate('claude');answer={authenticated:false,status:'unknown',reason:'probe_pending'};
+    const checking=await plane.runtimeStatus('claude',registration);
+    assert.equal(checking.authentication,'checking');assert.match(checking.authDetail,/pending/);assert.equal(checking.intakeReady,false);
+    auth.invalidate('claude');answer={authenticated:false,status:'unknown',reason:'timeout'};
+    assert.equal((await plane.runtimeStatus('claude',registration)).authentication,'error');
+    auth.invalidate('claude');resources={state:'ready',protected:true,reason:'within_budget'};
+    let release,entered;const waiting=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+    registration.authStatus=async()=>{entered();await waiting;return {authenticated:true}};
+    const pending=plane.runtimeStatus('claude',registration);await started;
+    resources={state:'held',protected:true,reason:'host_resource_pressure'};release();
+    const changed=await pending;assert.equal(changed.authentication,'authenticated');assert.equal(changed.intakeReady,false);
+    assert.equal(changed.resourceAdmission.state,'held');assert.match(changed.availabilityDetail,/host resources/i);
+
+  } finally {await app.close();}
+});
+
+test('Claude probe start failures remain operation errors when process registration also refuses the helper', {timeout:15000,skip:process.platform==='win32'?'Covers POSIX asynchronous spawn failure; Windows launches behind the existing Job gate':false},async t=>{
+ const {spawnSync}=await import('node:child_process');
+ const root=await mkdtemp(path.join(tmpdir(),'ponderosa-probe-start-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const moduleUrl=new URL('../../packages/engines/dist/claude-models.js',import.meta.url).href;
+ for(const method of ['discover','validate'])for(const refusesRegistration of [false,true]){
+  const source=`
+   import assert from 'node:assert/strict';
+   import {ClaudeModelCatalogProbe} from ${JSON.stringify(moduleUrl)};
+   const probe=new ClaudeModelCatalogProbe({bin:process.execPath,killGraceMs:50});
+   const handles=[],context={signal:new AbortController().signal,onRuntimeSpawned(handle){handles.push(handle);if(${refusesRegistration})throw new Error('fixture registration refused missing identity');}};
+   const operation=${JSON.stringify(method)}==='discover'?()=>probe.discover(${JSON.stringify(path.join(root,'missing-directory'))},context):()=>probe.validate(${JSON.stringify(path.join(root,'missing-directory'))},'fixture',context);
+   await assert.rejects(operation);
+   await Promise.all(handles.map(handle=>handle.close()));
+   assert.ok(handles.every(handle=>!handle.isAlive()),'Failed helper left process authority alive');
+   await new Promise(resolve=>setTimeout(resolve,30));
+   console.log('failure reported; host survived');
+  `;
+  const result=spawnSync(process.execPath,['--unhandled-rejections=strict','--input-type=module','-e',source],{cwd:root,env:{...process.env,PONDEROSA_AGENT_SCOPE_MODE:''},encoding:'utf8',timeout:3000});
+  assert.equal(result.status,0,`${method}, registration refuses=${refusesRegistration}: ${result.error?.message??result.stderr.slice(-1800)}`);
+  assert.match(result.stdout,/failure reported; host survived/u);
+ }
+});
+
+
+for (const engine of ['codex', 'claude']) test(`${engine}: reusable Agent Role creates idle once and updates only future session snapshots`, { timeout: 60000 }, t => withFixture(t, async f => {
+  const chat = await f.createChat('Standing role fixture');
+  const url = `/api/projects/${chat.projectId}/agents`;
+  const body = { title: 'Reusable Reviewer', engine, conversationId: chat.id, role: 'Review Cafe\u0301\r\nCarefully', idempotencyKey: crypto.randomUUID() };
+  const agent = f.ok(await f.api('POST', url, body));
+  assert.equal(agent.role, 'Review Café\nCarefully');
+  assert.equal(f.ok(await f.api('POST', url, body)).id, agent.id);
+  assert.equal((await f.api('POST', url, { ...body, role: 'A different role' })).status, 409);
+  const exported = f.ok(await f.api('GET', `/api/agents/${agent.id}/export?mode=template`));
+  assert.equal(exported.agents[0].initialInstructions, agent.role, 'Export lost the explicit standing role');
+  assert.equal(f.turns.length, 0, 'Standing setup dispatched task work');
+  assert.equal((await f.detail(agent.id)).runs.length, 0);
+  for (const role of [{ bad: true }, 'x'.repeat(8001)]) assert.equal((await f.api('PATCH', `/api/agents/${agent.id}`, { role })).status, 400);
+  await f.send(agent.id, 'Perform first controlled task');
+  const first = await f.settled(agent.id), before = first.runs.map(run => run.id);
+  const firstInput = f.ok(await f.api('GET', `/api/runs/${first.runs[0].id}/provider-input?exact=1`));
+  assert.match(firstInput.exactSystemPrompt, /Review Café\nCarefully/u);
+  const session = await f.hold(agent.id);
+  const active = (await f.detail(agent.id)).runs.find(run => !before.includes(run.id));
+  const activeInput = f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`));
+  const changed = f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: 'Check Only Verified Evidence' }));
+  assert.equal(changed.role, 'Check Only Verified Evidence');
+  assert.deepEqual(f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`)), activeInput, 'Role save rewrote accepted Run instructions');
+  assert.equal((await session.tool('ponderosa_message', { text: 'Finished the owned task' })).success, true); session.finish();
+  const completed = await f.settled(agent.id, before);
+  await f.send(agent.id, 'Perform next controlled task');
+  const next = await f.settled(agent.id, completed.runs.map(run => run.id));
+  const nextRun = next.runs.find(run => !completed.runs.some(previous => previous.id === run.id));
+  const nextInput = f.ok(await f.api('GET', `/api/runs/${nextRun.id}/provider-input?exact=1`));
+  assert.match(nextInput.exactSystemPrompt, /Check Only Verified Evidence/u);
+  assert.notEqual(nextInput.systemPromptHash, activeInput.systemPromptHash);
+  f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: null }));
+  const previous = next.runs.map(run => run.id);
+  await f.send(agent.id, 'Perform task after clearing explicit role');
+  const cleared = await f.settled(agent.id, previous), clearedRun = cleared.runs.find(run => !previous.includes(run.id));
+  const clearedInput = f.ok(await f.api('GET', `/api/runs/${clearedRun.id}/provider-input?exact=1`));
+  assert.doesNotMatch(clearedInput.exactSystemPrompt, /Agent standing role|Check Only Verified Evidence/u);
+  await f.reopen();
+  assert.equal((await f.detail(agent.id)).agent.role, undefined);
+}, { diagnosticProvider: true }));
+
+
+test('adding standing roles preserves existing creation fingerprints when no role was requested', { timeout: 30000 }, async t => {
+  const { AgentStore } = await import('@ponderosa/agents');
+  const { createHash } = await import('node:crypto');
+  const { stableJson } = await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Existing creation identity');
+    const idempotencyKey = crypto.randomUUID(), body = { title: 'Legacy Intent', engine: 'codex', conversationId: chat.id, idempotencyKey };
+    const agent = f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, body));
+    const oldPayload = { projectId: chat.projectId, title: body.title, engine: body.engine, conversationId: chat.id, model: null, effort: null, speed: null, initialMessage: null, draftAttachmentIds: [], draftOwnerId: null, presetId: null, managerAgentId: null, awaitResult: null, managementPermissions: null };
+    const expected = createHash('sha256').update(stableJson(oldPayload)).digest('hex');
+    assert.equal(store.sqlite.prepare('SELECT payload_hash FROM agent_creation_operations WHERE idempotency_key = ?').get(idempotencyKey).payload_hash, expected);
+    assert.equal(f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, body)).id, agent.id);
+  }, { storeFactory: dataDir => (store = new AgentStore(dataDir)) });
+});
+
 import {EngineAvailabilityStore} from '../../apps/server/dist/engine-availability-store.js';
 import {ProviderProcessAuthority} from '../../apps/server/dist/provider-process-authority.js';
 import {openCurrentMemoryDatabase} from '../../packages/agents/dist/state-admission.js';
@@ -258,14 +376,14 @@ test('native diagnostic handles remain owned blockers after failed cleanup and c
  owner.pruneExited();assert.equal(owner.count(),1);fail=false;await owner.terminateDiagnostics();assert.equal(owner.count(),0);assert.equal(closes,2);
 });
 
-import {providerSessionFacade,projectProviderRootExitDetail} from '../../apps/server/dist/provider-session-facade.js';
+import {providerSessionFacade,projectProviderRootExitDetail,ProviderRuntimeBoundaryError} from '../../apps/server/dist/provider-session-facade.js';
 test('provider exit evidence and resume validation cross only closed data boundaries',()=>{
  const raw={engineAgentId:'session',events:{async *[Symbol.asyncIterator](){}},isAlive:()=>true,close:async()=>{},startTurn:async()=>({turnId:'t'}),steer:async()=>({status:'not_active'}),interrupt:async()=>{},validatesResumeBeforeTurn:true};
  assert.equal(providerSessionFacade(raw).validatesResumeBeforeTurn,true);
  let getterCalls=0;const invalid=Object.defineProperty({},'terminalEvent',{get(){getterCalls++;return {type:'error',message:'forged'}}});
  assert.throws(()=>projectProviderRootExitDetail(invalid));assert.equal(getterCalls,0);
- const detail=projectProviderRootExitDetail({outputDraining:false,exitCode:0,terminalEvent:{type:'error',category:'quota_exhausted',message:'secret arbitrary detail',quotaResetAt:'2030-01-01T00:00:00.000Z'}});
- assert.equal(detail.terminalEvent.category,'quota_exhausted');assert.equal(detail.terminalEvent.quotaResetAt,'2030-01-01T00:00:00.000Z');assert.doesNotMatch(detail.terminalEvent.message,/secret/);
+ const detail=projectProviderRootExitDetail({outputDraining:false,exitCode:0,terminalEvent:{type:'error',category:'quota_exhausted',message:'Exact harmless root detail; api_key=SYNTHETIC_ROOT_SECRET',quotaResetAt:'2030-01-01T00:00:00.000Z'}});
+ assert.equal(detail.terminalEvent.category,'quota_exhausted');assert.equal(detail.terminalEvent.quotaResetAt,'2030-01-01T00:00:00.000Z');assert.match(detail.terminalEvent.message,/Exact harmless root detail/);assert.doesNotMatch(detail.terminalEvent.message,/SYNTHETIC_ROOT_SECRET/);
 });
 
 test('native persistent runtime aliases retain one root and cancellation never targets its previous Run',async t=>{
@@ -301,6 +419,8 @@ test('a successful sign-in observation survives a separate diagnostic cleanup fa
  assert.equal(handle.isAlive(),false);assert.equal(result.authenticated,true);assert.equal(result.diagnosticFailure,'cleanup_failed');
  const cache=new EngineAuthStatusCache();await cache.get('codex',async()=>result);assert.equal(cache.snapshot('codex').authenticated,true);assert.equal(cache.snapshot('codex').diagnosticFailure,'cleanup_failed');
 });
+
+
 
 for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and drains diagnostic operations delayed ${phase}`, { timeout: 10000, skip: process.platform === 'win32' }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'diagnostic-shutdown-'));
@@ -341,4 +461,183 @@ for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and 
     if (child && child.exitCode === null && child.signalCode === null) { process.kill(-child.pid, 'SIGTERM'); await exited; }
     await app?.close(); await rm(root, { recursive: true, force: true });
   }
+});
+
+import { canonicalProviderFailureEvent } from '../../apps/server/dist/provider-failure-event.js';
+import { redactPortableDiagnostic } from '../../apps/server/dist/portable-secrets.js';
+
+const marker = 'HARMLESS_CAUSE_14_19_BROKEN_WIDGET_731';
+const secret = 'SYNTHETIC_CREDENTIAL_731';
+const cause = `${marker} transport rejected widget 731; 日本語 café 🦄; api_key=${secret}`;
+
+test('canonical diagnostics retain Unicode/cause, redact shared known fields and refuse uninspectable text explicitly', () => {
+  for (const text of [cause, `${marker} Authorization: Bearer ${secret}`, `${marker} OPENAI_API_KEY="${secret}"`,
+    `${marker} credentials={"nested": ["${secret}"]}`, JSON.stringify({ marker, env: JSON.stringify({ ANTHROPIC_API_KEY: secret }) }),
+    `${marker} env=${JSON.stringify(JSON.stringify({ api_key: secret }))}`, `${marker} https://example.invalid/?api_key=${secret}`]) {
+    const event = canonicalProviderFailureEvent({ type: 'error', message: text, code: 'provider_error' });
+    assert.equal(event.category, 'unknown'); assert.ok(event.message.startsWith('Provider execution failed.\n'));
+    assert.ok(event.message.includes(marker)); assert.ok(!event.message.includes(secret), event.message);
+    assert.equal(canonicalProviderFailureEvent(event).message, event.message);
+  }
+  assert.match(canonicalProviderFailureEvent({ type:'error', message:cause }).message, /日本語 café 🦄/);
+  assert.match(redactPortableDiagnostic('a'.repeat(4*1024*1024+1)), /omitted.*limit/);
+  assert.match(redactPortableDiagnostic(JSON.stringify(JSON.stringify('['.repeat(100)+'0'+']'.repeat(100)))), /omitted.*limit/);
+  const thrown = new ProviderRuntimeBoundaryError('controlled provider operation', new Error(cause));
+  assert.ok(thrown.restrictedDetail.includes(marker)); assert.ok(!thrown.restrictedDetail.includes(secret));
+  const root = projectProviderRootExitDetail({ stderr: cause, terminalEvent:{type:'error',message:cause} });
+  assert.ok(root.terminalEvent.message.includes(marker)); assert.ok(!JSON.stringify(root).includes(secret));
+});
+
+test('unknown streamed cause survives canonical storage, bounded API and server reopen with no named credential on disk', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Exact provider cause'),agent=await f.createIdleAgent(chat,'Controlled failure');
+    const diagnostic=cause+'\n'+'長'.repeat(20000)+' END_OF_COMPLETE_DIAGNOSTIC';
+    f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message:diagnostic})}]);
+    await f.send(agent.id,'One controlled failure');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'failed Run');
+    const inspect = async () => {
+      const detail=await f.detail(agent.id);
+      const error=detail.activity.find(a=>a.event.type==='error');
+      assert.equal(detail.runs[0].status,'failed'); assert.ok(error.event.message.includes(marker));
+      assert.ok(error.event.message.includes('日本語 café 🦄'));
+      assert.equal(error.event.message,canonicalProviderFailureEvent({type:'error',code:'provider_error',message:diagnostic}).message,'Complete validated diagnostic, including its tail, remains available');
+      const page=f.ok(await f.api('GET',`/api/agents/${agent.id}/history/activity?limit=1`));
+      assert.ok(JSON.stringify(page).includes(marker));
+      for(const suffix of ['', '/history/runOutput','/history/activity','/history/runs','/runs','/history/workItems']) {
+        const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);
+        assert.ok(!JSON.stringify(response).includes(secret));
+      }
+      assert.ok(!JSON.stringify(await f.api('GET','/api/conversations/'+chat.id)).includes(secret));
+      return error;
+    };
+    const before=await inspect();
+    let durable=false;
+    const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+      const name=path.join(dir,item.name);if(item.isDirectory())await scan(name);else{
+        const bytes=await readFile(name);assert.ok(!bytes.includes(Buffer.from(secret)),name);
+        if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))durable=true;
+      }
+    }};
+    await scan(f.dataDir);assert.equal(durable,true,'canonical event journal must retain the cause');
+    const count=f.turns.length;await f.reopen();const after=await inspect();assert.equal(after.event.message,before.event.message);
+    assert.equal(f.turns.length,count,'inspection/reopen does not replay provider work');await scan(f.dataDir);
+  });
+});
+
+
+test('embedded encoded credential spans share one recursive budget and preserve surrounding prose', () => {
+  const prefix='HARMLESS_REVIEW_942 日本語 café 🦄 ',tail=' HARMLESS_EXACT_TAIL';
+  const value='SYNTHETIC_SECRET_INDEPENDENT_942';
+  for (const field of ['OPENAI_API_KEY','api_key']) {
+    const encode=JSON.stringify;
+    for (const body of [encode({[field]:value, safe:'雪'}),encode(encode({[field]:value,safe:'雪'})),
+      encode(encode(encode({[field]:value,safe:'雪'}))),
+      encode({message:'nested prose '+encode(encode({[field]:value})),safe:'雪'}),
+      encode(encode(field+'='+value))]) {
+      const input=prefix+body+tail,output=canonicalProviderFailureEvent({type:'error',code:'provider_error',message:input}).message;
+      assert.ok(!output.includes(value),output);assert.ok(output.includes(prefix));assert.ok(output.endsWith(tail));
+      assert.equal(canonicalProviderFailureEvent({type:'error',code:'provider_error',message:output}).message,output);
+    }
+    assert.equal(redactPortableDiagnostic(prefix+encode(encode({[field]:value,safe:'雪'}))+tail),prefix+encode(encode({safe:'雪'}))+tail);
+  }
+  const safe=prefix+JSON.stringify(JSON.stringify({safe:'雪'}))+tail;
+  assert.equal(redactPortableDiagnostic(safe),safe,'Unchanged encoded span/prose retains exact bytes');
+  const span=JSON.stringify(JSON.stringify(JSON.stringify({safe:'x'.repeat(500000)})));
+  assert.equal(redactPortableDiagnostic(prefix+span+tail),prefix+span+tail,'One span is below the inspection budget');
+  assert.match(redactPortableDiagnostic(prefix+Array(6).fill(span).join(' ')+tail),/omitted.*inspection limit/,'Separate spans cannot reset the shared budget');
+  assert.match(redactPortableDiagnostic(prefix+'['.repeat(66)+'0'+']'.repeat(66)+tail),/omitted.*inspection limit/);
+});
+
+test('encoded known provider fields after prose stay absent from canonical storage/API after reopen', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const marker='HARMLESS_REVIEW_942',value='SYNTHETIC_SECRET_INDEPENDENT_942';
+    const chat=await f.createChat('Embedded encoded provider cause'),agents=[];
+    for(const field of ['OPENAI_API_KEY','api_key']) {
+      const agent=await f.createIdleAgent(chat,'Controlled '+field),message=marker+' '+JSON.stringify(JSON.stringify({[field]:value}));
+      f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message})}]);
+      await f.send(agent.id,'Controlled error');
+      await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))},'encoded terminal');
+      agents.push(agent);
+    }
+    const inspect=async()=>{
+      for(const agent of agents){
+        const d=await f.detail(agent.id);const event=d.activity.find(row=>row.event.type==='error').event;
+        assert.ok(event.message.includes(marker));assert.equal(event.message,'Provider execution failed.\n'+marker+' '+JSON.stringify(JSON.stringify({})));
+        for(const suffix of ['', '/history/activity?limit=1','/history/runOutput','/history/runs','/runs','/history/workItems']){
+          const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+        }
+      }
+      const response=await f.api('GET','/api/conversations/'+chat.id);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+      let canonical=0,database=0;
+      const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+        const filename=path.join(dir,item.name);if(item.isDirectory())await scan(filename);else{
+          const bytes=await readFile(filename);assert.ok(!bytes.includes(Buffer.from(value)),filename);
+          if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))canonical++;
+          if(/\.(?:db|sqlite)(?:-wal)?$/.test(item.name))database++;
+        }
+      }};
+      await scan(f.dataDir);assert.equal(canonical,2);assert.ok(database>0,'Scan includes real SQLite/WAL files');
+    };
+    await inspect();const turns=f.turns.length;await f.reopen();await inspect();assert.equal(f.turns.length,turns,'No provider replay');
+  });
+});
+
+
+test('malformed encoded known assignments redact finite truncation/escape/nesting matrix without losing safe prose', () => {
+  const prefix='HARMLESS_MALFORMED_CAUSE 日本語 café 🦄 ',tail=' HARMLESS_EXACT_TAIL';
+  const value='SYNTHETIC_MALFORMED_942';
+  let cases=0;
+  for(const field of ['OPENAI_API_KEY','api_key']) for(let layers=1;layers<=5;layers++) {
+    let body=JSON.stringify({[field]:value,safe:'雪'});
+    for(let i=1;i<layers;i++)body=JSON.stringify(body);
+    const variants=[body.slice(0,-1),body.slice(0,-2),"'"+body.slice(1,-1)+"'",'{bad,'+body,'['+body];
+    for(const malformed of variants) {
+      const input=prefix+malformed+tail,output=redactPortableDiagnostic(input);
+      assert.ok(!output.includes(value),JSON.stringify({layers,malformed,output}));
+      assert.ok(output.startsWith(prefix));assert.ok(output.endsWith(tail));
+      assert.equal(redactPortableDiagnostic(output),output);cases++;
+    }
+    const safe=prefix+JSON.stringify(JSON.stringify({safe:'雪'})).slice(0,-1)+tail;
+    assert.equal(redactPortableDiagnostic(safe),safe,'Harmless malformed text is unchanged');
+  }
+  assert.equal(cases,50);
+  for(const field of ['OPENAI_API_KEY','api_key']) {
+    const broken='cause \\"'+field+'\\": \\"'+value;
+    const output=redactPortableDiagnostic(broken);
+    assert.ok(!output.includes(value));assert.match(output,/omitted: unterminated credential value/);
+  }
+});
+
+test('malformed encoded known provider fields after prose stay absent from canonical storage/API after reopen', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const marker='HARMLESS_REVIEW_942',value='SYNTHETIC_SECRET_INDEPENDENT_942';
+    const chat=await f.createChat('Embedded encoded provider cause'),agents=[];
+    for(const field of ['OPENAI_API_KEY','api_key']) {
+      const agent=await f.createIdleAgent(chat,'Controlled '+field),message=marker+' '+JSON.stringify(JSON.stringify({[field]:value})).slice(0,-1)+' 日本語 🦄 HARMLESS_EXACT_TAIL';
+      f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message})}]);
+      await f.send(agent.id,'Controlled error');
+      await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))},'encoded terminal');
+      agents.push(agent);
+    }
+    const inspect=async()=>{
+      for(const agent of agents){
+        const d=await f.detail(agent.id);const event=d.activity.find(row=>row.event.type==='error').event;
+        assert.ok(event.message.includes(marker));assert.ok(event.message.endsWith(' 日本語 🦄 HARMLESS_EXACT_TAIL'));assert.ok(!event.message.includes(value));
+        for(const suffix of ['', '/history/activity?limit=1','/history/runOutput','/history/runs','/runs','/history/workItems']){
+          const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+        }
+      }
+      const response=await f.api('GET','/api/conversations/'+chat.id);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+      let canonical=0,database=0;
+      const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+        const filename=path.join(dir,item.name);if(item.isDirectory())await scan(filename);else{
+          const bytes=await readFile(filename);assert.ok(!bytes.includes(Buffer.from(value)),filename);
+          if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))canonical++;
+          if(/\.(?:db|sqlite)(?:-wal)?$/.test(item.name))database++;
+        }
+      }};
+      await scan(f.dataDir);assert.equal(canonical,2);assert.ok(database>0,'Scan includes real SQLite/WAL files');
+    };
+    await inspect();const turns=f.turns.length;await f.reopen();await inspect();assert.equal(f.turns.length,turns,'No provider replay');
+  });
 });

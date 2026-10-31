@@ -2,7 +2,8 @@ import type Database from "better-sqlite3";
 
 // Shared ordinary/offline read accounting. No converter, native host, new
 // database, profile cache, or caller admission witness belongs in this module.
-export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 512,
+// Canonical schema with pause receipts has 513 objects; retain a fixed metadata bound.
+export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 528,
   columns: 256, metadataBytes: 1024 ** 2, rowBytes: 64 * 1024 ** 2 });
 const fail: (code: string) => never = code => { throw new Error(`bounded state read refused (${code})`); };
 export const stateQuote = (name: string): string => `"${name.replaceAll('"', '""')}"`;

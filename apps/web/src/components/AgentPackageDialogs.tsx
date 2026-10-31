@@ -82,11 +82,9 @@ function PackageChoices({
       </Select>
     </FormControl>
     <Typography variant="body2" color="text.secondary">
-      {agentCount} Agent{agentCount === 1 ? "" : "s"} selected. {mode === "template"
-        ? "Setup only excludes history and artifacts."
-        : "Full packages include available Agent history, managed artifacts, and project instructions."}
-      {" "}Credentials are not included.
+      {agentCount} Agent{agentCount === 1 ? "" : "s"} selected. Credentials are excluded.
     </Typography>
+    {mode === "full" ? <Alert severity="warning">History and stored data may contain sensitive information.</Alert> : null}
   </Stack>;
 }
 
@@ -218,6 +216,7 @@ export function AgentDuplicateDialog({
     onConfirm={() => void duplicate()}>
     <Stack spacing={2} sx={{ pt: 1 }}>
       <Typography variant="body2" color="text.secondary">Source: {source.title}</Typography>
+      <Typography variant="body2" color="text.secondary">Duplicates omit output and speaker roles.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={included.length}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
       <FormControl fullWidth size="small">

@@ -272,13 +272,13 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "sessionId", "providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens", "requestOutputIncluded",
     "executionId", "rolloverId", "lowWaterMark", "seedPromptUtf8Bytes", "contextSections",
     "previousProviderSessionId", "replacementProviderSessionId", "startingOccupancy", "delta", "id", "name", "input",
-    "output", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
+    "output", "voiceReplyStreamId", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
-    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
+    "providerTurnId", "itemId", "phase", "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
-    "work_start", "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
+    "work_start", "response_text", "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
     "tool_call", "tool_result", "command", "file_change", "test_result", "browser_session", "browser_action",
     "browser_console", "browser_screenshot", "work_item_update", "turn_done", "error",
   ] as const, budget, 1);
@@ -289,6 +289,14 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       const callId = optionalIdentifier(row, "callId", budget, 2);
       return { type, kind: enumeration(row, "kind", ["command", "file_change", "native_tool"] as const, budget, 2),
         ...(callId === undefined ? {} : { callId }) };
+    }
+    case "response_text": {
+      const row = exact(value, ["providerTurnId", "itemId", "phase", "kind", "text"], budget);
+      return { type, providerTurnId: identifier(row, "providerTurnId", budget, 2),
+        itemId: identifier(row, "itemId", budget, 2),
+        phase: enumeration(row, "phase", ["final_answer", "commentary", "unknown"] as const, budget, 2),
+        kind: enumeration(row, "kind", ["start", "delta", "complete"] as const, budget, 2),
+        text: string(row, "text", budget, 2) };
     }
     case "session": {
       const row = exact(value, ["sessionId"], budget);
@@ -351,8 +359,10 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, id: identifier(row, "id", budget, 2), name: identifier(row, "name", budget, 2), input: jsonValue(row.get("input"), budget, 2) };
     }
     case "tool_result": {
-      const row = exact(value, ["id", "output", "isError", "failureCategory", "retryable", "exitCode", "signal", "retryAfterMs"], budget);
+      const row = exact(value, ["id", "output", "voiceReplyStreamId", "isError", "failureCategory", "retryable", "exitCode", "signal", "retryAfterMs"], budget);
       const isError = optionalBoolean(row, "isError", budget, 2);
+      const voiceReplyStreamId = optionalIdentifier(row, "voiceReplyStreamId", budget, 2);
+      if (voiceReplyStreamId !== undefined && isError !== false) reject();
       const hasFailureCategory = row.has("failureCategory");
       const hasRetryable = row.has("retryable");
       if (hasFailureCategory !== hasRetryable) reject();
@@ -371,6 +381,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
         type,
         id: identifier(row, "id", budget, 2),
         output: string(row, "output", budget, 2),
+        ...(voiceReplyStreamId === undefined ? {} : { voiceReplyStreamId }),
         ...(isError === undefined ? {} : { isError }),
         ...(failureCategory === undefined ? {} : { failureCategory, retryable: retryable! }),
         ...(exitCode === undefined ? {} : { exitCode }),

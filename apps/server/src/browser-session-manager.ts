@@ -1771,6 +1771,7 @@ export class BrowserSessionManager {
 
   async newPage(scope: BrowserScope, expectedControlEpoch: number, owner: BrowserControlOwner = "operator"): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
+    if (!session.dto.capabilities?.multiPage) throw new BrowserSessionError("New tabs are unavailable in this browser.", 409);
     return this.pageAction(scope, session, owner, expectedControlEpoch, async driver => {
       if (!driver.newPage) throw new BrowserSessionError("New tabs are unavailable.");
       return driver.newPage();

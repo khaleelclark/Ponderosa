@@ -1,3 +1,4 @@
+import {loadLocalMemoryConfiguration} from "./local-memory-config.js";
 import { AgentStore, admitDataDirectory, StateAdmissionError } from "@ponderosa/agents";
 import { DataDirectoryAuthority } from "@ponderosa/native-host";
 import type { WindowsDirectoryLeaseTransfer } from "@ponderosa/native-host";
@@ -15,6 +16,7 @@ import { installLauncherRunningLogs } from "./launcher-running-logs.js";
 // Installed launcher output is capped per write throughout the daemon's life.
 // Source/systemd launches without a launcher root retain their normal streams.
 const config = loadConfig();
+const localMemory = loadLocalMemoryConfiguration(process.env.PONDEROSA_LOCAL_MEMORY_CONFIG);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDist = path.resolve(here, "../../web/dist");
 const buildManifest = path.resolve(here, "../../../build-manifest.json");
@@ -28,7 +30,6 @@ assertProductionBuildIdentity({
 
 const launcherControlToken = process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN?.trim();
 delete process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN;
-const launcherSecurity = launcherControlToken ? { controlToken: launcherControlToken } : undefined;
 const shutdownRecovery = process.env.PONDEROSA_SHUTDOWN_RECOVERY === "1";
 const shutdownRecoveryPid = Number(process.env.PONDEROSA_SHUTDOWN_RECOVERY_PID);
 const shutdownRecoveryRequestedAt = process.env.PONDEROSA_SHUTDOWN_RECOVERY_REQUESTED_AT;
@@ -108,6 +109,7 @@ if (process.env.PONDEROSA_SHUTDOWN_RECOVERY !== "1") installLauncherRunningLogs(
 let app: ReturnType<typeof createServer>;
 try { app = createServer({
   dataDir: storeRoot,
+  ...(localMemory ? {localMemory} : {}),
   reportedDataDir: process.env.PONDEROSA_REPORTED_DATA_DIR ?? config.dataDir,
   store,
   browserServiceSocket: process.env.PONDEROSA_BROWSER_SERVICE_SOCKET,
@@ -118,15 +120,12 @@ try { app = createServer({
   launcherRecords,
   engines: defaultEngineRegistrations(),
   webDist,
-  authToken: config.authToken,
   networkSecurity: config.networkSecurity,
   operatorOrigins: config.operatorOrigins,
-  operatorIdentities: config.operatorIdentities,
   requestLimits: { maxRequestsPerMinute: 600, maxCriticalRequestsPerMinute: 120, maxStreamRequestsPerMinute: 120, maxMonitorRequestsPerMinute: 120, maxInflight: 128 },
   buildRevision: process.env.PONDEROSA_BUILD_SHA,
   buildVersion: process.env.PONDEROSA_BUILD_VERSION,
   releaseChannel: process.env.PONDEROSA_RELEASE_CHANNEL,
-  ...(launcherSecurity ? { launcherSecurity } : {}),
   agentBaseUrl: process.env.PONDEROSA_AGENT_BASE_URL ?? internalAgentBaseUrl(config.host, config.port),
   allowedImportRoots: (process.env.PONDEROSA_IMPORT_ROOTS ?? "")
     .split(path.delimiter).map((root) => root.trim()).filter(Boolean),

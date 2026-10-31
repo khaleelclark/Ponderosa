@@ -188,8 +188,9 @@ export function composerShouldSeedContinuationDestination(input: {
   retainedSelectionKey?: string;
   localText: string;
   editorText: string;
+  interactionStarted?: boolean;
 }): boolean {
-  return !input.retainedSelectionKey &&
+  return !input.interactionStarted && !input.retainedSelectionKey &&
     input.previousSelectionKey !== input.nextSelectionKey &&
     !input.localText.trim() &&
     !input.editorText.trim();

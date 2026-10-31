@@ -107,9 +107,52 @@ function expectedContract(budget = new StateReadBudget()): string {
     return compiledContract = schemaSignature(sqlite);
   } finally { sqlite.close(); }
 }
+// Only the exact pre-history and pre-workspace schemas may upgrade online.
+// Derive signatures from current DDL; arbitrary missing tables remain refused.
+let compiledPausePredecessor: string | undefined;
+function pausePredecessorContract(budget = new StateReadBudget()): string {
+  if (compiledPausePredecessor) return compiledPausePredecessor;
+  budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
+  const sqlite = new Database(":memory:");
+  try {
+    bindStateReadBudget(sqlite, budget);
+    initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
+    sqlite.exec("DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses");
+    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
+    return compiledPausePredecessor = schemaSignature(sqlite);
+  } finally { sqlite.close(); }
+}
+let compiledHistoryPredecessor: string | undefined;
+let compiledWorkspacePredecessor: string | undefined;
+function workspacePredecessorContract(budget = new StateReadBudget(), beforeHistory = false): string {
+  const cached = beforeHistory ? compiledHistoryPredecessor : compiledWorkspacePredecessor;
+  if (cached) return cached;
+  budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
+  const sqlite = new Database(":memory:");
+  try {
+    bindStateReadBudget(sqlite, budget);
+    sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
+    initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
+    sqlite.exec("DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses");
+    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
+    sqlite.exec("DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'");
+    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0029_assistant_workspace.sql");
+    if (beforeHistory) {
+      sqlite.exec("DROP TABLE capability_policy_history");
+      sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0028_capability_policy_history.sql");
+    }
+    const signature = schemaSignature(sqlite);
+    if (beforeHistory) compiledHistoryPredecessor = signature; else compiledWorkspacePredecessor = signature;
+    return signature;
+  } finally { sqlite.close(); }
+}
+function historyPredecessorContract(budget = new StateReadBudget()): string {
+  return workspacePredecessorContract(budget, true);
+}
 function verifyDatabase(sqlite: Database.Database, generationId: string,
-  contract = expectedContract()): void {
-  if (schemaSignature(sqlite) !== contract) refuse();
+  contract = expectedContract(), allowHistoryUpgrade = false): boolean {
+  const actual = schemaSignature(sqlite), upgrade = actual !== contract;
+  if (upgrade && (!allowHistoryUpgrade || (actual !== historyPredecessorContract(stateReadBudget(sqlite)) && actual !== workspacePredecessorContract(stateReadBudget(sqlite)) && actual !== pausePredecessorContract(stateReadBudget(sqlite))))) refuse();
   withStateReads(sqlite, reads => {
     const objectCount = reads.population("sqlite_master");
     const tables = reads.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'", ["name"], 512, 1024 ** 2, objectCount);
@@ -127,6 +170,7 @@ function verifyDatabase(sqlite: Database.Database, generationId: string,
     reads.budget.allocate(4096); reads.budget.reserve(1);
     if (JSON.stringify(generation) !== JSON.stringify({ singleton: 1, state_epoch: 2, generation_id: generationId, schema_contract: STATE_SCHEMA_CONTRACT })) refuse();
   });
+  return upgrade;
 }
 function databaseNames(primary: string): string[] {
   if (!primary || primary !== basename(primary) || !/^[A-Za-z0-9_.-]+$/u.test(primary) ||
@@ -207,7 +251,7 @@ function snapshot(root: string, names: readonly string[], budget: StateReadBudge
   } catch (error) { dispose(); throw error; }
 }
 
-function verifyRootWithin(root: string, names: string[], marker: StateIdentity, budget: StateReadBudget) {
+function verifyRootWithin(root: string, names: string[], marker: StateIdentity, budget: StateReadBudget, allowHistoryUpgrade = false) {
   const rootIdentity = physicalDirectoryIdentity(root);
   // No unknown top-level SQLite authority is accepted as a current companion.
   const allowed = new Set(names.flatMap(name => ["", "-wal", "-shm", "-journal"].map(suffix => name + suffix)));
@@ -217,25 +261,26 @@ function verifyRootWithin(root: string, names: string[], marker: StateIdentity, 
   const copied = snapshot(root, names, budget);
   try {
     const contract = expectedContract(budget);
+    let upgrade = false;
     for (const name of names) {
       budget.allocate(8192 * 1024 + 4096); budget.reserve(1);
       const sqlite = new Database(storageDatabaseFilename(join(copied.directory, name)), { fileMustExist: true });
       try {
         bindStateReadBudget(sqlite, budget);
         sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
-        verifyDatabase(sqlite, marker.generationId, contract);
+        upgrade = verifyDatabase(sqlite, marker.generationId, contract, allowHistoryUpgrade);
       } finally { sqlite.close(); }
     }
     copied.verify();
     if (JSON.stringify(readMarker(root, budget)) !== JSON.stringify(marker) ||
         physicalDirectoryIdentity(root) !== rootIdentity) refuse();
-    return copied;
+    return { ...copied, upgrade };
   } catch (error) { copied.dispose(); throw error; }
 }
 
-function verifyRoot(root: string, names: string[], marker: StateIdentity) {
+function verifyRoot(root: string, names: string[], marker: StateIdentity, allowHistoryUpgrade = false) {
   const budget = new StateReadBudget();
-  return withStateReadInvocation(budget, () => verifyRootWithin(root, names, marker, budget));
+  return withStateReadInvocation(budget, () => verifyRootWithin(root, names, marker, budget, allowHistoryUpgrade));
 }
 
 function bootstrap(root: string, names: string[]): StateIdentity {
@@ -384,7 +429,7 @@ export function admitDataDirectory(dataDir: string, primary = "ponderosa.db", in
     const empty = readdirSync(root).length === 0;
     if (empty && expected) refuse();
     const marker = empty ? bootstrap(root, names) : readMarker(root);
-    const admittedSnapshot = verifyRoot(root, names, marker);
+    const admittedSnapshot = verifyRoot(root, names, marker, true);
     try {
       if (expected && (marker.generationId !== expected.generationId ||
           expected.physicalIdentity !== undefined && physicalDirectoryIdentity(root) !== expected.physicalIdentity)) refuse();
@@ -393,7 +438,18 @@ export function admitDataDirectory(dataDir: string, primary = "ponderosa.db", in
     // Closing another descriptor for a live SQLite file can drop its POSIX
     // locks. Close the source cohort first; keep the directory lease throughout.
     sqlite = new Database(storageDatabaseFilename(join(root, primary)), { fileMustExist: true });
-    sqlite.pragma("foreign_keys=ON"); sqlite.pragma("journal_mode=WAL");
+    sqlite.pragma("foreign_keys=ON");
+    if (admittedSnapshot.upgrade) {
+      // Recheck the live handle under the same physical lease before any write.
+      // DDL, its receipt and final validation commit as one transaction.
+      verifyDatabase(sqlite, marker.generationId, expectedContract(), true);
+      const upgrading = sqlite;
+      withStateReads(upgrading, () => {
+        initializeCurrentDatabase(upgrading);
+        verifyDatabase(upgrading, marker.generationId);
+      });
+    }
+    sqlite.pragma("journal_mode=WAL");
     sqlite.pragma("synchronous=FULL"); sqlite.pragma("busy_timeout=500");
     const state: RootState = { authority, root, primary, marker, client: sqlite,
       physicalIdentity: physicalDirectoryIdentity(root), closeClient: sqlite.close.bind(sqlite),

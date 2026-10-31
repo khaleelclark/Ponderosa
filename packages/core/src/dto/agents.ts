@@ -1,3 +1,4 @@
+import { normalizeCanonicalText, unicodeCodePointLength } from "../text-policy.js";
 import type { EngineId } from "../adapter.js";
 import type { ArtifactKind } from "./artifacts.js";
 import type {
@@ -80,6 +81,8 @@ export interface AgentDto {
   /** The single Project Chat that owns this live Agent and supplies its Chat context. */
   conversationId: string;
   title: string;
+  /** Operator-authored standing role; distinct from provenance and work requests. */
+  role?: string;
   /** The engine currently bound to this agent. */
   activeEngine: EngineId;
   /** Durable provider selection used when a turn does not override it. */
@@ -134,6 +137,20 @@ export interface PortableAgentNodeDto {
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
 }
+export interface PortableMemorySourceStamp {
+  format:1; principal:string; id:string; scope:string; audience:string; ownerChat:string;
+  sourceType:'user_statement'|'ai_inference';
+  provenance:{actor:{kind:'agent'|'user';id:string};runId:string;fenceToken:string;at:string};
+  origin?:PortableMemorySourceStamp['provenance'];
+}
+export interface PortableMemoryRowDto {id:string;text:string;metadata:Record<string,string|number|boolean>;embedding:number[];stamp:PortableMemorySourceStamp}
+export interface PortableChatMemorySnapshotDto {
+  schema:'ponderosa.chat-memory.v1';signature:string;sourceChatId:string;agentIds:string[];excludedScopes:['global'];chunks:PortableMemoryRowDto[];conflicts:PortableMemoryRowDto[];
+}
+export interface PortablePackageMemoryDto {snapshot:PortableChatMemorySnapshotDto;agentRefs:Record<string,string>}
+/** Portable intent only; the destination import review controls activation. */
+export interface PortableOutputRoleDto { ref: string; output: boolean; speaker: boolean }
+export interface OutputRoleImportReviewDto { id: string; warning?: string; inactive: boolean; speaker: 'activate' | 'inactive' | 'unchanged'; targets: Array<{ref:string;output:boolean;speaker:boolean}> }
 export interface AgentPortablePackageDto {
   schema: "ponderosa.agent-package.v1";
   mode: AgentExportMode;
@@ -144,6 +161,9 @@ export interface AgentPortablePackageDto {
   sourceProjectInstructions?: string;
   rootRef: string;
   agents: PortableAgentNodeDto[];
+  outputRoles?: PortableOutputRoleDto[];
+  /** Full-mode selected Chat/team and included Agent private memory; grants are never transported. */
+  memory?: PortablePackageMemoryDto[];
 }
 export interface AgentImportChatInstructionsResolution {
   action: "keep_destination" | "use_source";
@@ -152,6 +172,7 @@ export interface AgentImportChatInstructionsResolution {
 }
 export interface ImportAgentPackageRequest {
   package: AgentPortablePackageDto;
+  outputRoleReviewId?: string;
   conversationId: string;
   engineMapping: Record<string, string>;
   chatInstructionsResolution?: AgentImportChatInstructionsResolution;
@@ -188,12 +209,16 @@ export interface AgentImportOperationDto {
   /** SHA-256 of the exact submitted payload bound to requestId. */
   payloadHash: string;
   projectId: string;
+  /** Immutable destination admitted from the bounded upload header. */
+  conversationId:string;
+  product:'dev'|'branches';
   sourceLabel: string;
   phase: AgentImportPhase;
   status: "pending" | "completed" | "failed";
   createdAt: string;
   updatedAt: string;
   result?: ImportAgentPackageResponse;
+  outputRoleRecoveryId?: string;
   error?: string;
 }
 
@@ -204,6 +229,15 @@ export interface AgentCreationRecoveryDto {
   agentId: string;
 }
 export type CreateAgentResponse = AgentDto | AgentCreationRecoveryDto;
+
+/** Reuse the existing preset-guidance ceiling for bounded standing setup. */
+export function normalizeAgentRole(value: string | null | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("Agent Role must be text");
+  const normalized = normalizeCanonicalText(value).trim();
+  if (unicodeCodePointLength(normalized) > 8000) throw new Error("Agent Role must be 8000 characters or fewer");
+  return normalized || undefined;
+}
 
 export interface AgentRoleProfile {
   role: string;
@@ -216,12 +250,13 @@ export interface AgentRoleProfile {
  * description compact because this profile is also injected into team discovery.
  */
 export function agentRoleProfile(
-  agent: Pick<AgentDto, "title" | "spawnPrompt" | "presetSnapshot">,
+  agent: Pick<AgentDto, "title" | "role" | "spawnPrompt" | "presetSnapshot">,
 ): AgentRoleProfile {
-  const prompt = agent.spawnPrompt?.replace(/\s+/g, " ").trim();
+  const prompt = (agent.role ?? agent.spawnPrompt)?.replace(/\s+/g, " ").trim();
   const compactPrompt = prompt && prompt.length > 160
     ? `${prompt.slice(0, 160).replace(/\s+\S*$/, "").trimEnd()}…`
     : prompt;
+  if (agent.role && compactPrompt) return { role: agent.title, description: compactPrompt };
   if (agent.presetSnapshot) {
     return { role: agent.presetSnapshot.name, description: agent.presetSnapshot.description };
   }
@@ -290,6 +325,8 @@ export const TEAM_DIRECTORY_LIMITS = {
 /** POST /api/projects/:id/agents body. */
 export interface CreateAgentRequest {
   title: string;
+  /** Standing guidance; does not dispatch an opening task. */
+  role?: string;
   engine: EngineId;
   /** Every live Agent belongs to exactly one Chat. */
   conversationId: string;
@@ -315,6 +352,8 @@ export interface CreateAgentRequest {
 /** PATCH /api/agents/:id body (persistent Agent settings). */
 export interface UpdateAgentRequest {
   title?: string;
+  /** Applies at the next Run; null clears the explicit standing role. */
+  role?: string | null;
   /** Provider used when the next Run starts. Does not reconfigure an active Run. */
   activeEngine?: EngineId;
   /** Durable next-Run model. Null clears the Agent override. */

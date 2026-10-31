@@ -445,7 +445,18 @@ export class CoordinationV3RequiredReplyAuthority {
     activations: readonly ActivationInput[];
     now: string;
   }): RequiredReplyObligation[] {
-    this.transferContextRolloverObligations(input);
+    const pausedOrigins=input.activations.flatMap(activation=>{
+      const row=this.sqlite.prepare(`SELECT COALESCE((SELECT previous.run_id FROM agent_pause_recoveries previous
+          WHERE previous.pause_id=pause.id AND previous.state='rejected' AND previous.run_id IS NOT NULL
+            AND previous.rowid<recovery.rowid ORDER BY previous.rowid DESC LIMIT 1),pause.run_id) AS run_id
+        FROM agent_pause_recoveries recovery
+        JOIN agent_run_pauses pause ON pause.id=recovery.pause_id
+        WHERE recovery.activation_id=? AND recovery.run_id=? AND pause.agent_id=? AND pause.state='resume_requested'`)
+        .get(activation.id,input.runId,input.agentId) as {run_id:string}|undefined;
+      return row?[row.run_id]:[];
+    });
+    this.transferFromOrigins(input,pausedOrigins,false,true);
+    this.transferContextRolloverObligations(input,pausedOrigins.length>0);
     this.transferFromOrigins(input, input.activations.flatMap(a =>
       delegationOriginsForActivation(this.sqlite, a.id)), true);
     const inheritedFinalRoutes = new Set(input.activations.flatMap(a => delegationOriginsForActivation(this.sqlite, a.id))
@@ -526,7 +537,7 @@ export class CoordinationV3RequiredReplyAuthority {
     scopeKey: string;
     activations: readonly ActivationInput[];
     now: string;
-  }): void {
+  }, paused = false): void {
     const continuations = input.activations.filter(
       (activation) => activation.kind === "context_rollover_continuation",
     );
@@ -616,13 +627,13 @@ export class CoordinationV3RequiredReplyAuthority {
     if (attachedSourceCount.count !== sourceActivationIds.length) {
       throw new Error("context rollover source activation lineage conflicts with its source Run");
     }
-    this.transferFromOrigins(input, [rollover.source_run_id]);
+    this.transferFromOrigins(input, [rollover.source_run_id],false,paused);
   }
 
   private transferFromOrigins(input: {
     runId: string; projectId: string; agentId: string; scopeKey: string; now: string;
     activations?: readonly ActivationInput[];
-  }, originRunIds: string[], finalOnly = false): void {
+  }, originRunIds: string[], finalOnly = false, paused = false): void {
     for (const originRunId of new Set(originRunIds)) {
       const roots = this.forRun(originRunId).filter(o =>
         o.projectId === input.projectId && o.agentId === input.agentId && o.scopeKey === input.scopeKey);
@@ -648,9 +659,9 @@ export class CoordinationV3RequiredReplyAuthority {
         // ordinary callbacks cannot revive completed or cancelled work.
         const answeredInitial = predecessor.deliveryPhase === 'initial' && ['pending','satisfied'].includes(predecessor.state) &&
           answeredDecision && row?.run_status !== 'cancelled';
-        const satisfiedInitial = answeredInitial && predecessor.state === 'satisfied';
-        if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial) continue;
-        if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial) continue;
+        const satisfiedInitial = (answeredInitial || paused) && predecessor.state === 'satisfied';
+        if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial && !(paused && predecessor.state === "satisfied")) continue;
+        if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial && !(paused && predecessor.state === "satisfied")) continue;
         this.sqlite.prepare(`
           INSERT OR IGNORE INTO required_reply_obligations (
             run_id, source_activation_id, project_id, agent_id, scope_key, reply_authority_json,
@@ -1004,7 +1015,7 @@ export class CoordinationV3RequiredReplyAuthority {
           WHERE id = ? AND state IN ('consumed', 'outcome_unknown')
         `).run(
           attempts,
-          category === "quota_exhausted" || category === "throttled" ? "rate_limit" : category ?? null,
+          (category === 'quota_exhausted' || category === 'throttled') ? 'rate_limit' : category ?? null,
           error,
           exhausted ? 'retry_exhausted' : 'permanent_failure',
           now,

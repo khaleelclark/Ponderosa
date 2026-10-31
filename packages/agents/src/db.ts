@@ -60,6 +60,12 @@ const schemaExtensions = [
   "0022_provider_scope_authority.sql",
   "0023_lead_task_continuity.sql",
   "0024_asset_browser_metadata.sql",
+  "0025_branch_runtime.sql",
+  "0026_imported_history_retrieval.sql",
+  "0027_schedule_work_lookup.sql",
+  "0028_capability_policy_history.sql",
+  "0029_assistant_workspace.sql",
+  "0030_agent_run_pauses.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

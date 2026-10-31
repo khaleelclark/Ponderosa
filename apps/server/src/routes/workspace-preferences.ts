@@ -1,3 +1,4 @@
+import {requestProduct,resourceInProduct,mergeProductPreferencePatch} from '../product-scope.js';
 import type {
   MarkWorkspaceResourceUsedRequest,
   ModelOption,
@@ -111,12 +112,10 @@ export function registerWorkspacePreferenceRoutes(
       if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
         return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
       }
-      const recency = workspace.listResourceRecency(limit);
-      return {
-        ...recency,
-        resources: recency.resources.filter((resource) =>
-          resource.kind !== "agent" || !store.agentCreationPending(resource.resourceId)),
-      };
+      const product = requestProduct(request);
+      return workspace.listResourceRecency(limit, resource =>
+        resourceInProduct(store, resource.kind, resource.resourceId, product)
+        && (resource.kind !== "agent" || !store.agentCreationPending(resource.resourceId)));
     },
   );
 
@@ -130,6 +129,7 @@ export function registerWorkspacePreferenceRoutes(
           kind !== "project"
           && kind !== "conversation"
           && kind !== "agent"
+          && kind !== "branch"
         )
         || typeof resourceId !== "string"
         || !resourceId.trim()
@@ -141,7 +141,9 @@ export function registerWorkspacePreferenceRoutes(
         ? Boolean(store.getProject(resourceId))
         : kind === "conversation"
           ? Boolean(store.getConversation(resourceId))
-          : Boolean(store.getAgent(resourceId)) && !store.agentCreationPending(resourceId);
+          : kind === 'branch'
+            ? Boolean(store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(resourceId))
+            : Boolean(store.getAgent(resourceId)) && !store.agentCreationPending(resourceId);
       if (!exists) {
         return reply.code(404).send({ error: "workspace resource not found" });
       }
@@ -154,17 +156,18 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
+    if ('outputApps' in patch) return reply.code(400).send({error:'Use output-app designation settings to change output roles'});
     if (patch.notificationScopes !== undefined) return reply.code(400).send({ error: "use the resource notification settings endpoint" });
-    for (const key of ["projectFolders", "chatFolders"] as const) {
+    for (const key of ["projectFolders", "chatFolders", "branchFolders"] as const) {
       if (patch[key] === undefined) continue;
       const folders = patch[key];
-      const memberKey = key === "projectFolders" ? "projectIds" : "conversationIds";
+      const memberKey = key === "projectFolders" ? "projectIds" : key==='branchFolders'?'branchIds':"conversationIds";
       const ids = new Set<string>();
       const members = new Set<string>();
       if (!Array.isArray(folders) || folders.length > 1000 || folders.some(folder => {
         if (!folder || typeof folder !== "object" || typeof folder.id !== "string" || !folder.id || folder.id.length > 200 || ids.has(folder.id) ||
           typeof folder.name !== "string" || !folder.name.trim() || folder.name.length > 100 || typeof folder.expanded !== "boolean" ||
-          (key === "chatFolders" && "starred" in folder && folder.starred !== undefined && typeof folder.starred !== "boolean") ||
+          (key !== "projectFolders" && "starred" in folder && folder.starred !== undefined && typeof folder.starred !== "boolean") ||
           !Array.isArray((folder as unknown as Record<string, unknown[]>)[memberKey]) || (folder as unknown as Record<string, unknown[]>)[memberKey]!.length > 10000) return true;
         ids.add(folder.id);
         return (folder as unknown as Record<string, unknown[]>)[memberKey]!.some(id => {
@@ -180,13 +183,13 @@ export function registerWorkspacePreferenceRoutes(
       return reply.code(400).send({ error: "preference revision and timestamp are server-owned" });
     }
     if (patch.projectSort && !["last_used", "alphabetical", "custom"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
-    for (const [label, sort] of [["home", patch.homeSort], ["chat", patch.chatSort], ["agent", patch.agentSort]] as const) {
+    for (const [label, sort] of [["home", patch.homeSort], ["chat", patch.chatSort], ["agent", patch.agentSort],['branch',patch.branchSort]] as const) {
       if (sort !== undefined && !["last_used", "alphabetical", "custom"].includes(sort)) return reply.code(400).send({ error: `invalid ${label} sort` });
     }
     if (patch.projectOrder && (patch.projectOrder.length > 10_000 || patch.projectOrder.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.projectOrder).size !== patch.projectOrder.length)) {
       return reply.code(400).send({ error: "invalid custom project order" });
     }
-    for (const [label, order] of [["home", patch.homeOrder], ["chat", patch.chatOrder], ["agent", patch.agentOrder]] as const) {
+    for (const [label, order] of [["home", patch.homeOrder], ["chat", patch.chatOrder], ["agent", patch.agentOrder],['branch',patch.branchOrder]] as const) {
       if (order !== undefined && (!Array.isArray(order) || order.length > 10_000 || order.some((id) => typeof id !== "string" || id.length > 200) || new Set(order).size !== order.length)) {
         return reply.code(400).send({ error: `invalid custom ${label} order` });
       }
@@ -194,7 +197,7 @@ export function registerWorkspacePreferenceRoutes(
     if (patch.starredProjectIds !== undefined && (!Array.isArray(patch.starredProjectIds) || patch.starredProjectIds.length > 10_000 || patch.starredProjectIds.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.starredProjectIds).size !== patch.starredProjectIds.length)) {
       return reply.code(400).send({ error: "invalid starred projects" });
     }
-    if (patch.starredResourceIds !== undefined && (!Array.isArray(patch.starredResourceIds) || patch.starredResourceIds.length > 10_000 || patch.starredResourceIds.some((id) => typeof id !== "string" || id.length > 240 || !/^(?:project|conversation|agent):[^:]+$/u.test(id)) || new Set(patch.starredResourceIds).size !== patch.starredResourceIds.length)) {
+    if (patch.starredResourceIds !== undefined && (!Array.isArray(patch.starredResourceIds) || patch.starredResourceIds.length > 10_000 || patch.starredResourceIds.some((id) => typeof id !== "string" || id.length > 240 || !/^(?:project|conversation|agent|branch):[^:]+$/u.test(id)) || new Set(patch.starredResourceIds).size !== patch.starredResourceIds.length)) {
       return reply.code(400).send({ error: "invalid starred resources" });
     }
     if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["directResponses", "broadcasts"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must contain supported boolean switches" });
@@ -234,6 +237,7 @@ export function registerWorkspacePreferenceRoutes(
       }
     }
     if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
+    if (patch.globalInstructions !== undefined && patch.globalInstructions.length > 100_000) return reply.code(400).send({ error: "Global instructions must be at most 100,000 characters. Your saved instructions were not changed." });
     if (patch.maxConcurrentAgentRuns !== undefined && (!Number.isSafeInteger(patch.maxConcurrentAgentRuns) ||
         patch.maxConcurrentAgentRuns < MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY ||
         patch.maxConcurrentAgentRuns > MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY)) {
@@ -275,8 +279,11 @@ export function registerWorkspacePreferenceRoutes(
       return reply.code(400).send({ error: "A chat in this folder no longer exists. Refresh and retry." });
     }
     delete patch.chatFoldersRevision;
+    if(patch.branchFolders!==undefined&&patch.branchFoldersRevision!==previousPreferences.revision)return reply.code(409).send({error:'Branch folders changed; refresh and reapply the folder action.'});
+    if(patch.branchFolders?.some(folder=>folder.branchIds.some(id=>!store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(id))))return reply.code(400).send({error:'A Branch in this folder is unavailable. Refresh and retry.'});
+    delete patch.branchFoldersRevision;
     const cursor = workspace.cursor();
-    const preferences = workspace.updatePreferences(patch);
+    const preferences = workspace.updatePreferences(mergeProductPreferencePatch(store,previousPreferences,patch,requestProduct(request)));
     // The store owns normalization; compare only fields delivered in the prompt.
     const globalInstructionsChanged = preferences.globalInstructions.trim() !== previousPreferences.globalInstructions.trim();
     const profileChanged = preferences.profile.displayName !== previousPreferences.profile.displayName ||

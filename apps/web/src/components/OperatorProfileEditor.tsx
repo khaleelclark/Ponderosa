@@ -136,7 +136,7 @@ export function OperatorProfileEditor({
         : handleHelperText} inputProps={{ maxLength: 32 }} />
   </>;
   return <Stack spacing={avatarSize > 60 ? 2.25 : 2}>
-    {showDescription ? <Typography variant="body2" color="text.secondary">This synced identity controls how Agents address you and how your profile appears throughout Ponderosa.</Typography> : null}
+    {showDescription ? <Typography variant="body2" color="text.secondary">Your name and picture across Ponderosa.</Typography> : null}
     {avatarFirst ? avatar : fields}
     {avatarFirst ? fields : avatar}
     <FormControl fullWidth>
@@ -146,7 +146,7 @@ export function OperatorProfileEditor({
         {AVATARS.map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
       </Select>
     </FormControl>
-    {showUploadHelp ? <Typography variant="caption" color="text.secondary">PNG, JPEG, WebP, GIF, or AVIF up to 10 MiB. HEIC is not accepted because current browsers cannot render it reliably. Uploaded pictures are stored in Ponderosa-managed workspace data.</Typography> : null}
+    {showUploadHelp ? <Typography variant="caption" color="text.secondary">PNG, JPEG, WebP, GIF or AVIF · up to 10 MiB</Typography> : null}
     {form.error ? <Alert severity="error">{form.error}</Alert> : null}
   </Stack>;
 }

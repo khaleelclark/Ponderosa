@@ -1,3 +1,4 @@
+import {productApiPath} from './productScope.js';
 import type { WorkspaceResourceKind } from "../resourcePreferences.js";
 import type { CollectionPageDto } from "@ponderosa/core";
 import type {
@@ -74,7 +75,7 @@ import type {
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
   HealthDto,
-  AllChatPageDto,
+  InboxPageDto,
   CreateHostFolderRequest,
   HostFolderCreateDto,
   HistoryPageDto,
@@ -167,6 +168,7 @@ const API_BASE = "";
 const pendingBackgroundReads = new Map<string, Promise<unknown>>();
 
 function backgroundRead(method: string, path: string): boolean {
+  path=path.replace(/^\/api\/branches\/engine\//,"/api/");
   if (method === "GET") return true;
   if (method !== "POST") return false;
   return path === "/api/notifications/projection"
@@ -187,7 +189,7 @@ async function probeStreamRateLimit(): Promise<void> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
-    const response = await fetch("/api/streams/probe", {
+    const response = await fetch(productApiPath("/api/streams/probe"), {
       cache: "no-store",
       signal: controller.signal,
     });
@@ -217,6 +219,7 @@ async function decodeHttpError(response: Response, isBackground: boolean): Promi
 }
 
 export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
+  path=productApiPath(path);
   const method = (init?.method ?? "GET").toUpperCase();
   const isBackground = backgroundRead(method, path);
   const load = async (): Promise<T> => {
@@ -258,7 +261,8 @@ function withoutCursor(path: string): string {
   return `${parsed.pathname}${parsed.search}`;
 }
 
-function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
+export function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
+  path=productApiPath(path);
   return coalesceBackgroundRead(`page:${path}:${resetOnStale}`, async () => {
     await waitForBackgroundCooldown();
     const response = await fetch(`${API_BASE}${path}`);
@@ -294,7 +298,7 @@ async function collectCollectionPages<T>(path: string): Promise<T[]> {
 }
 
 async function requestText(path: string, init?: RequestInit): Promise<string> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  const response = await fetch(productApiPath(`${API_BASE}${path}`), init);
   if (!response.ok) {
     throw await decodeHttpError(response, false);
   }
@@ -317,6 +321,10 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
+  getVoiceReplyStatus(conversationId: string, messageId: string, agentId: string): Promise<import("@ponderosa/core").VoiceReplyStatus> {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/voice-replies/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`, {cache:"no-store"});
+  },
+
   getAssetLimits(): Promise<AssetLimitsDto> { return requestJson<AssetLimitsDto>("/api/asset-limits"); },
   listProjects(): Promise<ProjectDto[]> {
     return collectCollectionPages<ProjectDto>("/api/projects");
@@ -371,7 +379,7 @@ export const realApi = {
     })}`);
   },
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto> {
-    const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
+    const path = scope === "overall" ? "/api/usage" : `/api/${scope==='branch'?'branches':scope+'s'}/${encodeURIComponent(id ?? "")}/usage`;
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
     return requestJson<TokenUsageSummaryDto>(url);
   },
@@ -399,8 +407,8 @@ export const realApi = {
   searchGlobalFiles(query: string, limit = 25, scope?: { projectId: string; conversationId?: string }, cursor?: string, signal?: AbortSignal): Promise<import("@ponderosa/core").GlobalFileSearchResponseDto> {
     return requestJson(`/api/search/files${toQuery({ q: query, limit, ...scope, cursor })}`, signal ? { signal } : undefined);
   },
-  getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
-    return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
+  getInbox(limit: number = 50, cursor?: string): Promise<InboxPageDto> {
+    return requestJson<InboxPageDto>(`/api/inbox${toQuery({ limit: String(limit), cursor })}`);
   },
   listConversations(projectId: string): Promise<ConversationDto[]> {
     return collectCollectionPages<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");
@@ -460,14 +468,14 @@ export const realApi = {
       `/api/conversations/${encodeURIComponent(conversationId)}/next-run-deliveries${toQuery({ limit })}`,
     );
   },
-  getConversationDraft(conversationId: string, ownerId: string): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`);
+  getConversationDraft(conversationId: string, ownerId: string, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`, { signal });
   },
   getConversationDraftConflicts(conversationId: string, ownerId: string): Promise<ConversationDraftConflictListDto> {
     return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts?ownerId=${encodeURIComponent(ownerId)}`);
   },
-  putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
+  putConversationDraft(conversationId: string, request: PutConversationDraftRequest, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest), signal });
   },
   restoreConversationDraftConflict(
     conversationId: string,
@@ -501,13 +509,13 @@ export const realApi = {
       body: file,
     }), shouldRetry);
   },
-  async downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File> {
-    const response = await fetch(attachment.downloadUrl, { cache: "no-store" });
+  async downloadDraftAttachment(attachment: DraftAttachmentDto, signal?: AbortSignal): Promise<File> {
+    const response = await fetch(productApiPath(attachment.downloadUrl), { cache: "no-store", signal });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
   },
   async deleteDraftAttachment(conversationId: string, ownerId: string, attachmentId: string): Promise<void> {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}?ownerId=${encodeURIComponent(ownerId)}`, { method: "DELETE" });
+    const response = await fetch(productApiPath(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}?ownerId=${encodeURIComponent(ownerId)}`), { method: "DELETE" });
     if (!response.ok && response.status !== 404) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
   generateConversationTitle(conversationId: string): Promise<GenerateConversationTitleResponse> {
@@ -607,9 +615,9 @@ export const realApi = {
       body: JSON.stringify(request),
     });
   },
-  listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
+  listDecisions(filter: { id?: string; projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}, signal?: AbortSignal): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`, signal ? { signal, cache: "no-store" } : undefined); },
   getDecisionAction(decisionId: string): Promise<RuntimeElicitationActionDto> { return requestJson<RuntimeElicitationActionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/action`); },
-  respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
+  respondDecision(decisionId: string, request: ResolveDecisionRequest, signal?: AbortSignal): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest), signal }); },
   getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto> { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
   async upsertWebPushSubscription(subscription: WebPushSubscriptionDto): Promise<void> {
     await requestJson(`/api/push/subscriptions/${encodeURIComponent(subscription.deviceId)}`, { method: "PUT", body: JSON.stringify(subscription) });
@@ -806,7 +814,7 @@ export const realApi = {
     return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
   },
   agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
-    return `/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`;
+    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`);
   },
   importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
@@ -814,6 +822,13 @@ export const realApi = {
       headers: { "idempotency-key": requestId },
       body: JSON.stringify(request satisfies ImportAgentPackageRequest),
     });
+  },
+  recoverAgentOutputRoles(projectId:string,operationId:string,reviewId?:string):Promise<import('@ponderosa/core').OutputRoleImportReviewDto|ImportAgentPackageResponse>{
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-role-finalizations/${encodeURIComponent(operationId)}`,{method:'POST',body:JSON.stringify(reviewId?{reviewId}:{})});
+  },
+  previewAgentOutputRoles(projectId:string,packageBlob:Blob,metadata:Omit<ImportAgentPackageRequest,'package'>):Promise<import('@ponderosa/core').OutputRoleImportReviewDto>{
+    const body=new Blob([`${JSON.stringify(metadata)}\n`,packageBlob],{type:'application/vnd.ponderosa.agent-import'});
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-role-preview`,{method:'POST',headers:{'content-type':body.type},body});
   },
   importAgentPackageBlob(
     projectId: string,
@@ -979,6 +994,9 @@ export const realApi = {
       body: JSON.stringify(request),
     });
   },
+  controlRun(agentId: string, action:'pause'|'resume', request:{targetRunId?:string;pauseId?:string;idempotencyKey:string}): Promise<{accepted:true;pauseId?:string}> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/${action}`,{method:'POST',body:JSON.stringify(request)});
+  },
   compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },
@@ -1067,7 +1085,7 @@ export const realApi = {
   },
   async getBrowserFrame(projectId: string, agentId: string, runId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
     await waitForBackgroundCooldown(signal);
-    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    const response = await fetch(productApiPath(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`), { cache: "no-store", signal });
     if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
@@ -1178,7 +1196,7 @@ export const realApi = {
   },
   async getProjectBrowserFrame(projectId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
     await waitForBackgroundCooldown(signal);
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    const response = await fetch(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`), { cache: "no-store", signal });
     if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
@@ -1188,9 +1206,9 @@ export const realApi = {
     return createResilientEventSource({
       probeRateLimit: probeStreamRateLimit,
       reconnectCooldownMs: backgroundCooldownRemaining,
-      createSource: () => new EventSource(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
+      createSource: () => new EventSource(productApiPath(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
         lastEventId: cursor,
-      })}`),
+      })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
       configure(source) {
@@ -1213,7 +1231,7 @@ export const realApi = {
     return createResilientEventSource({
       probeRateLimit: probeStreamRateLimit,
       reconnectCooldownMs: backgroundCooldownRemaining,
-      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`),
+      createSource: () => new EventSource(productApiPath(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
       configure(source) {

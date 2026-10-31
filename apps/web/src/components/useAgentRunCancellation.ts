@@ -17,7 +17,12 @@ export function useAgentRunCancellation(
     }: {
       idempotencyKey: string;
       targetRunId: string;
-    }) => api.cancelRun(agentId, { idempotencyKey, targetRunId }),
+    }) => {
+      if (!targetRunId) {
+        throw new Error("The active Run changed before it could be stopped.");
+      }
+      return api.cancelRun(agentId, { idempotencyKey, targetRunId });
+    },
     onSettled: () => {
       stopRequestId.current = undefined;
       void queryClient.invalidateQueries({
@@ -29,16 +34,11 @@ export function useAgentRunCancellation(
     },
   });
   const stopActiveRun = () => {
-    if (!executionId) {
-      return Promise.reject(
-        new Error("The active Run changed before it could be stopped."),
-      );
-    }
     const idempotencyKey = stopRequestId.current ?? createClientId();
     stopRequestId.current = idempotencyKey;
-    return cancelRun.mutateAsync({
+    cancelRun.mutate({
       idempotencyKey,
-      targetRunId: executionId,
+      targetRunId: executionId ?? "",
     });
   };
   return { cancelRun, stopActiveRun };

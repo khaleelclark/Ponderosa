@@ -71,6 +71,7 @@ export interface WorkItemDto {
 }
 
 export interface AgentCoordinationV3Dto {
+  pause?: { id:string; runId:string; state:"paused"|"resume_requested"; pausedAt:string; error?:string };
   availability: "running" | "runnable" | "waiting" | "idle";
   requests: Array<{
     id: string;

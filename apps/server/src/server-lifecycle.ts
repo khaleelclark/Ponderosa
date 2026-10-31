@@ -1,3 +1,4 @@
+import {localMemoryFor} from './local-memory.js';
 import WebSocket from "ws";
 import type {
   AgentDeletionReceipt,
@@ -99,6 +100,7 @@ export function recoverFailedAgentCreations(input: {
   const failures: Array<{ operationId: string; error: unknown }> = [];
   for (const operation of input.store.listRecoverableAgentCreationOperations()) {
     if (operation.status === "canonical_committed") continue;
+    if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error('Package memory cleanup remains pending')});continue;}
     input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
     let rolledBack = true;
     const authorityBlockedArtifactIds = new Set<string>();
@@ -361,10 +363,12 @@ export function registerServerLifecycle(
     startupProjectionRecoveryImmediate = setImmediate(() => {
       startupProjectionRecoveryImmediate = undefined;
       if (isClosed()) return;
-      startupProjectionRecovery = reconcileRuntimeCommunicationProjections(undefined, {
-        yieldEvery: 1,
-        shouldContinue: () => !isClosed(),
-      }).then(async (repaired) => {
+      startupProjectionRecovery = Promise.resolve(app.ready()).then(async () => {
+        if (isClosed()) return;
+        const repaired = await reconcileRuntimeCommunicationProjections(undefined, {
+          yieldEvery: 1,
+          shouldContinue: () => !isClosed(),
+        });
         let verifiedProjects = 0;
         for (const project of store.listProjects()) {
           if (isClosed()) break;
@@ -513,6 +517,13 @@ export function registerServerLifecycle(
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
     await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
+    for(const operation of store.listRecoverableAgentCreationOperations()){
+      if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){
+        store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
+        try{const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for package cleanup');await memory.rollbackImportMemory(operation.id);}
+        catch(error){store.updateAgentCreationOperation(operation.id,{lastError:error instanceof Error?error.message:String(error)});}
+      }
+    }
     const failedCreationRecovery = recoverFailedAgentCreations({
       store,
       assets,
@@ -546,8 +557,13 @@ export function registerServerLifecycle(
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     if (artifactFilesystem.ok) {
       resolveOperationalNotification("startup:artifact-filesystem-capability");
-      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
-        coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
+      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId, binding) => {
+        const decisionId = /^decision:([^:]+):response$/.exec(communicationId)?.[1];
+        if (!decisionId) return coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId;
+        const decision = workspace.getDecision(decisionId);
+        return Boolean(decision?.status === "resolved" && decision.projectId === projectId && decision.agentId === binding.agentId &&
+          decision.response?.attachments?.some(file => file.id === binding.attachmentId && file.sha256 === binding.contentHash && file.size === binding.byteLength));
+      });
       if (recoveredAssociations.unavailable) {
         app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
       }
@@ -569,11 +585,6 @@ export function registerServerLifecycle(
           }
         }
       }
-      // Historical projection repair is idempotent and exact live retries
-      // reconcile their own Communication before reporting success. Run the
-      // full backlog after readiness so a large ledger cannot hold the listener
-      // closed, and yield between bounded batches to preserve the event loop.
-      scheduleStartupProjectionRecovery();
       for (const artifact of runtimeArtifacts.filter((candidate) => candidate.ownerKind === "request_update")) {
         const request = coordinationV3.requestForUpdate(artifact.ownerId);
         if (!request || !assets.authoritativeRuntimeArtifact(artifact.projectId, artifact)) continue;
@@ -855,7 +866,7 @@ export function registerServerLifecycle(
           );
           if (!releaseAssetReconciliation) continue;
           try {
-            const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
+            const associated = store.getMessageAttachmentIds(agent.id);
             await assets.reconcile(
               project.id,
               agent.id,
@@ -928,6 +939,10 @@ export function registerServerLifecycle(
       phases: lifecyclePhases,
       totalMs: Math.round((performance.now() - lifecycleStartedAt) * 10) / 10,
     }, "server lifecycle readiness completed");
+    // Exact live retries reconcile their own Communication. Schedule the
+    // idempotent historical backlog after every startup barrier so it cannot
+    // interleave with (and delay) the required asset/deletion recovery above.
+    if (artifactFilesystem.ok) scheduleStartupProjectionRecovery();
   });
 
   app.addHook("preClose", async () => {
@@ -961,8 +976,8 @@ export function registerServerLifecycle(
     assets.close();
     context.browserProfiles.close();
     workspace.close();
-    // A write-active lifetime leaves recovery to the next startup. Replaying
-    // every projection here can exceed the shutdown deadline on large stores.
+    // Commit verified projection progress without replaying history here.
+    // Incomplete or unsupported work retains the full startup recovery path.
     store.close();
     shutdownStorageClosed = true;
     app.log.info({ durationMs: Math.round(performance.now() - startedAt) }, "Ponderosa shutdown storage cleanup completed");

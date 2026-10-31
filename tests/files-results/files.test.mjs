@@ -6,9 +6,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import sharp from 'sharp';
-import { AgentStore, managedArtifactContentPath } from '@ponderosa/agents';
-import { AgentWorkingCopyService } from '../../apps/server/dist/agent-working-copy-service.js';
-import { withFixture, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import {prepareAssetUpload} from '../../apps/server/dist/assets.js';
+import {hasSamsungScreenshotTrailer} from '../../apps/server/dist/jpeg-container.js';
+import { managedArtifactContentPath } from '@ponderosa/agents';
+import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
@@ -241,6 +242,131 @@ test('Motion Photo upload retains accepted exact bytes and refuses an oversized 
   for (const [asset, body] of accepted) assert.deepEqual((await f.api('GET', asset.downloadUrl)).rawBody, body);
 }));
 
+
+// Exercise the URL returned by the real import tool; constructing a scoped URL
+// in the test would conceal a missing Branches response-prefix projection.
+test('imported download URLs preserve both product owners and captured checksums without operator authentication across reopen', options, t => withFixture(t, async f => {
+  const branch = f.ok(await f.api('POST', '/api/branches', { name: 'Scoped deliverables', idempotencyKey: randomUUID() }));
+  const downloads = [];
+  for (const product of ['dev', 'branches']) {
+    const base = product === 'branches' ? '/api/branches/engine' : '/api';
+    const otherBase = product === 'branches' ? '/api' : '/api/branches/engine';
+    const chats = [];
+    for (const name of ['Artifact owner', 'Foreign project']) chats.push(product === 'dev'
+      ? await f.createChat(name)
+      : f.ok(await f.api('POST', `/api/branches/${branch.id}/chats`, { label: name, defaultEngine: 'codex' }, { 'idempotency-key': randomUUID() })));
+    const [chat, foreign] = chats;
+    assert.notEqual(chat.projectId, foreign.projectId, 'The foreign-project check uses a distinct canonical project');
+    const agent = f.ok(await f.api('POST', `${base}/projects/${chat.projectId}/agents`, {
+      title: 'Deliverable author', engine: 'codex', conversationId: chat.id, idempotencyKey: randomUUID(),
+    }));
+    f.plans.set(agent.id, [{ hold: true }]);
+    f.ok(await f.api('POST', `${base}/agents/${agent.id}/messages`, { text: 'Capture controlled deliverable', idempotencyKey: randomUUID() }));
+    const session = await until(() => f.turns.some(turn => turn.agentId === agent.id) && f.sessions.get(agent.id), 'held artifact author');
+    const bytes = Buffer.from([0, 255, 128, 10, ...Buffer.from(`Owned ${product} café 🌲`)]), name = 'résultat 100%.bin';
+    const source = path.join(chat.workingDirectory, name);
+    await writeFile(source, bytes);
+    const { artifact } = f.ok(await f.tool(session, 'ponderosa_import_file', { path: name }));
+    const expected = `${base}/projects/${encodeURIComponent(chat.projectId)}/artifacts/${encodeURIComponent(artifact.id)}/download`;
+    assert.equal(artifact.downloadUrl, expected, `${product} returns its authorized route without client repair`);
+    assert.equal(artifact.sha256, createHash('sha256').update(bytes).digest('hex'));
+    await rm(source);
+    const response = await f.api('GET', artifact.downloadUrl); f.ok(response);
+    assert.deepEqual(response.rawBody, bytes);
+    assert.match(response.headers['content-disposition'], /^attachment/);
+    assert.equal((await f.api('GET', artifact.downloadUrl, undefined, { authorization: '' })).status, 200);
+    assert.equal((await f.api('GET', artifact.downloadUrl.replace(base, otherBase))).status, 404, 'A product URL cannot confer ownership');
+    assert.equal((await f.api('GET', `${base}/projects/${foreign.projectId}/artifacts/${encodeURIComponent(artifact.id)}/download`)).status, 404);
+    assert.equal((await f.api('GET', `${base}/projects/${chat.projectId}/artifacts/missing/download`)).status, 404);
+    downloads.push({ artifact, bytes });
+  }
+  await f.reopen();
+  for (const { artifact, bytes } of downloads) {
+    const response = await f.api('GET', artifact.downloadUrl); f.ok(response);
+    assert.deepEqual(response.rawBody, bytes);
+    assert.equal(createHash('sha256').update(response.rawBody).digest('hex'), artifact.sha256);
+  }
+}, { authToken: randomUUID() }));
+
+function samsungScreenshot(image, appInfo, {version=107,gap=0}={}) {
+  const fields=[[0x0c51,'Samsung_Capture_Info','Screenshot'],[0x0da1,'Captured_App_Info',appInfo]];
+  const blocks=fields.map(([type,name,value])=>{
+    const key=Buffer.from(name),data=Buffer.from(value),block=Buffer.alloc(8+key.length+data.length);
+    block.writeUInt16LE(type,2);block.writeUInt32LE(key.length,4);key.copy(block,8);data.copy(block,8+key.length);return block;
+  });
+  const directory=Buffer.alloc(36);directory.write('SEFH');directory.writeUInt32LE(version,4);directory.writeUInt32LE(2,8);
+  let back=blocks.reduce((sum,block)=>sum+block.length,0);
+  for(const [i,block]of blocks.entries()){
+    block.copy(directory,12+i*12,0,4);directory.writeUInt32LE(back,16+i*12);directory.writeUInt32LE(block.length,20+i*12);back-=block.length;
+  }
+  const footer=Buffer.alloc(8);footer.writeUInt32LE(directory.length);footer.write('SEFT',4);
+  return Buffer.concat([image,Buffer.alloc(gap),...blocks,directory,footer]);
+}
+const captureInfo=value=>Buffer.from(JSON.stringify(value)).toString('base64');
+const screenshotJpeg=()=>sharp({create:{width:2,height:2,channels:3,background:'#aabbcc'}}).jpeg().toBuffer();
+
+test('Samsung screenshots accept required comp and optional bounded inert capurl',async()=>{
+  const image=await screenshotJpeg(),comp='com.example.photos/.Screenshot';
+  for(const info of [{comp},{comp,capurl:'https://example.test/screenshot'},{capurl:'https://example.test/',comp},{comp,capurl:''},{comp,capurl:'x'.repeat(1024)},{comp,capurl:'javascript:inert-metadata'}]){
+    const body=samsungScreenshot(image,captureInfo(info));
+    assert.equal(hasSamsungScreenshotTrailer(body),true);
+    const prepared=await prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'});
+    assert.equal(prepared.sha256,createHash('sha256').update(body).digest('hex'));
+    assert.equal(prepared.width,2);assert.equal(prepared.height,2);
+  }
+  assert.equal(hasSamsungScreenshotTrailer(samsungScreenshot(image,'com.example.photos')),true);
+  const png=samsungScreenshot(await sharp(image).png().toBuffer(),captureInfo({comp,capurl:'https://example.test/'}));
+  assert.equal(hasSamsungScreenshotTrailer(png),true);
+  assert.equal((await prepareAssetUpload({body:png,name:'screenshot.png',declaredType:'image/png'})).mediaType,'image/png');
+});
+
+test('Samsung screenshot metadata retains strict shape, encoding, bounds and image-type admission',async()=>{
+  const image=await screenshotJpeg(),comp='com.example.photos/.Screenshot';
+  const invalid=[null,[],{}, {capurl:'https://example.test/'},{comp:0},{comp:''},{comp:'x'.repeat(1025)},{comp:'bad\ncomponent'},
+    ...[null,0,false,{},[], 'x'.repeat(1025),'bad\nurl','bad\u007furl'].map(capurl=>({comp,capurl})),
+    {comp,capurl:'https://example.test/',extra:true},JSON.parse('{"comp":"safe","__proto__":{}}')];
+  const canonical=captureInfo({comp:'aa'}),alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  assert.ok(canonical.endsWith('=='));
+  const noncanonical=canonical.slice(0,-3)+alphabet[alphabet.indexOf(canonical.at(-3))+1]+'==';
+  assert.deepEqual(Buffer.from(noncanonical,'base64'),Buffer.from(canonical,'base64'));
+  const invalidUtf8=Buffer.concat([Buffer.from('{"comp":"'),Buffer.from([0xff]),Buffer.from('"}')]).toString('base64');
+  const malformed=[...invalid.map(captureInfo),canonical+'\n',canonical.slice(0,-1),noncanonical,invalidUtf8,Buffer.from('{').toString('base64'),'A'.repeat(4100)];
+  for(const value of malformed){
+    const body=samsungScreenshot(image,value);
+    assert.equal(hasSamsungScreenshotTrailer(body),false,'Malformed captured-app metadata was accepted');
+    await assert.rejects(prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'}),error=>error.statusCode===415);
+  }
+  const app=captureInfo({comp,capurl:'https://example.test/'}),valid=samsungScreenshot(image,app);
+  const duplicate=Buffer.from(valid),directory=valid.length-8-valid.readUInt32LE(valid.length-8);duplicate.writeUInt16LE(0x0c51,directory+26);
+  const escaped=Buffer.from(valid);escaped.writeUInt32LE(0xffffffff,directory+16);
+  for(const body of [duplicate,escaped,samsungScreenshot(image,app,{version:106}),samsungScreenshot(image,app,{gap:1}),valid.subarray(0,-1),Buffer.concat([valid,Buffer.from([0])]),samsungScreenshot(image.subarray(0,-2),app)]){
+    await assert.rejects(prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'}),error=>error.statusCode===415);
+  }
+  for(const [name,declaredType]of [['screenshot.png','image/jpeg'],['screenshot.jpg','image/png']]){
+    await assert.rejects(prepareAssetUpload({body:valid,name,declaredType}),error=>error.statusCode===415);
+  }
+});
+
+test('Samsung capurl screenshots retain exact bytes through Agent, Chat and draft uploads and restart',options,t=>withFixture(t,async f=>{
+  const chat=await f.createChat('Samsung screenshot'),agent=await f.createIdleAgent(chat,'Screenshot reader');
+  const body=samsungScreenshot(await screenshotJpeg(),captureInfo({comp:'com.example.photos/.Screenshot',capurl:'https://example.test/'})),saved=[];
+  for(const route of [`/api/agents/${agent.id}/attachments`,`/api/conversations/${chat.id}/attachments`,`/api/conversations/${chat.id}/draft-attachments`]){
+    const asset=f.ok(await f.api('POST',route,body,{'content-type':'application/x-ponderosa-attachment','x-ponderosa-filename':'screenshot.jpg','x-ponderosa-media-type':'image/jpeg','x-ponderosa-draft-owner':'samsung-browser'}));
+    if(!route.endsWith('/draft-attachments')){
+      assert.equal(asset.sha256,createHash('sha256').update(body).digest('hex'));assert.equal(typeof asset.previewUrl,'string');
+    }
+    saved.push(asset);
+  }
+  await f.reopen();
+  for(const asset of saved){
+    const download=await f.api('GET',asset.downloadUrl);f.ok(download);assert.deepEqual(download.rawBody,body);
+    assert.equal(createHash('sha256').update(download.rawBody).digest('hex'),createHash('sha256').update(body).digest('hex'));
+    if(asset.previewUrl)assert.equal((await f.api('GET',asset.previewUrl)).status,200);
+  }
+}));
+
+import {AgentStore} from '@ponderosa/agents';
+import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 test('rejected and no-op working-copy changes preserve compatible context; teardown errors cannot be swallowed as missing paths',options,async t=>{
  let store;await withFixture(t,async f=>{
   const chat=await f.createChat('Working-copy continuity'),agent=await f.createAgent(chat,'Continuity reader'),session=f.sessions.get(agent.id),before=store.getAgent(agent.id).workingCopy;
@@ -256,7 +382,7 @@ test('rejected and no-op working-copy changes preserve compatible context; teard
 });
 
 test('canonical history reuses authorized artifact full-file references without treating the inline preview as the document',options,async t=>{
- let store;
+ const {AgentStore}=await import('@ponderosa/agents');let store;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Retained document history'),agent=await f.createIdleAgent(chat,'Document reader'),other=await f.createIdleAgent(chat,'Other reader');
   const body='Retained document 🧭\n'+'Exact Unicode 東京 😀\n'.repeat(3000),session=await f.hold(agent.id);

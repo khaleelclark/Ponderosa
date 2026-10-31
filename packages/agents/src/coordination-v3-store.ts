@@ -205,6 +205,7 @@ export class CoordinationV3Store {
       input => this.updateRequest(input),
       (activationIds, now) =>
         this.questionAuthority.settleQuestionsForFailedActivations(activationIds, now),
+      (id,error,now)=>this.runLifecycleAuthority.rejectPausedActivation(id,error,now),
     );
     this.activationCommandAuthority = new CoordinationV3ActivationCommandAuthority(
       sqlite,
@@ -271,6 +272,16 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleForRun(runId, "cancelled", now); },
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+      options.canonicalTaskDecisions,
+      input => this.createActivation(input),
+      (id, now) => {
+        let rollover=this.contextRolloverAuthority.get(id);
+        if(rollover?.state==='handoff_committed')rollover=this.contextRolloverAuthority.beginRetiring(id,now);
+        if(rollover?.state==='session_retiring')rollover=this.contextRolloverAuthority.prepareContinuation({id,now});
+        if(rollover?.state!=='continuation_ready'||!rollover.continuationActivationId||rollover.replacementRunId)
+          throw new Error('Committed handoff has no exclusively owned continuation; work remains paused');
+        return rollover.continuationActivationId;
+      },
     );
     this.deletionAuthority = new CoordinationV3DeletionAuthority(
       sqlite,
@@ -282,6 +293,7 @@ export class CoordinationV3Store {
       sqlite,
       this.support,
       this.runtimeScopeAuthority,
+      this.runtimeAttachmentAuthority,
       this.requestRecoveryAuthority,
       input => this.createActivation(input),
       (requestIds, ownerAgentId, dependencyKind, dependencyId, now) =>
@@ -316,6 +328,7 @@ export class CoordinationV3Store {
       this.questionAuthority,
       input => this.createActivation(input),
       input => this.cancelAgentRun(input),
+      options.canonicalTaskDecisions,
     );
     this.schedulerLeaseAuthority = new CoordinationV3SchedulerLeaseAuthority(
       sqlite,
@@ -336,6 +349,10 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+      (runId,error) => {
+        const run=this.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(runId) as {fencing_token:number}|undefined;
+        return Boolean(run&&this.runLifecycleAuthority.containPauseRecoveryFailure(runId,run.fencing_token,error));
+      },
     );
     this.contextRolloverAuthority.reconcileRetainedContinuity(new Date().toISOString());
   }
@@ -660,6 +677,10 @@ export class CoordinationV3Store {
     return this.coordinateAuthority.enqueueMessageActivation(input);
   }
 
+  protectMessageAttachments(input: Pick<EnqueueMessageActivationInput, "projectId" | "agentId" | "messageId" | "payload">): unknown {
+    return this.coordinateAuthority.protectMessageAttachments(input);
+  }
+
   waitForTaskDecision(input: { runAuthorization: RunAuthorizationV3; decisionId: string; scopeKey: string }, now = new Date().toISOString()): void {
     this.sqlite.transaction(() => {
       this.support.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
@@ -700,6 +721,20 @@ export class CoordinationV3Store {
 
   getAgentAvailability(agentId: string): DerivedAgentAvailability {
     return this.schedulerStatusReadModel.getAgentAvailability(agentId);
+  }
+
+  /** Exact paired server clocks for voice latency; this read grants no authority. */
+  voiceReplyRunTiming(communicationId: string, agentId: string): {
+    runId: string; leasedAt: string; runStartedAt?: string; runStatus: string;
+  } | undefined {
+    const activation = this.runtimeCommunication(communicationId)?.activations?.find(a => a.agentId === agentId);
+    if (!activation) return undefined;
+    const row = this.sqlite.prepare(`SELECT r.id, r.created_at, r.started_at, r.status
+      FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id
+      WHERE a.activation_id=? AND r.agent_id=? ORDER BY r.created_at DESC LIMIT 1`)
+      .get(activation.id, agentId) as { id: string; created_at: string; started_at: string | null; status: string } | undefined;
+    return row ? { runId: row.id, leasedAt: row.created_at,
+      ...(row.started_at ? { runStartedAt: row.started_at } : {}), runStatus: row.status } : undefined;
   }
 
   activeAgentRun(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto["activeRun"] {
@@ -867,9 +902,14 @@ export class CoordinationV3Store {
     return this.requestReadModel.requestDelivery(requestId);
   }
 
+  requestIsOperatorRecovery(id: string) { return this.requestReadModel.requestIsOperatorRecovery(id); }
+
+  getJoin(id: string) { return this.requestReadModel.getJoin(id); }
+
   requestRetryStatus(requestId: string): {
     successorRequestId?: string;
     successorState?: import("@ponderosa/core").CoordinationRequestState;
+    recoveryState?: import("@ponderosa/core").CoordinationRequestState;
   } {
     return this.requestReadModel.requestRetryStatus(requestId);
   }
@@ -880,6 +920,12 @@ export class CoordinationV3Store {
 
   expireDue(now = new Date().toISOString()): { requests: number; joins: number } {
     return this.requestAuthority.expireDue(now);
+  }
+
+  /** Existing no-submission proof also closes historical cancellation claims
+   * that were deferred or recovered before provider work could begin. */
+  canRetryUninjectedRun(runId: string): boolean {
+    return this.schedulerLeaseAuthority.canRetryUninjectedRun(runId);
   }
 
   /** On single-host startup every active lease owned by another server process
@@ -941,6 +987,11 @@ export class CoordinationV3Store {
     })();
     return this.schedulerLeaseAuthority.leaseNextRun(input);
   }
+
+  branchScheduleUpdateTarget(branchId:string,now?:string) { return this.steeringAuthority.branchScheduleUpdateTarget(branchId,now); }
+  queueBranchScheduleUpdate(input:{occurrenceId:string;runId:string;attemptId:string;fence:number;now?:string}) { return this.steeringAuthority.queueBranchScheduleUpdate(input); }
+  branchScheduleUpdateStatus(occurrenceId:string,now?:string) { return this.steeringAuthority.branchScheduleUpdateStatus(occurrenceId,now); }
+  cancelUndeliveredBranchScheduleUpdate(occurrenceId:string,now?:string):boolean { return this.steeringAuthority.cancelUndeliveredBranchScheduleUpdate(occurrenceId,now); }
 
   leaseNextSteering(input: { workerId: string; now?: string; coalesceLimit?: number }): SteeringLease | undefined {
     return this.steeringAuthority.leaseNextSteering(input);
@@ -1157,6 +1208,10 @@ export class CoordinationV3Store {
       promptInjectionState: "not_injected" | "injecting" | "injected";
       httpStatusCode?: number;
       retryAfterMs?: number;
+      quotaResetAt?: string;
+      quotaLimit?: import("@ponderosa/core").ProviderQuotaLimit;
+      engineId?: string;
+      model?: string;
       exitCode?: number | null;
       signal?: string | null;
       stderr?: string;
@@ -1176,6 +1231,22 @@ export class CoordinationV3Store {
     now = new Date().toISOString(),
   ): { activationIds: string[]; resumed: number } {
     return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, runtimeSelection, now);
+  }
+
+  pauseAgentRun(input: {agentId:string;runId:string;idempotencyKey:string;now?:string}) {
+    return this.runLifecycleAuthority.pauseAgentRun(input);
+  }
+  resumeAgentRun(input: {agentId:string;pauseId:string;idempotencyKey:string}) {
+    return this.runLifecycleAuthority.resumeAgentRun(input);
+  }
+  pauseRecoveryForRun(runId:string,agentId:string) {
+    return this.sqlite.prepare(`SELECT pause.id,pause.run_id,pause.phase,pause.rollover_id,pause.checkpoint_json,recovery.state
+      FROM agent_pause_recoveries recovery JOIN agent_run_pauses pause ON pause.id=recovery.pause_id
+      WHERE recovery.run_id=? AND pause.agent_id=? AND pause.state<>'stopped'`).get(runId,agentId) as
+      {id:string;run_id:string;phase:string;rollover_id:string|null;checkpoint_json:string;state:string}|undefined;
+  }
+  runPause(runId:string) {
+    return this.sqlite.prepare("SELECT id,state FROM agent_run_pauses WHERE run_id=? AND state IN ('paused','resume_requested')").get(runId) as {id:string;state:string}|undefined;
   }
 
   cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {
@@ -1230,6 +1301,10 @@ export class CoordinationV3Store {
 
   requestContextRollover(input: Parameters<CoordinationV3ContextRolloverAuthority["request"]>[0]): ReturnType<CoordinationV3ContextRolloverAuthority["request"]> {
     return this.contextRolloverAuthority.request(input);
+  }
+
+  rebindContextRolloverHandoffBoundary(input: Parameters<CoordinationV3ContextRolloverAuthority["rebindHandoffBoundary"]>[0]): ContextRolloverV3 {
+    return this.contextRolloverAuthority.rebindHandoffBoundary(input);
   }
 
   contextRollover(id: string): ContextRolloverV3 | undefined {

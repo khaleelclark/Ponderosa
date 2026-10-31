@@ -1,3 +1,6 @@
+import { canonicalProviderFailureEvent } from "../provider-failure-event.js";
+import {localMemoryFor} from "../local-memory.js";
+import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
 import {
   type AgentDto,
   type AgentEvent,
@@ -8,9 +11,9 @@ import {
   type ProviderFailureCategory,
   type ProviderInputSourceManifest,
   type RuntimeDynamicToolSpec,
+  type RuntimeCapabilityRestrictions,
   type RuntimeProcessHandle,
   unicodeCodePointLength,
-  publicProviderFailureEvent,
   publicProviderFailureSummary,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
@@ -77,6 +80,7 @@ export function contextRolloverHandoffValidationError(
 export interface ProviderRunExecutionInput {
   activeRun: ActiveRun;
   availableRuntimeTools: RuntimeDynamicToolSpec[];
+  capabilityRestrictions:RuntimeCapabilityRestrictions;
   agent: AgentDto;
   agentMessageUrl: string;
   broadcastCanonicalTipId: string | undefined;
@@ -194,6 +198,7 @@ export function startProviderRunExecution(
   const {
     activeRun,
     availableRuntimeTools,
+    capabilityRestrictions,
     agent,
     agentMessageUrl,
     broadcastCanonicalTipId,
@@ -242,6 +247,10 @@ export function startProviderRunExecution(
     v3InjectionId,
   } = input;
 
+  // Capability belongs to the engine selected for this exact Run, which may
+  // differ from the Agent's saved engine preference.
+  activeRun.voiceReplyStreamSupported = engine.adapter.supportsVoiceReplyStream === true;
+
   let terminalLifecycle: ReturnType<typeof store.appendEvent> | undefined;
   let terminalLifecyclePublished = false;
   const publishTerminalLifecycle = (): void => {
@@ -278,10 +287,47 @@ export function startProviderRunExecution(
     let schedulerCancelled = false;
     let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
+    let voiceContextInvalid = false;
+    let voiceContextNotice: Promise<unknown> | undefined;
+    // Recheck the canonical memory packet even while the model is silent.
+    // A bounded watchdog covers store mutations, grant/policy changes and expiry;
+    // Candidate/final boundaries await the same validation; canonical commit also
+    // rechecks synchronous host authority after the asynchronous storage read.
+    let checkingVoice:Promise<boolean>|undefined;
+    const validateVoiceReplyContext = (): Promise<boolean> => checkingVoice??=(async()=>{
+      if (voiceContextInvalid) return false;
+      if (!activeRun.voiceReply) return true;
+      try { const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
+      catch {
+        voiceContextInvalid = true;
+        if (activeRun.voiceReply.invalidate("context_changed") && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted) {
+          voiceContextNotice = persistRuntimeEvent(agent.id, activeRun,
+            { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } })
+            .catch(error => app.log.error({ err: error, runId }, "voice context invalidation notice failed"));
+        }
+        return false;
+      }
+    })().finally(()=>{checkingVoice=undefined;});
+    activeRun.validateVoiceReplyContext = validateVoiceReplyContext;
+    activeRun.validateVoiceReplyCommit=()=>!voiceContextInvalid&&(localMemoryFor(app)?.speechCommitValid(runId)??true);
+    const voiceContextTimer = activeRun.voiceReplyStreamSupported
+      ? setInterval(() => {
+          if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.snapshot.state !== "completed") validateVoiceReplyContext();
+        }, 250) : undefined;
     try {
       const runCapability = agentMessageCapabilities.get(messageCapability);
       if (!runCapability || runCapability.agentId !== agent.id || runCapability.runId !== runId) {
         throw new Error("provider Run lost its exact message capability before session creation");
+      }
+      // Fallback speech needs the same live authority even when this engine
+      // cannot stream or never calls the voice tool. Never rebuild it after completion.
+      const memory = localMemoryFor(app);
+      if (memory && canonicalVoiceReplyInput(store, coordinationV3, runCapability)) {
+        try { memory.beginSpeech(messageCapability); }
+        catch (error) {
+          // Speech fails closed; ordinary canonical text must remain available.
+          app.log.warn({ err: error, runId }, "Voice speech authorization unavailable");
+        }
       }
       const replacementCandidate = coordinationV3.contextRolloverCandidateForRun(runId, agent.id);
       const pendingHandoff = coordinationV3.activeContextRollover(agent.id);
@@ -324,6 +370,7 @@ export function startProviderRunExecution(
           speed: effectiveSpeed,
           environment,
           dynamicTools: availableRuntimeTools,
+          capabilityRestrictions,
           handleDynamicToolCall: createProviderDynamicToolHandler(
             app,
             availableRuntimeTools,
@@ -797,7 +844,13 @@ export function startProviderRunExecution(
           // delivered when the first non-error event arrives.
           publishMessageDeliveryChanged(agent.id);
         }
+        activeRun.voiceReplyTiming ??= {};
+        activeRun.voiceReplyTiming.submittedAt ??= new Date().toISOString();
         for await (const event of startStream(sessionId)) {
+          if ((event.type === "response_text" && event.text || event.type === "text" && event.delta) && !activeRun.voiceReplyTiming.firstModelTextAt) {
+            activeRun.voiceReplyTiming.firstModelTextAt = new Date().toISOString();
+          }
+          if (activeRun.voiceReply) Object.assign(activeRun.voiceReply.snapshot, activeRun.voiceReplyTiming);
           if (event.type === "session" && frozenHandoffSessionId && event.sessionId !== frozenHandoffSessionId) {
             throw new Error("context rollover handoff changed provider session identity");
           }
@@ -906,6 +959,19 @@ export function startProviderRunExecution(
           }
           for (const buffered of bufferedSessionEvents.splice(0)) {
             await persistRuntimeEvent(agent.id, activeRun, buffered);
+          }
+          if (event.type === "response_text") {
+            if (!await validateVoiceReplyContext()) continue;
+            if (activeRun.voiceReply && coordinationV3.latestAcknowledgedSteeringInjection(runId) !== activeRun.voiceReply.snapshot.steeringInjectionId && activeRun.voiceReply.invalidate()) {
+              await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+            }
+            if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.accept(event, new Date().toISOString())) {
+              await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+            }
+            continue;
+          }
+          if (activeRun.voiceReply?.observeWork(event)) {
+            await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
           }
           // Retain payload-free native-work evidence for context accounting in
           // the internal audit only; it is not Chat or ordinary activity output.
@@ -1135,12 +1201,31 @@ export function startProviderRunExecution(
         }
         if (!retryFresh) break;
       }
-      if (runError && persistentRuntime && activeRun.observedProviderFailure) {
-        try { await teardownPersistentRuntime(agent.id, persistentRuntime, "provider terminal failure", project.id); }
-        catch (error) {
-          // Typed failure remains primary; retained cleanup blocks replacement.
-          app.log.error({ err: error, agentId: agent.id, runId }, "provider failure cleanup remains pending");
+      if(runError&&persistentRuntime&&activeRun.observedProviderFailure){
+        try{await teardownPersistentRuntime(agent.id,persistentRuntime,'provider terminal failure',project.id);}
+        catch(error){
+          // Keep the typed failure; the existing retained cleanup authority
+          // remains visible and blocks replacement until observed exit.
+          app.log.error({err:error,agentId:agent.id,runId},'provider failure cleanup remains pending');
         }
+      }
+      if (activeRun.voiceReply && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && !runError &&
+          activeRun.observedProviderTerminalStatus === "completed") {
+        const answer = await validateVoiceReplyContext() && coordinationV3.latestAcknowledgedSteeringInjection(runId) === activeRun.voiceReply.snapshot.steeringInjectionId
+          ? activeRun.voiceReply.finalText() : undefined;
+        if (answer) {
+          const fence = coordinationV3.latestAcknowledgedSteeringInjection(runId);
+          const response = await app.inject({ method: "POST", url: "/api/agent-messages",
+            headers: { authorization: `Bearer ${messageCapability}` },
+            payload: { text: answer, ...(fence ? { steeringInjectionId: fence } : {}) } });
+          const result = response.json() as { eventId?: string; committed?: boolean };
+          if (response.statusCode >= 200 && response.statusCode < 300 && result.eventId) {
+            const canonical = coordinationV3.runtimeCommunication(result.eventId);
+            if (canonical && await validateVoiceReplyContext()) activeRun.voiceReply.complete(canonical.createdAt);
+            else activeRun.voiceReply.invalidate();
+          } else activeRun.voiceReply.invalidate();
+        } else activeRun.voiceReply.invalidate();
+        await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
       }
       if (activeRun.v3SchedulerRunId && !v3PromptInjected && !runError) {
         runError = "provider ended before prompt injection could be confirmed";
@@ -1169,7 +1254,7 @@ export function startProviderRunExecution(
       const message = providerFailure?.restrictedDetail
         ?? "Agent execution failed due to an internal runtime error.";
       const failureEvent = providerFailure
-        ? publicProviderFailureEvent({
+        ? canonicalProviderFailureEvent({
             type: "error",
             message,
             ...(providerFailure.code ? { code: providerFailure.code } : {}),
@@ -1205,6 +1290,9 @@ export function startProviderRunExecution(
           : failureEvent,
       );
     } finally {
+      clearInterval(voiceContextTimer);
+      await checkingVoice;
+      await voiceContextNotice;
       runtimeElicitations.clearRun(runId);
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
@@ -1325,7 +1413,7 @@ export function startProviderRunExecution(
         });
       }
       const replacementCancelled = Boolean(
-        replacementRunRollover && schedulerCancelled && !isClosed(),
+        replacementRunRollover && schedulerCancelled && !coordinationV3.runPause(runId) && !isClosed(),
       );
       const replacementFailed = Boolean(
         replacementRunRollover?.state === "failed" && !isClosed(),
@@ -1407,7 +1495,7 @@ export function startProviderRunExecution(
         });
         publish(agent.id, cancelled);
       }
-      if (owned && !isClosed() && !controller.signal.aborted) {
+      if (owned && ownsActiveRunForAuditDrain(agent.id, activeRun) && !coordinationV3.runPause(runId) && !isClosed() && !controller.signal.aborted) {
         if (!rolloverSucceeded && !suppressRolloverHandoffOutput && !schedulerCancelled &&
             !runError && finalText.trim() &&
             firstTextSeq !== undefined && lastTextSeq !== undefined) {
@@ -1481,7 +1569,7 @@ export function startProviderRunExecution(
               app.log.error({ err: error, agentId: agent.id, runId }, "policy context refresh teardown remains pending");
             }
           }
-        } else if (rolloverRequested &&
+        } else if (rolloverRequested && !coordinationV3.runPause(runId) &&
             (runError || controller.signal.aborted || schedulerCancelled || handoffActivationAcknowledged)) {
           const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);
           if (abandonedHandoff && !abandonedHandoff.consumedAt) {
@@ -1591,6 +1679,8 @@ export function startProviderRunExecution(
                 promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
                   ?? (v3PromptInjected ? "injected" : "not_injected"),
                 message: runError,
+                engineId: runtimeEngineId,
+                model: effectiveModel,
                 ...(providerQuotaResetAt ? { quotaResetAt: providerQuotaResetAt } : {}),
                 ...(providerQuotaLimit ? { quotaLimit: providerQuotaLimit } : {}),
                 ...(providerHttpStatusCode !== undefined ? { httpStatusCode: providerHttpStatusCode } : {}),

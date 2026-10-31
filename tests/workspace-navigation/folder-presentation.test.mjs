@@ -80,7 +80,7 @@ test('10000 folder members use one activity and one unread request, retaining of
     const body = JSON.parse(init.body); calls.push({ kind: 'activity', body });
     return new Response(JSON.stringify({ conversations: { 'member-9999': { status: 'working' } }, chatFolders: {} }));
   };
-  api.getNotificationProjection = async body => { calls.push({ kind: 'unread', body }); return { workspace: {}, allMessages: {}, projects: {}, conversations: { 'member-9999': { totalCount: 3 } }, chatFolders: {} }; };
+  api.getNotificationProjection = async body => { calls.push({ kind: 'unread', body }); return { workspace: {}, inbox: {}, projects: {}, conversations: { 'member-9999': { totalCount: 3 } }, chatFolders: {} }; };
   let activity, unread;
   function Probe() { activity = useWorkspaceActivity([...members, 'ungrouped'], folders, true); unread = useNotificationProjection([], [...members, 'ungrouped'], folders); return null; }
   renderToStaticMarkup(React.createElement(QueryClientProvider, { client }, React.createElement(Probe)));
@@ -120,4 +120,56 @@ test('actual directory client retains folder mode on transparent stale-cursor re
   assert.equal(calls.length, 2);
   assert.ok(calls.every(url => url.searchParams.get('folders') === 'true'));
   assert.equal(calls[1].searchParams.has('cursor'), false);
+});
+
+const {recentResourceRows} = await import('../../apps/web/src/resourcePreferences.ts');
+test('BR004 All/Recent interleaves blocks with loose resources using every scoped member, including stars', () => {
+  const folders=[{id:'a',name:'A',memberIds:['old'],expanded:false},{id:'b',name:'B',memberIds:['star','off-page'],expanded:true}];
+  const items=[{id:'old',updatedAt:'10'},{id:'loose',updatedAt:'11'},{id:'star',updatedAt:'12'},{id:'off-page',updatedAt:'09'}];
+  const order=values=>recentResourceRows(folders,values,values.filter(item=>item.id==='loose')).map(row=>row.id);
+  assert.deepEqual(order(items),['folder:b','resource:loose','folder:a']);
+  assert.deepEqual(order(items.map(item=>item.id==='old'?{...item,updatedAt:'13'}:item)),['folder:a','folder:b','resource:loose']);
+  assert.deepEqual(order(items.map(item=>item.id==='loose'?{...item,updatedAt:'14'}:item)),['resource:loose','folder:b','folder:a']);
+  assert.deepEqual(recentResourceRows(folders,[],[{id:'a',updatedAt:''}]).map(row=>row.id),['folder:a','folder:b','resource:a'],'Unknown recency gets no synthetic priority; folder/resource IDs cannot collide');
+});
+
+test('BR004 shared Chat renderer changes only All/Recent block ordering and preserves activity timestamps', () => {
+  const items=[{...rows[0],lastUsedAt:'2026-10-24T12:00:00Z'}, {...rows[31],lastUsedAt:'2026-10-23T12:00:00Z'}];
+  const props={items,folders:[{...folder,expanded:false,conversationIds:[rows[31].conversation.id]}],starredIds:new Set(['conversation:'+rows[31].conversation.id]),filtering:false,
+    renderRow:item=>React.createElement('span',null,item.conversation.id),onChange(){},onRename(){},onDelete(){},onReorder(){}};
+  const html=sort=>renderToStaticMarkup(React.createElement(ChatFolders,{...props,sort},({starredRows,allRows})=>React.createElement('div',null,React.createElement('section',{id:'stars'},starredRows),React.createElement('section',{id:'all'},allRows))));
+  const recent=html('last_used'),alpha=html('alphabetical'),custom=html('custom');
+  const all=value=>value.split('id="all"')[1];
+  assert.ok(all(recent).indexOf('data-chat-folder-row="chat-0"')<all(recent).indexOf('data-chat-folder="folder"'));
+  for(const value of [alpha,custom])assert.ok(all(value).indexOf('data-chat-folder="folder"')<all(value).indexOf('data-chat-folder-row="chat-0"'));
+  assert.equal(recent.split('id="all"')[0],alpha.split('id="all"')[0],'Starred composition/order stays separate');
+  assert.equal(items[0].conversation.updatedAt,rows[0].conversation.updatedAt);
+});
+
+const {BranchFolders}=await import('../../apps/web/src/components/branches/BranchFolders.tsx');
+test('BR004 Starred keeps legacy folder/member/loose ordering when canonical use differs',()=>{
+  const folders=[{id:'a',name:'A',expanded:true,starred:true,memberIds:['old','older']},{id:'b',name:'B',expanded:true,starred:true,memberIds:['new']}];
+  const values=[{id:'old',title:'Old',createdAt:'10',lastUsedAt:'30'},{id:'older',title:'Older',createdAt:'09',lastUsedAt:'31'},{id:'new',title:'New',createdAt:'20',lastUsedAt:'20'},{id:'loose-new',title:'New loose',createdAt:'19',lastUsedAt:'19'},{id:'loose-old',title:'Old loose',createdAt:'08',lastUsedAt:'32'}];
+  const sections=({starredRows,allRows})=>React.createElement('div',null,React.createElement('section',{id:'stars'},starredRows),React.createElement('section',{id:'all'},allRows));
+  const stars=new Set(['branch:loose-new','branch:loose-old']);
+  const branchHtml=renderToStaticMarkup(React.createElement(BranchFolders,{branches:values.map(item=>({...item,name:item.title})),preferences:{branchSort:'last_used',branchFolders:folders.map(({memberIds,...rest})=>({...rest,branchIds:memberIds})),starredResourceIds:[...stars],starredProjectIds:[]},filtering:false,renderRow:item=>React.createElement('span',null,item.id),onPreferences(){}},sections));
+  const [branchStar,branchAll]=branchHtml.split('id="all"');
+  assert.ok(branchStar.indexOf('data-branch-folder="b"')<branchStar.indexOf('data-branch-folder="a"'));
+  assert.ok(branchStar.indexOf('data-branch-folder-row="old"')<branchStar.indexOf('data-branch-folder-row="older"'));
+  assert.ok(branchStar.indexOf('data-branch-folder-row="loose-new"')<branchStar.indexOf('data-branch-folder-row="loose-old"'));
+  assert.ok(branchAll.indexOf('data-branch-folder="a"')<branchAll.indexOf('data-branch-folder="b"'));
+  const chats=values.map(item=>({kind:'conversation',project:rows[0].project,conversation:{id:item.id,title:item.title,updatedAt:item.createdAt},lastUsedAt:item.lastUsedAt}));
+  const chatHtml=renderToStaticMarkup(React.createElement(ChatFolders,{items:chats,folders:folders.map(({memberIds,...rest})=>({...rest,conversationIds:memberIds})),sort:'last_used',starredIds:new Set(['conversation:loose-new','conversation:loose-old']),filtering:false,renderRow:item=>React.createElement('span',null,item.conversation.id),onChange(){},onReorder(){},onRename(){},onDelete(){}},sections));
+  const [chatStar,chatAll]=chatHtml.split('id="all"');
+  assert.ok(chatStar.indexOf('data-chat-folder="b"')<chatStar.indexOf('data-chat-folder="a"'));
+  assert.ok(chatStar.indexOf('data-chat-folder-row="old"')<chatStar.indexOf('data-chat-folder-row="older"'));
+  assert.ok(chatStar.indexOf('data-chat-folder-row="loose-new"')<chatStar.indexOf('data-chat-folder-row="loose-old"'));
+  assert.ok(chatAll.indexOf('data-chat-folder="a"')<chatAll.indexOf('data-chat-folder="b"'));
+});
+
+test('sidebar folders and rows use nested semantic list items',()=>{
+ const html=render(rows.slice(30));
+ assert.match(html,/<li[^>]*data-chat-folder="folder"/);
+ assert.match(html,/<ul[^>]*>[\s\S]*?<li[^>]*data-chat-folder-row="chat-30"/);
+ assert.ok(!/<div[^>]*data-chat-folder(?:-row)?=/.test(html));
 });

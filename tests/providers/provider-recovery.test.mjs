@@ -406,6 +406,53 @@ test('UI014 quota evidence survives normalization and missing/past resets never 
   assert.equal(providerRecoveryDelay('quota_exhausted', 1, true, 0, new Date(now - 1).toISOString(), now), null);
   assert.equal(providerRecoveryDelay('quota_exhausted', 6, true, 0, reset, now), null);
 });
+for (const accepted of [false, true]) test(`UI014 quota without reset holds exact work for explicit retry, accepted=${accepted}`, t => {
+  const f = memoryRecovery(t), run = f.lease(f.now);
+  f.fail(run, f.now, accepted, 'quota_exhausted', { failureDetail: { phase: accepted ? 'provider_execution' : 'prompt_submission', promptInjectionState: accepted ? 'injected' : 'not_injected', engineId: 'codex', model: 'fixture-model' } });
+  f.restart();
+  assert.equal(f.lease(new Date(Date.parse(f.now) + 86400000).toISOString()), undefined);
+  const [receipt] = f.store().deliveryReceiptsForCommunication('project', 'communication');
+  assert.equal(receipt.canRetry, true); assert.equal(Boolean(receipt.retryMayDuplicate), accepted);
+  assert.equal(receipt.providerFailure.category, 'quota_exhausted');
+  assert.equal(receipt.providerFailure.providerId, 'codex');
+  assert.equal(receipt.providerFailure.recovery, 'action_required');
+  assert.equal(receipt.providerFailure.resetAt, undefined);
+  const retry = f.store().retryMessageDelivery({ projectId: 'project', activationId: f.root, idempotencyKey: 'quota-operator-retry', now: f.now });
+  assert.equal(retry.accepted, true);
+});
+
+test('UI014 uninjected quota reset preserves exact time and six-attempt lineage across restart', t => {
+  const accepted = false, f = memoryRecovery(t); let now = f.now;
+  for (let attempt=1; attempt<=6; attempt++) {
+    const run=f.lease(now); assert.ok(run);
+    const resetAt=new Date(Date.parse(now)+3600000).toISOString();
+    f.fail(run,now,accepted,'quota_exhausted',{failureDetail:{phase:'provider_execution',promptInjectionState:accepted?'injected':'not_injected',engineId:'codex',model:'fixture-model',quotaResetAt:resetAt}});
+    f.restart();
+    const [receipt]=f.store().deliveryReceiptsForCommunication('project','communication');
+    assert.equal(receipt.providerFailure.providerId,'codex'); assert.equal(receipt.providerFailure.resetAt,resetAt);
+    if(attempt===6){assert.equal(receipt.providerFailure.recovery,'stopped');assert.equal(f.lease(resetAt),undefined);break;}
+    assert.equal(receipt.providerFailure.recovery,'scheduled'); assert.equal(receipt.providerFailure.nextRetryAt,resetAt);
+    assert.equal(f.lease(new Date(Date.parse(resetAt)-1).toISOString()),undefined);
+    now=resetAt;
+  }
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,6);
+});
+
+test('UI014 acknowledged quota preserves reset evidence without replaying accepted work after restart', t => {
+  const f = memoryRecovery(t), run = f.lease(f.now), resetAt = new Date(Date.parse(f.now) + 3600000).toISOString();
+  f.fail(run, f.now, true, 'quota_exhausted', { failureDetail: { phase: 'provider_execution', promptInjectionState: 'injected', engineId: 'codex', model: 'fixture-model', quotaResetAt: resetAt } });
+  f.restart();
+  for (const time of [resetAt, new Date(Date.parse(resetAt) + 86400000).toISOString()]) assert.equal(f.lease(time), undefined);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n, 1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM agent_activations WHERE state IN ('pending', 'retry_pending')").get().n, 0);
+  const [receipt] = f.store().deliveryReceiptsForCommunication('project', 'communication');
+  assert.equal(receipt.providerFailure.resetAt, resetAt); assert.equal(receipt.providerFailure.recovery, 'action_required');
+  assert.equal(receipt.providerFailure.nextRetryAt, undefined); assert.equal(receipt.canRetry, true); assert.equal(receipt.retryMayDuplicate, true);
+  const retry = f.store().retryMessageDelivery({ projectId: 'project', activationId: f.root, idempotencyKey: 'acknowledged-quota-explicit-retry', now: resetAt });
+  assert.equal(retry.accepted, true); assert.equal(f.store().retryMessageDelivery({ projectId: 'project', activationId: f.root, idempotencyKey: 'acknowledged-quota-explicit-retry', now: resetAt }).replayed, true);
+  assert.ok(f.lease(resetAt));
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n, 2);
+});
 
 test('UI014 adapter evidence distinguishes explicit quota/reset, ambiguous 429, temporary throttle, and informational usage', async () => {
   const {mapClaudeEvent}=await import('../../packages/engines/dist/claude-events.js');
@@ -425,6 +472,15 @@ test('UI014 adapter evidence distinguishes explicit quota/reset, ambiguous 429, 
   assert.equal(publicProviderFailureEvent(legacy).category,'quota_exhausted');assert.equal(legacy.quotaResetAt,undefined);
 });
 
+test('UI014 repeated uninjected quota with a past reset stops instead of looping', t => {
+  const accepted=false, f=memoryRecovery(t),run=f.lease(f.now),resetAt=new Date(Date.parse(f.now)+3600000).toISOString();
+  f.fail(run,f.now,accepted,'quota_exhausted',{failureDetail:{phase:'provider_execution',promptInjectionState:accepted?'injected':'not_injected',engineId:'codex',quotaResetAt:resetAt}});
+  const next=f.lease(resetAt);assert.ok(next);
+  f.fail(next,resetAt,accepted,'quota_exhausted',{failureDetail:{phase:'provider_execution',promptInjectionState:accepted?'injected':'not_injected',engineId:'codex',quotaResetAt:resetAt}});
+  f.restart();assert.equal(f.lease(new Date(Date.parse(resetAt)+86400000).toISOString()),undefined);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,2);
+  assert.equal(f.store().deliveryReceiptsForCommunication('project','communication')[0].providerFailure.recovery,'action_required');
+});
 
 for(const persistent of [false,true])test(`UI014 Claude ${persistent?'persistent':'one-shot'} rejection ends its owned watchdog before canonical recovery`,{timeout:15000,skip:process.platform==='win32'?'POSIX inert executable transport fixture; mapping/policy checks remain portable':false},async t=>{
  const {ClaudeStreamSession}=await import('../../packages/engines/dist/claude-stream-session.js');

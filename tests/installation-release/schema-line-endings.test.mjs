@@ -22,6 +22,16 @@ function signature(sql) {
   try { db.exec(sql); return stateSchemaSignature(db); } finally { db.close(); }
 }
 
+test('schema inspection accepts the fixed object ceiling and refuses excess objects and oversized declarations',()=>{
+  assert.throws(()=>signature(`CREATE TABLE oversized (value TEXT DEFAULT '${'a'.repeat(1_100_000)}')`),
+    /bounded state read refused|unsupported bounded state schema metadata/);
+  // Pin the approved finite 528-object envelope independently of runtime constants.
+  const atLimit = Array.from({length:528},(_,i)=>`CREATE TABLE t${i} (value TEXT);`).join('\n');
+  assert.equal(JSON.parse(signature(atLimit)).objects.length, 528);
+  assert.throws(()=>signature(`${atLimit}\nCREATE TABLE excess (value TEXT);`),
+    /unsupported bounded state schema metadata/);
+});
+
 const declarations = [
   'CREATE TABLE items (',
   ' /* Comment with unmatched \' " ` [ and --',
@@ -96,6 +106,7 @@ test('current-state admission accepts a CRLF-created real database without rewri
   };
   try {
     const before = read();
+    assert.equal(before.length, 518, 'the complete current schema, including generation and recovery receipts, fits the fixed 528-object ceiling');
     assert.ok(before.some(row => row.sql?.includes('\r\n')), 'fixture stores real CRLF declarations');
     assert.ok(before.every(row => !row.sql?.includes('\r\r\n')), 'fixture does not double existing CRLF');
     admission = admitDataDirectory(fixture.data);

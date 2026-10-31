@@ -20,12 +20,12 @@ function fsyncDirectory(directory: string): void {
   finally { closeSync(descriptor); }
 }
 
-function writeJson(file: string, data: unknown): void {
+function writeJson(file: string, data: unknown, indentation: 0 | 2 = 2): void {
   const directory = dirname(file);
   mkdirSync(directory, { recursive: true });
   const temporary = join(directory, `.${randomUUID()}.json.tmp`);
   try {
-    writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", "utf8");
+    writeFileSync(temporary, JSON.stringify(data, null, indentation) + "\n", "utf8");
     const descriptor = openSync(temporary, "r+");
     try { fsyncSync(descriptor); }
     finally { closeSync(descriptor); }

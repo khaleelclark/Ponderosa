@@ -158,3 +158,19 @@ test("ordinary shutdown failure keeps cleanup incomplete and does not claim a su
   assert.equal((await fixture.handlers.get("engine:snapshot")()).state, "cleanup_incomplete");
   assert.equal(fixture.dialogs[0].title, "Ponderosa Engine is still running");
 });
+
+test('truncated log label describes returned bytes rather than full file size', () => {
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, {dataset:{},setAttribute(key,value){this[key]=value;},addEventListener(){}});
+    return elements.get(id);
+  };
+  const renderer = ts.transpileModule(readFileSync(new URL('../../apps/engine-desktop/src/renderer.ts',import.meta.url),'utf8'), {
+    compilerOptions:{module:ts.ModuleKind.CommonJS},
+  }).outputText.replace('void refresh();','');
+  const context = vm.createContext({exports:{},document:{getElementById:element,body:{dataset:{}}},window:{setInterval(){}},console});
+  vm.runInContext(renderer,context);
+  context.sample={state:'running',detail:'Fixture',logs:{server:{text:'é'.repeat(512),totalBytes:1048576,returnedBytes:1024,truncated:true}}};
+  vm.runInContext('render(sample)',context);
+  assert.equal(element('log-output')['aria-label'],'server log, latest 1.0 KiB shown');
+});

@@ -36,6 +36,10 @@ export function createOperationalNotifications(context: OperationalNotifications
   const createOperationalNotification = (input: {
     dedupeKey: string;
     informational?: boolean;
+    renewAfterRecovery?: boolean;
+    push?:boolean;
+    branchId?:string;
+    branchExecutionId?:string;
     category: "communication" | "provider" | "coordination" | "decision" | "system";
     severity: "info" | "attention" | "urgent";
     title: string;
@@ -51,16 +55,14 @@ export function createOperationalNotifications(context: OperationalNotifications
     resolution?: WorkspaceNotificationDto["resolution"];
   }): WorkspaceNotificationDto => {
     const cursor = workspace.cursor();
-    const { informational, ...notificationInput } = input;
-    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, input.severity !== "info");
+    const { informational, push, renewAfterRecovery, ...notificationInput } = input;
+    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, push ?? input.severity !== "info", renewAfterRecovery);
     publishWorkspaceSince(cursor);
     return notification;
   };
   const resolveOperationalNotification = (dedupeKey: string): void => {
-    const current = workspace.openOperationalNotification(dedupeKey)
-      ?? workspace.findNotification(item => item.kind === "information"
-        && item.dedupeKey === dedupeKey && (item.status ?? "open") === "open");
-    if (!current) return;
+    const current = workspace.getNotificationByDedupeKey(dedupeKey);
+    if (!current || !["operational", "information"].includes(current.kind) || (current.status ?? "open") !== "open") return;
     const cursor = workspace.cursor();
     workspace.setNotificationStatus(current.id, "resolved");
     publishWorkspaceSince(cursor);
@@ -158,7 +160,6 @@ export function createOperationalNotifications(context: OperationalNotifications
   let coordinationNotificationsStopped = false;
   let coordinationNotificationWork: Promise<void> | undefined;
   function* coordinationAttentionNotifications(projectId?: string): Generator<void> {
-    const retained = new Set<string>();
     const pageSize = 200;
     let candidateCursor: Pick<
       CoordinationAttentionCandidateV3View,
@@ -185,44 +186,25 @@ export function createOperationalNotifications(context: OperationalNotifications
         const candidateRequest = candidate.kind === "request"
           ? coordinationV3.getRequest(candidate.recordId)
           : undefined;
-        const pendingDirectRecovery = Boolean(
-          candidateRequest?.recoverySuccessorRequestId &&
-          ["failed", "outcome_unknown"].includes(candidateRequest.state) &&
-          coordinationV3.requestRetryStatus(candidateRequest.id).successorState !== "completed",
-        );
-        const trace = inspector.traces.find((entry) =>
-          entry.state === "attention" && entry.itemIds.includes(focusId))
-          ?? (pendingDirectRecovery
-            ? inspector.traces.find((entry) => entry.itemIds.includes(focusId))
-            : undefined);
-        if (!trace) continue;
-        const related = trace.itemIds.flatMap((id) => items.get(id) ? [items.get(id)!] : []);
-        if (related.some((item) => item.kind === "decision" && item.state === "pending")) continue;
-        const focusedRecoveryRequest = pendingDirectRecovery
-          ? items.get(focusId)
-          : undefined;
-        const failedRequest = focusedRecoveryRequest?.kind === "request"
-          ? focusedRecoveryRequest
-          : [...related].reverse().find((item) => {
-          if (item.kind !== "request" || ![
-            "blocked",
-            "failed",
-            "outcome_unknown",
-            "expired",
-            "recipient_unavailable",
-          ].includes(item.state)) return false;
-          return !(
-            ["failed", "outcome_unknown"].includes(item.state) &&
-            coordinationV3.requestRetryStatus(item.recordId).successorState === "completed"
-          );
-        });
-        const failedJoin = [...related].reverse().find((item) => item.kind === "join"
-          && ["impossible", "expired"].includes(item.state));
-        // Plain user messages and internal context-rollover Runs have their own
-        // recovery surfaces. They are not coordinated assignments merely
-        // because their execution trace ended uncertain.
-        if (!failedRequest && !failedJoin) continue;
-        const failedWork = failedRequest ?? failedJoin!;
+        // The exact Request/Join owns the outcome; a graph's display state or
+        // unrelated completed Run cannot establish recovery.
+        const trace = inspector.traces.find(entry => entry.itemIds.includes(focusId));
+        const failedWork = items.get(focusId);
+        if (!trace || !failedWork || !["blocked", "failed", "outcome_unknown", "expired", "recipient_unavailable", "impossible"].includes(failedWork.state)) continue;
+        if (trace.itemIds.some(id => items.get(id)?.kind === "decision" && items.get(id)?.state === "pending")) continue;
+        const retry = candidateRequest ? coordinationV3.requestRetryStatus(candidateRequest.id) : undefined;
+        if ((retry?.recoveryState ?? retry?.successorState) === "completed") continue;
+        if (retry?.successorRequestId) continue;
+        const join = candidate.kind === "join" ? coordinationV3.getJoin(candidate.recordId) : undefined;
+        const ownerId = candidateRequest?.requesterAgentId ?? join?.ownerAgentId;
+        const owner = ownerId ? store.getAgent(ownerId) : undefined;
+        const ownerConversation = candidateRequest?.conversationId ?? join?.conversationId;
+        const internallyOwned = owner?.projectId === project.id && (!ownerConversation || owner.conversationId === ownerConversation);
+        // The canonical requester/Join wake handles this failure. Only a failed
+        // explicit recovery or missing owner needs an operator's intervention.
+        const operatorRecovery = candidateRequest ? coordinationV3.requestIsOperatorRecovery(candidateRequest.id) : false;
+        if (internallyOwned && !operatorRecovery) continue;
+        const failedRequest = failedWork.kind === "request" ? failedWork : undefined;
         const responsibleAgentId = failedRequest?.recipientAgentId ?? failedRequest?.requesterAgentId
           ?? failedWork.agentIds[0] ?? trace.agentIds[0];
         const agent = responsibleAgentId ? store.getAgent(responsibleAgentId) : undefined;
@@ -270,15 +252,15 @@ export function createOperationalNotifications(context: OperationalNotifications
                 : outcome === "failed"
                   ? "The Agent reported that the assignment failed."
                   : "The coordinated workflow could not finish automatically.";
-        const key = `coordination-attention:${trace.id}:${failedRequest?.recordId ?? "trace"}`;
-        retained.add(key);
+        const key = `coordination-attention:${failedWork.kind}:${failedWork.recordId}`;
         createOperationalNotification({
           dedupeKey: key,
           category: "coordination",
           severity: "attention",
-          title: failedRequest ? `${recipient?.title ?? "Unavailable Agent"}'s assignment needs review`
-            : `${agent?.title ?? "Agent"} could not collect the required results`,
-          body: outcomeExplanation,
+          title: operatorRecovery ? "Assignment recovery needs your review" : "Assignment has no available recovery owner",
+          body: operatorRecovery
+            ? "The recovery attempt did not finish. Review its activity before deciding whether to repeat work."
+            : `${outcomeExplanation} Review the activity and choose who should continue this work.`,
           ...(rawAssignment ? { contextPreview: assignment.slice(0, 120) } : {}),
           workContext: {
             kind: failedWork.kind as "request" | "join", recordId: failedWork.recordId,
@@ -319,17 +301,32 @@ export function createOperationalNotifications(context: OperationalNotifications
     // A yielded pass may have observed different revisions. Let its queued
     // follow-up finish before resolving notices from an incomplete retained set.
     if (coordinationNotificationsStopped || (projectId && dirtyCoordinationProjects.has(projectId))) return;
-    const obsolete: string[] = [];
-    workspace.forEachOpenOperationalNotification("coordination-attention:", (notification) => {
-      if (projectId && notification.projectId !== projectId) return;
-      if (!notification.dedupeKey || retained.has(notification.dedupeKey)) return;
-      obsolete.push(notification.dedupeKey);
+    const retained: WorkspaceNotificationDto[] = [];
+    workspace.forEachCoordinationNotification(notification => {
+      if (!projectId || notification.projectId === projectId) retained.push(notification);
     });
-    for (const key of obsolete) {
+    for (const notification of retained) {
       yield;
       if (coordinationNotificationsStopped || (projectId && dirtyCoordinationProjects.has(projectId))) return;
-      resolveOperationalNotification(key);
+      const work = notification.workContext;
+      let resolved = false, internal = !work;
+      if (work?.kind === "request") {
+        const request = coordinationV3.getRequest(work.recordId);
+        const retry = request ? coordinationV3.requestRetryStatus(request.id) : undefined;
+        resolved = !request || ["completed", "cancelled"].includes(request.state) || (retry?.recoveryState ?? retry?.successorState) === "completed";
+        const owner = request?.requesterAgentId ? store.getAgent(request.requesterAgentId) : undefined;
+        internal = Boolean(retry?.successorRequestId
+          || (request && !coordinationV3.requestIsOperatorRecovery(request.id) && owner?.projectId === request.projectId && (!request?.conversationId || owner?.conversationId === request.conversationId)));
+      } else if (work?.kind === "join") {
+        const join = coordinationV3.getJoin(work.recordId);
+        resolved = !join || ["satisfied", "cancelled"].includes(join.state);
+        const owner = join ? store.getAgent(join.ownerAgentId) : undefined;
+        internal = Boolean(owner?.projectId === join?.projectId && (!join?.conversationId || owner?.conversationId === join.conversationId));
+      }
+      if (resolved && notification.dedupeKey) resolveOperationalNotification(notification.dedupeKey);
+      else if (internal) { const cursor = workspace.cursor(); workspace.classifyNotificationAsInternal(notification.id); publishWorkspaceSince(cursor); }
     }
+
   }
   const reconcileCoordinationAttentionNotifications = (): void => {
     for (const _ of coordinationAttentionNotifications()) { /* synchronous startup repair */ }

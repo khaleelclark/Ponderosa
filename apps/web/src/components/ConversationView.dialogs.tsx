@@ -1,12 +1,4 @@
-import {
-  Alert,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  TextField,
-} from "@mui/material";
+import { TextInputDialog } from "./ConfirmationDialogs";
 import type {
   ConversationDto,
   EngineDto,
@@ -40,8 +32,7 @@ interface ConversationDialogsProps {
     names: string,
   ): void;
   onRenameClose(): void;
-  onRenameValueChange(value: string): void;
-  onRename(): void;
+  onRename(value: string): void;
   onDeleteClose(): void;
   onDelete(expectedAgentIds: string[]): void;
 }
@@ -65,7 +56,6 @@ export function ConversationDialogs({
   onStopCancel,
   onStopConfirm,
   onRenameClose,
-  onRenameValueChange,
   onRename,
   onDeleteClose,
   onDelete,
@@ -93,34 +83,19 @@ export function ConversationDialogs({
         )}
       />
 
-      <Dialog open={renameOpen} onClose={onRenameClose} fullWidth maxWidth="xs">
-        <DialogTitle>Rename Chat</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            label="Chat name"
-            value={renameValue}
-            onChange={event => onRenameValueChange(event.target.value)}
-            sx={{ mt: 1 }}
-          />
-          {renameError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {renameError}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={onRenameClose}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={!renameValue.trim() || renamePending}
-            onClick={onRename}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <TextInputDialog
+        open={renameOpen}
+        title="Rename Chat"
+        label="Chat name"
+        initialValue={renameValue}
+        confirmLabel="Save"
+        pendingLabel="Saving…"
+        pending={renamePending}
+        error={renameError}
+        validate={value => value.trim() ? undefined : "Enter a Chat name."}
+        onCancel={onRenameClose}
+        onConfirm={value => onRename(value.trim())}
+      />
 
       <ChatDeletionDialog
         open={deleteOpen}

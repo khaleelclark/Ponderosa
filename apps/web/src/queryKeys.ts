@@ -8,6 +8,11 @@
 import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination.js";
 
 export const queryKeys = {
+  branchesHome: {
+    all: ["branches", "home"] as const,
+    snapshot: ["branches", "home", "snapshot"] as const,
+    section: (section: "active" | "outcomes") => ["branches", "home", section] as const,
+  },
   runtimeSelection: (owner: string) => ["runtime-selection", owner] as const,
   health: {
     all: ["health"] as const,
@@ -110,7 +115,7 @@ export const queryKeys = {
   },
   agents: {
     all: ["agents"] as const,
-    allChat: ["agents", "all-chat"] as const,
+    inbox: ["agents", "inbox"] as const,
     project: (projectId: string | undefined) => ["agents", projectId] as const,
     detailAll: ["agent"] as const,
     detailPrefix: (agentId: string) => ["agent", agentId] as const,
@@ -200,7 +205,7 @@ export const queryKeys = {
   tokenUsage: {
     all: ["token-usage"] as const,
     detail: (
-      scope: "overall" | "project" | "agent" | "conversation",
+      scope: "overall" | "project" | "agent" | "conversation" | "branch",
       scopeId: string | undefined,
       rangeKey: "24h" | "7d" | "30d" | "all",
     ) => ["token-usage", scope, scopeId, rangeKey] as const,
@@ -271,8 +276,8 @@ export const queryKeys = {
     detail: (projectId: string, rootsKey: string) =>
       ["agent-deletion-preview", projectId, rootsKey] as const,
   },
-  allChatAll: ["all-chat"] as const,
-  allChat: (limit: number) => ["all-chat", limit] as const,
+  inboxAll: ["inbox"] as const,
+  inbox: (limit: number) => ["inbox", limit] as const,
   projectFolders: ["project-folders"] as const,
   collaborationAll: ["collaboration-chat"] as const,
   collaborationPrefix: (conversationId: string | undefined) =>

@@ -1,5 +1,6 @@
 import {
   AgentDeletionConflictError,
+  retainChatAttachment,
   type AgentDeletionReceipt,
   type AgentManagementAuthorization,
   type AgentStore,
@@ -74,6 +75,7 @@ type AgentDeletionAuthorityContext =
     browserProfiles: BrowserProfileAuthority;
     workingCopies: AgentWorkingCopyService;
     assets: Pick<AssetStore, "purgeAgents">;
+    purgeAgentMemory?(receipt:AgentDeletionReceipt):Promise<void>;
   };
 
 export function createAgentDeletionAuthority(
@@ -258,6 +260,7 @@ export function createAgentDeletionAuthority(
         errors.push(error instanceof Error ? error.message : "asset authority cleanup failed");
       }
     }
+    if(errors.length===0)try{await context.purgeAgentMemory?.(receipt);}catch(error){errors.push(error instanceof Error?error.message:'Private Agent memory cleanup failed');}
     if (errors.length > 0) {
       try { store.recordAgentDeletionCleanupError(receipt.id, errors.join("; ")); }
       catch { /* the durable receipt remains pending for startup reconciliation */ }
@@ -374,6 +377,18 @@ export function createAgentDeletionAuthority(
         await closeAgentBrowsers(agentId, "agent_deleted_final_barrier");
       }
       expectedAgentIds.forEach((agentId) => browserProfiles.removeAgent(agentId));
+      // Shared Decision answers outlive private Agent storage. Copy and verify
+      // their exact canonical files before the existing irreversible barrier.
+      for (const decision of workspace.listDecisions({ projectId: current.projectId })) {
+        if (!deletingSet.has(decision.agentId) || !decision.conversationId || decision.status !== "resolved" ||
+            store.getConversation(decision.conversationId)?.projectId !== decision.projectId) continue;
+        for (const attachment of decision.response?.attachments ?? []) {
+          if (attachment.agentId !== decision.agentId) throw new Error("Decision file ownership changed; deletion is blocked");
+          retainChatAttachment({ dataDir: opts.dataDir, projectId: decision.projectId, conversationId: decision.conversationId,
+            eventId: `decision:${decision.id}:response`, attachment,
+            sourceDirectory: `projects/${decision.projectId}/agents/${decision.agentId}/attachments` });
+        }
+      }
       committed = store.deleteAgentSubtrees(
         current.rootAgentIds,
         previewHash,

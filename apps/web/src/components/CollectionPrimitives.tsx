@@ -748,7 +748,7 @@ export function ResourceRow({
       {leading}
       {icon ? <Box sx={{ width: 38, height: 38, flex: "0 0 auto", borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", color: "primary.main", "& > svg": { fontSize: 21 } }}>{icon}</Box> : null}
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography fontWeight={750} noWrap>{label}</Typography>
+        <Typography fontWeight={750} noWrap sx={{display:{xs:"-webkit-box",sm:"block"},WebkitLineClamp:2,WebkitBoxOrient:"vertical",whiteSpace:{xs:"normal",sm:"nowrap"},overflowWrap:"anywhere"}}>{label}</Typography>
         {description ? <Typography component="div" variant="body2" color="text.secondary" noWrap>{description}</Typography> : null}
       </Box>
       {meta ? <Box sx={{ flexShrink: 0, minWidth: 0 }}>{meta}</Box> : null}

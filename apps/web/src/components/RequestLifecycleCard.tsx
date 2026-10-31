@@ -15,10 +15,13 @@ import type {
   CoordinationRequestArtifactDto,
   CoordinationRequestUpdateDto,
 } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
+import { useWorkspaceReadOnly } from "./WorkspaceReadOnlyContext";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 
 const UPDATE_PREVIEW_CHARACTERS = 900;
 
@@ -271,6 +274,31 @@ export function RequestLifecycleCard({
     staleTime: 15_000,
   });
   const lifecycle = query.data?.requestLifecycle;
+  const readOnly = useWorkspaceReadOnly();
+  const queryClient = useQueryClient();
+  const [confirmRetry, setConfirmRetry] = useState(false);
+  const retry = useMutation({
+    mutationFn: async () => {
+      if (readOnly || !lifecycle?.request.retryAvailable) throw new Error("This assignment cannot be retried.");
+      try {
+        const result = await api.retryCoordinationRequest(requestId, { idempotencyKey: `operator-retry:${requestId}` });
+        if (result?.retryOfRequestId !== requestId || !result.requestIds?.length) throw new Error("Unconfirmed recovery");
+        return result;
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status < 500) throw error;
+        throw new Error("Could not confirm whether the retry started. Check activity before trying again; repeating work may duplicate changes.");
+      }
+    },
+    onSuccess: () => {
+      setConfirmRetry(false);
+      // The accepted successor is canonical even if a background refresh fails.
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
+      ]).catch(() => {});
+    },
+  });
+  const retryAvailable = !readOnly && lifecycle?.request.retryAvailable && !retry.isSuccess;
   const questions = useMemo(
     () =>
       new Map(
@@ -405,8 +433,26 @@ export function RequestLifecycleCard({
                 Open Work details
               </Button>
             ) : null}
+            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={event => { event.stopPropagation(); retry.reset(); setConfirmRetry(true); }}>Retry assignment…</Button> : null}
           </Stack>
         ) : null}
+        <Box onClick={event => event.stopPropagation()}>
+          <ConfirmDialog
+            open={confirmRetry}
+            title="Retry this assignment?"
+            cancelLabel="Not now"
+            confirmLabel="Retry assignment"
+            pendingLabel="Starting…"
+            pending={retry.isPending}
+            confirmDisabled={!retryAvailable}
+            error={retry.isError ? retry.error instanceof Error ? retry.error.message : "The retry could not be started." : undefined}
+            onCancel={() => setConfirmRetry(false)}
+            onConfirm={() => retry.mutateAsync()}
+          >
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{resolvedRequestText ?? "Assignment description unavailable."}</Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>Earlier work or changes may already exist. Retrying starts another attempt and may duplicate changes. Review the activity first.</Typography>
+          </ConfirmDialog>
+        </Box>
       </AccordionDetails>
     </Accordion>
   );

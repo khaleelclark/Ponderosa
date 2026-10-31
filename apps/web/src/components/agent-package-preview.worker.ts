@@ -1,4 +1,4 @@
-import { AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
+import { agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 interface PreviewRequest {
   id: number;
   blob: Blob;
@@ -6,6 +6,7 @@ interface PreviewRequest {
 
 interface PortableAgentPreview {
   sourceLabel: string;
+  hasOutputRoles: boolean;
   sourceProjectInstructions?: string;
   mode: "template" | "full";
   kind: "agent" | "organization";
@@ -43,9 +44,11 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
       || typeof value.sourceLabel !== "string"
       || !Array.isArray(value.agents)
       || value.agents.length < 1
-      || value.agents.length > 100
     ) {
       throw new Error("Choose or paste a ponderosa.agent-package.v1 document.");
+    }
+    if (value.agents.length > AGENT_PACKAGE_MAX_AGENTS) {
+      throw new Error(`Agent package contains ${value.agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`);
     }
     worker.postMessage({ id, phase: "Preparing summary" });
     const sourceEngines = new Set<string>();
@@ -61,6 +64,14 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
       const node = candidate as Record<string, unknown>;
       if (typeof node.title !== "string") {
         throw new Error("Every Agent in the package needs a name.");
+      }
+      if (node.initialInstructions !== undefined && (typeof node.initialInstructions !== "string" || !agentPackageTextIsWellFormed(node.initialInstructions))) {
+        throw new Error("Agent initial instructions must contain well-formed Unicode.");
+      }
+      for (const message of Array.isArray(node.history) ? node.history : []) {
+        if (!message || typeof message.text !== "string" || !agentPackageTextIsWellFormed(message.text)) {
+          throw new Error("Agent history text must contain well-formed Unicode.");
+        }
       }
       agentTitles.push(node.title.trim().slice(0, 80) || "Imported Agent");
       if (typeof node.engine === "string" && node.engine.trim()) {
@@ -93,6 +104,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     const response: PreviewResponse = {
       id,
       preview: {
+        hasOutputRoles: Array.isArray(value.outputRoles)&&value.outputRoles.length>0,
         sourceLabel: value.sourceLabel.slice(0, 240),
         ...(value.mode === "full" && typeof value.sourceProjectInstructions === "string"
           ? { sourceProjectInstructions: value.sourceProjectInstructions } : {}),

@@ -1,6 +1,6 @@
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { Box, Button, Stack } from "@mui/material";
+import { Box, Button, Stack, Typography } from "@mui/material";
 import type {
   AgentRunDto,
   ResponseFileActivityDto,
@@ -69,6 +69,7 @@ export function AgentWorkReceipt({
   agentName,
   run,
   active = false,
+  paused = false,
   entries,
   projectId,
   projectRoot,
@@ -79,6 +80,7 @@ export function AgentWorkReceipt({
   agentName: string;
   run?: AgentRunDto;
   active?: boolean;
+  paused?: boolean;
   entries: ActivityStreamEntry[];
   projectId?: string;
   projectRoot?: string;
@@ -154,7 +156,7 @@ export function AgentWorkReceipt({
                   fontWeight: 700,
                 }}
               >
-                {receiptTitle(agentName, run)}
+                {paused ? `${agentName}'s work is paused` : receiptTitle(agentName, run)}
               </Box>
               <Box
                 component="span"
@@ -193,7 +195,7 @@ export function AgentWorkReceipt({
                   fontWeight: 700,
                 }}
               >
-                {receiptTitle(agentName, run)}
+                {paused ? `${agentName}'s work is paused` : receiptTitle(agentName, run)}
               </Box>
               <Box
                 component="span"
@@ -215,6 +217,9 @@ export function AgentWorkReceipt({
             />
           ) : null}
         </Stack>
+        {paused ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 0.5 }}>
+          Paused by you. This execution was interrupted; unfinished work is held until Resume. Stop ends the held work.
+        </Typography> : null}
         {expanded && hasVisibleActivity ? (
           <Box
             sx={{

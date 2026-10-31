@@ -14,6 +14,7 @@ import type {
   ProjectedCommunicationMessage,
 } from "@ponderosa/core";
 import { openDb, type Db } from "./db.js";
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { readRepairableJsonl, reconcileUncertainAppends } from "./append-jsonl.js";
 import { admitDataDirectory, type StateAdmission } from "./state-admission.js";
 import { dbPath, projectsDir } from "./paths.js";
@@ -181,6 +182,7 @@ export function createAgentStoreComponents(
   dataDir: string,
   opened: OpenAgentStoreData,
   ports: AgentStoreComponentPorts,
+  progress: ProjectionProgress,
 ): AgentStoreComponents {
   const { db, client, deliverySequenceFile, deliverySequence } = opened;
   let chatFeed!: AgentChatFeedProjection;
@@ -191,9 +193,10 @@ export function createAgentStoreComponents(
     db,
     ports.listAgents,
     ports.getConversationMessages,
-    projectId => chatFeed.refreshAllChatFeedProject(projectId),
+    projectId => chatFeed.refreshInboxFeedProject(projectId),
     (projectId, conversationId, visible) =>
       setCompactionHistoryConversationVisibility(client, projectId, conversationId, visible),
+    progress,
   );
   const agentCatalog = new AgentCatalogAuthority(
     dataDir,
@@ -201,6 +204,7 @@ export function createAgentStoreComponents(
     client,
     ports.getAgentPreset,
     ports.getProject,
+    progress,
   );
   const communicationJournal = new AgentCommunicationJournalAuthority(
     dataDir,
@@ -222,6 +226,7 @@ export function createAgentStoreComponents(
     ports.rowToAgentDto,
     projectId => Boolean(ports.getProject(projectId)),
     ports.readEvents,
+    progress,
   );
   const eventProjection = new AgentEventProjectionStore(
     dataDir,
@@ -240,6 +245,8 @@ export function createAgentStoreComponents(
     ports.listAgents,
     ports.communicationProjectionAllowed,
     ports.appendCommunicationProjection,
+    progress,
+    dataDir,
   );
   const projectDeletion = new AgentProjectDeletionAuthority(
     dataDir,
@@ -276,7 +283,7 @@ export function createAgentStoreComponents(
     ports.getAgent,
     ports.listAgents,
     ports.getProject,
-    ports.rowToAgentDto,
+    id => { agentCatalog.clearRoleCache(id); return ports.rowToAgentDto(id); },
   );
   const agentDeletion = new AgentDeletionAuthority(
     dataDir,
@@ -285,7 +292,7 @@ export function createAgentStoreComponents(
     ports.getAgent,
     ports.listAgents,
     ports.authorizeAgentManagementPlan,
-    projectId => chatFeed.refreshAllChatFeedProject(projectId),
+    projectId => chatFeed.refreshInboxFeedProject(projectId),
     agentId => eventProjection.forgetAgent(agentId),
     projectId => ({ events: communicationJournal.readCommunicationEvents(projectId), projections: ports.projectionIndex(projectId).projections }),
     (projectId, agentId, sourceDirectory) => artifactCatalog.retainDeletedAgentArtifactBytes(projectId, agentId, sourceDirectory),
@@ -318,6 +325,7 @@ export function createAgentStoreComponents(
         artifactIds,
         metadataAuthority,
       ),
+    progress,
   );
   const fileActivity = new AgentFileActivityReadModel(
     client,

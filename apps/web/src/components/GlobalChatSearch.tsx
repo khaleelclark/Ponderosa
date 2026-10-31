@@ -1,4 +1,4 @@
-import { routeToPath } from "../routeRegistry";
+import { routeLinkPath } from "../routeRegistry";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import SearchIcon from "@mui/icons-material/Search";
 import CloseIcon from "@mui/icons-material/Close";
@@ -113,11 +113,12 @@ function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRang
 }
 
 export function SearchSnippet({ snippet, ranges, query }: { snippet: string; ranges: SearchHighlightRangeDto[]; query: string }): JSX.Element {
+  const theme = useTheme();
   const visibleSnippet = plainGlobalSearchSnippet(snippet);
   const visibleRanges = visibleSnippet === snippet ? ranges : queryHighlightRanges(visibleSnippet, query);
   return <Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
     {highlightedSnippetSegments(visibleSnippet, visibleRanges).map((segment, index) => segment.highlighted
-      ? <Box component="mark" key={index} sx={{ bgcolor: "warning.light", color: "text.primary", borderRadius: .5, px: .25 }}>{segment.text}</Box>
+      ? <Box component="mark" key={index} sx={{ bgcolor: "warning.light", color: theme.palette.getContrastText(theme.palette.warning.light), borderRadius: .5, px: .25 }}>{segment.text}</Box>
       : <Box component="span" key={index}>{segment.text}</Box>)}
   </Typography>;
 }
@@ -168,7 +169,7 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
   onActive?(): void;
 }): JSX.Element {
   return <SearchResultRow
-    href={routeToPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
+    href={routeLinkPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
     id={id}
     active={active}
     onActive={onActive}
@@ -196,7 +197,7 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   onActive?(): void;
 }): JSX.Element {
   return <SearchResultRow
-    href={routeToPath(routeForGlobalSearchSelection({ projectId: recent.project.id, chat: recent.chat }))}
+    href={routeLinkPath(routeForGlobalSearchSelection({ projectId: recent.project.id, chat: recent.chat }))}
     id={id}
     active={active}
     onActive={onActive}
@@ -432,7 +433,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
           {fileResults.map((file, fileIndex) => {
             const index = chatEntries.length + fileIndex;
             return <SearchResultRow key={`file:${file.project.id}:${file.conversationId}:${file.path}`} id={`global-search-option-${index}`}
-              href={routeToPath(routeForGlobalSearchSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } }))}
+              href={routeLinkPath(routeForGlobalSearchSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } }))}
               active={activeIndex === index} onActive={() => setActiveIndex(index)}
               ariaLabel={`Open file ${file.name}`}
               onSelect={() => chooseSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } })}

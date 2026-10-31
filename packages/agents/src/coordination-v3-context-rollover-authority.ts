@@ -186,6 +186,14 @@ export class CoordinationV3ContextRolloverAuthority {
             !explicitSafeRetry && !nextHeadroomCycle) {
           throw new Error("context_refresh_already_underway");
         }
+        // Further pressure from the same live source does not refreeze its tail.
+        // The isolated handoff captures all accepted steering at the boundary.
+        if (existing.state === 'requested' && existing.source_run_id === input.sourceRunId &&
+            existing.project_id === input.projectId && existing.old_provider_session_id === input.oldProviderSessionId &&
+            input.triggerKind !== 'human' && this.sqlite.prepare(`SELECT 1 FROM scheduler_runs
+              WHERE id=? AND agent_id=? AND status='running'`).get(input.sourceRunId,input.agentId)) {
+          return { rollover: this.view(existing), created: false };
+        }
         if (existing.project_id !== input.projectId ||
             existing.old_provider_session_id !== input.oldProviderSessionId ||
             (!terminalFailure && !nextHeadroomCycle && (
@@ -259,6 +267,63 @@ export class CoordinationV3ContextRolloverAuthority {
         now,
       });
       return { rollover: this.get(id)!, created: true };
+    })();
+  }
+
+  /** Freeze again only at the isolated handoff boundary, after live steering ends. */
+  rebindHandoffBoundary(input: {
+    id: string; handoffRunId: string; fencingToken: number;
+    bind: (communicationEventIds: string[]) => {
+      canonicalOrdinal: number; communicationEventId: string;
+      recentTail: Array<{ communicationEventId: string; contentSha256: string }>;
+    };
+    now?: string;
+  }): ContextRolloverV3 {
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction(() => {
+      const current = this.get(input.id);
+      if (!current) throw new Error('context rollover not found');
+      const handoff = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run
+        JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        JOIN agent_activations activation ON activation.id=attached.activation_id
+        JOIN activation_sources source ON source.activation_id=activation.id
+        WHERE run.id=? AND run.fencing_token=? AND run.status='leased' AND run.lease_expires_at>?
+          AND run.prompt_injection_state='not_injected' AND run.side_effects_fenced_at IS NULL
+          AND run.agent_id=? AND run.project_id=? AND run.scope_key=?
+          AND activation.kind='context_rollover_handoff' AND source.source_kind='context_rollover' AND source.source_id=?`)
+        .get(input.handoffRunId, input.fencingToken, now, current.agentId, current.projectId, current.scopeKey, input.id);
+      const source = this.sqlite.prepare(`SELECT status FROM scheduler_runs
+        WHERE id=? AND agent_id=? AND project_id=? AND scope_key=? AND provider_session_id=?`)
+        .get(current.sourceRunId, current.agentId, current.projectId, current.scopeKey, current.oldProviderSessionId) as {status:string}|undefined;
+      if (current.state !== 'requested' || !handoff || source?.status !== 'completed') {
+        throw new Error('context rollover boundary requires the exact live handoff after its completed source');
+      }
+      const uncertain = this.sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections
+        WHERE run_id=? AND state IN ('pending','submitted','outcome_unknown') LIMIT 1`).get(current.sourceRunId);
+      if (uncertain) throw new Error('context rollover boundary has unresolved source input');
+      const activations = this.sqlite.prepare(`SELECT DISTINCT activation.id FROM scheduler_run_activations attached
+        JOIN agent_activations activation ON activation.id=attached.activation_id
+        WHERE attached.run_id=? AND activation.agent_id=? AND activation.project_id=? AND activation.scope_key=?
+          AND EXISTS (SELECT 1 FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+            WHERE injection.run_id=attached.run_id AND injection.state='acknowledged' AND member.value=activation.id)
+        ORDER BY activation.id`).all(current.sourceRunId,current.agentId,current.projectId,current.scopeKey) as Array<{id:string}>;
+      const communications = this.sqlite.prepare(`SELECT DISTINCT json_extract(runtime.payload_json,'$.communication.eventId') AS id
+        FROM scheduler_run_activations attached JOIN activation_sources source ON source.activation_id=attached.activation_id
+        JOIN runtime_communications runtime ON runtime.id=source.source_id AND source.source_kind='communication'
+        WHERE attached.run_id=? AND runtime.project_id=?
+          AND attached.activation_id IN (SELECT value FROM json_each(?))`)
+        .all(current.sourceRunId,current.projectId,JSON.stringify(activations.map(row=>row.id))) as Array<{id:string|null}>;
+      // The binder checks canonical scope, current revisions, hashes and rendered size.
+      const boundary = input.bind([...new Set([...current.recentTailCommunicationEventIds,
+        ...communications.flatMap(row=>row.id ? [row.id] : [])])]);
+      const ids = activations.map(row=>row.id);
+      this.sqlite.prepare(`UPDATE context_rollovers SET compaction_cutoff_ordinal=?, compaction_cutoff_event_id=?,
+        recent_tail_event_ids_json=?,recent_tail_hashes_json=?,source_activation_ids_json=?,
+        updated_at=?
+        WHERE id=? AND state='requested'`).run(boundary.canonicalOrdinal,boundary.communicationEventId,
+          JSON.stringify(boundary.recentTail.map(row=>row.communicationEventId)),
+          JSON.stringify(boundary.recentTail.map(row=>row.contentSha256)),JSON.stringify(ids),now,current.id);
+      return this.get(current.id)!;
     })();
   }
 
@@ -611,7 +676,7 @@ export class CoordinationV3ContextRolloverAuthority {
         }
       }
       if (current.triggerKind !== "human" && (
-        current.visibleResponseCommitted ||
+        current.visibleResponseCommitted && !this.hasPendingSourceReply(current) ||
         !this.continuationObligationRemains(current)
       )) {
         this.sqlite.prepare(`
@@ -1245,9 +1310,19 @@ export class CoordinationV3ContextRolloverAuthority {
     return result;
   }
 
+  /** Historical response commitment cannot discharge a later canonical reply root. */
+  private hasPendingSourceReply(rollover: ContextRolloverV3): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations obligation
+      JOIN json_each(?) source ON source.value=obligation.source_activation_id
+      WHERE obligation.run_id=? AND obligation.agent_id=? AND obligation.project_id=? AND obligation.scope_key=?
+        AND obligation.state IN ('pending','recovery_pending','retried') LIMIT 1`)
+      .get(JSON.stringify(rollover.sourceActivationIds),rollover.sourceRunId,rollover.agentId,rollover.projectId,rollover.scopeKey));
+  }
+
   private continuationObligationRemains(
     rollover: ContextRolloverV3,
   ): boolean {
+    if (this.hasPendingSourceReply(rollover)) return true;
     const requests = this.sqlite.prepare(`
       ${REQUEST_SOURCE_LINEAGE_CTE}
       SELECT DISTINCT request.id, request.state, request.recipient_agent_id

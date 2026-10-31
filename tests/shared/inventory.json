@@ -46,7 +46,7 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native server workspaces; private stores and controlled inert provider roots only",
-      "origin": "Production-safe per-scope host memory validation and shutdown/restart canonical recovery without optional full replay"
+      "origin": "Per-scope host memory validation and shutdown/restart canonical recovery without optional full replay"
     },
     {
       "oldPath": "apps/server/test/real-codex.test.mjs",
@@ -776,6 +776,14 @@
       "origin": "F02 organization guidance portability and durable round trips"
     },
     {
+      "path": "tests/organizations/execution-portability.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; disposable Fastify/SQLite fixture; no provider account",
+      "origin": "Phase2 historical execution archive fresh-instance portability"
+    },
+    {
       "path": "tests/installation-release/operator-proxy-shutdown.test.mjs",
       "feature": "installation-release",
       "lane": "server",
@@ -872,12 +880,20 @@
       "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     },
     {
-      "path": "tests/context-recovery/imported-history-retrieval.test.mjs",
+      "path": "tests/context-recovery/history-context-budget.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
       "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
-      "origin": "Production context budget: canonical-bound private imported-history search, chunk reads, restart and scope fences"
+      "requirements": "Node24, built native server workspaces; private canonical stores and inert persistent providers, no provider account",
+      "origin": "PR99 context budget addendum: complete accepted-input accounting, paginated selection, session occupancy and frozen scoped retrieval"
+    },
+    {
+      "path": "tests/context-recovery/imported-history-fidelity.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built agents/native workspaces; disposable real SQLite and canonical archives; no provider account",
+      "origin": "Imported archive fidelity: exact bounded Unicode retrieval, provenance, index lifecycle and private reference fences"
     },
     {
       "path": "tests/context-recovery/history-artifact-metadata.test.mjs",
@@ -995,12 +1011,649 @@
       "origin": "Prepared Agent lookup regression: one statement per authority, fresh typed DTOs, deletion/owner guards and database isolation/reopen"
     },
     {
-      "path": "tests/context-recovery/history-context-budget.test.mjs",
+      "oldPath": "packages/core/test/capability-policy.test.mjs",
+      "path": "tests/branches/capability-policy.test.mjs",
+      "feature": "branches",
+      "lane": "tooling",
+      "moduleBase": "packages/core/package.json",
+      "requirements": "Built core workspace; pure synthetic capability policies; no provider/browser/account",
+      "origin": "Branch capability policy regressions ported from 902ba1a7; existing assertions retained"
+    },
+    {
+      "path": "tests/branches/storage-schema.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built agents/native workspaces; disposable current-format data; no provider account or browser",
+      "origin": "Current-master Branch storage, scoped trigger authority and canonical Agent deletion invariants"
+    },
+    {
+      "path": "tests/branches/branch-graph.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-graph.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branch-map.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-map.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branches.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branches.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branch-execution-budget.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-execution-budget.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branch-calls.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-calls.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/trigger-intake.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Current-master Branch-only schedule and occurrence authority"
+    },
+    {
+      "path": "tests/branches/restriction-lineage.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Current-master private deletion and fail-closed restriction authority"
+    },
+    {
+      "path": "tests/branches/chat-ownership.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Current-master Branch Chat identity and deletion ownership"
+    },
+    {
+      "path": "tests/branches/installation-compensation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable state and controlled provider fixture; no provider account",
+      "origin": "Current-master Branch lifecycle integration; shared existing authorities"
+    },
+    {
+      "path": "tests/files-results/portable-artifact-count.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; disposable state and controlled provider fixture; no provider account",
+      "origin": "Current-master Branch lifecycle integration; shared existing authorities"
+    },
+    {
+      "path": "tests/chats/creation.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; disposable state and controlled provider fixture; no provider account",
+      "origin": "Current-master Branch lifecycle integration; shared existing authorities"
+    },
+    {
+      "path": "tests/branches/script-service.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; real inert POSIX child processes; no provider account",
+      "origin": "Current-master Branch Script authority, shutdown and observed cleanup"
+    },
+    {
+      "path": "tests/branches/resource-admission.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; disposable state; no provider account",
+      "origin": "Current-master asynchronous Branch resource creation and intake fences"
+    },
+    {
+      "path": "tests/branches/package-lifecycle.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; no provider account",
+      "origin": "Current-master Branch integration: shared import validation and atomic lifecycle binding"
+    },
+    {
+      "path": "tests/branches/home.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; no provider account",
+      "origin": "BR002 bounded global Home counts, canonical status, action pagination and query plans"
+    },
+    {
+      "path": "tests/branches/operations.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; no provider account",
+      "origin": "Current-master Branch integration: bounded exact canonical execution status"
+    },
+    {
+      "path": "tests/branches/application-lifecycle.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; owned POSIX Script process groups; Windows intentionally unsupported; no provider account",
+      "origin": "Current-master Branch application: real process deployment drain and shutdown"
+    },
+    {
+      "path": "tests/browser/display-residue.test.mjs",
+      "feature": "browser",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; private synthetic display paths; no browser/provider account",
+      "origin": "Pine qualification: recover stale partial display cleanup claims while preserving live owners"
+    },
+    {
+      "path": "tests/providers/capability-restrictions.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Node24, built engines; no provider account",
+      "origin": "Qualified Branch adapter restriction contracts ported to current master"
+    },
+    {
+      "path": "tests/branches/runtime-capabilities.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; owned inert provider roots; no provider account",
+      "origin": "Current-master policy enforcement: actual dynamic tool refusal and session replacement"
+    },
+    {
+      "path": "tests/branches/sources.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; owned filesystem watcher; no provider account",
+      "origin": "Current-master Branch-only schedule, signed webhook, durable filesystem and source replacement qualification"
+    },
+    {
+      "path": "tests/branches/api.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, current built native workspaces, inert provider fixture; no provider account",
+      "origin": "Current-master Branch API ownership, Chat lifecycle reuse and favorite/folder persistence"
+    },
+    {
+      "path": "tests/organizations/package-upload-ownership.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, current built native workspaces, disposable upload sentinels; no provider account",
+      "origin": "Reproduced unowned-path deletion through forged staged upload JSON; exact upload ownership and product admission"
+    },
+    {
+      "path": "tests/branches/product-scope.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; controlled subscription adapter and owned inert roots; no provider account",
+      "origin": "Current master Branch product isolation, pagination and canonical ownership qualification"
+    },
+    {
+      "path": "tests/branches/editing-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled browser history and actual TSX navigation/dialog owners",
+      "origin": "PR95 workflow leave choices, exact settlement fencing, retained drafts, native reload and shared pending dismissal"
+    },
+    {
+      "path": "tests/branches/execution-controls.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled budget query and mutation owners",
+      "origin": "BR024 Execution Controls placement, stable refresh and exact revision/period/uncertain-save safeguards"
+    },
+    {
+      "path": "tests/branches/execution-workspace.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 selected Run actions, results, lazy technical evidence and canonical recovery"
+    },
+    {
+      "path": "tests/branches/run-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 retained Run history, mobile navigation, truthful activation audit"
+    },
+    {
+      "path": "tests/branches/ui-state.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; no browser or provider account",
+      "origin": "Current master Branch folder conflict, nested route and scoped transport regressions"
+    },
+    {
+      "path": "tests/installation-release/offline-content-restore.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built current workspaces; private offline backup fixture; no provider account",
+      "origin": "Current-master Branch qualification: valid unfiled Chat restore, unknown and duplicate folder ownership"
+    },
+    {
+      "path": "tests/branches/installation-publication.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; built native server; synthetic package; no provider Run",
+      "origin": "Private V6 qualification: reproduce staged resource rejection during publication"
+    },
+    {
+      "path": "tests/speech/call-attempt.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/reply-association.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/phrase-buffer.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/provider-response-text.test.mjs",
+      "feature": "speech",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/native-work-boundary.test.mjs",
+      "feature": "speech",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/voice-reply-native.test.mjs",
+      "feature": "speech",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/memory/portability.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, isolated Chroma and pinned local models; no provider account",
+      "origin": "Phase2 bounded host memory snapshot/restoration qualification"
+    },
+    {
+      "path": "tests/memory/deletion-lifecycle.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, isolated Chroma and pinned local models; no provider account",
+      "origin": "PR43 review: durable memory deletion, isolation and retry qualification"
+    },
+    {
+      "path": "tests/memory/startup-config.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; isolated configuration files; no provider account or inference",
+      "origin": "Generic Branches memory startup configuration"
+    },
+    {
+      "path": "tests/installation-release/launcher-products.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built server/native workspaces; isolated temporary database; no provider account or installed application",
+      "origin": "Separate Ponderosa and Branches launcher destinations: real one-time session exchange, strict redirect allowlist and shared-session restart regression"
+    },
+    {
+      "path": "tests/workspace-navigation/agent-status-tooltip.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual shared React row/badge render",
+      "origin": "UI 010 concise scoped Agent status and separate tooltip regions"
+    },
+    {
+      "path": "tests/chats/decision-response.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual hook/API with controlled transport and real QueryClient/MutationObserver",
+      "origin": "UI 011 confirmed saves, lost-response reconciliation and approval completion safety"
+    },
+    {
+      "path": "tests/chats/delivery-wait-reasons.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 built server; isolated canonical stores/inert providers; injected host samples only",
+      "origin": "UI 013 batch health/admission projection across Chat/Agent/Inbox/receipt refresh and single admission after recovery"
+    },
+    {
+      "path": "tests/providers/provider-limit-feedback.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 built server; isolated canonical stores and inert providers; no provider account",
+      "origin": "UI014 exact provider holds across pagination, recheck/restart, successful explicit recovery, unaffected work and indexed lookup"
+    },
+    {
+      "path": "tests/chats/provider-failure-banner.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React; actual component callbacks with controlled canonical props and API",
+      "origin": "UI014 scoped Chat banner, Details, usage/recheck, exact retry controls and truthful recovery announcements"
+    },
+    {
+      "path": "tests/chats/mobile-enter.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed web TypeScript; actual shared native/React Enter closures under controlled platform/viewport inputs; no provider account",
+      "origin": "UI016 Android Enter-to-Send baseline and mobile newline/desktop/IME regression"
+    },
+    {
+      "path": "tests/chats/decision-attachments.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; controlled providers and fresh private stores; no account or listener",
+      "origin": "UI017 Decision image/file answers: scope, canonical references, byte protection, provider input, restart and deletion"
+    },
+    {
+      "path": "tests/chats/decision-answer-draft.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Actual Decision draft and upload hooks with controlled transport/effects; no provider account"
+    },
+    {
+      "path": "tests/chats/decision-questions.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Actual Fastify Decision route with controlled authority stubs; no listener or provider",
+      "origin": "UI019 full Unicode questions and bounded structured group validation"
+    },
+    {
+      "path": "tests/chats/agent-decision-layout.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; actual panel/timeline rendering with controlled canonical query inputs",
+      "origin": "UI020 single conversation scroll, exact canonical questions and concise Decision notices"
+    },
+    {
+      "path": "tests/branches/home-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, real shared Home React components and QueryClient; no browser or provider account",
+      "origin": "BR002 exact summary, canonical execution outcomes, bounded independent paging and cached refresh recovery"
+    },
+    {
+      "path": "tests/speech/voice-menu.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Actual React component closures with controlled scheduling, native speech and transport; no physical microphone qualification",
+      "origin": "Shared Voice options, canonical call owners, unchanged dictation controls, explicit capture and canonical speech/lifecycle fences"
+    },
+    {
+      "path": "tests/branches/canvas-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Pure bounded canvas framing and view-state checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/canvas-insertion-menu.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual insertion-menu owners with transient control replacement, captured client geometry and focus-return behavior; no providers or live data"
+    },
+    {
+      "path": "tests/branches/canvas-layout.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/guided-operations.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/workflow-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/chats/mutation-notifications.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled React scheduling, no live data",
+      "origin": "Shared transient success feedback and durable actionable/progress contract"
+    },
+    {
+      "path": "tests/branches/decision-form-retention.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; actual shared Decision response owner with controlled outcomes",
+      "origin": "BR024 keeps open and unconfirmed shared Decision forms mounted across canonical page refresh"
+    },
+    {
+      "path": "tests/branches/schedule-steering.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents; disposable local SQLite stores, no provider, listener or live data",
+      "origin": "Exact scheduled update ownership, non-delivery, uncertainty, approval races and no fallback Run regressions"
+    },
+    {
+      "path": "tests/branches/run-status.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents; disposable SQLite authority fixtures, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/run-status-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies and source loader; shared status markup, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/schedule-overlap.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; disposable SQLite and controlled Codex/Claude adapters, no external provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/installation-release/projection-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Validated clean checkpoint reuse, write-active corruption recovery, canonical source scope, certificate/crash refusal and event sequence/torn append regression"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-proof.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Transactional projection receipt, FTS visibility and source/database binding boundaries"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-recovery.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Native write-active restart and incomplete history tails; metadata, SQL, V3 and saved-decision preservation"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-theme.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built web assets; generated startup script in VM and existing theme owner, no native Android claim",
+      "origin": "Android PWA browser metadata and prepaint theme consistency"
+    },
+    {
+      "path": "tests/branches/capability-history.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; disposable stores and controlled providers; no provider account",
+      "origin": "Phase2 permission history and concise protocol regression"
+    },
+    {
+      "path": "tests/chats/protocol-efficiency.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; disposable stores and controlled providers; no provider account",
+      "origin": "Phase2 permission history and concise protocol regression"
+    },
+    {
+      "path": "tests/workspace-navigation/preference-save-feedback.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 TypeScript transform; no provider account"
+    },
+    {
+      "path": "tests/chats/composer-pending-read.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed Lexical; no browser or provider account"
+    },
+    {
+      "path": "tests/memory/package-portability.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built server, owned Chroma and pinned models; no provider account",
+      "origin": "Phase2 actual product package memory/lifecycle regressions"
+    },
+    {
+      "path": "tests/context-recovery/steering-refresh.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
       "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server workspaces; private canonical stores and inert persistent providers, no provider account",
-      "origin": "PR99 context budget addendum: complete accepted-input accounting, paginated selection, session occupancy and frozen scoped retrieval"
+      "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
+    },
+    {
+      "path": "tests/branches/assistant-workspace.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, current built native workspaces, inert provider fixture; no provider account",
+      "origin": "Current-master Branch API ownership, Chat lifecycle reuse and favorite/folder persistence"
+    },
+    {
+      "path": "tests/chats/chat-input-evidence.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; no provider account or browser"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-page-strip.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed Chromium via PONDEROSA_BROWSER_EXECUTABLE (default /usr/bin/google-chrome); rsbuild and playwright-core; loopback component fixture only",
+      "origin": "Browser tablist owned roles, adjacent add action, desktop/mobile themes and keyboard/management guards"
+    },
+    {
+      "path": "tests/workspace-navigation/overlay-focus.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; overlay exit connected/visible/hidden fallback regression"
+    },
+    {
+      "path": "tests/branches/output-role-import.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; inert controlled adapters and private stores, no provider account",
+      "origin": "Portable output/speaker import declarations, human review, cross-store finalization/recovery and singleton fences"
+    },
+    {
+      "path": "tests/context-recovery/pause-resume.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
     }
   ],
   "retainedReleasePayload": [
@@ -1185,6 +1838,72 @@
       "path": "tests/shared/windows-pwa-browser.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-native-Windows-PWA-fixture"
+    },
+    {
+      "path": "tests/branches/branch-execution-budget-worker.mjs",
+      "moduleBase": "packages/agents/package.json"
+    },
+    {
+      "path": "tests/branches/execution-ui-qualification.mjs",
+      "feature": "branches",
+      "moduleBase": "apps/server/package.json",
+      "origin": "Opt-in loopback BR024 browser qualification; disposable canonical stores and controlled provider roots only"
+    },
+    {
+      "path": "tests/memory/portability-fixture.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned private memory package fixtures",
+      "origin": "Phase2 actual product memory package tests"
+    },
+    {
+      "path": "tests/memory/package-crash-worker.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned private memory package fixtures",
+      "origin": "Phase2 actual product memory package tests"
+    },
+    {
+      "path": "tests/branches/every-input-fixture.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-fixture-or-loader"
+    },
+    {
+      "path": "tests/workspace-navigation/webkit-every-input.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/verify-chat-input-evidence.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-input-census.mjs",
+      "moduleBase": "apps/web/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chromium-mobile-input-driver.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Existing installed Chromium and playwright-core;390x844 mobile/touch emulation; real permissioned clipboard, loopback fixture, no account or installation",
+      "origin": "Mobile transport for existing complete Chat input qualification, not a provider inference path"
+    },
+    {
+      "path": "tests/workspace-navigation/search-accessibility.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/output-role-import-ui.mjs",
+      "feature": "branches",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built web/server and installed Chromium; actual organization and Branch dialogs on controlled disposable providers",
+      "origin": "A21 collision dialog and role publication/restart browser qualification"
     }
   ],
   "support": [

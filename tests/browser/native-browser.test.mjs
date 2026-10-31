@@ -32,6 +32,14 @@ test('checks 103, 104 (4 on Linux): host Chrome acts, reads the selected upload 
     driver = await chromeBrowserDriverFactory(root)(randomUUID(), () => {}, handle => handles.push(handle), undefined,
       { owner: { version: 1, kind: 'chat', conversationId: randomUUID() }, nativeManual: process.platform === 'linux', connectOnOpen: true, initialUrl: url });
     await driver.navigate(url);
+    if (process.env.PONDEROSA_BROWSER_MULTI_PAGE === '1' || process.env.NODE_ENV === 'development') {
+      const original = (await driver.pages()).activePageId;
+      const added = await driver.newPage();
+      assert.equal(added.pages.length, 2);assert.notEqual(added.activePageId, original);
+      await driver.activatePage(original);await driver.closePage(added.activePageId);
+      assert.equal((await driver.pages()).activePageId, original);
+      assert.equal((await driver.pages()).pages.length, 1);
+    }
     await driver.fill('#message', 'Harmless typed value'); await driver.click('#apply');
     assert.match(await driver.inspect('#result'), /Harmless typed value/);
     if (process.platform === 'linux') {

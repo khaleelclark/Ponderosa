@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
@@ -22,6 +23,7 @@ import {
 import { downloadMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { formatExecutionElapsed } from "../time";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { useMutationNotification } from "./MutationNotifications";
 import type { AgentTab } from "./AgentDetail.helpers";
 import {
   AgentHeaderRelationships,
@@ -54,8 +56,10 @@ function AgentRunState({
   phaseEvidenceFresh,
   startedAt,
   agentNameForId,
+  paused,
 }: {
   status: AgentStatus;
+  paused?: boolean;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -65,13 +69,18 @@ function AgentRunState({
   const mobile = useMediaQuery("(max-width: 899.95px)");
   const [detailAnchor, setDetailAnchor] = useState<HTMLElement | null>(null);
   const now = useAgentRunClock(startedAt);
-  const presentation = agentStatusPresentation(health, {
+  const presentation = paused ? {
+    status: "waiting" as const,
+    label: "Paused",
+    detail: "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+    accessibleLabel: "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+  } : agentStatusPresentation(health, {
     status,
     connectionStatus,
     phaseEvidenceFresh,
     agentNameForId,
   });
-  const elapsed = startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
+  const elapsed = !paused && startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
   const runState = elapsed
     ? `${presentation.label} · ${elapsed}`
     : presentation.label;
@@ -92,7 +101,7 @@ function AgentRunState({
   ].filter(Boolean).join(" · ");
   const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
   const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
-  if (mobile) return <>
+  if (mobile && !paused) return <>
     <Tooltip title={accessibleDetail}><IconButton size="small" aria-label={accessibleDetail}
       onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: 44, height: 44 }}>
       <Box component="span" sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: theme => semanticStatusColorToken(presentation.status, theme.palette.mode) }} />
@@ -140,9 +149,11 @@ interface AgentDetailHeaderProps {
   onOpenChat(conversationId: string): void;
   onOpenAgent(agentId: string): void;
   onStop(): void;
+  paused?:boolean;
+  pausePending?:boolean;
+  onPauseResume?():void;
   onExportPackage(): void;
   onDuplicate?(): void;
-  onNotice(message: string): void;
   onOpenTechnical(): void;
   onRename(): void;
   onCreateAgent(): void;
@@ -174,9 +185,9 @@ export function AgentDetailHeader({
   onOpenChat,
   onOpenAgent,
   onStop,
+  paused, pausePending, onPauseResume,
   onExportPackage,
   onDuplicate,
-  onNotice,
   onOpenTechnical,
   onRename,
   onCreateAgent,
@@ -184,6 +195,8 @@ export function AgentDetailHeader({
   onDelete,
   onTabChange,
 }: AgentDetailHeaderProps): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
+  const notify=useMutationNotification();
   return (
     <TabbedWorkspaceFrame
       compactMobile
@@ -233,13 +246,14 @@ export function AgentDetailHeader({
       status={<Stack direction="row" sx={{ alignItems: "center" }}>
         <AgentRunState
           status={status}
+          paused={paused}
           health={health}
           connectionStatus={connectionStatus}
           phaseEvidenceFresh={phaseEvidenceFresh}
           startedAt={startedAt}
           agentNameForId={agentNameForId}
         />
-        {running ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
+        {running && !auditOnly ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
           aria-label={stopping ? "Cancelling…" : "Stop"} sx={{ display: { xs: "inline-flex", md: "none" }, width: 44, height: 44 }}><StopCircleOutlinedIcon /></IconButton></Tooltip> : null}
       </Stack>}
       actions={
@@ -250,7 +264,8 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
-          {running ? (
+          {(running||paused)&&!auditOnly&&onPauseResume?<Button size="small" variant="outlined" disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>:null}
+          {running && !auditOnly ? (
             <Button
               size="small"
               color="error"
@@ -301,8 +316,8 @@ export function AgentDetailHeader({
                 label: "Copy chat transcript",
                 icon: <ContentCopyOutlinedIcon fontSize="small" />,
                 onSelect: () => void copyText(transcriptMarkdown)
-                  .then(() => onNotice("Chat transcript copied."))
-                  .catch(error => onNotice(error instanceof Error ? error.message : "Chat transcript could not be copied.")),
+                  .then(() => notify({ key: "copy-transcript", message: "Copied" }))
+                  .catch(error => notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be copied.", severity: "error" })),
               },
               {
                 label: "Download chat transcript",
@@ -320,7 +335,7 @@ export function AgentDetailHeader({
                 destructive: true,
                 onSelect: onDelete,
               },
-            ]}
+            ].filter(action=>!auditOnly||["Technical Details","Copy chat transcript","Download chat transcript"].includes(action.label))}
           />
         </Stack>
       }
@@ -330,7 +345,7 @@ export function AgentDetailHeader({
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
         items: AGENT_DETAIL_TABS.filter(item =>
-          item.value !== "subagents" || showSubagents
+          (!auditOnly||!["subagents","settings"].includes(item.value)) && (item.value !== "subagents" || showSubagents)
         ),
       }}
     />

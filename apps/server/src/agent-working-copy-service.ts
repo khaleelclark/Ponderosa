@@ -660,7 +660,7 @@ export class AgentWorkingCopyService {
           throw new Error("The retained Git cleanup ownership marker changed and was preserved");
         }
         await options.beforeMutation?.();
-        durable = this.persistCleanupState(agentId, {
+      durable = this.persistCleanupState(agentId, {
           ...durable,
           cleanupReceipt: { ...durable.cleanupReceipt, phase: "branch_removal_authorized" },
           updatedAt: new Date().toISOString(),
@@ -675,7 +675,7 @@ export class AgentWorkingCopyService {
         }
         await runGit(projectRoot, ["check-ref-format", "--branch", workingCopy.branch]);
         await options.beforeMutation?.();
-        options.beforeBranchRemoval?.();
+      options.beforeBranchRemoval?.();
         await assertCopyHasNoUnpreservedWork(projectRoot, expectedRoot, workingCopy.branch, false);
         deleteOwnedBranchReferences(projectRoot, workingCopy.branch, cleanupRef, expectedBranchHead!);
         options.afterBranchRemoval?.();

@@ -5,11 +5,25 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseRichMessageBlock, RICH_MESSAGE_FORMAT_INSTRUCTIONS } from '@ponderosa/core';
 const { ChatMessageBody, collapsedLongMessagePreview } = await import('../../apps/web/src/components/chat/ChatMessages.tsx');
-const render = (text, props = {}) => renderToStaticMarkup(React.createElement(ChatMessageBody, { text, collapseLongMessage: false, ...props }));
+const { MutationNotificationProvider } = await import('../../apps/web/src/components/MutationNotifications.tsx');
+const render = (text, props = {}) => renderToStaticMarkup(React.createElement(MutationNotificationProvider, null, React.createElement(ChatMessageBody, { text, collapseLongMessage: false, ...props })));
 const metric = { version: 1, type: 'metrics', items: [{ label: 'Physical RAM', value: '16', unit: 'GB' }] };
 const fence = (block, closer = '```') => '```ponderosa\n' + JSON.stringify(block) + '\n' + closer;
 const richCount = html => [...html.matchAll(/data-ponderosa-rich=/g)].length;
 const { chatMarkdownUrlTransform } = await import('../../apps/web/src/components/chat/chatMarkdownLink.ts');
+const { setStandaloneProductScope } = await import('../../apps/web/src/api/productScope.ts');
+
+test('Branches artifact links retain their current product route and download feedback', () => {
+  setStandaloneProductScope('branches');
+  try {
+    const href = '/api/branches/engine/projects/branch-project/artifacts/import_123/download';
+    for (const link of ['ponderosa://artifact/import_123', href]) {
+      const html = render(`[Download](${link})`, { projectId: 'branch-project' });
+      assert.ok(html.includes(`href="${href}"`));
+      assert.match(html, /download=""/);
+    }
+  } finally { setStandaloneProductScope(undefined); }
+});
 
 test('existing artifact Markdown links rerender as project-authorized downloads with their authored labels', () => {
   for (const id of ['import_2cde92a47c35500d7e7868c7889cc74ac7f59e957f00d70f', 'agent:run:1:0', 'a', 'a'.repeat(256)]) {

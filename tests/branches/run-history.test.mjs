@@ -1,0 +1,128 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import vm from 'node:vm';
+import '../shared/web-typescript-loader.mjs';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+const {BranchRunHistory}=await import('../../apps/web/src/components/branches/BranchRunHistory.tsx');
+const {OccurrenceAudit}=await import('../../apps/web/src/components/TriggerOccurrenceAudit.tsx');
+const run=(id,state='completed',source='manual')=>({id,branchId:'workflow',createdAt:'2026-10-27T11:30:00Z',state,admissionSource:source});
+const props={runs:[],selectedId:'',onFilter(){},onSelect(){return true},loading:false,onRetry(){},hasMore:false,loadingMore:false,onMore(){},triggerEvents:'Trigger Events',children:'Selected Run evidence'};
+const render=extra=>renderToStaticMarkup(React.createElement(BranchRunHistory,{...props,...extra}));
+
+test('Run History distinguishes initial, filtered, loading and unavailable states without claiming unknown is empty',()=>{
+ assert.match(render(),/No Runs yet/);assert.match(render({filter:'failed'}),/No Runs match this filter/);
+ assert.match(render({loading:true}),/Loading Run history/);assert.doesNotMatch(render({loading:true}),/No Runs yet/);
+ const unavailable=render({error:Error('Backend offline')});assert.match(unavailable,/Run history unavailable/);assert.doesNotMatch(unavailable,/No Runs yet/);
+});
+
+test('deep-linked and filtered-out selected Runs remain represented without replacing history or exposing IDs as names',()=>{
+ const html=render({runs:[run('newest','running','automatic')],selectedId:'older',selectedRun:run('older','waiting','call'),filter:'running'});
+ assert.match(html,/Selected Run outside this history page or filter/);assert.match(html,/aria-current="true"/);assert.match(html,/Automatic Run/);assert.match(html,/Called by Workflow/);
+ assert.doesNotMatch(html,/>older<|>newest</);assert.match(html,/Selected Run evidence/);
+ const other=render({runs:[],selectedId:'older',selectedRun:run('foreign')});assert.doesNotMatch(other,/Selected Run outside/);
+ const loaded=render({runs:[run('older')],selectedId:'older',selectedRun:run('older')});assert.doesNotMatch(loaded,/Selected Run outside/);
+});
+
+// Run the real component with controlled hooks to exercise its presentation-only
+// navigation and retained scroll; canonical selection remains the caller's owner.
+function historyFixture(){
+ const require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript'),exports={},states=[],refs=[],effects=[];let cursor=0;
+ const hooks={useState(initial){const key=cursor++;if(!(key in states))states[key]=typeof initial==='function'?initial():initial;return[states[key],value=>{states[key]=typeof value==='function'?value(states[key]):value}]},useRef(initial){const key=cursor++;return refs[key]??={current:initial}},useEffect(effect,deps){const key=cursor++,old=states[key];if(!old||deps.some((value,i)=>value!==old[i])){states[key]=deps;effects.push(effect)}},useLayoutEffect(effect,deps){hooks.useEffect(effect,deps)}};
+ let desktop=false,measure;const element={};
+ const jsx=(type,props)=>{if(props?.['data-run-history-layout']&&props.ref)props.ref.current=element;return {type,props}};
+ const scope={exports,getComputedStyle:()=>({getPropertyValue:()=>desktop?'1':'0'}),ResizeObserver:class{constructor(callback){measure=callback}observe(){}disconnect(){}},require:name=>name==='react'?hooks:name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='@ponderosa/core'?require('@ponderosa/core'):name==='@mui/material'?Object.fromEntries(['Alert','Box','Button','List','ListItemButton','MenuItem','Skeleton','Stack','TextField','Typography'].map(name=>[name,name])):name.includes('SemanticStatus')?{SemanticStatus:'SemanticStatus',semanticAgentStatus:value=>value}: {default:'Icon'}};
+ vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/branches/BranchRunHistory.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,scope);
+ function nodes(tree){return !tree||typeof tree!=='object'?[]:[tree,...[tree.props?.children].flat(Infinity).flatMap(nodes)]}
+ return {resize(value){desktop=value;measure?.()},render(extra){cursor=0;const tree=exports.BranchRunHistory({...props,...extra});for(const effect of effects.splice(0))effect();return nodes(tree)}};
+}
+
+test('desktop entry selects the newest eligible Run once through replace navigation; explicit selection and background refresh win',()=>{
+ const f=historyFixture(),selected=[],onSelect=(id,replace)=>{selected.push([id,replace]);return true};
+ f.resize(true);f.render({active:false,onSelect});f.render({active:true,loading:true,onSelect});
+ f.render({active:true,error:Error('History unavailable'),runs:[run('cached')],onSelect});assert.deepEqual(selected,[]);
+ f.render({active:true,runs:[run('newest'),run('older')],onSelect});assert.deepEqual(selected,[['newest',true]]);
+ f.render({active:true,selectedId:'newest',runs:[run('later'),run('newest')],onSelect});assert.deepEqual(selected,[['newest',true]],'New Runs must not steal the selected Run');
+ const linked=historyFixture();linked.resize(true);linked.render({selectedId:'missing-deep-link',runs:[run('latest')],onSelect});linked.render({selectedId:'missing-deep-link',runs:[run('latest')],onSelect});assert.equal(selected.length,1,'Even an unavailable explicit Run remains authoritative');
+});
+
+test('mobile starts in history, restores its chosen Run across tabs and preserves its back view across desktop resizing',()=>{
+ const f=historyFixture(),selected=[],onSelect=(id,replace)=>{selected.push([id,replace]);return true};
+ let nodes=f.render({active:true,runs:[run('a')],onSelect});assert.deepEqual(selected,[]);
+ nodes.find(node=>node.type==='ListItemButton').props.onClick();nodes=f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});
+ nodes.find(node=>node.type==='Button'&&node.props.children==='Run History').props.onClick();
+ f.render({active:false,selectedId:'a',runs:[run('a')],onSelect});f.render({active:false,selectedId:'',runs:[run('a')],onSelect});
+ f.render({active:true,selectedId:'',runs:[run('new'),run('a')],onSelect});assert.deepEqual(selected,[['a',undefined],['a',true]],'Returning restores the previous choice rather than the newest Run');
+ f.resize(true);f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});f.resize(false);nodes=f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});
+ assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');
+});
+
+test('rejected automatic navigation does not repeatedly prompt on background history refresh',()=>{
+ const f=historyFixture(),selected=[],onSelect=(id,replace)=>{selected.push([id,replace]);return false};
+ f.resize(true);f.render({active:true,runs:[run('a')],onSelect});f.render({active:true,runs:[run('a')],onSelect});f.render({active:true,runs:[run('new'),run('a')],onSelect});
+ assert.deepEqual(selected,[['a',true]]);
+ assert.match(render({runs:[run('a')]}),/Choose a Run from history/);
+});
+
+test('mobile browser Back to an unselected history route is not rewritten to the remembered Run',()=>{
+ const f=historyFixture(),selected=[],onSelect=(id,replace)=>{selected.push([id,replace]);return true};
+ f.render({active:true,runs:[run('a')],onSelect});f.render({active:true,selectedId:'a',runs:[run('a')],onSelect});
+ let nodes=f.render({active:true,selectedId:'',runs:[run('a')],onSelect});nodes=f.render({active:true,selectedId:'',runs:[run('new'),run('a')],onSelect});
+ assert.deepEqual(selected,[]);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');
+});
+
+test('history previews reuse bounded authored text and labels without raw envelopes, references or content changes',()=>{
+ const rows=[{...run('result'),output:'**Ready:** [Download report](https://example.test/report) '+ '🙂'.repeat(400)},
+  {...run('scheduled','queued','automatic'),input:JSON.stringify({payload:'Review the weekly report',occurrenceId:'private-occurrence',provenance:{source:'schedule'}})},
+  {...run('bundle'),output:'branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222',input:'Prepare a readable report'},
+  {...run('structured'),input:JSON.stringify({private:'technical object'})},
+  {...run('oversized','queued','automatic'),input:JSON.stringify({payload:'PRIVATE OVERSIZED '+ 'x'.repeat(5000)})},
+  {...run('quoted'),output:JSON.stringify('branch-result-bundle:11111111-1111-1111-1111-111111111111:22222222-2222-2222-2222-222222222222')}];
+ const before=JSON.stringify(rows),html=render({runs:rows});
+ for(const text of ['Ready: Download report','Review the weekly report','Prepare a readable report'])assert.ok(html.includes(text),text);
+ assert.equal(JSON.stringify(rows),before);assert.ok(!html.includes('private-occurrence')&&!html.includes('branch-result-bundle:')&&!html.includes('technical object')&&!html.includes('https://example.test/report'));
+ assert.ok(!html.includes('🙂'.repeat(400)),'Display preview is bounded while stored content is unchanged');
+ assert.ok(!html.includes('PRIVATE OVERSIZED'),'Oversized structured preview decoding is omitted; exact Details remain unchanged');
+});
+
+test('filtered empty history offers clear and selected details survive history failure',()=>{
+ const f=historyFixture(),filters=[];const nodes=f.render({filter:'failed',onFilter:value=>filters.push(value)});
+ nodes.find(node=>node.type==='Button'&&node.props.children==='Clear Filter').props.onClick();assert.deepEqual(filters,['']);
+ const html=render({selectedId:'a',selectedRun:run('a'),error:Error('Refresh unavailable')});assert.match(html,/Selected Run evidence/);assert.match(html,/Run history unavailable/);
+ assert.doesNotMatch(render(),/Select a Run to see/);
+});
+
+test('mobile history back retains selection, filter and scroll; only explicit selection opens another Run',()=>{
+ const f=historyFixture(),selected=[],filters=[],extra={runs:[run('a'),run('b')],selectedId:'a',filter:'waiting',onSelect:id=>{selected.push(id);return true},onFilter:value=>filters.push(value)};
+ let nodes=f.render(extra),history=nodes.find(node=>node.props?.['aria-label']==='Run History'),detail=nodes.find(node=>node.props?.['aria-label']==='Selected Run');
+ const historyElement={scrollTop:140},detailElement={scrollTop:220};history.props.ref.current=historyElement;detail.props.ref.current=detailElement;
+ history.props.onScroll({currentTarget:historyElement});detail.props.onScroll({currentTarget:detailElement});
+ nodes.find(node=>node.type==='Button'&&node.props.children==='Run History').props.onClick();nodes=f.render(extra);
+ assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');assert.equal(historyElement.scrollTop,140);assert.equal(detailElement.scrollTop,220);assert.deepEqual(selected,[]);
+ nodes.find(node=>node.type==='TextField').props.onChange({target:{value:'failed'}});assert.deepEqual(filters,['failed']);assert.deepEqual(selected,[]);
+ nodes=f.render({...extra,onSelect:()=>false});nodes.find(node=>node.type==='ListItemButton').props.onClick();nodes=f.render(extra);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex','Rejected navigation leaves the history pane intact');
+ nodes.find(node=>node.type==='ListItemButton'&&node.props['aria-current']==='true').props.onClick();nodes=f.render(extra);assert.deepEqual(selected,['a']);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Selected Run').props.sx.display,'block');
+ nodes=f.render({...extra,runs:[run('new'),...extra.runs]});assert.deepEqual(selected,['a'],'Background history must not navigate');
+ nodes=f.render({...extra,selectedId:'b'});assert.equal(detailElement.scrollTop,0,'Explicit different Run starts at its result');
+});
+
+test('Trigger Events keep activation distinct from completion and raw identifiers inside disclosure without changing normal audit presentation',()=>{
+ const occurrence={id:'event-id',artifactId:'artifact-id',state:'activated',provenance:{},inputHash:'hash',occurredAt:'2026-10-27T11:00:00Z'};
+ const branch=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence,runTerminology:true}));assert.match(branch,/aria-label="Activated"/);assert.doesNotMatch(branch,/aria-label="Completed"/);assert.ok(branch.indexOf('artifact-id')>branch.indexOf('<details'));
+ const pending=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...occurrence,state:'pending'},runTerminology:true}));assert.match(pending,/Pending Activation/);
+ const normal=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence}));assert.match(normal,/aria-label="activated"/);assert.ok(normal.indexOf('artifact-id')<normal.indexOf('<details'));
+});
+
+test('scheduled Trigger Events explain held, update, combined and Run creation outcomes without claiming workflow completion',()=>{
+ const base={id:'event-id',artifactId:'artifact-id',state:'pending',provenance:{source:'schedule'},inputHash:'hash',occurredAt:'2030-01-02T00:00:00Z'},schedule={policy:'run_latest',firstScheduledAt:'2030-01-01T23:00:00Z',lastScheduledAt:'2030-01-02T00:00:00Z',eventCount:61};
+ const labels={held:'Waiting For Current Run',steering:'Updating Current Run',updated:'Current Run Updated',run:'Run Created',unconfirmed:'Update Unconfirmed',combined:'Combined Into Latest Check'};
+ for(const [delivery,label] of Object.entries(labels)){
+  const occurrence={...base,state:delivery==='combined'?'cancelled':['updated','run'].includes(delivery)?'activated':'pending',schedule:{...schedule,delivery,...(delivery==='combined'?{combinedIntoOccurrenceId:'newer-event-id'}:{})}},html=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence,runTerminology:true}));
+  assert.ok(html.includes(`aria-label="${label}"`),`${delivery} delivery retains its distinct audit outcome`);assert.equal(html.includes('aria-label="Completed"'),false,'An event outcome is not workflow completion');assert.ok(html.includes('Scheduled'),'Schedule source is visible');assert.ok(html.includes('First scheduled:')&&html.includes('Latest scheduled:')&&html.includes('61 scheduled events'),'Schedule range and count are visible');
+  if(delivery==='combined'){assert.equal(html.includes('aria-label="Canceled"'),false,'A combined held check is not presented as canceled work');assert.ok(html.indexOf('newer-event-id')>html.indexOf('<details'),'Raw combined event identity stays in diagnostic evidence');}
+ }
+ const partial=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,schedule:{...schedule,delivery:'held',eventCountExact:false}},runTerminology:true}));assert.ok(partial.includes('At least ')&&partial.includes('61 scheduled events'),'Truncated cron history never claims an exact count');
+ for(const [state,label] of [['cancelled','Canceled'],['dead_lettered','Activation Failed']]){const html=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,state,schedule:{...schedule,delivery:'held'}},runTerminology:true}));assert.ok(html.includes(`aria-label="${label}"`),'Terminal occurrence failure/cancellation is not hidden by earlier delivery metadata');}
+});

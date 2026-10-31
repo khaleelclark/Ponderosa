@@ -1,3 +1,4 @@
+import {activeAgentProductSql,type ProductScope} from './product-scope-sql.js';
 import type Database from "better-sqlite3";
 import { asc, eq } from "drizzle-orm";
 import type {
@@ -30,9 +31,7 @@ type DecodeHistoryCursor = (
   stream: string,
   scope: string,
 ) => HistoryCursor;
-type UsageScope =
-  | { type: "overall" }
-  | { type: "project" | "agent" | "conversation"; id: string };
+type UsageScope = ({ type: "overall" } | { type: "project" | "agent" | "conversation" | "branch"; id: string }) & {productScope?:ProductScope};
 
 export class AgentRunUsageReadModel {
   constructor(
@@ -632,6 +631,11 @@ export class AgentRunUsageReadModel {
       "runs.status IN ('cancelled', 'completed', 'failed', 'interrupted')",
     ];
     const params: string[] = [];
+    if(scope.productScope)predicates.push(activeAgentProductSql('agents',scope.productScope));
+    if(scope.type==='branch'){
+      predicates.push("EXISTS(SELECT 1 FROM conversations owner WHERE owner.id=agents.conversation_id AND owner.branch_id=?)");
+      params.push(scope.id);
+    }
     if (scope.type === "project") {
       predicates.push("agents.project_id = ?");
       params.push(scope.id);

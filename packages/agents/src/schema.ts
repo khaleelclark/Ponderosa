@@ -33,6 +33,7 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
  * filesystem tombstone cleanup. */
 export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", {
   projectId: text("project_id").primaryKey(),
+  productScope:text('product_scope').notNull(),
   tombstoneName: text("tombstone_name").notNull(),
   ownershipToken: text("ownership_token"),
   /** Durable boundary proving that exact owned storage was authorized for removal. */
@@ -130,6 +131,7 @@ export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", 
 export const agentDeletionReceipts = sqliteTable("agent_deletion_receipts", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
+  productScope:text('product_scope').notNull(),
   previewHash: text("preview_hash").notNull(),
   rootAgentIdsJson: text("root_agent_ids_json").notNull(),
   deletedAgentIdsJson: text("deleted_agent_ids_json").notNull(),
@@ -160,6 +162,8 @@ export const agentManagementApprovals = sqliteTable("agent_management_approvals"
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
+  branchId: text("branch_id"),
+  executionId: text("branch_execution_id"),
   title: text("title").notNull(),
   defaultEngine: text("default_engine"),
   defaultModel: text("default_model"),
@@ -174,6 +178,7 @@ export const conversations = sqliteTable("conversations", {
 export const conversationDeletionReceipts = sqliteTable("conversation_deletion_receipts", {
   conversationId: text("conversation_id").primaryKey(),
   projectId: text("project_id").notNull(),
+  branchId: text("branch_id"),
   tombstoneName: text("tombstone_name"),
   ownershipToken: text("ownership_token"),
   removalStarted: integer("removal_started").notNull().default(0),
@@ -236,6 +241,13 @@ export const importedHistoryMessages = sqliteTable("imported_history_messages", 
   role: text("role").notNull(),
   text: text("text").notNull(),
   createdAt: text("created_at").notNull(),
+  sourceKind: text("source_kind").notNull().default("history"),
+  sourceSequence: integer("source_sequence").notNull().default(0),
+  sourceCreatedAt: text("source_created_at"),
+  contentSha256: text("content_sha256").notNull().default(""),
+  totalCodePoints: integer("total_code_points").notNull().default(0),
+  totalUtf8Bytes: integer("total_utf8_bytes").notNull().default(0),
+  codePointByteOffsets: text("code_point_byte_offsets").notNull().default("[0]"),
 }, (table) => [primaryKey({ columns: [table.agentId, table.messageId] })]);
 
 export const activityProjection = sqliteTable("activity_projection", {

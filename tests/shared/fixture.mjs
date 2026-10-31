@@ -48,19 +48,19 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, modelCatalog, modelValidator, socketIdleTimeoutMs, storeFactory, providerContextUsage, providerCommandResult, providerValidatesResumeBeforeTurn = false } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerValidatesResumeBeforeTurn = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
   let closingFixture = false;
   const capabilities = { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [] };
-  const providerProbes = [], knownProviderSessions = new Map();
+  const providerProbes = [], capabilityDiscoveries = [], knownProviderSessions = new Map();
   const adapter = {
     id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer',
     ...(modelValidator ? { validateModel: modelValidator } : {}),
     ...(modelCatalog ? { discoverModelCatalog: modelCatalog, modelSpecificEfforts: true } : {}),
     listModels: () => [{ id: modelCatalog ? '' : 'fixture', label: 'Fixture' }], listEfforts: () => [{ id: 'medium', label: 'Medium' }],
-    defaultModel: () => 'fixture', defaultEffort: () => 'medium', capabilities: async () => capabilities,
+    defaultModel: () => 'fixture', defaultEffort: () => 'medium', capabilities: async cwd => { capabilityDiscoveries.push({cwd}); return capabilityCatalog ? capabilityCatalog(cwd) : capabilities; },
     async *seed() { throw Error('Persistent fixture unexpectedly used one-shot seed'); },
     async *continue() { throw Error('Persistent fixture unexpectedly used one-shot continuation'); },
     async openSession(options) {
@@ -114,13 +114,12 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
           commands.push({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText });
           return providerCommandResult ? await providerCommandResult({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText }) : { message: 'Controlled command completed' };
         },
-
         contextUsage: () => providerContextUsage
           ? providerContextUsage({ agentId: options.agentId, sessionId: session.engineAgentId })
           : { usedTokens: 1000, windowTokens: 200000 },
-        steer: async input => { steers.push({ agentId: options.agentId, input }); return { status: 'accepted' }; },
-
+        steer: async input => { steers.push({ agentId: options.agentId, input }); return steeringResponse ? await steeringResponse({agentId:options.agentId,input}) : { status: 'accepted' }; },
         interrupt: async () => { events.push({ type: 'error', terminalStatus: 'interrupted', message: 'Controlled interruption' }); session.finish(); },
+        elicit: request => options.handleElicitation(request),
         tool: (name, args, id = randomUUID()) => options.handleDynamicToolCall({ id, name, arguments: args }),
         exitWithDetail: async detail => { record.rootExitDetail = detail; await session.close(); },
         finish: () => events.push({ type: 'turn_done', usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 } }),
@@ -161,9 +160,9 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     opening.then(() => openingSessions.delete(opening), () => openingSessions.delete(opening));
     return opening;
   };
-  const options = { dataDir, logger: false, allowedBrowseRoots: [root],
+  const options = { dataDir, logger: false, allowedBrowseRoots: [root], ...(authToken ? { authToken } : {}),
     // Controlled inert providers use a fixed sample, independent of CI host pressure.
-    resourceAdmissionObservation: { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
+    resourceAdmissionObservation: resourceAdmissionObservation ?? { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
     engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled fixture; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
       ...(diagnosticProvider ? [{ adapter: { ...adapter, id: 'claude', displayName: 'Controlled diagnostic provider' },
         isInstalled: () => providerInstalled?.('claude') !== false,
@@ -183,7 +182,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
   } };
   await open();
   const api = async (method, url, payload, headers = {}) => {
-    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers });
+    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers:{...(authToken?{authorization:`Bearer ${authToken}`} :{}),...headers} });
     let body; try { body = response.json(); } catch { body = response.body; }
     return { status: response.statusCode, body, headers: response.headers, rawBody: response.rawPayload };
   };
@@ -215,7 +214,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     plans.set(id, [{ hold: true }]); await send(id, 'Controlled held task');
     await until(() => turns.filter(t => t.agentId === id).length > count, 'held provider input'); return sessions.get(id);
   };
-  return { root, dataDir, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes,
+  return { root, dataDir, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes, capabilityDiscoveries,
     listen: () => app.listen({ host: '127.0.0.1', port: 0 }),
     async reopen() { await close(); await open(); },
     async dispose(remove = true) {

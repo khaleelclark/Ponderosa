@@ -14,7 +14,7 @@ export type {
   AgentCreationOperationStatus,
 } from "./store.js";
 export { normalizeAgentTitle } from "./agent-identity.js";
-export { WorkspaceStore, draftRevisionConflicts } from "./workspace-store.js";
+export { workspaceRecencyCte, WorkspaceStore, draftRevisionConflicts } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";
 export type { ProjectedChatSearchCandidate, ProjectedChatSearchOptions } from "./chat-search.js";
@@ -99,12 +99,17 @@ export type {
 export type { ManagementOperation, ManagementOperationProgress, ManagementPlan } from "./store-types.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
+export {artifactAgentProductSql,managedArtifactProductSql} from './artifact-product-scope.js';
+export {activeChatOwnerSql,activeChatProductSql,chatProductSql,activeAgentOwnerSql,activeAgentProductSql,projectProductSql,type ProductScope} from './product-scope-sql.js';
 export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 export { openDb } from "./db.js";
 export {
   createOfflineDataDirectoryBackup,
+  createOfflineWebDeploymentBackup,
+  assertWebOnlyDeploymentCompatibility,
   restoreOfflineDataDirectoryBackup,
   type DataDirectoryBackupManifest,
+  type WebDeploymentBackupManifest,
 } from "./data-directory-backup.js";
 export { stableJson } from "./coordination-v3-canonical-json.js";
 export {
@@ -159,3 +164,18 @@ export type {
 export { admitDataDirectory, shareStateAdmission, requireAdmittedDatabase, readCurrentStateIdentity, StateAdmission, StateAdmissionError } from "./state-admission.js";
 
 export { inspectCurrentState } from "./state-admission.js";
+
+export { BranchStore } from "./branch-store.js";
+export { validateBranchTemplate } from "./branch-template.js";
+export { branchRequirements, exportBranchPackage, importBranchPackage } from "./branch-package.js";
+export * from "./branch-parameters.js";
+export { validateBranchDefinition, validateBranchBindings } from "./branch-definition.js";
+export { branchDefinitionChanges } from "./branch-definition-diff.js";
+export type { BranchResourceProvision, BranchActionLease, BranchGateNotificationEvent, BranchScriptLease } from "./branch-store.js";
+export { BranchTriggerStore } from "./branch-trigger-store.js";
+export type * from "./branch-trigger-types.js";
+export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./capability-policy-store.js";
+
+export {REQUEST_SOURCE_LINEAGE_CTE,requestSourceLineageBody} from "./coordination-v3-request-lineage.js";
+
+export {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchRunCounts,readBranchWorkingStepCount} from "./branch-run-status.js";

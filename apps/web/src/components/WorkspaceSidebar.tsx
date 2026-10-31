@@ -56,7 +56,6 @@ import {
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { SidebarActivityBadge } from "./SidebarActivityBadge";
-import { summarizeWorkspaceActivity } from "@ponderosa/core";
 import { useWorkspaceActivity } from "../hooks/useWorkspaceActivity";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import { ResourceContextMenu, type ResourceContextMenuAction } from "./ResourceContextMenu";
@@ -193,7 +192,7 @@ export function WorkspaceSidebar({
     (messageSearchTerm !== filter.trim() || messageSearch.isPending);
   const directorySearch = filter;
   useEffect(() => {
-    if (route.kind === "allChat" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
+    if (route.kind === "inbox" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
     if (route.kind === "manageAgents") setProjectSection("agents");
   }, [route]);
   const projectDirectoryQuery = useProjectRailDirectory();
@@ -351,7 +350,7 @@ export function WorkspaceSidebar({
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
       onOpenHome={() => showNavigation({ kind: "home" })}
-      onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
+      onOpenInbox={() => showNavigation({ kind: "inbox" })}
       onManageSection={section => showNavigation(
         section === "agents"
           ? { kind: "manageAgents" }
@@ -400,7 +399,7 @@ export function WorkspaceSidebar({
     <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? agentsHeading : "Chats"}</Typography>
     {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
   </Stack>;
-  const allChatRows = chatItems;
+  const inboxRows = chatItems;
   const activeChatRow =
     route.kind === "conversation" &&
     activeProject &&
@@ -426,7 +425,7 @@ export function WorkspaceSidebar({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <SidebarResourceRow href={routeToPath({ kind: "conversation", projectId: chatProject.id, conversationId: conversation.id })} id={`sidebar-conversation:${conversation.id}`} label={`Open Chat ${conversation.title}`} title={conversation.title} icon={<ChatBubbleOutlineIcon fontSize="small" />}
-            starred={starred} emphasis={Boolean(unread.totalCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
+            starred={starred} emphasis={Boolean(unread.totalCount || unread.quietUnreadCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
             onOpen={() => openChat(chatProject, conversation)} onStar={() => toggleStar("conversation", conversation.id)}
             status={<>
               <SidebarNotificationBadge unread={notificationProjectionQuery.data?.conversations[conversation.id]} />
@@ -444,11 +443,11 @@ export function WorkspaceSidebar({
       renderRow={item => globalChatResourceRows([item])}
       onChange={(chatFolders, customOrder) => onPreferences({ chatFolders, ...(customOrder ? {
         chatSort: "custom",
-        ...(chatSort === "custom" ? {} : { chatOrder: customOrderSeed(preferences.chatOrder, allChatRows.map(row => row.conversation.id)) }),
+        ...(chatSort === "custom" ? {} : { chatOrder: customOrderSeed(preferences.chatOrder, inboxRows.map(row => row.conversation.id)) }),
       } : {}) })}
       onRename={onRenameConversation} onDelete={onDeleteConversation}
       onReorder={(source, target, position, chatFolders) => {
-        const visibleIds = allChatRows.map(row => row.conversation.id);
+        const visibleIds = inboxRows.map(row => row.conversation.id);
         onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(chatSort === "custom" ? preferences.chatOrder : customOrderSeed(preferences.chatOrder, visibleIds), visibleIds, source, target, position), ...(chatFolders ? { chatFolders } : {}) });
       }}>
     {({ starredRows, allRows, openRows }) => (
@@ -490,7 +489,7 @@ export function WorkspaceSidebar({
           suppressEmpty={Boolean(filter.trim()) && (messageSearchPending || messageSearch.isError || Boolean(currentMessageResults?.results.length))} />
       </>}
       sort={chatSort}
-      onSort={value => setResourceSort("chat", value, allChatRows.map(row => row.conversation.id), preferences.chatOrder)}
+      onSort={value => setResourceSort("chat", value, inboxRows.map(row => row.conversation.id), preferences.chatOrder)}
       drawer={drawer}
     />)}
     </ChatFolders>
@@ -501,7 +500,6 @@ export function WorkspaceSidebar({
     project: (typeof agentItems)[number]["project"];
     ownerConversation?: WorkspaceAgentDirectoryItemDto["ownerConversation"];
     health?: WorkspaceAgentDirectoryItemDto["health"];
-    healthConfirmedAt?: string;
     status?: (typeof agentItems)[number]["health"]["status"];
   };
   type AgentSidebarTreeRow = AgentSidebarRow & {
@@ -509,12 +507,11 @@ export function WorkspaceSidebar({
     hasChildren: boolean;
   };
   const allAgentRows: AgentSidebarRow[] = agentItems.map(
-    ({ agent, project, ownerConversation, health, healthConfirmedAt }) => ({
+    ({ agent, project, ownerConversation, health }) => ({
       agent,
       project,
       ownerConversation,
       health,
-      healthConfirmedAt,
       status: health.status,
     }),
   );
@@ -565,13 +562,14 @@ export function WorkspaceSidebar({
     return visible;
   };
   const agentResourceRows = (items: AgentSidebarTreeRow[]) =>
-    items.map(({ agent, project: agentProject, ownerConversation, health, healthConfirmedAt, depth, hasChildren }) => {
+    items.map(({ agent, project: agentProject, ownerConversation, health, depth, hasChildren }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
       const ownerTitle = ownerConversation?.title ?? "Unavailable Chat";
       return (
         <Stack
+          component="li"
           key={agent.id}
           direction="row"
           draggable
@@ -645,7 +643,7 @@ export function WorkspaceSidebar({
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}
             onContextAction={anchor => openResourceMenu(anchor, { kind: "agent", projectId: agentProject.id, agentId: agent.id })}
-            status={<SidebarActivityBadge activity={health ? summarizeWorkspaceActivity([health], healthConfirmedAt) : undefined} fresh={workspaceConnection.phaseEvidenceFresh} showLabel />} />
+            status={<SidebarActivityBadge agent={{ title: agent.title, health }} fresh={workspaceConnection.phaseEvidenceFresh} showLabel />} />
         </Stack>
       );
     });
@@ -757,6 +755,10 @@ export function WorkspaceSidebar({
           role="separator"
           aria-label="Resize sidebar"
           aria-orientation="vertical"
+          aria-valuenow={width}
+          aria-valuemin={clampWorkspaceSidebarWidth(0)}
+          aria-valuemax={clampWorkspaceSidebarWidth(Infinity)}
+          aria-valuetext={`${width} pixels`}
           tabIndex={0}
           onPointerDown={resizeStart}
           onKeyDown={event => {

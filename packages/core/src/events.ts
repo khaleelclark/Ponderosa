@@ -58,7 +58,6 @@ export type ProviderErrorCode =
  * changing it requires a SPEC edit (AGENTS.md).
  */
 export type AgentEvent =
-  | { type: "work_start"; kind: "command" | "file_change" | "native_tool"; callId?: string } // payload-free internal work evidence, never reply text
   | { type: "session"; sessionId: string } // persist for resume
   | {
       /** Current provider-context occupancy, distinct from aggregate billing usage. */
@@ -90,6 +89,10 @@ export type AgentEvent =
       replacementProviderSessionId: string;
       startingOccupancy: number;
     }
+  | { type: "work_start"; kind: "command" | "file_change" | "native_tool"; callId?: string } // internal work evidence (start or completion), never reply text or public telemetry
+  | { type: "response_text"; providerTurnId: string; itemId: string;
+      phase: "final_answer" | "commentary" | "unknown";
+      kind: "start" | "delta" | "complete"; text: string } // candidate bytes; no audience or publication authority
   | { type: "text"; delta: string; presentation?: "progress" } // explicit public commentary; still Work log, never Communication
   | { type: "reasoning"; delta: string } // transient reasoning → Work log
   | { type: "tool_call"; id: string; name: string; input: unknown }
@@ -97,6 +100,8 @@ export type AgentEvent =
       type: "tool_result";
       id: string;
       output: string;
+      /** Engine-normalized successful host voice authorization receipt, never audience authority. */
+      voiceReplyStreamId?: string;
       isError?: boolean;
       failureCategory?: ToolFailureCategory;
       retryable?: boolean;

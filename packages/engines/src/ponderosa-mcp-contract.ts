@@ -3,7 +3,10 @@ import { PONDEROSA_RUNTIME_TOOLS, PONDEROSA_HISTORY_TOOL, type RuntimeDynamicToo
 
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_ENCODED_CHARACTERS = 16 * 1024;
-const knownNames = new Set([...PONDEROSA_RUNTIME_TOOLS, PONDEROSA_HISTORY_TOOL].map(tool => tool.name));
+const knownNames = new Set([
+  ...[...PONDEROSA_RUNTIME_TOOLS, PONDEROSA_HISTORY_TOOL].map(tool => tool.name),
+  ...["save", "update", "forget", "get", "search", "history"].map(operation => `ponderosa_local_memory_${operation}`),
+]);
 
 function validTools(value: unknown): value is RuntimeDynamicToolSpec[] {
   if (!Array.isArray(value) || value.length > knownNames.size) return false;

@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import {
   Alert,
   Box,
@@ -51,7 +52,6 @@ import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { AgentWorkInspector } from "./AgentWorkInspector";
-import { AttentionSurface } from "./AttentionSurface";
 import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
@@ -79,6 +79,8 @@ import {
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
+import { ProviderFailureBanner } from "./ProviderFailureBanner";
+import { useMutationNotification } from "./MutationNotifications";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
   resolveMessageMentionText,
@@ -91,7 +93,6 @@ import { ChatContextSettings } from "./ChatContextSettings";
 
 import { chatStateKey } from "../chatState";
 import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
-import { notificationTechnicalFocusId } from "../technicalFocus";
 import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 
 export function ConversationView({
@@ -110,7 +111,6 @@ export function ConversationView({
   onOpenAgent,
   onAgentsDeleted,
   onOpenReview,
-  onOpenAgentWork,
   onOpenBrowser,
   onOpenFileActivity,
   onNewAgent,
@@ -139,7 +139,6 @@ export function ConversationView({
   ): void;
   onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string, executionId?: string): void;
-  onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(agentId: string, runId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto, managerAgentId?: string): void;
@@ -147,11 +146,14 @@ export function ConversationView({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onDeleted(): void;
 }): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
-  const [activeView, setActiveView] = useConversationActiveViewState(
+  const notify = useMutationNotification();
+  const [storedView, setActiveView] = useConversationActiveViewState(
     conversationId,
     initialView,
   );
+  const activeView=auditOnly&&storedView==='agents'?'main':storedView;
   const {
     agents,
     collaborationHistory,
@@ -954,17 +956,6 @@ export function ConversationView({
                     {olderError}
                   </Alert>
                 ) : null}
-                <AttentionSurface
-                  notifications={(notificationsQuery.data?.items ?? []).filter((item) => item.kind !== "decision")}
-                  projectId={conversation.projectId}
-                  conversationId={conversationId}
-                  onOpen={item => {
-                    const focusId = notificationTechnicalFocusId(item);
-                    if (item.agentId)
-                      onOpenAgent(item.agentId, "technical", focusId);
-                    else onOpenAgentWork(focusId);
-                  }}
-                />
                 {(activeBrowsers.data ?? [])
                   .filter(session => conversationAgents.some(agent => agent.id === session.agentId))
                   .map(session => {
@@ -1055,7 +1046,7 @@ export function ConversationView({
               }}
               beforeMessages={<>
                 <Alert severity="info" icon={false} sx={{ mx: 1.5, mt: 1.5, mb: olderError ? 0 : 1.5 }}>
-                  Team Chat shows how Agents coordinate. It is read-only; to talk to an Agent, use Chat and mention them.
+                  Read-only · Use Chat to message Agents.
                 </Alert>
                 {olderError ? <Alert
                   severity="error"
@@ -1142,7 +1133,6 @@ export function ConversationView({
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
-            collectionRequest={membersRequest}
             relationshipAgents={projectAgents}
             projectId={conversation.projectId}
             engines={engines}
@@ -1164,16 +1154,9 @@ export function ConversationView({
               totalCount: membersQuery.data?.pages[0]?.total,
               variant: "embedded",
             }}
-            collectionFooter={(
-              <CollectionStateFeedback
-                resourceLabel="Agents"
-                request={membersRequest}
-                itemCount={conversationAgents.length}
-                filtersActive={Boolean(memberSearch.trim())}
-                emptyTitle="No Agents Yet"
-                suppressEmpty
-              />
-            )}
+            collectionRequest={membersRequest}
+            organizationDataComplete={!memberSearch&&membersRequest.hasResolved&&!membersRequest.hasNextPage&&!membersRequest.isPaginationError&&!membersRequest.isRefreshError}
+            collectionFooter={filteredCount=><CollectionStateFeedback resourceLabel="Agents" request={membersRequest} itemCount={filteredCount} filtersActive={Boolean(memberSearch.trim())} emptyTitle="No Agents Yet" suppressEmpty/>}
           /></Box>
         ) : null}
         {activeView === "main" && !agentWorkOpen ? (
@@ -1186,16 +1169,18 @@ export function ConversationView({
               pointerEvents: "none",
             }}
           >
+            <ProviderFailureBanner messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
             <MasterRespondingIndicator
               messages={messages}
               agents={agents}
               healthByAgentId={healthByAgentId}
             />
+            </ProviderFailureBanner>
           </Box>
         ) : null}
       </Box>
 
-      <ChatComposerDock
+      {auditOnly?<Alert severity="info" sx={{m:1}}>This temporary Chat belongs to a workflow execution. Inspect its messages and results here.</Alert>:<ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && queuedMessageNotice ? (
@@ -1267,6 +1252,12 @@ export function ConversationView({
         ) : null}
         <Composer
           enableVoiceDictation
+          voiceContext={activeView === "main" && !agentWorkOpen ? {
+            projectId: conversation.projectId,
+            conversationId,
+            agents: routingAgents,
+            selectedAgentId: commandTargetAgent?.conversationId === conversationId ? commandTargetAgent.id : undefined,
+          } : undefined}
           draftStorageKey={chatStateKey(
             "draft",
             `conversation.${conversationId}.main`,
@@ -1316,10 +1307,8 @@ export function ConversationView({
                   );
                   return invocation.then(result => {
                     if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
-                    setQueuedMessageNotice(
-                      result.message ??
-                        `/${command.name} invoked for ${commandTargetAgent.title}.`,
-                    );
+                    if (result.message) setQueuedMessageNotice(result.message);
+                    else notify({ key: "provider-command", message: `/${command.name} Invoked` });
                   });
                 }
               : undefined
@@ -1369,9 +1358,9 @@ export function ConversationView({
           onCancel={stopOperation}
           cancelPending={cancelOperationPending}
         />
-      </ChatComposerDock>
+      </ChatComposerDock>}
 
-      <ConversationDialogs
+      {!auditOnly&&<ConversationDialogs
         conversation={conversation}
         engines={engines}
         addAgentsOpen={addAgentsOpen}
@@ -1396,11 +1385,10 @@ export function ConversationView({
         }}
         onStopConfirm={targets => void cancelOperationTargets(targets)}
         onRenameClose={() => setRenameOpen(false)}
-        onRenameValueChange={setRenameValue}
-        onRename={() => rename.mutate(renameValue.trim())}
+        onRename={value => rename.mutate(value)}
         onDeleteClose={() => setDeleteOpen(false)}
         onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
-      />
+      />}
 
     </Box></OutgoingMessageProvider>
   );

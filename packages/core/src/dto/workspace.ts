@@ -6,6 +6,7 @@ import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
 import type { AgentMentionBindingDto, ConversationDto } from "./conversations.js";
 import type { HistoryWindowDto } from "./common.js";
 import type { ProjectDto, ProjectSort } from "./projects.js";
+import type { AssetDto } from "./artifacts.js";
 
 /** Durable switches for the two operator-visible communication scopes. */
 export interface NotificationPreferencesDto {
@@ -29,6 +30,15 @@ export interface ProjectFolderDto {
   expanded: boolean;
 }
 
+/** Presentation only; folder membership never changes Branch ownership. */
+export interface BranchFolderDto {
+  id:string;
+  name:string;
+  branchIds:string[];
+  expanded:boolean;
+  starred?:boolean;
+}
+
 export interface WorkspacePreferencesDto {
   /** Absent Agent entries inherit their Chat's notification mode. */
   notificationScopes?: Record<string, "all" | "attention" | "muted">;
@@ -36,8 +46,17 @@ export interface WorkspacePreferencesDto {
   projectFolders?: ProjectFolderDto[];
   /** Presentation only; membership never changes a conversation's Project. */
   chatFolders?: ChatFolderDto[];
+  branchFolders?:BranchFolderDto[];
+  branchOrder?:string[];
+  branchSort?:ProjectSort;
   /** Absent on pre-local-voice workspaces; resolves to browser speech. */
   speech?: SpeechPreferencesDto;
+  /** Output designations are local installation roles, never imported Agent authority. */
+  outputApps?: { agentIds: string[]; speakerAgentId: string | null; initialized: boolean;
+    roleEpoch?: number;
+    agentEpochs?: Record<string,number>;
+    importReviews?: Record<string, { binding: string; state: string; targetEpochs: Record<string,number>; eligible: boolean; createdAt: string; operationId?: string; applied?: boolean; review: import("./agents.js").OutputRoleImportReviewDto }>;
+    setup?: { key: string; branchId: string; engine: string; model?: string; effort?: string; createdAt: string } };
   /** Canonical monotonic preference mutation sequence. */
   revision: number;
   projectSort: ProjectSort;
@@ -139,6 +158,8 @@ export interface WorkspaceConversationDirectoryItemDto {
   kind: "conversation";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
   conversation: ConversationDto;
+  /** Newest canonical use/activity; does not change conversation.updatedAt. */
+  lastUsedAt?: string;
   /** Canonical active-work count; omitted by older servers. */
   runningAgentCount?: number;
 }
@@ -184,6 +205,7 @@ export type WorkspaceResourceKind =
   | "project"
   | "conversation"
   | "agent"
+  | "branch"
  ;
 
 export interface WorkspaceResourceRecencyDto {
@@ -222,6 +244,7 @@ export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreference
   /** Required compare-and-swap revision when replacing folder preferences. */
   projectFoldersRevision?: number;
   chatFoldersRevision?: number;
+  branchFoldersRevision?:number;
 };
 
 export interface DraftAttachmentDto {
@@ -240,6 +263,8 @@ export interface ConversationDraftDto {
   /** Durable browser-profile owner. Drafts never roam to another browser profile. */
   ownerId: string;
   text: string;
+  /** In-progress structured answers, only on the exact Decision-owned surface. */
+  decisionAnswers?: DecisionAnswerDto[];
   /** Stable staged asset IDs; a draft is never represented as a chat event. */
   attachmentIds: string[];
   /** Metadata for staged files still referenced by this draft. */
@@ -270,7 +295,7 @@ export interface ConversationDraftConflictDto {
   /** Stable identity used to restore or discard exactly this displaced write. */
   id: string;
   current: ConversationDraftDto;
-  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "pendingSubmission" | "pendingSubmissions" | "clientId"> & { capturedAt: string };
+  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "decisionAnswers" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "pendingSubmission" | "pendingSubmissions" | "clientId"> & { capturedAt: string };
 }
 
 export interface DraftPendingSubmissionDto {
@@ -455,6 +480,7 @@ export interface ConversationDraftConflictListDto {
 }
 
 export interface PutConversationDraftRequest {
+  decisionAnswers?: DecisionAnswerDto[];
   /** Append/merge only. Omitting identities never retires them. Maximum 32 live IDs. */
   pendingSubmissions?: DraftPendingSubmissionDto[];
   /** Explicitly retire only these known identities after acceptance or deliberate discard. */
@@ -476,6 +502,8 @@ export interface GenerateConversationTitleResponse {
 
 export interface WorkspaceNotificationDto {
   id: string;
+  branchId?:string;
+  branchExecutionId?:string;
   /** Authored source for notification policy, independent of navigation target. */
   sourceAgentId?: string;
   projectId?: string;
@@ -497,7 +525,7 @@ export interface WorkspaceNotificationDto {
   status?: "open" | "resolved" | "dismissed";
   /** Stable key used to converge repeated reports of the same operational problem. */
   dedupeKey?: string;
-  action?: { kind: "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
+  action?: { kind: "open_branch" | "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
   title: string;
   body: string;
   /** Bounded in-app context; never included in lock-screen push copy. */
@@ -520,7 +548,9 @@ export interface WorkspaceNotificationDto {
   readAt?: string;
   /** Canonical closure/dismissal time for an action that is no longer open. */
   resolvedAt?: string;
-  decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction">;
+  /** Confirmed source recovery, independently of a persistent dismissal. */
+  recoveredAt?: string;
+  decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction"> & { questionCount?: number };
   /** Human-facing recovery context for one current coordination problem. */
   resolution?: {
     kind: "coordination_request";
@@ -552,6 +582,8 @@ export interface WorkspaceNotificationCountProjectionDto {
   importantCount: number;
   ordinaryCount: number;
   totalCount: number;
+  /** Ordinary unread activity, excluded from notification badges and alert totals. */
+  quietUnreadCount?: number;
 }
 
 /** Exact Project counts split so Project-level attention is never described
@@ -576,7 +608,7 @@ export interface WorkspaceNotificationProjectionRequestDto {
 
 export interface WorkspaceNotificationProjectionDto {
   workspace: WorkspaceNotificationCountProjectionDto;
-  allMessages: WorkspaceNotificationCountProjectionDto;
+  inbox: WorkspaceNotificationCountProjectionDto;
   projects: Record<string, WorkspaceProjectNotificationProjectionDto>;
   conversations: Record<string, WorkspaceNotificationCountProjectionDto>;
   chatFolders?: Record<string, WorkspaceNotificationCountProjectionDto>;
@@ -591,6 +623,21 @@ export interface RetryCoordinationRequestResponse {
 
 export type DecisionMode = "approval" | "choice" | "text";
 export interface DecisionOptionDto { id: string; label: string; description?: string }
+export interface DecisionQuestionDto {
+  id: string;
+  mode: "choice" | "text";
+  question: string;
+  context?: string;
+  options: DecisionOptionDto[];
+  allowOther: boolean;
+}
+export interface DecisionAnswerDto {
+  questionId: string;
+  status: "answered" | "skipped";
+  text?: string;
+  optionId?: string;
+  attachmentIds?: string[];
+}
 export interface DecisionDto {
   id: string;
   projectId: string;
@@ -602,6 +649,8 @@ export interface DecisionDto {
   mode: DecisionMode;
   question: string;
   context?: string;
+  /** Structured questions share one completion and continuation. */
+  questions?: DecisionQuestionDto[];
   options: DecisionOptionDto[];
   allowOther: boolean;
   /** Correlated questions intentionally suspended while this blocking Decision
@@ -642,16 +691,19 @@ export interface DecisionDto {
     expiresAt: string;
   };
   status: "pending" | "resolved" | "cancelled";
-  response?: { optionId?: string; text?: string; skipped?: true; respondedAt: string };
+  response?: { answers?: DecisionAnswerDto[]; optionId?: string; text?: string; attachments?: AssetDto[]; skipped?: true; respondedAt: string };
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ResolveDecisionRequest {
+  answers?: DecisionAnswerDto[];
   /** Explicit operator cancellation; never an answer or approval. */
   skip?: true;
   optionId?: string;
   text?: string;
+  /** Staged files owned by this exact Decision, never client-supplied paths. */
+  attachmentIds?: string[];
   /** Ephemeral provider form content. The server forwards this to the waiting
    * runtime request and deliberately excludes it from the Decision record. */
   content?: unknown;
@@ -1020,7 +1072,7 @@ export interface ReadinessCheckDto {
 }
 
 export interface NetworkSecurityPostureDto {
-  mode: "loopback" | "authenticated" | "trusted_tailnet" | "reverse_proxy";
+  mode: "trusted_network";
   /** Exact configured listener host. Never contains credentials. */
   bindHost: string;
   authenticationRequired: boolean;
@@ -1049,13 +1101,15 @@ export interface ReadinessDto {
     activeRuns: number;
     schedulerRuns: number;
     localRuns: number;
+    /** Supervised Branch processes and active installation/resource operations. */
+    workflowAuthorities:number;
     providerAuthorities: number;
     browserAuthorities: number;
     pendingCleanupOperations: number;
     retainedTeardownFailures: number;
     /** Bounded, credential-free identities for authorities preventing restart. */
     blockers: Array<{
-      kind: "run" | "provider" | "run_browser" | "project_browser" | "browser_residue" | "project_cleanup" | "agent_cleanup";
+      kind: "workflow" | "run" | "provider" | "run_browser" | "project_browser" | "browser_residue" | "project_cleanup" | "agent_cleanup";
       reason: string;
       id?: string;
       projectId?: string;

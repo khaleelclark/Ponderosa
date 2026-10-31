@@ -1,8 +1,8 @@
+import {AssistantEntry} from './components/AssistantEntry';
 import { Alert, Box, Button } from "@mui/material";
 import { LoadingState } from "./components/LoadingState";
 import { MobileNavigationButton } from "./components/MobileNavigationContext";
 import type {
-  ConversationDto,
   EngineDto,
   ProjectDto,
   WorkspaceNotificationDto,
@@ -24,7 +24,7 @@ type RemovableWorkspaceResourceRoute = Extract<
   { kind: "agent" | "conversation" }
 >;
 
-const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
+const loadInboxView = () => import("./components/InboxView").then(module => ({ default: module.InboxView }));
 const loadManageChatsWorkspace = () => import("./components/ManageChatsWorkspace").then(module => ({ default: module.ManageChatsWorkspace }));
 const loadManageAgentsWorkspace = () => import("./components/WorkspaceResourceViews").then(module => ({ default: module.AllAgentsWorkspace }));
 const loadHomeView = () => import("./components/HomeView").then(module => ({ default: module.HomeView }));
@@ -52,7 +52,7 @@ interface WorkspaceRouteOutletProps {
   loadError: boolean;
   refreshError: boolean;
   onRetryLoad(): void;
-  onNavigate(route: Route): void;
+  onNavigate(route: Route, options?: {replace?: boolean}): boolean | void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onSavePreferences(
     patch: Partial<WorkspacePreferencesDto>,
@@ -67,12 +67,6 @@ interface WorkspaceRouteOutletProps {
   ): void;
   onCancelCreate(): void;
   onOpenInbox(): void;
-  onProjectDeleted(projectId: string): void;
-  onConversationAction(
-    kind: "rename" | "delete",
-    conversation: ConversationDto,
-  ): void;
-  onOpenEngineStatus(): void;
   onBrowserRequestHandled(requestId: number): void;
   onResourceDeleted(route: RemovableWorkspaceResourceRoute): void;
   onToggleColorMode(): void;
@@ -103,9 +97,6 @@ export function WorkspaceRouteOutlet({
   onCreate,
   onOpenInbox,
   onCancelCreate,
-  onProjectDeleted,
-  onConversationAction,
-  onOpenEngineStatus,
   onBrowserRequestHandled,
   onResourceDeleted,
   onToggleColorMode,
@@ -132,7 +123,9 @@ export function WorkspaceRouteOutlet({
           Some workspace data could not be refreshed. The last loaded data remains available.
         </Alert>
       ) : null}
-      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
+      <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection:"column" }}>
+      <AssistantEntry/>
+      <Box sx={{flex:1,minHeight:0,display:"grid"}}>
       {loadError ? (
         <Box sx={{ p: 2 }}>
           <MobileNavigationButton />
@@ -165,10 +158,10 @@ export function WorkspaceRouteOutlet({
         />
       ) : route.kind === "home" ? (
         <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, enginesLoaded, notifications, notificationCounts, notificationsLoadFailed, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />
-      ) : route.kind === "allChat" ? (
+      ) : route.kind === "inbox" ? (
         <RecoverableLazyRoute
-          key="all-chat"
-          load={loadAllChatView}
+          key="inbox"
+          load={loadInboxView}
           componentProps={{ onNavigate, notifications }}
         />
       ) : route.kind === "manageChats" ? (
@@ -239,19 +232,13 @@ export function WorkspaceRouteOutlet({
               project: projects.find(project => project.id === selectedProjectId)!,
               route,
               engines,
-              notifications,
               preferences,
               onPreferences,
-              onRenameConversation: conversation =>
-                onConversationAction("rename", conversation),
-              onDeleteConversation: conversation =>
-                onConversationAction("delete", conversation),
-              onOpenEngineStatus,
+              decisionReviewAction: <Button color="inherit" size="small" onClick={onOpenInbox}>View decision</Button>,
               navigate: onNavigate,
               browserRequest: projectBrowserRequest,
               onBrowserRequestHandled,
               onResourceDeleted,
-              onProjectDeleted,
               onCreate: (kind, context) => onCreate(kind, context),
             }}
           />
@@ -284,6 +271,7 @@ export function WorkspaceRouteOutlet({
       ) : (
         assertNeverRoute(route)
       )}
+      </Box>
       </Box>
     </Box>
   );

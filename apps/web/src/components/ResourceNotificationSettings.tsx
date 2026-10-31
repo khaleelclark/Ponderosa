@@ -22,7 +22,7 @@ export function ResourceNotificationSettings({ kind, id }: { kind: "agent" | "co
       <MenuItem value="attention">Needs attention only</MenuItem>
       <MenuItem value="muted">Muted</MenuItem>
     </TextField>
-    <Typography variant="caption" color="text.secondary">Saves immediately. Controls in-app notifications and browser push. Work, messages, and pending decisions are unchanged.</Typography>
+    <Typography variant="caption" color="text.secondary">Notification changes save immediately.</Typography>
     {kind === "conversation" && <Typography variant="caption" color="text.secondary">Agents inherit this setting unless they have their own override.</Typography>}
     {(save.isError || preferences.isError) && <Alert severity="error">Could not load or save notification settings. Try again.</Alert>}
   </Stack>;

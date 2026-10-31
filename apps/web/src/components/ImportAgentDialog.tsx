@@ -42,6 +42,7 @@ const LARGE_PASTE_CHARACTERS = 256 * 1024;
 
 interface PortableAgentPreview {
   sourceLabel: string;
+  hasOutputRoles: boolean;
   sourceProjectInstructions?: string;
   mode: "template" | "full";
   kind: "agent" | "organization";
@@ -79,12 +80,18 @@ export function ImportAgentForm({
 }): JSX.Element {
   const notify = useMutationNotification();
   const [packageBlob, setPackageBlob] = useState<Blob>();
+  const [roleOperation,setRoleOperation]=useState<import('@ponderosa/core').AgentImportOperationDto>();
+  const [recoveryReview,setRecoveryReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
+  const operationQuery=useQuery({queryKey:['role-import-operation',projectId,roleOperation?.id],queryFn:()=>api.getAgentImportOperation(projectId,roleOperation!.id),enabled:Boolean(roleOperation),refetchInterval:q=>q.state.data?.status==='completed'||q.state.data?.status==='failed'?false:500});
+  useEffect(()=>{const current=operationQuery.data;if(!current)return;setRoleOperation(current);if(current.status==='completed'){setRoleOperation(undefined);(onSubmitted??onCancel)();}else if(current.status==='failed'){setRoleOperation(undefined);importRequestId.current=createClientId();setError(current.error??'Import failed');}else if(current.error)setError(current.error);},[operationQuery.dataUpdatedAt]);
+  const [roleReview,setRoleReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
   const [packagePreview, setPackagePreview] = useState<PortableAgentPreview>();
   const [inspecting, setInspecting] = useState(false);
   const [inspectionPhase, setInspectionPhase] = useState<string>();
   const [fileName, setFileName] = useState<string>();
   const [jsonText, setJsonText] = useState("");
   const [conversationId, setConversationId] = useState("");
+  useEffect(()=>{setRoleReview(undefined);},[packageBlob,conversationId]);
   const [engineMapping, setEngineMapping] = useState<Record<string, string>>({});
   const [acknowledgeElevatedPermissions, setAcknowledgeElevatedPermissions] = useState(false);
   const [instructionsAction, setInstructionsAction] = useState<ChatInstructionsAction>("");
@@ -93,7 +100,6 @@ export function ImportAgentForm({
   const instructionsConflict = Boolean(sourceInstructions && destinationInstructions && sourceInstructions !== destinationInstructions);
   useEffect(() => { setInstructionsAction(""); importRequestId.current = createClientId(); }, [sourceInstructions, destinationInstructions, conversationId]);
   const [error, setError] = useState<string>();
-  const [promptCopyStatus, setPromptCopyStatus] = useState<string>();
   const destinationAgentsQuery = useQuery<AgentDto[]>({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -174,17 +180,22 @@ export function ImportAgentForm({
     })));
   }, [engines, sourceEngines.join("\0")]);
   const importAgents = useMutation({
-    mutationFn: async () => api.startAgentPackageImport(
+    mutationFn: async () => {
+      if(packagePreview?.hasOutputRoles&&!roleReview){setRoleReview(await api.previewAgentOutputRoles(projectId,packageBlob!,{conversationId,engineMapping}));return;}
+      return api.startAgentPackageImport(
       projectId,
       packageBlob!,
       {
         conversationId, engineMapping,
+        ...(roleReview?{outputRoleReviewId:roleReview.id}:{}),
         chatInstructionsResolution: await chatInstructionsResolution(instructionsAction, destinationInstructions),
         ...(elevatedAgents.length > 0 ? { acknowledgeElevatedManagementPermissions: acknowledgeElevatedPermissions } : {}),
       },
       importRequestId.current,
-    ),
+    );},
     onSuccess: (operation) => {
+      if(!operation)return;
+      if(packagePreview?.hasOutputRoles&&operation.status==='pending'){setRoleOperation(operation);return;}
       clearPackageDraft();
       notify({
         key: `agent-import:${operation.id}`,
@@ -290,14 +301,14 @@ export function ImportAgentForm({
   const copyExternalPrompt = async () => {
     try {
       await copyText(externalAgentImportPrompt(new Date().toISOString()));
-      setPromptCopyStatus("Prompt copied");
+      notify({ key: "copy-import-prompt", message: "Copied" });
     } catch {
-      setPromptCopyStatus("Could not copy the prompt. Check clipboard access and try again.");
+      notify({ key: "copy-import-prompt", message: "Could not copy the prompt. Check clipboard access and try again.", severity: "error" });
     }
   };
 
   return <Stack spacing={2}>
-      <Alert severity="info">Imported history remains private historical context and does not appear as new chat messages. Agent packages do not include credentials.</Alert>
+      <Alert severity="info">History stays private; credentials are excluded.</Alert>
       <Paper component="section" variant="outlined" aria-label="Import an external AI chat" sx={{ p: 1.5 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", sm: "center" }} justifyContent="space-between">
           <Stack spacing={0.25} sx={{ minWidth: 0 }}>
@@ -310,9 +321,6 @@ export function ImportAgentForm({
             Copy conversion prompt
           </Button>
         </Stack>
-        {promptCopyStatus ? <Typography role="status" variant="caption" color={promptCopyStatus === "Prompt copied" ? "success.main" : "error.main"} sx={{ display: "block", mt: 0.75 }}>
-          {promptCopyStatus}
-        </Typography> : null}
       </Paper>
       <Typography variant="body2" color="text.secondary">Agent and organization packages: up to {AGENT_PACKAGE_LIMIT_LABEL}, with up to {AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL} of embedded artifacts. Choose a file for large imports.</Typography>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
@@ -444,8 +452,10 @@ export function ImportAgentForm({
           borderColor: "divider",
         } : {}),
       }}>
+      {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review output roles again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm output roles</Button></>}</>}
+      {roleReview&&<Alert severity={roleReview.warning?'warning':'info'}>{roleReview.warning??'Imported output roles will be activated in this Branch Chat.'}</Alert>}
       <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
-      <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
+      <Button variant="contained" disabled={Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
         const target = engines.find(engine => engine.id === engineMapping[source]);
         return !engineIsAvailable(target);
       }) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => {
@@ -454,7 +464,7 @@ export function ImportAgentForm({
         onPendingChange?.(true);
         importAgents.mutate();
       }}>
-        {importAgents.isPending ? "Importing…" : "Import"}
+        {importAgents.isPending ? "Importing…" : packagePreview?.hasOutputRoles&&!roleReview ? "Review output roles" : "Import"}
       </Button>
       </Stack>
   </Stack>;

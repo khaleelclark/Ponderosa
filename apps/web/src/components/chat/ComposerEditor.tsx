@@ -69,8 +69,9 @@ import {
 import type { ComposerMenuSuggestion } from "./Composer.controls";
 import { isIOSDevice } from "../../browserPlatform";
 
-// iPadOS can identify as a Mac. Do not change Android or desktop Return policy.
+// iPadOS can identify as a Mac; font sizing still follows its existing policy.
 const isIOSComposer = isIOSDevice();
+const isMobileComposer = isIOSComposer || (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent));
 
 export type ComposerMentionDescriptor = {
   start: number;
@@ -945,7 +946,7 @@ function EditorBridge({
   useEffect(() => editor.registerCommand(KEY_ENTER_COMMAND, event => {
     if (!event || disabled || editor.isComposing() ||
         shouldIgnoreComposerKey({ isComposing: event.isComposing, keyCode: event.keyCode })) return false;
-    if (isIOSComposer || (event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches)) return false;
+    if (isMobileComposer || (event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches)) return false;
     // Lexical's native listener runs before React's bubbled keydown. Suppress
     // its default paragraph mutation; React owns desktop Send/menu/Shift+Return.
     // A blocked Send must not create an invisible second canonical paragraph.
@@ -1008,6 +1009,9 @@ function EditorBridge({
       if (!editor.getRootElement()?.contains(document.activeElement)) return;
       if (editor.getRootElement()?.ownerDocument.getSelection()?.isCollapsed === false) return;
       editor.update(() => {
+        // Native input may reach the DOM before Lexical imports it. Preserve
+        // that caret instead of selecting the stale chip-only model's end.
+        if (editor.getRootElement()?.textContent !== $getRoot().getTextContent()) return;
         const selection = $getSelection();
         if (selection && (!$isRangeSelection(selection) || !selection.isCollapsed())) return;
         const paragraph = $getRoot().getFirstChild();
@@ -1024,7 +1028,8 @@ function EditorBridge({
     },
     focus: () => editor.focus(),
     isFocused: () => editor.getRootElement()?.contains(document.activeElement) ?? false,
-    getCanonicalText: () => canonicalRef.current,
+    // Native input can be queued before the update-listener cache catches up.
+    getCanonicalText: () => editor.read("pending", $canonicalText),
     getSelectionOffsets: () =>
       editor.getEditorState().read(() => $selectionOffsets()),
     setSelectionOffsets: (start, end) => {
@@ -1485,11 +1490,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       // let the first printable key reuse its pre-chip selection.
       bridgeRef.current?.placeCaretAfterLoneMention();
     }
-    if (event.key === "Enter" && (isIOSComposer || (
+    if (event.key === "Enter" && (isMobileComposer || (
       event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches
     ))) {
       if (menuOpen) onSuppressMenu();
-      // Lexical owns mobile Shift+Return. iOS also uses plain Return for a newline.
+      // Lexical owns mobile newlines, including soft-keyboard beforeinput.
       return;
     }
     if (
@@ -1652,7 +1657,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 position: "absolute",
                 top: 6,
                 left: 2,
-                color: { xs: "text.secondary", md: "text.disabled" },
+                color: "text.secondary",
                 fontSize: isIOSComposer ? 16 : 15,
                 lineHeight: "22px",
                 pointerEvents: "none",

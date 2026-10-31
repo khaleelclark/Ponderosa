@@ -72,8 +72,8 @@ test('orderly shutdown skips full replay and restart repairs projections without
     assert.equal(shutdownReplays, 0, 'Shutdown replayed the entire lifetime before releasing SQLite');
     assert.equal(store.startupProfile().mode, 'recovery');
     assert.deepEqual((await f.detail(answered.agent.id)).messages.map(message => message.id).sort(), messages);
-    assert.equal(f.ok(await f.api('GET', '/api/decisions?agentId=' + pending.agent.id)).find(decision => decision.id === pending.decision.id).status, 'pending');
-    assert.deepEqual(f.ok(await f.api('GET', '/api/decisions?agentId=' + answered.agent.id)).find(decision => decision.id === answered.decision.id), saved);
+    assert.equal(f.ok(await f.api('GET', '/api/decisions?id=' + pending.decision.id))[0].status, 'pending');
+    assert.deepEqual(f.ok(await f.api('GET', '/api/decisions?id=' + answered.decision.id))[0], saved);
     assert.deepEqual(f.ok(await f.api('POST', route, { text: 'Preserve this decision' })), saved);
     assert.deepEqual(store.sqlite.prepare('SELECT * FROM coordination_requests WHERE id=?').get(requestId), requestBefore);
     assert.equal(f.turns.length, turns, 'Restart or answer replay duplicated provider work');

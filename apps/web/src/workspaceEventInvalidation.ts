@@ -10,7 +10,7 @@ export function workspaceEventInvalidatesGlobalSearch(
 
 /** Messages is a canonical communication projection. Refresh it only for
  * workspace events that can add or change one of its communication rows. */
-export function workspaceEventInvalidatesAllChat(
+export function workspaceEventInvalidatesInbox(
   event: WorkspaceEvent,
 ): boolean {
   return event.type === "conversation_changed" ||

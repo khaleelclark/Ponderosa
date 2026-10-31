@@ -7,7 +7,7 @@ import {
   type AgentPresetDto,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
-import { EventLog } from "./eventlog.js";
+import { readLog } from "./eventlog.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
 import { pruneArtifactDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type { AgentJson, ConversationJson, PresetEvent, ProjectJson } from "./store-types.js";
@@ -68,6 +68,8 @@ export class AgentProjectionRebuilder {
   ) {}
 
   rebuildProjections(): void {
+    this.agentCatalog.invalidateImportedIndexes();
+    this.agentCatalog.clearRoleCache();
     // Project recovery crosses an irreversible filesystem boundary. Its receipt
     // commits must not be rolled back when a later, unrelated projection replay
     // fails and the broad rebuild transaction is reverted.
@@ -88,6 +90,7 @@ export class AgentProjectionRebuilder {
     this.db.delete(changedFileProjection).run();
     this.db.delete(managedArtifactProjection).run();
     this.db.delete(importedHistoryMessages).run();
+    this.client.prepare("DELETE FROM imported_history_indexes").run();
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
     this.db.delete(workItems).run();
@@ -190,6 +193,8 @@ export class AgentProjectionRebuilder {
             .values({
               id: m.id,
               projectId: m.projectId,
+              branchId: m.branchId ?? null,
+              executionId: m.executionId ?? null,
               title: m.title,
               defaultEngine: m.defaultEngine ?? null,
               defaultModel: m.defaultModel ?? null,
@@ -290,14 +295,14 @@ export class AgentProjectionRebuilder {
 
         const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);
         if (existsSync(importedHistoryFile)) {
-          this.agentCatalog.projectImportedHistory(agentId, readJson(importedHistoryFile));
+          this.agentCatalog.projectImportedHistory(agentId, readJson(importedHistoryFile), { deferIndex: true });
         }
 
         const logFile = eventsPath(this.dataDir, projectId, agentId);
         if (t.deletedAt && !existsSync(logFile)) continue;
         mkdirSync(artifactsDir(this.dataDir, projectId, agentId), { recursive: true });
         if (!existsSync(logFile)) continue;
-        const stored = new EventLog(logFile).readAll();
+        const stored = readLog(logFile);
         const protectedArtifactPaths = new Set(stored.flatMap(({ event }) =>
           event.type === "generated_artifact" || event.type === "browser_screenshot" ? [event.path] : [],
         ));

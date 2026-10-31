@@ -480,8 +480,11 @@ function folderPlan(namespaces: Namespace[]): ChatFolderDto[] {
           expanded: true
         });
   }
-  const all = namespaces.map(item => item.chat.originalChat.id).sort();
-  requireValue([...byName.values()].flatMap(folder => folder.conversationIds).sort().join() === all.join(), "folder coverage differs from restored Chat scope");
+  const retained = new Set(namespaces.map(item => item.chat.originalChat.id));
+  const filed = [...byName.values()].flatMap(folder => folder.conversationIds);
+  // Unfiled Chats are valid. Folder membership must still be unique and stay
+  // inside the independently verified retained Chat scope.
+  requireValue(new Set(filed).size === filed.length && filed.every(id => retained.has(id)), "folder membership differs from restored Chat scope");
   return [...byName.values()];
 }
 function copyIndexed(source: Source, path: string, target: string): void {
@@ -657,6 +660,7 @@ export function restoreContent(options: ContentRestoreOptions): Record<string, u
         createdAt: agent.createdAt,
         updatedAt: agent.updatedAt,
         managementPermissions: agent.managementPermissions,
+        role: agent.role,
         presetSnapshot: agent.presetSnapshot,
         workingCopy
       });

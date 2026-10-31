@@ -1,14 +1,16 @@
 import {
-  Alert, Autocomplete, Box, FormControl, InputLabel, LinearProgress,
+  Alert, Autocomplete, Box, Button, FormControl, InputLabel, LinearProgress,
   MenuItem, Paper, Select, Stack, TextField, Typography,
 } from "@mui/material";
 import type {
-  EngineDto, ProjectDto,
+  EngineDto, ProjectDto, BranchDto, TokenUsageScope,
   WorkspaceAgentDirectoryItemDto,
   WorkspaceConversationDirectoryItemDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { requestCollectionPage } from "../api/real";
+import { uniqueBy, normalizeResetPages } from "../collections";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { uniqueManagedRows } from "../hooks/useManagedWorkspaceCollection";
@@ -224,28 +226,31 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   </Box>;
 }
 
-export function ProviderActivitySettingsSection({ projects, projectId }: { projects: ProjectDto[]; projectId?: string }): JSX.Element {
+export function ProviderActivitySettingsSection({ projects, projectId, workflows=false }: { projects: ProjectDto[]; projectId?: string; workflows?: boolean }): JSX.Element {
   const [scopeSearch, setScopeSearch] = useState("");
   const chatQuery = useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", { search: scopeSearch, retainPreviousData: false, maxPages: 1 });
   const agentQuery = useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", { search: scopeSearch, retainPreviousData: false, maxPages: 1 });
+  const workflowQuery = useInfiniteQuery({queryKey:["branches","activity",scopeSearch.trim()],enabled:workflows,initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestCollectionPage<BranchDto>(`/api/branches?search=${encodeURIComponent(scopeSearch.trim())}${pageParam?`&cursor=${encodeURIComponent(pageParam)}`:""}`),getNextPageParam:last=>last.hasMore?last.cursor:undefined,maxPages:1,select:normalizeResetPages});
+  const workflowRows = uniqueBy(workflowQuery.data?.pages.flatMap(page=>page.items)??[], row=>row.id);
   const chats = uniqueManagedRows(chatQuery.data?.pages, row => row.conversation.id);
   const agents = uniqueManagedRows(agentQuery.data?.pages, row => row.agent.id);
   const initialProject = projects.find(project => project.id === projectId);
-  const [selectedScope, setSelectedScope] = useState({ key: initialProject ? `project:${initialProject.id}` : "overall", label: initialProject?.label ?? "All Ponderosa", group: initialProject ? "Working folders" : "Everything" });
+  const [selectedScope, setSelectedScope] = useState({ key: initialProject ? `project:${initialProject.id}` : "overall", label: initialProject?.label ?? (workflows ? "All Branches" : "All Ponderosa"), group: initialProject ? "Working folders" : "Everything" });
   const scopeKey = selectedScope.key;
   const [rangeKey, setRangeKey] = useState<"24h" | "7d" | "30d" | "all">("30d");
   const from = rangeKey === "all" ? undefined : new Date(Date.now() - ({ "24h": 1, "7d": 7, "30d": 30 }[rangeKey] * 86_400_000)).toISOString();
-  const [scope, scopeId] = scopeKey === "overall" ? ["overall", undefined] as const : scopeKey.split(":", 2) as ["project" | "agent" | "conversation", string];
+  const [scope, scopeId] = scopeKey === "overall" ? ["overall", undefined] as const : scopeKey.split(":", 2) as [TokenUsageScope, string];
   const usage = useQuery({ queryKey: queryKeys.tokenUsage.detail(scope, scopeId, rangeKey), queryFn: () => api.getTokenUsage(scope, scopeId, from ? { from } : {}), refetchInterval: 30_000 });
   const scopes = [
-    { key: "overall", label: "All Ponderosa", group: "Everything" },
+    { key: "overall", label: workflows ? "All Branches" : "All Ponderosa", group: "Everything" },
+    ...(workflows ? workflowRows.map(branch => ({key:`branch:${branch.id}`,label:branch.name,group:"Workflows"})) : []),
     ...projects.filter(project => project.label.toLowerCase().includes(scopeSearch.trim().toLowerCase())).map(project => ({ key: `project:${project.id}`, label: project.label, group: "Working folders" })),
     ...chats.map(({ project, conversation }) => ({ key: `conversation:${conversation.id}`, label: `${conversation.title} · ${project.label}`, group: "Chats" })),
     ...agents.map(({ project, agent, ownerConversation }) => ({ key: `agent:${agent.id}`, label: `${agent.title} · #${agent.handle} · ${ownerConversation?.title ?? project.label}`, group: "Agents" })),
   ].filter(item => item.key !== selectedScope.key);
   // Keep the selected identity even when it is outside the current search/page.
   scopes.unshift(selectedScope);
-  const groupOrder = ["Everything", "Working folders", "Chats", "Agents"];
+  const groupOrder = ["Everything", "Workflows", "Working folders", "Chats", "Agents"];
   scopes.sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group));
   return <Paper variant="outlined" sx={{ p: 2.5 }}>
     <Typography variant="h6" fontWeight={800}>Provider Activity</Typography>
@@ -257,14 +262,14 @@ export function ProviderActivitySettingsSection({ projects, projectId }: { proje
         getOptionLabel={item => item.label} isOptionEqualToValue={(a, b) => a.key === b.key}
         onInputChange={(_event, value, reason) => { if (reason === "input" || reason === "clear") setScopeSearch(value); }}
         onChange={(_event, item) => { setSelectedScope(item); setScopeSearch(""); }}
-        renderInput={params => <TextField {...params} label="Scope" placeholder="Search Chats, Agents, and folders" />} />
+        renderInput={params => <TextField {...params} label="Scope" placeholder={workflows ? "Search workflows, Chats, Agents, and folders" : "Search Chats, Agents, and folders"} />} />
       <FormControl size="small" sx={{ minWidth: 160 }}><InputLabel id="usage-range">Time Range</InputLabel><Select labelId="usage-range" label="Time Range" value={rangeKey} onChange={event => setRangeKey(event.target.value as typeof rangeKey)}><MenuItem value="24h">Last 24 Hours</MenuItem><MenuItem value="7d">Last 7 Days</MenuItem><MenuItem value="30d">Last 30 Days</MenuItem><MenuItem value="all">All Time</MenuItem></Select></FormControl>
     </Stack>
     <Box aria-label="Activity scope results">
+      {workflows&&<Stack spacing={1}>{workflowQuery.isPending&&<Typography role="status">Loading workflow scopes…</Typography>}{workflowQuery.error&&<Alert severity="error" action={<Button onClick={()=>void workflowQuery.refetch()}>Retry workflows</Button>}>Workflow scopes could not be loaded.</Alert>}{workflowQuery.hasNextPage&&<Button disabled={workflowQuery.isFetchingNextPage} onClick={()=>void workflowQuery.fetchNextPage()}>Load more workflows</Button>}</Stack>}
       <CollectionStateFeedback request={chatQuery.requestState} itemCount={chats.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Chat scopes" emptyTitle="No Chat scopes" compact autoLoadMore={false} />
       <CollectionStateFeedback request={agentQuery.requestState} itemCount={agents.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Agent scopes" emptyTitle="No Agent scopes" compact autoLoadMore={false} />
     </Box>
-    <Alert severity="info" sx={{ mb: 2 }}>Input includes instructions, tools, conversation context, and cached reuse. These are provider-reported tokens, not subscription quota, remaining context, or a cost estimate.</Alert>
     <Box>{usage.isError ? <Alert severity="error">Provider activity could not be loaded.</Alert> : !usage.data ? <LinearProgress /> : <TokenUsageDetails data={usage.data} />}</Box>
   </Paper>;
 }

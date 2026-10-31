@@ -32,7 +32,7 @@ export interface ComposerRuntimeOption {
   group?: "Latest" | "Pinned";
 }
 
-function effortLabel(option?: ComposerRuntimeOption): string | undefined {
+export function effortLabel(option?: ComposerRuntimeOption): string | undefined {
   return option?.id === "xhigh" ? "Extra High" : option?.label.replace(/\b\p{L}/gu, letter => letter.toLocaleUpperCase());
 }
 

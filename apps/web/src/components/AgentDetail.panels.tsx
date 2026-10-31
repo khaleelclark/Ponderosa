@@ -5,17 +5,17 @@ import type {
   AgentHealthDto,
   ConversationDto,
   ResponseFileActivityDto,
-  WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { useEffect, useState, type ComponentProps } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, type ReactNode, type ComponentProps } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AgentStatus } from "../agents";
+import { api } from "../api";
+import { queryKeys } from "../queryKeys";
+import { scrollFocusedMessageIntoView } from "../messageFocus";
 import { chatStateKey, readChatState } from "../chatState";
 import type { AgentTelemetryFocus } from "../routing";
-import { notificationTechnicalFocusId } from "../technicalFocus";
 import { AgentsTab } from "./AgentsTab";
-import { AttentionSurface } from "./AttentionSurface";
 import type { AgentTab } from "./AgentDetail.helpers";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { ChatPane } from "./chat/ChatPane";
@@ -32,7 +32,7 @@ interface AgentDetailPanelsProps {
   engines: ComponentProps<typeof AgentsTab>["engines"];
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
-  notifications: WorkspaceNotificationDto[];
+  decisionReviewAction?: ReactNode;
   operatorProfile?: WorkspacePreferencesDto["profile"];
   agentNameForId: NonNullable<ComponentProps<typeof ChatPane>["agentNameForId"]>;
   agentIdForHandle: NonNullable<ComponentProps<typeof ChatPane>["agentIdForHandle"]>;
@@ -57,7 +57,6 @@ interface AgentDetailPanelsProps {
   onOpenFile(file: ResponseFileActivityDto): void;
   onNewSubagent(managerAgentId: string): void;
   onAgentsDeleted(agentIds: string[]): void;
-  onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
   onCloseTechnical(): void;
 }
@@ -72,7 +71,7 @@ export function AgentDetailPanels({
   engines,
   statusByAgentId,
   healthByAgentId,
-  notifications,
+  decisionReviewAction,
   operatorProfile,
   agentNameForId,
   agentIdForHandle,
@@ -95,7 +94,6 @@ export function AgentDetailPanels({
   onOpenFile,
   onNewSubagent,
   onAgentsDeleted,
-  onOpenTechnical,
   onOpenArtifact,
   onCloseTechnical,
 }: AgentDetailPanelsProps): JSX.Element {
@@ -103,6 +101,18 @@ export function AgentDetailPanels({
   const markCommunicationVisible = useConversationNotificationVisibility(
     queryClient,
   );
+  const decisions = useQuery({
+    queryKey: [...queryKeys.decisions.all, "agent", agentId, "pending"],
+    queryFn: ({ signal }) => api.listDecisions({ projectId: detail.agent.projectId, agentId, status: "pending" }, signal),
+    enabled: tab === "chat",
+  });
+  const pendingDecisions = useMemo(() => [...new Map((decisions.data ?? [])
+    .filter(decision => decision.status === "pending" && decision.agentId === agentId && decision.projectId === detail.agent.projectId)
+    .map(decision => [decision.id, decision])).values()], [decisions.data, agentId, detail.agent.projectId]);
+  const viewDecision = () => {
+    const target = document.getElementById(`decision:${pendingDecisions[0]?.id}`);
+    if (target) { target.focus({ preventScroll: true }); scrollFocusedMessageIntoView(target); }
+  };
   const [visibleSubagentCount, setVisibleSubagentCount] = useState(25);
   useEffect(() => setVisibleSubagentCount(25), [detail.agent.id]);
   const panes: Record<AgentTab, JSX.Element> = {
@@ -111,7 +121,8 @@ export function AgentDetailPanels({
         sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}
       >
           <ChatPane
-            decisionEvents={detail.decisionEvents}
+          pendingDecisions={pendingDecisions}
+          decisionEvents={detail.decisionEvents}
           messages={chatMessages}
           agentName={detail.agent.title}
           agentNameForId={agentNameForId}
@@ -124,6 +135,7 @@ export function AgentDetailPanels({
           activity={detail.activity}
           runOutput={detail.runOutput}
           runs={detail.runs}
+          pausedRunId={detail.coordinationV3?.pause?.runId}
           activeExecutionId={activeExecutionId}
           projectRoot={projectRoot}
           onOpenFile={onOpenFile}
@@ -238,12 +250,17 @@ export function AgentDetailPanels({
           gridTemplateRows: "auto minmax(0, 1fr)",
         }}
       >
-        <AttentionSurface
-          notifications={notifications}
-          projectId={detail.agent.projectId}
-          agentId={agentId}
-          onOpen={item => onOpenTechnical(notificationTechnicalFocusId(item))}
-        />
+        <Box sx={{ minWidth: 0 }}>
+          {pendingDecisions.length ? <Alert severity="warning"
+            action={pendingDecisions.length > 1 && decisionReviewAction ? decisionReviewAction
+              : <Button color="inherit" size="small" onClick={viewDecision}>View decision</Button>}
+            sx={{ mx: { xs: 1.5, md: 2.5 }, mt: 1, alignItems: "center", "& .MuiAlert-message": { minWidth: 0, overflowWrap: "anywhere" } }}>
+            {detail.agent.title} has {pendingDecisions.length === 1 ? "a decision" : `${pendingDecisions.length} decisions`}
+          </Alert> : null}
+          {decisions.isError ? <Alert severity="error" action={<Button color="inherit" onClick={() => void decisions.refetch()}>Retry</Button>} sx={{ m: 1 }}>
+            Agent decisions could not be refreshed.
+          </Alert> : null}
+        </Box>
         {panes.chat}
       </Box>
       {tab !== "chat" ? (

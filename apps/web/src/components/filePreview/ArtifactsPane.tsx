@@ -5,7 +5,7 @@ import DifferenceIcon from "@mui/icons-material/Difference";
 import SearchIcon from "@mui/icons-material/Search";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import { Alert, Box, Button, InputAdornment, List, ListItemButton, ListItemIcon, ListItemText, Stack, TextField, Typography } from "@mui/material";
-import { routeToPath } from "../../routeRegistry";
+import { routeLinkPath } from "../../routeRegistry";
 import type { ArtifactDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 import { telemetryElementId } from "../../telemetryFocus";
@@ -71,8 +71,8 @@ export function ArtifactsPane({
   if (orderedArtifacts.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="info">No files or results yet. Generated files, diffs, and test reports appear here; command output is available in the Chat's Work log and Technical details.</Alert>
-        <Button component="a" href={routeToPath({ kind: "agent", projectId, agentId, view: "technical" })}>Open {agentTitle}’s Technical details</Button>
+        <Alert severity="info">No files or results yet.</Alert>
+        <Button component="a" href={routeLinkPath({ kind: "agent", projectId, agentId, view: "technical" })}>Open {agentTitle}’s Technical details</Button>
       </Box>
     );
   }
@@ -105,7 +105,7 @@ export function ArtifactsPane({
                 const displayLabel = artifactDisplayLabel(artifact, displayPath);
                 return <ListItemButton
                   key={artifact.id}
-                  component="a" href={routeToPath({ kind: "agent", projectId, agentId, view: "artifacts", focusTelemetry: { stream: "artifacts", id: artifact.id } })}
+                  component="a" href={routeLinkPath({ kind: "agent", projectId, agentId, view: "artifacts", focusTelemetry: { stream: "artifacts", id: artifact.id } })}
                   aria-label={`Open ${displayLabel} (${displayPath})`}
                   title={displayPath}
                   id={telemetryElementId("artifacts", artifact.id)}
