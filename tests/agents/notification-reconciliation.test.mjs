@@ -371,3 +371,26 @@ test('reordered affected Agents do not rewrite a notice, while real changes pers
   workspace.close(); workspace = new WorkspaceStore(root);
   assert.equal(workspace.getNotification(notice.id).status, 'dismissed');
 });
+
+
+test('short provider cause is retained in scoped diagnostics and redacted before Copy Logs', fixtureTestOptions, t => {
+ return withFixture(t, async f => {
+  const chat = await f.createChat('Short diagnostic'), agent = await f.createIdleAgent(chat, 'Failing worker');
+  const cause = 'Controlled harmless upstream handshake refused';
+  const secret = 'diagnostic-secret-that-must-not-escape';
+  f.plans.set(agent.id, [{ output: false, run: async session => session.events.push({ type: 'error', terminalStatus: 'failed', message: `${cause} Authorization: Bearer ${secret}` }) }]);
+  await f.send(agent.id, 'Controlled failure');
+  const read = async (projectId, agentId) => f.ok(await f.api('GET', `/api/projects/${projectId}/agent-work?agentId=${agentId}`));
+  const result = await until(async () => {
+   const value = await read(chat.projectId, agent.id);
+   return value.items.some(item => item.details?.some(detail => detail.value.includes(cause))) && value;
+  }, 'precise scoped diagnostic');
+  assert.ok(!JSON.stringify(result).includes(secret));
+  const run = result.items.find(item => item.kind === 'run' && item.details?.some(detail => detail.label === 'Provider failure detail'));
+  const details = f.ok(await f.api('GET', `/api/projects/${chat.projectId}/agent-work/items/run/${run.recordId}`));
+  assert.ok(JSON.stringify(details).includes(cause)); assert.ok(!JSON.stringify(details).includes(secret));
+  const other = await f.createChat('Foreign Chat'), otherAgent = await f.createIdleAgent(other, 'Other worker');
+  assert.ok(!JSON.stringify(await read(other.projectId, otherAgent.id)).includes(cause));
+  assert.equal((await f.api('GET', `/api/projects/${other.projectId}/agent-work/items/run/${run.recordId}`)).status, 404);
+ });
+});
