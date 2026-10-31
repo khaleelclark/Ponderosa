@@ -226,3 +226,34 @@ test('two active looping paths both advance without exhausting either ceiling',a
  for(const path of paths){assert.equal(path.state,'active');assert.ok(path.traversals>50&&path.traversals<200);}
  assert.ok(Math.abs(paths[0].traversals-paths[1].traversals)<=1);
 });
+
+test('empty Script poll prepares the committed loop suffix in a separate scheduler unit',async t=>{
+ const f=fixture(t,{edges:[edge('again','work','work','success',{loop:true,input:{kind:'literal',text:'next'}})]});
+ f.branches.advance();const first=f.branches.claimScript('controlled');assert.ok(first);
+ f.branches.settleScript(first,{failed:false,output:'known'});
+ assert.equal(f.observer.prepare('SELECT COUNT(*) n FROM branch_step_executions').get().n,1,'settlement cannot inline suffix preparation');
+ const seen=[];
+ f.store.sqlite.function('observe_script_suffix',()=>{
+  seen.push(f.observer.prepare('SELECT state FROM branch_attempts WHERE id=?').get(first.attemptId).state);
+  return 1;
+ });
+ f.store.sqlite.exec("CREATE TEMP TRIGGER observe_script_suffix BEFORE INSERT ON branch_step_executions BEGIN SELECT observe_script_suffix(); END");
+ const next=f.branches.claimScript('controlled');assert.ok(next);assert.notEqual(next.attemptId,first.attemptId);assert.equal(next.input,'next');
+ assert.deepEqual(seen,['completed'],'preparation observes the prior committed result');
+ await f.branches.unitSaver.drain();
+ assert.ok(snapshots(f).some(row=>row.snapshot.selected.attempts.some(a=>a.id===first.attemptId&&a.state==='completed')&&row.snapshot.selected.steps.length===1),'settlement cut remains independently saved');
+ assert.throws(()=>f.branches.settleScript(first,{failed:false,output:'late duplicate'}),/lease|result|authority/i);
+});
+
+test('Script claim never advances a frontier inside a caller-owned transaction',t=>{
+ const f=fixture(t);const before=f.branches.detail(f.execution.id);
+ f.store.sqlite.transaction(()=>assert.equal(f.branches.claimScript('controlled'),undefined))();
+ assert.deepEqual(f.branches.detail(f.execution.id),before);
+});
+
+test('an empty Script claim stays bounded beside a live control loop and does not exhaust its ceiling',t=>{
+ const f=fixture(t,{entry:'loop',controls:[condition('loop')],edges:[edge('again','loop','loop','selected',{loop:true}),edge('exit','loop','work','failure')]},true);
+ assert.equal(f.branches.claimScript('controlled'),undefined);
+ const counters=f.store.sqlite.prepare('SELECT traversals,loop_iterations,state FROM branch_executions WHERE id=?').get(f.execution.id);
+ assert.equal(counters.state,'running');assert.ok(counters.traversals>0&&counters.traversals<=250);assert.ok(counters.loop_iterations<10000);
+});
