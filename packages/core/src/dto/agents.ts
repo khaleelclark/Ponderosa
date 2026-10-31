@@ -147,6 +147,15 @@ export interface PortableMemoryRowDto {id:string;text:string;metadata:Record<str
 export interface PortableChatMemorySnapshotDto {
   schema:'ponderosa.chat-memory.v1';signature:string;sourceChatId:string;agentIds:string[];excludedScopes:['global'];chunks:PortableMemoryRowDto[];conflicts:PortableMemoryRowDto[];
 }
+/** Separately selected operator data; never contains permissions, grants or live work. */
+export interface PortableGlobalMemorySnapshotDto {
+  schema:'ponderosa.selected-global-memory.v1';signature:string;sourcePrincipal:string;chunks:PortableMemoryRowDto[];conflicts:PortableMemoryRowDto[];
+}
+export interface GlobalMemorySelectionDto {chunkIds:string[];conflictIds:string[]}
+export interface GlobalMemoryInventoryDto {snapshot:PortableGlobalMemorySnapshotDto;inventoryHash:string}
+export interface GlobalMemoryTransferReviewDto {
+  snapshot:PortableGlobalMemorySnapshotDto;destination:PortableGlobalMemorySnapshotDto;reviewHash:string;
+}
 export interface PortablePackageMemoryDto {snapshot:PortableChatMemorySnapshotDto;agentRefs:Record<string,string>}
 /** Portable intent only; the destination import review controls activation. */
 export interface PortableOutputRoleDto { ref: string; output: boolean; speaker: boolean }

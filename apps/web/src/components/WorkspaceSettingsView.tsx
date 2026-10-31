@@ -1,3 +1,4 @@
+import {GlobalMemoryTransfer} from './GlobalMemoryTransfer';
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import {useMutationNotification} from "./MutationNotifications";
 import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
@@ -179,6 +180,7 @@ function GeneralSettingsSection({
   return (
     <Stack spacing={2.5}>
       <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
+      <GlobalMemoryTransfer />
       {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></Paper>}
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="h6" component="h2" fontWeight={800} sx={{ mb: 1.5 }}>
