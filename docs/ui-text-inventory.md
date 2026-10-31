@@ -37,3 +37,7 @@ Remaining conditional states are explicit: supported-speech remote-processing co
 ### Chat instruction limit feedback
 
 Chat settings keeps over-limit instructions editable and marks the Instructions field with “Use 100,000 characters or fewer.” Save becomes available again at the existing server boundary (100,000 JavaScript string units); the draft is not truncated. Core and Branches use the same `ChatContextSettings` through `ConversationView`. The focused offline component contract checks the error, exact boundary and corrected whole-text submission; it does not qualify browser or screen-reader behavior.
+
+### Permission status contrast
+
+Available, unrestricted permission chips retain their green icon/border and “Allowed” label, with theme primary text for readable label contrast on the containing Paper. This shared editor serves product, workflow, Chat and Agent settings. Mounted Chat settings exposed the original Core light-theme label at 3.85:1; corrected-build mounted verification remains required.
