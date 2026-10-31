@@ -145,3 +145,25 @@ for(const [label,source,timeoutMs,expected] of [
  await f.service.tick(true);const result=await until(()=>{const e=f.branches.execution(f.execution.id);return e.state==='failed'&&e},'explicit Script failure');
  assert.equal(result.output,expected);assert.equal(f.branches.detail(f.execution.id).attempts[0].scriptEvidence.error,expected);f.done();
 });
+
+test('resource await is an admission boundary and stop before release preserves a prepared notification',options,async t=>{
+ let release,entered;let notifications=0;
+ const gate=new Promise(resolve=>{release=resolve}),ready=new Promise(resolve=>{entered=resolve});
+ const resources={errors:()=>[],async tick(){entered();await gate},requestStop(){},async stop(){release()}};
+ const f=fixture(t,'// no Script should launch',{resources,notifyAction:()=>{notifications++;return 'unexpected'}});
+ const branch=f.branches.execution(f.execution.id).branchId;
+ const deployed=f.branches.getBranch(branch);
+ const action=f.branches.deploy({chatId:'',branchId:branch,expectedVersionId:deployed.versionId,idempotencyKey:'action-sibling',definition:{schema:'ponderosa.branch.v1',name:'Action boundary',trigger:{kind:'manual'},entry:'notify',controls:[],edges:[],steps:[{id:'notify',kind:'action',action:'notify',configRefs:[]}],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:f.root}}});
+ const execution=f.branches.accept(action.id,'action','notification');
+ let finished=false;const pending=f.service.tick(true).then(()=>{finished=true});
+ try{
+  await ready;assert.equal(finished,false);
+  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE lease_owner IS NOT NULL OR process_identity_json IS NOT NULL").get().n,0);
+  assert.equal(notifications,0);
+  f.service.requestStop();
+ }finally{release();await pending}
+ assert.equal(notifications,0);
+ assert.equal(f.store.sqlite.prepare('SELECT a.state FROM branch_actions a JOIN branch_attempts attempt ON attempt.id=a.attempt_id JOIN branch_step_executions s ON s.id=attempt.step_execution_id WHERE s.execution_id=?').get(execution.id).state,'pending');
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE lease_owner IS NOT NULL OR process_identity_json IS NOT NULL").get().n,0);
+ f.done();
+});

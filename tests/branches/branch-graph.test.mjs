@@ -426,3 +426,26 @@ test('inspection projects condition choices, skipped arms, fork start and join e
  const lease=f.branches.claimScript('inspect');f.branches.settleScript(lease,{failed:false,output:'B'});f.branches.advance();f.reopen();detail=f.branches.detail(f.execution.id);
  assert.ok(detail.decisions.some(d=>d.kind==='join_resolved'&&/satisfied: 1 of 2/.test(d.message)));
 });
+
+test('limit-failed finish Join stops unstarted remainder but preserves an existing Script lease',async t=>{
+ const f=fixture(t,wideForkGraph(3,{condition:true}),{maxTraversals:3});
+ // One committed unit at a time exposes the sibling lease before the limit is hit.
+ let lease;
+ for(let n=0;n<8&&!lease;n++){
+  f.branches.unitTransaction(()=>f.branches.advance())();
+  lease=f.branches.claimScript('already-leased');
+ }
+ assert.ok(lease);assert.equal(f.branches.detail(f.execution.id).steps.find(s=>s.id===f.branches.detail(f.execution.id).attempts.find(a=>a.id===lease.attemptId).stepExecutionId).stepId,'s1');
+ f.branches.advance();
+ const db=f.store.sqlite,detail=f.branches.detail(f.execution.id);
+ assert.equal(detail.execution.traversals,3);
+ assert.equal(db.prepare('SELECT state FROM branch_attempts WHERE id=?').get(lease.attemptId).state,'leased');
+ assert.equal(detail.execution.state,'running','leased remainder still owns settlement authority');
+ assert.ok(db.prepare("SELECT COUNT(*) n FROM branch_paths WHERE execution_id=? AND state='canceled'").get(f.execution.id).n>0);
+ assert.equal(f.branches.claimScript('must-not-start'),undefined);
+ assert.match(db.prepare('SELECT result_json FROM branch_forks WHERE execution_id=?').get(f.execution.id).result_json,/maxTraversals.*limit 3, attempted 4/);
+ f.branches.settleScript(lease,{failed:false,output:'known sibling result'});f.branches.advance();
+ assert.equal(f.branches.execution(f.execution.id).state,'failed');assert.equal(f.branches.execution(f.execution.id).traversals,3);
+ assert.equal(db.prepare('SELECT state FROM branch_attempts WHERE id=?').get(lease.attemptId).state,'completed');
+ await f.branches.unitSaver.drain();
+});

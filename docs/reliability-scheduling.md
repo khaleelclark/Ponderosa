@@ -47,3 +47,17 @@ Prepared validation (not yet executed): full `branch-calls`,
 safety groups in one final consolidated batch after fresh dependent builds and
 typechecks. Preserve the two original immediate-next-lease assertions unchanged.
 No reliability streak is restarted by these focused regressions.
+
+
+A Join that has failed from a canonical traversal/loop limit stops unstarted leaf
+remainder paths even when its ordinary remainder policy is `finish`. It retains
+leased, running, uncertain, Request/process and child-execution authority, plus
+nested path owners, for their existing settlement or cleanup. Ordinary failures,
+successful/partial joins and all existing `cancel` behavior keep their policy.
+No traversal count is raised and no completed result is reclassified.
+
+Resource work is awaited before Script or notification admission in a workflow
+pass; stop is checked again at that await boundary. The outer scheduler tracks
+the pass separately so unrelated Run admission and exact cancellation can still
+proceed while resource provisioning waits. Cleanup-only passes also await their
+resource maintenance before returning or reporting errors.

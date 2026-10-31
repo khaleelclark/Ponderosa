@@ -1961,7 +1961,16 @@ export class BranchStore {
     catch { result = { failed: true, output: "Joined text exceeds the inline contract; use explicit artifact references" }; }
     this.run("UPDATE branch_forks SET state = 'closed', selected_paths_json = ?, result_json = ? WHERE id = ?", stableJson(selected.map(a => a.path_id)), stableJson(result), fork.id);
     this.checkpoint(execution.id, `joined:${fork.id}`, "join_resolved", { forkInvocationId: fork.id, selectedPathIds: selected.map(a => a.path_id), result }, now);
-    if (join.remainder === "cancel") for (const child of children) if (!arrivals.some(a => a.path_id === child.id)) this.cancelPath(child.id, now);
+    for (const child of children) if (!arrivals.some(a => a.path_id === child.id)) {
+      // A failed limit cannot release fresh remainder work. Retain leased/live
+      // work and nested owners for their existing settlement/cleanup authority.
+      const unstartedLimitRemainder=result.failed&&limit&&!this.row(`SELECT 1 FROM branch_paths WHERE parent_path_id=?
+        UNION ALL SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+          WHERE s.path_id=? AND (a.state IN ('leased','running','outcome_unknown') OR a.request_id IS NOT NULL OR a.process_identity_json IS NOT NULL)
+        UNION ALL SELECT 1 FROM branch_executions e JOIN branch_attempts a ON a.id=e.parent_attempt_id
+          JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.path_id=? LIMIT 1`,child.id,child.id,child.id);
+      if (join.remainder === "cancel" || unstartedLimitRemainder) this.cancelPath(child.id, now);
+    }
     this.updateMapState(fork.id);
     const edge = definition.edges.find(e => e.from === join.id && e.on === (result.failed ? "failure" : "success"));
     this.followEdge(fork.parent_path_id, edge, result.output ?? "", result, now);
