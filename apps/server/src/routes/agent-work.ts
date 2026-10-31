@@ -9,13 +9,14 @@ import type {
   AgentWorkItemDto,
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
+import { redactProviderDiagnostic } from "../provider-failure-event.js";
 import { sendInspectorJson } from "../inspector-response.js";
 
 export class AgentWorkProjection {
   constructor(
     private readonly store: Pick<
       AgentStore,
-      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds" | "getAgent"
+      "sqlite" | "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds" | "getAgent"
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
@@ -26,6 +27,25 @@ export class AgentWorkProjection {
       "listDecisionPage" | "getDecision" | "decisionsForRuns"
     >,
   ) {}
+
+  private failureDetails(projectId: string, recordId: string): AgentWorkItemDto["details"] {
+    const failure = this.store.sqlite.prepare(`
+      SELECT event.payload_json FROM scheduler_runs scheduler
+      JOIN provider_inputs input ON input.scheduler_run_id = scheduler.id
+      JOIN (SELECT * FROM events WHERE agent_id = (
+        SELECT agent_id FROM scheduler_runs WHERE project_id = ? AND id = ?
+      ) ORDER BY seq DESC LIMIT 128) event ON event.agent_id = scheduler.agent_id
+      LEFT JOIN activity_projection activity ON activity.agent_id = event.agent_id AND activity.seq = event.seq
+      WHERE scheduler.project_id = ? AND scheduler.id = ? AND event.type = 'error'
+        AND COALESCE(activity.execution_id, json_extract(event.payload_json, '$.executionId')) = input.execution_id
+      ORDER BY event.seq DESC LIMIT 1
+    `).get(projectId, recordId, projectId, recordId) as { payload_json: string } | undefined;
+    if (!failure) return [];
+    const message: unknown = JSON.parse(failure.payload_json).message;
+    return typeof message === "string"
+      ? [{ label: "Provider failure detail", value: redactProviderDiagnostic(message).slice(0, 4000) }]
+      : [];
+  }
 
   inspect(input: {
     projectId: string;
@@ -63,6 +83,11 @@ export class AgentWorkProjection {
               : `${agentName(item.agentIds[0])}'s wake-up ended ${item.state.replaceAll("_", " ")}`;
       } else if (item.kind === "run") {
         item.title = `${agentName(item.agentIds[0])} Run`;
+        const details = this.failureDetails(input.projectId, item.recordId);
+        if (details?.length) item.details = [
+          ...(this.coordination.agentWorkItemDetails({ ...input, kind: "run", recordId: item.recordId }) ?? []),
+          ...details,
+        ];
       }
     }
 
@@ -429,6 +454,7 @@ export class AgentWorkProjection {
         ...input,
         kind: input.kind as Exclude<AgentWorkItemDto["kind"], "decision">,
       });
+      if (input.kind === "run" && details) details = [...details, ...(this.failureDetails(input.projectId, input.recordId) ?? [])];
       if (input.kind === "request") {
         const lifecycle = this.coordination.requestLifecycleDetails({
           projectId: input.projectId,
