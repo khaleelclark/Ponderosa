@@ -40,6 +40,6 @@ Chat settings keeps over-limit instructions editable and marks the Instructions 
 
 ### Permission status contrast
 
-Available, unrestricted permission chips retain their green icon/border and “Allowed” label, with theme primary text for readable label contrast on the containing Paper. This shared editor serves product, workflow, Chat and Agent settings. Mounted Chat settings exposed the original Core light-theme label at 3.85:1; corrected-build mounted verification remains required.
+Available, unrestricted permission chips retain their green icon/border and “Allowed” label, with theme primary text applied only to `.MuiChip-label` for readable label contrast on the containing Paper. The root keeps its success color so the icon inherits green; warning and unavailable states receive no primary-text override. This shared editor serves product, workflow, Chat and Agent settings. Mounted Chat settings exposed the original Core light-theme label at 3.85:1; corrected-build mounted verification remains required.
 
 Workflow-owned Chats: Delete opens “Workflow-owned Chat” with an explicit whole-workflow removal explanation and “Open workflow settings” link; it never offers an independent Delete Chat confirmation. Ordinary Core Chats retain member-reviewed deletion.
