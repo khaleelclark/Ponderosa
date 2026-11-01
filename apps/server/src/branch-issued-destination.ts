@@ -33,6 +33,7 @@ export class BranchIssuedDestinationService {
   };
  }
  private valid(input:BranchIssuedDestinationInput):void {
+  if(input.historicalReviewHash!==undefined&&(typeof input.historicalReviewHash!=='string'||!/^[a-f0-9]{64}$/.test(input.historicalReviewHash)))throw Error('Exact server historical review hash required');
   if(typeof input.commandKey!=='string'||!input.commandKey.trim()||input.commandKey.length>200||!Number.isSafeInteger(input.checkpointId)||input.checkpointId<1
    ||typeof input.expectedHash!=='string'||!/^[a-f0-9]{64}$/.test(input.expectedHash)||input.reconcileEffects!==true)throw Error('Exact issued checkpoint command and effect reconciliation required');
  }
@@ -64,14 +65,14 @@ export class BranchIssuedDestinationService {
    const readiness=ownerResult.readiness;
    const checkpoint=readiness&&this.db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(receipt.owner.executionId,readiness.checkpointId) as Row|undefined;
    if(!checkpoint||checkpoint.content_hash!==readiness.checkpointHash||hash(JSON.parse(checkpoint.snapshot_json))!==checkpoint.content_hash)throw Error('Destination final checkpoint receipt unavailable');
-   return {commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,disclosure,state:'admitted',restoreSupported:true,receipt};
+   return {...(r.historicalPartition?{historicalPartition:r.historicalPartition}:{}),commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,disclosure,state:'admitted',restoreSupported:true,receipt};
   }
   if(row.state==='admitted')state='admitted';
   else if(row.stage_json){
    const stage=JSON.parse(row.stage_json),op=this.store.getAgentCreationOperation(stage.importPlan.creationOperationId);
    state=op?.status==='canonical_committed'&&(op.result as Row)?.branchDestinationPrepared===true?'awaiting_disclosure':'import_unknown';
   }
-  return {commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,disclosure,state,restoreSupported:state==='admitted'};
+  return {...(r.historicalPartition?{historicalPartition:r.historicalPartition}:{}),commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,disclosure,state,restoreSupported:state==='admitted'};
  }
  list(branchId:string,executionId:string):BranchIssuedDestinationDto[] {
   if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Branch execution unavailable');

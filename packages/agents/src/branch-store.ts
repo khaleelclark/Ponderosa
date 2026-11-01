@@ -1,10 +1,11 @@
+import {captureGenerationOneHost,generationOneEvidence,type GenerationOneProof} from './branch-resource-generation-one.js';
 import {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';
 import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import {generationExitKey,requireGenerationExitIntakeFence,readGenerationExitCapture,fenceGenerationExitCapture,reserveGenerationExitCapture,sealGenerationExitCapture} from './branch-generation-exit-capture.js';
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import {readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
-import {readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+import {encodeIssuedResourceContinuation,readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {issuedResourceCapture,reserveIssuedResourceCapture,sealIssuedResourceCapture} from './branch-issued-resource-capture.js';
 import {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
@@ -863,6 +864,7 @@ export class BranchStore {
       const saved=readIssuedResourceContinuation(this.sqlite,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.continuation;
       if(!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
         ||!branch||branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Current issued destination pins/owner unavailable');
+      if(c.generationRetry?input.historicalReviewHash!==payloadHash([c.generationRetry.selection]):input.historicalReviewHash!==undefined)throw Error('Exact server historical selection review required');
       const definition=this.version(branchId,c.versionId)!.definition;
       if(this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||definition.steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Branch destination capabilities restricted');
       if(saved.custody.agentIds.length>(definition.policy.maxEphemeralAgents??100))throw Error('Destination ephemeral Agent budget unavailable');
@@ -871,6 +873,7 @@ export class BranchStore {
       const idMap=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
       const reservation:import('@ponderosa/core').CoordinationDestinationReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,
         commandKey:input.commandKey,operatorId:chat.operatorId,reconcileEffects:true,custody:saved.custody,
+        ...(c.generationRetry?{historicalPartition:[c.generationRetry.selection]}:{}),
         destination:{projectId:chat.projectId,conversationId:chat.conversationId,executionId:next.id,resourceStepId:idMap[saved.selected.resources![0]!.step_execution_id]!,resourceGeneration:0}};
       const reserved=this.coordination.reserveCoordinationDestination(reservation,authority,now);
       const plan={schema:'ponderosa.branch.issued-destination.v1',input,reservation,admissionId:reserved.admissionId,idMap,chatCreationKey:chat.creationKey};
@@ -953,13 +956,18 @@ export class BranchStore {
     return true;
   }
   /** Host-only current retirement/custody predicate; does not grant destination authority. */
-  resourceHistoryCustodySettled(executionId:string):boolean {
+  resourceHistoryCustodySettled(executionId:string,generationOne?:GenerationOneProof):boolean {
     for(const r of this.rows('SELECT * FROM branch_resources WHERE execution_id=?',executionId)){
       const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?',r.step_execution_id).map(m=>m.agent_id);
       const chat=this.resourceOperation(r.step_execution_id,'chat'),imported=this.resourceOperation(r.step_execution_id,'import');
       if(!this.resourceOperationAuditMatches(r,'chat',chat)||!this.resourceOperationAuditMatches(r,'import',imported)||chat&&!this.resourceOperationReleased(r,chat))return false;
       // Retained mutable lists cannot erase identities from the owned completed import audit.
-      const contexts=this.rows('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=?',r.step_execution_id);
+      let contexts=this.rows('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=?',r.step_execution_id);
+      if(generationOne&&r.generation===1){
+        const proof=generationOneEvidence(this.sqlite,generationOne.originalSelected),old=contexts.filter(c=>c.generation===0);
+        if(proof.selected.execution![0]!.id!==executionId||proof.selected.resources![0]!.step_execution_id!==r.step_execution_id||old.length!==1||stableJson(old[0])!==stableJson(proof.retired.context))return false;
+        contexts=contexts.filter(c=>c.generation!==0);
+      }
       const context=contexts[0],ids=imported?.state==='completed'?imported.result?.agentIds:[];
       if(this.row("SELECT 1 FROM branch_resource_members WHERE step_execution_id=? AND origin!='template'",r.step_execution_id))return false;
       if(!Array.isArray(ids)||ids.some((id:unknown)=>typeof id!=='string'||!id.length)||new Set(ids).size!==ids.length
@@ -1289,11 +1297,19 @@ export class BranchStore {
     }).immediate();
   }
   issuedResourceCapture(executionId:string,stepId:string,commandKey:string) {return issuedResourceCapture(this.sqlite,executionId,stepId,commandKey);}
-  reserveIssuedResourceCapture(executionId:string,stepId:string,generation:number,commandKey:string) {
+  previewGenerationOneCapture(executionId:string){
+    return this.sqlite.transaction(()=>{
+      const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current generation capture restricted');
+      const value=captureGenerationOneHost(this.sqlite,selectBranchUnit(this.sqlite,executionId));
+      const issuedContinuation=encodeIssuedResourceContinuation(this.sqlite,executionId,value.selected,value.host,false,value.generationRetry);
+      return {reviewHash:payloadHash({...value,issuedContinuation}),historicalReviewHash:payloadHash([value.generationRetry.selection]),historicalPartition:[value.generationRetry.selection],generation:1 as const};
+    })();
+  }
+  reserveIssuedResourceCapture(executionId:string,stepId:string,generation:number,commandKey:string,expectedReviewHash?:string) {
     return this.unitTransaction(()=>{
       const execution=this.execution(executionId);
       if(!execution||this.restricted(execution.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current resource creation authority restricted');
-      return reserveIssuedResourceCapture(this.sqlite,executionId,stepId,generation,commandKey);
+      return reserveIssuedResourceCapture(this.sqlite,executionId,stepId,generation,commandKey,expectedReviewHash);
     }).immediate();
   }
   sealIssuedResourceCapture(executionId:string,stepId:string,commandKey:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt):void {

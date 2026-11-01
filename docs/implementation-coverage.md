@@ -611,3 +611,13 @@ for its explicit API; no called-tree historical admission or later-generation
 consumer is implied. Parallel/EXIT/larger/later-generation trees remain unsupported.
 No tests/checks/build/types/Node/native/browser/preparation/execution/migrations/
 push/deploy/newworkers; no end-to-end qualification or acceptance claim.
+
+Serial standalone one-resource gen1 destination SOURCE is connected on the shared
+serial retry/current-host codec: exact old seal/retirement and failed attempt,
+explicit current roots, current package CAS, server historical selector discovery/
+SDK, real human all-facts disclosure, final policy, existing one-owner atomic
+admission/receipts/readback. Integration separates sealed original Project audit-
+read from fresh destination policy. Deferred actual producer->retry->capture->
+review->admit fixture includes policy drift and owner rollback; nothing executed.
+Parallel/later generations/called-tree admission and live native/provider/package
+qualification remain unsupported. See branch-generation-one-destination.md.

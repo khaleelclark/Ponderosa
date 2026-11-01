@@ -962,8 +962,8 @@ async function openCalledTreeResource(store,branches,dir,executionId,branchId){
  store.createAgent(p.id,{title:'Called source',engine:'codex',conversationId:chat.id},undefined,id);
  const result={rootAgentId:id,agentIds:[id],agentRefs:{worker:id}};
  branches.unitTransaction(()=>{store.updateAgentCreationOperation(op.id,{status:'completed',result});branches.completeResourceOperation(r.step_execution_id,'import',token,result);})();await branches.unitSaver.drain();
- const source=branches.reserveResourceCapture(r.step_execution_id),receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-called-opening',sha256:hash('opening'),byteLength:1};
- branches.finishResourceCapture(source,receipt);await branches.unitSaver.drain();branches.bindResource(r.step_execution_id,result);await branches.unitSaver.drain();
+ if(branches.resourceCaptureEligible(r.step_execution_id)){const source=branches.reserveResourceCapture(r.step_execution_id),receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-called-opening',sha256:hash('opening'),byteLength:1};branches.finishResourceCapture(source,receipt);await branches.unitSaver.drain();}
+ branches.bindResource(r.step_execution_id,result);await branches.unitSaver.drain();
  return {requestId:store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id,agentId:id,chatId:chat.id,stepId:r.step_execution_id};
 }
 async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false,calledResources=false){
@@ -1502,10 +1502,11 @@ test('disclosure API exposes exact human confirmation and rejects fabricated ide
 
 // Deferred composer regression: actual SQLite owner/runtime paths, inert package
 // and managed-folder adapters; no provider, Script or browser process is started.
-async function issuedDestinationFixture(t,mode='async',parallel=false){
- const f=await reservationHistoryFixture(t,mode,false,parallel),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
- let saved;
- await f.finish(f.source.id,undefined,undefined,async({stepId,generation})=>{
+async function issuedDestinationFixture(t,mode='async',parallel=false,existing){
+ const f=existing?.f??await reservationHistoryFixture(t,mode,false,parallel);
+ if(!existing){const prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);}
+ let saved=existing?.saved;
+ if(!existing)await f.finish(f.source.id,undefined,undefined,async({stepId,generation})=>{
   const intent=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'composer-cut');
   const receipt={...intent.source,version:1,custodyId:hash(intent.source.checkpointId),boundaryId:'inert-composer-boundary',sha256:hash('inert-composer-package'),byteLength:1};
   f.store.sqlite.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'composer-cut',receipt))();
@@ -1514,11 +1515,13 @@ async function issuedDestinationFixture(t,mode='async',parallel=false){
  const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
  const {BranchDisclosureReviewService}=await import('../../apps/server/dist/branch-disclosure-review.js');
  const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ const historical=saved.snapshot.issuedContinuation?.generationRetry?.selection;
+ const allowedReceipts=[saved.receipt,...(historical?[f.branches.generationExitCapture(f.source.id,historical.stepId,0).receipt]:[])];
  let bytes=true,creates=0,imports=0,reads=0,verifications=0;
  const packageFor=receipt=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date(0).toISOString(),sourceLabel:'Inert captured organization',rootRef:receipt.agentIds[0],
   agents:receipt.agentIds.map(ref=>({ref,title:'Retained worker',engine:'codex',sourceChat:{ref:receipt.sourceChatId,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))});
  const engine={
-  readCheckpoint:async receipt=>{reads++;assert.deepEqual(receipt,saved.receipt);if(!bytes)throw Error('missing issued bytes');return packageFor(receipt);},
+  readCheckpoint:async receipt=>{reads++;assert.ok(allowedReceipts.some(r=>stableJson(r)===stableJson(receipt)));if(!bytes)throw Error('missing issued bytes');return packageFor(receipt);},
   verifyCheckpointNow:receipt=>{verifications++;assert.deepEqual(receipt,saved.receipt);if(!bytes)throw Error('missing issued bytes');return receipt.sha256;},
   validateAgent:()=>{},
   importAgent:async(projectId,chatId,pkg,engines,key,{branchHooks:hooks})=>{
@@ -1542,12 +1545,12 @@ async function issuedDestinationFixture(t,mode='async',parallel=false){
  const services=()=>{
   const coordination=new CoordinationV3Store(f.store.sqlite),resources=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));
   resources.setPackageEngine(engine);
-  const disclosure=new BranchDisclosureReviewService(f.store,f.branches,coordination,(...args)=>resources.verifyHistoricalCustody(...args));
+  const disclosure=new BranchDisclosureReviewService(f.store,f.branches,coordination,(...args)=>resources.verifyHistoricalCustody(...args),false,receipt=>engine.readCheckpoint(receipt));
   const createChat=async(input,key,owner)=>{creates++;assert.ok(f.store.sqlite.prepare('SELECT 1 FROM coordination_destination_admissions WHERE conversation_id IS NOT NULL AND state=\'reserved\'').get(),'hold commits before any Chat publication');
    const project=f.store.createProject({...input,hostPath:f.branches.localConfiguration(f.branch.id).directories.root,chatOwned:true,...owner},{idempotencyKey:key,payloadHash:hash(stableJson({input,owner}))});return f.store.getConversation(project.lastConversationId);};
   return {disclosure,composer:new BranchIssuedDestinationService(f.store,f.branches,coordination,disclosure,()=>engine,createChat)};
  };
- const input={commandKey:'restore-issued-cut',checkpointId:saved.checkpointId,expectedHash:saved.checkpointHash,reconcileEffects:true};
+ const input={commandKey:'restore-issued-cut',checkpointId:saved.checkpointId,expectedHash:saved.checkpointHash,reconcileEffects:true,...(historical?{historicalReviewHash:hash(stableJson([historical]))}:{})};
  return {f,saved,input,services,setBytes:value=>{bytes=value;},get counts(){return {creates,imports,reads,verifications};}};
 }
 for(const mode of ['async','sync'])test(`issued ${mode} composer reserves -> stages -> human approves -> atomically admits -> exact restart readback`,async t=>{
@@ -1685,7 +1688,7 @@ test('Branch abandoned capture needs synchronous package retirement and cannot r
 
 
 // Deferred source: canonical Request failure drives the real fresh-context retry.
-// Deliberately does not claim later-generation admission is supported.
+// Deferred serial gen1 consumer source follows retirement; parallel remains retirement-only and nothing is qualified.
 for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fresh resource generation ${mode} parallel=${parallel} retirement retains exact evidence transactionally`,async t=>{
  const f=await reservationHistoryFixture(t,mode,false,parallel,true),prefix=await f.claim();
  f.settle(prefix);await f.advance(f.source.id);
@@ -1822,8 +1825,52 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
  await f.reopen();
  const saved=f.store.sqlite.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(retained.execution_id,retained.command_key);
  assert.deepEqual(saved,retained);
+ if(!parallel)await completeGenerationOneDestination(t,f,mode);
 });
 
+// Full deferred serial producer->retry->current capture->human review->one admission source.
+async function completeGenerationOneDestination(t,f,mode){
+ const db=f.store.sqlite,current=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
+ const preview=f.branches.previewGenerationOneCapture(f.source.id);
+ assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:0`);assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/retirement linkage/);throw Error('restore retirement');})(),/restore retirement/);
+ assert.equal(preview.historicalPartition[0].generation,0);assert.equal(preview.historicalPartition[0].stepId,current.stepId);
+ assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,1,'gen1-cut','0'.repeat(64)),/preview/);
+ const journal=f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,1,'gen1-cut',preview.reviewHash);
+ assert.equal(journal.snapshot.hostDependencies.roots.length,1);assert.equal(journal.snapshot.hostDependencies.roots[0].requestId,current.requestId);
+ assert.equal(journal.snapshot.selected.attempts.filter(a=>a.request_id).length,1);
+ assert.equal(journal.snapshot.issuedContinuation.generationRetry.originalSelected.attempts.filter(a=>a.request_id).length,2);
+ const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'inert-gen1-current',sha256:hash('gen1 current private bytes'),byteLength:1};
+ db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,current.stepId,'gen1-cut',receipt))();
+ const saved=f.branches.issuedResourceCapture(f.source.id,current.stepId,'gen1-cut');
+ new CoordinationV3Store(db).updateRequest({requestId:current.requestId,updateId:'gen1-source-settled',kind:'completed',actor:{kind:'agent',id:current.agentId},payload:{text:'known gen1 result'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const deletion=f.store.previewAgentDeletion([current.agentId]);f.store.deleteAgentSubtrees([current.agentId],deletion.previewHash,x=>new CoordinationV3Store(db).handleAgentDeletion(x));
+ const chat=f.store.commitConversationDeletion(current.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(current.chatId);f.branches.resourceRetired(current.stepId);await f.branches.unitSaver.drain();
+ const x=await issuedDestinationFixture(t,mode,false,{f,saved}),{composer,disclosure}=x.services();
+ assert.equal(f.branches.execution(f.source.id).state,'completed');
+ await assert.rejects(composer.prepare(f.branch.id,f.source.id,{...x.input,historicalReviewHash:'0'.repeat(64)}),/historical selection/);
+ const prepared=await composer.prepare(f.branch.id,f.source.id,x.input);
+ const oldProject=f.branches.generationExitCapture(f.source.id,current.stepId,0).identity.projectId,getProject=f.store.getProject;
+ f.store.getProject=function(id){return id===oldProject?undefined:getProject.call(this,id);};
+ await assert.rejects(disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId),/historical Project operator audit-read/);f.store.getProject=getProject;
+ const review=await disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ const historical=review.facts.filter(f=>f.kind==='historical_generation');assert.equal(historical.length,1);assert.equal(historical[0].destinationAgentIds.length,1);
+ await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'explicit-gen1-human',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
+ new CapabilityPolicyStore(db).put({scopeKind:'chat',scopeId:prepared.destination.conversationId,expectedRevision:0,restrictedCapabilityIds:[]});
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash),/approval/);
+ const freshReview=await disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'explicit-gen1-final-policy',action:'approve',reviewHash:freshReview.reviewHash,expectedRevision:1});
+ const finalReviewHash=freshReview.reviewHash;
+ const compose=f.branches.composeIssuedDestination;f.branches.composeIssuedDestination=function(...args){compose.apply(this,args);throw Error('gen1 owner rollback');};
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,finalReviewHash),/gen1 owner rollback/);f.branches.composeIssuedDestination=compose;
+ assert.equal(db.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' AND identity=?").get(prepared.admissionId),undefined);
+ const admitted=await composer.admit(f.branch.id,f.source.id,x.input.commandKey,finalReviewHash),proof=admitted.receipt.historicalPartition;
+ assert.equal(proof.length,1);assert.equal(proof[0].dispatchable,false);assert.deepEqual(proof[0].selection,preview.historicalPartition[0]);
+ assert.deepEqual(Object.keys(admitted.receipt.requestMap),[current.requestId]);assert.deepEqual(Object.keys(admitted.receipt.agentMap),[current.agentId]);
+ assert.equal(db.prepare('SELECT count(*) n FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND a.number=1 AND s.id=?').get(prepared.destination.executionId,admitted.receipt.owner.resourceStepId).n,0,'old failed attempt is evidence only');
+ await f.reopen();const counts=x.counts,read=await x.services().composer.admit(f.branch.id,f.source.id,x.input.commandKey,finalReviewHash);
+ assert.deepEqual(read.receipt.historicalPartition,proof);assert.deepEqual(x.counts,counts);
+}
 
 // Deferred isolation fixture: the second group slot must hold Branch dispatch too.
 for(const mode of ['async','sync'])test(`group reservation ${mode} holds every destination execution until whole admission`,async t=>{

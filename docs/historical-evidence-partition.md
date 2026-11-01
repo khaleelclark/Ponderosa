@@ -27,3 +27,12 @@ The existing admission receipt includes `historicalPartition` with exact selecti
 Remaining work is separate: Branch must compose a later-generation current cut/retained host and explicitly pass these selections through its retry/destination consumer. Existing issued-resource consumer restrictions are not widened here. A checkpoint containing mixed old/current roots is not silently split or repaired; the current cut must explicitly exclude retired evidence, with complete historical selections supplied separately. No previously deleted preupgrade generation is reconstructed, no provider/native state is restored, and no UI flow or live qualification is claimed.
 
 Deferred regression source extends the real serial/parallel producer fixture: exact sealed proof after original deletion, full-byte preservation, no new Agents/Requests/activations from evidence selection, changed hash/unmapped audience/alias/current-root/missing-journal refusal, immutable receipt exact readback after source removal and transaction rollback. The partition fixture uses inert current destination references and does not qualify a complete real imported destination or provider/package execution.
+
+Branch gen1 integration supplies the narrow serial consumer described in
+branch-generation-one-destination.md. Original historical Project identity is
+bound by the seal/fence/provider evidence and exact original Branch/execution/
+Step; a fresh destination Project need not equal it. Explicit human review now
+checks original historical Project audit-read/deletion-pending status separately
+from current destination policy in candidate, prepare and final authorization.
+No old actor/audience/dispatch map is changed. Broader retry families and all
+executable qualification remain separate.

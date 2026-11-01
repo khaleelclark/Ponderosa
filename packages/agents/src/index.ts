@@ -213,3 +213,5 @@ export {generationExitKey,readGenerationExitCapture,type BranchPriorGenerationEn
 export {readDestinationHistoricalPartition,destinationHistoricalFacts} from './coordination-v3-historical-partition.js';
 
 export {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';
+
+export {captureGenerationOneHost,generationOneEvidence,type GenerationOneProof} from './branch-resource-generation-one.js';

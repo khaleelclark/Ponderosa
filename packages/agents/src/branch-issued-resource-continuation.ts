@@ -1,3 +1,4 @@
+import {generationOneReplay,type GenerationOneProof} from './branch-resource-generation-one.js';
 import type Database from 'better-sqlite3';
 import type {BranchDefinition,CheckpointPackageReceipt} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
@@ -10,7 +11,7 @@ import {validateBranchConfiguration} from './branch-parameters.js';
 type Row=Record<string,any>;
 
 /** Uses the existing Script/control/parallel replay; this envelope grants no admission. */
-export function encodeIssuedResourceContinuation(db:Database.Database,executionId:string,selected:Selected,host:BranchHostCut,group=false):Row {
+export function encodeIssuedResourceContinuation(db:Database.Database,executionId:string,selected:Selected,host:BranchHostCut,group=false,generationRetry?:GenerationOneProof):Row {
  if(!db.inTransaction)throw Error('Issued continuation encoding requires the capture transaction');
  const owner=db.prepare(`SELECT e.configuration_json,v.definition_json,v.content_hash version_hash,b.content_hash binding_hash,b.bindings_json
   FROM branch_executions e JOIN branch_versions v ON v.id=e.version_id AND v.branch_id=e.branch_id
@@ -24,7 +25,7 @@ export function encodeIssuedResourceContinuation(db:Database.Database,executionI
   ||host.bindingPin.revisionId!==e.binding_revision_id||host.bindingPin.sha256!==owner.binding_hash)throw Error('Issued continuation pins/configuration unsupported');
  const audit=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(executionId);
  const value={schema:'ponderosa.branch.issued-resource-continuation.v1',compatibility:SCRIPT_CONTINUATION_COMPATIBILITY,
-  ...(group?{group:true}:{}),versionId:e.version_id,versionHash:owner.version_hash,bindingRevisionId:e.binding_revision_id,bindingHash:owner.binding_hash,configuration:safe,
+  ...(group?{group:true}:{}),...(generationRetry?{generationRetry}:{}),versionId:e.version_id,versionHash:owner.version_hash,bindingRevisionId:e.binding_revision_id,bindingHash:owner.binding_hash,configuration:safe,
   audit,auditSha256:payloadHash(audit),frontierSha256:resourceCaptureFrontierHash(selected),hostCutSha256:payloadHash(host)};
  if(!issuedResourceContinuationSupported(db,executionId,selected,host,value))throw Error('Issued executable continuation replay unsupported');
  return value;
@@ -48,8 +49,10 @@ export function issuedResourceContinuationSupported(db:Database.Database,executi
   verifyHostProvenance(host);
   const resourceCleanup=e.state==='waiting'&&selected.paths?.length===1&&selected.paths[0]?.state==='completed';
   if(resourceCleanup&&(e.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'||selected.resources[0]?.state!=='draining'))return false;
-  const context:ScriptOwnerContext={resourceFrontier:true,issuedResource:true,...(c.group===true?{issuedGroup:true}:{}),resourceCleanup,terminal:e.state==='completed'||resourceCleanup,waiting:e.state==='waiting'&&!resourceCleanup,descendantTraversals:0,descendantLoops:0,children:{}};
-  return replayScriptCut(db,executionId,selected,definition,c.configuration,c.audit,undefined,undefined,context,host);
+  const retry=c.generationRetry?generationOneReplay(db,selected,host,c.generationRetry):undefined;
+  if(selected.resources[0]?.generation===1&&!retry||retry&&c.group)return false;
+  const context:ScriptOwnerContext={...(retry?{resourceRetry:retry}:{}),resourceFrontier:true,issuedResource:true,...(c.group===true?{issuedGroup:true}:{}),resourceCleanup,terminal:e.state==='completed'||resourceCleanup,waiting:e.state==='waiting'&&!resourceCleanup,descendantTraversals:0,descendantLoops:0,children:{}};
+  return replayScriptCut(db,executionId,retry?c.generationRetry.originalSelected:selected,definition,c.configuration,c.audit,undefined,undefined,context,retry?.replayHost??host);
  }catch{return false;}
 }
 

@@ -74,3 +74,10 @@ owners, human disclosure, owner/Chat/Agent/Request/Step/import/resource maps,
 all owner command receipts and post-admit checkpoints. No usable destination
 consumer, historical partition/admission, later-generation replay, native/provider
 qualification or complete feature claim is made by this producer slice.
+
+The serial one-resource generation-one destination successor now supplies explicit
+current-cut/retained-host replay and exact historical selections through the
+existing singular capture/disclosure/admit/readback path. See
+[branch-generation-one-destination.md](branch-generation-one-destination.md).
+This supersedes only that narrow source hold, not parallel/later-generation,
+called-tree admission, missing-old-proof or executable qualification limits.

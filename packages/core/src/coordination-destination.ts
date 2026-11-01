@@ -64,10 +64,13 @@ export interface BranchDisclosureReviewDto {
 
 /** Single supported issued-resource destination; effects require explicit commands. */
 export interface BranchIssuedDestinationInput {
+  /** Copy from the server's exact generation-one selection preview. */
+  historicalReviewHash?:string;
  commandKey:string; checkpointId:number; expectedHash:string; reconcileEffects:true;
  accessSettingsResolution?:import('./dto/agents.js').ImportAgentPackageRequest['accessSettingsResolution'];
 }
 export interface BranchIssuedDestinationDto {
+ historicalPartition?:CoordinationHistoricalGenerationSelection[];
  commandKey:string; admissionId:string; checkpointId:number; checkpointHash:string;
  destination:CoordinationDestinationReservation['destination'];
  disclosure:{revision:number;state:'unreviewed'|'approved'|'revoked';reviewHash?:string};

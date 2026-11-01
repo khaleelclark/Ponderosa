@@ -93,7 +93,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   });
   app.post<{Params:DestinationParams;Body:unknown}>(destinationPath,async(request,reply)=>{
     try{const p=request.params,body=validatedObject(request.body,'Issued destination preparation');
-      exactObjectFields(body,['commandKey','checkpointId','expectedHash','reconcileEffects','accessSettingsResolution'],'Issued destination preparation');
+      exactObjectFields(body,['commandKey','checkpointId','expectedHash','reconcileEffects','accessSettingsResolution','historicalReviewHash'],'Issued destination preparation');
       const result=await destinations.prepare(p.id,p.executionId,body as unknown as import('@ponderosa/core').BranchIssuedDestinationInput);notify();return result;
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
@@ -553,13 +553,19 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   const ownedResource=(branchId:string,executionId:string,stepId:string)=>{
     if(!store.sqlite.prepare('SELECT 1 FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=? AND e.id=? AND e.branch_id=?').get(stepId,executionId,branchId))throw Error('Resource owner unavailable');
   };
+  app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/generation-one-captures',(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return context.resources.listGenerationOneCaptures(p.executionId,p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/generation-one-preview',(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return branches.previewGenerationOneCapture(p.executionId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:{id:string;executionId:string;stepId:string};Querystring:{commandKey:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/issued-checkpoint',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);if(typeof request.query.commandKey!=='string'||!request.query.commandKey.trim()||request.query.commandKey.length>200)throw Error('Capture command key required');return context.resources.issuedResourceCaptureStatus(p.executionId,p.stepId,request.query.commandKey);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.post<{Params:{id:string;executionId:string;stepId:string};Body:import('@ponderosa/core').BranchIssuedResourceCaptureInput}>('/api/branches/:id/executions/:executionId/resources/:stepId/issued-checkpoint',async(request,reply)=>{
-    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);const body=validatedObject(request.body,'Issued capture');exactObjectFields(body,['commandKey','expectedGeneration'],'Issued capture');
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);const body=validatedObject(request.body,'Issued capture');exactObjectFields(body,['commandKey','expectedGeneration','expectedReviewHash'],'Issued capture');
       if(typeof body.commandKey!=='string'||typeof body.expectedGeneration!=='number')throw Error('Exact issued capture identity required');
-      return await context.resources.captureIssuedResource(p.executionId,p.stepId,body.expectedGeneration,body.commandKey);
+      return await context.resources.captureIssuedResource(p.executionId,p.stepId,body.expectedGeneration,body.commandKey,body.expectedReviewHash as string|undefined);
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId',async(request,reply)=>{
