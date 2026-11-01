@@ -1626,7 +1626,9 @@ test('Branch custody inventory pins exact checkpoint and staged admission withou
 test('Branch explicit checkpoint retirement preserves disposition and fences old issued identity',async t=>{
  const x=await issuedDestinationFixture(t),f=x.f,source=x.saved.source,api=f.branches.custodyLifecycle;
  const review=api.inspect(source),input={commandKey:'retire-exact-issued-cut',expectedRevision:review.revision,checkpoints:[{id:x.saved.checkpointId,sha256:x.saved.checkpointHash}]};
+ const originalSnapshot=f.store.sqlite.prepare('SELECT * FROM branch_unit_snapshots WHERE id=?').get(x.saved.checkpointId);
  const receipt=api.retireCheckpoints(source,input);
+ assert.deepEqual(receipt.checkpointEvidence,[originalSnapshot]);
  assert.equal(receipt.state,'retired');assert.deepEqual(api.retireCheckpoints(source,input),receipt);
  assert.throws(()=>api.retireCheckpoints(source,{...input,checkpoints:[]}),/selection/);
  assert.equal(f.store.sqlite.prepare('SELECT 1 FROM branch_unit_snapshots WHERE id=?').get(x.saved.checkpointId),undefined);

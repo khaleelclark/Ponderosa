@@ -82,12 +82,12 @@ export class BranchCustodyLifecycle {
   const chat=this.db.prepare('SELECT storage_cleanup_completed,server_cleanup_completed FROM conversation_deletion_receipts WHERE conversation_id=?').get(source.sourceChatId) as Row|undefined;
   if(requireDeletion&&(this.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(source.sourceChatId)||chat?.storage_cleanup_completed!==1||chat.server_cleanup_completed!==1))blockers.push('source_chat_cleanup_not_proven');
   for(const id of source.agentIds){
-   if(this.db.prepare(`SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running') UNION ALL SELECT 1 FROM agent_deletion_pending WHERE agent_id=? LIMIT 1`).get(id,id,id))blockers.push(`participant_not_drained:${id}`);
+   if(this.db.prepare(`SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown') UNION ALL SELECT 1 FROM agent_deletion_pending WHERE agent_id=? LIMIT 1`).get(id,id,id))blockers.push(`participant_not_drained:${id}`);
    const agent=this.db.prepare('SELECT deleted_at FROM agents WHERE id=?').get(id) as Row|undefined;
    const deleted=this.db.prepare('SELECT 1 FROM agent_deletion_receipts r,json_each(r.deleted_agent_ids_json) m WHERE m.value=? LIMIT 1').get(id);
    if(requireDeletion&&(agent?.deleted_at===null||!deleted))blockers.push(`participant_deletion_not_proven:${id}`);
    if(requireDeletion&&this.db.prepare(`SELECT 1 FROM agent_deletion_receipts r,json_each(r.deleted_agent_ids_json) m WHERE m.value=? AND r.storage_cleanup_completed!=1 LIMIT 1`).get(id))blockers.push(`participant_cleanup_incomplete:${id}`);
-   if(this.db.prepare(`SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','attached','retry_pending') LIMIT 1`).get(id))blockers.push(`participant_activation_not_drained:${id}`);
+   if(this.db.prepare(`SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','attached','retry_pending','outcome_unknown') LIMIT 1`).get(id))blockers.push(`participant_activation_not_drained:${id}`);
    if(this.db.prepare(`SELECT 1 FROM coordination_requests WHERE (recipient_agent_id=? OR requester_agent_id=?) AND state NOT IN ('completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded') LIMIT 1`).get(id,id))blockers.push(`participant_request_unresolved:${id}`);
    if(this.db.prepare("SELECT 1 FROM agent_creation_operation_members m JOIN agent_creation_operations o ON o.id=m.operation_id WHERE m.agent_id=? AND o.status NOT IN ('completed','rolled_back') LIMIT 1").get(id))blockers.push(`import_unresolved:${id}`);
   }
@@ -141,7 +141,10 @@ export class BranchCustodyLifecycle {
      if(checkpointLink(this.json(row.snapshot_json),cp.id,cp.sha256))throw Error('Initial checkpoint pins selected history');
     }
    }
-   const receipt={schema:'branch-custody-checkpoint-retirement.v1',input:exact,custodyId:current.custodyId,state:'retired',createdAt:new Date().toISOString()};
+   // Preserve original snapshot bytes in the atomic audit receipt before retiring executable rows.
+   const checkpointEvidence=input.checkpoints.map(cp=>this.db.prepare('SELECT * FROM branch_unit_snapshots WHERE execution_id=? AND id=? AND content_hash=?').get(owner,cp.id,cp.sha256));
+   if(checkpointEvidence.some(row=>!row))throw Error('Checkpoint evidence changed before retirement');
+   const receipt={schema:'branch-custody-checkpoint-retirement.v1',input:exact,custodyId:current.custodyId,state:'retired',checkpointEvidence,createdAt:new Date().toISOString()};
    for(const cp of input.checkpoints)this.db.prepare('DELETE FROM branch_unit_snapshots WHERE execution_id=? AND id=? AND content_hash=?').run(owner,cp.id,cp.sha256);
    for(const [captureKey,capture] of retiredCaptures){
     const dispositionInput={commandKey:input.commandKey,captureKey,captureSha256:payloadHash(capture),expectedRevision:input.expectedRevision,source};

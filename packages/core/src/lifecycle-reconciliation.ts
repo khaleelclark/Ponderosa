@@ -38,3 +38,8 @@ export interface AgentImportLifecycleReceipt {
   version:1;operationId:string;commandKey:string;reviewSha256:string;
   state:'preserved_unresolved'|'retired';operatorId:'local-operator';evidenceDirectory?:string;
 }
+
+export interface BranchCustodyReviewInput {source:import('./branches.js').CheckpointPackageSource}
+export interface BranchCustodyCheckpointRetirementInput extends BranchCustodyReviewInput {
+ commandKey:string;expectedRevision:string;checkpoints:{id:number;sha256:string}[];
+}

@@ -61,6 +61,19 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
       return result;
     }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Human disclosure choice refused'});}
   });
+  // Explicit operator selection; no automatic retirement of historical checkpoints.
+  app.post<{Body:import('@ponderosa/core').BranchCustodyReviewInput}>('/api/lifecycle/branch-custody/review',(request,reply)=>{
+    try{const body=validatedObject(request.body,'Branch custody review');exactObjectFields(body,['source'],'Branch custody review');
+      return store.sqlite.transaction(()=>branches.custodyLifecycle.inspect(body.source as import('@ponderosa/core').CheckpointPackageSource))();
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Body:import('@ponderosa/core').BranchCustodyCheckpointRetirementInput}>('/api/lifecycle/branch-custody/retire-checkpoints',(request,reply)=>{
+    try{const body=validatedObject(request.body,'Branch checkpoint retirement');exactObjectFields(body,['source','commandKey','expectedRevision','checkpoints'],'Branch checkpoint retirement');
+      if(typeof body.commandKey!=='string'||typeof body.expectedRevision!=='string'||!Array.isArray(body.checkpoints)||body.checkpoints.length>128)throw Error('Exact bounded checkpoint selection required');
+      for(const checkpoint of body.checkpoints){const cp=validatedObject(checkpoint,'Checkpoint');exactObjectFields(cp,['id','sha256'],'Checkpoint');}
+      const input=request.body;return branches.custodyLifecycle.retireCheckpoints(input.source,{commandKey:input.commandKey,expectedRevision:input.expectedRevision,checkpoints:input.checkpoints});
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   const assertEditable=(id:string)=>{
     if(store.sqlite.prepare("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')").get(id))throw new Error('An installation update is applying; wait for it to finish');
   };

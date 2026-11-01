@@ -1185,6 +1185,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
   });
 
   const application=registerApplicationRoutes(app, {
+    custodyOwner:()=>branches.custodyLifecycle,
     opts,
     store,
     assets,

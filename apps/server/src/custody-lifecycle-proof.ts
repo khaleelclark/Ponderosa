@@ -1,11 +1,20 @@
 import type Database from 'better-sqlite3';
+import type {BranchCustodyLifecycle} from '@ponderosa/agents';
 import type {CheckpointPackageSource} from '@ponderosa/core';
 
 /** Conservative reference inventory. Audit copies are retained unless their canonical owner retires them. */
-export function custodyLifecycleProof(db:Database.Database,source:CheckpointPackageSource|undefined,id:string){
+export function custodyLifecycleProof(db:Database.Database,source:CheckpointPackageSource|undefined,id:string,owner?:BranchCustodyLifecycle){
  const references:string[]=[],blockers:string[]=[];
  const tables=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'branch_%' OR name LIKE 'coordination_destination_%' OR name='coordination_cut_restorations') ORDER BY name").all() as {name:string}[];
+ if(source&&owner){
+  const exact:CheckpointPackageSource={checkpointId:source.checkpointId,sourceChatId:source.sourceChatId,agentIds:source.agentIds,intent:source.intent};
+  const current=owner.inspect(exact);
+  references.push(...current.references.map(ref=>`${ref.kind}:${ref.ownerId}:${ref.key}:${ref.sha256}`));
+  blockers.push(...current.blockers);
+ }
  for(const {name}of tables){
+  // Canonical Branch hooks distinguish executable pins from validated audit dispositions.
+  if(source&&owner&&name!=='coordination_cut_restorations')continue;
   if(!/^[a-z0-9_]+$/.test(name))throw Error('Unknown custody reference schema');
   const columns=(db.prepare(`PRAGMA table_info(${name})`).all() as {name:string;type:string}[]).filter(column=>/TEXT/i.test(column.type)&&/json|receipt|capture|checkpoint/i.test(column.name));
   if(columns.some(column=>!/^[a-z0-9_]+$/.test(column.name)))throw Error('Unknown custody reference column');

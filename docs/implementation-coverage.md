@@ -90,9 +90,11 @@ fresh CAS/drain checks and no unknown-write replay. See
 Legacy memory holds without effect metadata remain held. Existing same-Chat reporting
 regrouping already has a canonical operator endpoint; cross-Chat/root relocation remains
 unsupported. Runtime staged-destination retirement is integrated with immutable
-tombstones, review CAS and independent identity/import refusals. Operator route wiring
-still requires Features current owner/reference and observed-drain authority; no
-ordinary operator assertion can replace that proof. Existing pins remain enforced.
+tombstones, review CAS and independent identity/import refusals. Branch owner lifecycle review and explicit checkpoint-retirement endpoints are wired;
+package custody composes canonical references and cleanup/drain proof. Destination
+retirement still needs a destination-specific authority/approval adapter and operator
+route. Combined abandoned-intent/package retirement remains unimplemented. Existing
+admission pins remain enforced; no operator assertion substitutes for observed drain.
 
 - Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
   consumers and atomic Runtime group destination API (no independent-loop substitute); changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child

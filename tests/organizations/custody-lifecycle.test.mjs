@@ -36,3 +36,14 @@ test('custody proof includes unknown outcomes and queued destination authority',
  assert.match(runtimeSql,/retry_pending/);assert.deepEqual(runtimeParameters,['agent','agent','agent']);
  assert.equal(proof.blockers.includes('Source Agent agent has undrained runtime authority'),true);
 });
+
+test('canonical Branch proof replaces audit-only pins and retains actual owner blockers',()=>{
+ const db={prepare(sql){return {all:()=>[{name:'branch_commands'}],get:()=>undefined};}};
+ const source={checkpointId:'checkpoint',sourceChatId:'chat',agentIds:['agent'],intent:{executionId:'execution'}};
+ let received;
+ const owner={inspect(exact){received=exact;return {references:[{kind:'admission',ownerId:'owner',key:'admission',sha256:'hash'}],blockers:['participant_cleanup_incomplete:agent']};}};
+ const proof=custodyLifecycleProof(db,{...source,boundaryId:'receipt-only'},'custody',owner);
+ assert.deepEqual(received,source);
+ assert.deepEqual(proof.references,['admission:owner:admission:hash']);
+ assert.equal(proof.blockers.includes('participant_cleanup_incomplete:agent'),true);
+});

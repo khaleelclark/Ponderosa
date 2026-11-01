@@ -130,6 +130,7 @@ export interface BranchImportHooks {
 }
 
 interface AgentPackageRoutesContext {
+  custodyOwner:()=>import('@ponderosa/agents').BranchCustodyLifecycle;
   dataDir: string;
   workingCopies?: AgentWorkingCopyService;
   portableBrowserSettings?:(agent:AgentDto)=>{savedBrowserAllowed:boolean;browserMode:'disposable'|'trusted';sourceProfileName?:string};
@@ -167,7 +168,7 @@ export function registerAgentPackageRoutes(
   context: AgentPackageRoutesContext,
 ): {packageEngine:BranchPackageEngine} {
   const checkpointCustody=checkpointPackageCustody(context.dataDir);
-  const lifecycle=checkpointCustodyLifecycle(path.join(context.dataDir,'checkpoint-package-custody'),(source,id)=>custodyLifecycleProof(context.store.sqlite,source,id));
+  const lifecycle=checkpointCustodyLifecycle(path.join(context.dataDir,'checkpoint-package-custody'),(source,id)=>custodyLifecycleProof(context.store.sqlite,source,id,context.custodyOwner()));
   // Inherits the operator origin/capability boundary; reconciliation is never an Agent tool.
   app.get('/api/lifecycle/checkpoint-custody',()=>lifecycle.list());
   app.get<{Params:{id:string}}>('/api/lifecycle/checkpoint-custody/:id',(request,reply)=>{

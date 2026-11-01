@@ -585,6 +585,7 @@ app.get<{ Params: { id: string; seq: string } }>(
 );
 
 const agentPackages=registerAgentPackageRoutes(app, {
+  custodyOwner:context.custodyOwner,
   portableBrowserSettings:(agent)=>{
     const ownerId=chatBrowserOwnerId(agent.conversationId);
     const preference=browserProfiles.preference(ownerId,agent.id);
