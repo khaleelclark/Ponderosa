@@ -585,8 +585,11 @@ order atop123f91222; final source commit1b1ffa842. Runtime/custody equivalents
 were not replayed. One source collision family: db.ts migration registration,
 resolved to preserve0035_provider_context_recovery_progress.sql followed by
 0036_coordination_cut_restorations.sql exactly once. Neither migration executed.
-The frozen RequestLifecycleCard delta is incorporated provisionally, pending
-sole UI-owner review through the tracked request; no independent web rewrite.
+The sole UI owner reviewed the complete RequestLifecycleCard file and exact
+frozen delta and approved adoption as-is. Historical question/answer labels,
+full-text buttons, numbering and historical-origin actor rendering are included;
+no correction was needed. This approval covers only provenance rendering, not
+browser graph review/adoption callers or #32 acceptance.
 
 This supersedes older blanket statements that Fork/Map, issued Request prefixes,
 owner trees or restored-history recapture lack source implementation. Supported
