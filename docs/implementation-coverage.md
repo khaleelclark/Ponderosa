@@ -224,3 +224,17 @@ native/external-folder historical recreation. Standalone human gates do not
 close these gaps or establish framework parity. Features follow-up remains
 pending for shared export warning, exact predecessor fixture and explicit
 portability access-review forwarding. No whole-implementation completion claim.
+
+## Shared warning and predecessor fixture follow-through
+
+`5bcbcd6b` integrated: full Branches package exports use the existing core
+warning; the Assistant fixture deliberately retaining 0031+ schema objects now
+requires hybrid refusal and unchanged state. Exact-prefix populated acceptance
+regression source remains in Reliability's additive-upgrade test. No test run.
+
+Manager resolves the portability model boundary by preserving same-Chat parent
+and ancestry rules: independent source Chats map to new destination Chats,
+without adding cross-Chat reporting authority. Reliability owns whole-folder /
+new-Chat mappings and reviewed nonsecret grant continuation; UI owns the related
+choices/provenance. Branches reviewed-choice forwarding still remains open.
+This supersedes the earlier pending cross-Chat model-decision wording.
