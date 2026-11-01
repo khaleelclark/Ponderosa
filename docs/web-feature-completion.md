@@ -482,14 +482,32 @@ and confirmation and refreshes canonical evidence without automatically resubmit
 or treating a refreshed state as an exact command receipt. Interrupted filesystem/
 SQL dispositions remain held until their original command can be reconciled.
 
-Discovery review with Reliability is pending. At frozen1544, global deleted-owner
-import lists, destination admission lists and full capture-source discovery are
-not exposed by the documented lifecycle APIs. Current callers use canonical
-identities already returned by import/Branch destination flows; they do not infer
-missing source fields from custody hashes or accept pasted IDs. Destination review
-itself can refuse until destination deletion proof exists, limiting access to its
-returned source for Branch/capture review. Unsupported discovery must remain
-explicit rather than claiming these entries are globally reachable.
+Reliability confirmed the frozen1544 discovery limits by source review. There is
+no global/deleted-owner import operation inventory: import creation/polling supplies
+known IDs, and orphan staging metadata is evidence rather than an operation
+selector. Branch destination discovery returns at most 50 entries and requires
+current source execution ownership; no global/deleted-source admission inventory
+exists. Known admission review/receipt remains independent of scoped discovery.
+GROUP retirement remains refused.
+
+Custody inventory/review does not return complete CheckpointPackageSource intent.
+An issued-checkpoint receipt can contain the full source, but capturing status
+contains only commandKey/state; unsealed capture source discovery is missing.
+Current callers use actual import/Branch destination identities and the full source
+returned by destination review. That review can refuse before destination deletion
+proof, limiting Branch/capture reachability. They never infer missing intent from
+custody hashes or accept pasted IDs. Exact Branch command references supply actual
+capture keys; own checkpoint references supply IDs/hashes, excluding initial and
+foreign checkpoints. No global source/capture selector is claimed.
+
+Only destination retirement supplies a dedicated pure receipt GET. Custody,
+import, memory, capture abandonment and Branch checkpoint retirement recover full
+receipts through explicitly confirmed identical POSTs with the retained original
+body. Current review state alone does not prove original command completion.
+Capture abandonment committed replay survives owner deletion and verifies retained
+bytes; Branch checkpoint retirement replay still requires retained owner command
+and source identity, with no owner-independent host journal. These API limits
+remain backend gaps; the UI does not present scoped recovery as global discovery.
 
 Deferred source regressions: `tests/chats/lifecycle-command.test.mjs` exercises exact
 approval/retirement and memory/import/custody/capture/Branch receipt boundaries;
