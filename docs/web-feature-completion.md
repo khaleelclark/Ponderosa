@@ -1049,3 +1049,105 @@ erased by source deletion remain unavailable; no retention writer or reclamation
 is introduced.
 
 Integration: backend/core1fb4b4e is assembled asf94aedeaa and ff40 historical audit identity/privacy correction is assembled asba14fb7bc. This UI successor is now source-connected to those contracts; no reference backend copies or ancestor replay. Current called-tree producer, original owner fences, group UI and lifecycle source remain preserved. Historical generation-one selection/review UI is delivered only for the bounded serial case; all executed qualification remains deferred.
+
+## Bounded serial generation history 1–32 UI source
+
+Successor to UI `678493cab9f2674d03e73911ebaa14fd0fae8a04`. Required exact
+backend/core: `cbe266387da53f24344285b1a2d052fcaf780568` at
+`/tmp/ponderosa-branches-generation-chain`, including actual
+`docs/branch-generation-one-destination.md`, BranchGenerationHistoryPreview,
+BranchesClient.previewGenerationHistoryCapture/listGenerationHistoryCaptures,
+issued-resource status generation, resource routes and service, complete chain
+producer and historical disclosure reader. This older UI base intentionally
+requires those backend-owned DTO fields. Existing requestJson uses the exact SDK
+wire endpoints; no additional shared adapter/SDK/DTO/backend edits. Prior group,
+lifecycle, abandonment, historical audit and preview-transaction dependencies
+remain required or must be preserved as verified equivalents during assembly.
+
+Existing generation-one UI modules now use GET generation-history-preview and
+GET generation-history-captures, followed by the unchanged exact issued-checkpoint
+POST/status GET and singular prepare/disclosure/admit routes. Existing backend
+generation-one routes remain restricted/compatible; no server fallback or route
+mutation is introduced. The storage key and generationOne command property remain
+unchanged deliberately: existing pending generation-one commands and preparations
+must retain their original selections and pure GET recovery. A prior saved gen1
+preview without budget metadata stays inspectable; it is not converted to a new
+preview or used to issue another capture POST.
+
+New previews require source generation1–32, ALL exactly ordered selections0..g-1,
+matching execution/Step, unique checkpoint/envelope/fence identities, complete
+hashes and equal current package source-ref audiences. They also require exact
+server consumedAttempts=g+1 and maxAttempts in [consumedAttempts,33]. Every retired
+selection/package identity/hash/fence/current-ref audience is displayed separately
+with its original generation. Current source generation and both server budget
+values are explicit. Nothing resets/replenishes retry allowance; destination
+generation numbering is separate from consumed original attempts. Server alone
+proves manual standalone one-resource serial ASYNC/SYNC eligibility. Parallel,
+called trees, generation>32, offset restore and unknown evidence remain refused;
+the server's 32 MiB historical-evidence bound still applies even at32 selections.
+
+Capture confirmation persists the complete original preview including ordered
+history/budget and exact {commandKey,expectedGeneration,expectedReviewHash} before
+one POST. Pure status must match generation, original cut/history hashes and
+EVERY ordered saved selection before a retained checkpoint can feed preparation.
+Stale/invalid data clears selected preparation/preview/confirmation; the original
+pending command remains held. No mutation retry, automatic read retry, fresh-cut
+hash replacement, budget inference, effect replay or old Agent import is added.
+Malformed saved commands remain held. Discovery is bounded100 by the server and
+client, refusing overflow/duplicate keys rather than pretending it is paginated.
+A pending local original command prevents choosing another discovered capture as
+its replacement; canonical discovery never supplies guessed IDs or map entries.
+
+Contract limitation: capture discovery/status DTO includes generation, selections
+and hashes but DOES NOT include consumedAttempts/maxAttempts. When saved original
+preview metadata exists, it remains displayed and persisted unchanged. Empty-
+browser/status-only recovery copies the exact canonical selection/generation/hash
+fields and explicitly marks budget metadata unavailable. It never supplies
+invented budget values, fetches a fresh preview to substitute a different cut, or
+claims the status proved a retry limit. Server historicalReviewHash/cut validation
+and destination composition remain responsible for preserving actual attempt and
+configured maxAttempts. Extending status budget metadata would be a separate
+backend-owned contract change, not implemented here.
+
+Preparation persists the entire original selection list beside its command and
+uses exact server historicalReviewHash. Pure preparation receipt recovery must
+return the identical whole historicalPartition before pending input clears.
+Disclosure now requires exactly one ordered original sealed fact bundle for each
+prior generation; its seal execution/Step/generation/checkpoint/envelope/fence
+and original participants must match that selection. Every bundle must use the
+complete CURRENT package source-ref audience and map to exactly the fresh
+recipients; retired Agents cannot appear in either side of executable maps.
+Complete current plus historical fact metadata remains bound to the server review,
+with original actors/audiences, every original package, current custody/participant
+maps and final policy displayed. Per-bundle labels come from verified original
+seal generation, never a guessed journal identifier. Explicit all-facts human
+acknowledgement, separate approve/revoke/admit, policy drift reapproval and exact
+pending-command GET recovery remain reused. Original Project AND original Request
+Project audit-read stay separate from fresh destination Project authority. Receipt
+projection still excludes raw retired native seal/retirement bytes; no additional
+private-byte surface is introduced.
+
+Ten deliverables: apps/web/src/components/branches/{BranchGenerationOne.tsx,
+branchGenerationOne.ts,BranchDisclosureReview.tsx,branchDisclosureReview.ts};
+tests/chats/{branch-generation-one.test.mjs,branch-generation-one-mounted.tsx,
+branch-generation-history.test.mjs,branch-generation-history-mounted.tsx,
+branch-disclosure-review-mounted.tsx}; this report. Existing ExecutionPanel mount
+is reused without changes. Deferred 2/3/32 fixtures cover ordered complete history,
+budget bounds/no reset, omitted/reordered/aliased/non-first package evidence,
+current-only refs/maps, per-generation package labels, all-facts approval,
+save-before-POST/exact CAS, lost response/remount/original-key pure status,
+empty-browser canonical status without fabricated budget, last-selection receipt
+refusal and exact GET preparation recovery. Existing gen1 helper fixture now uses
+the real original-seal shape; singular mounted fixture explicitly resolves a409
+held choice by matching original-key GET before a new choice. All fixtures remain
+UNEXECUTED.
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, backend writes, push/merge/deploy or new workers. Source review only;
+no passing, restored-runtime or live-provider claim. Remaining: backend/core
+source assembly, status-only budget metadata limitation above, actual retry and
+native/provider/filesystem custody qualification, accessibility/mobile execution,
+and all full UI/group/lifecycle/Bible/Phase2 acceptance. No retention writer,
+reclamation, budget reset or offset restore is added.
+
+Integration: required cbe266387 backend/core chain is already assembled as b5ed36c58 (coverage96ea1594e); no reference backend copies or ancestor replay. This successor supersedes the earlier UI generation-one-only and fixed attempt2of2 limitation. Status-only budget metadata remains a backend contract gap; no executed qualification is claimed.

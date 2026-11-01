@@ -48,6 +48,7 @@ export async function branchDisclosureReviewRegression():Promise<void>{
   assert(document.body.textContent?.includes('Exact original private fact')&&document.body.textContent?.includes('fresh recipients: fresh'),'exact fact, original scope and new recipients remain reviewable');
   await acknowledge();button('Approve disclosure').click();await tick();button('Approve exact disclosure').click();await settle();
   assert(sent.length===1,'409 never auto-approves');assert(!button('Approve disclosure')||(button('Approve disclosure') as HTMLButtonElement).disabled,'stale review loses acknowledgement');
+  assert(localStorage.getItem(storageKey),'409 preserves original choice for pure readback');button('Inspect retained command').click();await settle();assert(sent.length===1&&!localStorage.getItem(storageKey),'only matching GET receipt resolves held choice');
   button('Preview disclosure').click();await settle();await acknowledge();button('Approve disclosure').click();await tick();button('Approve exact disclosure').click();await settle();
   assert(localStorage.getItem(storageKey),'lost response retains exact choice');
   render('remount');await settle();button('Review fresh destination').click();await settle();button('Inspect retained command').click();await settle();
