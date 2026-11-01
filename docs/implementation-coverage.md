@@ -705,3 +705,35 @@ reconciliation, accessibility/mobile/performance and integrated qualification
 remain open. Deferred regressions are source only. No tests/checks/types/build,
 Node/native/browser/runner preparation or execution, push/deploy or full
 UI/#32/Bible/Phase2 pass claim.
+
+
+## Runtime fresh-participant destination admission assembled
+
+Runtime owner71c557a06 integrated as d4e4821bf atopadbcaa8df without source
+conflicts. All twenty owner deliverables are physically present. Migration0037
+coordination_destination_admissions follows existing0035/0036 exactly once;
+none executed. Runtime/package/core source equals the frozen owner successor.
+
+Host-only reserve/stage/review/admit/readback APIs and additive import hooks now
+provide durable fresh Chat/Agent holds, actual import identity/artifact maps,
+mandatory current custody/owner and per-fact disclosure authority, current policy
+hash review, synchronous Branch composition and final-only activation publication
+inside the canonical owner transaction. Savepoint rollback, exact receipt readback
+and staged intake/readiness/scheduler gates are source implementation. Ordinary
+original-participant restoration and actor authorizers remain strict. Access
+settings review alone does not authorize historical disclosure.
+
+This does NOT complete issued-resource restoration: Branch must supply exact
+issued-frontier capture bytes, deterministic initial destination identity,
+real custody/disclosure/artifact adapters and human review, final policy sequencing,
+issued Step/resource/import/owner receipts and lifecycle reconciliation. Existing
+issued-resource refusal must remain until that consumer is connected. One
+nonsecret organization/Chat generation is the bounded Runtime scope; external
+participants, unknown/recovery effects, expired deadlines, Decision suspensions
+and communication-owned artifacts refuse. Source lifecycle RESTRICT pins can
+block deletion until owner reconciliation; no automatic hold reclamation exists.
+
+Deferred runtime fixture source is present, not end-to-end qualification. Existing
+resource/UI/performance and broader #32 gaps remain open. No tests/checks/build/
+types/Node/native/browser/runner preparation or execution, push/deploy or
+#32/Bible/Phase2 acceptance claim.
