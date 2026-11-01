@@ -387,3 +387,28 @@ contract. No broad admission fallback. Migration0035 is unique in the assembled
 schema directory and registered once; ALTER-only progress column follows0034.
 No migration/test execution. Runtime docs and recovery contract fully read.
 No builds/types/browser/native/network/runner checks or passing claim.
+
+## Workflow live-root caller and saved-coverage reconciliation
+
+Features source `628cc23b583692aff38bf9d19b507217592d41c5` and
+`d9fb504d766b24a3891a458657f58451e4a833ef` integrated conflict-free as
+`fe92c0877` and `29cb44635`. Existing Reliability through `f3a009bac` and
+Runtime through `f446d63e` were already integrated and were not replayed.
+Sync dispatch and explicit resume now revalidate exact durable saved bytes even
+with a process-local saved ticket; regression source covers reconstruction and
+external frontier/invocation changes. General crash atomicity remains open.
+
+Workflow file selections now forward explicit live activation and managed Chat
+creation. Creation pauses before Agent import for exact actual-root confirmation
+through workingRootReview and the public SDK/route; canceled or stale reviews
+refuse, recovery copies remain separate, and live-root receipts survive terminal
+compaction. This supersedes the missing Branches backend activation caller in
+older inventory entries. Single-Agent managed Chat activation is implemented;
+grouped Shared multi-Agent imports remain refused pending coordinated owner
+implementation requested by the manager. The new UI activation/creation/review
+flow and separately reviewed mapped Settings choices remain owner work.
+
+All eleven changed-file entries across both commits were inspected in source;
+shared docs overlap once, yielding ten distinct paths. No tests, checks, builds,
+types, browser, native execution or runner preparation performed. No push/deploy,
+full #8, #32 or Phase 2 completion claim.
