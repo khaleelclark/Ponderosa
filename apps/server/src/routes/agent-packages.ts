@@ -1,4 +1,6 @@
 import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
+import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPackageReceipt} from '../checkpoint-agent-packages.js';
+export type {CheckpointPackageSource,CheckpointPackageReceipt} from '../checkpoint-agent-packages.js';
 export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
 import {withoutPortableSecrets} from '../portable-secrets.js';
 import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder} from '../portable-working-files.js';
@@ -86,6 +88,9 @@ export interface BranchPackageImportOptions {
 }
 /** Shared packaging boundary; callers own durable human review and destination selection. */
 export interface BranchPackageEngine {
+  captureCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageReceipt>;
+  readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
+  releaseCheckpoint(receipt:CheckpointPackageReceipt):Promise<void>;
   composeAgents(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>;
   setOutputApps(owner:OutputAgentApps):void;
   validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
@@ -109,6 +114,7 @@ export interface BranchImportHooks {
 
 interface AgentPackageRoutesContext {
   dataDir: string;
+  withCheckpointSourceBoundary?<T>(source:CheckpointPackageSource,work:(boundaryId:string)=>Promise<T>):Promise<T>;
   workingCopies?: AgentWorkingCopyService;
   portableBrowserSettings?:(agent:AgentDto)=>{savedBrowserAllowed:boolean;browserMode:'disposable'|'trusted';sourceProfileName?:string};
   store: AgentStore;
@@ -144,6 +150,7 @@ export function registerAgentPackageRoutes(
   app: FastifyInstance,
   context: AgentPackageRoutesContext,
 ): {packageEngine:BranchPackageEngine} {
+  const checkpointCustody=checkpointPackageCustody(context.dataDir);
   const {
     store,
     coordination: coordinationV3,
@@ -2491,6 +2498,22 @@ export function registerAgentPackageRoutes(
     }
   });
   return {packageEngine:{
+    captureCheckpoint:source=>withAgentImportAdmission(async()=>{
+      const boundary=context.withCheckpointSourceBoundary;
+      if(!boundary)throw new Error('Checkpoint source capture boundary unavailable');
+      const frozen={...source,agentIds:[...source.agentIds]};
+      return boundary(frozen,async boundaryId=>checkpointCustody.capture(frozen,boundaryId,async()=>{
+        const inputs:AgentPackageCompositionInput[]=[];
+        for(const id of frozen.agentIds){
+          const agent=store.getAgent(id);
+          if(!agent||agent.conversationId!==frozen.sourceChatId||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');
+          inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:await buildPortablePackage(id,'full',false)});
+        }
+        return (await composeAgentPackages(inputs)).package;
+      }));
+    }),
+    readCheckpoint:receipt=>checkpointCustody.read(receipt),
+    releaseCheckpoint:receipt=>checkpointCustody.release(receipt),
     composeAgents:composeAgentPackages,
     reviewAccess,
     setOutputApps(owner:OutputAgentApps){outputApps=owner;},
