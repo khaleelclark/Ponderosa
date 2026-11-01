@@ -1,4 +1,5 @@
 import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
+import { NativeHistoryAuthority } from "../native-history-authority.js";
 import { replyStreamCommit } from "../reply-stream-publication.js";
 import { canonicalProviderFailureEvent } from "../provider-failure-event.js";
 import {localMemoryFor} from "../local-memory.js";
@@ -323,6 +324,9 @@ export function startProviderRunExecution(
           if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.snapshot.state !== "completed") validateVoiceReplyContext();
         }, 250) : undefined;
     try {
+      const nativeHistory = new NativeHistoryAuthority(store);
+      const nativeSeed = nativeHistory.takeSeed(agent.id,runId,v3FencingToken!,resumeSessionId,Boolean(communicationEventId && store.getCommunicationEvent(agent.projectId,communicationEventId)?.sender.kind==='user'));
+      let nativeForkOpened=false;
       const runCapability = agentMessageCapabilities.get(messageCapability);
       if (!runCapability || runCapability.agentId !== agent.id || runCapability.runId !== runId) {
         throw new Error("provider Run lost its exact message capability before session creation");
@@ -371,6 +375,7 @@ export function startProviderRunExecution(
           agentId: agent.id,
           cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,
+          ...(nativeSeed ? {transcriptFork:nativeSeed.seed,assertHistoryCurrent:nativeSeed.assertCurrent,onTranscriptForkObserved:nativeSeed.observed} : {}),
           history: sessionResumeId ? [] : seedHistory,
           systemPrompt,
           model: effectiveModel,
@@ -610,6 +615,7 @@ export function startProviderRunExecution(
         return operation;
       };
       let persistentRuntime = reusablePersistentRuntime;
+      if(nativeSeed && persistentRuntime)throw new Error("Fresh transcript context cannot adopt an existing runtime");
       if (persistentRuntime) {
         let alive = false;
         try { alive = persistentRuntime.session.isAlive(); } catch { /* fail closed */ }
@@ -891,6 +897,14 @@ export function startProviderRunExecution(
         activeRun.voiceReplyTiming ??= {};
         activeRun.voiceReplyTiming.submittedAt ??= new Date().toISOString();
         for await (const event of startStream(sessionId)) {
+          if(nativeSeed && !nativeForkOpened) {
+            if(event.type==='session') {
+              if(event.sessionId!==persistentRuntime?.session.engineAgentId)throw new Error("Native fork identity changed");
+              nativeSeed.opened(event.sessionId);nativeForkOpened=true;
+            } else if(['text','response_text','tool_call','tool_result','command','file_change'].includes(event.type)) {
+              throw new Error("Native fork has not confirmed its fresh session identity");
+            }
+          }
           if ((event.type === "response_text" && event.text || event.type === "text" && event.delta) && !activeRun.voiceReplyTiming.firstModelTextAt) {
             activeRun.voiceReplyTiming.firstModelTextAt = new Date().toISOString();
           }
@@ -946,7 +960,7 @@ export function startProviderRunExecution(
           if (event.type === "turn_done") activeRun.observedProviderTerminalStatus = "completed";
           if (event.type === "error" && event.terminalStatus !== undefined) activeRun.observedProviderTerminalStatus = event.terminalStatus;
           if(event.type==='error')activeRun.observedProviderFailure=event;
-          if (event.type === "error" && !input.nativeAction && sessionId && !frozenHandoffSessionId &&
+          if (event.type === "error" && !input.nativeAction && !nativeSeed && sessionId && !frozenHandoffSessionId &&
               !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event)) {
             const fallbackBudget = freshProviderInputManifest.schemaVersion === 3
               ? freshProviderInputManifest.contextBudget : undefined;

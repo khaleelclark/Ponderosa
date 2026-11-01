@@ -1,4 +1,5 @@
 import type { RuntimeInputFile } from "./runtime-input-files.js";
+import type { NativeHistoryCatalog, NativeFileRewindResult, NativeTranscriptSeed } from "./native-history.js";
 import type { ProviderContextRecoverySupport } from "./context-recovery.js";
 // The Adapter (engine) abstraction — SPEC §5. Every engine implements this one
 // interface. The agent stores canonical history; the adapter translates it into
@@ -331,6 +332,8 @@ export interface RuntimeSession extends RuntimeProcessHandle {
    * A documented command-input wire format is distinct from ordinary user work;
    * authored prose is never proof of native completion. */
   invokeCommand?(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void>;
+  nativeHistory?(): Promise<NativeHistoryCatalog>;
+  rewindFiles?(messageId: string, dryRun: boolean): Promise<NativeFileRewindResult>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;
@@ -352,6 +355,10 @@ export interface ProviderRootExitDetail {
 }
 
 export interface OpenRuntimeSessionOptions {
+  /** Host-reserved fresh transcript context; never an adopted source lease. */
+  transcriptFork?: NativeTranscriptSeed;
+  assertHistoryCurrent?: () => void;
+  onTranscriptForkObserved?: (sessionId: string) => void;
   agentId: string;
   cwd: string;
   resumeSessionId?: string;

@@ -2,6 +2,7 @@ import { ClaudeReplayFraming } from "./claude-replay-framing.js";
 import { claudeTurnContent } from "./typed-input.js";
 import { ClaudeControls } from "./claude-controls.js";
 import { requestNativeApproval } from "./native-approvals.js";
+import { ClaudeFileHistory } from "./claude-file-history.js";
 import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import { ClaudeNativeCompaction } from "./claude-native-compaction.js";
@@ -66,6 +67,8 @@ export class ClaudeStreamSession implements RuntimeSession {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   private readonly child: ChildProcess;
+  private readonly fileHistory: ClaudeFileHistory;
+  private historyActive = false;
   private reportDrainedRootExit?: () => void;
   private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
   private nativeCommand?: ClaudeNativeCompaction;
@@ -101,8 +104,9 @@ export class ClaudeStreamSession implements RuntimeSession {
       throw new Error("persistent runtime opening requires a spawn-time termination registrar");
     }
     this.selectedModel = opts.model;
-    this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
-    this.engineAgentId = opts.resumeSessionId ?? randomUUID();
+    this.seedHistory = opts.resumeSessionId || opts.transcriptFork ? [] : [...opts.history];
+    this.engineAgentId = opts.transcriptFork?.newSessionId ?? opts.resumeSessionId ?? randomUUID();
+    this.fileHistory = new ClaudeFileHistory(this.engineAgentId, frame => this.writeFrame(frame));
     this.taskLifetime = new ClaudeTaskLifetime(this.engineAgentId);
     this.contextObservations = new ClaudeContextUsage(this.engineAgentId);
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
@@ -134,12 +138,15 @@ export class ClaudeStreamSession implements RuntimeSession {
       ...(ponderosaMcp ? ["--mcp-config", ponderosaMcp] : []),
       ...(opts.model ? ["--model", opts.model] : []),
       ...(opts.effort ? ["--effort", opts.effort] : []),
-      ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
+      ...(opts.transcriptFork
+        ? ["--resume",opts.transcriptFork.sourceSessionId,"--fork-session","--session-id",this.engineAgentId,"--resume-session-at",opts.transcriptFork.throughId]
+        : opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
       // Native questions have no Ponderosa response bridge. Keep the managed
       // ponderosa_decision tool as the only user-question path in this host.
       "--disallowedTools", ["AskUserQuestion",...(restrictionArgs[1]?[restrictionArgs[1]]:[])].join(","),
     ];
-    const environment = claudeBillingEnvironment(opts.environment, opts.expectedBillingMode);
+    opts.assertHistoryCurrent?.();
+    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: "true" };
     const contained = spawnContainedCli({
       bin: opts.bin,
       args,
@@ -202,6 +209,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         output.destroy(error instanceof Error ? error : new Error("Claude stream failed"));
         void this.close().catch(() => undefined);
       } finally {
+        this.fileHistory.close();
         this.nativeCommand?.fail();
         this.controls.close();
         this.cancelApprovals();
@@ -211,6 +219,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
+    if (this.historyActive || this.fileHistory.uncertain) throw new Error("Native file history is active or uncertain");
     if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude native control is active or uncertain");
     if (input.effort && input.effort !== this.opts.effort) throw new Error("Claude effort change requires reopening the retained session");
     if (input.model && input.model !== this.selectedModel) await this.setLiveModel(input.model);
@@ -219,7 +228,8 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.nativeUsage = undefined;
     this.terminalEvent=undefined;
     const turnId = input.clientMessageId ?? randomUUID();
-    const prompt = this.opts.resumeSessionId
+    this.fileHistory.beginTurn();
+    const prompt = this.opts.resumeSessionId || this.opts.transcriptFork
       ? input.prompt
       : renderSeedPrompt(this.seedHistory.splice(0), input.prompt);
     this.taskLifetime.beginTurn();
@@ -234,6 +244,15 @@ export class ClaudeStreamSession implements RuntimeSession {
       throw error;
     }
     return { turnId };
+  }
+
+  async nativeHistory() { return this.fileHistory.catalog(); }
+
+  async rewindFiles(messageId: string, dryRun: boolean) {
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.liveControlActive || this.controls.uncertain || this.nativeCommand && !this.nativeCommand.succeeded || this.historyActive) throw new Error("Native session is busy");
+    this.historyActive = true;
+    try { return await this.fileHistory.rewind(messageId,dryRun); }
+    finally { this.historyActive = false; }
   }
 
   async capabilities(): Promise<EngineCapabilities> {
@@ -276,6 +295,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   async invokeCommand(name: string, argumentsText?: string): Promise<RuntimeCommandResult> {
+    if (this.historyActive || this.fileHistory.uncertain) throw new Error("Native history active or uncertain");
     if (name === "native-context-usage") {
       if (argumentsText?.trim() || this.closed || this.liveControlActive || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude context control unavailable");
       this.liveControlActive = true;
@@ -351,7 +371,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude native control is active or uncertain");
     if (input.model && input.model !== this.selectedModel) throw new Error("Change model at a turn boundary");
     if (input.effort && input.effort !== this.opts.effort) throw new Error("Claude effort change requires reopening the retained session");
-    if (this.nativeCommand || !this.active) return { status: "not_active" };
+    if (this.historyActive || this.fileHistory.uncertain || this.nativeCommand || !this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
     this.contextObservations.submit(turnId);
     await this.writeInput(input.prompt, turnId, input.inputFiles);
@@ -439,6 +459,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
+    this.fileHistory.close();
     this.controls.close();
     this.cancelApprovals();
     this.nativeCommand?.fail();
@@ -490,6 +511,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     const map = claudeStreamEventMapper();
     try {
       for await (const raw of this.mediaReplayFraming().parse(stdout as AsyncIterable<Buffer>)) {
+        if (this.fileHistory.observe(raw)) continue;
         if (this.controls.observe(raw)) continue;
         const stopHook = this.taskLifetime.stopHook(raw);
         if (stopHook) {

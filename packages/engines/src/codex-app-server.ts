@@ -1,6 +1,7 @@
 import { codexTurnContent } from "./typed-input.js";
 import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
 import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
+import { forkCodexTranscript } from "./codex-transcript-fork.js";
 import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
 import {
@@ -612,7 +613,14 @@ export class CodexAppServerSession implements RuntimeSession {
     });
     const cliVersion = codexCliVersion(await rpc.initialize());
     if (opts.expectedBillingMode) await requireCodexBillingMode(rpc, opts.expectedBillingMode);
-    const response = opts.resumeSessionId
+    const fork = opts.transcriptFork ? await forkCodexTranscript(rpc,opts.transcriptFork.sourceSessionId,opts.transcriptFork.throughId,() => {
+      if (opts.signal.aborted) throw new Error("Fork lost Run authority");
+      opts.assertHistoryCurrent?.();
+    }, {cwd:opts.cwd,model:opts.model || null,serviceTier:serviceTierForSpeed(opts.speed),approvalPolicy:opts.handleElicitation?"on-request":"never",sandbox:effectiveSandboxMode,
+      ...(sessionConfig?{config:sessionConfig}:{}),developerInstructions:opts.systemPrompt ?? null}) : undefined;
+    if (fork?.sessionId)opts.onTranscriptForkObserved?.(fork.sessionId);
+    if (fork && (fork.outcome !== "completed" || !fork.sessionId)) throw new Error("Native transcript fork outcome unknown; do not repeat");
+    const response: ThreadResponse = fork?.sessionId ? {thread:{id:fork.sessionId},model:opts.model} : opts.resumeSessionId
       ? await rpc.request<ThreadResponse>("thread/resume", {
           threadId: opts.resumeSessionId,
           cwd: opts.cwd,
@@ -647,8 +655,8 @@ export class CodexAppServerSession implements RuntimeSession {
       response.thread.id,
       rpc,
       opts.cwd,
-      !opts.resumeSessionId,
-      opts.resumeSessionId ? [] : [...opts.history],
+      !opts.resumeSessionId && !opts.transcriptFork,
+      opts.resumeSessionId || opts.transcriptFork ? [] : [...opts.history],
       typeof response.model === "string" && response.model.trim() ? response.model.trim() : opts.model,
       (opts.configuredMcps??[]).filter(server=>!restrictedConnectors.has(server.name)),
       opts.onCapabilitiesChanged,
@@ -656,6 +664,26 @@ export class CodexAppServerSession implements RuntimeSession {
       opts.expectedBillingMode,
     );
     return session;
+  }
+
+  async nativeHistory(): Promise<import("@ponderosa/core").NativeHistoryCatalog> {
+    if (this.activeTurnId) throw new Error("Native thread has active work");
+    const points: string[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    do {
+      if (seen.size >= 100) throw new Error("Native history exceeds bounded lookup");
+      const page = object(await this.rpc.request("thread/turns/list", {threadId:this.engineAgentId,limit:100,itemsView:"notLoaded",...(cursor?{cursor}:{})}));
+      if (!page || !Array.isArray(page.data)) throw new Error("Native history unavailable");
+      for (const entry of page.data) {
+        const turn=object(entry);
+        if (turn?.status === "completed" && typeof turn.id === "string") points.push(turn.id);
+      }
+      if (page.nextCursor === null) break;
+      if (typeof page.nextCursor !== "string" || !page.nextCursor || seen.has(page.nextCursor)) throw new Error("Incomplete native history");
+      cursor=page.nextCursor;seen.add(cursor);
+    } while (true);
+    return {sessionId:this.engineAgentId,checkpoints:[],forkPoints:points,fileRewindSupported:false,transcriptForkSupported:true};
   }
 
   async capabilities(): Promise<EngineCapabilities> {

@@ -1,3 +1,5 @@
+import { registerNativeHistoryRoutes } from "./native-history.js";
+import { NativeHistoryAuthority } from "../native-history-authority.js";
 import { registerSourceEffectRoutes } from "./source-effects.js";
 import { registerNativeControlRoutes } from "./native-controls.js";
 import { registerContextRecoveryRoutes } from "./context-recovery.js";
@@ -169,6 +171,7 @@ export function registerProviderCommandRoutes(
   registerSourceEffectRoutes(app, { store });
 
 const activeAgentProviderCommands = new Set<string>();
+registerNativeHistoryRoutes(app,{store,coordinationV3,activeRuns,deletingAgentIds,deletingProjectIds,persistentRuntimeForTermination,isClosed,workingCopies,busy:activeAgentProviderCommands});
 const activeContextRecoveries = new Map<string,{id:string;controller:AbortController;stopped?:boolean}>();
 const retainedPermissionsMatch = (agentId:string, engineId:string, contract:import("@ponderosa/core").RetainedNormalRuntimeContract, sourceRunId?:string) => {
   const current=runtimeRestrictions(new CapabilityPolicyStore(store.sqlite).resolveForAgent(agentId,sourceRunId),engineId);
@@ -526,6 +529,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
     if(coordinationV3.contextRecovery.active(agent.id)) return reply.code(409).send({code:"context_recovery_held",error:"An explicit context recovery hold is active"});
+    if(new NativeHistoryAuthority(store).held(agent.id))return reply.code(409).send({error:"Native history operation is prepared or uncertain"});
     if(activeAgentProviderCommands.has(agent.id)) return reply.code(409).send({error:"An Agent provider command is already active"});
     activeAgentProviderCommands.add(agent.id);
     try {

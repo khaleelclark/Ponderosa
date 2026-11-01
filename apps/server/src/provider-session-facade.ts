@@ -1,3 +1,4 @@
+import { projectNativeHistory, projectNativeRewind } from "./native-history-projection.js";
 import { canonicalProviderFailureEvent, redactProviderDiagnostic } from "./provider-failure-event.js";
 import { isProxy } from "node:util/types";
 import {
@@ -378,6 +379,8 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
   let contextUsageMethod: ((...args: unknown[]) => unknown) | undefined;
   let rateLimitStatusMethod: ((...args: unknown[]) => unknown) | undefined;
   let capabilitiesMethod: ((...args: unknown[]) => unknown) | undefined;
+  let nativeHistoryMethod: ((...args: unknown[]) => unknown) | undefined;
+  let rewindFilesMethod: ((...args: unknown[]) => unknown) | undefined;
   let invokeCommandMethod: ((...args: unknown[]) => unknown) | undefined;
   try {
     raw = target(value);
@@ -396,10 +399,19 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     rateLimitStatusMethod = method(raw, "rateLimitStatus", false);
     capabilitiesMethod = method(raw, "capabilities", false);
     invokeCommandMethod = method(raw, "invokeCommand", false);
+    nativeHistoryMethod = method(raw,"nativeHistory",false);
+    rewindFilesMethod = method(raw,"rewindFiles",false);
   } catch (error) {
     throw boundaryError("project provider session", error);
   }
 
+  let nativeMutationActive=false;
+  const nativeMutation=async (operation:string,work:()=>unknown):Promise<unknown>=>{
+    if(nativeMutationActive)throw new Error("Another retained native operation is active");
+    nativeMutationActive=true;
+    try{return await providerRuntimeOperation(operation,work);}
+    finally{nativeMutationActive=false;}
+  };
   const facade: RuntimeSession = {
     engineAgentId,
     events,
@@ -458,9 +470,11 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
         catch (error) { throw boundaryError("project provider capabilities", error); }
       },
     } : {}),
+    ...(nativeHistoryMethod ? { nativeHistory: async () => { if(nativeMutationActive)throw new Error("Native operation is active");return projectNativeHistory(await providerRuntimeOperation("read native history", () => Reflect.apply(nativeHistoryMethod!,raw,[]))); } } : {}),
+    ...(rewindFilesMethod ? { rewindFiles: async (messageId:string,dryRun:boolean) => projectNativeRewind(await nativeMutation("rewind native files", () => Reflect.apply(rewindFilesMethod!,raw,[messageId,dryRun]))) } : {}),
     ...(invokeCommandMethod ? {
       invokeCommand: async (name, argumentsText) => {
-        const value = await providerRuntimeOperation(
+        const value = await nativeMutation(
           "invoke provider command",
           () => Reflect.apply(invokeCommandMethod!, raw, [name, argumentsText]),
         );
