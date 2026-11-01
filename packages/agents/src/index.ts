@@ -181,3 +181,6 @@ export {REQUEST_SOURCE_LINEAGE_CTE,requestSourceLineageBody} from "./coordinatio
 export {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchRunCounts,readBranchWorkingStepCount} from "./branch-run-status.js";
 
 export { ContextRecoveryConflictError } from "./coordination-v3-context-recovery-authority.js";
+
+export { beginSourceCapture, assertSourceCapture, commitSourceCapture, releaseSourceCapture, beginSourceMutation, withSourceMutation, touchSourceMutation, SourceCaptureChangedError } from "./source-capture-boundary.js";
+export type { SourceCaptureToken } from "./source-capture-boundary.js";

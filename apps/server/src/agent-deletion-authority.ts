@@ -1,3 +1,4 @@
+import { withSourceMutation } from "@ponderosa/agents";
 import {
   AgentDeletionConflictError,
   retainChatAttachment,
@@ -201,7 +202,7 @@ export function createAgentDeletionAuthority(
       if (runtimeTerminationAttempts.get(handle) === attempt) runtimeTerminationAttempts.delete(handle);
     }
   };
-  const processAgentDeletionCleanup = async (receipt: AgentDeletionReceipt): Promise<boolean> => {
+  const processAgentDeletionCleanupUntracked = async (receipt: AgentDeletionReceipt): Promise<boolean> => {
     if (receipt.serverCleanupCompleted) return true;
     if (!receipt.storageCleanupCompleted) return false;
     const errors: string[] = [];
@@ -295,7 +296,9 @@ export function createAgentDeletionAuthority(
     catch { /* clients reconcile from durable state on reconnect */ }
     return true;
   };
-  const commitAgentDeletion = async (
+  const processAgentDeletionCleanup = (...args: Parameters<typeof processAgentDeletionCleanupUntracked>) =>
+    withSourceMutation(() => processAgentDeletionCleanupUntracked(...args));
+  const commitAgentDeletionUntracked = async (
     rootAgentIds: string[],
     previewHash: string,
     authorization?: AgentManagementAuthorization,
@@ -416,6 +419,8 @@ export function createAgentDeletionAuthority(
       cleanupPending: !(receipt.storageCleanupCompleted && receipt.serverCleanupCompleted),
     };
   };
+  const commitAgentDeletion = (...args: Parameters<typeof commitAgentDeletionUntracked>) =>
+    withSourceMutation(() => commitAgentDeletionUntracked(...args));
   return {
     cancelAgentDecisions,
     awaitProjectDeletionBarrier,

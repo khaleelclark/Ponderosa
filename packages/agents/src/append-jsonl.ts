@@ -1,3 +1,4 @@
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import {
   closeSync,
   existsSync,
@@ -40,6 +41,7 @@ function writeAll(fd: number, bytes: Buffer, errorMessage: string): void {
 }
 
 export function readRepairableJsonl<T>(file: string, label: string, repair = false): T[] {
+  if (repair) touchSourceMutation();
   if (!existsSync(file)) return [];
   const fd = openSync(file, repair ? "r+" : "r");
   try {
@@ -76,6 +78,7 @@ export function readRepairableJsonl<T>(file: string, label: string, repair = fal
 }
 
 export function appendFsyncedJsonl(file: string, records: unknown[]): void {
+  touchSourceMutation();
   if (records.length === 0) return;
   const identity = resolve(file);
   if (uncertainAppends.has(identity)) {
@@ -107,6 +110,7 @@ export function appendFsyncedJsonl(file: string, records: unknown[]): void {
  * entry durable before returning. Readers see either the old complete snapshot
  * or the new complete snapshot after a crash. */
 export function writeAtomicFsyncedJsonl(file: string, records: unknown[]): void {
+  touchSourceMutation();
   const directory = dirname(file);
   mkdirSync(directory, { recursive: true });
   const temporary = join(directory, `.${randomUUID()}.jsonl.tmp`);

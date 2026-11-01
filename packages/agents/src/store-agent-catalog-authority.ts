@@ -1,3 +1,4 @@
+import { withSourceMutation } from "./source-capture-boundary.js";
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "@ponderosa/native-host/fs";
@@ -681,7 +682,7 @@ export class AgentCatalogAuthority {
   }
 
   /** Creation-pending fencing keeps incomplete imports out of ordinary views. */
-  async setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']}): Promise<void> {
+  private async setImportedHistoryAsyncUntracked(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']}): Promise<void> {
     const agent = this.getAgent(agentId);
     if (!agent) throw new Error("agent not found");
     if (!this.client.prepare(`SELECT 1 FROM agent_creation_operation_members AS members
@@ -719,6 +720,10 @@ export class AgentCatalogAuthority {
       throw error;
     }
     await this.projectImportedHistoryAsync(agentId, imported, importedArchiveVersion(pathname)!);
+  }
+
+  setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']}): Promise<void> {
+    return withSourceMutation(() => this.setImportedHistoryAsyncUntracked(agentId, source, messages, initialInstructions, portableState));
   }
 
   private validateImportedArchiveSize(imported: ImportedArchive): void {

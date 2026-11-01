@@ -1,3 +1,4 @@
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
@@ -187,6 +188,7 @@ export class AgentProjectDeletionAuthority {
       // Revalidate after the removal-started commit. A replacement at the exact
       // path must never inherit the authority granted to the earlier inode.
       validateProjectDeletionTombstone(tombstone, identity);
+      touchSourceMutation();
       rmSync(tombstone, { recursive: true, force: true });
       afterTombstoneRemoval?.(current.projectId);
     }
@@ -250,6 +252,7 @@ export class AgentProjectDeletionAuthority {
       tombstoneName,
       ownershipToken,
     } satisfies ProjectDeletionIdentity);
+    touchSourceMutation();
     renameSync(canonicalDir, deletingDir);
     fsyncDirectory(parentDir);
     const now = new Date().toISOString();
@@ -330,6 +333,7 @@ export class AgentProjectDeletionAuthority {
         }).run();
       });
     } catch (error) {
+      touchSourceMutation();
       renameSync(deletingDir, canonicalDir);
       fsyncDirectory(parentDir);
       throw error;
@@ -379,6 +383,7 @@ export class AgentProjectDeletionAuthority {
         tombstoneName,
         ownershipToken: row.ownershipToken,
       });
+      touchSourceMutation();
       renameSync(tombstone, canonical);
       fsyncDirectory(root);
     }

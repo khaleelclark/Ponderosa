@@ -1,3 +1,4 @@
+import { withSourceMutation } from "@ponderosa/agents";
 import type {
   AgentStore,
   ConversationDeletionReceipt,
@@ -193,7 +194,7 @@ export function createConversationDeletionAuthority(context: {
   ): Promise<boolean> => {
     const existing = operations.get(receipt.conversationId);
     if (existing) return existing;
-    const operation = processConversationDeletion(receipt).finally(() => {
+    const operation = withSourceMutation(() => processConversationDeletion(receipt)).finally(() => {
       if (operations.get(receipt.conversationId) === operation) {
         operations.delete(receipt.conversationId);
       }

@@ -1,4 +1,5 @@
 import {recordingMediaType} from './audio-container.js';
+import { withSourceMutation } from "@ponderosa/agents";
 import { admitDataDirectory } from "@ponderosa/agents";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "@ponderosa/native-host/fs";
@@ -526,7 +527,7 @@ export class AssetStore {
 
   /** Chat-owned Broadcast media has the Chat UUID as its storage owner, but
    * no Agent record. Remove its bytes before releasing its durable quota. */
-  async purgeConversationAssets(projectId: string, conversationId: string): Promise<void> {
+  private async purgeConversationAssetsUntracked(projectId: string, conversationId: string): Promise<void> {
     if (!RUNTIME_UUID.test(conversationId)) throw new AssetError(400, "Chat attachment owner is invalid");
     const directory = this.dir(projectId, conversationId);
     const ownedLeaf = (leaf: string) =>
@@ -1108,7 +1109,7 @@ export class AssetStore {
     return resolved;
   }
 
-  async recoverRuntimeCommunicationAssociations(
+  private async recoverRuntimeCommunicationAssociationsUntracked(
     communicationExists: (communicationId: string, projectId: string, binding: RuntimeAttachmentAssociation) => boolean,
   ): Promise<{ associated: number; released: number; unavailable: number }> {
     let associated = 0;
@@ -1134,7 +1135,7 @@ export class AssetStore {
     return { associated, released, unavailable };
   }
 
-  async stage(input: {
+  private async stageUntracked(input: {
     projectId: string;
     agentId: string;
     conversationId?: string;
@@ -1291,7 +1292,7 @@ export class AssetStore {
     }
   }
 
-  async associate(projectId: string, agentId: string, ids: string[]): Promise<AssetDto[]> {
+  private async associateUntracked(projectId: string, agentId: string, ids: string[]): Promise<AssetDto[]> {
     const assets = await Promise.all(ids.map((id) => this.read(projectId, agentId, id)));
     if (assets.some((asset) => !asset)) throw new AssetError(404, "asset not found");
     const integrity = await Promise.all(ids.map((id) => this.content(projectId, agentId, id, false)));
@@ -1356,7 +1357,7 @@ export class AssetStore {
     } catch { return undefined; }
   }
 
-  async remove(projectId: string, agentId: string, id: string): Promise<boolean> {
+  private async removeUntracked(projectId: string, agentId: string, id: string): Promise<boolean> {
     const asset = await this.read(projectId, agentId, id);
     if (!asset || asset.state !== "staged") return false;
     const receipt = this.authority.beginDelete(id, projectId, agentId);
@@ -1364,7 +1365,7 @@ export class AssetStore {
     return true;
   }
 
-  async enqueueRemoval(projectId: string, agentId: string, id: string): Promise<boolean> {
+  private async enqueueRemovalUntracked(projectId: string, agentId: string, id: string): Promise<boolean> {
     if (this.authority.deletionRequested(id)) return true;
     const asset = await this.read(projectId, agentId, id);
     if (!asset || asset.state !== "staged") return false;
@@ -1421,7 +1422,7 @@ export class AssetStore {
     } finally { await openedDirectory.handle.close(); }
   }
 
-  async reconcile(
+  private async reconcileUntracked(
     projectId: string,
     agentId: string,
     associatedIds: Set<string>,
@@ -1531,6 +1532,34 @@ export class AssetStore {
           now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
     }
     return removed;
+  }
+
+  purgeConversationAssets(...args: Parameters<AssetStore["purgeConversationAssetsUntracked"]>): ReturnType<AssetStore["purgeConversationAssetsUntracked"]> {
+    return withSourceMutation(() => this.purgeConversationAssetsUntracked(...args));
+  }
+
+  recoverRuntimeCommunicationAssociations(...args: Parameters<AssetStore["recoverRuntimeCommunicationAssociationsUntracked"]>): ReturnType<AssetStore["recoverRuntimeCommunicationAssociationsUntracked"]> {
+    return withSourceMutation(() => this.recoverRuntimeCommunicationAssociationsUntracked(...args));
+  }
+
+  stage(...args: Parameters<AssetStore["stageUntracked"]>): ReturnType<AssetStore["stageUntracked"]> {
+    return withSourceMutation(() => this.stageUntracked(...args));
+  }
+
+  associate(...args: Parameters<AssetStore["associateUntracked"]>): ReturnType<AssetStore["associateUntracked"]> {
+    return withSourceMutation(() => this.associateUntracked(...args));
+  }
+
+  remove(...args: Parameters<AssetStore["removeUntracked"]>): ReturnType<AssetStore["removeUntracked"]> {
+    return withSourceMutation(() => this.removeUntracked(...args));
+  }
+
+  enqueueRemoval(...args: Parameters<AssetStore["enqueueRemovalUntracked"]>): ReturnType<AssetStore["enqueueRemovalUntracked"]> {
+    return withSourceMutation(() => this.enqueueRemovalUntracked(...args));
+  }
+
+  reconcile(...args: Parameters<AssetStore["reconcileUntracked"]>): ReturnType<AssetStore["reconcileUntracked"]> {
+    return withSourceMutation(() => this.reconcileUntracked(...args));
   }
 
 }

@@ -1,3 +1,4 @@
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
@@ -219,6 +220,7 @@ export class AgentDeletionAuthority {
     try {
       for (const row of stagedDirectories.values()) {
         validateAgentDeletionDirectory(row.canonical, row);
+        touchSourceMutation();
         renameSync(row.canonical, row.tombstone);
         row.renamed = true;
       }
@@ -300,6 +302,7 @@ export class AgentDeletionAuthority {
           throw new Error("Agent deletion rollback lost its owned tombstone", { cause: error });
         }
         validateAgentDeletionDirectory(row.tombstone, row);
+        touchSourceMutation();
         renameSync(row.tombstone, row.canonical);
       }
       for (const directory of new Set([...stagedDirectories.values()].map(({ canonical }) => dirname(canonical)))) {
@@ -385,11 +388,13 @@ export class AgentDeletionAuthority {
       validateAgentDeletionDirectory(auditDirectory, owned);
       for (const entry of readdirSync(auditDirectory)) {
         if (entry === "agent.json" || entry === AGENT_DELETION_IDENTITY_FILE) continue;
+        touchSourceMutation();
         rmSync(join(auditDirectory, entry), { recursive: true, force: true });
       }
       if (hasTombstone) {
         validateAgentDeletionDirectory(tombstone, owned);
         if (pathEntryExists(canonical)) throw new Error("deleted Agent audit destination already exists");
+        touchSourceMutation();
         renameSync(tombstone, canonical);
         afterAuditRename?.(agentId);
       }
@@ -452,6 +457,7 @@ export class AgentDeletionAuthority {
       }
       if (hasTombstone) {
         validateAgentDeletionDirectory(tombstone, owned);
+        touchSourceMutation();
         renameSync(tombstone, canonical);
         fsyncDirectory(directory);
       } else {

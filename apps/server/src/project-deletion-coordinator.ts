@@ -1,3 +1,4 @@
+import { withSourceMutation } from "@ponderosa/agents";
 import {localMemoryFor} from "./local-memory.js";
 import {requestProduct,resourceInProduct} from "./product-scope.js";
 import type {
@@ -229,7 +230,7 @@ export function registerProjectDeletionRoutes(
     };
   });
 
-  app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
+  app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => withSourceMutation(async () => {
     const previousReceipt = store.getProjectDeletionReceipt(request.params.id);
     if (previousReceipt) {
       // Older committed receipts can still carry unresolved retained browsers.
@@ -546,7 +547,7 @@ export function registerProjectDeletionRoutes(
         for (const agentId of agentIds) deletingAgentIds.delete(agentId);
       }
     }
-  });
+  }));
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/communication-reconciliation", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });

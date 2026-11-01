@@ -1,3 +1,4 @@
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -21,6 +22,7 @@ function fsyncDirectory(directory: string): void {
 }
 
 function writeJson(file: string, data: unknown, indentation: 0 | 2 = 2): void {
+  touchSourceMutation();
   const directory = dirname(file);
   mkdirSync(directory, { recursive: true });
   const temporary = join(directory, `.${randomUUID()}.json.tmp`);
@@ -51,6 +53,7 @@ function readJsonLines<T>(file: string): T[] {
 
 /** Remove rebuildable/stale files while retaining bytes referenced by canonical events. */
 function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string>, relative = ""): void {
+  touchSourceMutation();
   if (!existsSync(root)) return;
   for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
     const childRelative = relative ? join(relative, entry.name) : entry.name;

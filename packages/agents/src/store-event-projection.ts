@@ -1,3 +1,4 @@
+import { touchSourceMutation } from "./source-capture-boundary.js";
 import { appendFsyncedJsonl } from "./append-jsonl.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "@ponderosa/native-host/fs";
@@ -384,6 +385,7 @@ export class AgentEventProjectionStore {
         if (op.content !== undefined) {
           const target = artifactContentPath(this.dataDir, projectId, agentId, op.row.path);
           mkdirSync(dirname(target), { recursive: true });
+          touchSourceMutation();
           writeFileSync(target, op.content, "utf8");
           const published = publishManagedArtifactContent(
             this.dataDir,
