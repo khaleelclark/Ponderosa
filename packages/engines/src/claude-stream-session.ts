@@ -490,7 +490,16 @@ export class ClaudeStreamSession implements RuntimeSession {
     const map = claudeStreamEventMapper();
     try {
       for await (const raw of this.mediaReplayFraming().parse(stdout as AsyncIterable<Buffer>)) {
-        if (this.controls.observe(raw) || this.handleNativeRequest(raw)) continue;
+        if (this.controls.observe(raw)) continue;
+        const stopHook = this.taskLifetime.stopHook(raw);
+        if (stopHook) {
+          for (const event of stopHook.events) yield event;
+          await this.writeFrame({ type: "control_response", response: {
+            subtype: "success", request_id: stopHook.requestId, response: {},
+          } });
+          continue;
+        }
+        if (this.handleNativeRequest(raw)) continue;
         this.captureModelInitialization(raw);
         const capabilities = normalizeClaudeInitCapabilities(raw, this.selectedModel);
         if (capabilities && capabilities.sessionId !== this.engineAgentId) throw new Error("Claude session changed");
@@ -505,14 +514,6 @@ export class ClaudeStreamSession implements RuntimeSession {
             ...(this.liveModelCatalog() ? { modelCatalog: this.liveModelCatalog() } : {}),
           };
           this.opts.onCapabilitiesChanged?.();
-        }
-        const stopHook = this.taskLifetime.stopHook(raw);
-        if (stopHook) {
-          for (const event of stopHook.events) yield event;
-          await this.writeFrame({ type: "control_response", response: {
-            subtype: "success", request_id: stopHook.requestId, response: {},
-          } });
-          continue;
         }
         if (this.nativeCommand) {
           this.nativeCommand.observe(raw);
