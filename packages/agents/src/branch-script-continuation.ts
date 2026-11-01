@@ -1,3 +1,4 @@
+import {retainedResourceCapture} from './branch-resource-capture.js';
 import {hostRequestPayload,coordinationLineageSupported} from './branch-host-provenance.js';
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import {branchContinuationIds} from './branch-continuation-remap.js';
@@ -81,10 +82,10 @@ export function resourceReservationSupported(selected:Selected,definition:Branch
   const step=selected.steps?.find(s=>s.id===p?.step_execution_id),agent=definition.steps.find(s=>s.id===step?.step_id);
   return selected.resources?.length===1&&!!e&&!!r&&!!step&&agent?.kind==='agent'&&agent.target.kind==='ephemeral_organization'
     &&definition.steps.filter(s=>s.kind==='agent').length===1&&!definition.steps.some(s=>s.kind==='branch_call')
-    &&r.execution_id===e.id&&r.step_execution_id===step.id&&step.state==='prepared'&&r.state==='reserved'&&r.generation===0&&r.retry_draining===0
-    &&r.root_agent_id===null&&r.chat_id===null&&r.error===null&&r.chat_operation_json===null&&r.import_operation_json===null
+    &&r.execution_id===e.id&&r.step_execution_id===step.id&&step.state==='prepared'&&r.state==='reserved'&&Number.isSafeInteger(r.generation)&&r.generation>=0&&r.retry_draining===0
+    &&r.error===null&&(r.root_agent_id===null&&r.chat_id===null&&r.chat_operation_json===null&&r.import_operation_json===null||!!retainedResourceCapture(selected))
     &&r.template_ref===agent.target.templateRef&&r.requested_count===definition.templates?.[r.template_ref]?.agents.length
-    &&r.requested_count<=(definition.policy.maxEphemeralAgents??100)&&r.creation_key===`branch-resource:${step.id}`;
+    &&r.requested_count<=(definition.policy.maxEphemeralAgents??100)&&(r.creation_key===`branch-resource:${step.id}`||r.creation_key===`branch-resource:${step.id}:${r.generation}`);
 }
 export function encodeScriptContinuation(db:Database.Database,executionId:string,selected:Selected,hostCut?:BranchHostCut):Row|undefined {
   const owner=db.prepare(`SELECT e.configuration_json,v.definition_json,v.content_hash version_hash,b.content_hash binding_hash,b.bindings_json
@@ -227,6 +228,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     let finished:Row|undefined,terminalObserved=false;
     const admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();
     let resourceReserved=!!seed?.selected.resources?.length,gateClosing:Row|undefined;
+    const resourceOperations=new Map<string,Row>();
     let started=false,accepted=false,pendingLoop:string|undefined,interruption:Row|undefined,activeInvocation:Row|undefined;
     const authorized=new Map<string,number>(),exited=new Set<string>(),seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
     if(seed){
@@ -351,6 +353,20 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
             ||v.templateRef!==r.template_ref||v.count!==r.requested_count||event.transition_key!==`resource:${current.id}`)return false;
           resourceReserved=true;break;
         }
+        case 'resource_operation':{
+          const r=selected.resources![0],c=r&&retainedResourceCapture(selected);
+          if(!context?.resourceFrontier||!resourceReserved||!current||r?.step_execution_id!==current.id||!c
+            ||v.schema!=='branch-resource-operation.v1'||!['chat','import'].includes(v.phase)||typeof v.token!=='string'
+            ||!event.transition_key.startsWith(`resource-operation:${r.creation_key}:${v.phase}:${v.token}:${v.state}:`)
+            ||!['running','completed'].includes(v.state))return false;
+          const previous=resourceOperations.get(v.phase);
+          if(!previous&&v.state!=='running'||previous&&(previous.state!=='running'||previous.token!==v.token)
+            ||v.phase==='import'&&resourceOperations.get('chat')?.state!=='completed')return false;
+          if(v.phase==='chat'&&(v.releaseRequired!==true||v.generation!==r.generation))return false;
+          if(v.state==='completed'&&stableJson(v)!==r[`${v.phase}_operation_json`])return false;
+          if(v.phase==='import'&&previous?.creationOperationId&&v.creationOperationId!==previous.creationOperationId)return false;
+          resourceOperations.set(v.phase,v);break;
+        }
         case 'child_admitted':case 'child_completed':{
           const child=context?.children[v.attemptId],a=selected.attempts!.find(row=>row.id===v.attemptId),step=selected.steps!.find(row=>row.id===a?.step_execution_id);
           if(!child||!current||step?.id!==current.id||!definition.steps.some(row=>row.id===step!.step_id&&row.kind==='branch_call')||child.executionId!==v.childExecutionId)return false;
@@ -428,6 +444,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       ||interruption.invocationId!==closing.id||interruption.ordinal!==closing.ordinal||[...authorized.keys()].some(id=>!exited.has(id))))return false;
     if((context||waitingGate)&&[...authorized.keys()].some(id=>!exited.has(id)))return false;
     if(context?.resourceFrontier&&!resourceReserved)return false;
+    if(context?.resourceFrontier&&retainedResourceCapture(selected)&&!seed&&['chat','import'].some(phase=>resourceOperations.get(phase)?.state!=='completed'))return false;
     if(openedGates.size!==selected.gates!.length||selected.gates!.some(g=>resolvedGates.has(g.id)!==(g.state==='resolved')))return false;
     if(boundRequests.size!==selected.attempts!.filter(a=>a.request_id).length)return false;
     if(!started||pendingLoop||current&&!['prepared',...(context?.waiting||waitingGate||hostCut?['waiting']:[])].includes(current.state)||seen.size!==selected.steps!.length)return false;

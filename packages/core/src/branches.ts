@@ -344,3 +344,23 @@ export interface BranchHostRequestAdoptionDto {
 export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>;workingFilesActivation?:{sharedRoot?:string};newManagedChatFolderName?:string}
 export type BranchImportFileSelections=Record<string,BranchImportFileSelection>;
 export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:string[];wholeWorkingFolder?:boolean}>;
+
+export interface CheckpointPackageSource {
+  checkpointId:string;
+  sourceChatId:string;
+  agentIds:string[];
+  intent:{executionId:string;resourceStepId:string;resourceGeneration:number;frontierSha256:string;bindingSha256:string;configurationSha256:string};
+}
+export interface CheckpointPackageReceipt extends CheckpointPackageSource {
+  version:1;
+  custodyId:string;
+  boundaryId:string;
+  sha256:string;
+  byteLength:number;
+}
+export type CheckpointPackageStatus=
+  | {state:'missing'}
+  | {state:'retained';receipt:CheckpointPackageReceipt}
+  | {state:'capturing';source:CheckpointPackageSource;boundaryId:string}
+  | {state:'failed';source:CheckpointPackageSource;boundaryId:string;reason:string}
+  | {state:'released';receipt:CheckpointPackageReceipt};

@@ -1,5 +1,6 @@
+import {retainedResourceCapture} from './branch-resource-capture.js';
 import {coordinationLineageSupported} from './branch-host-provenance.js';
-import {captureBranchHostCut} from './branch-host-cut.js';
+import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {hasParallelControls} from './branch-parallel-continuation.js';
 import {branchContinuationIds} from './branch-continuation-remap.js';
@@ -50,7 +51,7 @@ export function encodeScriptTreeContinuation(db:Database.Database,id:string,sele
     const ids=db.prepare(`WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT id FROM tree ORDER BY id`).all(id) as Row[];
     if(ids.length<2&&!selected.resources?.length)return;
     // An unstarted reservation owns no released Chat/import effect or external identity.
-    if(selected.resources?.length&&db.prepare('SELECT 1 FROM branch_resource_members WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) UNION ALL SELECT 1 FROM branch_ephemeral_contexts WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) LIMIT 1').get(id,id))return;
+    if(selected.resources?.length&&!retainedResourceCapture(selected)&&db.prepare('SELECT 1 FROM branch_resource_members WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) UNION ALL SELECT 1 FROM branch_ephemeral_contexts WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) LIMIT 1').get(id,id))return;
     const owners=ids.map(row=>owner(db,row.id,row.id===id?selected:selectBranchUnit(db,row.id)));
     if(owners.some(row=>!row))return;
     const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[]};
@@ -77,6 +78,24 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const {secretBindings,...safe}=JSON.parse(actual.configuration_json);if(stableJson(safe)!==stableJson(o.configuration))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     const resourceFrontier=owners.length===1&&resourceReservationSupported(o.selected,definition);
+    const capture=retainedResourceCapture(o.selected);
+    if(capture&&(capture.source.intent.bindingSha256!==o.bindingHash||capture.source.intent.configurationSha256!==payloadHash(o.configuration)))return false;
+    if(capture){
+      const cut=o.hostDependencies,r=o.selected.resources[0],operation=JSON.parse(r.import_operation_json),chatOperation=JSON.parse(r.chat_operation_json);
+      if(!cut||o.hostDependenciesHash!==payloadHash(cut)||!verifyBranchHostCut(cut,o.executionId)||!cut.coverage.complete
+       ||stableJson(cut.resources.map((x:Row)=>x.row))!==stableJson(o.selected.resources)
+       ||stableJson(cut.resourceMembers.map((x:Row)=>x.row.agent_id).sort())!==stableJson([...capture.source.agentIds].sort())
+       ||cut.resourceMembers.some((x:Row)=>x.row.step_execution_id!==r.step_execution_id||x.row.origin!=='template')
+       ||cut.resourceContexts.length!==1||cut.resourceContexts[0].row.step_execution_id!==r.step_execution_id||cut.resourceContexts[0].row.generation!==r.generation||cut.resourceContexts[0].row.chat_id!==r.chat_id
+       ||stableJson(JSON.parse(cut.resourceContexts[0].row.agent_ids_json))!==stableJson(capture.source.agentIds))return false;
+      const release=cut.resourceReceipts.find((x:Row)=>x.row.execution_id===o.executionId&&x.row.command_key===`resource-release:${r.creation_key}:${chatOperation.token}`)?.row;
+      if(!release||release.input_hash!==payloadHash({creationKey:r.creation_key,token:chatOperation.token})||release.result_json!==stableJson({phase:'chat',token:chatOperation.token,generation:r.generation}))return false;
+      const creation=cut.resourceReceipts.find((x:Row)=>x.row.id===operation.creationOperationId)?.row;
+      const members=cut.resourceReceipts.filter((x:Row)=>x.row.operation_id===operation.creationOperationId).map((x:Row)=>x.row).sort((a:Row,b:Row)=>a.position-b.position);
+      if(!creation||creation.kind!=='import'||creation.status!=='completed'||members.some((x:Row,i:number)=>x.position!==i)
+       ||stableJson(members.map((x:Row)=>x.agent_id))!==stableJson(capture.source.agentIds))return false;
+    }
+
     if(owners.length===1&&!resourceFrontier)return false;
     if(!scriptDefinitionSupported(definition,true,resourceFrontier)||inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1)return false;
     const descendant=o.executionId!==c.rootExecutionId,terminal=['completed','failed'].includes(e.state);

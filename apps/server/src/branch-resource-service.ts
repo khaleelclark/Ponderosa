@@ -1,8 +1,9 @@
+import type {BranchPackageEngine} from './routes/agent-packages.js';
 import type {ChatCreator} from "./routes/projects.js";
 import {createHash} from 'node:crypto';
 import {realpathSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
-import type { AgentStore, BranchStore, BranchResourceProvision } from '@ponderosa/agents';
+import {retainedResourceCapture,type AgentStore,type BranchStore,type BranchResourceProvision } from '@ponderosa/agents';
 import type { ImportAgentPackageResponse } from '@ponderosa/core';
 export type BranchTemplateImporter = (input: BranchResourceProvision, hooks: {
   plan(agentIds: string[],creationOperationId?:string): void | Promise<void>; commit(result: ImportAgentPackageResponse): void;
@@ -12,6 +13,8 @@ const IMPORT_DEADLINE_MS = 5 * 60 * 1000;
 /** Existing tracked template imports, driven only by the existing scheduler cycle. */
 export class BranchResourceService {
   private importer?: BranchTemplateImporter;
+  private packages?:BranchPackageEngine;
+  setPackageEngine(engine:BranchPackageEngine):void {this.packages=engine;}
   private pending?: Promise<void>;
   private maintenance?:Promise<void>;
   private importController?: AbortController;
@@ -24,6 +27,29 @@ export class BranchResourceService {
     if (this.pending) {await this.maintain();return this.pending;}
     const operation = this.work(admit && !this.stopped); this.pending = operation;
     try { await operation; } finally { if (this.pending === operation) this.pending = undefined; }
+  }
+  async verifyHistoricalCustody(executionId:string,checkpointId:number,expectedHash:string):Promise<void> {
+    const row=this.store.sqlite.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(executionId,checkpointId) as {snapshot_json:string;content_hash:string}|undefined;
+    if(!row||row.content_hash!==expectedHash||createHash('sha256').update(row.snapshot_json).digest('hex')!==expectedHash)throw Error('Historical resource checkpoint unavailable');
+    const snapshot=JSON.parse(row.snapshot_json);
+    for(const owner of snapshot.continuation?.owners??[{selected:snapshot.selected}]){
+      const capture=retainedResourceCapture(owner.selected);
+      if(capture){if(!this.packages)throw Error('Checkpoint package service unavailable');await this.packages.readCheckpoint(capture.receipt!);}
+    }
+  }
+  async reviewRestoreAccess(stepExecutionId:string,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']) {
+    if(!this.packages)throw Error('Checkpoint package service unavailable');
+    const journal=this.branches.resourceRestoreJournal(stepExecutionId);
+    const row=this.store.sqlite.prepare('SELECT r.chat_id,r.execution_id,e.branch_id FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepExecutionId) as {chat_id:string;execution_id:string;branch_id:string}|undefined;
+    if(!journal||!row?.chat_id)throw Error('Fresh resource destination Chat is not ready');
+    const portable=await this.packages.readCheckpoint(journal.receipt),review=await this.packages.reviewAccess({...portable,rootRef:journal.rootRef},row.chat_id);
+    this.branches.resourceRestoreReview(stepExecutionId,review,choice);return review;
+  }
+  async releaseCapture(stepExecutionId:string):Promise<void> {
+    if(!this.packages)throw Error('Checkpoint package service unavailable');
+    const receipt=this.branches.resourceCaptureRelease(stepExecutionId,'releasing');
+    await this.packages.releaseCheckpoint(receipt);
+    this.branches.resourceCaptureRelease(stepExecutionId,'released');
   }
   private idle(agentIds: string[]): boolean {
     return agentIds.every(id => !this.store.sqlite.prepare(`SELECT 1 FROM agent_creation_operation_members m JOIN agent_creation_operations o ON o.id=m.operation_id WHERE m.agent_id=? AND o.status NOT IN ('completed','rolled_back')`).get(id)
@@ -45,7 +71,17 @@ export class BranchResourceService {
       let phase:'chat'|'import'|undefined,token:string|undefined;
       try {
         const imported=this.branches.resourceOperation(provision.stepExecutionId,'import');
-        if(imported?.state==='completed'){this.branches.bindResource(provision.stepExecutionId,imported.result as ImportAgentPackageResponse);continue;}
+        if(imported?.state==='completed'){
+          if(!this.branches.resourceCaptureEligible(provision.stepExecutionId)&&!this.branches.resourceCaptureJournal(provision.stepExecutionId)){this.branches.bindResource(provision.stepExecutionId,imported.result as ImportAgentPackageResponse);continue;}
+          if(!this.packages)throw Error('Checkpoint package service unavailable');
+          const source=this.branches.reserveResourceCapture(provision.stepExecutionId);
+          const observed=await this.packages.inspectCheckpoint(source);
+          const receipt=observed.state==='retained'?observed.receipt:observed.state==='missing'?await this.packages.captureCheckpoint(source):undefined;
+          if(!receipt)throw Error(`Resource capture ${observed.state}; explicit owner reconciliation required`);
+          this.branches.finishResourceCapture(source,receipt);
+          await this.branches.waitResourceCheckpoint(provision.stepExecutionId);
+          this.branches.bindResource(provision.stepExecutionId,imported.result as ImportAgentPackageResponse);continue;
+        }
         if(!provision.chatId){
           const configuredDirectory=provision.workingDirectory?.trim();
           let hostPath:string|undefined;
@@ -71,10 +107,24 @@ export class BranchResourceService {
         }
         if (this.stopped) break;
         controller.signal.throwIfAborted();
+        const restore=this.branches.resourceRestoreJournal(provision.stepExecutionId);
+        let accessSettingsResolution:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution'];
+        if(restore){
+          if(!this.packages)throw Error('Checkpoint package service unavailable');
+          const portable=await this.packages.readCheckpoint(restore.receipt);
+          if(!portable.agents.some(node=>node.ref===restore.rootRef)||portable.agents.length!==provision.template.agents.length)throw Error('Retained resource Agent inventory differs');
+          provision={...provision,template:{...portable,rootRef:restore.rootRef}};
+          this.packages.validateAgent(provision.template,provision.engineMapping);
+          const review=await this.packages.reviewAccess(provision.template,provision.chatId);
+          if(!restore.choice||restore.choice.reviewSha256!==review.reviewSha256){
+            this.branches.resourceRestoreReview(provision.stepExecutionId,review);continue;
+          }
+          accessSettingsResolution=restore.choice;
+        }
         // Every new effect revalidates current owner/ancestor release after the previous await.
         phase='import';token=this.branches.beginResourceOperation(provision.stepExecutionId,provision.creationKey,phase);if(!token)continue;
         const importToken=token;
-        await this.importer(provision, {
+        await this.importer({...provision,...(accessSettingsResolution?{accessSettingsResolution}:{})}, {
           plan: async(ids,creationOperationId) => {
             this.branches.observeResourceImportPlan(provision.stepExecutionId,importToken,creationOperationId);
             // The start/receipt markers must be covered before a later plan/effect boundary.
@@ -89,6 +139,7 @@ export class BranchResourceService {
       } catch (error) {
         const message=error instanceof Error ? error.message : 'Template creation failed';
         if(phase&&token)this.branches.finishResourceOperation(provision.stepExecutionId,phase,token,error);
+        else if(this.branches.resourceCaptureJournal(provision.stepExecutionId))this.branches.resourceCaptureError(provision.stepExecutionId,message);
         else this.branches.resourceError(provision.stepExecutionId,message);
         if (error && typeof error === 'object' && 'provisionRejected' in error && error.provisionRejected) this.branches.resourceRejected(provision.stepExecutionId,message);
       } finally {
@@ -106,6 +157,9 @@ export class BranchResourceService {
   private async cleanup():Promise<void> {
     for (const resource of this.branches.resourceCleanupCandidates()) {
       try {
+        const capture=this.branches.resourceCaptureJournal(resource.stepExecutionId);
+        if(capture?.state==='capturing')continue;
+        if(capture?.state==='retained'){if(!this.packages||!capture.receipt)throw Error('Required checkpoint custody unavailable');await this.packages.readCheckpoint(capture.receipt);}
         this.branches.cancelResourceWork(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         await this.deleteAgents(resource.agentIds);

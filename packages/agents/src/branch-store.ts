@@ -1,3 +1,4 @@
+import {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
 import {insertBranchFrontier} from './branch-frontier-storage.js';
 import {restoredRequestUpdatePayload} from './coordination-v3-cut-restoration-authority.js';
 import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
@@ -33,7 +34,7 @@ import { CapabilityPolicyStore } from "./capability-policy-store.js";
 
 type Row = Record<string, any>;
 const MERGE_TARGET_STATES:readonly string[]=['queued','running','waiting','completed'];
-export interface BranchResourceProvision { branchId:string; executionId:string; workingDirectory:string; defaultEngine:string; stepExecutionId: string; projectId: string; chatId: string; creationKey: string; template: AgentPortablePackageDto; engineMapping: Record<string, string> }
+export interface BranchResourceProvision { branchId:string; executionId:string; workingDirectory:string; defaultEngine:string; stepExecutionId: string; projectId: string; chatId: string; creationKey: string; template: AgentPortablePackageDto; engineMapping: Record<string, string>; accessSettingsResolution?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution'] }
 export interface BranchActionLease { attemptId:string; fence:number; workerId:string; branchId:string; executionId:string; projectId?:string; chatId?:string; title:string; input:string }
 
 export interface BranchGateNotificationEvent {gateId:string;revision:number;executionId:string;branchId:string;branchName:string;state:'pending'|'open'|'closing_unpublished'|'closing';prompt:string;purpose:string}
@@ -285,6 +286,7 @@ export class BranchStore {
   }
   private functionalReady(executionId: string): boolean {
     return this.ancestors(executionId).every(owner => {
+      if(this.row("SELECT 1 FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id AND c.command_key='resource-capture:'||r.creation_key WHERE r.execution_id=? AND json_extract(c.result_json,'$.state')='capturing' LIMIT 1",owner.id))return false;
       const invocation=this.checkpointInvocationRow(owner.id);
       return (!invocation||invocation.state==='active')&&this.unitSaver.ready(owner.id,invocation?.mode??JSON.parse(owner.configuration_json).checkpointMode??'async');
     });
@@ -792,7 +794,7 @@ export class BranchStore {
     for(const r of this.rows('SELECT * FROM branch_resources WHERE execution_id=?',executionId)){
       const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?',r.step_execution_id).map(m=>m.agent_id);
       const chat=this.resourceOperation(r.step_execution_id,'chat'),imported=this.resourceOperation(r.step_execution_id,'import');
-      if(!this.resourceOperationAuditMatches(r,'chat',chat)||!this.resourceOperationAuditMatches(r,'import',imported))return false;
+      if(!this.resourceOperationAuditMatches(r,'chat',chat)||!this.resourceOperationAuditMatches(r,'import',imported)||chat&&!this.resourceOperationReleased(r,chat))return false;
       // Retained mutable lists cannot erase identities from the owned completed import audit.
       const contexts=this.rows('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=?',r.step_execution_id);
       const context=contexts[0],ids=imported?.state==='completed'?imported.result?.agentIds:[];
@@ -830,7 +832,10 @@ export class BranchStore {
     if(!scriptTreeSnapshotSupported(this.sqlite,executionId,snapshot))throw Error('Historical tree continuation integrity unsupported');
     const c=snapshot.continuation,commandHash=payloadHash({executionId,checkpointId,expectedHash}),key=`tree-historical-rewind:${payloadHash(commandKey)}`;
     if(c.owners.some((o:Row)=>o.selected.resources.length)){
-      for(const o of c.owners)for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',resource.step_execution_id);if(!row||row.execution_id!==o.executionId||['template_ref','requested_count','creation_key','generation'].some(k=>row[k]!==resource[k]))throw Error('Historical resource custody identity unavailable');}
+      for(const o of c.owners)for(const resource of o.selected.resources){
+        const capture=retainedResourceCapture(o.selected);
+        if(capture){const current=this.resourceCaptureJournal(resource.step_execution_id);if(current?.state!=='retained'||stableJson(current.receipt)!==stableJson(capture.receipt))throw Error('Historical resource checkpoint custody was released or changed');}
+        const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',resource.step_execution_id);if(!row||row.execution_id!==o.executionId||['template_ref','requested_count','creation_key','generation'].some(k=>row[k]!==resource[k]))throw Error('Historical resource custody identity unavailable');}
       if(!this.resourceHistoryCustodySettled(executionId))throw Error('Historical resource custody is not retired or verified');
     }
     for(const o of c.owners){
@@ -872,7 +877,7 @@ export class BranchStore {
         for(const step of remapped.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=?',step.id);if(!row||row.execution_id!==target||row.path_id!==step.path_id||['step_id','invocation','input_text'].some(key=>row[key]!==step[key]))throw Error('Tree mapped Step ownership failure');}
         for(const a of remapped.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',a.id);if(!row||row.step_execution_id!==a.step_execution_id||row.number!==a.number||row.input_hash!==a.input_hash||row.request_id!==(a.request_id??null))throw Error('Tree mapped attempt ownership failure');}
         for(const r of remapped.sealedResults!){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=?',r.id);if(!row||row.execution_id!==target||row.path_id!==r.path_id||row.step_execution_id!==r.step_execution_id||row.terminal_attempt_id!==r.terminal_attempt_id||row.result_json!==r.result_json||row.content_hash!==r.content_hash)throw Error('Tree mapped result ownership failure');}
-        for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',map[resource.step_execution_id]);if(!row||row.execution_id!==target||row.template_ref!==resource.template_ref||row.requested_count!==resource.requested_count||row.creation_key!==`branch-resource:${map[resource.step_execution_id]}`)throw Error('Tree mapped resource ownership failure');}
+        for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',map[resource.step_execution_id]);if(!row||row.execution_id!==target||row.template_ref!==resource.template_ref||row.requested_count!==resource.requested_count||row.creation_key!==`branch-resource:${map[resource.step_execution_id]}`)throw Error('Tree mapped resource ownership failure');const custody=retainedResourceCapture(o.selected),journal=this.resourceRestoreJournal(map[resource.step_execution_id]);if(custody&&(stableJson(journal?.receipt)!==stableJson(custody.receipt)||journal?.rootRef!==resource.root_agent_id||journal?.sourceStepId!==resource.step_execution_id))throw Error('Tree resource custody lineage differs');}
         if(o.executionId!==executionId){const child=this.row('SELECT * FROM branch_unit_snapshots WHERE id=? AND execution_id=?',evidence.childLineageId,target);
           if(!child||payloadHash(JSON.parse(child.snapshot_json))!==child.content_hash||child.snapshot_json!==stableJson(childTreeLineage(line,result.lineageId,o.executionId,target)))throw Error('Tree child lineage unavailable');}
       }
@@ -907,7 +912,12 @@ export class BranchStore {
       const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target,canonical?.requestMap);
       insertBranchFrontier(this.sqlite,target,restored,now,canonical?new Set(Object.values(canonical.requestMap)):undefined);
       for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,target,g.prompt_text,g.purpose,now,now);
-      for(const resource of o.selected.resources)this.run("INSERT INTO branch_resources(step_execution_id,execution_id,template_ref,state,requested_count,creation_key) VALUES(?,?,?,'reserved',?,?)",mapped(resource.step_execution_id),target,resource.template_ref,resource.requested_count,`branch-resource:${mapped(resource.step_execution_id)}`);
+      for(const resource of o.selected.resources){
+        const creationKey=`branch-resource:${mapped(resource.step_execution_id)}`;
+        this.run("INSERT INTO branch_resources(step_execution_id,execution_id,template_ref,state,requested_count,creation_key) VALUES(?,?,?,'reserved',?,?)",mapped(resource.step_execution_id),target,resource.template_ref,resource.requested_count,creationKey);
+        const custody=retainedResourceCapture(o.selected);
+        if(custody)this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',target,`resource-restore:${creationKey}`,payloadHash({receipt:custody.receipt,sourceStepId:resource.step_execution_id,rootRef:resource.root_agent_id}),stableJson({schema:'branch-resource-restore.v1',receipt:custody.receipt,rootRef:resource.root_agent_id,sourceStepId:resource.step_execution_id}),now);
+      }
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',e.traversals,e.loop_iterations,e.depth_ceiling,target);this.selectedWrite(target);
     }
     const line={schema:'ponderosa.branch.tree-rewind-lineage.v1',sourceExecutionId:executionId,executionId:next.id,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,...(canonical?{coordination:canonical,graphReviewHash:graph!.reviewHash}:{}),idMap:Object.fromEntries(ids)};
@@ -1005,7 +1015,7 @@ export class BranchStore {
     const rows=this.rows(`SELECT r.rowid position,r.* FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id
       WHERE r.state='reserved' AND e.cancel_requested=0 AND EXISTS(SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=r.step_execution_id AND a.state='prepared' AND a.cancel_requested=0 AND a.available_at<=? AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 1`, new Date().toISOString(),this.provisionCursor);
     if(rows.length)this.provisionCursor=rows[0]!.position;
-    return rows.filter(r=>this.resourceRelease(r.step_execution_id,r.creation_key)==='ready'&&!['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(r.step_execution_id,phase as 'chat'|'import')?.state))).map(r => {
+    return rows.filter(r=>(this.resourceRelease(r.step_execution_id,r.creation_key)==='ready'||this.resourceCaptureJournal(r.step_execution_id)?.state==='capturing'&&this.resourceOperation(r.step_execution_id,'import')?.state==='completed')&&!['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(r.step_execution_id,phase as 'chat'|'import')?.state))).map(r => {
       const execution = this.execution(r.execution_id)!;
       const bindings=this.bindings(execution),template=this.definition(execution).templates![r.template_ref]!;
       const root=template.agents.find(a=>a.ref===template.rootRef)!;
@@ -1031,6 +1041,77 @@ export class BranchStore {
       ||!this.row("SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=? AND a.state='prepared' AND a.cancel_requested=0 AND a.available_at<=? AND NOT EXISTS(SELECT 1 FROM branch_attempts n WHERE n.step_execution_id=a.step_execution_id AND n.number>a.number)",stepExecutionId,new Date().toISOString()))return 'fenced';
     try{if(r.owner_chat_id)this.chat(r.owner_chat_id);if(r.chat_id)this.chat(r.chat_id);}catch{return 'fenced';}
     return this.functionalReady(r.execution_id)&&this.hasRunnableCapacity(r.execution_id)?'ready':'waiting';
+  }
+  resourceRestoreJournal(stepExecutionId:string):Row|undefined {
+    const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+    const record=r&&this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,`resource-restore:${r.creation_key}`);
+    if(!record)return;const journal=JSON.parse(record.result_json);
+    if(journal.schema!=='branch-resource-restore.v1'||record.input_hash!==payloadHash({receipt:journal.receipt,sourceStepId:journal.sourceStepId,rootRef:journal.rootRef}))throw Error('Resource restore journal integrity failure');return journal;
+  }
+  resourceRestoreReview(stepExecutionId:string,review:import('@ponderosa/core').AgentAccessImportReviewDto,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']):void {
+    this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),journal=this.resourceRestoreJournal(stepExecutionId);
+      if(!r||r.state!=='reserved'||!r.chat_id||!journal||this.resourceOperation(stepExecutionId,'import')?.state==='completed')throw Error('Resource destination review is unavailable');
+      if(choice&&(choice.reviewSha256!==review.reviewSha256||journal.review?.reviewSha256!==review.reviewSha256))throw Error('Resource destination access review changed');
+      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...journal,review,...(choice?{choice}:{choice:null})}),r.execution_id,`resource-restore:${r.creation_key}`);
+    }).immediate();
+  }
+  resourceCaptureError(stepExecutionId:string,error:string):void {
+    this.unitTransaction(()=>{
+      const c=this.resourceCaptureJournal(stepExecutionId),r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+      if(c&&r)this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...c,error:branchText(error)}),r.execution_id,`resource-capture:${r.creation_key}`);
+    }).immediate();
+  }
+  resourceCaptureEligible(stepExecutionId:string):boolean {
+    const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),e=r&&this.execution(r.execution_id);
+    if(!e||e.parentExecutionId||Object.keys(e.configuration.secretBindings??{}).length||!scriptDefinitionSupported(this.definition(e),false,true)||this.definition(e).steps.filter(s=>s.kind==='agent').length!==1)return false;
+    const selected=selectBranchUnit(this.sqlite,e.id);
+    return selected.resources!.length===1&&selected.paths!.length===1&&!selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id);
+  }
+  resourceCaptureJournal(stepExecutionId:string):BranchResourceCapture|undefined {
+    const r=selectBranchUnit(this.sqlite,this.row('SELECT execution_id FROM branch_resources WHERE step_execution_id=?',stepExecutionId)?.execution_id??'').resources?.find(r=>r.step_execution_id===stepExecutionId);
+    if(!r)return;
+    const c=resourceCapture(r),receipt=this.row('SELECT input_hash FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,`resource-capture:${r.creation_key}`);
+    if(c&&receipt?.input_hash!==payloadHash(c.source))throw Error('Resource capture intent hash differs');return c;
+  }
+  reserveResourceCapture(stepExecutionId:string):import('@ponderosa/core').CheckpointPackageSource {
+    return this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+      if(!r)throw Error('Resource capture owner unavailable');
+      const previous=this.resourceCaptureJournal(stepExecutionId);if(previous)return previous.source;
+      const execution=this.execution(r.execution_id)!,branch=this.getBranch(execution.branchId),selected=selectBranchUnit(this.sqlite,r.execution_id),imported=this.resourceOperation(stepExecutionId,'import');
+      if(!branch?.enabled||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration)
+        ||Object.keys(execution.configuration.secretBindings??{}).length||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)
+        ||r.state!=='reserved'||!r.chat_id||imported?.state!=='completed'||!imported.creationOperationId
+        ||selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.cancel_requested)||selected.resources!.length!==1)throw Error('Resource capture requires a current unissued imported generation');
+      const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id',stepExecutionId).map(m=>m.agent_id);
+      if(stableJson([...imported.result.agentIds].sort())!==stableJson(members)||members.length!==r.requested_count)throw Error('Resource capture membership differs');
+      const source={checkpointId:randomUUID(),sourceChatId:r.chat_id,agentIds:[...imported.result.agentIds] as string[],intent:{executionId:r.execution_id,resourceStepId:stepExecutionId,resourceGeneration:r.generation,frontierSha256:resourceCaptureFrontierHash(selected),bindingSha256:this.row('SELECT content_hash FROM branch_bindings WHERE id=?',execution.bindingRevisionId)!.content_hash,configurationSha256:payloadHash(Object.fromEntries(Object.entries(execution.configuration).filter(([key])=>key!=='secretBindings')))}};
+      const journal:BranchResourceCapture={schema:'branch-resource-capture.v1',state:'capturing',source};
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',r.execution_id,`resource-capture:${r.creation_key}`,payloadHash(source),stableJson(journal),new Date().toISOString());this.selectedWrite(r.execution_id);return source;
+    }).immediate();
+  }
+  finishResourceCapture(source:import('@ponderosa/core').CheckpointPackageSource,receipt:import('@ponderosa/core').CheckpointPackageReceipt):void {
+    this.unitTransaction(()=>{
+      const current=this.resourceCaptureJournal(source.intent.resourceStepId),r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',source.intent.resourceStepId),execution=this.execution(source.intent.executionId);
+      if(!r||!execution||!current||stableJson(current.source)!==stableJson(source)||!receiptMatchesSource(receipt,source)||!['capturing','retained'].includes(current.state))throw Error('Resource capture receipt is fenced');
+      if(current.state==='retained'){if(stableJson(current.receipt)!==stableJson(receipt))throw Error('Resource capture receipt changed');return;}
+      const branch=this.getBranch(execution.branchId);
+      if(!branch?.enabled||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)||r.execution_id!==execution.id||r.generation!==source.intent.resourceGeneration||r.state!=='reserved'||resourceCaptureFrontierHash(selectBranchUnit(this.sqlite,execution.id))!==source.intent.frontierSha256
+       ||branch?.bindingRevisionId!==execution.bindingRevisionId||branch.versionId!==execution.versionId||payloadHash(Object.fromEntries(Object.entries(this.configuration(branch.id)).filter(([key])=>key!=='secretBindings')))!==source.intent.configurationSha256
+       ||this.row('SELECT content_hash FROM branch_bindings WHERE id=?',execution.bindingRevisionId)?.content_hash!==source.intent.bindingSha256)throw Error('Resource generation changed during capture; retained bytes cannot substitute for this frontier');
+      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=? AND input_hash=?',stableJson({...current,state:'retained',receipt}),execution.id,`resource-capture:${r.creation_key}`,payloadHash(source));this.selectedWrite(execution.id);
+    }).immediate();
+  }
+  resourceCaptureRelease(stepExecutionId:string,state:'releasing'|'released'):import('@ponderosa/core').CheckpointPackageReceipt {
+    return this.unitTransaction(()=>{
+      const c=this.resourceCaptureJournal(stepExecutionId),r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+      if(!c?.receipt||!r||!['retained','releasing','released'].includes(c.state))throw Error('Retained resource custody unavailable');
+      if(c.state==='released')return c.receipt;
+      if(this.rows("SELECT result_json FROM branch_commands WHERE command_key LIKE 'resource-restore:%'").some(row=>JSON.parse(row.result_json).receipt?.custodyId===c.receipt!.custodyId))throw Error('Retained checkpoint custody is referenced by a restored resource');
+      if(state==='released'&&c.state==='retained')throw Error('Release intent must commit before custody deletion');
+      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...c,state}),r.execution_id,`resource-capture:${r.creation_key}`);this.selectedWrite(r.execution_id);return c.receipt;
+    }).immediate();
   }
   async waitResourceCheckpoint(stepExecutionId:string):Promise<void> {
     const resource=this.row('SELECT execution_id FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
@@ -1096,12 +1177,21 @@ export class BranchStore {
       // Observation/custody survives a gate, cancellation or failed saver; opening work does not.
       if(phase==='chat')this.bindResourceChat(stepExecutionId,result.chatId);
       else{
+        const restore=this.resourceRestoreJournal(stepExecutionId);
+        if(restore){
+          const map=result.agentRefs,refs=restore.receipt.agentIds as string[];
+          if(!map||stableJson(Object.keys(map).sort())!==stableJson([...refs].sort())||new Set(Object.values(map)).size!==refs.length||refs.some(ref=>typeof map[ref]!=='string'||refs.includes(map[ref]))
+            ||stableJson([...Object.values(map)].sort())!==stableJson([...result.agentIds].sort())||map[restore.rootRef]!==result.rootAgentId)throw Error('Fresh resource Agent map differs from retained custody');
+        }
         const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?',stepExecutionId).map(m=>m.agent_id);
         if(!members.includes(result.rootAgentId)||members.length!==result.agentIds.length||result.agentIds.some((id:string)=>!members.includes(id)))throw Error('Resource completion identities do not match the tracked plan');
         this.run('UPDATE branch_resources SET root_agent_id=? WHERE step_execution_id=?',result.rootAgentId,stepExecutionId);
         this.run('UPDATE branch_ephemeral_contexts SET agent_ids_json=? WHERE step_execution_id=? AND generation=?',stableJson(result.agentIds),stepExecutionId,r.generation);
       }
       this.writeResourceOperation(r,phase,{...operation,state:'completed',result});
+      if(phase==='import'&&this.resourceCaptureEligible(stepExecutionId)){
+        try{this.reserveResourceCapture(stepExecutionId);}catch(error){this.resourceError(stepExecutionId,error instanceof Error?error.message:'Resource capture intent unavailable');}
+      }
     })();
   }
   finishResourceOperation(stepExecutionId:string,phase:'chat'|'import',token:string,error?:unknown):void {
@@ -1151,11 +1241,14 @@ export class BranchStore {
       const r = this.row("SELECT r.*,e.cancel_requested FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?", stepExecutionId);
       if (!r || r.state !== "reserved" || r.cancel_requested) throw new Error("Branch resource creation is fenced");
       if(this.resourceRelease(stepExecutionId)!=='ready')throw Error('Resource opening release is held by current authority or checkpoint coverage');
+      if((this.resourceCaptureEligible(stepExecutionId)||this.resourceCaptureJournal(stepExecutionId))&&!retainedResourceCapture(selectBranchUnit(this.sqlite,r.execution_id)))throw Error('Resource opening requires retained private checkpoint capture');
       const operation=this.resourceOperation(stepExecutionId,'import');
       if(operation?.state!=='completed'||stableJson(operation.result)!==stableJson(result))throw Error('Resource opening requires its known committed import result');
       const members = this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?", stepExecutionId).map(m=>m.agent_id);
       if (!members.includes(result.rootAgentId) || members.length !== result.agentIds.length || result.agentIds.some(id=>!members.includes(id))) throw new Error("Tracked resource identities do not match reservation");
       const execution = this.execution(r.execution_id)!, chat = this.chat(r.chat_id);
+      const capture=this.resourceCaptureJournal(stepExecutionId);
+      if(capture){const branch=this.getBranch(execution.branchId);if(!branch?.enabled||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration))throw Error('Current resource opening pins or authority changed');}
       const attempt = this.row("SELECT a.*,s.step_id,s.input_text FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.id=? ORDER BY a.number DESC LIMIT 1", stepExecutionId)!;
       if (attempt.state !== "prepared" || attempt.cancel_requested) throw new Error("Branch resource opening is fenced");
       const step = this.definition(execution).steps.find(s=>s.id===attempt.step_id)!;
@@ -1188,6 +1281,7 @@ export class BranchStore {
     })();
   }
   resourceErrors():Error[] {return this.rows(`SELECT error FROM branch_resources WHERE error IS NOT NULL
+    UNION SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE command_key LIKE 'resource-capture:%' AND json_extract(result_json,'$.error') IS NOT NULL
     UNION SELECT json_extract(c.result_json,'$.error') error FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id
       AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
       WHERE json_extract(c.result_json,'$.error') IS NOT NULL`).map(r=>new Error(r.error));}
@@ -1204,6 +1298,7 @@ export class BranchStore {
     return rows.map(r=>({stepExecutionId:r.step_execution_id,chatId:r.chat_id??undefined,branchId:this.execution(r.execution_id)!.branchId,executionId:r.execution_id,agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",r.step_execution_id).map(m=>m.agent_id)}));
   }
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
+    const capture=this.resourceCaptureJournal(stepExecutionId);if(capture&&capture.state==='capturing')return false;
     const resource=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
     if(resource&&['chat','import'].some(phase=>{const operation=this.resourceOperation(stepExecutionId,phase as 'chat'|'import');
       return operation&&['running','unknown'].includes(operation.state)&&this.resourceOperationReleased(resource,operation);}))return false;

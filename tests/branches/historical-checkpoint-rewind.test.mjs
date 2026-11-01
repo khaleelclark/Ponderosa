@@ -112,7 +112,7 @@ test('secret-dependent and leased points remain unsupported; exit does not inven
 test('historical HTTP list/rewind enforce exact shape and commit a queued lineage before notify',async t=>{
  const f=fixture(t),cp=await f.prefix();await f.finish();const {createRequire}=await import('node:module');const require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
  const {registerBranchRoutes}=await import('../../apps/server/dist/routes/branches.js');const app=require('fastify')();t.after(()=>app.close());let notified=0;
- registerBranchRoutes(app,{branches:f.branches,store:f.store,installations:{setPublisher(){}},notify(){notified++;assert.ok(f.store.sqlite.prepare("SELECT 1 FROM branch_unit_snapshots WHERE json_extract(snapshot_json,'$.schema')='ponderosa.branch.rewind-lineage.v1'").get());}});
+ registerBranchRoutes(app,{resources:{async verifyHistoricalCustody(){}},branches:f.branches,store:f.store,installations:{setPublisher(){}},notify(){notified++;assert.ok(f.store.sqlite.prepare("SELECT 1 FROM branch_unit_snapshots WHERE json_extract(snapshot_json,'$.schema')='ponderosa.branch.rewind-lineage.v1'").get());}});
  const base=`/api/branches/${f.branch.id}/executions/${f.source.id}`;
  const list=await app.inject({method:'GET',url:`${base}/historical-checkpoints`});assert.equal(list.statusCode,200);assert.ok(list.json().some(c=>c.id===cp.id&&c.restoreSupported));
  assert.equal((await app.inject({method:'GET',url:`${base}/historical-checkpoints?before=bad`})).statusCode,409);
@@ -335,7 +335,7 @@ test('exit interruption and historical continuation are usable through exact-sha
  const f=fixture(t,'exit',false,false,true);await f.prefix();const live=await f.claim();f.branches.authorizeScript(live,inertIdentity);
  const {createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
  const {registerBranchRoutes}=await import('../../apps/server/dist/routes/branches.js'),app=require('fastify')();t.after(()=>app.close());let notifications=0;
- registerBranchRoutes(app,{branches:f.branches,store:f.store,installations:{setPublisher(){}},notify(){notifications++;assert.equal(f.store.sqlite.inTransaction,false);}});
+ registerBranchRoutes(app,{resources:{async verifyHistoricalCustody(){}},branches:f.branches,store:f.store,installations:{setPublisher(){}},notify(){notifications++;assert.equal(f.store.sqlite.inTransaction,false);}});
  const base=`/api/branches/${f.branch.id}/executions/${f.source.id}`,inv=f.branches.execution(f.source.id).checkpointInvocation;
  const interrupt={action:'interrupt',expectedId:inv.id,commandKey:'http-pause'};
  assert.equal((await app.inject({method:'POST',url:`${base}/checkpoint-interruption`,payload:{...interrupt,extra:true}})).statusCode,409);
@@ -962,7 +962,7 @@ async function reservationHistoryFixture(t,mode='async'){
  const advance=async id=>{for(let n=0;n<30;n++){await branches.unitSaver.drain();branches.advance();if(reservation(id)&&branches.execution(id).state==='waiting')break;}await branches.unitSaver.drain();assert.ok(reservation(id));};
  const capture=async id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;assert.doesNotThrow(()=>branches.checkpointInterruption(branch.id,id,'interrupt',inv.id,`close-${id}`),'actual resource EXIT interruption must be supported');await branches.unitSaver.completeExits();}return branches.historicalCheckpoints(branch.id,id).find(c=>c.restoreSupported&&captureBytes({store},c.id).selected.resources.length===1);};
  const resume=id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;branches.checkpointInterruption(branch.id,id,'resume',inv.interruptionId,`resume-${id}`);}};
- const finish=async id=>{
+ const finish=async(id,onCaptured)=>{
   await advance(id);for(let n=0;n<6&&branches.resourceRelease(reservation(id).step_execution_id)!=='ready';n++){await branches.unitSaver.drain();branches.advance();}
   const r=reservation(id),chatToken=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(chatToken);await branches.unitSaver.drain();assert.equal(branches.releaseResourceChat(r.step_execution_id,r.creation_key,chatToken),true);
   const p=store.createProject({label:'Inert owned resource',hostPath:dir,defaultEngine:'codex',chatOwned:true,branchId:branch.id,executionId:id}),temporary=store.getConversation(p.lastConversationId);
@@ -971,7 +971,12 @@ async function reservationHistoryFixture(t,mode='async'){
   const operation=store.beginAgentCreationOperation({projectId:p.id,conversationId:temporary.id,actorScope:'resource-history-inert',kind:'import',idempotencyKey:r.creation_key,payloadHash:'inert'}).operation,agentId=randomUUID();store.addAgentCreationOperationMember(operation.id,agentId,0);
   branches.observeResourceImportPlan(r.step_execution_id,token,operation.id);await branches.unitSaver.drain();branches.planResource(r.step_execution_id,[agentId],token);
   const agent=store.createAgent(p.id,{title:'Inert fixture identity',engine:'codex',conversationId:temporary.id},undefined,agentId),result={rootAgentId:agent.id,agentIds:[agent.id]};
-  branches.unitTransaction(()=>{branches.completeResourceOperation(r.step_execution_id,'import',token,result);store.updateAgentCreationOperation(operation.id,{status:'completed',result});})();await branches.unitSaver.drain();branches.bindResource(r.step_execution_id,result);
+  branches.unitTransaction(()=>{branches.completeResourceOperation(r.step_execution_id,'import',token,result);store.updateAgentCreationOperation(operation.id,{status:'completed',result});})();await branches.unitSaver.drain();
+  const captureSource=branches.reserveResourceCapture(r.step_execution_id),captureReceipt={...captureSource,version:1,custodyId:hash(captureSource.checkpointId),boundaryId:'inert-capture-boundary',sha256:hash('inert-package'),byteLength:1};
+  assert.throws(()=>branches.bindResource(r.step_execution_id,result),/retained|coverage/);
+  branches.finishResourceCapture(captureSource,captureReceipt);await branches.unitSaver.drain();
+  if(onCaptured)await onCaptured({source:captureSource,receipt:captureReceipt,result,stepId:r.step_execution_id});
+  branches.bindResource(r.step_execution_id,result);
   const request=store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id;
   coordination.updateRequest({requestId:request,updateId:`result-${id}`,kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'known resource result'}});
   const suffix=await claim();assert.equal(suffix.executionId,id);assert.ok(suffix.source.includes('suffix'));assert.equal(suffix.fence,1);settle(suffix);await branches.unitSaver.drain();
@@ -1160,4 +1165,31 @@ test('sync saved coverage survives saver reconstruction and rejects later extern
  assert.equal(f.branches.unitSaver.ready(f.source.id,'sync'),false,'a ticket cannot cross invocation identities');
  assert.equal(restarted.ready(f.source.id,'sync'),false);
  f.store.sqlite.prepare('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?').run(invocation,f.source.id);
+});
+
+// Deferred source: the inert receipt exercises Branch ownership; server custody has its own byte tests.
+for(const mode of ['async','sync','exit'])test(`prospective imported resource ${mode} cut rewinds with one fresh custody association`,async t=>{
+ const f=await reservationHistoryFixture(t,mode),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let checkpoint,retained;
+ await f.finish(f.source.id,async c=>{
+  retained=c;checkpoint=await f.capture(f.source.id);assert.ok(checkpoint);
+  const saved=captureBytes(f,checkpoint.id),r=saved.selected.resources[0];
+  assert.equal(JSON.parse(r.capture_json).receipt.custodyId,c.receipt.custodyId);assert.equal(r.root_agent_id,c.result.rootAgentId);
+  assert.equal(saved.restore_supported,true);assert.equal(saved.hostDependencies.resourceMembers.length,1);
+  assert.ok(saved.hostDependencies.resourceReceipts.some(x=>x.row.kind==='import'&&x.row.status==='completed'));
+  assert.equal(f.branches.resourceCanRetire(c.stepId,c.result.agentIds),false);
+  assert.throws(()=>f.branches.finishResourceCapture({...c.source,intent:{...c.source.intent,resourceGeneration:9}},c.receipt),/fenced/);
+  f.resume(f.source.id);
+ });
+ const beforeFailure=allocationCounts(f);
+ f.store.sqlite.exec("CREATE TRIGGER reject_resource_custody BEFORE INSERT ON branch_commands WHEN NEW.command_key LIKE 'resource-restore:%' BEGIN SELECT RAISE(ABORT,'resource custody insertion failed'); END");
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'rolled-back-resource'),/custody insertion failed/);
+ assert.deepEqual(allocationCounts(f),beforeFailure);f.store.sqlite.exec('DROP TRIGGER reject_resource_custody');
+ const fresh=f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'retained-resource');
+ const resource=f.reservation(fresh.id),journal=f.branches.resourceRestoreJournal(resource.step_execution_id);
+ assert.deepEqual(journal.receipt,retained.receipt);assert.equal(journal.rootRef,retained.result.rootAgentId);
+ assert.equal(resource.chat_id,null);assert.equal(resource.root_agent_id,null);assert.notEqual(resource.step_execution_id,retained.stepId);
+ assert.equal(f.store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(resource.step_execution_id).request_id,null);
+ const before=allocationCounts(f);await f.reopen();assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'retained-resource').id,fresh.id);assert.deepEqual(allocationCounts(f),before);
+ assert.throws(()=>f.branches.resourceCaptureRelease(retained.stepId,'releasing'),/referenced/);
 });

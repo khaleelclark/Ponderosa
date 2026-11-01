@@ -1370,8 +1370,9 @@ app.server.on("upgrade", linkPreviewUpgrade);
     });publishWorkspaceSince(cursor);
   });
   branchInstallations.setEngine(application.packageEngine);
+  branchResources.setPackageEngine(application.packageEngine);
   branchResources.setImporter(async(input,hooks,signal)=>{
-    await application.packageEngine.importAgent(input.projectId,input.chatId,input.template,input.engineMapping,input.creationKey,{branchHooks:hooks,signal});
+    await application.packageEngine.importAgent(input.projectId,input.chatId,input.template,input.engineMapping,input.creationKey,{branchHooks:hooks,signal,accessSettingsResolution:input.accessSettingsResolution});
   });
   branchScripts=new BranchScriptService(branches,store,coordinationV3WorkerId,{...opts.branches,resources:branchResources,installations:branchInstallations,appendAudit:appendWorkspace,
     notifyAction:input=>createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,projectId:input.projectId,conversationId:input.chatId,category:'system',severity:'info',push:true,title:input.title,body:input.body,action:{kind:'open_branch',targetId:input.branchId}}).id,
@@ -1425,7 +1426,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
   application.packageEngine.setOutputApps(outputApps);
   branchInstallations.setOutputApps(outputApps);
   registerAgentWorkspaceActions(app,{store,coordinationV3,workspace,outputApps,createChat:application.createChat,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,recordCommunication,reconcile:reconcileRuntimeCommunicationProjections,notify:()=>coordinationV3Scheduler.notify(),providerEnabled:id=>engines.has(id)&&providerEnabled(id)});
-  registerBranchRoutes(app,{outputApps,branches,store,workspace,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
+  registerBranchRoutes(app,{outputApps,branches,store,workspace,resources:branchResources,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
     preferences:()=>workspace.getPreferences(),engineAvailable:id=>engines.has(id)&&providerEnabled(id),
     providerStatus:async id=>{const registration=engines.get(id);return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:'error',intakeReady:false,availabilityDetail:'Provider is not configured'};},
 notify:()=>coordinationV3Scheduler.notify(),

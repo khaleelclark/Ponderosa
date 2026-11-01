@@ -88,6 +88,18 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
  }
  const resources=selected.resources!.map(envelope),resourceMembers:Evidence[]=[],resourceContexts:Evidence[]=[],resourceReceipts:Evidence[]=[];
  for(const resource of selected.resources!){
+  if(resource.chat_operation_json){
+   const operation=JSON.parse(resource.chat_operation_json);
+   if(operation.releaseRequired===true){const release=db.prepare('SELECT execution_id,command_key,input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(id,`resource-release:${resource.creation_key}:${operation.token}`) as Row|undefined;if(release)resourceReceipts.push(envelope(release));}
+  }
+  if(resource.import_operation_json){
+   const operation=JSON.parse(resource.import_operation_json);
+   if(operation.creationOperationId){
+    const receipt=db.prepare('SELECT id,project_id,kind,payload_hash,status,result_json FROM agent_creation_operations WHERE id=?').get(operation.creationOperationId) as Row|undefined;
+    if(receipt)resourceReceipts.push(envelope(receipt));
+    for(const member of db.prepare('SELECT operation_id,agent_id,position FROM agent_creation_operation_members WHERE operation_id=? ORDER BY position').all(operation.creationOperationId) as Row[])resourceReceipts.push(envelope(member));
+   }
+  }
   for(const member of db.prepare('SELECT agent_id,step_execution_id,origin FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(resource.step_execution_id) as Row[])resourceMembers.push(envelope(member));
   for(const context of db.prepare('SELECT step_execution_id,generation,chat_id,agent_ids_json FROM branch_ephemeral_contexts WHERE step_execution_id=? ORDER BY generation').all(resource.step_execution_id) as Row[])resourceContexts.push(envelope(context));
   if(resource.chat_id){const receipt=db.prepare('SELECT conversation_id,storage_cleanup_completed,server_cleanup_completed FROM conversation_deletion_receipts WHERE conversation_id=?').get(resource.chat_id) as Row|undefined;if(receipt)resourceReceipts.push(envelope(receipt));}

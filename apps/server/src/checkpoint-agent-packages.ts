@@ -5,25 +5,8 @@ import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_MAX_AGENTS,type AgentPortablePacka
 import {parsePortablePackageFile,portablePackageJsonChunks} from './agent-package-codec.js';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 
-export interface CheckpointPackageSource {
-  checkpointId:string;
-  sourceChatId:string;
-  agentIds:string[];
-  intent:{executionId:string;resourceStepId:string;resourceGeneration:number;frontierSha256:string;bindingSha256:string;configurationSha256:string};
-}
-export interface CheckpointPackageReceipt extends CheckpointPackageSource {
-  version:1;
-  custodyId:string;
-  boundaryId:string;
-  sha256:string;
-  byteLength:number;
-}
-export type CheckpointPackageStatus=
-  | {state:'missing'}
-  | {state:'retained';receipt:CheckpointPackageReceipt}
-  | {state:'capturing';source:CheckpointPackageSource;boundaryId:string}
-  | {state:'failed';source:CheckpointPackageSource;boundaryId:string;reason:string}
-  | {state:'released';receipt:CheckpointPackageReceipt};
+import type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '@ponderosa/core';
+export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '@ponderosa/core';
 /** Host-only custody. Source deletion and import-operation cleanup never own this directory. */
 export function checkpointPackageCustody(dataDir:string){
   const directory=path.join(dataDir,'checkpoint-package-custody');
