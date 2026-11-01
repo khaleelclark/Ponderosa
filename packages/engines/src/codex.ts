@@ -1,5 +1,6 @@
+import { UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY } from "@ponderosa/core";
 // The Codex adapter (SPEC §5). Drives the already-authenticated `codex` CLI as a
-// subscription-backed engine (AGENTS.md invariant 1 — NEVER an API key). Spawns
+// native harness in its configured subscription or API-key/token mode. Spawns
 // `codex exec --json` / `codex exec resume`, streams JSONL, and maps it to
 // AgentEvents. The spawn/exec-vs-resume mechanics are invisible outside this file.
 //
@@ -68,11 +69,12 @@ export { renderSeedPrompt } from "./seed-history.js";
 
 export class CodexAdapter implements Adapter {
   readonly id = "codex";
+  readonly contextRecoverySupport = UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY;
   readonly supportsVoiceReplyStream = true;
   readonly displayName = "Codex";
   readonly providerUsageCommand = {
     name: "status",
-    description: "Show Codex subscription limits",
+    description: "Show Codex usage",
   };
   readonly modelSpecificEfforts = true;
   readonly trustedSystemPromptChannel = "developer" as const;

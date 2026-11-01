@@ -244,7 +244,7 @@ test('deferred sign-in checks stay checking during host pressure and recover wit
   let reads=0,answer={authenticated:true},resources={state:'held',protected:true,reason:'host_resource_pressure'};
   const registration=defaultEngineRegistrations().find(r=>r.adapter.id==='claude');
   registration.isInstalled=()=>true;registration.authStatus=async()=>{reads++;return answer;};
-  const plane=createEngineControlPlane({engines:new Map([['claude',registration]]),store:{listAgents:()=>[]},workspace:{},engineAuthStatuses:auth,engineAvailability:{get(){},denial(){},servingBuildRevision:'test',servingInstanceId:'test'},providerUsage:{},providerEnabled:()=>true,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,deletingProjectIds:new Set(),isClosed:()=>false,providerProcessAuthority:{count:()=>0,register(){assert.fail('Unexpected provider process')}},resourceAdmission:{snapshot:()=>resources}});
+  const plane=createEngineControlPlane({engines:new Map([['claude',registration]]),store:{listAgents:()=>[]},workspace:{getPreferences:()=>({})},engineAuthStatuses:auth,engineAvailability:{get(){},denial(){},servingBuildRevision:'test',servingInstanceId:'test'},providerUsage:{},providerEnabled:()=>true,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,deletingProjectIds:new Set(),isClosed:()=>false,providerProcessAuthority:{count:()=>0,register(){assert.fail('Unexpected provider process')}},resourceAdmission:{snapshot:()=>resources}});
   try {
     await auth.get('claude',registration.authStatus);t.mock.timers.tick(31000);
     const held=await plane.runtimeStatus('claude',registration);
@@ -640,4 +640,144 @@ test('malformed encoded known provider fields after prose stay absent from canon
     };
     await inspect();const turns=f.turns.length;await f.reopen();await inspect();assert.equal(f.turns.length,turns,'No provider replay');
   });
+});
+
+import { parseCodexLoginStatus, claudeAuthStatus } from '../../packages/engines/dist/auth.js';
+import { projectProviderAuthStatus } from '../../apps/server/dist/provider-success-projection.js';
+
+test('Bible25 configured API and subscription status is truthful and never returns key/token output', async () => {
+  for (const [text, mode] of [
+    ['Logged in using ChatGPT', 'subscription'],
+    ['Logged in using an API key - SYNTHETIC_PRIVATE_KEY', 'api'],
+    ['Authenticated with access token: SYNTHETIC_PRIVATE_KEY', 'api'],
+  ]) {
+    const status = projectProviderAuthStatus(parseCodexLoginStatus(text));
+    assert.equal(status.authenticated, true); assert.equal(status.billingMode, mode);
+    assert.doesNotMatch(JSON.stringify(status), /SYNTHETIC_PRIVATE_KEY/);
+  }
+  for (const text of ['not authenticated with API key', 'API key rejected', 'No access token', 'Error: logged in using an API key', '']) {
+    const status = parseCodexLoginStatus(text);
+    assert.equal(status.authenticated, false); assert.equal(status.status, 'unknown');
+  }
+  const status = await claudeAuthStatus({ ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY' });
+  assert.equal(status.authenticated, true); assert.equal(status.billingMode, 'api');
+  assert.equal(status.source, 'environment_presence'); assert.match(status.detail, /not verified/);
+  assert.doesNotMatch(JSON.stringify(projectProviderAuthStatus(status)), /SYNTHETIC_PRIVATE_KEY/);
+  assert.throws(() => projectProviderAuthStatus({ authenticated: true, billingMode: 'SYNTHETIC_PRIVATE_KEY' }));
+  const ambiguous = await claudeAuthStatus({ ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY', CLAUDE_CODE_OAUTH_TOKEN: 'SYNTHETIC_OTHER_TOKEN' });
+  assert.equal(ambiguous.status, 'unknown'); assert.equal(ambiguous.authenticated, false);
+  assert.equal(ambiguous.billingMode, undefined);
+  assert.doesNotMatch(JSON.stringify(ambiguous), /SYNTHETIC_PRIVATE_KEY|SYNTHETIC_OTHER_TOKEN/);
+
+});
+
+test('Bible25 mode selection persists, holds mismatched work, and preserves Agent identity/history/settings', { timeout: 30000 }, t => {
+  let mode = 'subscription';
+  return withFixture(t, async f => {
+    const chat = await f.createChat('Billing mode preservation');
+    const agent = await f.createAgent(chat, 'Persistent billing Agent');
+    const before = await f.detail(agent.id);
+    const beforeHistory = before.messages;
+    assert.ok(beforeHistory.length > 0, 'Preservation requires populated history');
+    const count = f.turns.length;
+    for (const invalid of [{ codex: 'SYNTHETIC_PRIVATE_KEY' }, { unknown: 'api' }, [], null]) {
+      assert.equal((await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: invalid })).status, 400);
+    }
+    f.ok(await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: { codex: 'api' } }));
+    const [blocked] = f.ok(await f.api('GET', '/api/engines'));
+    assert.equal(blocked.selectedBillingMode, 'api'); assert.equal(blocked.billingMode, 'subscription');
+    assert.equal(blocked.billingModeMatches, false); assert.equal(blocked.intakeReady, false);
+    assert.match(blocked.availabilityDetail, /selected billing mode/);
+    const probes = f.providerProbes.length;
+    assert.equal((await f.api('POST', `/api/projects/${chat.projectId}/engine-models/codex/validate`, { modelId: 'fixture' })).status, 409);
+    f.ok(await f.api('POST', '/api/engines/codex/recheck'));
+    assert.equal(f.providerProbes.length, probes, 'Mismatched selection must not charge a diagnostic request');
+    const after = await f.detail(agent.id);
+    assert.deepEqual(after.agent, before.agent);
+    assert.deepEqual(after.messages, beforeHistory);
+    assert.equal(f.turns.length, count, 'Changing preference must not execute or replay work');
+    mode = 'api'; await f.reopen();
+    const [ready] = f.ok(await f.api('GET', '/api/engines'));
+    assert.equal(ready.billingMode, 'api'); assert.equal(ready.selectedBillingMode, 'api');
+    assert.equal(ready.billingModeMatches, true); assert.equal(ready.intakeReady, true);
+    assert.deepEqual((await f.detail(agent.id)).agent, before.agent);
+    assert.equal(f.turns.length, count);
+    assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).providerBillingModes.codex, 'api');
+    await f.send(agent.id, 'Controlled API-mode successor');
+    const apiDone = await f.settled(agent.id, before.runs.map(run => run.id));
+    assert.equal(apiDone.agent.id, before.agent.id);
+    assert.equal(apiDone.agent.title, before.agent.title);
+    assert.equal(apiDone.agent.model, before.agent.model);
+    assert.equal(apiDone.agent.activeEngine, before.agent.activeEngine);
+    const apiSession = f.turns.at(-1).sessionId;
+
+    f.ok(await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: { codex: 'subscription' } }));
+    assert.equal(f.ok(await f.api('GET', '/api/engines'))[0].intakeReady, false);
+    mode = 'subscription'; await f.reopen();
+    assert.equal(f.ok(await f.api('GET', '/api/engines'))[0].intakeReady, true);
+    await f.send(agent.id, 'Controlled subscription-mode successor');
+    const subscriptionDone = await f.settled(agent.id, apiDone.runs.map(run => run.id));
+    assert.equal(subscriptionDone.agent.id, before.agent.id);
+    assert.equal(subscriptionDone.agent.title, before.agent.title);
+    assert.equal(subscriptionDone.agent.model, before.agent.model);
+    assert.notEqual(f.turns.at(-1).sessionId, apiSession, 'Mode change must retire the previous native session');
+    const text = JSON.stringify(subscriptionDone.messages);
+    for (const message of beforeHistory) assert.deepEqual(subscriptionDone.messages.find(item => item.id === message.id), message);
+    assert.match(text, /Controlled API-mode successor/);
+    assert.match(text, /Controlled subscription-mode successor/);
+  }, { modelValidator: async () => assert.fail('Mismatched billing selection reached model validation'), providerAuthStatus: () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }) });
+});
+
+test('Bible25 both native harness probe launches preserve configured modes without putting credentials in argv or results', async () => {
+  const { codexAvailabilityStatus, claudeAvailabilityStatus } = await import('../../packages/engines/dist/auth.js');
+  for (const mode of ['api', 'subscription']) {
+    for (const provider of ['codex', 'claude']) {
+      const env = provider === 'claude' && mode === 'api' ? { ANTHROPIC_API_KEY: 'SYNTHETIC_NATIVE_KEY' } : {};
+      const probe = provider === 'codex' ? codexAvailabilityStatus : claudeAvailabilityStatus;
+      let calls = 0;
+      const result = await probe(env, async (_bin, args, options) => {
+        calls++;
+        assert.doesNotMatch(JSON.stringify(args), /SYNTHETIC_NATIVE_KEY/);
+        if (provider === 'claude' && mode === 'api') assert.equal(options.env.ANTHROPIC_API_KEY, 'SYNTHETIC_NATIVE_KEY');
+        assert.equal(options.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN, undefined);
+        return { stderr: '', stdout: provider === 'claude'
+          ? JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'PONDEROSA_RUNTIME_READY' })
+          : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'PONDEROSA_RUNTIME_READY' } }) + '\n' + JSON.stringify({ type: 'turn.completed' }) };
+      }, async () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }));
+      assert.equal(calls, 1); assert.equal(result.available, true);
+      assert.doesNotMatch(JSON.stringify(result), /SYNTHETIC_NATIVE_KEY|subscription-backed/);
+    }
+  }
+});
+
+
+import { StderrTail } from '../../packages/engines/dist/stderr-tail.js';
+import { PROVIDER_STDERR_DETAIL_LIMIT } from '@ponderosa/core';
+for (const size of [8193, 20000]) test(`formatted stderr ${size} survives actual server root-exit projection`, () => {
+ const tail = new StderrTail();
+ const cause = ' final cause api_key=SYNTHETIC_TAIL_SECRET';
+ tail.append('x'.repeat(size - cause.length) + cause);
+ const detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:7,signal:'SIGTERM',outputDraining:true});
+ assert.equal(detail.exitCode,7); assert.equal(detail.signal,'SIGTERM'); assert.equal(detail.outputDraining,true);
+ assert.match(detail.stderr,new RegExp(`^\\[stderr truncated: ${size - 8192} UTF-16 code units omitted; retained tail follows\\]\\n`));
+ assert.match(detail.stderr,/final cause/); assert.doesNotMatch(detail.stderr,/SYNTHETIC_TAIL_SECRET/);
+ assert.ok(tail.text().length <= PROVIDER_STDERR_DETAIL_LIMIT);
+});
+test('Unicode cut and cumulative omission survive actual server root-exit projection', () => {
+ const tail = new StderrTail();
+ tail.append('ab😀' + 'x'.repeat(8191));
+ let detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:2,signal:null});
+ assert.match(detail.stderr,/^\[stderr truncated: 4 UTF-16 code units omitted; retained tail follows\]\nx/u);
+ assert.doesNotMatch(detail.stderr,/[\uD800-\uDFFF]/u);
+ tail.append('last cause');
+ detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:2,signal:null});
+ assert.match(detail.stderr,/^\[stderr truncated: 13 UTF-16 code units omitted;/u);
+ assert.ok(detail.stderr.endsWith('last cause')); assert.equal(detail.exitCode,2); assert.equal(detail.signal,null);
+});
+test('root-exit diagnostic bound still rejects invalid provider data', () => {
+ assert.doesNotThrow(()=>projectProviderRootExitDetail({stderr:'x'.repeat(PROVIDER_STDERR_DETAIL_LIMIT)}));
+ for(const stderr of ['x'.repeat(PROVIDER_STDERR_DETAIL_LIMIT+1),42,null,{}]) {
+  assert.throws(()=>projectProviderRootExitDetail({stderr,exitCode:7}));
+ }
+ assert.throws(()=>projectProviderRootExitDetail({stderr:'valid',exitCode:1.5}));
 });

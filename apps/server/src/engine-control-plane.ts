@@ -158,6 +158,8 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const auth = registration.authStatus ? engineAuthStatuses.snapshot(id) : { state: "known" as const, authenticated: true };
     if (auth.state === "unknown") return { kind: "authentication_unknown", providerId,
       ...(auth.lastKnown ? { lastKnownAuthentication: auth.lastKnown } : {}) };
+    const selectedMode = workspace.getPreferences().providerBillingModes?.[id];
+    if (selectedMode && auth.billingMode !== selectedMode) return { kind: "authentication_required", providerId };
     if (!auth.authenticated) return { kind: "authentication_required", providerId, ...(auth.observedAt ? { observedAt: auth.observedAt } : {}) };
     if (auth.diagnosticFailure || diagnosticCleanupPending(id)) return {kind:'provider_unavailable',providerId,...(auth.observedAt?{observedAt:auth.observedAt}:{})};
     const denial = engineAvailability.denial(id);
@@ -172,6 +174,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     authentication: "checking" | "authenticated" | "unauthenticated" | "error";
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
+    billingMode?: "subscription" | "api";
+    selectedBillingMode?: "subscription" | "api";
+    billingModeMatches?: boolean;
     authDetail?: string;
     authObservedAt?: string;
     authReason?: import("@ponderosa/core").EngineAuthStatus["reason"];
@@ -214,9 +219,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         availabilityCategory: "unavailable",
       };
     }
+    const selectedBillingMode = workspace.getPreferences().providerBillingModes?.[id];
+    const billingModeMatches = !selectedBillingMode || auth.billingMode === selectedBillingMode;
     const unknown = auth.status === "unknown";
     const checking = unknown && auth.reason === "probe_pending";
-    const authDetail = checking ? resources?.state === "held"
+    const authDetail = !billingModeMatches ? "Configure the selected billing mode in the native CLI, then recheck sign-in. Existing Agent state is retained." : checking ? resources?.state === "held"
       ? "Provider sign-in check is deferred while waiting for host resources."
       : "Provider sign-in check is pending."
       : unknown ? "Provider authentication could not be checked."
@@ -231,7 +238,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       configured: true,
       installed: true,
       authentication: checking ? "checking" : unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
-      intakeReady: enabled && !unknown && auth.authenticated && !cleanupPending && !denial && resources?.state !== "held",
+      ...(auth.billingMode ? { billingMode: auth.billingMode } : {}),
+      ...(selectedBillingMode ? { selectedBillingMode } : {}),
+      billingModeMatches,
+      intakeReady: billingModeMatches && enabled && !unknown && auth.authenticated && !cleanupPending && !denial && resources?.state !== "held",
       ...(resources ? { resourceAdmission: resources } : {}),
       authObservedAt: engineAuthStatuses.snapshot(id).observedAt,
       ...(auth.reason ? { authReason: auth.reason } : {}),
@@ -253,6 +263,8 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         : resources?.state === "held"
         ? { availabilityDetail: "Waiting for host resources. Accepted work remains queued and will resume automatically when headroom recovers." }
         : cleanupPending ? { availabilityDetail: "Provider diagnostic cleanup is pending; replacement remains blocked until the owned process exits." }
+        : !billingModeMatches
+        ? { availabilityDetail: authDetail }
         : !auth.authenticated
         ? { availabilityDetail: authDetail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: denial }
@@ -841,6 +853,14 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     modelId: string,
   ): Promise<EngineModelValidationDto> => {
     if (!providerDiscoveryEnabled(adapter.id)) throw providerInactiveError();
+    const selectedMode = workspace.getPreferences().providerBillingModes?.[adapter.id];
+    if (selectedMode) {
+      const registration = engines.get(adapter.id)!;
+      const auth = registration.authStatus ? await engineAuthStatuses.read(adapter.id, registration.authStatus) : undefined;
+      if (!auth?.authenticated || auth.status === "unknown" || auth.diagnosticFailure || auth.billingMode !== selectedMode) {
+        throw Object.assign(new Error("Configure the selected native harness billing mode and recheck sign-in before testing a model."), { statusCode: 409 });
+      }
+    }
     const authority: ModelCatalogDiscoveryAuthority = {
       projectId: project.id,
       engineId: adapter.id,

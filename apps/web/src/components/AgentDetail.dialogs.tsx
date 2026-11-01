@@ -35,7 +35,7 @@ export function AgentDetailDialogs({
         onConfirm={recheckEngine.onConfirm}
       >
         <Typography sx={{ pt: 1 }}>
-          This sends one minimal subscription-backed request to verify that the
+          This sends one minimal harness-backed request to verify that the
           provider is available.
         </Typography>
       </ConfirmDialog>

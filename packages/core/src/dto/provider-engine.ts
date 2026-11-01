@@ -282,6 +282,9 @@ export interface EngineDto {
   /** Authentication probe truth. `checking` never means signed out, and
    * successful authentication does not prove provider reachability. */
   authentication: "checking" | "authenticated" | "unauthenticated" | "error";
+  billingMode?: "subscription" | "api";
+  selectedBillingMode?: "subscription" | "api";
+  billingModeMatches?: boolean;
   authDetail?: string;
   authObservedAt?: string;
   authReason?: import("../adapter.js").EngineAuthStatus["reason"];

@@ -1,6 +1,7 @@
 import { canonicalProviderFailureEvent, redactProviderDiagnostic } from "./provider-failure-event.js";
 import { isProxy } from "node:util/types";
 import {
+  PROVIDER_STDERR_DETAIL_LIMIT,
   classifyProviderFailure,
   publicProviderFailure,
   type AgentEvent,
@@ -346,7 +347,7 @@ export function projectProviderRootExitDetail(value: unknown): ProviderRootExitD
       if (member !== null && (typeof member !== "string" || member.length > 64)) throw new Error(INVALID_PROVIDER_STRUCTURE);
       detail.signal = member as string | null;
     } else if (key === "stderr") {
-      if (typeof member !== "string" || member.length > 8192) throw new Error(INVALID_PROVIDER_STRUCTURE);
+      if (typeof member !== "string" || member.length > PROVIDER_STDERR_DETAIL_LIMIT) throw new Error(INVALID_PROVIDER_STRUCTURE);
       detail.stderr = redactProviderDiagnostic(member);
     } else if (key === "outputDraining") {
       if (typeof member !== "boolean") throw new Error(INVALID_PROVIDER_STRUCTURE);

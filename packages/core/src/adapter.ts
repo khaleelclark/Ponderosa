@@ -1,3 +1,4 @@
+import type { ProviderContextRecoverySupport } from "./context-recovery.js";
 // The Adapter (engine) abstraction — SPEC §5. Every engine implements this one
 // interface. The agent stores canonical history; the adapter translates it into
 // a runtime session. Nothing outside packages/engines may know which engine it is
@@ -305,6 +306,11 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   interrupt(): Promise<void>;
 }
 
+/** UTF-16 units: retained stderr plus bounded omission notice (including numeric count). */
+export const PROVIDER_STDERR_TAIL_LIMIT = 8192;
+// 128 covers the fixed notice and any JavaScript numeric count representation.
+export const PROVIDER_STDERR_DETAIL_LIMIT = PROVIDER_STDERR_TAIL_LIMIT + 128;
+
 export interface ProviderRootExitDetail {
   /** Root is gone; the adapter is draining already-emitted output for a bounded interval. */
   outputDraining?: boolean;
@@ -511,6 +517,8 @@ export interface ProviderUsageSnapshot {
  * Both methods return a live stream of normalized {@link AgentEvent}s.
  */
 export interface Adapter {
+  /** Static support only; reading it must not launch a provider or run a probe. */
+  readonly contextRecoverySupport?: Readonly<ProviderContextRecoverySupport>;
   /** Item-scoped response candidates; explicit host reply authorization remains required. */
   readonly supportsVoiceReplyStream?: boolean;
   id: EngineId; // "codex" | "claude"
@@ -571,12 +579,14 @@ export interface Adapter {
 /** Reported by `/api/engines` (SPEC §8): an engine plus its live auth status. */
 export interface EngineAuthStatus {
   authenticated: boolean;
+  /** Native harness mode; presence does not prove paid-request access. */
+  billingMode?: "subscription" | "api";
   /** Sign-in was parsed, but its diagnostic process has not safely settled. */
   diagnosticFailure?: "cleanup_failed";
   /** False alone is not logout evidence when the read-only probe is unknown. */
   status?: "unknown";
   reason?: "timeout" | "spawn_failed" | "malformed" | "cleanup_failed" | "probe_failed" | "probe_pending";
-  source?: "cli_status" | "subscription_presence";
+  source?: "cli_status" | "subscription_presence" | "environment_presence";
   /** Optional human-readable detail (e.g. "logged in as ...", or why not). */
   detail?: string;
 }

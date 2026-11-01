@@ -205,6 +205,9 @@ export async function prepareAgentRun(
     pendingTurn,
     requestedSourceChannel,
   } = input;
+  if (coordinationV3.contextRecovery.active(agent.id)) {
+    throw contextRecoveryRequired("An explicit context recovery hold is active; no provider input is authorized.");
+  }
 
   const project = store.getChatContext(agent.conversationId);
   if (!project || project.id !== storageProject.id) throw new Error("Agent has no active owning Chat context");
@@ -398,6 +401,7 @@ export async function prepareAgentRun(
     ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id) : undefined;
   const effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
     runtimeSessionContractHash,
+    ...(runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode ? { billingMode: runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode } : {}),
     systemPromptHash,
     scopeKey: schedulerRunScopeKey,
   })).digest("hex");

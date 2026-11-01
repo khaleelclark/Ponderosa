@@ -1,8 +1,8 @@
 // @ponderosa/engines — Adapter interface (re-exported from core) + engine adapters
 // + event mappers. The ONLY package that knows engine-specific event shapes
 // (AGENTS.md invariant 2). apps/server depends on this; nothing here calls a
-// provider HTTP API or reads an API key (invariant 1) — engines are driven as
-// already-authenticated CLIs (subscription auth).
+// provider HTTP API or stores credentials — engines are driven as
+// already-authenticated CLIs (subscription or configured API-key mode).
 
 export { CodexAdapter, renderSeedPrompt } from "./codex.js";
 export { CodexAppServerSession, mapCodexAppServerNotification } from "./codex-app-server.js";

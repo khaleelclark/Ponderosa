@@ -8,8 +8,9 @@ develop a creative brief, or build and review software. Conversations, agent
 roles, assignments and saved results stay available when you return.
 
 You work in a web app. **Ponderosa Engine** runs the service on your computer
-and manages startup, status and logs. AI work runs through subscription-authenticated
-provider tools on that computer; Ponderosa does not accept provider API keys.
+and manages startup, status and logs. AI work runs through harness-authenticated
+provider tools on that computer; configure credentials in those native tools or
+the host environment, never in Ponderosa.
 Saved history helps work continue, but does not mean an agent recalls every detail.
 
 ## Public beta
@@ -19,13 +20,13 @@ Saved history helps work continue, but does not mean an agent recalls every deta
 Linux, macOS and Windows are the beta targets.
 
 Codex and Claude Code are both supported, using your existing provider
-subscriptions. Choose either provider, or configure both. Available models,
+subscription or API billing mode. Choose either provider, or configure both. Available models,
 reasoning settings and tools depend on the provider and account.
 
 ## Prerequisites
 
 - A computer you administer and a modern web browser.
-- Codex CLI or Claude Code installed and signed in with your subscription under
+- Codex CLI or Claude Code installed and configured for subscription or API billing under
   the same OS account that runs Engine. See [provider setup](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run).
 - For internal browsing, Chrome or Chromium installed on the Engine host.
   [Browser setup](https://ponderosa.khaleelclark.com/ponderosa-guide/#browsers) explains the platform limits.
@@ -115,3 +116,27 @@ or fix deadline is promised.
 ## Credits
 
 Ponderosa was created by [Khaleel Clark](https://github.com/khaleelclark).
+
+### Native harness billing mode
+
+Codex and Claude Code can use a subscription or configured API credentials through
+those same CLIs. Ponderosa does not collect, store, export, or log credential
+values. Configure login using the native Codex CLI; for Claude API billing set
+`ANTHROPIC_API_KEY` in the daemon's host environment. Host environment changes
+require a normal daemon restart; this setting never edits the environment or logs
+in on your behalf. No direct provider HTTP integration is used.
+
+In Settings → Providers, Billing mode selects the expected native harness mode.
+The default uses the configured harness. Explicit Subscription or API key/token
+holds new work until the observed native status matches; recheck sign-in after
+changing native login. Changing this selection does not interrupt an existing Run. Selecting
+a different mode retains Agent identity, canonical history, model, permissions,
+and settings. At the next turn the existing immutable session-contract boundary
+retires incompatible provider caches; existing uncertainty, reconstruction and
+cleanup guards still apply and may require normal context recovery. This control
+cannot provision a missing account or override a provider's entitlement decision.
+
+Status distinguishes CLI login / environment presence from a successful provider
+request. Claude key presence is explicitly unverified. Recheck/model tests can
+incur the selected account's normal charges and run only on explicit request.
+No real-account/API parity qualification is implied by controlled fixture tests.

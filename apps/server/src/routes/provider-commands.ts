@@ -1,3 +1,4 @@
+import { registerContextRecoveryRoutes } from "./context-recovery.js";
 import { randomUUID } from "node:crypto";
 import type {
   CancelAgentRunRequest,
@@ -160,6 +161,14 @@ export function registerProviderCommandRoutes(
     providerProcessAuthority,
     workingCopies,
   } = context;
+
+const activeAgentProviderCommands = new Set<string>();
+registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
+  support:engineId=>engines.get(engineId)?.adapter.contextRecoverySupport,
+  unavailable:(agentId,projectId)=>isClosed() || deletingAgentIds.has(agentId) || deletingProjectIds.has(projectId) ||
+    activeAgentProviderCommands.has(agentId) || activeRuns.has(agentId) || Boolean(coordinationV3.activeAgentRun(agentId)) ||
+    [...engineCapabilityDiscoveryAuthorities].some(authority=>authority.agentId===agentId),
+});
 
 for (const action of ['pause','resume'] as const) app.post<{Params:{id:string};Body:{targetRunId?:string;pauseId?:string;idempotencyKey?:string}}>(`/api/agents/:id/${action}`,async(request,reply)=>{
   const body=request.body;
@@ -360,6 +369,10 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
   async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
+    if(coordinationV3.contextRecovery.active(agent.id)) return reply.code(409).send({code:"context_recovery_held",error:"An explicit context recovery hold is active"});
+    if(activeAgentProviderCommands.has(agent.id)) return reply.code(409).send({error:"An Agent provider command is already active"});
+    activeAgentProviderCommands.add(agent.id);
+    try {
     if(store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id))
       return reply.code(409).send({error:'Agent is paused; Resume or Stop before a provider command'});
     const project = store.getChatContext(agent.conversationId);
@@ -405,6 +418,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         Object.assign(error, { catalogVersion: catalog.catalogVersion });
         throw error;
       }
+      if(coordinationV3.contextRecovery.active(agent.id)) throw new NativeContextUnavailableError("An explicit context recovery hold is active");
       const commandBoundary = name === "compact" ? store.providerCommandContextBoundary(agent.id) : undefined;
       const invocationId = randomUUID();
       if (name === "compact") {
@@ -625,12 +639,17 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     } finally {
       if (!cleanupOwnsWorkingCopyUse) releaseWorkingCopyUse();
     }
+    } finally { activeAgentProviderCommands.delete(agent.id); }
   },
 );
 
 app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {
   const agent = store.getAgent(request.params.id);
   if (!agent) return reply.code(404).send({ error: "agent not found" });
+  if(coordinationV3.contextRecovery.active(agent.id)) return reply.code(409).send({code:"context_recovery_held",error:"An explicit context recovery hold is active"});
+  if(activeAgentProviderCommands.has(agent.id)) return reply.code(409).send({error:"An Agent provider command is already active"});
+  activeAgentProviderCommands.add(agent.id);
+  try {
   if(store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id))
     return reply.code(409).send({error:'Agent is paused; Resume or Stop before Context Refresh'});
   if (activeRuns.has(request.params.id) || coordinationV3.activeAgentRun(request.params.id)) {
@@ -762,6 +781,7 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
     rolloverId: requested.rollover.id,
     replayed: !requested.created,
   };
+  } finally { activeAgentProviderCommands.delete(agent.id); }
 });
 
 registerAgentRunHistoryRoute(app, serverContext);
