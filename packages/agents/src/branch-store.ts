@@ -193,7 +193,8 @@ export class BranchStore {
     const lastHold=this.row("SELECT kind FROM branch_checkpoints WHERE execution_id=? AND kind IN ('checkpoint_restore_held','checkpoint_interrupt_requested','checkpoint_interrupt_resumed') ORDER BY id DESC LIMIT 1",executionId);
     if(invocation.mode==='exit'&&(invocation.interruptionId||lastHold&&lastHold.kind!=='checkpoint_interrupt_resumed')&&!this.checkpointHoldIdentitySupported(executionId,invocation))return false;
     const ticket=this.unitSaver.status(executionId);
-    if(ticket?(ticket.invocationId!==invocation.id||ticket.state!=='saved'):!this.unitSaver.currentSavedMatches(executionId,invocation.id,invocation.saved_snapshot_id))return false;
+    if(ticket&&(ticket.invocationId!==invocation.id||ticket.state!=='saved'))return false;
+    if(!this.unitSaver.currentSavedMatches(executionId,invocation.id,ticket?.savedId??invocation.saved_snapshot_id))return false;
     if(this.row("SELECT g.id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",executionId))return false;
     this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:invocation.ordinal+1,mode:invocation.mode,state:'active',durability:'pending'}),executionId);
     this.selectedWrite(executionId);return true;

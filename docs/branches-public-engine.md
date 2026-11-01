@@ -207,3 +207,19 @@ portability-owner implementation work; this caller cannot grant it by changing
 paths. In-progress checkpoint resource/provider/parallel/map codecs and general
 external-writer reconciliation likewise remain incomplete. No test execution or
 full portability/parity verdict accompanies these forwarding changes.
+
+### Current-coverage reconciliation at dispatch and resume
+
+Sync dispatch now compares the current selected bytes with the exact saved
+snapshot on every readiness check, including after saver reconstruction. A
+process-local saved ticket alone cannot authorize a changed frontier or a new
+invocation identity. Explicit checkpoint resume performs the same comparison even
+when a local saved ticket exists. Missing, corrupt or mismatched bytes hold work;
+these checks do not manufacture a snapshot, recover an unknown effect, or release
+old leases. Deferred regression source covers saver reconstruction, changed path
+content and changed invocation identity. No execution accompanies this change.
+
+This closes a specific stale-coverage admission gap, not general cross-store
+crash atomicity. In-progress fork/map replay, fresh Request/Join lineage, created
+resource membership and reviewed secret/recovery bindings still require dedicated
+continuation codecs. The single-path validator remains enforced.

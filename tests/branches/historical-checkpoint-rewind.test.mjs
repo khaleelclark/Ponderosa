@@ -1141,3 +1141,23 @@ for(const mode of ['async','sync','exit'])test(`standalone human gate ${mode}: i
  assert.ok(branches.historicalCheckpoints(branch.id,next.id).some(c=>c.restoreSupported),'A restored/resolved prefix remains checkpointable');
  assert.equal(branches.detail(source.id).gates[0].state,'canceled');
 });
+
+test('sync saved coverage survives saver reconstruction and rejects later external row changes',async t=>{
+ const f=fixture(t,'sync');await f.prefix();
+ const {BranchUnitSaver}=await import('../../packages/agents/dist/branch-unit-saver.js');
+ const restarted=new BranchUnitSaver(f.store.sqlite);
+ assert.equal(f.branches.unitSaver.ready(f.source.id,'sync'),true);
+ assert.equal(restarted.ready(f.source.id,'sync'),true,'exact durable bytes recover readiness without a process-local ticket');
+ const path=f.store.sqlite.prepare('SELECT id,input_text FROM branch_paths WHERE execution_id=?').get(f.source.id);
+ // Bypass the owned unit to model another writer; never turn its rows into new coverage.
+ f.store.sqlite.prepare('UPDATE branch_paths SET input_text=? WHERE id=?').run('foreign frontier',path.id);
+ assert.equal(f.branches.unitSaver.ready(f.source.id,'sync'),false,'a saved ticket is not current coverage');
+ assert.equal(restarted.ready(f.source.id,'sync'),false);
+ f.store.sqlite.prepare('UPDATE branch_paths SET input_text=? WHERE id=?').run(path.input_text,path.id);
+ assert.equal(restarted.ready(f.source.id,'sync'),true);
+ const invocation=f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(f.source.id).checkpoint_invocation_json;
+ f.store.sqlite.prepare("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.id',?) WHERE id=?").run(randomUUID(),f.source.id);
+ assert.equal(f.branches.unitSaver.ready(f.source.id,'sync'),false,'a ticket cannot cross invocation identities');
+ assert.equal(restarted.ready(f.source.id,'sync'),false);
+ f.store.sqlite.prepare('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?').run(invocation,f.source.id);
+});

@@ -100,7 +100,16 @@ export class BranchUnitSaver {
   ready(id:string,mode:BranchCheckpointMode):boolean {
     if(this.failed(id)||this.pendingBytes>=this.maxPendingBytes)return false;
     const ticket=this.statuses.get(id);
-    return mode!=='sync'||ticket?.state==='saved';
+    if(mode!=='sync')return true;
+    // A process-local ticket cannot attest rows changed by a different connection.
+    if(ticket&&ticket.state!=='saved')return false;
+    const row=this.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(id) as {checkpoint_invocation_json:string}|undefined;
+    if(!row?.checkpoint_invocation_json)return false;
+    try {
+      const invocation=JSON.parse(row.checkpoint_invocation_json);
+      if(ticket&&ticket.invocationId!==invocation.id)return false;
+      return this.currentSavedMatches(id,invocation.id,ticket?.savedId??invocation.saved_snapshot_id);
+    } catch {return false;}
   }
   status(id:string):Readonly<Status>|undefined {return this.statuses.get(id);}
   failed(id:string):boolean {return this.failures.has(id);}
