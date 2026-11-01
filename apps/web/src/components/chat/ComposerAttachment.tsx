@@ -1,3 +1,4 @@
+import {AudioMessagePlayer} from '../speech/AudioMessagePlayer';
 import CloseIcon from "@mui/icons-material/Close";
 import {
   Box,
@@ -32,7 +33,7 @@ export function ComposerAttachment({
 }): JSX.Element {
   const [preview, setPreview] = useState<string>();
   useLayoutEffect(() => {
-    if (!file.type.startsWith("image/")) return undefined;
+    if (!file.type.startsWith("image/")&&!file.type.startsWith("audio/")) return undefined;
     const url = URL.createObjectURL(file);
     setPreview(url);
     return () => URL.revokeObjectURL(url);
@@ -40,7 +41,7 @@ export function ComposerAttachment({
 
   return (
     <Box sx={{ position: "relative", minWidth: 0, maxWidth: 180 }}>
-      {preview ? (
+      {preview&&file.type.startsWith("audio/")?<Box sx={{width:180,maxWidth:"100%",mt:4}}><AudioMessagePlayer preload="metadata" src={preview} label={`Preview ${file.name}`}/></Box>:preview ? (
         <Box
           component="a"
           href={preview}
@@ -80,10 +81,10 @@ export function ComposerAttachment({
           position: "absolute",
           right: 3,
           top: 3,
-          width: 28,
-          height: 28,
-          minWidth: 28,
-          minHeight: 28,
+          width: {xs:44,sm:28},
+          height: {xs:44,sm:28},
+          minWidth: {xs:44,sm:28},
+          minHeight: {xs:44,sm:28},
           p: 0.4,
           bgcolor: "background.paper",
           boxShadow: 1,

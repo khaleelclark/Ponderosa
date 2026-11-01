@@ -45,10 +45,10 @@ test('server stages use paired timestamps; browser stages never use enqueue or m
 test('short terminal sentence flushes after stability delay without needing another model token',()=>{
  const b=new VoicePhraseBuffer();assert.deepEqual(b.accept(reply('A short'),0),[]);
  assert.deepEqual(b.accept(reply('A short sentence.',2),100),[]);
- assert.deepEqual(b.flush(999),[]);assert.deepEqual(b.flush(1000),['A short sentence.']);
+ assert.deepEqual(b.flush(399),[]);assert.deepEqual(b.flush(400),['A short sentence.']);
  assert.deepEqual(b.flush(),[]);
  assert.deepEqual(b.accept(reply('A short sentence. Next sentence.',3),1100),[]);
- assert.deepEqual(b.flush(2000),['Next sentence.']);
+ assert.deepEqual(b.flush(1400),['Next sentence.']);
  assert.deepEqual(b.finish('A short sentence. Next sentence.'),[]);
  for(const text of ['Dr.','Mr.','Prof.','An unfinished phrase']){
   const a=new VoicePhraseBuffer();a.accept(reply(text),0);assert.deepEqual(a.flush(900),[]);

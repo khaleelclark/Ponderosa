@@ -29,7 +29,7 @@ function ChatOptionsPaper({children,footer,...props}:ChatOptionsPaperProps):JSX.
  return <Paper {...props}>{children}{footer}</Paper>;
 }
 /** Shared interaction surfaces receive scoped transport and navigation from their product shell. */
-export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate,notificationAction,enginesLoaded=true}:{branchId:string;engines:EngineDto[];enginesLoaded?:boolean;executionId?:string;branchRoute:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean;notificationAction?:ReactNode}):JSX.Element {
+export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate,notificationAction,enginesLoaded=true,standalone=false}:{branchId:string;engines:EngineDto[];enginesLoaded?:boolean;standalone?:boolean;executionId?:string;branchRoute:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean;notificationAction?:ReactNode}):JSX.Element {
  const guard=useBranchNavigationGuard();
  const active=useRef(false);useLayoutEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
  const [picker,setPicker]=useState(false),[search,setSearch]=useState('');
@@ -58,7 +58,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  useEffect(()=>{const context=owner.data,targetExecution=context?.executionId??undefined;if(!branchRoute.creationKey&&chatId&&context?.branchId&&(context.branchId!==branchId||targetExecution!==(executionId??undefined)||branchRoute.chatId!==context.id))onNavigate({branchId:context.branchId,tab:'chats',executionId:targetExecution,chatId:context.id,workspace:route?.projectId===context.projectId?route:{kind:'conversation',projectId:context.projectId,conversationId:context.id}},true)},[branchId,chatId,executionId,owner.data,branchRoute.chatId,branchRoute.creationKey,route]);
  const creationOwner={product:'branches' as const,branchId};
  const pendingAttempt=readCreationAttempts().find(item=>sameCreationOwner(item.owner,creationOwner)&&!item.chat);
- const creationAllowed=branchRoute.branchId===branchId&&branchRoute.tab==='chats'&&!branchRoute.global&&!executionId;
+ const creationAllowed=!standalone&&branchRoute.branchId===branchId&&branchRoute.tab==='chats'&&!branchRoute.global&&!executionId;
  const creationKey=creationAllowed?branchRoute.creationKey:undefined;
  const starting=useRef(false),currentRoute=useRef(branchRoute);currentRoute.current=branchRoute;
  useEffect(()=>{starting.current=false},[creationKey]);
@@ -87,7 +87,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
   {choices.hasNextPage&&<Button disabled={choices.isFetching} onClick={()=>void choices.fetchNextPage()}>Load more Chats</Button>}
  </Stack>};
  return <Stack spacing={1} sx={{flex:1,minHeight:0,minWidth:0,overflow:'hidden'}}>
-  <Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0}}>
+  {!standalone&&<Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0}}>
    <Autocomplete options={choiceRows} value={chat??null} getOptionLabel={c=>c.title} getOptionKey={c=>c.id} isOptionEqualToValue={(a,b)=>a.id===b.id} filterOptions={options=>options} disableClearable={Boolean(chat)}
     open={picker} onOpen={()=>setPicker(true)} onClose={(event,reason)=>{if(reason==='selectOption'&&'defaultMuiPrevented'in event&&event.defaultMuiPrevented)return;setPicker(false);if(reason==='selectOption')setSearch('')}} onChange={(event,c)=>{if(c&&!chooseChat(c))(event as {defaultMuiPrevented?:boolean}).defaultMuiPrevented=true}}
     inputValue={picker?search:chat?.title??''} onInputChange={(_event,value,reason)=>{if(reason==='input')setSearch(value)}}
@@ -99,7 +99,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
     sx={{flex:1,minWidth:0,maxWidth:360}}/>
    {!executionId&&<Button size="small" startIcon={<AddIcon/>} disabled={Boolean(creationKey)} onClick={startChat} sx={{flexShrink:0,whiteSpace:'nowrap'}}>New Chat</Button>}
    {executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{notificationAction}
-  </Stack>
+  </Stack>}
   {searchText&&searches.error&&<Alert severity="error" action={<Button onClick={()=>void searches.refetch()}>Retry search</Button>}>Chats could not be searched. {searches.error.message}</Alert>}
   {creationKey&&<NewChatComposer key={creationKey} creationKey={creationKey} owner={creationOwner} inline engines={engines} enginesLoaded={enginesLoaded} onCreated={created} onCancel={()=>onNavigate({...branchRoute,creationKey:undefined},true)} onConfigureProvider={()=>onNavigate({...branchRoute,global:'providers'})}/>}
   {!creationKey&&creationAllowed&&pendingAttempt&&<Button onClick={startChat}>Retry opening Chat</Button>}

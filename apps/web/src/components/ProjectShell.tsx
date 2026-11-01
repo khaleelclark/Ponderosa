@@ -1,3 +1,4 @@
+import {isOutputAppPath} from '../api/productScope';
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import { Alert, Box, Button, LinearProgress, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
@@ -288,6 +289,7 @@ export function ProjectShell({
   } else if (route.kind === "agent") {
     main = (
       <AgentDetail
+        standalone={isOutputAppPath(window.location.pathname)}
         decisionReviewAction={decisionReviewAction}
         key={route.agentId}
         agentId={route.agentId}

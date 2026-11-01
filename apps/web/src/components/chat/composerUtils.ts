@@ -584,6 +584,7 @@ const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
   ".txt": "text/plain",
   ".zip": "application/zip",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".webm":"audio/webm", ".ogg":"audio/ogg", ".m4a":"audio/mp4",
 };
 const COMPOSER_MEDIA_TYPE_ALIASES: Record<string, string> = {
   "image/heif": "image/heic",

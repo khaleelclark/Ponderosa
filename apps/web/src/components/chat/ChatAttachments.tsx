@@ -1,3 +1,4 @@
+import {AudioMessagePlayer} from '../speech/AudioMessagePlayer';
 import CloseIcon from "@mui/icons-material/Close";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
@@ -97,6 +98,8 @@ export function ChatAttachments({
                   </Typography>
                   {failed.has(attachment.id) && !attachment.unavailable ? <Button size="small" onClick={() => setFailed(current => { const next = new Set(current); next.delete(attachment.id); return next; })}>Retry preview</Button> : null}
                 </Stack>
+              ) : attachment.mediaType.startsWith("audio/") && (downloadUrl||previewUrl) ? (
+                <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" sx={{overflowWrap:"anywhere"}}>{attachment.name}</Typography><AudioMessagePlayer src={(downloadUrl??previewUrl)!} label={`Play ${attachment.name}`}/><Button href={downloadUrl??previewUrl} download size="small">Download audio</Button></Stack>
               ) : image && previewUrl ? (
                 <ButtonBase
                   aria-label={`Preview ${attachment.name}`}

@@ -7,7 +7,7 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { parseRichMessageBlock, messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto, WorkspaceFileOwnerDto } from "@ponderosa/core";
-import { type ReactNode, type ComponentPropsWithoutRef, useState } from "react";
+import { type ReactNode, type ComponentPropsWithoutRef, useState, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { remarkMessageFormatting } from "./messageMarkdown";
@@ -426,7 +426,7 @@ function remarkMessageTags(options: { tokens: ReturnType<typeof messageProseTagT
   };
 }
 
-function ChatMarkdown({
+const ChatMarkdown = memo(function ChatMarkdown({
   children,
   collaborationRecipients,
   agentMentions,
@@ -476,7 +476,7 @@ function ChatMarkdown({
         fontSize: small
           ? { xs: "0.9375rem", md: "0.82rem" }
           : { xs: "0.875rem", sm: "1rem", md: "0.9375rem" },
-        lineHeight: small ? 1.42 : { xs: "20px", sm: 1.48 },
+        lineHeight: small ? 1.42 : 1.48,
         "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
@@ -604,7 +604,7 @@ function ChatMarkdown({
       </ReactMarkdown>
     </Box>
   );
-}
+});
 
 export function CommunicationDocumentCard({ document, projectId, fileScope }: { document: CommunicationDocumentReference; projectId?: string; fileScope?: WorkspaceFileOwnerDto }): JSX.Element {
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown projectId={projectId} fileScope={fileScope}>{content}</ChatMarkdown>} />;

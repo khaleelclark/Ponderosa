@@ -100,6 +100,7 @@ import {
   type ComposerProjectFileDescriptor,
 } from "./ComposerEditor";
 import {
+  selectComposerFiles,
   canSubmitComposerText,
   COMPOSER_MAX_FILE_BYTES,
   canonicalDraftConflictFiles,
@@ -3753,6 +3754,8 @@ export function Composer({
           {enableVoiceDictation ? <DictationControls
             key={JSON.stringify([projectId, conversationDraftId, voiceContext?.conversationId])}
             voiceContext={voiceContext}
+            onVoiceAttachment={composerAttachmentsEnabled?file=>{if(draftMutationLockedRef.current)return "The draft is busy. Try attaching again.";const selection=selectComposerFiles(files,[file],assetLimits);if(selection.error)return selection.error;addFiles([file]);return undefined;}:undefined}
+            maxRecordingBytes={Math.max(0,Math.min(assetLimits?.maxFileBytes??COMPOSER_MAX_FILE_BYTES,(assetLimits?.maxMessageBytes??COMPOSER_MAX_FILE_BYTES)-files.reduce((sum,file)=>sum+file.size,0)))}
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}

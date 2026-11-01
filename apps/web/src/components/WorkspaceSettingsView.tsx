@@ -1,3 +1,5 @@
+import {AssistantSettings} from './AssistantSettings';
+import {TextSizeSetting} from './TextSizeSetting';
 import {GlobalMemoryTransfer} from './GlobalMemoryTransfer';
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import {useMutationNotification} from "./MutationNotifications";
@@ -179,6 +181,7 @@ function GeneralSettingsSection({
     rolloverTokensError === undefined && rolloverFractionError === undefined;
   return (
     <Stack spacing={2.5}>
+      <Paper variant="outlined" sx={{p:2.5}}><Typography component="h2" variant="h6">Assistant</Typography><AssistantSettings/></Paper>
       <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
       <GlobalMemoryTransfer />
       {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></Paper>}
@@ -208,6 +211,7 @@ function GeneralSettingsSection({
               <MenuItem value="sans">Classic Sans</MenuItem>
             </Select>
           </FormControl>
+          <TextSizeSetting/>
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2.5 }}>

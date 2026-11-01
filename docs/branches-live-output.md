@@ -13,3 +13,28 @@ Live targets use the existing bounded detail history page (up to100 attempts), i
 `tests/branches/live-output-mounted.tsx` mounts this production component with the actual React Query hooks and real `EventSource` transport. Its local HTTP fixture is `tests/branches/live-output-mounted.browser.mjs`; no provider or production server is used. With existing dependencies and Chrome available, set `PONDEROSA_LIVE_MOUNT_BUILD` and `PONDEROSA_LIVE_MOUNT_EVIDENCE` to fresh owned absolute directories, build with `node apps/web/node_modules/@rsbuild/core/bin/rsbuild.js build --config tests/branches/live-output-mounted.config.mjs`, then run `node tests/branches/live-output-mounted.browser.mjs`. Video requires the existing Playwright ffmpeg cache (`PLAYWRIGHT_BROWSERS_PATH` can identify it); do not install dependencies implicitly.
 
 The desktop and emulated-phone cells assert incremental text with stable DOM identity, exact-Run exclusion, a separately cached stale history page, cached text during an intentionally held reconnect, actual EventSource reconnection, canonical snapshot replacement, actual 32KiB truncated snapshots with explicit canonical retrieval success/error and replacement, Run replacement and stream closure on unmount. Screenshots and video are retained. This fixture qualifies the mounted live-work component, not the entire Branches navigation shell, real phone hardware, screen-reader/audio behavior, all themes, high-cardinality subscriptions or every output surface. The parallel-gate count fixture separately starts an authorized Script sibling before opening the gate and proves a second, prepared Script cannot acquire fresh authority while that gate is open.
+
+## Shared rendering and update publication
+
+Agent work logs, task work receipts, and Branches live work now share
+`AgentResponseText`. An open segment stays literal prewrapped text, avoiding
+repeated parsing of unfinished Markdown; a closed canonical segment uses the
+shared rich message renderer. Segment identity and explicit full-text retrieval
+remain unchanged. Exact-Run terminal lifecycle events close that Run's projected
+segments without touching another Run.
+
+The Agent SSE hook preserves every live text/reasoning envelope in order and
+publishes queued deltas after a 16 ms interval, or immediately at 64 envelopes or
+while hidden. A tool, lifecycle event, snapshot/status, or unmount flushes preceding
+text first. This reduces query/render churn without creating a second event store
+or changing authored Communication. Terminal and nontext events remain immediate.
+The previous mapped LCP results remain red; these source changes are not a measured
+performance improvement or Bible21 acceptance.
+
+Calls still use qualified backend response snapshots and existing phrase/context
+checks. A stable terminal sentence may flush after 300 ms, checked every 100 ms,
+rather than a 900 ms stability threshold checked every 900 ms. Unfinished tokens,
+Markdown, abbreviation boundaries, changed Run/fence/item identity, and changed
+spoken prefixes retain their existing protections. No browser-local text is
+presented as an Agent acknowledgement. End-to-end audio latency remains unmeasured
+for this implementation.

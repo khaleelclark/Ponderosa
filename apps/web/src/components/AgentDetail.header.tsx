@@ -127,6 +127,7 @@ function AgentRunState({
 }
 
 interface AgentDetailHeaderProps {
+  standalone?:boolean;
   agent: AgentDto;
   projectLabel?: string;
   chats: AgentHeaderChat[];
@@ -163,6 +164,7 @@ interface AgentDetailHeaderProps {
 }
 
 export function AgentDetailHeader({
+  standalone=false,
   agent,
   projectLabel,
   chats,
@@ -197,6 +199,12 @@ export function AgentDetailHeader({
 }: AgentDetailHeaderProps): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
   const notify=useMutationNotification();
+  if(standalone)return <Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap'}}>
+    <Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId}/></Box>
+    {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back to chat</Button>}
+    {(running||paused)&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
+    {running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
+  </Stack>;
   return (
     <TabbedWorkspaceFrame
       compactMobile

@@ -11,6 +11,7 @@ import type { AgentStatus } from "../agents";
 import type { AgentDetailView, AgentTelemetryFocus } from "../routing";
 
 export interface AgentDetailProps {
+  standalone?:boolean;
   agentId: string;
   projectId: string;
   focusMessageId?: string;

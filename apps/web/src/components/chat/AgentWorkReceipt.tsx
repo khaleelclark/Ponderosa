@@ -218,7 +218,7 @@ export function AgentWorkReceipt({
           ) : null}
         </Stack>
         {paused ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 0.5 }}>
-          Paused by you. This execution was interrupted; unfinished work is held until Resume. Stop ends the held work.
+          Paused · Resume to continue.
         </Typography> : null}
         {expanded && hasVisibleActivity ? (
           <Box

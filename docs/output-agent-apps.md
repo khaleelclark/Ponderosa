@@ -85,3 +85,43 @@ this slice starts from ui097 `c581d406604d9cec7fee69cb5e118ce024285d95` and does
 include or modify those commits. Integration through Cliff remains required.
 
 Working-file links from `/assistant` and `/apps/<agent-id>` open the Branches file viewer in a new tab. The standalone shell supplies its canonical Branch/Chat owner; the nested workspace URL retains the file’s Agent or Chat owner, exact path and fragment. File-preview Markdown links and shared resource links use the same product navigation helper. Ordinary Core workspace links retain their original URLs.
+
+## Everyday controls
+
+Output URLs use a focused chat header; workflow editing and organization controls
+remain under **More options**. **Settings** offers the automatic interval, provider
+and model, appearance, and the Assistant enable/disable action. Opening settings
+loads the current workflow values. Background refreshes retain an open draft;
+a schedule save sends the currently observed workflow version and displays any
+conflict rather than silently replacing newer edits. The interval must be finite,
+at least one minute, and represent an exact safe millisecond value.
+
+General workspace settings also show whether Assistant is enabled. Explicitly
+re-enabling uses the canonical Assistant endpoint; the UI does not create a second
+workflow locally. Speaker/output toggles serialize writes and retain the observed
+speaker role when changing only the output designation.
+
+Text size is a device preference, shared by Core, Branches, Assistant, and output
+URLs through browser storage. Available sizes are 100–200%; browser zoom remains
+available. Font family uses the existing workspace preference. Standalone chat
+uses the same visual-viewport keyboard handling as the full workspace.
+
+## Voice messages
+
+**Voice options → Record voice message** opens the browser microphone recorder.
+Finish, review the audio, and choose **Attach voice message**. It enters the same
+draft upload queue as a selected file; the ordinary Send action sends it to the
+selected recipient. It is never sent automatically. Attachment limits still apply;
+a rejected attachment stays in the recording dialog for review and retry. Discard is explicit. Recording stops when its surface becomes
+inactive, and microphone tracks are released on finish, failure, replacement, or
+unmount. Draft and sent audio attachments have native playback controls.
+
+Recording requires browser MediaRecorder and microphone access. The browser chooses
+among Opus/WebM, MP4, and Opus/Ogg; unsupported browsers keep dictation and file
+attachment options. Audio remains an attachment; no new transcription service,
+provider transport, or credentials store is introduced. Server asset admission must
+preserve the matching validated audio media type for playback after reload.
+
+These implementation changes have not been built, typechecked, browser exercised,
+or qualified under the implement-first direction. Previous qualification evidence
+is historical and does not qualify these changes.

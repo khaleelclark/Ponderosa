@@ -34,17 +34,14 @@ const resourcePresentation = {
   chat: {
     icon: <ChatBubbleOutlineIcon />,
     title: "New Chat",
-    description: "Start a conversation with its own team and working context.",
   },
   agent: {
     icon: <SmartToyOutlinedIcon />,
     title: "Create Agent",
-    description: "Add a managed worker with its own role and runtime to a Chat.",
   },
 } satisfies Record<Extract<Route, { kind: "create" }>["resource"], {
   icon: ReactElement;
   title: string;
-  description: string;
 }>;
 
 function CreateSurface({
@@ -59,9 +56,7 @@ function CreateSurface({
     <MobileNavigationButton />
     <Box sx={{ minWidth: 0, flex: 1 }}>
       <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
-      <Typography color="text.secondary" sx={{ mt: 0.5, display: route.resource === "chat" ? { xs: "none", sm: "block" } : undefined }}>
-        {presentation.description}
-      </Typography>
+
     </Box>
     <PrimaryHeaderActionsOutlet />
   </Stack>;

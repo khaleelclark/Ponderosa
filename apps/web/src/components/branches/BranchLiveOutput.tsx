@@ -1,3 +1,4 @@
+import {AgentResponseText} from '../chat/AgentResponseText';
 import {Alert,Paper,Stack,Typography} from '@mui/material';
 import type {BranchLiveOutputDto} from '@ponderosa/core';
 import {useAgent} from '../../hooks/queries';
@@ -20,7 +21,7 @@ export function BranchLiveOutput({targets,labels}:{targets:BranchLiveOutputDto[]
    {agent.error&&<Alert severity="error">{agent.error.message}</Alert>}
    {stream.connectionStatus!=='live'&&<Typography role="status">{stream.connectionStatus==='connecting'?'Connecting…':'Live updates unavailable; reconnecting…'}</Typography>}
    {!entries.length&&<Typography color="text.secondary">Waiting for output…</Typography>}
-   {entries.map(entry=><RunOutputFullText key={entry.id} segment={entry} render={text=><Typography component="div" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{text}</Typography>}/>)}
+   {entries.map(entry=><RunOutputFullText key={entry.id} segment={entry} render={text=><AgentResponseText text={text} completed={entry.completed} projectId={owner.projectId} fileScope={{agentId:owner.agentId}}/>}/>)}
   </Stack></Paper>;
  })}</Stack>;
 }

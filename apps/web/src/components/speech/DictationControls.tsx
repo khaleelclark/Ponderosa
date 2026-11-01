@@ -1,3 +1,5 @@
+import {VoiceMessageRecorder} from './VoiceMessageRecorder';
+import {isOutputAppPath} from '../../api/productScope';
 import GraphicEqIcon from "@mui/icons-material/GraphicEq";
 import PhoneIcon from "@mui/icons-material/Phone";
 import MicNoneIcon from "@mui/icons-material/MicNone";
@@ -19,12 +21,16 @@ export function DictationControls({
   onFinalTranscript,
   onSettlingChange,
   onActiveChange,
+  onVoiceAttachment,
+  maxRecordingBytes=80*1024*1024,
 }: {
   disabled: boolean;
   voiceContext?: VoiceConversationContext;
   onFinalTranscript(transcript: string): void;
   onSettlingChange(settling: boolean): void;
   onActiveChange?(active: boolean): void;
+  onVoiceAttachment?(file:File):string|undefined;
+  maxRecordingBytes?:number;
 }): JSX.Element {
   const disabled = useWorkspaceReadOnly() || suppliedDisabled;
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -35,9 +41,10 @@ export function DictationControls({
   const callOwner = JSON.stringify([voiceContext?.projectId, voiceContext?.conversationId, voiceContext?.selectedAgentId, voiceContext?.lockAgent]);
   const [openedCallOwner, setOpenedCallOwner] = useState<string>();
   const callOpen = openedCallOwner === callOwner;
+  const [recordingOpen,setRecordingOpen]=useState(false);
   useEffect(() => { setOpenedCallOwner(undefined); }, [callOwner]);
   useEffect(() => {
-    if (disabled) { setAnchor(null); setOpenedCallOwner(undefined); }
+    if (disabled) { setAnchor(null); setOpenedCallOwner(undefined);setRecordingOpen(false); }
   }, [disabled]);
   useEffect(() => {
     if (wasCallOpen.current && !callOpen) buttonRef.current?.focus({preventScroll: true});
@@ -107,7 +114,7 @@ export function DictationControls({
             aria-haspopup="menu"
             aria-expanded={Boolean(anchor)}
             aria-controls={anchor ? menuId : undefined}
-            disabled={disabled || callOpen}
+            disabled={disabled || callOpen || recordingOpen}
             onClick={event => setAnchor(event.currentTarget)}
           >
             <GraphicEqIcon />
@@ -125,6 +132,7 @@ export function DictationControls({
         disableRestoreFocus={callOpen}
         disableScrollLock
       >
+        {onVoiceAttachment&&<MenuItem disabled={!anchor||disabled||active||paused||maxRecordingBytes<=0} onClick={()=>{setAnchor(null);setRecordingOpen(true);}}><ListItemIcon><MicNoneIcon fontSize="small"/></ListItemIcon><ListItemText primary="Record voice message"/></MenuItem>}
         <MenuItem
           disabled={!anchor || disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent =>
             agent.projectId === voiceContext.projectId && agent.conversationId === voiceContext.conversationId &&
@@ -148,7 +156,8 @@ export function DictationControls({
           <ListItemText primary="Dictation" secondary={unavailable ?? (active || paused ? primaryLabel : undefined)} />
         </MenuItem>
       </Menu>
-      {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} open onClose={() => setOpenedCallOwner(undefined)} />}
+      {recordingOpen&&!disabled&&onVoiceAttachment&&<VoiceMessageRecorder onAttach={onVoiceAttachment} maxBytes={maxRecordingBytes} onClose={()=>setRecordingOpen(false)}/>}
+      {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={() => setOpenedCallOwner(undefined)} />}
       {active || paused ? (
         <Tooltip title="Stop voice dictation">
           <span>

@@ -79,8 +79,9 @@ export function ImportAgentForm({
   const [fileName, setFileName] = useState<string>();
   const [jsonText, setJsonText] = useState("");
   const [conversationId, setConversationId] = useState("");
-  useEffect(()=>{setRoleReview(undefined);},[packageBlob,conversationId]);
+
   const [engineMapping, setEngineMapping] = useState<Record<string, string>>({});
+  useEffect(()=>{setRoleReview(undefined);},[packageBlob,conversationId,engineMapping]);
   const [acknowledgeElevatedPermissions, setAcknowledgeElevatedPermissions] = useState(false);
   const [instructionsAction, setInstructionsAction] = useState<ChatInstructionsAction>("");
   const sourceInstructions = packagePreview?.sourceProjectInstructions;
@@ -425,7 +426,9 @@ export function ImportAgentForm({
         />
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
+      {roleReview?.warning&&<Alert severity="warning">{roleReview.warning}</Alert>}
       <Stack direction="row" spacing={1} sx={{
+        flexWrap:"wrap",gap:1,
         justifyContent: "flex-end",
         ...(stickyActions ? {
           position: "absolute",
@@ -441,7 +444,7 @@ export function ImportAgentForm({
         } : {}),
       }}>
       {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review output roles again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm output roles</Button></>}</>}
-      {roleReview&&<Alert severity={roleReview.warning?'warning':'info'}>{roleReview.warning??'Imported output roles will be activated in this Branch Chat.'}</Alert>}
+
       <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
       <Button variant="contained" disabled={Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
         const target = engines.find(engine => engine.id === engineMapping[source]);

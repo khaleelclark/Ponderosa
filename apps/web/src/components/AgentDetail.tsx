@@ -94,6 +94,7 @@ export function AgentDetail({
   focusTelemetry,
   technicalFocusId,
   initialView,
+  standalone=false,
   onViewChange,
   onOpenTechnicalDetails,
   decisionReviewAction,
@@ -918,6 +919,7 @@ export function AgentDetail({
       }}
     >
       <AgentDetailHeader
+        standalone={standalone}
         agent={detail.agent}
         projectLabel={project?.label}
         chats={headerChats}
@@ -1104,7 +1106,7 @@ export function AgentDetail({
             speed,
           ]),
           submissionRuntimeIntentKey: String(submissionRuntimeIntent),
-          controls: agentRuntimeControls,
+          controls: standalone?undefined:agentRuntimeControls,
           disabled: false,
           submissionDisabled: runtimeSaving,
           running: false,

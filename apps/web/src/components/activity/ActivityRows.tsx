@@ -17,7 +17,7 @@ import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
 import { presentProjectPath } from "../../projectPathPresentation";
 import { telemetryElementId } from "../../telemetryFocus";
-import { ChatMessageBody } from "../chat/ChatMessages";
+import { AgentResponseText } from "../chat/AgentResponseText";
 import { FilePreview } from "../filePreview/FilePreview";
 import { recordedArtifactDiff } from "../filePreview/artifactDiff";
 import { ActivityOutput, RunOutputFullText } from "./ActivityOutput";
@@ -443,13 +443,12 @@ export function ResponseRow({
   return <Row entry={entry} focusId={focusId} stream="runOutput">
     <RunOutputFullText
       segment={entry.segment}
-      render={(text) => <ChatMessageBody
+      render={(text) => <AgentResponseText
         text={text}
-        collapseLongMessage={false}
+        completed={entry.segment.completed}
         projectId={projectId}
         fileScope={agentId ? { agentId } : undefined}
-        compactMarkdown
-        smallText
+        compact
       />}
     />
     {entry.segment.fileActivity?.length ? <ResponseFileActivity

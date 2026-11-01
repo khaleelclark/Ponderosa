@@ -27,7 +27,7 @@ export class VoicePhraseBuffer {
     if (reply.state === "failed") { this.closed = true; return []; }
     return this.phrases(false);
   }
-  flush(now = performance.now()): string[] { return this.closed ? [] : this.phrases(false, true, now - this.changedAt >= 900); }
+  flush(now = performance.now()): string[] { return this.closed ? [] : this.phrases(false, true, now - this.changedAt >= 300); }
   finish(canonicalText: string): string[] {
     if (!canonicalText.startsWith(this.spokenPrefix)) throw new Error("The canonical reply differs from the spoken response. Read it in Chat.");
     this.text = canonicalText;

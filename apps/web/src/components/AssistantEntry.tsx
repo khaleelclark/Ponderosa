@@ -7,8 +7,9 @@ import {requestJson} from '../api/real';
 export function AssistantEntry():JSX.Element{
  const query=useQuery({queryKey:['assistant-initialize'],staleTime:Infinity,retry:false,
   queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({initialize:true})})});
+ const status=useQuery({queryKey:['assistant-status'],queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant'),enabled:query.isSuccess,refetchInterval:15000});
  return <Stack direction="row" alignItems="center" sx={{px:1}}><Button href="/assistant">Assistant</Button>
-  {query.data?.initialized&&!query.data.enabled&&<Button href="/assistant">Disabled</Button>}
+  {(status.data??query.data)?.initialized&&!(status.data??query.data)?.enabled&&<Button href="/assistant">Disabled</Button>}
   {query.isError&&<Alert severity="error" action={<Button onClick={()=>void query.refetch()}>Retry</Button>}>{(query.error as Error).message}</Alert>}
  </Stack>;
 }

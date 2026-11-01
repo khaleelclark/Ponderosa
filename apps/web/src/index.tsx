@@ -1,10 +1,11 @@
+import {TEXT_SIZE_EVENT,readTextSize} from './textSize';
 import {isBranchesPath,isOutputAppPath,setStandaloneProductScope} from "./api/productScope.js";
 import {applyBrowserTheme} from "./browserTheme";
 import CssBaseline from "@mui/material/CssBaseline";
 import "@fontsource-variable/inter";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, Suspense, lazy, useLayoutEffect, useMemo, useState } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 const OutputAgentApp=lazy(()=>import('./components/OutputAgentApp').then(module=>({default:module.OutputAgentApp})));
 if(isOutputAppPath(window.location.pathname))setStandaloneProductScope('branches');
@@ -39,6 +40,11 @@ const queryClient = new QueryClient({
 
 function Root(): JSX.Element {
   const [colorMode, setColorMode] = useState<ColorMode>(loadColorMode);
+  useEffect(()=>{
+    const apply=()=>{document.documentElement.style.fontSize=`${readTextSize()}%`;};
+    apply();window.addEventListener(TEXT_SIZE_EVENT,apply);window.addEventListener('storage',apply);
+    return()=>{window.removeEventListener(TEXT_SIZE_EVENT,apply);window.removeEventListener('storage',apply);};
+  },[]);
   const theme = useMemo(() => createPonderosaTheme(colorMode), [colorMode]);
 
   useLayoutEffect(() => {
@@ -53,7 +59,7 @@ function Root(): JSX.Element {
         <MutationNotificationProvider>
           <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
             <Suspense fallback={<div role="status" style={{padding:24}}>Loading Ponderosa…</div>}>
-            {isOutputAppPath(window.location.pathname)?<OutputAgentApp/>:isBranchesPath(window.location.pathname)?<BranchesView colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:<App
+            {isOutputAppPath(window.location.pathname)?<OutputAgentApp colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:isBranchesPath(window.location.pathname)?<BranchesView colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:<App
               colorMode={colorMode}
               onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
             />}

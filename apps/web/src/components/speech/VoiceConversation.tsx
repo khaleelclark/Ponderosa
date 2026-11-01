@@ -406,7 +406,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       },
     });
     refreshStatus();
-    const phraseTimer = setInterval(() => { if (valid() && streaming) { try { append(buffer.flush()); } catch (error) { fail((error as Error).message); } } }, 900);
+    const phraseTimer = setInterval(() => { if (valid() && streaming) { try { append(buffer.flush()); } catch (error) { fail((error as Error).message); } } }, 100);
     // Nominal backstop only: network/event-loop delay is unbounded; no physical-onset atomicity.
     const exposureTimer = setInterval(() => { void refreshStatus(); }, 250);
     const deadline = setTimeout(() => fail("The Agent is still working after 120 seconds. Open Chat for its reply."), 120_000);
@@ -495,7 +495,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         <Typography>{phase === "ready" && !muted ? sttUnavailable ? "Calling unavailable · typing is available" : "Ready to call" : status}</Typography>
         {handsFree && <Typography variant="caption" color="text.secondary">Hands-free call active · automatic finalized turns</Typography>}
       </Box>
-      {(phase === "ready" || phase === "paused") && !handsFree && !sttUnavailable && <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>{standalone ? "Start call to talk with Agent. Each finished turn is sent automatically." : "Start call sends each finalized spoken turn automatically as a private message."} Browser speech may use the browser vendor’s remote processing.</Typography>}
+      {(phase === "ready" || phase === "paused") && !handsFree && !sttUnavailable && <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>Browser speech may use remote processing.</Typography>}
       {sttUnavailable && <Alert severity="info">{sttUnavailable} {standalone ? "Type your turn below. Replies use native speech when available." : "Use Chat or expand Transcript & typing."}</Alert>}
       {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Read replies in Chat.</Alert>}
       {notice && <Alert severity="info">{notice}</Alert>}
@@ -516,7 +516,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       {playText && error && !inFlight && !recording && !ttsUnavailable && !expanded && <Button onClick={() => play(playText)}>Play reply</Button>}
       <Button size="small" sx={{ minHeight: 44 }} aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={() => setExpanded(value => !value)}>Transcript &amp; typing</Button>
       {expanded && <Stack id={`${ownerId}-details`} spacing={2}>
-        {latency && <Typography aria-label="Call timing" variant="caption">{latency} Recognition finalization and provider time vary; these are this turn’s observed intervals.</Typography>}
+        {latency && <Box component="details"><Box component="summary" sx={{cursor:"pointer"}}>Call timing</Box><Typography aria-label="Call timing" variant="caption">{latency}</Typography></Box>}
         {provisionalReply && <Typography ref={replyElement} aria-label="Streaming reply" sx={{ whiteSpace: "pre-wrap" }}>{provisionalReply}</Typography>}
         <Box aria-label="Call transcript">{transcript.map(message => <Box key={message.id} sx={{ mb: 1 }}><Typography variant="caption">{message.role === "user" ? "You" : "Agent"}</Typography><Typography ref={renderReply?.canonicalId === message.id ? replyElement : undefined} sx={{ whiteSpace: "pre-wrap" }}>{message.document ? "Full message available in Chat." : message.text}</Typography></Box>)}</Box>
         <TextField label="Your next turn" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked} onChange={e => setText(e.target.value)} />

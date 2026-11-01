@@ -1,4 +1,4 @@
-/** One page-local recognition lease shared by ordinary dictation and calls. */
+/** One page-local audio/capture lease shared by dictation, recordings, audio playback and calls. */
 interface Capture { release(): void }
 let active: Capture | undefined;
 export function abandonPageCapture(): void {

@@ -4,7 +4,7 @@ import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFil
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { boundLiveAgentTelemetry } from "../agentLiveProjection";
+import { appendLiveRunText, closeLiveRunText, boundLiveAgentTelemetry } from "../agentLiveProjection";
 import type { StreamSubscription } from "../api/types";
 import { compactDefined } from "../collections";
 import { queryKeys } from "../queryKeys";
@@ -258,30 +258,8 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     const runOutput = compactDefined(detail.runOutput ?? []);
     const executionId = event.executionId ?? `live:${seq}`;
     const kind = event.type === "reasoning" ? "reasoning" : "response";
-    const existing = [...runOutput].reverse().find((entry) =>
-      !entry.completed && entry.executionId === executionId && entry.kind === kind);
-    const id = existing?.id ?? `${agentId}:runOutput:${seq}`;
-    const next: RunOutputDto = existing ? {
-      ...existing,
-      text: `${existing.text}${event.delta}`,
-      sourceSeqEnd: seq,
-    } : {
-      id,
-      agentId,
-      executionId,
-      kind,
-      text: event.delta,
-      completed: false,
-      seq,
-      sourceSeqStart: seq,
-      sourceSeqEnd: seq,
-      createdAt: ts,
-    };
-    const closed = runOutput.map((entry) =>
-      entry.completed || entry.id === existing?.id ? entry : { ...entry, completed: true });
-    const nextRunOutput = existing
-        ? closed.map((entry) => entry.id === id ? next : entry)
-        : [...closed, next];
+    const nextRunOutput=appendLiveRunText(runOutput,{agentId,executionId,kind,seq,createdAt:ts,delta:event.delta});
+    if(nextRunOutput===runOutput)return detail;
     const priorFileActivity = kind === "response"
       ? [...runOutput].reverse().find((entry) =>
           entry.executionId === executionId && entry.kind === "response")?.fileActivity
@@ -336,6 +314,7 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     return {
       ...detail,
       runs: existing ? runs.map((run) => run.id === event.executionId ? nextRun : run) : [...runs, nextRun],
+      runOutput: terminal ? closeLiveRunText(detail.runOutput,event.executionId) : detail.runOutput,
     };
   }
 
@@ -453,6 +432,16 @@ export function useAgentStream(
     setState(initialStreamState);
 
     let stopped = false;
+    let textFlushTimer: ReturnType<typeof setTimeout> | undefined;
+    let pendingText: SseEventEnvelope[] = [];
+    const flushText = () => {
+      if(textFlushTimer)clearTimeout(textFlushTimer);
+      textFlushTimer=undefined;
+      if(!pendingText.length)return;
+      const batch=pendingText;pendingText=[];
+      queryClient.setQueriesData<AgentDetailDto>({queryKey:queryKeys.agents.detailPrefix(agentId)},detail=>
+        detail?boundLiveAgentTelemetry(batch.reduce((current,envelope)=>updateAgentDetail(agentId,envelope,current),detail)):detail);
+    };
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
@@ -580,6 +569,7 @@ export function useAgentStream(
           }, 8_000);
         },
         onStatus(status) {
+          flushText();
           const changedInstance = Boolean(cursor.instanceId && cursor.instanceId !== status.instanceId);
           if (changedInstance) {
             const baseline = status.snapshot ? status.cursor : 0;
@@ -650,11 +640,17 @@ export function useAgentStream(
               : { ...current, connected: true, connectionStatus: "live" };
           });
 
-          queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (detail) =>
-            detail
-              ? boundLiveAgentTelemetry(updateAgentDetail(agentId, envelope, detail))
-              : detail,
-          );
+          // Preserve every delta in order, but publish at most once per frame-sized
+          // interval. Tools and lifecycle changes flush text before their own update.
+          if(envelope.event.type==='text'||envelope.event.type==='reasoning'){
+            pendingText.push(envelope);
+            if(pendingText.length>=64||document.visibilityState==='hidden')flushText();
+            else textFlushTimer??=setTimeout(flushText,16);
+          }else{
+            flushText();
+            queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, detail =>
+              detail?boundLiveAgentTelemetry(updateAgentDetail(agentId,envelope,detail)):detail);
+          }
 
           if (envelope.event.type === "text" && envelope.event.presentation === "progress") {
             publicProgressRefresh.schedule();
@@ -689,6 +685,7 @@ export function useAgentStream(
 
     return () => {
       stopped = true;
+      flushText();
       subscription?.close();
       markStreamDisconnected();
       clearConnectionTimers();
