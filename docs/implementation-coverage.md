@@ -2,7 +2,7 @@
 
 Source-only inventory includes Branch1aa09968 (2–32 serial/local-parallel resources; c462d403 predecessor), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
 retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner througheba8fa646 (91e8f8ad2/6ddf47dfa predecessors),
-and lifecycle source through393a02f5 (including Runtime713af3ad equivalent1e4d9e2). Integration owns
+and lifecycle source throughf73a1e5a discovery atop393a02f5 (including Runtime713af3ad equivalent1e4d9e2). Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
 No tests/checks/build/types/Node/native/browser/runner preparation or execution,
@@ -163,7 +163,8 @@ mutations; corrupt/unwritable storage blocks them. Choice CAS409 invalidates rev
 staging/admission409 retains input. Human whole-fact approval and admission are separate;
 current persisted approval hash/revision and fresh acknowledgement are required.
 Independent destination/choice readback permits revocation without source/preview proof.
-There is no group collection or original capture-key discovery, cross-device recovery,
+This UI has no group collection/original capture-key discovery or cross-device recovery;
+backend lifecycle discovery below does not reconstruct hashed GROUP capture keys. There is no
 mutation replay, partial-capture abandonment, group retirement or source-pin release UI.
 Preparation discloses directory reuse/default Chat plus two owned resource Chats.
 Both deferred command and mounted fixtures are source only; none executed.
@@ -201,11 +202,12 @@ approval/retirement require separate confirmations with identical choice/key/has
 Singular and group destination retirement have pure receipt GETs; other recovery requires explicit
 unchanged POST replay. Corrupt retained browser input blocks new mutations. Two deferred
 command/mounted fixture sources are present, unexecuted. See web-feature-completion.md.
-Global/deleted-owner import and destination inventories remain absent; scoped destination
-listing requires source ownership and is capped at50. Custody review lacks complete
-source intent, so unsealed capture discovery remains missing; destination review may
-refuse before deletion proof and limit Branch/capture reachability. Branch checkpoint
-retirement still depends on retained owner/source identity; no owner-independent journal.
+Backend f73a1e5a now supplies paginated current/deleted/retained import and singular/group
+current/retired destination discovery plus full supported unsealed capture source/key
+metadata independently of destination review. Existing UI does not consume those new
+collections yet; it still relies on its prior scoped identities/browser keys. No broader
+UI discovery or capture selector is claimed. Branch checkpoint retirement still depends
+on retained owner/source identity; no owner-independent journal.
 This is scoped lifecycle UI source, not broad discovery or executed qualification. The
 separate bounded group admission UI below does not add group retirement UI.
 
@@ -326,4 +328,17 @@ Group destination retirement host source reuses the singular per-resource observ
 
 ### Lifecycle discovery source successor
 
-Operator audit discovery now provides revision-bound paginated import-operation, current/retired destination and full unsealed capture/source collections under `/api/lifecycle/{agent-imports,destinations,checkpoint-captures}`. It preserves exact current/deletion-receipt/retained-only owner labels and original product/Branch/execution identities, validates retained hashes/receipts, and exposes complete source/capture keys without gating source discovery on destination deletion review. DTOs/BranchesClient and deferred source fixtures are present. Unknown evidence remains held; bounded inventories refuse rather than truncate. This closes the backend identity reachability gap, not UI integration/qualification, group capture abandonment, disk reclamation or broader lifecycle acceptance. No tests/checks/build/types/Node/native/browser/prep/execution/migrations/push/deploy/newworkers or web writes.
+Operator audit discovery now provides revision-bound paginated import-operation, current/retired destination and supported unsealed capture/source collections under `/api/lifecycle/{agent-imports,destinations,checkpoint-captures}`. It preserves exact current/deletion-receipt/retained-only owner labels and original product/Branch/execution identities, validates retained hashes/receipts, and exposes complete source/capture keys without gating source discovery on destination deletion review. DTOs/BranchesClient and deferred source fixtures are present. Unknown evidence remains held; bounded inventories refuse rather than truncate. This closes the backend identity reachability gap, not UI integration/qualification, group capture abandonment, disk reclamation or broader lifecycle acceptance. No tests/checks/build/types/Node/native/browser/prep/execution/migrations/push/deploy/newworkers or web writes.
+
+Discovery limits: page size1–100/default50; follow nextCursor until absent, explicitly
+restart after revision409. SQL/recognized metadata inventories refuse above4096 records
+or16MiB; import directory enumeration is separately capped at16384 entries and individual
+files at4MiB. Invalid, conflicting, changed or oversized evidence returns409. Unrecognized/
+quarantined import filenames produce a count, never guessed IDs or quarantine writes.
+The read-only reader calls only pure import validation, not readOperation/hydration.
+Current/deletion_receipt/retained_only labels are evidence states, never deletion proof
+or eligibility. Supported singular resource/issued capture schemas expose stored full
+source and exact key; unknown matched schemas refuse, while hashed GROUP capture journals
+are not exposed or reconstructed. Group multi-package abandonment remains unsupported.
+Discovery changes no pins, policies or payloads and returns no Request/snapshot bodies.
+Five deferred metadata/SQLite fixtures are present and source-read, not executed.
