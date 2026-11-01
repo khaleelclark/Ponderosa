@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { selectNativeCommand } from '../../apps/server/dist/native-command-selection.js';
 const command = '/plan {"prompt":"Inspect","mode":"plan"}';
-const event = (eventId, overrides = {}) => ({ eventId, projectId: 'project', conversationId: 'chat',
+const event = (eventId, overrides = {}) => ({ eventId, schemaVersion: 2, projectId: 'project', conversationId: 'chat', createdAt: '2026-11-01T00:00:00.000Z',
   sender: { kind: 'user', userId: 'local-operator' }, intent: 'broadcast',
-  audience: { kind: 'project', projectId: 'project' }, text: command, ...overrides });
+  audience: { kind: 'organization', organizationId: 'organization' }, text: command, ...overrides });
 function select(events, ids = events.map(e => e.eventId), body = () => undefined) {
   return selectNativeCommand({ projectId: 'project', agentId: 'agent', conversationId: 'chat',
     communicationIds: ids, read: id => events.find(e => e.eventId === id), documentText: body });
