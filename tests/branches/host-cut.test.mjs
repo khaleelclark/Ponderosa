@@ -164,6 +164,37 @@ test('historical graph receipt and provenance insertion failure roll back every 
  f.store.sqlite.exec('DROP TRIGGER refuse_restored_origin');assert.ok(f.branches.restoreHostGraph(f.branch.id,f.source.id,input,f.grant).restorationId);
 });
 
+test('Branch result reader consumes retained output and refuses altered import provenance',async t=>{
+ const {restoredRequestUpdatePayload}=await import('../../packages/agents/dist/coordination-v3-cut-restoration-authority.js');
+ const {payloadHash,stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const f=await adoptionFixture(t),db=f.store.sqlite;
+ db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const selection={checkpointId:f.selection.checkpointId,expectedHash:f.selection.expectedHash},review=f.branches.reviewHostGraph(f.branch.id,f.source.id,selection,f.grant);
+ const receipt=f.branches.restoreHostGraph(f.branch.id,f.source.id,{...selection,reviewHash:review.reviewHash,commandKey:'result-origin',reconcileEffects:true},f.grant);
+ const row=db.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get(receipt.updateMap['source-completed']);
+ assert.match(JSON.parse(row.payload_json).text,/Imported historical/);
+ assert.deepEqual(restoredRequestUpdatePayload(db,row),{text:'Original effects settled'});
+ assert.throws(()=>restoredRequestUpdatePayload(db,{...row,request_id:f.selection.requestId}),/provenance differs/);
+ assert.throws(()=>restoredRequestUpdatePayload(db,{...row,resulting_version:row.resulting_version+1}),/provenance differs/);
+ const changed={...JSON.parse(row.payload_json),historicalPayload:{text:'Unverified replacement'}};
+ assert.throws(()=>restoredRequestUpdatePayload(db,{...row,payload_json:stableJson(changed),payload_hash:payloadHash(changed)}),/provenance differs/);
+ const live=db.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get('source-completed');
+ assert.deepEqual(restoredRequestUpdatePayload(db,{...live,payload_json:stableJson(changed)}),changed,'ordinary authored payloads do not acquire import authority');
+ db.prepare('DELETE FROM coordination_restored_update_origins WHERE update_id=?').run(row.id);
+ assert.throws(()=>restoredRequestUpdatePayload(db,row),/provenance unavailable/);
+});
+
+test('Branch terminal reduction waits when the selected Request version has no matching update',async t=>{
+ const f=fixture(t);
+ for(let n=0;n<30&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ const requestId=f.branches.detail(f.source.id).attempts[0].requestId;assert.ok(requestId);
+ f.coordination.updateRequest({requestId,updateId:'terminal-before-projection-drift',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Selected result'}});
+ f.store.sqlite.prepare('UPDATE coordination_requests SET version=version+1 WHERE id=?').run(requestId);
+ f.branches.advance();await f.branches.unitSaver.drain();
+ const attempt=f.branches.detail(f.source.id).attempts[0];assert.equal(attempt.state,'waiting');assert.equal(attempt.result,undefined);assert.match(attempt.error,/explicit reconciliation/);
+ assert.notEqual(f.branches.execution(f.source.id).state,'completed');
+});
+
 test('mapped historical question accepts a live answer and completes its fresh Join continuation',async t=>{
  const {stableJson,payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
  const f=fixture(t);for(let n=0;n<30&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}

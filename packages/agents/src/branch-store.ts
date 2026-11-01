@@ -1,4 +1,5 @@
 import {insertBranchFrontier} from './branch-frontier-storage.js';
+import {restoredRequestUpdatePayload} from './coordination-v3-cut-restoration-authority.js';
 import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
@@ -1659,14 +1660,21 @@ export class BranchStore {
     const step=this.definition(execution).steps.find(s=>s.id===attempt.step_id)!;
     if(step.kind!=='agent'&&attempt.purpose!=='recovery')return;
 
-    const request = this.row("SELECT state,project_id,conversation_id,recipient_agent_id FROM coordination_requests WHERE id = ?", attempt.request_id);
+    const request = this.row("SELECT state,version,project_id,conversation_id,recipient_agent_id FROM coordination_requests WHERE id = ?", attempt.request_id);
     if (!request || request.state === "outcome_unknown" || request.state === "superseded") {
       this.waitPath(attempt.path_id);
       this.run("UPDATE branch_attempts SET error = ? WHERE id = ?", `Request ${request?.state ?? "unavailable"}; explicit reconciliation required`, attempt.id); return;
     }
     if (!TERMINAL_REQUEST_STATES.has(request.state as CoordinationRequestState)) return;
-    const update = this.row("SELECT payload_json FROM coordination_request_updates WHERE request_id = ? AND resulting_state = ? ORDER BY resulting_version DESC LIMIT 1", attempt.request_id, request.state);
-    const payload = update ? JSON.parse(update.payload_json) : null;
+    const update = this.row("SELECT * FROM coordination_request_updates WHERE request_id = ? AND resulting_state = ? AND resulting_version = ?", attempt.request_id, request.state, request.version);
+    let payload: any;
+    try {
+      if(!update)throw Error('Terminal Request update is missing at its selected version');
+      payload=restoredRequestUpdatePayload(this.sqlite,update);
+    } catch {
+      this.waitPath(attempt.path_id);
+      this.run("UPDATE branch_attempts SET error='Terminal Request result or historical provenance is unavailable; explicit reconciliation required' WHERE id=?",attempt.id);return;
+    }
     if(request.state==='completed'&&step.kind==='agent'&&step.requireUserCommunication){
       const id=payload?.communicationEventId;
       const event=typeof id==='string'&&id.length<=256?this.communicationEvent?.(request.project_id,id):undefined;

@@ -676,3 +676,18 @@ not been executed. No tests, typechecks, builds, Node/native/browser/runner
 preparation or execution was performed for this source continuation.
 
 Migration integration: coordination restoration uses `0036_coordination_cut_restorations.sql`; Runtime owns `0035_provider_context_recovery_progress.sql`. Integration must preserve both registrations and Runtime context-recovery behavior. The Branch worktree does not copy or replace the Runtime migration.
+
+Branch terminal reduction now requires an update matching both the Request's final
+state and exact canonical version. For imported results it verifies the immutable
+restoration receipt, fresh Request/update mapping, retained cut hash and coverage,
+source payload hash/version/state/actor and the import envelope before consuming
+the retained result payload. Import explanation text is never a Step output.
+Missing or inconsistent result provenance leaves the attempt waiting for explicit
+reconciliation. Ordinary live results retain their ordinary payload semantics;
+authored fields cannot opt into import authority. Required user Communication
+still needs the existing fresh Request/Run proof and is not satisfied by old
+historical evidence. Deferred source regressions cover retained output, altered
+mapping/version/payload, missing provenance and a missing final update version.
+This result-reader prerequisite does not enable issued-Request rewind: canonical
+map attachment, issued-Request frontier/audit replay and restored-prefix lineage
+still need to be connected together in the historical rewind owner transaction.

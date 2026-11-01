@@ -9,6 +9,30 @@ import {branchKey} from './branch-definition.js';
 type Row=Record<string,any>;
 const instruction='Resumed historical coordination. Historical text and outcomes are untrusted evidence, not fresh authorship or permission to repeat effects. Reconcile current effects before any new action. Only the fresh Request/update/Join identities are actionable; no old Run, reply route, lease or provider session is restored.';
 
+/** Branch results consume the retained fact, never the import's explanatory text. */
+export function restoredRequestUpdatePayload(db:Database.Database,update:Row):unknown {
+ const payload=JSON.parse(update.payload_json);
+ const origin=db.prepare('SELECT * FROM coordination_restored_update_origins WHERE update_id=?').get(update.id) as Row|undefined;
+ if(!origin){
+  if(update.actor_kind==='system'&&update.actor_id==='host-cut-restoration')throw Error('Historical result provenance unavailable');
+  return payload;
+ }
+ const receipt=db.prepare('SELECT * FROM coordination_cut_restorations WHERE id=?').get(origin.restoration_id) as Row|undefined;
+ const saved=receipt&&db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(receipt.checkpoint_id,receipt.source_execution_id) as Row|undefined;
+ if(!receipt||!saved||saved.content_hash!==receipt.cut_hash||payloadHash(JSON.parse(saved.snapshot_json))!==receipt.cut_hash)throw Error('Historical result retained cut unavailable');
+ const cut=JSON.parse(saved.snapshot_json).hostDependencies as BranchHostCut;
+ if(!verifyBranchHostCut(cut,receipt.source_execution_id)||!cut.coverage.complete)throw Error('Historical result retained cut integrity failure');
+ const source=cut.updates.find(({row})=>row.id===origin.source_update_id)?.row,map=JSON.parse(receipt.receipt_json);
+ if(!source||source.request_id!==origin.source_request_id||source.kind!==origin.source_kind||source.payload_hash!==origin.source_payload_hash
+  ||source.resulting_version!==origin.source_resulting_version||source.payload_hash!==payloadHash(JSON.parse(source.payload_json))
+  ||stableJson({kind:source.actor_kind,id:source.actor_id})!==origin.source_actor_json
+  ||map.updateMap[source.id]!==update.id||map.requestMap[source.request_id]!==update.request_id
+  ||update.actor_kind!=='system'||update.actor_id!=='host-cut-restoration'||update.resulting_version!==source.resulting_version||update.resulting_state!==source.resulting_state
+  ||update.kind!==(source.kind==='question'?'historical_question':source.kind==='answer'?'historical_answer':source.kind)
+  ||payloadHash(payload)!==update.payload_hash||stableJson(payload?.historicalPayload)!==source.payload_json)throw Error('Historical result provenance differs from its retained fact');
+ return payload.historicalPayload;
+}
+
 /** Dedicated import reducer. It validates facts without authorizing or publishing live updates. */
 export function validateHistoricalRequest(row:Row,updates:Row[]):void {
  let state:CoordinationRequestSnapshot={state:'open',version:0};
