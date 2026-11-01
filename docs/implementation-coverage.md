@@ -486,3 +486,21 @@ regrouped. UI workflow-package controls remain sole UI-owner work. In-progress
 checkpoint fork/map/Request/provider/resource/recovery-secret families remain open.
 No tests/checks/builds/types/browser/native/runner preparation or execution,
 push/deploy or full #8/#32 completion claim.
+
+## Shared composition and independent reporting roots
+
+Reliability `d7ca2d196a6e1e90d3f80ff46f7bd5a0b9644da0` then Branches
+`537b12517dd51c88ec719869174480455bd501be` integrated in dependency order,
+conflict-free. One shared async composer now owns artifact/history/role/preset,
+working originals and compatible memory remapping; the duplicate Branch composer
+is removed. Explicit rootRefs admits same-Chat reporting forests without invented
+managers. Shared root identity derives from explicit source Chat and shared mode,
+including full-folder exports lacking input root refs. Group staged memory uses
+ordered complete receipt membership; commit/recovery also checks result.agentRefs.
+All fourteen changed-file entries (fourteen distinct paths) physically present and
+source-read. This supersedes the earlier forest/importer-batch missing-source note.
+Recovery mappings must be rediscovered/re-previewed with shared-composer root IDs;
+old Branch-composer keys cannot be retained. UI ownership remains unchanged.
+Existing-Agent regrouping and in-progress checkpoint fork/map/Request/provider/
+resource/recovery-secret families remain incomplete. No tests/checks/build/types/
+Node/native/browser/runner preparation or execution, push/deploy or full #8/#32 claim.
