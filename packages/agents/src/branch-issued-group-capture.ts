@@ -43,6 +43,8 @@ export function readIssuedGroupCapture(db:Database.Database,executionId:string,c
   ||v.state==='capturing'&&v.receipts.length===v.sources.length
   ||new Set(v.sources.map((source:Row)=>source.checkpointId)).size!==resources.length
   ||new Set(v.sources.map((source:Row)=>source.intent.resourceStepId)).size!==resources.length
+  ||new Set(v.sources.map((source:Row)=>source.sourceChatId)).size!==resources.length
+  ||new Set(v.sources.flatMap((source:Row)=>source.agentIds)).size!==v.sources.reduce((count:number,source:Row)=>count+source.agentIds.length,0)
   ||new Set(v.receipts.map((receipt:Row)=>receipt.checkpointId)).size!==v.receipts.length)throw Error('Group capture journal integrity failure');
  for(const source of v.sources){
   const r=resources.find((r:Row)=>r.step_execution_id===source.intent.resourceStepId);

@@ -68,7 +68,7 @@ Operator-only routes under `/api/branches/:id/executions/:executionId/destinatio
 The existing singular endpoint stays strict. The group readiness fence covers every
 resource slot/ancestor. Separate whole-group destination retirement is integrated in lifecycle-reconciliation.md;
 this consumer adds no capture abandonment, history release or unknown effect reconciliation. A
-partial group capture has no abandonment command in this slice and remains held.
+partial group capture stays held until the dedicated host group abandonment protocol below commits.
 
 `GET /capture?commandKey=...` reads the retained capture intent without trying to
 recapture a changed live frontier. Its shared DTO reports each source seal, capture
@@ -78,7 +78,7 @@ already sealed members. The last exact seal alone creates the shared checkpoint.
 Status readback verifies canonical journal bytes, complete unique source inventory,
 receipt bindings and, when retained, the exact saved checkpoint. There is no delete,
 release, synthetic retirement receipt or silent conversion to singular abandonment.
-Reliability has been notified of the exhaustive group abandonment adapter boundary;
+The dedicated host adapter implements the exhaustive group abandonment boundary;
 no new lifecycle hook or migration is added. Existing lifecycle0040 schema is unchanged; singular retirement still refuses groups,
 while the separate whole-group destination protocol requires exhaustive proof. `cleanupHeld:false` on a fully sealed capture
 only describes that capture; it does not release destination or history custody pins.
@@ -93,7 +93,7 @@ root wakes and no-byte restart readback. Three-resource serial/parallel cases in
 the last completion failure and require whole rollback, then change the last Chat
 policy and require a new human choice. Partial last-package failure asserts all
 cleanup pins survive restart, only earlier seals exist, no shared checkpoint is
-published and abandonment is explicitly unsupported. Count 1/33 capture refusals
+published; the ordinary capture endpoint refuses abandonment and the dedicated host endpoint below owns it. Count 1/33 capture refusals
 and multi-resource audit/custody/member tampering are also deferred source. Prior
 two-resource cases remain. These fixtures use real Branch/Runtime/Chat/Request/
 choice/transaction writers with inert package/import/provider adapters.
@@ -113,7 +113,7 @@ Before a new capture, `GET .../destination-groups/capture-preview` performs the 
 
 Core exports `BranchGroupDiscoveryPage`, `BranchGroupCapturePreview`, `BranchGroupCaptureInput` and `BranchGroupCaptureResult`. SDK helpers are `discoverDestinationGroups`, `previewGroupCapture`, `captureGroup` and `groupCaptureStatus`. GET status preserves its prior shape. POST capture returns the retained checkpoint and actual receipt inventory, a different shape. UI6b1f7a398 now supplies the required exact preview/CAS body and canonical discovery; the prior commandKey-only mismatch is resolved. Exact GET recovery remains available. A separate backend preview read-transaction correction remains unassembled; see current implementation coverage. Discovery is private operator audit, inherited from the existing route authorization hook, and must never be exposed through an Agent token.
 
-Partial group abandonment remains unsupported with all member pins held. This does not enable historical generations, provider/native replay, or broaden the artifact/secret/memory/root limits. Deferred regression source covers preview purity/stale comparison, exact and legacy discovery, pagination/reopen/invalidation and existing serial/parallel 2..32 capture flows. No executable qualification was performed.
+Partial group abandonment uses the dedicated host protocol below; all member pins stay held until its whole-group commit. This does not enable historical generations, provider/native replay, or broaden the artifact/secret/memory/root limits. Deferred regression source covers preview purity/stale comparison, exact and legacy discovery, pagination/reopen/invalidation and existing serial/parallel 2..32 capture flows. No executable qualification was performed.
 
 ## Atomic partial-group capture disposition
 
@@ -124,3 +124,5 @@ Input is `{executionId,captureKey,commandKey,captureSha256,expectedRevision}`. O
 One canonical `branch-group-custody-abandon.v1` command retains the exact input, original raw capture JSON, all original source/receipt bytes and proof inventory. Original capture rows are preserved. Verified disposition blocks reserve/seal revival and atomically removes only that group's cleanup/reference pins; unrelated pins remain. Raw status stays `capturing` with optional `disposition: abandoned` and `cleanupHeld:false`; its old `abandonment:unsupported` field still means the ordinary capture endpoint cannot perform abandonment. The dedicated host adapter owns actual tombstones/archive preservation, human review and HTTP support. Canonical hooks do not independently claim package retirement or delete bytes.
 
 New deferred canonical proof fixture and actual existing Branch group fixture source remain unexecuted; no qualification claim.
+
+The host adapter is composed in [checkpoint-group-capture-abandonment.md](checkpoint-group-capture-abandonment.md): paginated exact intent discovery, explicit review and one all-package owner commit, immutable prepare/archive/tombstone evidence and exact lost-response recovery. Canonical review additionally binds current resource generations, complete Chat membership and settled import ownership; any changed/non-first identity or open Chat Request/Join holds the whole group. Deferred host/canonical composition injects a final SQL failure after all package archives to assert every Branch cleanup pin remains held. No fixtures were executed.

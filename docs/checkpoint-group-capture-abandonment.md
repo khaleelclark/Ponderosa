@@ -16,7 +16,7 @@ The operator routes inherit the existing local origin/capability audit boundary 
 
 ## Commit and failure contract
 
-The canonical Branch owner validates the entire raw issued-group intent, sources, partial receipt map, exact live resource/member closure, drain/native/effect evidence and every external custody reference in one owner transaction. Only this exact group's own capture pin is excluded. Unknown or foreign references hold the whole group. The host reuses the canonical owner hook rather than adding a Runtime retirement authorizer.
+The canonical Branch owner binds current exact resource generations, settled imports and complete Chat member rows, then validates the entire raw issued-group intent, sources, partial receipt map, exact live resource/member closure, drain/native/effect evidence and every external custody reference in one owner transaction. Only this exact group's own capture pin is excluded. Unknown or foreign references hold the whole group. The host reuses the canonical owner hook rather than adding a Runtime retirement authorizer.
 
 Before any package moves, one private fsynced immutable prepare journal archives the original command row and all package source, file-name, hash, byte-length and review evidence. Actual captured receipts must match the retained source membership and original payload length/digest. A published package whose SQL member seal failed is still checked against that exact original source. Uncaptured resources receive empty or partial evidence inventories and their own permanent package identity tombstones; no later capture may fill an abandoned slot.
 
@@ -26,4 +26,4 @@ All SQL cleanup-pin/disposition changes and the one `checkpoint_group_abandonmen
 
 ## Remaining bounds
 
-This slice is issued-group capture abandonment only. Retained groups, historical/disk reclamation, external writers that do not participate in the source boundary, unknown schemas/outcomes and unrelated destination retirement remain held under their own protocols. The existing private journal's 4-MiB bound can refuse a group before any package publication. Package size and 128-file per-custody limits remain unchanged. Source fixtures use injected owner/runtime ports; real canonical Branch boundary fixtures and consumer/native integration must be separately qualified.
+This slice is issued-group capture abandonment only. Retained groups, historical/disk reclamation, external writers that do not participate in the source boundary, unknown schemas/outcomes and unrelated destination retirement remain held under their own protocols. The existing private journal's 4-MiB bound can refuse a group before any package publication. Package size and 128-file per-custody limits remain unchanged. Source fixtures use injected owner/runtime ports; a separate deferred fixture composes the real Branch hook with this host protocol and a final SQL failure. Consumer/native integration must be separately qualified.

@@ -31,7 +31,7 @@ function fixture(t,{receipts=1}={}){
  let references=[],blockers=[],fail=false,unavailable=false,beforePublish=()=>{};
  const owner={inspectGroupCapture(executionId,key){
   if(unavailable)throw Error('owner unavailable');assert.equal(executionId,'owner');assert.equal(key,captureKey);
-  return {sources,receipts:captured,captureSha256:lifecycleHash(value),revision:lifecycleHash({references,blockers}),references,blockers,captureEvidence:db.prepare('SELECT * FROM branch_commands').get()};
+  return {sources,receipts:captured,captureSha256:lifecycleHash(value),revision:lifecycleHash({references,blockers}),members:[{references,blockers}],state:'capturing'};
  },abandonGroupCapture(input,publish){
   assert.equal(db.inTransaction,true);assert.equal(input.expectedRevision,lifecycleHash({references,blockers}));
   beforePublish();const packageRetirements=publish();db.exec('DELETE FROM pins');if(fail)throw Error('SQL commit failed');return {state:'abandoned',packageRetirements};

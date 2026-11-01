@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,readdirSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {lifecycleDiscovery} from '../../apps/server/dist/lifecycle-discovery.js';
 import {lifecycleHash} from '../../apps/server/dist/lifecycle-journal.js';
 import {stableJson} from '../../packages/agents/dist/index.js';
@@ -19,7 +20,7 @@ function fixture(t){
  CREATE TABLE coordination_destination_group_chats(admission_id TEXT,source_chat_id TEXT,source_execution_id TEXT,conversation_id TEXT);`);
  const directory=path.join(dataDir,'agent-import-operations');mkdirSync(directory);
  let disposed=false;
- const api=lifecycleDiscovery({db,dataDir,validateImport(value,id){assert.equal(value.id,id);assert.ok(value.projectId&&value.conversationId&&value.payloadHash);return value;},owner:()=>({captureDisposed:()=>disposed}),readRetirement:id=>({admissionId:id,operatorId:'local-operator',reviewHash:'f'.repeat(64)})});
+ const api=lifecycleDiscovery({db,dataDir,validateImport(value,id){assert.equal(value.id,id);assert.ok(value.projectId&&value.conversationId&&value.payloadHash);return value;},owner:()=>({captureDisposed:()=>disposed,inspectGroupCapture(executionId,captureKey){const value=JSON.parse(db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,captureKey).result_json);return {...value,members:value.sources.map(source=>({source,blockers:['provider_drain_required']}))};}}),readRetirement:id=>({admissionId:id,operatorId:'local-operator',reviewHash:'f'.repeat(64)})});
  return {db,directory,api,setDisposed:v=>disposed=v};
 }
 const operation=(id,chat='deleted-chat')=>({id,projectId:'project',conversationId:chat,product:'dev',requestId:`request-${id}`,payloadHash:'a'.repeat(64),status:'failed',phase:'failed',sourceLabel:'import',createdAt:'now',updatedAt:'now'});
@@ -78,4 +79,18 @@ test('current group discovery requires every original slot and keeps group ident
  assert.throws(()=>api.destinations({}),/slot inventory/);
  db.prepare('INSERT INTO coordination_destination_group_chats VALUES(?,?,?,?)').run(row.id,'source-chat-1','source-1','fresh-1');
  const entry=api.destinations({}).items[0];assert.equal(entry.group,true);assert.equal(entry.destinations.length,2);assert.deepEqual(entry.destinations.map(d=>d.conversationId),['fresh-0','fresh-1']);
+});
+
+test('group intent discovery returns full partial sources before drain or destination review and skips only verified disposition',t=>{
+ const {db,api}=fixture(t),sources=[0,1].map(i=>({checkpointId:`group-${i}`,sourceChatId:`original-${i}`,agentIds:[`member-${i}`],intent:{executionId:'owner',resourceStepId:`step-${i}`,resourceGeneration:0,frontierSha256:'a'.repeat(64),bindingSha256:'b'.repeat(64),configurationSha256:'c'.repeat(64)}}));
+ const captureKey='issued-group-capture:'+'d'.repeat(64),capture={state:'capturing',sources,receipts:[]},bytes=stableJson(capture);
+ db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?)').run('owner',captureKey,'e'.repeat(64),bytes);
+ const page=api.groupCaptures({limit:1});assert.equal(page.items.length,1);assert.deepEqual(page.items[0].sources,sources);assert.equal(page.items[0].sourceOwner,'retained_only');assert.equal(page.items[0].captureKey,captureKey);
+ const input={executionId:'owner',captureKey,commandKey:'abandon',captureSha256:lifecycleHash(capture),expectedRevision:'f'.repeat(64)};
+ const proofs=sources.map(source=>({custodyId:createHash('sha256').update(source.checkpointId).digest('hex'),sourceSha256:lifecycleHash(source),revision:'durable-proof'}));
+ const disposition={schema:'branch-group-custody-abandon.v1',input,state:'abandoned',sources,receipts:[],originalCaptureRaw:bytes,packageRetirements:proofs};
+ db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?)').run('owner','group-custody-abandoned:'+lifecycleHash(captureKey),lifecycleHash(input),stableJson(disposition));
+ assert.equal(api.groupCaptures({}).items.length,0);
+ db.prepare('UPDATE branch_commands SET result_json=? WHERE command_key=?').run(stableJson({...disposition,packageRetirements:proofs.slice(1)}),'group-custody-abandoned:'+lifecycleHash(captureKey));
+ assert.throws(()=>api.groupCaptures({}),/proofs required|integrity differs/);
 });

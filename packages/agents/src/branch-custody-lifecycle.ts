@@ -1,7 +1,7 @@
 import {readIssuedGroupCapture} from './branch-issued-group-capture.js';
 import {groupAbandonKey,readGroupCaptureDisposition,exactGroupPackageProofs,type BranchGroupCaptureAbandonInput,type BranchGroupPackageInventory,type BranchGroupPackageRetirementProof} from './branch-group-custody-disposition.js';
 import {createHash} from 'node:crypto';
-import type {CheckpointPackageSource} from '@ponderosa/core';
+import type {CheckpointPackageSource,CheckpointPackageReceipt} from '@ponderosa/core';
 import type {BranchStore} from './branch-store.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 type Row=Record<string,any>;
@@ -169,12 +169,27 @@ export class BranchCustodyLifecycle {
   if(!capture)throw Error('Group capture intent unavailable');
   const row=this.db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,captureKey) as Row;
   const disposition=readGroupCaptureDisposition(this.db,executionId,captureKey,row.result_json);
-  const members=capture.sources.map((source:CheckpointPackageSource)=>{
+  const resources=this.db.prepare('SELECT * FROM branch_resources WHERE execution_id=? ORDER BY step_execution_id LIMIT 4097').all(executionId) as Row[];
+  const memberRows=(capture.sources as CheckpointPackageSource[]).map(source=>({sourceChatId:source.sourceChatId,agents:this.db.prepare('SELECT id,conversation_id,deleted_at FROM agents WHERE conversation_id=? ORDER BY id LIMIT 4097').all(source.sourceChatId)}));
+  const subtree=this.db.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
+   SELECT e.* FROM branch_executions e WHERE e.id IN (SELECT id FROM owned) ORDER BY e.id LIMIT 4097`).all(executionId) as Row[];
+  const attempts=this.db.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
+   SELECT a.* FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id IN (SELECT id FROM owned) ORDER BY a.id LIMIT 4097`).all(executionId) as Row[];
+  if([resources,subtree,attempts,...memberRows.map(row=>row.agents)].some(rows=>rows.length>4096)||Buffer.byteLength(stableJson({resources,subtree,attempts,memberRows}))>16*1024*1024)throw Error('Group owner inventory exceeds lifecycle bound');
+  const subtreeHeld=subtree.some(row=>!['completed','failed','canceled'].includes(row.state)&&row.cancel_requested!==1)||attempts.some(row=>['prepared','waiting','leased','running','outcome_unknown'].includes(row.state));
+  const complete=resources.length===capture.sources.length&&resources.every(resource=>capture.sources.some((source:CheckpointPackageSource)=>source.intent.resourceStepId===resource.step_execution_id&&source.intent.resourceGeneration===resource.generation&&source.sourceChatId===resource.chat_id));
+  const members:{source:CheckpointPackageSource;custodyId:string;sourceSha256:string;revision:string;references:BranchCustodyReference[];blockers:string[]}[]=capture.sources.map((source:CheckpointPackageSource)=>{
    const current=this.inspect(source);
    const references=current.references.filter(ref=>!(ref.kind==='command'&&ref.ownerId===executionId&&ref.key===captureKey));
-   return {source,custodyId:current.custodyId,sourceSha256:payloadHash(source),revision:current.revision,references,blockers:current.abandonmentBlockers};
+   const resource=resources.find(resource=>resource.step_execution_id===source.intent.resourceStepId),agents=memberRows.find(row=>row.sourceChatId===source.sourceChatId)!.agents as Row[];
+   const imported=resource&&this.branches.resourceOperation(resource.step_execution_id,'import');
+   const exactMembers=stableJson(agents.map(agent=>agent.id).sort())===stableJson([...source.agentIds].sort());
+   const exactImport=imported?.state==='completed'&&stableJson(imported.result?.agentIds)===stableJson(source.agentIds);
+   const blockers=[...current.abandonmentBlockers,...(subtreeHeld?['group_owned_subtree_unsettled']:[]),...(!complete||!exactMembers||!exactImport?['group_current_resource_or_member_inventory_changed']:[])];
+   if(this.db.prepare("SELECT 1 FROM coordination_joins WHERE conversation_id=? AND state='open' UNION ALL SELECT 1 FROM coordination_requests WHERE conversation_id=? AND state NOT IN ('completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded') LIMIT 1").get(source.sourceChatId,source.sourceChatId))blockers.push('group_chat_effects_unsettled');
+   return {source,custodyId:current.custodyId,sourceSha256:payloadHash(source),revision:payloadHash({member:current.revision,imported:imported??null}),references,blockers};
   });
-  const evidence={executionId,captureKey,captureSha256:payloadHash(capture),state:capture.state,sources:capture.sources,receipts:capture.receipts,members};
+  const evidence={executionId,captureKey,captureSha256:payloadHash(capture),state:capture.state,sources:capture.sources as CheckpointPackageSource[],receipts:capture.receipts as CheckpointPackageReceipt[],members,resources,memberRows,subtree,attempts};
   return {...evidence,revision:payloadHash(evidence),abandonmentAllowed:!disposition&&capture.state==='capturing'&&members.every((m:Row)=>!m.references.length&&!m.blockers.length),disposition:disposition?.state};
  }
  abandonGroupCapture(input:BranchGroupCaptureAbandonInput,confirmPackagesRetired:(inventory:BranchGroupPackageInventory)=>BranchGroupPackageRetirementProof[]){

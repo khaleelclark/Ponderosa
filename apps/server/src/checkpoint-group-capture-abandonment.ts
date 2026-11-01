@@ -2,7 +2,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import fs from '@ponderosa/native-host/fs';
 import type Database from 'better-sqlite3';
-import {stableJson,type BranchCustodyLifecycle} from '@ponderosa/agents';
+import {stableJson,type BranchCustodyLifecycle,type BranchCustodyReference} from '@ponderosa/agents';
 import type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointCustodyReconcileReceipt,CheckpointGroupCaptureAbandonmentReviewInput,CheckpointGroupCaptureAbandonmentInput,CheckpointGroupCaptureAbandonmentReviewDto,CheckpointGroupCaptureAbandonmentReceipt} from '@ponderosa/core';
 import {checkpointCustodyLifecycle} from './checkpoint-custody-lifecycle.js';
 import {custodyLifecycleProof} from './custody-lifecycle-proof.js';
@@ -16,17 +16,23 @@ export function checkpointGroupCaptureAbandonment(dataDir:string,db:Database.Dat
   if(typeof input.executionId!=='string'||!input.executionId||input.executionId.length>512||typeof input.captureKey!=='string'||!/^issued-group-capture:[a-f0-9]{64}$/.test(input.captureKey))throw Error('Exact retained group capture identity required');
   return lifecycleHash({executionId:input.executionId,captureKey:input.captureKey});
  };
+ const inspect=(input:CheckpointGroupCaptureAbandonmentReviewInput)=>{
+  const current=owner().inspectGroupCapture(input.executionId,input.captureKey);
+  const captureEvidence=db.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(input.executionId,input.captureKey) as {result_json:string}|undefined;
+  if(!captureEvidence||lifecycleHash(JSON.parse(captureEvidence.result_json))!==current.captureSha256)throw Error('Original group capture evidence differs');
+  return {...current,captureEvidence,references:current.members.flatMap((member:{references:BranchCustodyReference[]})=>member.references),blockers:current.members.flatMap((member:{blockers:string[]})=>member.blockers)};
+ };
  const service=(source:CheckpointPackageSource,input:CheckpointGroupCaptureAbandonmentReviewInput)=>checkpointCustodyLifecycle(directory,(actual,id)=>{
   if(!actual||stableJson({checkpointId:actual.checkpointId,sourceChatId:actual.sourceChatId,agentIds:actual.agentIds,intent:actual.intent})!==stableJson(source))throw Error('Group package source differs');
-  const current=owner().inspectGroupCapture(input.executionId,input.captureKey),other=custodyLifecycleProof(db,source,id);
+  const current=inspect(input),other=custodyLifecycleProof(db,source,id);
   return {references:[...current.references.map(ref=>`${ref.kind}:${ref.ownerId}:${ref.key}`),...other.references.filter(ref=>ref.startsWith('coordination_cut_restorations.'))],blockers:current.blockers};
  },source);
  const review=(input:CheckpointGroupCaptureAbandonmentReviewInput)=>{
-  const groupId=identity(input),branch=owner().inspectGroupCapture(input.executionId,input.captureKey);
-  const packages=branch.sources.map(source=>{
+  const groupId=identity(input),branch=inspect(input);
+  const packages:CheckpointGroupCaptureAbandonmentReviewDto['packages']=branch.sources.map((source:CheckpointPackageSource)=>{
    const custodyId=lifecycleHashCheckpoint(source.checkpointId),pkg=service(source,input).review(custodyId);
-   if(pkg.state==='reconciled'||pkg.state==='released')throw Error('Group package already has a separate disposition');
-   const receipt=branch.receipts.find(receipt=>receipt.checkpointId===source.checkpointId);
+   if(branch.state!=='capturing'||branch.disposition||pkg.state==='reconciled'||pkg.state==='released')throw Error('Group package already has a separate disposition');
+   const receipt=branch.receipts.find((receipt:CheckpointPackageReceipt)=>receipt.checkpointId===source.checkpointId);
    // A published package whose SQL seal failed still belongs to this exact original source.
    const metadata=pkg.files.find(file=>file.name===`${custodyId}.json`);
    if(receipt&&!metadata)throw Error('Captured group package receipt unavailable');
@@ -62,6 +68,10 @@ export function checkpointGroupCaptureAbandonment(dataDir:string,db:Database.Dat
      if(lifecycleHash(JSON.parse(prepared.captureEvidence.result_json))!==prepared.review.captureSha256)throw Error('Original group capture archive differs');
      // Archive the COMPLETE inventory before the first package tombstone or move.
      journal.write(key,prepared);
+    }
+    if(!committed){
+     const original=db.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(input.executionId,input.captureKey);
+     if(stableJson(original)!==stableJson(prepared.captureEvidence))throw Error('Prepared original group capture row changed');
     }
     const finishPackages=()=>{
      const proofs:Array<{custodyId:string;sourceSha256:string;revision:string;receipt:CheckpointCustodyReconcileReceipt}>=prepared.review.packages.map((pkg:CheckpointGroupCaptureAbandonmentReviewDto['packages'][number])=>{

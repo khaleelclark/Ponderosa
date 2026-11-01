@@ -2,7 +2,7 @@ import {encodeScriptContinuation} from '../../packages/agents/dist/branch-script
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -1935,6 +1935,11 @@ for(const parallel of [false,true])test(`partial group ${parallel?'parallel':'se
  for(const item of x.issued)if(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(item.request).state!=='completed')x.complete(item);
  f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
  const row=db.prepare("SELECT command_key,result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id),l=f.branches.custodyLifecycle;
+ const originalSources=JSON.parse(row.result_json).sources,nonFirst=originalSources[1].intent.resourceStepId;
+ db.prepare('UPDATE branch_resources SET generation=generation+1 WHERE step_execution_id=?').run(nonFirst);
+ assert.equal(l.inspectGroupCapture(f.source.id,row.command_key).abandonmentAllowed,false);
+ for(const source of originalSources)assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),true);
+ db.prepare('UPDATE branch_resources SET generation=generation-1 WHERE step_execution_id=?').run(nonFirst);
  const review=l.inspectGroupCapture(f.source.id,row.command_key);assert.equal(review.abandonmentAllowed,true);
  const input={executionId:f.source.id,captureKey:row.command_key,commandKey:'whole-group-abandon',captureSha256:review.captureSha256,expectedRevision:review.revision};
  const proofs=review.members.map(m=>({custodyId:m.custodyId,sourceSha256:m.sourceSha256,revision:'inert-durable-package-receipt'}));let calls=0;
@@ -1947,4 +1952,35 @@ for(const parallel of [false,true])test(`partial group ${parallel?'parallel':'se
  const seal=JSON.parse(row.result_json).receipts[0];assert.throws(()=>db.transaction(()=>f.branches.sealIssuedGroupMember(f.source.id,'two-resource-cut',seal))(),/abandoned/);
  await f.reopen();assert.deepEqual(f.branches.custodyLifecycle.abandonGroupCapture(input,()=>proofs),receipt);
  assert.throws(()=>f.branches.custodyLifecycle.abandonGroupCapture(input,()=>proofs.map((p,i)=>i? p:{...p,revision:'changed'})),/proof replay differs/);
+});
+
+// Compose the actual Branch group hook and host package protocol; payloads remain synthetic.
+test('whole-group host filesystem success and SQL failure retain all canonical Branch pins',async t=>{
+ const x=await twoIssuedResources(t,'sync',3,false,[0,1],true),{f}=x,db=f.store.sqlite;
+ for(const item of x.issued)if(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(item.request).state!=='completed')x.complete(item);
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ const row=db.prepare("SELECT * FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id),capture=JSON.parse(row.result_json);
+ const payload='inert original package bytes';
+ capture.receipts=capture.receipts.map(receipt=>({...receipt,sha256:hash(payload),byteLength:Buffer.byteLength(payload)}));
+ db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson(capture),f.source.id,row.command_key);
+ const dataDir=mkdtempSync(join(tmpdir(),'composed-group-host-'));t.after(()=>rmSync(dataDir,{recursive:true,force:true}));
+ const directory=join(dataDir,'checkpoint-package-custody');mkdirSync(directory,{mode:0o700});
+ for(const source of capture.sources){
+  const id=hash(source.checkpointId),receipt=capture.receipts.find(receipt=>receipt.checkpointId===source.checkpointId);
+  writeFileSync(join(directory,id+'.payload'),payload);writeFileSync(join(directory,id+'.pending.json'),JSON.stringify({...source,state:'failed'}));
+  if(receipt)writeFileSync(join(directory,id+'.json'),JSON.stringify(receipt));
+ }
+ const {checkpointGroupCaptureAbandonment}=await import('../../apps/server/dist/checkpoint-group-capture-abandonment.js');
+ const api=checkpointGroupCaptureAbandonment(dataDir,db,()=>f.branches.custodyLifecycle),selection={executionId:f.source.id,captureKey:row.command_key};
+ const review=api.review(selection),input={...selection,commandKey:'whole-host-command',reviewSha256:review.reviewSha256,preserveEvidence:true};
+ db.exec("CREATE TRIGGER group_host_failure BEFORE INSERT ON host_lifecycle_commits WHEN NEW.kind='checkpoint_group_abandonment' BEGIN SELECT RAISE(ABORT,'injected host SQL failure'); END");
+ assert.throws(()=>api.abandon(input),/injected host SQL failure/);
+ for(const source of capture.sources)assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),true);
+ assert.equal(db.prepare("SELECT count(*) n FROM branch_commands WHERE command_key LIKE 'group-custody-abandoned:%'").get().n,0);
+ db.exec('DROP TRIGGER group_host_failure');const result=api.abandon(input);assert.equal(result.packages.length,3);
+ for(const source of capture.sources)assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),false);
+ assert.deepEqual(api.abandon(input),result);
+ const original=capture.sources[2],id=hash(original.checkpointId),receipt=result.packages.find(receipt=>receipt.custodyId===id);
+ assert.equal(readFileSync(join(receipt.evidenceDirectory,id+'.payload'),'utf8'),payload);
+ writeFileSync(join(receipt.evidenceDirectory,id+'.payload'),'changed');assert.throws(()=>api.abandon(input),/evidence changed/);
 });

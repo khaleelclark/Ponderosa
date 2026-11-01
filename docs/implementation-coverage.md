@@ -142,7 +142,7 @@ check/build/typecheck/preparation was executed; inert adapters are not native pr
 
 Called trees, later-generation evidence-only participants/resource retry/recovery,
 parallel cleanup-held frontiers, broader package payloads and atomic multi-package
-group capture abandonment remain incomplete/refused. The fresh ordinary Project reuses
+group capture execution qualification remain incomplete; dedicated source abandonment is described below. The fresh ordinary Project reuses
 the owner Project directory and its usual default Chat plus N separately reserved
 owned resource Chats. UI source now consumes authoritative 2–32 serial/local-parallel preview/discovery as described below;
 separate filesystem workspace/imported native working roots remain absent. No qualification or acceptance claim.
@@ -199,7 +199,7 @@ is now assembled by6b1f7a398 below, with a separate backend preview-transaction 
   retry/recovery, parallel cleanup-held frontiers and broader package payloads remain
   refused beyond the delivered 2–32 standalone generation-zero serial/local-parallel
   consumer. UI source for2–32 serial/local-parallel capture/disclosure is assembled; atomic
-  multi-package group capture abandonment remains absent. Separate group retirement UI is integrated.
+  multi-package group capture abandonment source is composed below. Separate group retirement UI is integrated.
   Changed/secret bindings, exhausted-budget frontiers, Agent/child cancellation and
   cross-owner forwarded bundles remain open. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
@@ -308,7 +308,7 @@ performance. Historical LCP failure remains unresolved. None of all32, #8, #12,
 
 ### Whole-group lifecycle source successor
 
-Group destination retirement host source reuses the singular per-resource observer across the exhaustive 2–32 resource inventory, aggregates one review/revision, privately fsyncs one exact approval and calls one Runtime-owned whole-group retirement. Separate review/approve/retire/receipt routes and BranchesClient methods are provided. Every Chat, mapped/additional deleted member, current/deleted Project, import rollback, owner subtree/native exit and cross-owner reference is observed; unknown or stale evidence refuses. Singular retirement remains group-refusing, preserve-only is permanent and admitted provenance/package bytes remain retained. Deferred two-resource host/canonical composition and separate Runtime SQL fixtures are source only. No tests/checks/build/types/Node/native/browser/runner preparation/execution/migration/push/deploy or acceptance claim. Paginated backend discovery is integrated below; atomic multi-package group capture abandonment, group history/disk reclamation and external unknown recovery remain open. Bounded global policy/history and native-exit inventories bind approval, conservatively invalidating it on unrelated policy changes; each source owner must also pass non-deletion drain inspection. No migration change was introduced.
+Group destination retirement host source reuses the singular per-resource observer across the exhaustive 2–32 resource inventory, aggregates one review/revision, privately fsyncs one exact approval and calls one Runtime-owned whole-group retirement. Separate review/approve/retire/receipt routes and BranchesClient methods are provided. Every Chat, mapped/additional deleted member, current/deleted Project, import rollback, owner subtree/native exit and cross-owner reference is observed; unknown or stale evidence refuses. Singular retirement remains group-refusing, preserve-only is permanent and admitted provenance/package bytes remain retained. Deferred two-resource host/canonical composition and separate Runtime SQL fixtures are source only. No tests/checks/build/types/Node/native/browser/runner preparation/execution/migration/push/deploy or acceptance claim. Paginated backend discovery is integrated below; atomic multi-package group capture abandonment source is composed below; group history/disk reclamation and external unknown recovery remain open. Bounded global policy/history and native-exit inventories bind approval, conservatively invalidating it on unrelated policy changes; each source owner must also pass non-deletion drain inspection. No migration change was introduced.
 
 ### Lifecycle discovery source successor
 
@@ -323,7 +323,7 @@ The read-only reader calls only pure import validation, not readOperation/hydrat
 Current/deletion_receipt/retained_only labels are evidence states, never deletion proof
 or eligibility. Supported singular resource/issued capture schemas expose stored full
 source and exact key; unknown matched schemas refuse, while this lifecycle collection excludes GROUP capture journals. Separate canonical
-group discovery below exposes prospective retained keys without reconstructing legacy hashes. Group multi-package abandonment remains unsupported.
+group discovery below exposes prospective retained keys without reconstructing legacy hashes. Group multi-package abandonment uses the separate protocol below.
 Discovery changes no pins, policies or payloads and returns no Request/snapshot bodies.
 Five deferred metadata/SQLite fixtures are present and source-read, not executed.
 
@@ -385,7 +385,7 @@ preview. The earlier commandKey-only input mismatch is resolved. Both BranchesCl
 and additive BranchGroupClient retain shared DTOs and all prior exports/methods. GET
 status remains unchanged. The separate backend preview-transaction blocker below
 still prevents claiming new-capture usability or executed qualification.
-Partial multi-package abandonment remains unsupported with all pins held. Existing
+Partial multi-package abandonment requires the separate explicit whole-group protocol below. Existing
 historical participant, precleanup sealed evidence and broader payload limits remain.
 Deferred source covers preview purity/stale cut, serial/parallel exact and legacy keys,
 retained owner audit scope, paging/invalidation/reopen and partial pin retention; none ran.
@@ -417,7 +417,7 @@ remains authoritative. No polling, automatic mutation/retry or singular-action l
 This closes lifecycle discovery callers and group retirement UI source. Separate Branch
 capture/prepare discovery and e7 preview/CAS UI are now assembled by6b1f7a398; legacy
 lost GROUP keys cannot be reconstructed. The backend transaction blocker below remains.
-Atomic multi-package abandonment remains unsupported/all pins held; existing eligibility,
+Atomic multi-package abandonment source is composed below; existing eligibility,
 bounds, quiescence, references, historical partition and Branch precleanup-seal gaps
 remain. Two new deferred discovery fixture files plus command receipt additions were
 read, not executed; no native/browser/mobile/accessibility or release qualification.
@@ -453,14 +453,13 @@ successor or silently patch that owner code.
 
 Owner-independent group command readback remains missing: discovery can show retained
 owners while exact scoped GET still refuses missing source owners. Partial multi-package
-abandonment remains unsupported/all pins held. Called trees, later generations,
+abandonment uses the separate explicit protocol below, with all pins held until commit. Called trees, later generations,
 historical-only participant partition, Branch precleanup seals/retry/replay, broader
 payload/native roots and unknown external effects remain gaps. Directory reuse/default
 Chat plus one Chat per resource warning remains. Deferred helper/transport/mounted
 sources cover2/3/32 inventory and last-policy binding, stale cut, exact CAS persistence,
 response loss/remount/pure GET, canonical discovery/51st row/legacy/409 and independent
 revocation; none executed. No native/browser/mobile/accessibility or acceptance claim.
-Operator audit discovery now provides revision-bound paginated import-operation, current/retired destination and full unsealed capture/source collections under `/api/lifecycle/{agent-imports,destinations,checkpoint-captures}`. It preserves exact current/deletion-receipt/retained-only owner labels and original product/Branch/execution identities, validates retained hashes/receipts, and exposes complete source/capture keys without gating source discovery on destination deletion review. DTOs/BranchesClient and deferred source fixtures are present. Unknown evidence remains held; bounded inventories refuse rather than truncate. This closes the backend identity reachability gap, not UI integration/qualification, group capture abandonment, disk reclamation or broader lifecycle acceptance. No tests/checks/build/types/Node/native/browser/prep/execution/migrations/push/deploy/newworkers or web writes.
 
 Multiple-package unsealed issued-group capture abandonment: source-only host discovery/review/commit protocol and deferred boundary fixtures. One complete prepare inventory, all package tombstones and one canonical owner disposition; filesystem progress cannot release a subset of SQL cleanup pins. See `checkpoint-group-capture-abandonment.md`. No executed qualification, historical-group reclamation or unknown-outcome replay claim.
-Canonical group partial-capture abandonment hooks now compare whole raw intent/revision, every source's drain/effect/reference inventory and all actual package retirement proofs in one owner transaction. Original bytes retained, exact proof replay and reserve/seal revival guards; only verified group disposition releases its own cleanup/reference pins. Host adapter remains separately owned; no package deletion inferred. Deferred source only, no execution qualification.
+Canonical group partial-capture abandonment hooks now compare whole raw intent/revision, every source's drain/effect/reference inventory and all actual package retirement proofs in one owner transaction. Original bytes retained, exact proof replay and reserve/seal revival guards; only verified group disposition releases its own cleanup/reference pins. Host adapter is composed with these hooks in the dedicated protocol; package bytes are archived, never deleted. Deferred source only, no execution qualification.
