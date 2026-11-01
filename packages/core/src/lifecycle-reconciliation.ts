@@ -96,3 +96,22 @@ export interface LifecycleCaptureEntry {
  captureKey:string;source:import('./branches.js').CheckpointPackageSource;branchId?:string;
  sourceOwner:'current'|'retained_only';state:'capturing';evidenceSha256:string;
 }
+
+/** Exact issued-group capture identity, obtained from retained intent discovery. */
+export interface CheckpointGroupCaptureAbandonmentReviewInput {executionId:string;captureKey:string}
+export interface CheckpointGroupCaptureAbandonmentInput extends CheckpointGroupCaptureAbandonmentReviewInput {
+ commandKey:string;reviewSha256:string;preserveEvidence:true;
+}
+export interface CheckpointGroupCaptureAbandonmentReviewDto extends CheckpointGroupCaptureAbandonmentReviewInput {
+ groupId:string;captureSha256:string;branchRevision:string;
+ packages:(CheckpointCustodyLifecycleEntry&{source:import('./branches.js').CheckpointPackageSource})[];
+ references:string[];blockers:string[];reviewSha256:string;
+}
+export interface CheckpointGroupCaptureAbandonmentReceipt {
+ state:'abandoned';groupId:string;commandKey:string;reviewSha256:string;captureArchiveSha256:string;
+ branch:unknown;packages:CheckpointCustodyReconcileReceipt[];
+}
+export interface LifecycleGroupCaptureEntry extends CheckpointGroupCaptureAbandonmentReviewInput {
+ sources:import('./branches.js').CheckpointPackageSource[];capturedCheckpointIds:string[];
+ sourceOwner:'current'|'retained_only';state:'capturing';evidenceSha256:string;
+}

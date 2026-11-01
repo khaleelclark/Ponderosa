@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from '@ponderosa/native-host/fs';
 import type Database from 'better-sqlite3';
 import {stableJson,resourceCaptureFrontierHash,type BranchCustodyLifecycle} from '@ponderosa/agents';
-import type {AgentImportOperationDto,CheckpointPackageSource,LifecycleDiscoveryQuery,LifecycleDiscoveryPage,LifecycleImportEntry,LifecycleDestinationEntry,LifecycleCaptureEntry} from '@ponderosa/core';
+import type {AgentImportOperationDto,CheckpointPackageSource,LifecycleDiscoveryQuery,LifecycleDiscoveryPage,LifecycleImportEntry,LifecycleDestinationEntry,LifecycleCaptureEntry,LifecycleGroupCaptureEntry} from '@ponderosa/core';
 import {lifecycleHash} from './lifecycle-journal.js';
 type Row=Record<string,any>;
 const text=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=512;
@@ -110,8 +110,19 @@ export function lifecycleDiscovery(context:{db:Database.Database;dataDir:string;
    }
    return page('destinations',[...entries.values()],query);
   })();},
+  groupCaptures(query:LifecycleDiscoveryQuery):LifecycleDiscoveryPage<LifecycleGroupCaptureEntry>{return db.transaction(()=>{
+   const entries:{key:string;value:LifecycleGroupCaptureEntry}[]=[];
+   for(const row of rows('branch_commands',"command_key LIKE 'issued-group-capture:%'")){
+    if(context.owner().groupCaptureDisposed(row.execution_id,row.command_key,row.result_json))continue;
+    const raw=canonical(row.result_json);if(raw.state==='retained')continue;
+    const group=context.owner().inspectGroupCapture(row.execution_id,row.command_key);
+    const execution=db.prepare('SELECT 1 FROM branch_executions WHERE id=?').get(row.execution_id);
+    entries.push({key:stableJson([row.execution_id,row.command_key]),value:{executionId:row.execution_id,captureKey:row.command_key,sources:group.sources,capturedCheckpointIds:group.receipts.map(receipt=>receipt.checkpointId),sourceOwner:execution?'current':'retained_only',state:'capturing',evidenceSha256:lifecycleHash(group.captureEvidence)}});
+   }
+   return page('group-captures',entries,query);
+  })();},
   captures(query:LifecycleDiscoveryQuery):LifecycleDiscoveryPage<LifecycleCaptureEntry>{return db.transaction(()=>{
-   const entries:{key:string;value:LifecycleCaptureEntry}[]=[];
+   const entries:{key:string;value:LifecycleCaptureEntry,LifecycleGroupCaptureEntry}[]=[];
    for(const row of rows('branch_commands',"command_key LIKE 'resource-capture:%' OR command_key LIKE 'issued-resource-capture:%'")){
     const capture=canonical(row.result_json);
     if(!['branch-resource-capture.v1','branch-issued-resource-capture.v1'].includes(capture.schema))throw Error('Unknown capture journal schema remains held');

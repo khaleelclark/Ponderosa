@@ -1,3 +1,4 @@
+import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
 import {lifecycleDiscovery} from '../lifecycle-discovery.js';
 import {destinationLifecycle} from '../destination-lifecycle.js';
 import {checkpointCaptureAbandonment} from '../checkpoint-capture-abandonment.js';
@@ -182,6 +183,15 @@ export function registerAgentPackageRoutes(
   app.post<{Params:{id:string};Body:import('@ponderosa/core').CheckpointCustodyReconcileInput}>('/api/lifecycle/checkpoint-custody/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
     try{const body=validatedObject(request.body,'Custody reconciliation');exactObjectFields(body,['commandKey','reviewSha256','preserveEvidence'],'Custody reconciliation');return context.store.sqlite.transaction(()=>lifecycle.reconcile(request.params.id,body as unknown as import('@ponderosa/core').CheckpointCustodyReconcileInput)).immediate();}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
+  const groupAbandonment=checkpointGroupCaptureAbandonment(context.dataDir,context.store.sqlite,context.custodyOwner);
+  app.post<{Body:import('@ponderosa/core').CheckpointGroupCaptureAbandonmentReviewInput}>('/api/lifecycle/checkpoint-capture-groups/abandonment-review',(request,reply)=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Group capture review');exactObjectFields(body,['executionId','captureKey'],'Group capture review');return groupAbandonment.review(request.body);}
+    catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid group capture metadata; evidence remains held':(error as Error).message});}
+  });
+  app.post<{Body:import('@ponderosa/core').CheckpointGroupCaptureAbandonmentInput}>('/api/lifecycle/checkpoint-capture-groups/abandon',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Group capture abandonment');exactObjectFields(body,['executionId','captureKey','commandKey','reviewSha256','preserveEvidence'],'Group capture abandonment');return groupAbandonment.abandon(request.body);}
+    catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid group capture metadata; evidence remains held':(error as Error).message});}
   }));
   const abandonment=checkpointCaptureAbandonment(context.dataDir,context.store.sqlite,context.custodyOwner);
   app.post<{Body:import('@ponderosa/core').CheckpointCaptureAbandonmentReviewInput}>('/api/lifecycle/checkpoint-captures/abandonment-review',(request,reply)=>{
@@ -464,7 +474,7 @@ export function registerAgentPackageRoutes(
     }
   };
   const discovery=lifecycleDiscovery({db:store.sqlite,dataDir:context.dataDir,validateImport:validatedOperation,owner:context.custodyOwner,readRetirement:(id,group)=>group?coordinationV3.readCoordinationDestinationGroupRetirement(id):coordinationV3.readCoordinationDestinationRetirement(id)});
-  for(const [route,read] of [['agent-imports',discovery.imports],['destinations',discovery.destinations],['checkpoint-captures',discovery.captures]] as const){
+  for(const [route,read] of [['agent-imports',discovery.imports],['destinations',discovery.destinations],['checkpoint-captures',discovery.captures],['checkpoint-capture-groups',discovery.groupCaptures]] as const){
     app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>(`/api/lifecycle/${route}`,(request,reply)=>{
       try{return read(request.query);}catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid retained lifecycle metadata; evidence remains held':(error as Error).message});}
     });
