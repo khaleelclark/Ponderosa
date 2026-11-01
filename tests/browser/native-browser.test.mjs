@@ -22,7 +22,7 @@ test('checks 103, 104 (4 on Linux): host Chrome acts, reads the selected upload 
     if (request.url === '/submit') { submissions++; response.end('Submission received'); return; }
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.end(`<!doctype html><title>Owned browser qualification</title>
-      <main><label>Message <input id="message"></label><button id="apply" onclick="document.getElementById('result').textContent=document.getElementById('message').value">Apply</button><output id="result"></output>
+      <main><label>Message <input id="message"></label><button id="apply" onclick="console.log('Owned browser fixture applied');document.getElementById('result').textContent=document.getElementById('message').value">Apply</button><output id="result"></output>
       <form action="/submit" method="post"><label>Selected file <input id="chosen" type="file" accept="text/plain"></label><label>Other file <input id="other" type="file"></label><output id="upload-result"></output><button type="submit">Submit</button></form></main>
       <script>document.getElementById('chosen').onchange=async e=>{const f=e.target.files[0];document.getElementById('upload-result').textContent=f?await f.text():''};</script>`);
   });
@@ -40,7 +40,15 @@ test('checks 103, 104 (4 on Linux): host Chrome acts, reads the selected upload 
       assert.equal((await driver.pages()).activePageId, original);
       assert.equal((await driver.pages()).pages.length, 1);
     }
+    const recording = await driver.recordingStart((await driver.pages()).activePageId);
     await driver.fill('#message', 'Harmless typed value'); await driver.click('#apply');
+    await until(async()=> (await driver.consoleQuery({})).entries.some(e=>e.text.includes('Owned browser fixture applied')), 'real Runtime.consoleAPICalled was retained');
+    const recorded = await driver.recordingStop(recording.id);
+    assert.ok(recorded.frames.length > 0, 'real Page.screencastFrame did not produce recording bytes');
+    assert.equal(recorded.format, 'ponderosa.browser-recording.v1');
+    const firstFrame = Buffer.from(recorded.frames[0].jpeg, 'base64');
+    assert.deepEqual([...firstFrame.subarray(0, 2)], [0xff, 0xd8]);
+    await driver.recordingDiscard();
     assert.match(await driver.inspect('#result'), /Harmless typed value/);
     if (process.platform === 'linux') {
       const processBefore = { ...driver.processIdentity };

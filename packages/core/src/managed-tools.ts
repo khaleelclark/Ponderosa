@@ -477,8 +477,25 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
     },
   },
   {
+    name: "ponderosa_browser_console",
+    description: "Read bounded, redacted console messages from the already authorized browser. Cursor is session-local; no clearing or browser opening.",
+    inputSchema: {type: "object", additionalProperties: false, properties: {query: {type: "object", additionalProperties: false, properties: {
+      after: {type: "integer", minimum: 0}, limit: {type: "integer", minimum: 1, maximum: 100}, pageId: {type: "string", maxLength: 200}, level: {type: "string", enum: ["log", "info", "warning", "error"]}
+    }}}},
+  },
+  {
+    name: "ponderosa_browser_recording_start",
+    description: "Explicitly record an inspected owned page using CDP JPEG frames. Stops collecting after 60 seconds, 120 frames or 8 MiB encoded frames. No audio. Call recording_stop to publish the JSON frame recording. Visible page pixels may contain sensitive user data.",
+    inputSchema: {type: "object", additionalProperties: false, required: ["page_id"], properties: {page_id: {type: "string", minLength: 1, maxLength: 200}}},
+  },
+  {
+    name: "ponderosa_browser_recording_stop",
+    description: "Stop and publish this Run's explicit recording as a managed timestamped JPEG-frame JSON artifact. Requires the original recording ID and control grant. Does not encode a video.",
+    inputSchema: {type: "object", additionalProperties: false, required: ["recording_id"], properties: {recording_id: {type: "string", minLength: 1, maxLength: 200}}},
+  },
+  {
     name: "ponderosa_browser_screenshot",
-    description: "Capture the current browser viewport as a run-scoped PNG artifact. Live operator frames are not persisted unless this tool is called.",
+    description: "Capture the current browser viewport as a run-scoped PNG artifact. Live operator frames are not persisted unless a screenshot or explicit recording is requested.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {

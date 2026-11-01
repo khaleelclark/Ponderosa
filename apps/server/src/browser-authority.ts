@@ -113,8 +113,8 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     (scope, event) => {
       const run = activeRuns.get(scope.agentId);
       if (!run || run.runId !== scope.runId || run.conversationId !== scope.conversationId) {
-        if (event.type === "browser_screenshot") {
-          throw new Error("screenshot lost exact Run authority before publication");
+        if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
+          throw new Error("browser artifact lost exact Run authority before publication");
         }
         return;
       }
@@ -125,13 +125,13 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
         publish(scope.agentId, store.appendEvent(scope.agentId, event));
         return;
       }
-      if (event.type === "browser_screenshot") {
+      if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
         return persistRuntimeEvent(scope.agentId, run, event).then((stored) => {
-          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+          if (!stored) throw new Error("browser artifact lost exact Run authority before publication");
         }).catch((error: unknown) => {
           logWarn(
             { err: error, agentId: scope.agentId, runId: scope.runId },
-            "browser screenshot publication failed",
+            "browser artifact publication failed",
           );
           throw error;
         });
@@ -160,30 +160,30 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     (scope, event) => {
       const grant = scope.owner ? projectBrowserGrants.get(browserOwnerId(scope.owner)) : undefined;
       if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) {
-        if (event.type === "browser_screenshot") {
-          throw new Error("Project screenshot lost exact Run authority before publication");
+        if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
+          throw new Error("Project browser artifact lost exact Run authority before publication");
         }
         return;
       }
       const run = activeRuns.get(grant.agentId);
       if (!run || run.runId !== grant.runId || store.getAgent(grant.agentId)?.conversationId !== run.conversationId ||
           (scope.owner?.kind === "chat" && run.conversationId !== scope.owner.conversationId)) {
-        if (event.type === "browser_screenshot") {
-          throw new Error("Project screenshot lost exact Run authority before publication");
+        if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
+          throw new Error("Project browser artifact lost exact Run authority before publication");
         }
         return;
       }
-      if (event.type === "browser_screenshot") {
+      if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
         return persistRuntimeEvent(
           grant.agentId,
           run,
           { ...event, executionId: grant.runId },
         ).then((stored) => {
-          if (!stored) throw new Error("screenshot lost exact Run authority before publication");
+          if (!stored) throw new Error("browser artifact lost exact Run authority before publication");
         }).catch((error: unknown) => {
           logWarn(
             { err: error, agentId: grant.agentId, runId: grant.runId },
-            "Project browser screenshot publication failed",
+            "Project browser artifact publication failed",
           );
           throw error;
         });

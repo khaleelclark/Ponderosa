@@ -670,7 +670,7 @@ export function registerAgentRuntimeToolRoutes(
 
   app.post<{
     Body: {
-      operation?: "open" | "navigate" | "inspect" | "new_page" | "switch_page" | "close_page" | "upload" | "act" | "screenshot" | "take_control" | "close";
+      operation?: "open" | "navigate" | "inspect" | "new_page" | "switch_page" | "close_page" | "upload" | "act" | "console" | "recording_start" | "recording_stop" | "screenshot" | "take_control" | "close";
       url?: string;
       action?: unknown;
       selector?: unknown;
@@ -678,6 +678,8 @@ export function registerAgentRuntimeToolRoutes(
       key?: unknown;
       page_id?: unknown;
       artifact_id?: unknown;
+      query?: import("@ponderosa/core").BrowserConsoleQuery;
+      recording_id?: unknown;
       consequence?: unknown;
       attempt_id?: unknown;
       browser?: "saved" | "temporary";
@@ -690,7 +692,7 @@ export function registerAgentRuntimeToolRoutes(
     if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
       return reply.code(401).send({ error: "browser capability is not authorized for an active run" });
     }
-    const operations = ["open", "navigate", "inspect", "new_page", "switch_page", "close_page", "upload", "act", "screenshot", "take_control", "close"] as const;
+    const operations = ["open", "navigate", "inspect", "new_page", "switch_page", "close_page", "upload", "act", "console", "recording_start", "recording_stop", "screenshot", "take_control", "close"] as const;
     const operation = request.body?.operation;
     if (!operation || !operations.includes(operation)) return reply.code(400).send({ error: "unknown browser operation" });
     if (!capability.availableToolNames?.includes(`ponderosa_browser_${operation}`)) return reply.code(403).send({ error: "This browser operation is not authorized by the server-issued tool set." });
@@ -903,6 +905,14 @@ export function registerAgentRuntimeToolRoutes(
           const session = await sessionManager.act(scope, request.body);
           return { session, snapshot: await sessionManager.inspect(scope) };
         }
+        case "console":
+          return sessionManager.consoleQuery(scope, request.body.query);
+        case "recording_start":
+          if (typeof request.body.page_id !== "string") throw new BrowserSessionError("page_id is required");
+          return sessionManager.startRecording(scope, request.body.page_id);
+        case "recording_stop":
+          if (typeof request.body.recording_id !== "string") throw new BrowserSessionError("recording_id is required");
+          return sessionManager.stopRecording(scope, request.body.recording_id);
         case "screenshot":
           return { session: sessionManager.get(scope.agentId), artifact: await sessionManager.captureArtifact(scope) };
         case "take_control":

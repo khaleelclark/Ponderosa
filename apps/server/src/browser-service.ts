@@ -9,8 +9,8 @@ import type { BrowserDriver, BrowserDriverFactory, BrowserDriverLaunchOptions, B
 import { BrowserDriverActionError } from "./chrome-cdp-driver.js";
 import { BrowserSessionError } from "./browser-security.js";
 
-const methods = new Set(["pages", "pageInfo", "activatePage", "closePage", "newPage", "openLink", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "preview", "resizeViewport", "resizeDesktop", "upload", "clearUploadedFiles", "cancelPendingFileChooser", "pauseAutomation", "resumeAutomation"]);
-const automationMethods = new Set(["pageInfo", "activatePage", "closePage", "newPage", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "preview", "resizeViewport", "upload"]);
+const methods = new Set(["consoleQuery", "recordingStart", "recordingStop", "pages", "pageInfo", "activatePage", "closePage", "newPage", "openLink", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "preview", "resizeViewport", "resizeDesktop", "upload", "clearUploadedFiles", "cancelPendingFileChooser", "pauseAutomation", "resumeAutomation"]);
+const automationMethods = new Set(["consoleQuery", "recordingStart", "recordingStop", "pageInfo", "activatePage", "closePage", "newPage", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "preview", "resizeViewport", "upload"]);
 const OWNER_PROTOCOL = 2;
 const driverActionReasons = new Set([
   "invalid_selector", "selector_not_found", "selector_ambiguous", "selector_not_interactable",
@@ -247,6 +247,11 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
                 [...entries.values()].some(other => other !== entry && other.owner.kind === "saved")) throw new Error("Browser custody changed before promotion.");
             entry.owner = { version: 1, kind: "saved" };
             result = {};
+          } else if (body.operation === "discard_recording") {
+            // Revocation and restart release must not wait behind a slow page action.
+            await driver.recordingDiscard?.();
+            if (lease !== admittedLease) throw new Error("Browser application lease expired.");
+            result = {};
           } else if (body.operation === "check_lease") result = {};
           else if (body.operation === "adopt" || body.operation === "status") result = { snapshot: snapshot(entry), events: entry.events.splice(0) };
           else {
@@ -410,6 +415,7 @@ export class BrowserServiceClient {
       return result.value?.bytes ? Buffer.from(result.value.bytes, "base64") : result.value;
     };
     const own = {
+      recordingDiscard: async () => { await ownedRpc({operation: "discard_recording", id}); },
       setOwner: async (destination: BrowserOwner) => {
         await ownedRpc({ operation: "promote_owner", id, destination });
         owner = destination;
@@ -429,6 +435,7 @@ export class BrowserServiceClient {
         } else {
           await call("cancelPendingFileChooser", ["application_disconnect"]);
         }
+        await ownedRpc({operation: "discard_recording", id});
         suspended = true;
         clearInterval(refresh);
       },

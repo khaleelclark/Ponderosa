@@ -1,3 +1,5 @@
+import type {BrowserConsoleQuery, BrowserConsoleResult, BrowserRecordingStatus, BrowserRecordingArtifact} from "@ponderosa/core";
+import type {LogEvent} from "@ponderosa/agents";
 import { browserOwnerId, type BrowserOwner } from "@ponderosa/core";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs, mkdirSync, writeFileSync, renameSync } from "@ponderosa/native-host/fs";
@@ -172,9 +174,10 @@ export interface BrowserScope {
 
 type BrowserAuditEvent = Extract<AgentEvent, {
   type: "browser_session" | "browser_action" | "browser_console" | "browser_screenshot";
-}>;
+}> | Extract<LogEvent, {type: "generated_artifact"}>;
 
 interface ManagedSession {
+  recording?: {status: BrowserRecordingStatus; runId: string; epoch: number; artifact?: BrowserRecordingArtifact};
   cleanupSource?: RetainedBrowserScope;
   observedTermination?: boolean;
   safeForRestart?: boolean;
@@ -1159,6 +1162,8 @@ export class BrowserSessionManager {
         throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
       }
       if (session.dto.controlOwner !== owner) {
+        await session.driver!.recordingDiscard?.();
+        session.recording = undefined;
         session.agentActivity = undefined;
         session.lastFrame = undefined;
         // A control handoff is not navigation or teardown. Keep attached files
@@ -1184,6 +1189,7 @@ export class BrowserSessionManager {
    * command cannot continue into the operator's private session. */
   async revokeAgentControl(scope: BrowserScope): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
+    session.recording = undefined;
     this.markActivity(session);
     if (session.dto.controlOwner === "agent") {
       session.dto = {
@@ -1202,6 +1208,7 @@ export class BrowserSessionManager {
     }
     if (!session.controlRevocationPending) return publicDto(session);
     try {
+      await session.driver.recordingDiscard?.();
       if (session.driver.pauseAutomation && session.driver.manualState?.() !== "manual") {
         await session.driver.pauseAutomation();
       }
@@ -1871,6 +1878,61 @@ export class BrowserSessionManager {
       if (session.dto.frameRevision === revision) return frame;
     }
     return this.pageAction(scope, session, undefined, undefined, preview, result => result, false);
+  }
+
+  async consoleQuery(scope: BrowserScope, query: BrowserConsoleQuery = {}): Promise<BrowserConsoleResult> {
+    const session = this.ready(scope);
+    return this.pageAction(scope, session, "agent", undefined, async driver => {
+      if (!driver.consoleQuery) throw new BrowserSessionError("Console queries are unavailable for this browser driver.", 409);
+      return driver.consoleQuery(query);
+    }, value => value, false);
+  }
+
+  async startRecording(scope: BrowserScope, pageId: string): Promise<BrowserRecordingStatus> {
+    if (typeof pageId !== "string" || !pageId || pageId.length > 200) throw new BrowserSessionError("An inspected page_id is required.", 400);
+    const session = this.ready(scope);
+    return this.pageAction(scope, session, "agent", undefined, async driver => {
+      if (!driver.recordingStart) throw new BrowserSessionError("Recording is unavailable for this browser driver.", 409);
+      if (!session.recording || session.recording.runId !== (scope.actorRunId ?? scope.runId) || session.recording.epoch !== session.dto.controlEpoch) {
+        await driver.recordingDiscard?.(); session.recording = undefined;
+      }
+      return driver.recordingStart(pageId);
+    }, status => {
+      session.recording = {status, runId: scope.actorRunId ?? scope.runId, epoch: session.dto.controlEpoch};
+      this.emit(scope, {type: "browser_action", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
+        actor: "agent", action: "inspect", summary: "Started explicit page-frame recording (60 seconds / 120 frames / 8 MiB maximum)."});
+      return status;
+    }, false);
+  }
+
+  async stopRecording(scope: BrowserScope, id: string): Promise<BrowserRecordingArtifact> {
+    const session = this.ready(scope);
+    // Join the same action queue and retain authority through artifact publication.
+    return this.pageAction(scope, session, "agent", undefined, async driver => {
+      const recording = session.recording;
+      if (!recording || recording.status.id !== id || recording.runId !== (scope.actorRunId ?? scope.runId) || recording.epoch !== session.dto.controlEpoch) {
+        throw new BrowserSessionError("Recording requires its original Run and control grant.", 409);
+      }
+      if (recording.artifact) return recording.artifact;
+      if (!driver.recordingStop) throw new BrowserSessionError("Recording is unavailable for this browser driver.", 409);
+      const data = await driver.recordingStop(id);
+      if (!data.frames.length) {
+        await driver.recordingDiscard?.(); session.recording = undefined;
+        throw new BrowserSessionError("The recording has no frames; no empty artifact was published. Start a new recording after the page paints.", 409);
+      }
+      const body = Buffer.from(JSON.stringify(data));
+      if (body.length > 9 * 1024 * 1024) throw new BrowserSessionError("Recording exceeded its byte limit.", 413);
+      const artifactId = randomUUID(), relative = path.posix.join("browser", `${artifactId}.recording.json`);
+      const published = await publishManagedArtifactContentAsync(this.dataDir, scope.artifactProjectId ?? scope.projectId, artifactId, body);
+      if (this.ready(scope) !== session || session.recording !== recording || recording.epoch !== session.dto.controlEpoch) throw new BrowserSessionError("Browser authority changed before recording publication.", 409);
+      this.assertControl(session, "agent");
+      await this.emit(scope, {type: "generated_artifact", artifactId, executionId: scope.actorRunId ?? scope.runId,
+        path: relative, sourcePath: relative, name: "Browser recording (timestamped JPEG frames)", mediaType: "application/json",
+        size: published.size, sha256: published.sha256, visibility: "project"});
+      recording.artifact = {artifactId, artifactRef: `ponderosa://artifact/${artifactId}`, path: relative, mediaType: "application/json", frames: data.frames.length, reason: data.reason};
+      await driver.recordingDiscard?.();
+      return recording.artifact;
+    }, value => value, false);
   }
 
   async captureArtifact(scope: BrowserScope): Promise<{

@@ -103,7 +103,7 @@ export const BUILT_IN_CAPABILITIES: CapabilityDescriptor[] = [
     categoryLabel: "Browser",
     label: "Read pages",
     description: "Open, inspect, and capture pages with the Ponderosa browser.",
-    runtimeToolNames: ["ponderosa_browser_open", "ponderosa_browser_inspect", "ponderosa_browser_screenshot"],
+    runtimeToolNames: ["ponderosa_browser_open", "ponderosa_browser_inspect", "ponderosa_browser_screenshot", "ponderosa_browser_console", "ponderosa_browser_recording_start", "ponderosa_browser_recording_stop"],
   },
   {
     id: CAPABILITY_IDS.browserInteract,
