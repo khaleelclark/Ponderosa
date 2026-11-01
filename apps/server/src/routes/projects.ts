@@ -1,3 +1,4 @@
+import {removeEmptyTombstone} from '../empty-tombstone.js';
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, realpathSync, promises as fs } from "@ponderosa/native-host/fs";
 import path from "node:path";
@@ -659,7 +660,7 @@ async function removeManagedProjectFolderCreation(
           "Managed Project cleanup tombstone",
           { dev: current.cleanupDevice!, ino: current.cleanupInode! },
         );
-        await fs.rm(cleanupPath, { recursive: true });
+        await removeEmptyTombstone(cleanupPath, MANAGED_PROJECT_CREATION_MARKER);
         await syncDirectory(root);
       } else {
         if (current.phase !== "cleanup_authorized" || entries.length > 0 ||

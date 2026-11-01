@@ -132,8 +132,9 @@ function establishSchema(sqlite: Database.Database): void {
  * marker commit together, so an interrupted open is safe to retry. Extension
  * SQL is also idempotent to support fresh baselines that already include the
  * latest tables. */
-function establishSchemaExtensions(sqlite: Database.Database): void {
+function establishSchemaExtensions(sqlite: Database.Database, through?: string): void {
   for (const extensionName of schemaExtensions) {
+    if (through && extensionName > through) break;
     const sql = readFileSync(join(schemaDir, extensionName), "utf8");
     const applied = sqlite
       .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
@@ -1059,13 +1060,13 @@ function establishReadIndexes(sqlite: Database.Database): void {
  * Open (or create) the projection DB at `file` and establish its launch schema.
  * Pass ":memory:" for isolated callers.
  */
-export function initializeCurrentDatabase(sqlite: Database.Database): void {
+function initializeDatabaseSchema(sqlite: Database.Database, through?: string): void {
   establishSchema(sqlite);
   establishAgentMentionHandles(sqlite);
   establishContextRolloverAtomicitySchema(sqlite);
   establishContextRolloverFailureProvenance(sqlite);
   establishContextRolloverCycles(sqlite);
-  establishSchemaExtensions(sqlite);
+  establishSchemaExtensions(sqlite, through);
   establishContextRolloverObservations(sqlite);
   establishWorkingCopyAuthoritySchema(sqlite);
   establishProjectDeletionOwnershipSchema(sqlite);
@@ -1078,6 +1079,20 @@ export function initializeCurrentDatabase(sqlite: Database.Database): void {
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);
   establishReadIndexes(sqlite);
+}
+
+/** Current runtime initialization never selects an older schema. */
+export function initializeCurrentDatabase(sqlite: Database.Database): void {
+  initializeDatabaseSchema(sqlite);
+}
+
+/** Exact additive predecessor metadata, built only on an empty private memory DB.
+ * This is signature reconstruction, never an existing-state initializer. */
+export function initializePredecessorSchema(sqlite: Database.Database, through: string): void {
+  if (sqlite.name !== ":memory:" || hasApplicationSchema(sqlite) ||
+      !schemaExtensions.includes(through as typeof schemaExtensions[number]) ||
+      through < "0027_schedule_work_lookup.sql") throw new Error("Invalid predecessor schema reconstruction");
+  initializeDatabaseSchema(sqlite, through);
 }
 
 /** Acquire one database reference. A supplied admission is transferred to this

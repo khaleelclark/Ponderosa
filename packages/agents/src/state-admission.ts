@@ -12,7 +12,7 @@ import { prepareSqliteStorage, storageDatabaseFilename } from "@ponderosa/native
 prepareSqliteStorage(Database);
 import { DataDirectoryAuthority, dataDirectoryAuthoritySupported, physicalDirectoryIdentity } from "@ponderosa/native-host";
 import type { WindowsDirectoryLeaseTransfer } from "@ponderosa/native-host";
-import { initializeCurrentDatabase } from "./db.js";
+import { initializeCurrentDatabase, initializePredecessorSchema } from "./db.js";
 import { stateSchemaSignature } from "./state-schema-signature.js";
 import { StateReadBudget, stateReadBudget, bindStateReadBudget, withStateReadInvocation, withStateReads } from "./state-read-budget.js";
 
@@ -106,52 +106,37 @@ function expectedContract(budget = new StateReadBudget()): string {
     return compiledContract = schemaSignature(sqlite);
   } finally { sqlite.close(); }
 }
-// Only the exact pre-history and pre-workspace schemas may upgrade online.
-// Derive signatures from current DDL; arbitrary missing tables remain refused.
-let compiledPausePredecessor: string | undefined;
-function pausePredecessorContract(budget = new StateReadBudget()): string {
-  if (compiledPausePredecessor) return compiledPausePredecessor;
-  budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
-  const sqlite = new Database(":memory:");
-  try {
-    bindStateReadBudget(sqlite, budget);
-    initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
-    sqlite.exec("DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses");
-    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
-    return compiledPausePredecessor = schemaSignature(sqlite);
-  } finally { sqlite.close(); }
-}
-let compiledHistoryPredecessor: string | undefined;
-let compiledWorkspacePredecessor: string | undefined;
-function workspacePredecessorContract(budget = new StateReadBudget(), beforeHistory = false): string {
-  const cached = beforeHistory ? compiledHistoryPredecessor : compiledWorkspacePredecessor;
-  if (cached) return cached;
-  budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
-  const sqlite = new Database(":memory:");
-  try {
-    bindStateReadBudget(sqlite, budget);
-    sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
-    initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
-    sqlite.exec("DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses");
-    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0030_agent_run_pauses.sql");
-    sqlite.exec("DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'");
-    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0029_assistant_workspace.sql");
-    if (beforeHistory) {
-      sqlite.exec("DROP TABLE capability_policy_history");
-      sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0028_capability_policy_history.sql");
+// Only exact published additive predecessors may upgrade online. Reconstruct
+// each from its ordered DDL prefix, so later extensions cannot contaminate it.
+const predecessorVersions = [
+  "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
+  "0029_assistant_workspace.sql", "0030_agent_run_pauses.sql",
+  "0031_branch_initial_checkpoints.sql", "0032_branch_unit_snapshots.sql",
+  "0033_branch_checkpoint_invocations.sql",
+] as const;
+const predecessorContracts = new Map<string, string>();
+function isPredecessorContract(actual: string, budget: StateReadBudget): boolean {
+  for (const version of predecessorVersions) {
+    let signature = predecessorContracts.get(version);
+    if (!signature) {
+      budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
+      const sqlite = new Database(":memory:");
+      try {
+        bindStateReadBudget(sqlite, budget);
+        sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
+        initializePredecessorSchema(sqlite, version); declareGeneration(sqlite);
+        signature = schemaSignature(sqlite);
+        predecessorContracts.set(version, signature);
+      } finally { sqlite.close(); }
     }
-    const signature = schemaSignature(sqlite);
-    if (beforeHistory) compiledHistoryPredecessor = signature; else compiledWorkspacePredecessor = signature;
-    return signature;
-  } finally { sqlite.close(); }
-}
-function historyPredecessorContract(budget = new StateReadBudget()): string {
-  return workspacePredecessorContract(budget, true);
+    if (signature === actual) return true;
+  }
+  return false;
 }
 function verifyDatabase(sqlite: Database.Database, generationId: string,
   contract = expectedContract(), allowHistoryUpgrade = false): boolean {
   const actual = schemaSignature(sqlite), upgrade = actual !== contract;
-  if (upgrade && (!allowHistoryUpgrade || (actual !== historyPredecessorContract(stateReadBudget(sqlite)) && actual !== workspacePredecessorContract(stateReadBudget(sqlite)) && actual !== pausePredecessorContract(stateReadBudget(sqlite))))) refuse();
+  if (upgrade && (!allowHistoryUpgrade || !isPredecessorContract(actual, stateReadBudget(sqlite)))) refuse();
   withStateReads(sqlite, reads => {
     const objectCount = reads.population("sqlite_master");
     const tables = reads.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'", ["name"], 512, 1024 ** 2, objectCount);

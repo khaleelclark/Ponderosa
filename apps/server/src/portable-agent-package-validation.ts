@@ -1,6 +1,6 @@
 import {validateOutputRoles} from './portable-output-roles.js';
 import {validateMemorySnapshot} from './portable-memory-snapshot.js';
-import {AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed,AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
+import {normalizeAgentRole,AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed,AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
 import {CANONICAL_ARTIFACT_ID,portableAgentTopologyError} from './artifact-refs.js';
 import {exactObjectFields,validatedObject} from './object-validation.js';
 import {portableBase64ByteLength} from './agent-package-codec.js';
@@ -27,9 +27,19 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
   const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>();let totalArtifactBytes=0;
   for(const candidate of portable.agents as unknown[]){
     const node=validatedObject(candidate,'Agent package node');
-    exactObjectFields(node,['ref','title','engine','model','effort','initialInstructions','managerRef','managementPermissions','history','artifacts'],'Agent package node');
+    exactObjectFields(node,['ref','title','engine','model','effort','speed','role','presetSnapshot','initialInstructions','managerRef','managementPermissions','history','artifacts'],'Agent package node');
     if(typeof node.ref!=='string'||typeof node.title!=='string'||typeof node.engine!=='string'||!node.engine.trim()||(node.model!==undefined&&typeof node.model!=='string')||(node.effort!==undefined&&typeof node.effort!=='string')||(node.initialInstructions!==undefined&&typeof node.initialInstructions!=='string'))throw new Error('every imported Agent must declare valid identity and runtime fields');
     if(typeof node.initialInstructions==='string'&&!agentPackageTextIsWellFormed(node.initialInstructions))throw new Error('Agent initial instructions must contain well-formed Unicode');
+    for (const field of ['speed','role'] as const) {
+      if (node[field] !== undefined && (typeof node[field] !== 'string' || !agentPackageTextIsWellFormed(node[field] as string))) throw new Error(`Agent ${field} must be well-formed text`);
+    }
+    if (node.role !== undefined) normalizeAgentRole(node.role as string);
+    if (node.presetSnapshot !== undefined) {
+      const preset = validatedObject(node.presetSnapshot, 'Agent preset snapshot');
+      exactObjectFields(preset, ['id','name','description','guidance','engine','model','effort'], 'Agent preset snapshot');
+      for (const key of ['id','name','description','guidance','engine']) if (typeof preset[key] !== 'string' || !agentPackageTextIsWellFormed(preset[key] as string)) throw new Error('Agent preset snapshot has invalid text');
+      for (const key of ['model','effort']) if (preset[key] !== undefined && typeof preset[key] !== 'string') throw new Error('Agent preset snapshot has invalid selection');
+    }
     const permissions=validatedObject(node.managementPermissions,'managementPermissions');
     exactObjectFields(permissions,['allowAutomaticDescendantDeletion','allowAutomaticDescendantReorganization'],'managementPermissions');
     if(typeof permissions.allowAutomaticDescendantDeletion!=='boolean'||typeof permissions.allowAutomaticDescendantReorganization!=='boolean')throw new Error('every imported Agent must declare exact boolean management permissions');

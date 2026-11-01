@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
-  agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
+  normalizeAgentRole, FULL_PACKAGE_EXPORT_WARNING, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
   AGENT_PACKAGE_STAGING_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES,
   AGENT_PACKAGE_LIMIT_LABEL, AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,
 } from "@ponderosa/core";
@@ -46,7 +46,7 @@ import {
   generatedArtifactMetadataIsValid,
   type RegisteredGeneratedArtifact,
 } from "../assets.js";
-import { runtimeSelectionError } from "../runtime-selection.js";
+import { runtimeSelectionError, runtimeSpeedSelectionError } from "../runtime-selection.js";
 import {
   exactObjectFields,
   validatedObject,
@@ -718,6 +718,9 @@ export function registerAgentPackageRoutes(
         engine: agent.activeEngine,
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
+        ...(agent.speed !== undefined ? { speed: agent.speed } : {}),
+        ...(agent.role !== undefined ? { role: agent.role } : {}),
+        ...(agent.presetSnapshot ? { presetSnapshot: agent.presetSnapshot } : {}),
         managementPermissions: agent.managementPermissions,
         ...(initialInstructions !== undefined ? { initialInstructions } : {}),
         ...(agent.managerAgentId && included.has(agent.managerAgentId)
@@ -833,6 +836,7 @@ export function registerAgentPackageRoutes(
       requestedMode,
       request.query.organization === "true",
     );
+    if (result.mode === "full") reply.header("x-ponderosa-export-warning", FULL_PACKAGE_EXPORT_WARNING);
     if (request.query.download === "1") {
       const safeTitle = result.sourceLabel
         .normalize("NFKD")
@@ -1213,8 +1217,9 @@ export function registerAgentPackageRoutes(
             effort,
             cachedModelOptions(importAdapter, project.id),
           );
-          if (selectionError) {
-            throw new Error(`${node.title}: ${selectionError}`);
+          const speedError = runtimeSpeedSelectionError(importAdapter, model, node.speed, cachedModelOptions(importAdapter, project.id));
+          if (selectionError || speedError) {
+            throw new Error(`${node.title}: ${selectionError ?? speedError}`);
           }
           const initialInstructions = node.initialInstructions === undefined ? undefined
             : rewritePortableArtifactReferences(node.initialInstructions, artifactRefMap);
@@ -1230,6 +1235,11 @@ export function registerAgentPackageRoutes(
             ...node,
             title: node.title.trim().slice(0, 80) || "Imported Agent",
             initialInstructions,
+            ...(node.role !== undefined ? { role: normalizeAgentRole(rewritePortableArtifactReferences(node.role, artifactRefMap)) } : {}),
+            ...(node.presetSnapshot ? { presetSnapshot: {
+              ...node.presetSnapshot,
+              guidance: rewritePortableArtifactReferences(node.presetSnapshot.guidance, artifactRefMap),
+            } } : {}),
             targetEngine,
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
@@ -1321,6 +1331,8 @@ export function registerAgentPackageRoutes(
           agents: importNodes.map((node, index) => ({
             ...portablePackage.agents[index],
             ...(node.initialInstructions !== undefined ? { initialInstructions: node.initialInstructions } : {}),
+            ...(node.role !== undefined ? { role: node.role } : {}),
+            ...(node.presetSnapshot ? { presetSnapshot: node.presetSnapshot } : {}),
             ...(portablePackage.mode === "full" ? { history: node.history } : {}),
             ...(node.artifacts.length ? { artifacts: node.artifacts.map((artifact, artifactIndex) => ({
               ...portablePackage.agents[index]!.artifacts![artifactIndex],
@@ -1445,8 +1457,10 @@ export function registerAgentPackageRoutes(
           conversationId: conversation.id,
           ...(node.model ? { model: node.model } : {}),
           ...(node.effort ? { effort: node.effort } : {}),
+          ...(node.speed !== undefined ? { speed: node.speed } : {}),
+          ...(node.role !== undefined ? { role: node.role } : {}),
           managementPermissions: node.managementPermissions,
-        }, undefined, operationAgentIds[index]);
+        }, undefined, operationAgentIds[index], node.presetSnapshot ?? null);
         created.set(node.ref, agent);
         rollbackAgentIds.push(agent.id);
         deletingAgentIds.add(agent.id);
@@ -2238,7 +2252,7 @@ export function registerAgentPackageRoutes(
       for (const node of validatePortableAgentPackage(pkg).package.agents) {
         const target=mapping[node.engine]?.trim(), registration=target?engines.get(target):undefined;
         if(!registration)throw new Error(`Choose an available Engine for ${node.engine}`);
-        const error=runtimeSelectionError(registration.adapter,node.model?.trim()||undefined,node.effort?.trim()||undefined,cachedModelOptions(registration.adapter));
+        const error=runtimeSelectionError(registration.adapter,node.model?.trim()||undefined,node.effort?.trim()||undefined,cachedModelOptions(registration.adapter)) ?? runtimeSpeedSelectionError(registration.adapter,node.model?.trim()||undefined,node.speed,cachedModelOptions(registration.adapter));
         if(error)throw new Error(`${node.title}: ${error}`);
       }
     },

@@ -371,3 +371,21 @@ test('10000-Agent package admission, assignment, durable receipt, restart and co
  for(let index=1;index<ordered.length;index++)assert.equal(ordered[index].managerAgentId,ordered[index-1].id);
  t.diagnostic(`Complete10000-Agent import/restart/export: ${Math.round(performance.now()-started)}ms`);
 }));
+
+
+test('portable setup retains standing role, processing tier and preset provenance after reopen', options, t => withPortability(t, async f => {
+ f.store.updateAgent(f.a.id,{role:'Standing role distinct from preset',speed:'standard'});
+ const pkg=await f.exportAgent(f.a.id,'full'),node=pkg.agents.find(a=>a.ref===f.a.id);
+ assert.equal(node.role,'Standing role distinct from preset');assert.equal(node.speed,'standard');assert.equal(node.presetSnapshot.name,'Fixture preset');
+ const response=await f.request({method:'GET',url:`/api/agents/${f.a.id}/export?mode=full`});
+ assert.match(response.headers['x-ponderosa-export-warning'],/sensitive information/);
+ const template=await f.request({method:'GET',url:`/api/agents/${f.a.id}/export?mode=template`});assert.equal(template.headers['x-ponderosa-export-warning'],undefined);
+ const imported=f.ok(await f.request(f.importRequest(pkg)));await f.restart();
+ const restored=f.store.getAgent(imported.rootAgentId);assert.equal(restored.role,node.role);assert.equal(restored.speed,node.speed);assert.equal(restored.presetSnapshot.name,node.presetSnapshot.name);
+ const next=await f.exportAgent(restored.id,'full');assert.equal(next.agents.find(a=>a.ref===restored.id).presetSnapshot.name,node.presetSnapshot.name);
+ const before=f.store.listAgents(f.project.id).length;
+ for(const patch of [{speed:'unavailable-tier'},{role:'x'.repeat(8001)},{presetSnapshot:{...node.presetSnapshot,apiKey:'SYNTHETIC_SECRET'}}]){
+  const bad=structuredClone(pkg);Object.assign(bad.agents.find(a=>a.ref===pkg.rootRef),patch);
+  const refused=await f.request(f.importRequest(bad));assert.ok(refused.statusCode>=400,refused.body);assert.equal(f.store.listAgents(f.project.id).length,before);
+ }
+}));

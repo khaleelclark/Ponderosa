@@ -111,6 +111,8 @@ export interface AgentDto {
   importedFrom?: string;
 }
 
+export const FULL_PACKAGE_EXPORT_WARNING = 'History and stored data may contain sensitive information. Known credential fields are excluded; re-enter credentials after import. Global memory, installation permissions, live work and provider sessions are excluded.';
+
 export type AgentExportMode = "template" | "context" | "full";
 export interface PortableAgentHistoryMessageDto { role: "user" | "assistant" | "system"; text: string; createdAt?: string }
 export interface PortableArtifactDto {
@@ -131,6 +133,9 @@ export interface PortableAgentNodeDto {
   engine: string;
   model?: string;
   effort?: string;
+  speed?: string;
+  role?: string;
+  presetSnapshot?: AgentDto["presetSnapshot"];
   initialInstructions?: string;
   managerRef?: string;
   managementPermissions: AgentManagementPermissionsDto;
