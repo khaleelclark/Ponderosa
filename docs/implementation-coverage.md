@@ -25,7 +25,7 @@ Owner handoffs must distinguish an absent behavior from deferred qualification.
 | 5 | `apps/server/src/local-memory-config.ts`, `deploy/README.md`, configurable adapters | Runtime: classify required infrastructure versus optional integrations; no new outside dependency in this slice. |
 | 6 | `apps/server/src/runtime-authority.ts`, `local-memory-authority.ts`, capability-policy history | Runtime: human-origin access mutations and live rechecks; UI exposes human settings. |
 | 7 | `apps/server/src/operator-auth-proxy.ts`, server origin boundary | Runtime: finish removal of dedicated authentication while retaining browser-origin checks; file name alone does not establish a live token gate. |
-| 8 | `portable-agent-package-validation.ts`, `portable-execution-archive.ts`, `portable-memory-snapshot.ts`, `portable-output-roles.ts`, `docs/combined-migration-contract.md` | Reliability increment integrated: portable role/speed/preset snapshot and remapped guidance refs, validated import selections, shared export warning. Concrete remaining transport gaps listed below; full recreation remains incomplete. Known secret fields stay excluded. |
+| 8 | `portable-agent-package-validation.ts`, `portable-execution-archive.ts`, `portable-memory-snapshot.ts`, `portable-output-roles.ts`, `docs/combined-migration-contract.md` | Reliability increment integrated: portable role/speed/preset snapshot and remapped guidance refs, validated import selections, shared export warning. Shared composer/forest activation, workflow folder controls, grouped review and mapped Settings are integrated; see latest continuation for remaining gaps. Full recreation remains unverified. Known secret fields stay excluded. |
 | 9 | Shared core DTOs, Adapter interface, shared composer/dialogs | All owners: remove abandoned paths and avoid duplicated authority; broad dead-code analysis deferred. |
 | 10 | `apps/server/src/routes/branches.ts`, **new `examples/branches-client/client.ts`** | Integration: standalone outside-app start/status/result client, public HTTP only; not executed. No private fixture dependencies. |
 | 11 | Communication catalogs/prompts and canonical tool routing; `docs/PERMISSION_HISTORY_AND_PROTOCOL.md` | Runtime: concise asks/results and artifact references; message-log judging deferred. |
@@ -48,7 +48,7 @@ Owner handoffs must distinguish an absent behavior from deferred qualification.
 | 28 | All Branches rows and shared components/services above | All owners: whole-Bible requirement applies to Branches, not just its graph engine. No aggregate True verdict from partial features. |
 | 29 | Core, Branches, OutputAgentApp, AssistantEntry, folder navigation | UI: retain folders; remove explanatory UI blocks, overlaps/flicker causes. Blind panels/recordings deferred. |
 | 30 | `local-memory-catalog.ts`, `local-memory.ts`, dynamic-tool handler | Features + Runtime: combined chat/global search and global-write human settings; named external model/runtime prerequisites do not prove memory correctness. |
-| 31 | `routes/streams.ts`, Agent/Workspace hooks, `BranchLiveOutput.tsx`, `voice-reply-stream.ts` | UI + Runtime/Features: enumerate all output surfaces, use shared stream events and incremental call audio; inspect actual missing callers. Latency thresholds/recordings deferred. |
+| 31 | `routes/streams.ts`, Agent/Workspace hooks, `BranchLiveOutput.tsx`, `voice-reply-stream.ts` | UI shared-human/private/peer previews and recovery controls integrated; mixed-route generation and early qualified voice remain Runtime work. Latency thresholds/recordings deferred. |
 | 32 | `packages/core/src/branches.ts`, `branch-store.ts`, routes/engine/checkpoint authorities | Features: named capability checklist below; framework examples and any incomplete restoration are implementation work where absent, not automatically a verification gap. |
 
 ## Every Build-list subrequirement
@@ -70,7 +70,7 @@ Owner handoffs must distinguish an absent behavior from deferred qualification.
 | Assistant proactive default 10min/configurable interval | Assistant workflow trigger and digest cursor | Features: completion/issue sources, no successful-Run-as-task-completion inference. |
 | Assistant reports follow settings/no flood | Notification journal and assistant digest | Features + UI: quiet default, deduplication/cadence, canonical reports. |
 | Assistant same output UI attachments/voice/calls in app | `/assistant`, shared OutputAgentApp | UI + Runtime: all same capabilities, no special stripped shell. |
-| Exactly one app-wide Ponderosa speaker; move designation | Output-role preferences and dedicated role routes | Features: singleton across workflows, human-controlled relocation. |
+| Exactly one app-wide Ponderosa speaker; move designation | Output-role preferences and dedicated role routes | Features singleton route plus UI expected-speaker confirmation integrated; runtime/UX acceptance deferred. |
 | Edit workflow/model/prompt without breaking role | Branch editor and Agent runtime settings | Features + UI: keep designation through ordinary edits. |
 | Delete/remove role disables; settings shows disabled | Role/deletion lifecycle and Assistant settings | Features + UI: disabled means no speaker, no silent recreation. |
 | Explicit re-enable fresh defaults only if absent | Resumable Assistant setup | Features: no duplicate creation if speaker exists; preserve old workflow/user data. |
@@ -504,3 +504,29 @@ old Branch-composer keys cannot be retained. UI ownership remains unchanged.
 Existing-Agent regrouping and in-progress checkpoint fork/map/Request/provider/
 resource/recovery-secret families remain incomplete. No tests/checks/build/types/
 Node/native/browser/runner preparation or execution, push/deploy or full #8/#32 claim.
+
+## Workflow web caller assembled with shared composer contracts
+
+UI `468d5b64f1f7a2bc79c67172f88408a782ca9523` then
+`d84e766c6283a481b3758d76242d1417ee4908d5` integrated as `490c2f0d6` and
+`8fca25674` after prior webchain. Current Reliability d7ca and Branches537b
+contracts are present; migration0035 and shared audio path were not replayed.
+All twelve distinct changed deliverables physically present/source-read. Only
+conflict was superseded documentation; retained current sole UI ownership.
+
+Workflow full export now offers paginated canonical Agent folder/file selection.
+Import collects per-target new recovery paths, explicit managed creation/live
+activation and actual-root confirmation, grouped exhaustive access choices, then
+mapped Settings review before opening. Discovery preview replaces old root keys
+with shared-composer identities and requires exact-path re-preview. Single-folder
+receipts render directly in BranchPackageDialog; grouped root/live/suggestion
+receipts deduplicate in the shared review. This supersedes earlier blanket missing
+workflow web caller entries. A tentative merge-helper omission concern was
+withdrawn after reading the direct single-folder rendering; no fix is required.
+
+All32/Build-list tables remain implementation navigation, never acceptance.
+Concrete remaining implementation includes existing-Agent regrouping and general
+in-progress #32 fork/map/Request/provider/resource/recovery-secret continuations;
+Runtime mixed-route generation/early voice and unknown-native/Claude limitations
+remain. No consolidated qualification started. No tests/checks/build/types/browser/
+runner preparation or execution, push/deploy or whole-UI/Bible pass claim.
