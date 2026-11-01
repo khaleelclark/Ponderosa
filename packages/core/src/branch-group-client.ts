@@ -1,3 +1,4 @@
+import type {GroupJournalAuditSelection,GroupJournalAuditReadback} from './lifecycle-reconciliation.js';
 import type {BranchGroupCaptureResult,BranchGroupCaptureInput,BranchGroupCapturePreview,BranchGroupDiscoveryPage,BranchIssuedGroupCaptureStatus} from './branches.js';
 import type {BranchDisclosureChoice,BranchDisclosureReceipt,BranchDisclosureReviewDto,BranchIssuedDestinationDto,BranchIssuedDestinationInput,CoordinationDestinationGroupResource,CoordinationDestinationGroupReceipt} from './coordination-destination.js';
 
@@ -12,6 +13,7 @@ export class BranchGroupClient {
  private post<T>(path:string,body:unknown){return this.request<T>(path,{method:'POST',body:JSON.stringify(body)});}
  previewCapture(){return this.request<BranchGroupCapturePreview>(this.base+'/capture-preview',{cache:'no-store'});}
  discover(kind:'captures'|'admissions',cursor?:string){return this.request<BranchGroupDiscoveryPage>('/api/branches/destination-groups/discovery?kind='+kind+'&limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):''),{cache:'no-store'});}
+ journalAudit(selection:GroupJournalAuditSelection){const query=new URLSearchParams();for(const [key,value] of Object.entries(selection))if(value!==undefined)query.set(key,String(value));return this.request<GroupJournalAuditReadback>('/api/lifecycle/destination-groups/journal?'+query.toString(),{cache:'no-store'});}
  capture(input:BranchGroupCaptureInput){return this.post<BranchIssuedGroupCaptureReceipt>(this.base+'/capture',input);}
  captureStatus(commandKey:string){return this.request<BranchIssuedGroupCaptureStatus>(this.base+'/capture?commandKey='+encodeURIComponent(commandKey),{cache:'no-store'});}
  prepare(input:BranchIssuedDestinationInput){return this.post<BranchIssuedGroupDestinationDto>(this.base,input);}

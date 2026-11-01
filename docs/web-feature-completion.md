@@ -896,3 +896,75 @@ Remaining: fully retained-group history/disk reclamation, unsupported/unknown sc
 and outcomes, external writers, and separately authorized source integration and
 runtime/native/accessibility/mobile qualification. No whole UI/group/lifecycle/
 Bible/Phase2 acceptance is claimed.
+
+## Historical group journal audit continuation
+
+Source-only successor to UI `1d6e5da77a9d779921a50541f9685f73e96d9aa4`.
+Requires exact backend/core `38ec699b6579715740513ce30a41a38722be4401`, direct parent
+approved `3f9b74e1c2077a21d99603110d661252fd1cc86a`, at
+`/tmp/ponderosa-group-audit-readback`. Actual discovery producer, audit service,
+shared DTO/SDK, canonical audit reader and `docs/group-journal-audit-readback.md`
+were source-read. Integration owns equivalent backend/core assembly; prior capture
+CAS/read-transaction and group-abandonment dependencies remain preserved.
+
+Canonical group command discovery now exposes `item.auditSelection`. The UI passes
+that exact object to its additive `BranchGroupClient.journalAudit` adapter, equivalent
+to backend SDK `BranchesClient.groupJournalAudit(selection)`: GET
+`/api/lifecycle/destination-groups/journal` with every original query field. Journal
+key, journal hash, custody hash, source Branch/Run, optional original command and
+admission/reservation identity are neither reconstructed nor replaced. The adapter
+imports backend-owned `GroupJournalAuditSelection`/`GroupJournalAuditReadback` DTOs;
+no edits or duplicate definitions in backend `branches.ts`, `branches-client.ts`,
+`lifecycle-reconciliation.ts`, routes, stores, owner hooks or migrations. Prior
+additive UI-client ownership is preserved; keep both client modules in assembly.
+
+Every discovered row with a selector mounts a separate `GroupJournalAudit` panel.
+It remains available after a scoped current-owner GET refuses. Legacy capture rows
+without plaintext commands still forbid ordinary capture-command recovery while
+allowing exact raw-selector audit; older items/servers without selectors display an
+explicit unavailable explanation. Missing or erased original journals cannot be
+manufactured from custody/reservation metadata. Other source Runs and missing source
+owners are inspected through the owner-independent audit route, not a substitute
+current-authority read.
+
+The panel requires `historical:true`, `currentAuthority:false`,
+`actionEligible:false`, `held:true`, exact returned selector/journal hash, evidence
+digest and complete resource/member/owner inventory. The displayed evidence includes
+all capture sources/receipts/disposition, destination resources/full ID and Agent
+maps, every import status, owner/command presence, canonical receipt and verified
+retirement projection. Unknown imports remain held. Source/owner absence is never
+presented as deletion, drain, disclosure authority or eligibility. Private Request
+bodies, snapshots, configuration and package bytes are suppressed by the backend;
+the UI additionally projects only known audit fields and omits unexpected top-level
+or capture-disposition raw snapshot fields.
+
+Audit is a separate read-only state/component: results are never assigned to scoped
+capture status, prepared destination, disclosure review, saved command or lifecycle
+mutation state. Starting audit clears existing review acknowledgements/confirmations.
+No audit control offers approve, prepare, admit, cleanup, package reads, hydration,
+reimport or replay. Existing scoped reads/actions still retain their authority checks
+and exact-key/unknown-outcome protocols. Scoped refusal clears scoped results but
+preserves discovered audit selectors. Audit refusal, including selector/hash/custody/
+reservation conflict409, clears audit and discovered selection, invalidates scoped
+review/confirmation state and requires explicit rediscovery. There is no automatic
+audit retry, selector refresh or fallback mutation.
+
+Seven deliverables: new `apps/web/src/components/branches/GroupJournalAudit.tsx`
+and `groupJournalAudit.ts`, updated `BranchGroupReview.tsx`;
+`packages/core/src/branch-group-client.ts`; new
+`tests/chats/group-journal-audit.test.mjs` and `group-journal-audit-mounted.tsx`;
+and this document. Existing execution mounting and core exports are reused.
+Deferred fixture source covers exact/legacy selector binding, stale journal/custody/
+reservation envelopes, all nonauthorizing flags, exhaustive maps/non-first imports,
+private snapshot suppression, exact query transport without POST/retry, audit after
+scoped missing-owner refusal, legacy-key audit without plaintext reconstruction,
+stale409 clearing/explicit rediscovery and no mutation controls from audit evidence.
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, backend writes, push/merge/deploy or new workers. Fixtures are unexecuted.
+Remaining: journals actually erased by owner deletion,
+actual deletion/provider/native qualification, and separately authorized executed
+runtime/accessibility/mobile verification. Audit adds neither a retention writer nor
+reclamation or action authority. No whole UI/group/lifecycle/Bible/Phase2 acceptance.
+
+Integration: backend38ec is assembled as61386c0ed; preview read-transaction f623 equivalent and whole-group abandonment9bb remain preserved. The precleanup producer and independent Branch-owner guard are assembled ate4cdff692; this UI adds no generation-exit controls or execution qualification.
