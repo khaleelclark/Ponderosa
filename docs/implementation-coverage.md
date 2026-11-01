@@ -563,3 +563,25 @@ Owner-independent group journal audit readback source: discovery emits exact raw
 
 
 Integration source reconciliation: prior producer isolation at44a919 is superseded by the assembled independent Branch-owner guard from c5bb4f32. The isolated5ee source branch remains historical. Current source connects the producer with original-Branch/subtree fence validation before installation storage effects, beginDeletion and final SQL. Historical admission remains disabled; nativeState remains not_captured. No execution or qualification claim.
+
+
+### Historical group journal audit UI (source only)
+
+UI19bb4f26 is assembled with backend38ec equivalent. Canonical discovered
+auditSelection is passed verbatim through BranchGroupClient.journalAudit GET; both
+core clients share backend-owned DTOs. A separate read-only panel requires all four
+historical/no-current-authority/no-action/held flags and exact selector/hash envelope,
+shows the full retained map/import/resource/receipt inventory, and projects known
+fields while excluding unexpected top-level and raw disposition snapshot fields.
+Scoped GET refusal preserves discovery selectors; audit refusal clears audit/selection
+and confirmation state for explicit rediscovery, without retry or inferred action.
+Audit results are not assigned to capture/target/review/command mutation state.
+The earlier audit UI adoption gap is resolved in source. Deep receipt/custody proof
+validation remains backend-owned; UI helper shape checks do not independently prove
+every nested map/import value. Erased journals remain unrecoverable; no retention
+writer, reclamation or mutation authority is added. Historical participant admission,
+later-generation admission and broader native/payload/recovery limits remain open.
+Producer and independent Branch-owner guard remain assembled. Both helper/transport
+and mounted fixture sources are deferred, unexecuted. No tests/checks/build/types/
+Node/native/browser/preparation/execution/migrations/push/deploy/newworkers; no
+qualification or acceptance claim.
