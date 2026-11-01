@@ -93,7 +93,7 @@ export interface BranchPackageImportOptions {
 /** Shared packaging boundary; callers own durable human review and destination selection. */
 export interface BranchPackageEngine {
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
-  captureCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageReceipt>;
+  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
   releaseCheckpoint(receipt:CheckpointPackageReceipt):Promise<void>;
   composeAgents(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>;
@@ -2523,10 +2523,10 @@ export function registerAgentPackageRoutes(
   });
   return {packageEngine:{
     inspectCheckpoint:source=>checkpointCustody.inspect(source),
-    captureCheckpoint:source=>withAgentImportAdmission(async()=>{
+    captureCheckpoint:(source,seal)=>withAgentImportAdmission(async()=>{
       const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};
       const status=await checkpointCustody.inspect(frozen);
-      if(status.state==='retained')return status.receipt;
+      if(status.state==='retained'){if(seal)throw new Error('Issued capture needs its committed Branch receipt; retained bytes alone cannot reseal a later cut');return status.receipt;}
       if(status.state!=='missing')throw new Error(`Checkpoint custody ${status.state}; cannot recapture this intent`);
       const memory=localMemoryFor(app);
       const memoryDatabases=memory?await memory.checkpointSourceDatabases():[];
@@ -2551,7 +2551,7 @@ export function registerAgentPackageRoutes(
           inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:portable});
         }
         return (await composeAgentPackages(inputs)).package;
-      },publish=>commitSourceCapture(token,()=>{admit();publish();}));}finally{releaseSourceCapture(token);}
+      },(publish,receipt)=>commitSourceCapture(token,()=>{admit();const result:unknown=seal?.(receipt);if(result&&typeof result==='object'&&'then' in result)throw new Error('Checkpoint sealing must be synchronous');publish();}));}finally{releaseSourceCapture(token);}
     }),
     readCheckpoint:receipt=>checkpointCustody.read(receipt),
     releaseCheckpoint:receipt=>checkpointCustody.release(receipt),

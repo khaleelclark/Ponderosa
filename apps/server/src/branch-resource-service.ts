@@ -37,6 +37,23 @@ export class BranchResourceService {
       if(capture){if(!this.packages)throw Error('Checkpoint package service unavailable');await this.packages.readCheckpoint(capture.receipt!);}
     }
   }
+  issuedResourceCaptureStatus(executionId:string,stepId:string,commandKey:string):import('@ponderosa/core').BranchIssuedResourceCaptureDto {
+    const journal=this.branches.issuedResourceCapture(executionId,stepId,commandKey);
+    return journal?{commandKey,state:journal.state,...(journal.state==='retained'?{checkpointId:journal.checkpointId,checkpointHash:journal.checkpointHash,receipt:journal.receipt}:{}),restoreSupported:false}:{commandKey,state:'not_found',restoreSupported:false};
+  }
+  async captureIssuedResource(executionId:string,stepId:string,generation:number,commandKey:string):Promise<import('@ponderosa/core').BranchIssuedResourceCaptureDto> {
+    const previous=this.branches.issuedResourceCapture(executionId,stepId,commandKey);
+    if(previous&&previous.source.intent.resourceGeneration!==generation)throw Error('Issued capture command conflict');
+    if(previous?.state==='retained')return this.issuedResourceCaptureStatus(executionId,stepId,commandKey);
+    if(!this.packages)throw Error('Checkpoint package service unavailable');
+    const journal=this.branches.reserveIssuedResourceCapture(executionId,stepId,generation,commandKey);
+    // A retained payload without the committed Branch seal is ambiguous. Never
+    // reconstruct an earlier host frontier from current mutable source data.
+    await this.packages.captureCheckpoint(journal.source,receipt=>this.branches.sealIssuedResourceCapture(executionId,stepId,commandKey,receipt));
+    const sealed=this.branches.issuedResourceCapture(executionId,stepId,commandKey);
+    if(sealed?.state!=='retained')throw Error('Issued resource capture did not commit its Branch seal');
+    return this.issuedResourceCaptureStatus(executionId,stepId,commandKey);
+  }
   async inspectResource(stepExecutionId:string):Promise<import('@ponderosa/core').BranchResourceInspectionDto> {
     const snapshot=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
     if(!journal||!snapshot.destinationChatId||!snapshot.destinationChatAvailable||snapshot.state!=='reserved'||snapshot.importState)return snapshot;
@@ -173,7 +190,7 @@ export class BranchResourceService {
     for (const resource of this.branches.resourceCleanupCandidates()) {
       try {
         const capture=this.branches.resourceCaptureJournal(resource.stepExecutionId);
-        if(capture?.state==='capturing')continue;
+        if(capture?.state==='capturing'||this.branches.issuedResourceCapturePending(resource.stepExecutionId))continue;
         if(capture?.state==='retained'){if(!this.packages||!capture.receipt)throw Error('Required checkpoint custody unavailable');await this.packages.readCheckpoint(capture.receipt);}
         this.branches.cancelResourceWork(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;

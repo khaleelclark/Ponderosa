@@ -1,3 +1,4 @@
+import {issuedResourceCapture,reserveIssuedResourceCapture,sealIssuedResourceCapture} from './branch-issued-resource-capture.js';
 import {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
 import {insertBranchFrontier} from './branch-frontier-storage.js';
 import {restoredRequestUpdatePayload} from './coordination-v3-cut-restoration-authority.js';
@@ -1119,6 +1120,21 @@ export class BranchStore {
       if(c&&r)this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...c,error:branchText(error)}),r.execution_id,`resource-capture:${r.creation_key}`);
     }).immediate();
   }
+  issuedResourceCapture(executionId:string,stepId:string,commandKey:string) {return issuedResourceCapture(this.sqlite,executionId,stepId,commandKey);}
+  reserveIssuedResourceCapture(executionId:string,stepId:string,generation:number,commandKey:string) {
+    return this.unitTransaction(()=>{
+      const execution=this.execution(executionId);
+      if(!execution||this.restricted(execution.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current resource creation authority restricted');
+      return reserveIssuedResourceCapture(this.sqlite,executionId,stepId,generation,commandKey);
+    }).immediate();
+  }
+  sealIssuedResourceCapture(executionId:string,stepId:string,commandKey:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt):void {
+    const execution=this.execution(executionId);if(!execution||this.restricted(execution.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current issued capture authority restricted');
+    sealIssuedResourceCapture(this.sqlite,executionId,stepId,commandKey,receipt);
+  }
+  issuedResourceCapturePending(stepId:string):boolean {
+    return !!this.row("SELECT 1 FROM branch_commands WHERE command_key LIKE 'issued-resource-capture:%' AND json_extract(result_json,'$.source.intent.resourceStepId')=? AND json_extract(result_json,'$.state')='capturing' LIMIT 1",stepId);
+  }
   resourceCaptureEligible(stepExecutionId:string):boolean {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),e=r&&this.execution(r.execution_id);
     if(!e||Object.keys(e.configuration.secretBindings??{}).length||!scriptDefinitionSupported(this.definition(e),false,true)||this.definition(e).steps.filter(s=>s.kind==='agent').length!==1)return false;
@@ -1355,7 +1371,7 @@ export class BranchStore {
     return rows.map(r=>({stepExecutionId:r.step_execution_id,chatId:r.chat_id??undefined,branchId:this.execution(r.execution_id)!.branchId,executionId:r.execution_id,agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",r.step_execution_id).map(m=>m.agent_id)}));
   }
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
-    const capture=this.resourceCaptureJournal(stepExecutionId);if(capture&&capture.state==='capturing')return false;
+    const capture=this.resourceCaptureJournal(stepExecutionId);if((capture&&capture.state==='capturing')||this.issuedResourceCapturePending(stepExecutionId))return false;
     const resource=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
     if(resource&&['chat','import'].some(phase=>{const operation=this.resourceOperation(stepExecutionId,phase as 'chat'|'import');
       return operation&&['running','unknown'].includes(operation.state)&&this.resourceOperationReleased(resource,operation);}))return false;

@@ -349,7 +349,7 @@ export interface CheckpointPackageSource {
   checkpointId:string;
   sourceChatId:string;
   agentIds:string[];
-  intent:{executionId:string;resourceStepId:string;resourceGeneration:number;frontierSha256:string;bindingSha256:string;configurationSha256:string};
+  intent:{executionId:string;resourceStepId:string;resourceGeneration:number;frontierSha256:string;bindingSha256:string;configurationSha256:string;hostCutSha256?:string};
 }
 export interface CheckpointPackageReceipt extends CheckpointPackageSource {
   version:1;
@@ -379,3 +379,7 @@ export interface BranchResourceCustodyReleaseDto {
  commandKey:string;stepExecutionId:string;generation:number;custodyId:string;receiptSha256:string;state:'releasing'|'released';error?:string;
 }
 export type BranchResourceCustodyReleaseStatus=BranchResourceCustodyReleaseDto|{commandKey:string;state:'not_found'};
+
+/** Operator-only issued private-byte capture; this is not restoration admission. */
+export interface BranchIssuedResourceCaptureInput {commandKey:string;expectedGeneration:number}
+export interface BranchIssuedResourceCaptureDto {commandKey:string;state:'not_found'|'capturing'|'retained';checkpointId?:number;checkpointHash?:string;receipt?:CheckpointPackageReceipt;restoreSupported:false}

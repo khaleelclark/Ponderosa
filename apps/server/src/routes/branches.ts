@@ -444,6 +444,15 @@ export function registerBranchRoutes(app: FastifyInstance, context: { resources:
   const ownedResource=(branchId:string,executionId:string,stepId:string)=>{
     if(!store.sqlite.prepare('SELECT 1 FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=? AND e.id=? AND e.branch_id=?').get(stepId,executionId,branchId))throw Error('Resource owner unavailable');
   };
+  app.get<{Params:{id:string;executionId:string;stepId:string};Querystring:{commandKey:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/issued-checkpoint',async(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);if(typeof request.query.commandKey!=='string'||!request.query.commandKey.trim()||request.query.commandKey.length>200)throw Error('Capture command key required');return context.resources.issuedResourceCaptureStatus(p.executionId,p.stepId,request.query.commandKey);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:{id:string;executionId:string;stepId:string};Body:import('@ponderosa/core').BranchIssuedResourceCaptureInput}>('/api/branches/:id/executions/:executionId/resources/:stepId/issued-checkpoint',async(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);const body=validatedObject(request.body,'Issued capture');exactObjectFields(body,['commandKey','expectedGeneration'],'Issued capture');
+      if(typeof body.commandKey!=='string'||typeof body.expectedGeneration!=='number')throw Error('Exact issued capture identity required');
+      return await context.resources.captureIssuedResource(p.executionId,p.stepId,body.expectedGeneration,body.commandKey);
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return await context.resources.inspectResource(p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });

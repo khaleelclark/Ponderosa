@@ -18,7 +18,7 @@ export function checkpointPackageCustody(dataDir:string){
   const key=(source:CheckpointPackageSource)=>{
     if(!source.checkpointId||!source.sourceChatId||!source.agentIds.length||source.agentIds.length>AGENT_PACKAGE_MAX_AGENTS||new Set(source.agentIds).size!==source.agentIds.length||source.agentIds.some(id=>!id))throw new Error('Checkpoint capture requires bounded exact nonempty source membership');
     const intent=source.intent;
-    if(!intent||!intent.executionId||!intent.resourceStepId||!Number.isSafeInteger(intent.resourceGeneration)||intent.resourceGeneration<0||[intent.frontierSha256,intent.bindingSha256,intent.configurationSha256].some(hash=>typeof hash!=='string'||!/^[a-f0-9]{64}$/.test(hash)))throw new Error('Checkpoint capture requires exact resource intent');
+    if(!intent||!intent.executionId||!intent.resourceStepId||!Number.isSafeInteger(intent.resourceGeneration)||intent.resourceGeneration<0||[intent.frontierSha256,intent.bindingSha256,intent.configurationSha256,...(intent.hostCutSha256!==undefined?[intent.hostCutSha256]:[])].some(hash=>typeof hash!=='string'||!/^[a-f0-9]{64}$/.test(hash)))throw new Error('Checkpoint capture requires exact resource intent');
     return createHash('sha256').update(source.checkpointId).digest('hex');
   };
   const syncDirectory=async()=>{if(process.platform!=='win32'){const handle=await fs.open(directory,'r');try{await handle.sync();}finally{await handle.close();}}};
@@ -44,7 +44,7 @@ export function checkpointPackageCustody(dataDir:string){
     try{return JSON.parse(await fs.readFile(path.join(directory,`${id}.json`),'utf8')) as CheckpointPackageReceipt;}
     catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}
   };
-  const sameSource=(a:CheckpointPackageSource,b:CheckpointPackageSource)=>a.checkpointId===b.checkpointId&&a.sourceChatId===b.sourceChatId&&JSON.stringify(a.agentIds)===JSON.stringify(b.agentIds)&&a.intent?.executionId===b.intent?.executionId&&a.intent?.resourceStepId===b.intent?.resourceStepId&&a.intent?.resourceGeneration===b.intent?.resourceGeneration&&a.intent?.frontierSha256===b.intent?.frontierSha256&&a.intent?.bindingSha256===b.intent?.bindingSha256&&a.intent?.configurationSha256===b.intent?.configurationSha256;
+  const sameSource=(a:CheckpointPackageSource,b:CheckpointPackageSource)=>a.checkpointId===b.checkpointId&&a.sourceChatId===b.sourceChatId&&JSON.stringify(a.agentIds)===JSON.stringify(b.agentIds)&&a.intent?.executionId===b.intent?.executionId&&a.intent?.resourceStepId===b.intent?.resourceStepId&&a.intent?.resourceGeneration===b.intent?.resourceGeneration&&a.intent?.frontierSha256===b.intent?.frontierSha256&&a.intent?.bindingSha256===b.intent?.bindingSha256&&a.intent?.configurationSha256===b.intent?.configurationSha256&&a.intent?.hostCutSha256===b.intent?.hostCutSha256;
   const sameReceipt=(a:CheckpointPackageReceipt,b:CheckpointPackageReceipt)=>sameSource(a,b)&&a.version===1&&b.version===1&&a.custodyId===b.custodyId&&a.boundaryId===b.boundaryId&&a.sha256===b.sha256&&a.byteLength===b.byteLength;
   const validateMembership=(portable:AgentPortablePackageDto,source:CheckpointPackageSource)=>{
     if(JSON.stringify(portable.agents.map(node=>node.ref))!==JSON.stringify(source.agentIds)||portable.agents.some(node=>node.sourceChat?.ref!==source.sourceChatId))throw new Error('Checkpoint package source membership mismatch');
@@ -75,7 +75,7 @@ export function checkpointPackageCustody(dataDir:string){
       return {state:'missing'};
     }),
     /** Caller must hold the common source boundary until this promise settles. */
-    capture:(source:CheckpointPackageSource,boundaryId:string,capture:()=>Promise<AgentPortablePackageDto>,commit:(publish:()=>void)=>void=publish=>publish())=>serial(async()=>{
+    capture:(source:CheckpointPackageSource,boundaryId:string,capture:()=>Promise<AgentPortablePackageDto>,commit:(publish:()=>void,receipt:CheckpointPackageReceipt)=>void=publish=>publish())=>serial(async()=>{
       const id=key(source);if(!boundaryId)throw new Error('Checkpoint source boundary required');
       await fs.mkdir(directory,{recursive:true,mode:0o700});
       const existing=await receiptAt(id);
@@ -92,7 +92,7 @@ export function checkpointPackageCustody(dataDir:string){
       await fs.rename(temporary,path.join(directory,`${id}.payload`));await syncDirectory();
       const receipt:CheckpointPackageReceipt={version:1,custodyId:id,...source,agentIds:[...source.agentIds],intent:{...source.intent},boundaryId,sha256:hash.digest('hex'),byteLength};
       // Final source validation and receipt admission must share one synchronous turn.
-      commit(()=>publishReceipt(id,receipt));
+      commit(()=>publishReceipt(id,receipt),receipt);
       await fs.unlink(pending);await syncDirectory();return receipt;
       }catch(error){
         await writeJson(`${id}.pending.json`,{version:1,...source,boundaryId,state:'failed',reason:error instanceof Error&&error.name==='SourceCaptureChangedError'?'source_changed':'capture_failed'});

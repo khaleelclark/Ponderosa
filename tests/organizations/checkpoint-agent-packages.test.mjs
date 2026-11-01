@@ -47,3 +47,20 @@ test('a source write during export cannot publish a retained custody receipt',()
     const state=await custody.inspect(source);assert.equal(state.state,'failed');assert.equal(state.reason,'source_changed');
   }finally{releaseSourceCapture(token);db.close();}
 }));
+
+test('issued host digest participates in custody identity and synchronous seal receives exact receipt',()=>fixture(async directory=>{
+ const db=new Database(':memory:');db.exec('CREATE TABLE seals(value TEXT)');
+ const issued={...source,intent:{...source.intent,hostCutSha256:'d'.repeat(64)}},custody=checkpointPackageCustody(directory),token=beginSourceCapture(db);let sealed;
+ try{
+  const receipt=await custody.capture(issued,token.boundaryId,async()=>portable(),(publish,receipt)=>commitSourceCapture(token,()=>{sealed=receipt;db.prepare('INSERT INTO seals VALUES(?)').run(receipt.sha256);publish();}));
+  assert.deepEqual(sealed,receipt);assert.equal(db.prepare('SELECT value FROM seals').get().value,receipt.sha256);
+  await assert.rejects(custody.inspect({...issued,intent:{...issued.intent,hostCutSha256:'e'.repeat(64)}}),/conflict/);
+ }finally{releaseSourceCapture(token);db.close();}
+}));
+test('failed issued seal publishes neither Branch SQL nor a custody receipt',()=>fixture(async directory=>{
+ const db=new Database(':memory:');db.exec('CREATE TABLE seals(value TEXT)');const custody=checkpointPackageCustody(directory),token=beginSourceCapture(db);
+ try{
+  await assert.rejects(custody.capture(source,token.boundaryId,async()=>portable(),(publish,receipt)=>commitSourceCapture(token,()=>{db.prepare('INSERT INTO seals VALUES(?)').run(receipt.sha256);throw Error('Branch seal refused');})),/Branch seal refused/);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM seals').get().n,0);assert.equal((await custody.inspect(source)).state,'failed');
+ }finally{releaseSourceCapture(token);db.close();}
+}));

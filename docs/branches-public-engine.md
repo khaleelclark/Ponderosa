@@ -919,3 +919,51 @@ For an available fresh destination before import starts, the same read verifies 
 `BranchResourceCustodyReleaseDto` returns `{commandKey,stepExecutionId,generation,custodyId,receiptSha256,state,error?}`. State `releasing` means intent persisted but byte deletion/completion may be unfinished or unknown; only `released` confirms the recorded completion. An engine error is recorded as `releasing` plus bounded error; no automatic replay occurs. `GET .../checkpoint-custody?commandKey=...` is pure command inspection and returns that DTO or `{commandKey,state:"not_found"}`; it never invokes deletion. `BranchesClient.releaseResourceCustody` and `resourceCustodyReleaseStatus` expose these operations without retries. After transport ambiguity inspect the same key; if an explicit retry is selected, retain the **entire original input**, even if current inspection shows a newer generation. Completion retry uses the package engine's existing exact-receipt idempotent tombstone. Commands require the resource owner still to exist; owner-deletion/orphan reclamation remains outside this contract.
 
 Deferred source regressions cover pure review/command inspection, stale generation/receipt, referenced refusal, same-key conflict, lost response, restart, old-command completion across generation change and no second deletion after completion. No tests, builds, types or runtime checks have executed.
+
+### Issued resource private-byte capture (consumer remains refused)
+
+The operator-only resource route now accepts `POST .../resources/:stepId/issued-checkpoint`
+with `{commandKey, expectedGeneration}`. It captures one current nonsecret standalone
+serial organization after its opening Request exists, using a NEW checkpoint package;
+it never promotes the pre-opening package to a later issued cut. Active source provider
+processes, leased/running Runs, deletion, recovery/unknown outcomes, multiple resources,
+parallel paths/maps/forks, incomplete graph closure and canonical runtime artifacts
+refuse. A source may still await a question/continuation; original effects must settle
+and runtime drain before the separate Runtime destination reservation can be used.
+
+The capture intent independently journals exact selected rows, the canonical issued
+host graph and pins before exporting bytes. `CheckpointPackageSource.intent.hostCutSha256`
+binds the issued graph separately from `frontierSha256`; custody validates and compares
+this optional digest as part of identity. Existing pre-opening sources retain their
+original identity. The package engine's additive synchronous `seal(receipt)` callback
+runs inside `commitSourceCapture`, with every source database locked and the complete
+optimistic source boundary validated, before the filesystem receipt is published.
+Branch rechecks selected facts, the host graph and current owner pins and commits the
+immutable snapshot plus its exact independent receipt in that same SQLite transaction.
+Cleanup/retirement cannot drain a generation with a pending issued capture intent.
+
+`GET` on the same route with `?commandKey=...` is pure Branch journal readback and returns
+`BranchIssuedResourceCaptureDto`. A completed exact-key POST reads the existing seal
+without re-exporting, allocating another snapshot, or touching surviving source Agents.
+A changed generation on the same key conflicts. An interrupted/failed capture remains
+held; retained bytes without a committed Branch seal are ambiguous and cannot silently
+seal a new source frontier. No automatic recapture, release or abandonment reclamation
+is supplied. Filesystem custody publication and SQLite commit are not a distributed
+transaction: an interrupted final commit can leave an independent package requiring
+owner reconciliation. Source/owner deletion and orphan custody reconciliation remain
+separate lifecycle work.
+
+Every result says `restoreSupported:false`, and the saved checkpoint is deliberately
+refused by ordinary historical rewind. This is capture coverage only. The complete
+issued-resource consumer still needs prospective Project/Chat reservation, actual
+current custody/disclosure authority adapters and explicit human per-fact approval,
+final-policy review, staged maps, mapped Branch Step/attempt/import/owner receipts,
+Runtime admission/readiness and exact final readback. A consumer MUST compare the
+receipt's `hostCutSha256` to the saved issued host graph in its custody adapter; the
+frozen Runtime reserve API alone does not add that new caller binding. No private
+fact disclosure approval is inferred by capture or ordinary access-settings review.
+
+Deferred source regressions cover canonical issued fact drift, generation conflict,
+retirement hold, exact snapshot/receipt sealing, restart readback, continuing ordinary
+rewind refusal, custody host-digest substitution and rollback when Branch sealing
+fails. None were executed; this is not end-to-end restoration qualification.

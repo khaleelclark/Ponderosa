@@ -968,7 +968,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false){
  const advance=async id=>{for(let n=0;n<30;n++){await branches.unitSaver.drain();branches.advance();if(reservation(id)&&branches.execution(id).state==='waiting')break;}await branches.unitSaver.drain();assert.ok(reservation(id));};
  const capture=async id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;assert.doesNotThrow(()=>branches.checkpointInterruption(branch.id,id,'interrupt',inv.id,`close-${id}`),'actual resource EXIT interruption must be supported');await branches.unitSaver.completeExits();}return branches.historicalCheckpoints(branch.id,id).find(c=>c.restoreSupported&&captureBytes({store},c.id).selected.resources.length===1);};
  const resume=id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;branches.checkpointInterruption(branch.id,id,'resume',inv.interruptionId,`resume-${id}`);}};
- const finish=async(id,onCaptured)=>{
+ const finish=async(id,onCaptured,onIssued)=>{
   await advance(id);for(let n=0;n<6&&branches.resourceRelease(reservation(id).step_execution_id)!=='ready';n++){await branches.unitSaver.drain();branches.advance();}
   const r=reservation(id),chatToken=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(chatToken);await branches.unitSaver.drain();assert.equal(branches.releaseResourceChat(r.step_execution_id,r.creation_key,chatToken),true);
   const p=store.createProject({label:'Inert owned resource',hostPath:dir,defaultEngine:'codex',chatOwned:true,branchId:branch.id,executionId:id}),temporary=store.getConversation(p.lastConversationId);
@@ -986,6 +986,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false){
   const request=store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id;
   coordination.updateRequest({requestId:request,updateId:`result-${id}`,kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'known resource result'}});
   const suffix=await claim();assert.equal(suffix.executionId,id);assert.ok(suffix.source.includes('suffix'));assert.equal(suffix.fence,1);settle(suffix);await branches.unitSaver.drain();
+  if(onIssued)await onIssued({stepId:r.step_execution_id,generation:r.generation,agentId:agent.id,chatId:temporary.id});
   const preview=store.previewAgentDeletion([agent.id]);store.deleteAgentSubtrees([agent.id],preview.previewHash,x=>coordination.handleAgentDeletion(x));
   const receipt=store.commitConversationDeletion(temporary.id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(temporary.id);branches.resourceRetired(r.step_execution_id);await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');
   return {chatId:temporary.id,agentId,chatToken,token};
@@ -1286,4 +1287,29 @@ test('fresh resource access choice accepts a pure review and refuses a different
  assert.equal(f.branches.resourceRestoreJournal(r.step_execution_id).choice.reviewSha256,review.reviewSha256);
  const importToken=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'import');assert.ok(importToken);
  assert.throws(()=>f.branches.resourceRestoreReview(r.step_execution_id,review,{action:'use_source',reviewSha256:review.reviewSha256}),/unavailable/);
+});
+
+// Deferred: actual Branch/resource/Request fixture, no provider execution.
+test('issued resource seal binds later host facts and keeps ordinary rewind refused',async t=>{
+ const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let saved;
+ await f.finish(f.source.id,undefined,async({stepId,generation})=>{
+  const journal=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'issued-cut');
+  assert.equal(journal.source.intent.resourceStepId,stepId);assert.match(journal.source.intent.hostCutSha256,/^[a-f0-9]{64}$/);
+  assert.equal(f.branches.resourceCanRetire(stepId,journal.source.agentIds),false);
+  assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation+1,'issued-cut'),/conflict/);
+  const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'issued-inert-boundary',sha256:hash('later-issued-private-bytes'),byteLength:2};
+  const db=f.store.sqlite,request=journal.snapshot.hostDependencies.requests[0].row,before=db.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n;
+  db.prepare('UPDATE coordination_requests SET updated_at=? WHERE id=?').run('changed-after-intent',request.id);
+  assert.throws(()=>db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'issued-cut',receipt))(),/frontier changed/);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_unit_snapshots').get().n,before);
+  db.prepare('UPDATE coordination_requests SET updated_at=? WHERE id=?').run(request.updated_at,request.id);
+  db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'issued-cut',receipt))();
+  saved=f.branches.issuedResourceCapture(f.source.id,stepId,'issued-cut');assert.equal(saved.state,'retained');assert.equal(saved.snapshot.restore_supported,false);
+  const snapshot=JSON.parse(db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(saved.checkpointId).snapshot_json);
+  assert.deepEqual(snapshot.issuedResourceCustody,receipt);assert.notEqual(receipt.sha256,JSON.parse(journal.snapshot.selected.resources[0].capture_json).receipt.sha256);
+  assert.equal(f.branches.issuedResourceCapturePending(stepId),false);
+  assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,saved.checkpointId,saved.checkpointHash,'not-admitted'),/unsupported|continuation|settled/);
+ });
+ await f.reopen();const replay=f.branches.issuedResourceCapture(f.source.id,saved.source.intent.resourceStepId,'issued-cut');assert.equal(replay.checkpointId,saved.checkpointId);assert.deepEqual(replay.receipt,saved.receipt);
 });
