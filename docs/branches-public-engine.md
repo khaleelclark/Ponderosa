@@ -526,8 +526,9 @@ The executable graph codec also accepts persistent-Agent nodes before their firs
 Request is issued. This includes Agent items in an otherwise supported Fork/Map
 graph and persistent-Agent suffixes of supported child-owner trees. Selected
 Agent attempts must still be prepared, at fence zero, with no Request, recovery
-reference, result or runtime outcome. Every issued, completed or uncertain Agent
-Request remains outside this codec. Exact audit replay and the full owned
+reference, result or runtime outcome. Issued Requests require the separate
+reviewed canonical graph path described below; uncertain effects remain refused.
+Exact audit replay and the full owned
 frontier remain required; a fabricated Script observation cannot certify an
 Agent node. Rewind rechecks each persistent target in its current owning Chat
 before accepting fresh graph rows. Normal admission then creates a new Request
@@ -580,8 +581,8 @@ exit/cleanup, live effects and uncertain frontiers remain refused. Deferred
 regression source covers an any-Join canceling an already authorized Map Script,
 refusal before drain, exit/cleanup tampering and no relaunch after rewind.
 
-The runtime owner has supplied a concrete proposed internal Request restoration
-contract, not an implemented API. A dedicated trusted owner transaction must
+The runtime owner supplied the internal Request restoration contract implemented
+by the retained canonical coordination path below. A dedicated owner transaction must
 validate the saved cut and current original scopes/grants, assign new Request,
 update and Join identities, and retain source authors as historical provenance.
 Imported question/answer facts need explicit historical kinds or a separate
@@ -591,9 +592,9 @@ ordered Join members must have exact final version/update outcomes, and only
 the final appropriate question/answer/Join activations may be published. The
 restoration receipt and all maps/rows/outbox writes must commit atomically.
 Question/history readers must label imported provenance and support new live
-answers without treating historical facts as freshly authored messages. Until
-that authority, reader and final-delivery path exists together, Branches refuses
-issued-Request graph restoration. Provenance tables alone cannot enable it.
+answers without treating historical facts as freshly authored messages. These
+requirements apply together to every supported issued-Request frontier.
+Provenance tables alone cannot enable restoration.
 
 ### Retained canonical coordination graph import (source continuation)
 
@@ -658,8 +659,8 @@ graph pins and inconsistent frozen Join outcomes are not admitted. Explicit
 `reconcileEffects:true` is required. This never authorizes replay of an unknown
 native effect.
 
-**Issued-Request Branch rewind:** supported single-path, nonsecret async/sync
-persistent-Agent cuts now attach canonical restoration maps to fresh Branch
+**Issued-Request Branch rewind:** supported nonsecret persistent-Agent single-path
+and Fork/Map cuts attach canonical restoration maps to fresh Branch
 Step/attempt/path identities in the historical-rewind owner transaction. The
 operator first calls `reviewHostGraph`, then supplies
 `graphReview:{reviewHash,reconcileEffects:true}` to the existing historical rewind
@@ -688,9 +689,8 @@ An independently restored graph cannot be adopted as a rewind suffix. Retained
 terminal facts are consumed as data; waiting attempts observe only the mapped
 fresh Request. No old Run, reply, lease, session or effect is relaunched.
 
-Issued-Request parallel/Map/tree/exit frontiers, resources, human gates mixed
-with issued prefixes, failed/cancelled/uncertain or recovery attempts, changed or
-secret pins and restored-history recapture remain refused. Released resource
+Issued-Request child-owner trees, resources, failed/cancelled/uncertain or recovery
+attempts, changed or secret pins and restored-history recapture remain refused. Released resource
 custody, graph binding/secret remapping, Agent/child cancellation, forwarded-bundle
 pointer/hash transfer, recovery/exhausted-budget codecs and broader crash
 reconciliation remain outside this increment. This is a supported internal path,
@@ -729,3 +729,49 @@ events and terminal versions, and retain capacity accounting for update-sourced
 restored delivery.
 A mapped suffix requiring user Communication also refuses completion without
 fresh canonical publication proof; a historical or missing event ID is insufficient.
+
+
+### Issued Fork/Map, exit and mixed human-gate frontiers (source continuation)
+
+The existing parallel replay reducer now consumes each issued Agent's exact
+`request_bound` event between preparation and settlement. Shared issued-frontier
+validation checks original `branch:<attempt>` identity, complete canonical
+update prefixes and final projections. Binding/Chat/task/input validation still
+runs in the enclosing Script/control replay before delegation. Agent settlement
+must match the selected terminal Request version and retained payload; human
+gate and Script observations cannot certify Agent output. Waiting Requests retain
+active owned paths, so concurrency-limited Map dispatch and ordered Fork/Map
+Join reduction resume through the mapped canonical Request. Agent cancellation,
+retries, unknown outcomes and child-owned effects remain refused.
+
+Mixed captured human gates use the existing gate codec, fresh identities and
+fresh pending notifications. Canonical restoration records budget admission and
+workflow start once; gate restoration reuses them and preserves running paths
+alongside waiting reviews. Resolved reviews remain historical prefix facts.
+No old gate notification or decision authority is copied.
+
+Exit-mode prefixes containing issued Requests are admitted only when the existing
+closing-invocation proof succeeds. Waiting issued Requests still prevent closure;
+this increment does not treat a live or uncertain native effect as drained. A
+closed exit cut may include a completed Agent prefix followed by a captured human
+gate or safe control frontier. Rewind uses a fresh invocation and retains the old
+closing invocation only in lineage. Terminal Request facts create no recipient
+Request delivery. Original grants, final-only canonical wakes, exact Communication
+proof, owner-transaction rollback and lost-response receipts are unchanged.
+
+Child-owner tree integration remains unfinished: its per-owner sealed host cuts,
+reviewed owner pins and shared Request/Join closure must be captured and validated
+before a single canonical mapping can be attached to all fresh tree owners. The
+existing tree validator still rejects issued Requests. Calling restoration once
+per child would conflict on shared participants/graphs and is not an accepted
+substitute. No unrelated resource, secret, recovery or cross-owner forwarded
+bundle cases were widened.
+
+Deferred source in `tests/branches/host-cut.test.mjs` covers async/sync/closed-exit
+Map and Fork frontiers, simultaneous captured review and Agent work, fresh
+canonical IDs and zero fences, pending Map dispatch, receipt replay before and
+after suffix completion, exact request-bound/terminal-version/gate-response
+refusal, and rollback of canonical rows/outbox plus fresh gate notifications.
+No test, check, typecheck, build, Node/native/browser/runner preparation or
+execution was run. This is a partial source slice; child-owner trees and full
+#32 acceptance remain outstanding.

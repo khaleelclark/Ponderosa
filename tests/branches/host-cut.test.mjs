@@ -6,14 +6,15 @@ import {join} from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
 import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
 import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
-function fixture(t,{secret=false,mode,maxConcurrent=8,requireCommunication=false}={}){
+function fixture(t,{secret=false,mode,maxConcurrent=8,requireCommunication=false,transform,input='input'}={}){
  const dir=mkdtempSync(join(tmpdir(),'host-cut-')),store=new AgentStore(dir),coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Host cut',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Host cut'}),agent=store.createAgent(project.id,{title:'Worker',engine:'codex',conversationId:chat.id}),peer=store.createAgent(project.id,{title:'Peer',engine:'codex',conversationId:chat.id});
  const definition={schema:'ponderosa.branch.v1',name:'Host cut',trigger:{kind:'manual'},...(secret?{parameters:{token:{type:'secret'}}}:{}),entry:'agent',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Do the retained task',...(requireCommunication?{requireUserCommunication:true}:{})}],controls:[],edges:[],policy:{maxConcurrentExecutions:maxConcurrent,failure:{action:'stop'}}};
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{}}});
+ const extra=transform?.(definition,{agent,peer})??{};
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{},...extra}});
  if(mode)branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
- const source=branches.accept(branch.id,'source','input');
+ const source=branches.accept(branch.id,'source',input);
  const capture=()=>store.sqlite.transaction(()=>captureBranchHostCut(store.sqlite,source.id,selectBranchUnit(store.sqlite,source.id))).deferred();
  return {store,coordination,branches,project,chat,agent,peer,branch,source,capture};
 }
@@ -312,4 +313,74 @@ test('mapped suffix still refuses completion without fresh required user Communi
  for(let n=0;n<30&&!['completed','failed'].includes(f.branches.execution(next.id).state);n++){f.branches.advance();await f.branches.unitSaver.drain();}
  assert.equal(f.branches.execution(next.id).state,'failed');assert.match(f.branches.detail(next.id).attempts[0].error,/Required user Communication/);
  assert.equal(f.branches.execution(next.id).output,undefined);
+});
+
+// Deferred source: the shared canonical restoration path for Fork/Map and mixed gates.
+async function parallelIssuedFixture(t,{shape='map',mode='async'}={}){
+ const f=fixture(t,{mode,input:'["one","two"]',transform:(d,{agent,peer})=>{
+  const edge=(id,from,to,on='success')=>({id,from,to,on});
+  d.steps.push({id:'finish',kind:'human_gate',prompt:'Finish the restored graph',editable:true});
+  if(shape==='map'){
+   d.entry='map';d.controls=[{id:'map',kind:'map',joinId:'join',workerId:'agent',source:'list',maxItems:4,maxConcurrentItems:1},{id:'join',kind:'join',forkId:'map',mode:'all',remainder:'finish',inputOrder:[]}];
+   d.edges=[edge('item','map','agent','selected'),edge('arrive','agent','join'),edge('finish-edge','join','finish')];
+  }else{
+   d.entry='fork';d.steps.push(shape==='mixed'?{id:'sibling',kind:'human_gate',prompt:'Review alongside Agent',editable:true}:{id:'sibling',kind:'agent',target:{kind:'persistent_agent',ref:'peer'},instructions:'Reconcile sibling'});
+   d.controls=[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['right','left']}];
+   d.edges=[edge('left','fork','agent','selected'),edge('right','fork','sibling','selected'),edge('arrive','agent','join'),edge('sibling-arrive','sibling','join',shape==='mixed'?'approved':'success'),edge('finish-edge','join','finish')];
+  }
+  return {agents:{worker:agent.id,peer:peer.id}};
+ }}),db=f.store.sqlite;
+ const source=f.source;
+ const tick=async()=>{f.branches.advance();await f.branches.unitSaver.drain();};
+ const requests=id=>db.prepare('SELECT a.id,a.request_id,r.recipient_agent_id,r.state FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN coordination_requests r ON r.id=a.request_id WHERE s.execution_id=?').all(id);
+ const complete=id=>{for(const r of requests(id))if(!['completed','failed','cancelled'].includes(r.state))f.coordination.updateRequest({requestId:r.request_id,updateId:`complete-${r.request_id}`,kind:'completed',actor:{kind:'agent',id:r.recipient_agent_id},payload:{text:'Reconciled item'}});};
+ const gates=id=>db.prepare("SELECT g.id,g.revision,s.step_id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'").all(id);
+ const approve=(id,exceptFinish=false)=>{for(const g of gates(id))if(!exceptFinish||g.step_id!=='finish')f.branches.resolveGate(g.id,{expectedRevision:g.revision,decision:'approve',commandKey:`approve-${g.id}`});};
+ for(let n=0;n<80;n++){
+  await tick();
+  if(mode==='exit'){complete(source.id);approve(source.id,true);await f.branches.unitSaver.drain();if(gates(source.id).some(g=>g.step_id==='finish')&&f.branches.execution(source.id).checkpointInvocation.state==='interrupted')break;}
+  else if(requests(source.id).length===(shape==='fork'?2:1)&&(shape!=='mixed'||gates(source.id).some(g=>g.step_id==='sibling')))break;
+ }
+ assert.ok(requests(source.id).length);
+ if(mode==='exit')await f.branches.unitSaver.completeExits();
+ const candidate=f.branches.unitSaver.freeze({written:new Set([source.id])})[0];assert.ok(candidate.content);
+ const saved=JSON.parse(candidate.content);assert.equal(saved.restore_supported,true);
+ const checkpointId=Number(db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(source.id,candidate.content,candidate.hash).lastInsertRowid),selection={checkpointId,expectedHash:candidate.hash};
+ const finish=async id=>{for(let n=0;n<100&&f.branches.execution(id).state!=='completed';n++){complete(id);approve(id);await tick();}assert.equal(f.branches.execution(id).state,'completed');};
+ await finish(source.id);
+ db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const grant=()=>true,review=f.branches.reviewHostGraph(f.branch.id,source.id,selection,grant),graph={reviewHash:review.reviewHash,reconcileEffects:true,grant};
+ const rewind=(key='parallel-issued')=>f.branches.rewindHistorical(f.branch.id,source.id,checkpointId,candidate.hash,key,undefined,graph);
+ return {...f,source,db,saved,selection,graph,rewind,finish,gates,requests};
+}
+for(const shape of ['map','fork','mixed'])for(const mode of ['async','sync','exit'])test(`issued ${shape} ${mode} rewind preserves canonical maps and completes its fresh suffix`,async t=>{
+ const f=await parallelIssuedFixture(t,{shape,mode}),next=f.rewind(),old=f.saved.selected;
+ const line=JSON.parse(f.db.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.rewind-lineage.v1'").get(next.id).snapshot_json);
+ for(const attempt of old.attempts.filter(a=>a.request_id)){
+  const fresh=f.db.prepare('SELECT * FROM branch_attempts WHERE id=?').get(line.idMap[attempt.id]);
+  assert.equal(fresh.request_id,line.coordination.requestMap[attempt.request_id]);assert.notEqual(fresh.request_id,attempt.request_id);assert.equal(fresh.fence,0);
+ }
+ if(mode==='exit'){
+  assert.notEqual(f.branches.execution(next.id).checkpointInvocation.id,line.sourceCheckpointInvocation.id);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id JOIN coordination_request_updates u ON s.source_kind='request_update' AND s.source_id=u.id WHERE u.request_id IN (SELECT value FROM json_each(?))").get(JSON.stringify(line.coordination.requestMap)).n,0,'settled terminal roots have no new provider delivery');
+ }
+ if(shape==='mixed'&&mode!=='exit')assert.ok(f.gates(next.id).some(g=>g.id!==old.gates[0].id));
+ if(shape==='map'&&mode!=='exit')assert.ok(old.items.some(item=>item.dispatched===0));
+ assert.equal(f.rewind().id,next.id);
+ await f.finish(next.id);assert.equal(f.rewind().id,next.id);
+});
+for(const tamper of ['request-bound','terminal-version','gate-response'])test(`mixed issued prefix rejects ${tamper} tampering without canonical delivery`,async t=>{
+ const f=await parallelIssuedFixture(t,{shape:'mixed',mode:'exit'}),{stableJson,payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js'),saved=structuredClone(f.saved);
+ if(tamper==='request-bound')saved.continuation.audit=saved.continuation.audit.filter(a=>a.kind!=='request_bound');
+ if(tamper==='terminal-version'){const update=saved.hostDependencies.updates.find(({row})=>row.resulting_state==='completed');update.row.resulting_version++;update.sha256=payloadHash(update.row);}
+ if(tamper==='gate-response')saved.selected.gates.find(g=>g.state==='resolved').response_json=stableJson({decision:'approve',expectedRevision:0,commandKey:'forged',output:'forged'});
+ const hash=payloadHash(saved),id=Number(f.db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,stableJson(saved),hash).lastInsertRowid),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n;
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash,'tampered-parallel',undefined,f.graph),/integrity|unsupported/);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);
+});
+test('Mixed issued rewind rolls back both graphs and pending gate notifications on insertion failure',async t=>{
+ const f=await parallelIssuedFixture(t,{shape:'mixed'}),tables=['branch_executions','branch_attempts','branch_gate_notifications','coordination_requests','coordination_cut_restorations','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
+ f.db.exec("CREATE TEMP TRIGGER reject_parallel_gate BEFORE INSERT ON branch_gate_notifications BEGIN SELECT RAISE(ABORT,'controlled gate insertion failure'); END");
+ assert.throws(()=>f.rewind(),/controlled gate insertion failure/);assert.deepEqual(counts(),before);
+ f.db.exec('DROP TRIGGER reject_parallel_gate');assert.ok(f.rewind().id);
 });

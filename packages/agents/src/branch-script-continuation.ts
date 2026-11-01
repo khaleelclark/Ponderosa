@@ -7,8 +7,8 @@ import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {branchText} from './branch-definition.js';
 import {interpolateBranchText,validateBranchConfiguration} from './branch-parameters.js';
-import {verifyBranchHostCut,type BranchHostCut} from './branch-host-cut.js';
-import {validateHistoricalRequest} from './coordination-v3-cut-restoration-authority.js';
+import type {BranchHostCut} from './branch-host-cut.js';
+import {issuedRequestFrontierSupported,retainedAgentResult} from './branch-issued-continuation.js';
 
 type Row=Record<string,any>;
 export type Selected=Record<string,Row[]>;
@@ -23,20 +23,10 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
 export type ScriptOwnerContext={resourceFrontier?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
   try {
-    const issued=selected.attempts?.filter(a=>a.request_id)??[];
-    if(issued.length){
-      if(context||hasParallelControls(definition)||selected.gates!.length||!hostCut||!verifyBranchHostCut(hostCut,selected.execution![0]!.id)||!hostCut.coverage.complete
-        ||hostCut.roots.length!==issued.length||hostCut.resources.length)return false;
-      for(const a of issued){
-        const s=selected.steps!.find(s=>s.id===a.step_execution_id),node=definition.steps.find(n=>n.id===s?.step_id),r=hostCut.requests.find(({row})=>row.id===a.request_id)?.row;
-        if(node?.kind!=='agent'||!('ref' in node.target)||!r||r.id!==`branch:${a.id}`||r.requester_agent_id!==null||r.communication_event_id!==null
-          ||!hostCut.roots.some(root=>root.attemptId===a.id&&root.requestId===r.id&&!root.recoveryOfRequestId)
-          ||!['open','in_progress','awaiting_answer','waiting_dependency','completed'].includes(r.state)||a.fence!==0
-          ||!['waiting','completed'].includes(a.state)||a.state==='completed'&&r.state!=='completed'||r.state==='completed'&&node.requireUserCommunication)return false;
-        validateHistoricalRequest(r,hostCut.updates.filter(({row})=>row.request_id===r.id).map(({row})=>row).sort((a,b)=>a.resulting_version-b.resulting_version));
-      }
-    }
-    if(hasParallelControls(definition))return parallelFrontierSupported(selected,definition,context);
+    if(hasParallelControls(definition))return parallelFrontierSupported(selected,definition,context,hostCut);
+    // Tree owners need their own sealed cuts and a shared graph receipt before admission.
+    if(context&&selected.attempts!.some(a=>a.request_id)||!issuedRequestFrontierSupported(selected,definition,hostCut))return false;
+    const issued=selected.attempts!.filter(a=>a.request_id);
     const tables=['execution','paths','steps','attempts','forks','joins','loops','maps','items','sealedResults','bundles','gates','actions','resources'];
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
     const e=selected.execution![0],p=selected.paths![0],terminal=context?.terminal===true;
@@ -218,7 +208,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       ||stableJson(configuration)!==stableJson(JSON.parse(owner.configuration_json)))return false;
     const boundRequests=new Set<string>();
     if(selected.attempts!.some(a=>a.request_id)){
-      if(seed||context||configuration.checkpointMode==='exit')return false;
+      if(seed||context)return false;
       const binding=db.prepare('SELECT bindings_json FROM branch_bindings WHERE id=?').get(e.binding_revision_id) as Row|undefined;
       const chat=db.prepare('SELECT chat_id FROM branches WHERE id=?').get(e.branch_id) as Row|undefined;
       if(!binding||!chat)return false;
@@ -232,7 +222,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     // A prefix must include every owned event through its boundary, not just its last ID.
     const owned=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
     if(stableJson(owned)!==stableJson(events))return false;
-    if(hasParallelControls(definition))return replayParallelCut(selected,definition,configuration,events,checkpoint,seed,context);
+    if(hasParallelControls(definition))return replayParallelCut(selected,definition,configuration,events,checkpoint,seed,context,hostCut);
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let finished:Row|undefined,terminalObserved=false;
     const admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();
@@ -374,11 +364,8 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(definition.steps.find(row=>row.id===current!.step_id)?.kind==='branch_call'&&(!completedChildren.has(a.id)||stableJson(v.result)!==stableJson({failed:context!.children[a.id]!.failed===true,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})})))return false;
           const node=definition.steps.find(row=>row.id===current!.step_id);
           if(node?.kind==='agent'){
-            const request=hostCut?.requests.find(({row})=>row.id===a.request_id)?.row;
-            const update=hostCut?.updates.find(({row})=>row.request_id===a.request_id&&row.resulting_version===request?.version)?.row;
-            if(!boundRequests.has(a.id)||request?.state!=='completed'||!update||update.resulting_state!=='completed'||node.requireUserCommunication)return false;
-            const payload=JSON.parse(update.payload_json),output=typeof payload?.text==='string'?branchText(payload.text):undefined;
-            if(stableJson(v.result)!==stableJson({failed:false,...(output!==undefined?{output}:{})}))return false;
+            const result=retainedAgentResult(hostCut,a.request_id);
+            if(!boundRequests.has(a.id)||!result||node.requireUserCommunication||stableJson(v.result)!==stableJson(result))return false;
           }
           if(node?.kind==='human_gate'){
             const gate=selected.gates!.find(g=>g.step_execution_id===current!.id),decision=gate&&resolvedGates.get(gate.id);

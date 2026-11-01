@@ -754,11 +754,12 @@ export class BranchStore {
         this.state(next.id,'running',now);
       }
       if(selected.gates!.some(g=>g.state==='waiting')){
-        // A restored review has no released effect or capacity reservation. Record
-        // ordinary manual admission before exposing its fresh human decision.
-        if(!this.executionBudgets.admit(next.id,now))throw Error('Restored review admission unavailable');
-        this.checkpoint(next.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',next.id)!.admission_json)},now);
-        this.state(next.id,'waiting',now,'Waiting for approval');
+        // Canonical restoration already admitted this execution and recorded its start.
+        if(!canonical){
+          if(!this.executionBudgets.admit(next.id,now))throw Error('Restored review admission unavailable');
+          this.checkpoint(next.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',next.id)!.admission_json)},now);
+        }
+        if(!restored.paths!.some(p=>p.state==='active'))this.state(next.id,'waiting',now,'Waiting for approval');
       }
       this.selectedWrite(next.id);
       return this.execution(next.id)!;
