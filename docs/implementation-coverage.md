@@ -1,6 +1,6 @@
 # Current implementation coverage and backlog
 
-Source snapshot: `8fba10951`, integration branch
+Source snapshot: `9d717fb56`, integration branch
 `phase2-implementation-integration`. Source inspection only; no acceptance verdict.
 [Historical snapshots](implementation-coverage-history.md) are archival, not current limits.
 
@@ -30,7 +30,7 @@ producer/deletion fences and additive migrations 0035–0040 remain assembled an
 
 The canonical [remaining inventory](phase2-remaining-implementation.md) supplies exact
 requirement, user behavior, owner and dependency for each row. M6 documentation correction
-is resolved here; M1 Claude native compaction is delivered in source, not runtime-qualified. M5 concise-copy cleanup is also delivered in source; rendered #29 qualification remains open. These resolved items are not pending implementation. Three tracked M items (one external contract, one external remainder after host delivery, one internal review-display gap) plus six U entries remain: U1 native contracts, classified U2, partial U3, recorded U4, U5 backend disposition with UI pending and minimal U6 state delivered. Scope disposition is not proof that new code is required.
+is resolved here; M1 Claude native compaction is delivered in source, not runtime-qualified. M5 concise-copy cleanup is also delivered in source; rendered #29 qualification remains open. These resolved items are not pending implementation. Three tracked M items (one external contract, one external remainder after host delivery, one pending UI review display) plus six U entries remain: U1 native contracts, classified U2, partial U3, recorded U4, U5 backend disposition with UI pending and minimal U6 state delivered. Scope disposition is not proof that new code is required.
 
 | ID / state | Exact requirement | Concrete user behavior missing or unresolved; implemented boundary | Owner | Dependency |
 | --- | --- | --- | --- | --- |

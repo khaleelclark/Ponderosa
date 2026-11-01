@@ -1,6 +1,6 @@
 # Phase 2 remaining implementation inventory
 
-Source snapshot: `38985ae19`, integration worktree.
+Source snapshot: `9d717fb56`, integration worktree.
 Includes bounded called-owner-tree UI, correlated Claude native command recovery,
 original host-effect reconciliation and bounded in-root link/preserve-unknown transport;
 M1, M5 and M6 are resolved in source, with runtime qualification deferred.
@@ -173,6 +173,6 @@ is never labeled whole implementation. Current-head source was preserved; active
 owner work remains outside this snapshot until separately handed off/integrated.
 
 This is exhaustive **requirement accounting**, not an exhaustive proof that there
-are only these tracked gaps in a large codebase. The bounded read cannot close U1–U6 or
+are only these tracked gaps in a large codebase. The bounded source dispositions do not establish full U1 parity, resolve U3 data formats or every U4 combination, or close
 unrun universal criteria. Cliff should assign each numbered entry or resolve its
 scope; “four categories left” and “all implemented” would both overstate evidence.
