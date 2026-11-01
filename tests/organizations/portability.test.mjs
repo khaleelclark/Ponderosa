@@ -518,22 +518,41 @@ test('shared engine forwards selected folder intent, result mappings and retaine
 test('explicit live Shared activation uses a NEW managed Chat root and refuses existing Shared roots',options,t=>withPortability(t,async f=>{
   const {mkdir}=await import('node:fs/promises');
   const pkg=await f.packageEngine.exportAgent(f.a.id,'full',{selectedWorkingFiles:['unmanaged-working-file.txt']});
+  const singlePkg=structuredClone(pkg),workingRootRef=randomUUID(),childRef=randomUUID();
+  pkg.kind='organization';pkg.agents[0].workingRootRef=workingRootRef;pkg.agents[0].workingFolder={directories:[],excludedPaths:[]};
+  pkg.agents.push({ref:childRef,title:'Grouped Shared child',engine:'codex',managerRef:pkg.rootRef,workingRootRef,workingCopyMode:'shared',sourceChat:pkg.agents[0].sourceChat,managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},accessSettings:{restrictedCapabilityIds:[]}});
   const root=path.join(f.dataDir,'fresh-live-chat');await mkdir(root);
   const project=f.store.createProject({label:'Fresh live destination',hostPath:root,creationHostPath:root,managedWorkspaceName:'fresh-live-chat',chatOwned:true,defaultEngine:'codex'},{idempotencyKey:randomUUID(),payloadHash:'a'.repeat(64)});
   const result=await f.packageEngine.importAgent(project.id,project.lastConversationId,pkg,{codex:'codex'},randomUUID(),{
-    workingFilesDestination:path.join(f.dataDir,'fresh-live-recovery'),workingFilesActivation:{sharedRoot:root},
+    workingRootDestinations:{[workingRootRef]:path.join(f.dataDir,'fresh-live-recovery')},workingFilesActivation:{sharedRoot:root},
   });
   const agent=f.store.getAgent(result.rootAgentId);
   assert.equal(agent.workingCopy.rootPath,root);
   assert.equal(await readFile(path.join(agent.workingCopy.rootPath,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
   assert.equal(result.liveWorkingRoots[0].path,root);
-  const separate=await f.packageEngine.importAgent(project.id,project.lastConversationId,pkg,{codex:'codex'},randomUUID(),{workingCopyMode:'separate_git',workingFilesDestination:path.join(f.dataDir,'separate-live-recovery'),workingFilesActivation:{}});
+  assert.equal(result.liveWorkingRoots[0].agentIds.length,2);
+  for(const id of result.agentIds)assert.equal(f.store.getAgent(id).workingCopy.rootPath,root);
+  assert.equal(f.store.getAgent(result.agentIds.find(id=>id!==result.rootAgentId)).managerAgentId,result.rootAgentId);
+  const separate=await f.packageEngine.importAgent(project.id,project.lastConversationId,singlePkg,{codex:'codex'},randomUUID(),{workingCopyMode:'separate_git',workingFilesDestination:path.join(f.dataDir,'separate-live-recovery'),workingFilesActivation:{}});
   const separateAgent=f.store.getAgent(separate.rootAgentId);
   assert.notEqual(separateAgent.workingCopy.rootPath,root);
   assert.equal(separateAgent.workingCopy.branchOwned,true);
   assert.equal(await readFile(path.join(separateAgent.workingCopy.rootPath,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
   assert.equal(separate.liveWorkingRoots[0].path,separateAgent.workingCopy.rootPath);
-  await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{
+  await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,singlePkg,{codex:'codex'},randomUUID(),{
     workingFilesDestination:path.join(f.dataDir,'must-not-create'),workingFilesActivation:{sharedRoot:f.project.hostPath},
   }),/unused NEW managed Chat/);
+}));
+
+test('grouped organization import keeps explicit per-Agent access choices under one current review',options,t=>withPortability(t,async f=>{
+  const pkg=await f.exportAgent(f.a.id);
+  for(const node of pkg.agents)node.accessSettings.restrictedCapabilityIds=[CAPABILITY_IDS.memoryRead];
+  const review=await f.packageEngine.reviewAccess(pkg,f.destination.id);
+  const agentActions=Object.fromEntries(pkg.agents.map(node=>[node.ref,node.ref===pkg.rootRef?'use_source':'keep_destination']));
+  await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{accessSettingsResolution:{action:'keep_destination',reviewSha256:review.reviewSha256,agentActions:{[pkg.rootRef]:'use_source'}}}),/cover exactly/);
+  const result=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{accessSettingsResolution:{action:'keep_destination',reviewSha256:review.reviewSha256,agentActions}});
+  const policies=new CapabilityPolicyStore(f.store.sqlite);
+  assert.ok(policies.resolveForAgent(result.rootAgentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead));
+  const child=result.agentIds.find(id=>id!==result.rootAgentId);
+  assert.ok(!policies.resolveForAgent(child).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead));
 }));

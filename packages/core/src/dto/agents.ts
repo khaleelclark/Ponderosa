@@ -212,7 +212,9 @@ export interface ImportAgentPackageRequest {
   workingRootDestinations?: Record<string,string>;
   /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
   workingFilesActivation?: {sharedRoot?:string};
-  accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string};
+  accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string;
+    /** Exhaustive per-node human choices for one reviewed organization import. */
+    agentActions?:Record<string,"keep_destination"|"use_source">};
   /** Human-selected destination folder mode; omitted retains source mode. */
   workingCopyMode?: AgentWorkingCopyMode;
   conversationId: string;

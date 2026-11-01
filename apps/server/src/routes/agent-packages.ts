@@ -1035,7 +1035,7 @@ export function registerAgentPackageRoutes(
         if(importBody.workingFilesDestination!==undefined&&(typeof importBody.workingFilesDestination!=='string'||!path.isAbsolute(importBody.workingFilesDestination)))throw new Error('Choose an absolute new working-files destination');
         if (importBody.workingCopyMode!==undefined&&!['shared','separate_git'].includes(String(importBody.workingCopyMode)))throw new Error('Invalid destination working-copy mode');
         if(importBody.workingFilesActivation!==undefined){const activation=validatedObject(importBody.workingFilesActivation,'Live working-root activation');exactObjectFields(activation,['sharedRoot'],'Live working-root activation');if(activation.sharedRoot!==undefined&&typeof activation.sharedRoot!=='string')throw new Error('Invalid new Shared root confirmation');}
-        if(importBody.accessSettingsResolution!==undefined){const resolution=validatedObject(importBody.accessSettingsResolution,'Access review');exactObjectFields(resolution,['action','reviewSha256'],'Access review');if(!['keep_destination','use_source'].includes(String(resolution.action))||typeof resolution.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(resolution.reviewSha256))throw new Error('Invalid access review');}
+        if(importBody.accessSettingsResolution!==undefined){const resolution=validatedObject(importBody.accessSettingsResolution,'Access review');exactObjectFields(resolution,['action','reviewSha256','agentActions'],'Access review');if(resolution.agentActions!==undefined){const actions=validatedObject(resolution.agentActions,'Per-Agent access choices');if(Object.values(actions).some(action=>action!=='keep_destination'&&action!=='use_source'))throw new Error('Invalid per-Agent access choice');}if(!['keep_destination','use_source'].includes(String(resolution.action))||typeof resolution.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(resolution.reviewSha256))throw new Error('Invalid access review');}
         if (!validChatInstructionsResolution(importBody.chatInstructionsResolution) ||
             typeof importBody.conversationId !== "string" ||
             !importBody.engineMapping || typeof importBody.engineMapping !== "object" ||
@@ -1204,6 +1204,10 @@ export function registerAgentPackageRoutes(
         importSourceLabel = portablePackage.sourceLabel.slice(0,240);
         const sourceChatRefs=new Set(portablePackage.agents.flatMap(node=>node.sourceChat?[node.sourceChat.ref]:[]));
         if(sourceChatRefs.size>1)throw new Error('Multiple source Chat bindings require separate organization packages; one export is one within-Chat reporting subtree');
+        if(body.accessSettingsResolution?.agentActions){
+          const refs=portablePackage.agents.filter(node=>node.accessSettings).map(node=>node.ref),actions=body.accessSettingsResolution.agentActions;
+          if(Object.keys(actions).length!==refs.length||refs.some(ref=>!Object.hasOwn(actions,ref))||Object.keys(actions).some(ref=>!refs.includes(ref)))throw new Error('Per-Agent access choices must cover exactly the reviewed source settings');
+        }
         if(body.accessSettingsResolution||portablePackage.agents.some(node=>node.accessSettings?.restrictedCapabilityIds.length)){
           const accessReview=await reviewAccess(portablePackage,conversation.id);
           reviewedDestinationPolicy=stableJson(accessReview.destination);
@@ -1777,9 +1781,9 @@ export function registerAgentPackageRoutes(
         if(roleIntent)outputApps!.checkImport(roleIntent.reviewId,roleIntent.binding,creationOperationId);
         const commit=()=>{
           if(reviewedDestinationPolicy!==undefined&&stableJson(new CapabilityPolicyStore(store.sqlite).resolveForChat(conversation.id))!==reviewedDestinationPolicy)throw new Error('Destination access changed; review the import again');
-          if(body.accessSettingsResolution?.action==='use_source'){
+          if(body.accessSettingsResolution){
             const policies=new CapabilityPolicyStore(store.sqlite);
-            for(const node of importNodes)if(node.accessSettings)policies.put({scopeKind:'agent',scopeId:created.get(node.ref)!.id,expectedRevision:0,restrictedCapabilityIds:node.accessSettings.restrictedCapabilityIds,actor:'operator',reason:'Human-reviewed portable nonsecret access settings'});
+            for(const node of importNodes)if(node.accessSettings&&(body.accessSettingsResolution.agentActions?.[node.ref]??body.accessSettingsResolution.action)==='use_source')policies.put({scopeKind:'agent',scopeId:created.get(node.ref)!.id,expectedRevision:0,restrictedCapabilityIds:node.accessSettings.restrictedCapabilityIds,actor:'operator',reason:'Human-reviewed portable nonsecret access settings'});
           }
           branchHooks?.commit(response);
           store.updateAgentCreationOperation(creationOperationId!, {

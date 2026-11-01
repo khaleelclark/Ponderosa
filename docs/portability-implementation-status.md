@@ -110,3 +110,12 @@ working-copy service. Still no execution or passing claim.
 The deferred live regression also imports a Separate Git Agent into that fresh
 repository and asserts locally owned branch receipt, distinct normal working path
 and restored bytes there. No source runtime was invoked.
+
+Grouped Shared continuation: complete organizations already import in one canonical
+operation and populate one shared root after fresh managed Chat confirmation.
+Added exhaustive `accessSettingsResolution.agentActions` keyed by source node ref
+so a grouped operation can preserve independently reviewed keep/apply choices under
+one current complete-package digest. Core DTO and shared route validation/commit
+updated; wrapper forwards the existing resolution object unchanged. Branch grouping
+and staged per-Agent review/Stop/staleness remain owned by Branches. Deferred
+portability regression covers mixed choices and incomplete-map refusal. No execution.

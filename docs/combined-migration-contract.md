@@ -248,3 +248,17 @@ there is no silent activation or modification of an existing Shared root.
 An all-Separate-Git import into a NEW empty managed Chat may likewise confirm
 `sharedRoot` to initialize its fresh repository; omitting that confirmation for
 Separate-only activation expects an already initialized destination Git Project.
+
+Grouped within-Chat organization imports use the same one-operation live activation
+and shared root; the shared importer accepts the complete organization topology.
+For independently reviewed per-Agent capability choices,
+`accessSettingsResolution` also accepts `agentActions: Record<portableNodeRef,
+'keep_destination'|'use_source'>`. When present it must cover exactly every node
+with source `accessSettings`; unknown/missing refs refuse before writes. Existing
+`action` remains required and backwards compatible. Each explicit node choice
+controls only that newly created Agent's restrictions. `reviewSha256` MUST come
+from review of the complete grouped package and actual destination Chat; separate
+single-Agent package hashes cannot be combined or reused. Destination policy is
+rechecked before atomic commit. Grouping and durable per-Agent human reviews,
+actual new-root confirmation, cancellation/staleness admission remain Branch caller
+responsibilities; there is no automatic blanket permission or live root adoption.
