@@ -530,3 +530,23 @@ in-progress #32 fork/map/Request/provider/resource/recovery-secret continuations
 Runtime mixed-route generation/early voice and unknown-native/Claude limitations
 remain. No consolidated qualification started. No tests/checks/build/types/browser/
 runner preparation or execution, push/deploy or whole-UI/Bible pass claim.
+
+## Common optimistic source-capture boundary integrated
+
+Runtime owner `7a6293325ec4cf1e40135a5b2eac1e09d503c760` integrated as
+`1d7805d18` atop `914e45363`. All sixteen changed deliverables are present
+and source-read, including the API, writer hooks, exact contract documentation,
+and deferred regression source. No migration was added; existing0035 remains.
+Resolved two integration conflicts by preserving the shared recordingMediaType
+import/audio map and forwarding portableState through the tracked async imported
+history wrapper. Additive agents API exports are retained.
+
+For all32/Build-list #32 coverage this adds only the common optimistic host
+boundary: supplied SQLite connections plus participating journal, imported-history,
+artifact, attachment and deletion writers. Reliability's retained package caller,
+memory/import writer hooks and durable unknown-outcome checks remain required for
+combined all-domain capture. No native provider snapshot or complete resource
+custody claim. Newer Branches a62ef through6c4a9eb source is not yet integrated in
+this tree; its implementation notices do not establish integration or acceptance.
+Other previously listed gaps remain open. No tests/checks/build/types/Node/native/
+browser/runner preparation or execution, push/deploy or qualification performed.
