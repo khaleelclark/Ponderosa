@@ -1,3 +1,4 @@
+import {lifecycleDiscovery} from '../lifecycle-discovery.js';
 import {destinationLifecycle} from '../destination-lifecycle.js';
 import {checkpointCaptureAbandonment} from '../checkpoint-capture-abandonment.js';
 import {destinationAdmissionHeld} from '@ponderosa/agents';
@@ -462,6 +463,12 @@ export function registerAgentPackageRoutes(
       return undefined;
     }
   };
+  const discovery=lifecycleDiscovery({db:store.sqlite,dataDir:context.dataDir,validateImport:validatedOperation,owner:context.custodyOwner,readRetirement:(id,group)=>group?coordinationV3.readCoordinationDestinationGroupRetirement(id):coordinationV3.readCoordinationDestinationRetirement(id)});
+  for(const [route,read] of [['agent-imports',discovery.imports],['destinations',discovery.destinations],['checkpoint-captures',discovery.captures]] as const){
+    app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>(`/api/lifecycle/${route}`,(request,reply)=>{
+      try{return read(request.query);}catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid retained lifecycle metadata; evidence remains held':(error as Error).message});}
+    });
+  }
   const importLifecyclePath=(id:string)=>{if(!operationIdPattern.test(id))throw Error('Invalid import identity');return path.join(importOperationDirectory,`${id}.lifecycle.json`);};
   const writeLifecycle=(file:string,value:unknown)=>{
     const temporary=`${file}.${randomUUID()}.tmp`,fd=syncFs.openSync(temporary,'wx',0o600);

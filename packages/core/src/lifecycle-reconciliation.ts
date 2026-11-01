@@ -75,3 +75,24 @@ export interface DestinationGroupRetirementReviewDto extends CoordinationDestina
  preserveOnlyPermanent:true;globalRuntimeQuiescenceRequired:true;canReleaseSourcePins:boolean;
 }
 export type DestinationGroupRetirementReceipt=import('./coordination-destination.js').CoordinationDestinationGroupReconciliationReceipt;
+
+/** Operator audit discovery; identifiers are retained originals, never admission/cleanup authority. */
+export interface LifecycleDiscoveryQuery {cursor?:string;limit?:number|string}
+export interface LifecycleDiscoveryPage<T> {items:T[];revision:string;nextCursor?:string;unverifiedEvidenceCount?:number}
+export interface LifecycleAuditOwner {
+ projectId:string;conversationId:string;
+ project:'current'|'deletion_receipt'|'retained_only';conversation:'current'|'deletion_receipt'|'retained_only';
+}
+export interface LifecycleImportEntry {
+ operationId:string;owner:LifecycleAuditOwner;product:'dev'|'branches';status:string;phase:string;
+ evidenceOrigin:'journal'|'retained_lifecycle';lifecycleState?:string;evidenceSha256:string;
+}
+export interface LifecycleDestinationEntry {
+ admissionId:string;group:boolean;state:'reserved'|'staged'|'admitted'|'retired';
+ branchId:string;sourceExecutionId:string;sourceOwner:'current'|'retained_only';checkpointId:number;checkpointHash:string;
+ destinations:(LifecycleAuditOwner&{executionId:string;resourceStepId:string;sourceChatId:string})[];evidenceSha256:string;
+}
+export interface LifecycleCaptureEntry {
+ captureKey:string;source:import('./branches.js').CheckpointPackageSource;branchId?:string;
+ sourceOwner:'current'|'retained_only';state:'capturing';evidenceSha256:string;
+}
