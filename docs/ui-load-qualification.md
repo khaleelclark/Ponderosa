@@ -313,9 +313,10 @@ refuses before fixture/browser construction and writes32 terminal not-run rows.
 
 At8b8723a8d one zero-active pinned-profile/75ms browser invocation completed exit0
 with complete trace/profile/context and browser/web/fixture cleanup. Native41,
-one observed40ms group and40censored groups satisfied the current explicit
-namespace/window/visible-lifecycle/trusted ledger and supported zero-drop callback
-predicate. The finite rank is below16ms reporting floor, numeric p75=null. This
+one observed40ms group and40censored groups satisfied the then-current explicit
+namespace/window/visible-lifecycle/trusted ledger and early zero-drop callback
+predicate. Its emitted below16ms interpretation was conditional: terminal delivery
+coverage was not established, so the historical population remains diagnostic. This
 does not retroactively validate historical zero-observed captures or establish
 universal completeness. LCP4604ms remains red; canonical-tail readiness6633.6ms.
 No causal performance improvement, live20/32 or METHOD acceptance follows.
@@ -343,3 +344,43 @@ render cost does not isolate a safe product repair; no further product change
 or repeated browser invocation was made. Exact raw/trace/profile/maps and analysis
 are retained in the render-attribution packet. METHOD acceptance, contemporary
 capacity, actual20worker custody and explicitGO remain separate gates.
+
+### Terminal-health and structured-decision correction
+
+Read full independent exact8b review. A zero-drop early callback plus rAF/takeRecords
+does not establish delivery through the whole retained frame window. Installed
+collector now explicitly records terminalDelivery.supported=false; no browser
+contract is invented. Missing groups remain conditional diagnostic, including
+previous8b and mapped captures. Synthetic unit contract receipts test rank arithmetic
+only. Actual final-delivery contract validation remains OPEN.
+
+Entries must have finite ordered start/duration/processing fields and fit the frame
+window with a conservative8ms duration-quantization allowance. This is not exact
+pixel-presentation attestation. Independent documentId AND timeOrigin uniqueness
+reject relabelled duplicate documents. Host task begin/end ledger records planned
+trusted-type lower bounds, completion and native counter snapshots; all five input
+types reconcile against eventCounts. Native interactions are not equated to raw
+events. These new browser task/health paths have not been executed live.
+
+After monitoring stops every activated Agent is checked with f.settled (retained
+provider errors) plus all completed terminal Runs; every session-close attempt
+runs despite failure, and fixture disposal still runs. Focused regression injects
+a provider failure after the monitor window and verifies later Agent cleanup.
+No actual live20 shutdown proof follows from stub regression.
+
+Acceptance now reads manager-pinned structured JSON METHOD decision with exact
+reviewedHead and canonical enumerated input-manifest SHA256, not any prose ACCEPT
+line. Mixed PRODUCT ACCEPT/METHOD REQUEST_CHANGES or quoted ACCEPT is rejected.
+Separate pinned receipt hash/head and GO reference remain evidence, not permission.
+Input binding covers ENUMERATED FILE BYTES ONLY; Node/browser/Playwright/native/
+dependencies and source-to-build provenance are not established by this helper.
+Actual execution prerequisite/build-receipt acceptance remains a separate OPEN
+gate; no comprehensive-prerequisite claim or acceptance receipt is generated.
+
+Metadata erratum: the historical8b packet has9changed snapshots, not7 (the old
+count selected only.mjs extensions). Its retained15named passing cases are
+defined in TWO files. Historical argv also names absent qualification-ledger.test.mjs;
+no third-file cases or suite are credited. Original packet/argv bytes remain.
+Occurrence/LCP lifecycle source gate remains credited CLOSED; profile source
+substantially CLOSED; final delivery, execution prerequisite provenance, live20,
+contemporary capacity and full32/GO remain OPEN.
