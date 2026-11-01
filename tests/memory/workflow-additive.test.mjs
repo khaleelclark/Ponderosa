@@ -56,3 +56,80 @@ test('destination edits during staged recovery require a new review and compensa
  for(let i=0;i<x.before.length;i++)for(const [key,row]of Object.entries(byId(x.before[i])))if(key!==id)assert.deepEqual(byId(actual[i])[key],row);
  await x.authority();assert.equal(x.f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE staging_plan_id=? AND state IN ('staging','retiring')").get(plan.id).n,0);noRuns(x.f);
 });
+
+import {BranchInstallationService} from '../../apps/server/dist/branch-installation-service.js';
+const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r});return {promise,resolve};};
+// Hold real inventory results and the delivery of a real, completed staged import.
+async function overlapping(x,plan,run){
+ const prototype=BranchInstallationService.prototype,inventory=prototype.memoryInventory;
+ const entered=[deferred(),deferred()],release=[deferred(),deferred()],imported=deferred(),releaseImport=deferred(),pending=[];
+ let service,engine,originalImport,imports=0,calls=0;
+ prototype.memoryInventory=async function(...args){
+  if(this.store!==x.f.store)return inventory.apply(this,args);
+  service=this;
+  if(!engine){engine=this.engine;originalImport=engine.importAgent;engine.importAgent=async function(...args){imports++;const result=await originalImport.apply(this,args);imported.resolve({result,signal:args[5]?.signal});await releaseImport.promise;args[5]?.signal?.throwIfAborted();return result;};}
+  const index=calls++,result=await inventory.apply(this,args);
+  if(index<2){entered[index].resolve();await release[index].promise;}
+  return result;
+ };
+ try{
+  const a=confirm(x.f,plan.id);pending.push(a);await entered[0].promise;
+  const b=confirm(x.f,plan.id);pending.push(b);await entered[1].promise;
+  release[0].resolve();const staged=await imported.promise;
+  return await run({a,b,staged,service,releaseDuplicate:()=>release[1].resolve(),releaseImport:()=>releaseImport.resolve(),imports:()=>imports});
+ }finally{
+  release.forEach(g=>g.resolve());releaseImport.resolve();
+  await Promise.allSettled(pending);
+  if(engine)engine.importAgent=originalImport;
+  prototype.memoryInventory=inventory;
+  if(service)await service.tick();
+ }
+}
+
+test('delayed duplicate confirmation cannot revive Stop while a real staged memory import is pending',async t=>{
+ const x=await setup(t),plan=ok(await x.preview()),beforeVersion=x.f.store.sqlite.prepare('SELECT active_version_id FROM branches WHERE id=?').get(x.branchId);
+ await overlapping(x,plan,async h=>{
+  assert.equal(h.service.status(plan.id).state,'applying');assert.equal(h.imports(),1);
+  const staged=x.f.store.sqlite.prepare("SELECT * FROM branch_installation_resources WHERE staging_plan_id=? AND agent_ref='new'").get(plan.id);assert.equal(staged.local_id,h.staged.result.rootAgentId);
+  assert.ok(x.f.store.getAgentCreationOperation(staged.creation_operation_id).result.memoryPlan.length,'Real imported rows retain exact cleanup receipt');
+  const stop=ok(await api(x.f,'POST',`/api/branches/installations/${plan.id}/cancel`,{}));assert.equal(stop.state,'canceling');assert(h.staged.signal.aborted);
+  h.releaseDuplicate();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.service.status(plan.id).state,'canceling','A delayed duplicate cannot reset Stop before completing');const late=await h.b;assert.equal(late.status,409,late.raw);assert.match(late.body.error,/no longer available/);assert.equal(h.service.status(plan.id).state,'canceling','Delayed admission must not clear Stop');
+  h.releaseImport();assert(['canceling','canceled'].includes(ok(await h.a).state));await h.service.tick();await h.service.tick();
+  assert.equal(h.service.status(plan.id).state,'canceled');assert.equal(h.imports(),1);assert.equal(x.f.store.getAgent(staged.local_id),undefined);assert.equal(x.f.store.getAgentCreationOperation(staged.creation_operation_id)?.result?.memoryPlan,undefined);
+  assert.deepEqual(x.f.store.sqlite.prepare("SELECT local_id,state FROM branch_installation_resources WHERE staging_plan_id=?").all(plan.id),[{local_id:staged.local_id,state:'deleted'}],'Cleanup retains only its deleted resource tombstone');assert.equal(x.f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE staging_plan_id=? AND state IN ('active','staging','retiring')").get(plan.id).n,0);assert.deepEqual(x.f.store.sqlite.prepare('SELECT active_version_id FROM branches WHERE id=?').get(x.branchId),beforeVersion);await x.unchanged();
+  for(const field of ['title','handle','activeEngine','model','effort','speed','managementPermissions','managerAgentId'])assert.deepEqual(x.f.store.getAgent(x.old.id)[field],x.old[field],`Stopped update preserves Agent ${field}`);
+  for(const field of ['title','instructions'])assert.deepEqual(x.f.store.getConversation(x.chat.id)[field],x.chat[field],`Stopped update preserves Chat ${field}`);
+ });
+});
+
+test('overlapping confirmations of one applying plan coalesce without importing twice or replacing memory',async t=>{
+ const x=await setup(t),plan=ok(await x.preview());
+ await overlapping(x,plan,async h=>{
+  h.releaseDuplicate();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.service.status(plan.id).state,'applying');assert.equal(h.imports(),1);
+  h.releaseImport();const [a,b]=await Promise.all([h.a,h.b]);assert.equal(ok(a).state,'completed');assert.equal(ok(b).state,'completed');assert.equal(h.imports(),1);
+  preserve(x.before,await rows(x.f,x.chat.id));await x.authority();assert.equal(x.f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE branch_id=? AND agent_ref='new' AND state='active'").get(x.branchId).n,1);
+ });
+});
+
+test('duplicate inventory admission released after completion returns the compacted receipt without revival',async t=>{
+ const x=await setup(t),plan=ok(await x.preview());
+ await overlapping(x,plan,async h=>{
+  h.releaseImport();assert.equal(ok(await h.a).state,'completed');const before=await rows(x.f,x.chat.id),receipt=x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id);assert.equal(receipt.package_json,'{}');
+  h.releaseDuplicate();assert.equal(ok(await h.b).state,'completed');assert.deepEqual(x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id),receipt);assert.deepEqual(await rows(x.f,x.chat.id),before);assert.equal(h.imports(),1);await x.authority();
+ });
+});
+
+test('pending inventory admission cannot revive expired, canceled or review-required durable receipts',async t=>{
+ const x=await setup(t),prototype=BranchInstallationService.prototype,inventory=prototype.memoryInventory;
+ for(const state of ['expired','canceled','review_required']){
+  const plan=ok(await x.preview()),entered=deferred(),release=deferred();let service,pending;
+  prototype.memoryInventory=async function(...args){if(this.store!==x.f.store)return inventory.apply(this,args);service=this;const result=await inventory.apply(this,args);entered.resolve();await release.promise;return result;};
+  try{
+   pending=confirm(x.f,plan.id);await entered.promise;
+   if(state==='expired'){x.f.store.sqlite.prepare('UPDATE branch_installation_plans SET created_at=? WHERE id=?').run('2000-01-01T00:00:00.000Z',plan.id);await service.tick();}
+   else service.compactPlan(plan.id,state,'Controlled terminal receipt transition');
+   const receipt=x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id);assert.equal(receipt.state,state);assert.equal(receipt.package_json,'{}');
+   release.resolve();const late=await pending;assert.equal(late.status,409,late.raw);assert.deepEqual(x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id),receipt);await x.unchanged();
+  }finally{release.resolve();if(pending)await pending;prototype.memoryInventory=inventory;}
+ }
+});
