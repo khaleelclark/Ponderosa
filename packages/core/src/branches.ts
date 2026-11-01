@@ -119,6 +119,7 @@ export interface BranchCheckpointInvocationDto {
   requiredWatermark?:number; savedSnapshotId?:number; savedContentHash?:string; lastSavedSnapshotId?:number;
 }
 export interface BranchExecutionDto {
+  runtimeData?:{planId:string;sourceExecutionId:string;manifestSha256:string;held:true;currentAuthority:false};
   checkpointInvocation?:BranchCheckpointInvocationDto;
   id: string; branchId: string; versionId: string; bindingRevisionId: string;
   parentExecutionId?: string; parentAttemptId?: string; callDepth?: number; configuration?: BranchConfiguration;
@@ -252,14 +253,23 @@ export interface BranchResourceDto { stepExecutionId: string; templateRef: strin
 
 export interface BranchContextDto extends ConversationDto { workingDirectory:string; defaultEngine:string }
 
-export type BranchPackageChat={ref:string;title:string;instructions?:string;agents:Array<{ref:string;managerRef?:string;definition:AgentPortablePackageDto}>};
+export type BranchPackageChat={executionRef?:string;ref:string;title:string;instructions?:string;agents:Array<{ref:string;managerRef?:string;definition:AgentPortablePackageDto}>};
 export interface InstalledBranchPackage {
  schema:'ponderosa.branch-installation.v1';packageId:string;mode:'template'|'full';exportedAt:string;
  definition:BranchDefinition;chats:BranchPackageChat[];agentBindings:Record<string,{chatRef:string;agentRef:string}>;
  limits:BranchLimits;parameters?:Record<string,string|number|boolean>;
  triggers?:BranchBindings['triggers'];engines?:BranchBindings['engines'];
  outputRoles?:Array<{chatRef:string;agentRef:string;output:boolean;speaker:boolean}>;
+ runtimeData?:BranchPortableRuntimeData;
 }
+
+/** Private evidence bytes never carry dispatch, grants, leases or provider ownership. */
+export interface BranchPortableRuntimeFact {kind:'frontier'|'definition'|'bindings'|'configuration'|'provenance'|'host'|'initial'|'checkpoint'|'transition'|'command'|'custody';key:string;json:string;sha256:string}
+export interface BranchPortableRuntimeOwner {sourceExecutionId:string;sourceBranchId:string;chatRefs:string[];facts:BranchPortableRuntimeFact[];sha256:string}
+export interface BranchPortableRuntimeData {schema:'ponderosa.branch-runtime-data.v1';sourceBranchId:string;identities:{chats:Record<string,string>;agents:Record<string,{chatRef:string;agentRef:string}>};owners:BranchPortableRuntimeOwner[];sha256:string}
+export interface BranchRuntimeFrontierReceipt {disposition:'recreated_held'|'evidence_only';idMap:Record<string,string>;reason?:string}
+export interface BranchRuntimeDataReceipt {schema:'ponderosa.branch-runtime-import.v1';planId:string;branchId:string;manifestSha256:string;frontiers:Record<string,BranchRuntimeFrontierReceipt>;executionMap:Record<string,string>;chatMap:Record<string,string>;agentMap:Record<string,string>;disposition:'held';currentAuthority:false;dispatched:false;workflowEnabled:false;credentials:'reenter';nativeState:'not_adopted';createdAt:string}
+export interface BranchRuntimeDataReadback {receipt:BranchRuntimeDataReceipt;data:BranchPortableRuntimeData}
 
 export interface BranchLifecycleDto {
  sourceDiagnostics?:Array<{id:string;title:string;body:string;createdAt:string}>;
@@ -280,7 +290,7 @@ export interface BranchFullImportAgentReviewDto {
 }
 export interface BranchMemoryUpdateSelectionDto {newAgents:Array<{chatRef:string;agentRef:string}>;teamChats:string[]}
 export interface BranchMemoryUpdateReviewDto {selection:BranchMemoryUpdateSelectionDto;incoming:Array<{chatRef:string;agentRef:string;snapshot:import('./dto/agents.js').PortableChatMemorySnapshotDto}>;destination:import('./dto/agents.js').PortableChatMemorySnapshotDto[];excludedRows:number}
-export interface BranchInstallationPreviewDto {id:string;memoryUpdateReview?:BranchMemoryUpdateReviewDto;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
+export interface BranchInstallationPreviewDto {id:string;memoryUpdateReview?:BranchMemoryUpdateReviewDto;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];runtimeDataReview?:{manifestSha256:string;owners:number;facts:number;disposition:'held';currentAuthority:false};fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
 
 /** Scoped picker context comes from canonical membership, independent of search pagination. */
 export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTeam:boolean; chatTitle:string; managerTitle?:string };

@@ -28,10 +28,11 @@ it is not a scan claiming every rule in core has been justified.
 installation export plus shared Agent package composer transport definitions (now
 including state channels), templates, optional nonsecret parameters/limits and
 installed Agent data. The lightweight `branch-package.v1` exports only the
-definition. Full `branch-installation.v1` excludes runtime execution/private
-checkpoint journals and execution-owned Chats; it does not recreate in-flight
-work on another machine. That is an explicit U3/#8 portability boundary, not
-claimed complete here. Known secret fields are deliberately omitted;
+definition. Full `branch-installation.v1` now includes bounded standalone manual runtime
+execution/private checkpoint journals and execution-owned Chats as hash-bound
+held data. Supported effect-free native frontiers use the existing remapper;
+there is no runnable foreign-cut admission. Called/automatic trees and external
+proof expansion remain U3/#8 boundaries. See `branch-runtime-package-recreation.md`. Known secret fields are deliberately omitted;
 users must rebind credentials. A runtime checkpoint is an additional selected
 continuation contract, not a promise to replay unknown native side effects.
 

@@ -1,3 +1,4 @@
+import {validateBranchRuntimeData} from './branch-runtime-package.js';
 import {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';
 import {branchSharedState,branchStateResult} from './branch-shared-state.js';
 import {preserveBranchGroupJournals} from './branch-group-journal-retention.js';
@@ -299,6 +300,7 @@ export class BranchStore {
   }
   private functionalReady(executionId: string): boolean {
     return this.ancestors(executionId).every(owner => {
+      if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key='portable-runtime-data'",owner.id))return false;
       if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key LIKE 'resource-generation-exit:%' AND json_extract(result_json,'$.state') IN ('fencing','capturing') LIMIT 1",owner.id))return false;
       if(this.row(`SELECT 1 FROM coordination_destination_admissions admission WHERE admission.state!='admitted'
         AND (json_extract(admission.reservation_json,'$.destination.executionId')=? OR EXISTS(
@@ -575,6 +577,67 @@ export class BranchStore {
     const input = branchText(value), hash = payloadHash({ input, source: "manual" });
     return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual");
   }
+  /** Recreate private data owners without an acceptance, budget debit or dispatchable frontier. */
+  importRuntimeData(planId:string,branchId:string,value:import('@ponderosa/core').BranchPortableRuntimeData,chatMap:Record<string,string>,agentMap:Record<string,string>,now=new Date().toISOString()):import('@ponderosa/core').BranchRuntimeDataReceipt {
+    return this.unitTransaction(()=>{
+      const data=validateBranchRuntimeData(value),key=`portable-runtime-manifest:${payloadHash(planId)}`;
+      const input={planId,branchId,manifestSha256:data.sha256,chatMap,agentMap},inputJson=stableJson(input);
+      const prior=this.runtimeData(planId,branchId);
+      if(prior){if(stableJson({planId,branchId,manifestSha256:prior.data.sha256,chatMap:prior.receipt.chatMap,agentMap:prior.receipt.agentMap})!==inputJson)throw Error('Runtime package replay conflicts');return prior.receipt;}
+      const branch=this.getBranch(branchId);if(!branch?.versionId||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting)throw Error('Runtime destination unavailable');
+      if(stableJson(Object.keys(chatMap).sort())!==stableJson(Object.keys(data.identities.chats).sort())||stableJson(Object.keys(agentMap).sort())!==stableJson(Object.keys(data.identities.agents).sort())||new Set(Object.values(chatMap)).size!==Object.keys(chatMap).length||new Set(Object.values(agentMap)).size!==Object.keys(agentMap).length)throw Error('Runtime destination identity map is incomplete');
+      if(branch.enabled||Object.values(chatMap).some(id=>Object.hasOwn(data.identities.chats,id))||Object.values(agentMap).some(id=>Object.hasOwn(data.identities.agents,id)))throw Error('Runtime import requires a disabled fresh destination');
+      for(const id of Object.values(chatMap))if(!this.row('SELECT 1 FROM conversations WHERE id=? AND branch_id=? AND branch_execution_id IS NULL',id,branchId))throw Error('Runtime Chat destination is not fresh');
+      for(const [source,id] of Object.entries(agentMap)){const logical=data.identities.agents[source]!,sourceChat=Object.keys(data.identities.chats).find(k=>data.identities.chats[k]===logical.chatRef);if(!sourceChat||!this.row('SELECT 1 FROM agents WHERE id=? AND conversation_id=?',id,chatMap[sourceChat]))throw Error('Runtime Agent destination ownership differs');}
+      const executionMap:Record<string,string>={},frontiers:Record<string,import('@ponderosa/core').BranchRuntimeFrontierReceipt>={};
+      for(const owner of data.owners){
+        const e=JSON.parse(owner.facts.find(f=>f.kind==='frontier')!.json).execution[0],id=randomUUID();executionMap[owner.sourceExecutionId]=id;
+        // Source state, leases, Requests and snapshots remain evidence. An import is never an execution acceptance.
+        this.run(`INSERT INTO branch_executions(id,branch_id,version_id,binding_revision_id,occurrence_key,input_text,input_hash,provenance_json,state,wait_reason,output_text,configuration_json,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,'waiting',?,?,?, ?,?)`,id,branchId,branch.versionId,branch.bindingRevisionId,`runtime-data:${planId}:${owner.sourceExecutionId}`,e.input_text,e.input_hash,stableJson({source:'portable_runtime_data',planId,sourceExecutionId:owner.sourceExecutionId,manifestSha256:data.sha256,currentAuthority:false}), 'Imported runtime data is held; source effects and native ownership are not adopted',e.output_text??null,stableJson(this.configuration(branchId)),now,now);
+        this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',id,'portable-runtime-data',data.sha256,stableJson({planId,sourceExecutionId:owner.sourceExecutionId,ownerSha256:owner.sha256,currentAuthority:false}),now);
+        const selected=JSON.parse(owner.facts.find(f=>f.kind==='frontier')!.json) as Selected,definition=JSON.parse(owner.facts.find(f=>f.kind==='definition')!.json),configuration=JSON.parse(owner.facts.find(f=>f.kind==='configuration')!.json);
+        const noEffects=!selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))&&!selected.resources!.length&&!selected.actions!.length;
+        const context=['completed','failed'].includes(e.state)?{terminal:true,terminalState:e.state as 'completed'|'failed',descendantTraversals:0,descendantLoops:0,children:{}}:undefined;
+        if(noEffects&&!configuration.requiredSecretRefs.length&&payloadHash(definition)===payloadHash(this.version(branchId,branch.versionId)!.definition)&&scriptFrontierSupported(selected,definition,context)){
+          const ids=Object.fromEntries(branchContinuationIds(selected).map(source=>[source,randomUUID()]));for(const item of selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
+          const restored=remapBranchFrontier(selected,ids,owner.sourceExecutionId,id);
+          insertBranchFrontier(this.sqlite,id,restored,now);
+          this.run('UPDATE branch_executions SET configuration_json=?,traversals=?,loop_iterations=?,recovery_traversals=?,depth_ceiling=? WHERE id=?',stableJson(validateBranchConfiguration(configuration.configuration,definition,true)),e.traversals,e.loop_iterations,e.recovery_traversals,e.depth_ceiling,id);
+          frontiers[owner.sourceExecutionId]={disposition:'recreated_held',idMap:ids};
+        }else frontiers[owner.sourceExecutionId]={disposition:'evidence_only',idMap:{},reason:'Source has effects, unknown/native state, secret references, changed definition or a frontier outside the shared codec; exact facts remain held'};
+
+        for(const ref of owner.chatRefs){const source=Object.keys(data.identities.chats).find(k=>data.identities.chats[k]===ref)!;this.run('UPDATE conversations SET branch_execution_id=? WHERE id=? AND branch_id=? AND branch_execution_id IS NULL',id,chatMap[source],branchId);this.run('INSERT INTO branch_resource_references VALUES(?,?)',id,chatMap[source]);}
+      }
+      const receipt:import('@ponderosa/core').BranchRuntimeDataReceipt={schema:'ponderosa.branch-runtime-import.v1',planId,branchId,manifestSha256:data.sha256,frontiers,executionMap,chatMap,agentMap,disposition:'held',currentAuthority:false,dispatched:false,workflowEnabled:false,credentials:'reenter',nativeState:'not_adopted',createdAt:now};
+      const saved={receipt,data};this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',Object.values(executionMap)[0]!,key,payloadHash(saved),stableJson(saved),now);return receipt;
+    }).immediate();
+  }
+  runtimeData(planId:string,branchId:string):import('@ponderosa/core').BranchRuntimeDataReadback|undefined {
+    const row=this.row("SELECT c.input_hash,c.result_json FROM branch_commands c JOIN branch_executions e ON e.id=c.execution_id WHERE e.branch_id=? AND c.command_key=?",branchId,`portable-runtime-manifest:${payloadHash(planId)}`);if(!row)return;
+    const saved=JSON.parse(row.result_json) as import('@ponderosa/core').BranchRuntimeDataReadback;
+    if(payloadHash(saved)!==row.input_hash||saved.receipt.branchId!==branchId||saved.receipt.planId!==planId||saved.receipt.manifestSha256!==validateBranchRuntimeData(saved.data).sha256)throw Error('Runtime package receipt integrity failure');
+    if(stableJson(Object.keys(saved.receipt.executionMap).sort())!==stableJson(saved.data.owners.map(o=>o.sourceExecutionId).sort())||stableJson(Object.keys(saved.receipt.frontiers).sort())!==stableJson(Object.keys(saved.receipt.executionMap).sort())||new Set(Object.values(saved.receipt.executionMap)).size!==saved.data.owners.length||saved.receipt.currentAuthority!==false||saved.receipt.dispatched!==false||saved.receipt.disposition!=='held')throw Error('Runtime package mapped owner inventory differs');
+    for(const [map,original] of [[saved.receipt.chatMap,saved.data.identities.chats],[saved.receipt.agentMap,saved.data.identities.agents]] as const)if(stableJson(Object.keys(map).sort())!==stableJson(Object.keys(original).sort())||new Set(Object.values(map)).size!==Object.keys(map).length||Object.values(map).some(id=>Object.hasOwn(original,id)))throw Error('Runtime package participant map differs');
+    for(const [source,id] of Object.entries(saved.receipt.chatMap)){const ref=saved.data.identities.chats[source]!,owner=saved.data.owners.find(o=>o.chatRefs.includes(ref)),chat=this.row('SELECT branch_id,branch_execution_id FROM conversations WHERE id=?',id);if(!chat||chat.branch_id!==branchId||chat.branch_execution_id!==(owner?saved.receipt.executionMap[owner.sourceExecutionId]:null))throw Error('Runtime package Chat custody differs');}
+    for(const [source,id] of Object.entries(saved.receipt.agentMap)){const ref=saved.data.identities.agents[source]!,sourceChat=Object.keys(saved.data.identities.chats).find(k=>saved.data.identities.chats[k]===ref.chatRef);if(!sourceChat||!this.row('SELECT 1 FROM agents WHERE id=? AND conversation_id=?',id,saved.receipt.chatMap[sourceChat]))throw Error('Runtime package Agent custody differs');}
+    for(const [source,id] of Object.entries(saved.receipt.executionMap)){
+      const e=this.row('SELECT * FROM branch_executions WHERE id=?',id),c=this.row("SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key='portable-runtime-data'",id);
+      if(!e||e.branch_id!==branchId||JSON.parse(e.provenance_json).sourceExecutionId!==source||!c||c.input_hash!==saved.data.sha256||JSON.parse(c.result_json).planId!==planId)throw Error('Runtime package destination owner unavailable');
+      const frontier=saved.receipt.frontiers[source]!,owner=saved.data.owners.find(o=>o.sourceExecutionId===source)!;
+      if(e.admitted_at||e.admission_json||c.result_json!==stableJson({planId,sourceExecutionId:source,ownerSha256:owner.sha256,currentAuthority:false})||e.provenance_json!==stableJson({source:'portable_runtime_data',planId,sourceExecutionId:source,manifestSha256:saved.data.sha256,currentAuthority:false})||this.row('SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND (a.lease_owner IS NOT NULL OR a.lease_until IS NOT NULL OR a.process_identity_json IS NOT NULL OR a.request_id IS NOT NULL)',id))throw Error('Runtime data acquired execution authority or changed provenance');
+      if(frontier.disposition==='recreated_held'){
+        const sourceExecution=JSON.parse(owner.facts.find(f=>f.kind==='frontier')!.json).execution[0],configuration=JSON.parse(owner.facts.find(f=>f.kind==='configuration')!.json).configuration;
+        if(['traversals','loop_iterations','recovery_traversals','depth_ceiling'].some(key=>e[key]!==sourceExecution[key])||e.configuration_json!==stableJson(configuration)||payloadHash(this.version(branchId,e.version_id)!.definition)!==payloadHash(JSON.parse(owner.facts.find(f=>f.kind==='definition')!.json)))throw Error('Recreated runtime configuration or counters differ');
+        const expected=remapBranchFrontier(JSON.parse(owner.facts.find(f=>f.kind==='frontier')!.json),frontier.idMap,source,id),actual=selectBranchUnit(this.sqlite,id);
+        const normalize=(rows:Row[])=>rows.map(row=>stableJson(Object.fromEntries(Object.entries(row).filter(([key])=>!['created_at','updated_at'].includes(key))))).sort();
+        for(const key of Object.keys(expected))if(stableJson(normalize(expected[key]!))!==stableJson(normalize(actual[key]!)))throw Error('Recreated runtime frontier readback differs');
+      }else if(frontier.disposition!=='evidence_only'||Object.keys(frontier.idMap).length)throw Error('Runtime frontier disposition differs');
+      for(const ref of owner.chatRefs){const sourceChat=Object.keys(saved.data.identities.chats).find(k=>saved.data.identities.chats[k]===ref)!;if(!this.row('SELECT 1 FROM conversations WHERE id=? AND branch_id=? AND branch_execution_id=?',saved.receipt.chatMap[sourceChat],branchId,id))throw Error('Runtime execution Chat readback differs');}
+
+    }
+    return saved;
+  }
   /** Explicit snapshot command, never part of primary acceptance/settlement or runtime durability modes. */
   saveInitialCheckpoint(branchId:string,executionId:string,now=new Date().toISOString()):import('@ponderosa/core').BranchInitialCheckpointDto {
     return this.unitTransaction(()=>{
@@ -582,6 +645,7 @@ export class BranchStore {
       if(!branch||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting
         ||!execution||execution.branchId!==branchId)throw new Error('Branch execution is unavailable');
       if(branch.chatId)this.chat(branch.chatId);
+      if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key='portable-runtime-data'",executionId))throw Error('Imported data cannot create executable initial checkpoints');
       const accepted=this.row('SELECT * FROM branch_executions WHERE id=?',executionId)!;
       if(execution.state!=='canceled'||accepted.parent_execution_id||accepted.admission_source!=='manual'||accepted.admitted_at
         ||this.row('SELECT 1 FROM branch_paths WHERE execution_id=?',executionId)
@@ -1738,7 +1802,8 @@ export class BranchStore {
   }
   execution(id: string): BranchExecutionDto | undefined {
     const r = this.row("SELECT * FROM branch_executions WHERE id = ?", id);
-    return r && { checkpointInvocation:this.checkpointInvocation(id), id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, admissionSource:r.admission_source, ...(r.admitted_at?{admittedAt:r.admitted_at}:{}), ...(r.state==="queued"&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:"execution_budget" as const,branchId:r.branch_id}}:{}), budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
+    const origin=r?JSON.parse(r.provenance_json):undefined;
+    return r && { ...(origin?.source==='portable_runtime_data'?{runtimeData:{planId:origin.planId,sourceExecutionId:origin.sourceExecutionId,manifestSha256:origin.manifestSha256,held:true as const,currentAuthority:false as const}}:{}),checkpointInvocation:this.checkpointInvocation(id), id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, admissionSource:origin?.source==='portable_runtime_data'?undefined:r.admission_source, ...(r.admitted_at?{admittedAt:r.admitted_at}:{}), ...(r.state==="queued"&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:"execution_budget" as const,branchId:r.branch_id}}:{}), budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
   }
   private scriptEvidence(attemptId:string):import('@ponderosa/core').BranchAttemptDto['scriptEvidence'] {
     const evidence=this.row("SELECT evidence_json FROM branch_checkpoints WHERE kind='script_process_exit' AND transition_key GLOB ? ORDER BY id DESC LIMIT 1",`process-exit:${attemptId}:*`);
@@ -2070,6 +2135,7 @@ export class BranchStore {
         this.unitTransaction(() => {
           let execution = this.execution(row.id)!;
           if(!['queued','running','waiting'].includes(execution.state))return;
+          if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key='portable-runtime-data'",execution.id))return;
           const branch = this.getBranch(execution.branchId)!;
           for (const path of this.rows("SELECT id FROM branch_paths WHERE execution_id=? AND state='canceling'", execution.id)) this.cancelPath(path.id, now);
           if (this.row("SELECT cancel_requested FROM branch_executions WHERE id = ?", execution.id)!.cancel_requested) {
@@ -2590,6 +2656,7 @@ export class BranchStore {
   private command(id: string, key: string, input: unknown, operation: () => void, now: string): BranchExecutionDetailDto {
     branchKey(key); const hash = payloadHash(input);
     return this.unitTransaction(() => {
+      if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key='portable-runtime-data'",id))throw Error('Imported runtime data has no execution authority; review its package evidence');
       const previous = this.row("SELECT * FROM branch_commands WHERE execution_id = ? AND command_key = ?", id, key);
       if (previous) { if (previous.input_hash !== hash) throw new Error("Branch command idempotency conflict"); return JSON.parse(previous.result_json) as BranchExecutionDetailDto; }
       operation(); const detail = this.detail(id);
