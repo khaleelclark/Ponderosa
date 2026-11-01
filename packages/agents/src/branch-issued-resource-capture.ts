@@ -5,6 +5,7 @@ import {selectBranchUnit} from './branch-unit-selection.js';
 import {captureBranchHostCut} from './branch-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {receiptMatchesSource,resourceCaptureFrontierHash} from './branch-resource-capture.js';
+import {encodeIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 type Row=Record<string,any>;
 const key=(commandKey:string)=>`issued-resource-capture:${commandKey}`;
 
@@ -45,9 +46,10 @@ export function reserveIssuedResourceCapture(db:Database.Database,executionId:st
  if(hostDependencies.requests.some(({row})=>row.conversation_id!==r.chat_id||[row.requester_agent_id,row.recipient_agent_id].filter(Boolean).some(id=>!agentIds.includes(id)))||hostDependencies.joins.some(({row})=>row.conversation_id!==r.chat_id||!agentIds.includes(row.owner_agent_id))||hostDependencies.suspensions.some(({row})=>row.dependency_kind!=='join'))throw Error('Issued capture exceeds one resource participant scope');
  for(const id of agentIds)if(!db.prepare('SELECT 1 FROM agents WHERE id=? AND conversation_id=? AND deleted_at IS NULL').get(id,r.chat_id)
   ||db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM agent_deletion_pending WHERE agent_id=? LIMIT 1").get(id,id,id))throw Error('Issued resource participants must survive and drain before capture');
+ const issuedContinuation=encodeIssuedResourceContinuation(db,executionId,selected,hostDependencies);
  const source:CheckpointPackageSource={checkpointId:randomUUID(),sourceChatId:r.chat_id,agentIds:[...agentIds],intent:{executionId,resourceStepId:stepId,resourceGeneration:generation,frontierSha256:resourceCaptureFrontierHash(selected),bindingSha256:pins.binding_hash,configurationSha256:payloadHash(Object.fromEntries(Object.entries(JSON.parse(configuration.configuration_json)).filter(([k])=>k!=='secretBindings'))),hostCutSha256:payloadHash(hostDependencies)}};
  // Refused by ordinary rewind. Only the dedicated reviewed destination consumer may admit it.
- const snapshot={schema:'branch-unit-selected.v2',captureKind:'issued_resource',restore_supported:false,selected,hostDependencies};
+ const snapshot={schema:'branch-unit-selected.v2',captureKind:'issued_resource',restore_supported:false,selected,hostDependencies,issuedContinuation};
  const journal={schema:'branch-issued-resource-capture.v1',state:'capturing',source,snapshot};
  db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(executionId,key(commandKey),payloadHash({stepId,generation,commandKey}),stableJson(journal),new Date().toISOString());
  return journal;
@@ -63,6 +65,7 @@ export function sealIssuedResourceCapture(db:Database.Database,executionId:strin
   ||payloadHash(Object.fromEntries(Object.entries(JSON.parse(branch.configuration_json)).filter(([k])=>k!=='secretBindings')))!==journal.source.intent.configurationSha256
   ||Object.keys(JSON.parse(branch.configuration_json).secretBindings??{}).length)throw Error('Issued capture current owner pins changed');
  if(resourceCaptureFrontierHash(selected)!==journal.source.intent.frontierSha256||payloadHash(host)!==journal.source.intent.hostCutSha256)throw Error('Issued frontier changed during private-byte capture');
+ if(!journal.snapshot.issuedContinuation||!host||stableJson(encodeIssuedResourceContinuation(db,executionId,selected,host))!==stableJson(journal.snapshot.issuedContinuation))throw Error('Issued executable continuation/audit changed during private-byte capture');
  const snapshot={...journal.snapshot,issuedResourceCustody:receipt},snapshotHash=payloadHash(snapshot);
  const result=db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(executionId,stableJson(snapshot),snapshotHash);
  db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson({...journal,state:'retained',receipt,checkpointId:Number(result.lastInsertRowid),checkpointHash:snapshotHash}),executionId,key(commandKey));

@@ -190,3 +190,5 @@ export {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,rece
 export type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 export {destinationAdmissionHeld,requireDestinationAdmitted} from './coordination-v3-destination-staging.js';
 export {creationId as workspaceCreationId} from './store-workspace-catalog-authority.js';
+
+export {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';

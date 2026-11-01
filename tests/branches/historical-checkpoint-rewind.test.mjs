@@ -6,7 +6,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore,stableJson} from '../../packages/agents/dist/index.js';
+import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore,stableJson,readIssuedResourceContinuation,reconstructIssuedResourceContinuation,issuedResourceContinuationSupported} from '../../packages/agents/dist/index.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainHistory=false){
  const dir=mkdtempSync(join(tmpdir(),'historical-rewind-'));let store,branches;
@@ -968,7 +968,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false){
  const advance=async id=>{for(let n=0;n<30;n++){await branches.unitSaver.drain();branches.advance();if(reservation(id)&&branches.execution(id).state==='waiting')break;}await branches.unitSaver.drain();assert.ok(reservation(id));};
  const capture=async id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;assert.doesNotThrow(()=>branches.checkpointInterruption(branch.id,id,'interrupt',inv.id,`close-${id}`),'actual resource EXIT interruption must be supported');await branches.unitSaver.completeExits();}return branches.historicalCheckpoints(branch.id,id).find(c=>c.restoreSupported&&captureBytes({store},c.id).selected.resources.length===1);};
  const resume=id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;branches.checkpointInterruption(branch.id,id,'resume',inv.interruptionId,`resume-${id}`);}};
- const finish=async(id,onCaptured,onIssued)=>{
+ const finish=async(id,onCaptured,onIssued,onOpening)=>{
   await advance(id);for(let n=0;n<6&&branches.resourceRelease(reservation(id).step_execution_id)!=='ready';n++){await branches.unitSaver.drain();branches.advance();}
   const r=reservation(id),chatToken=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(chatToken);await branches.unitSaver.drain();assert.equal(branches.releaseResourceChat(r.step_execution_id,r.creation_key,chatToken),true);
   const p=store.createProject({label:'Inert owned resource',hostPath:dir,defaultEngine:'codex',chatOwned:true,branchId:branch.id,executionId:id}),temporary=store.getConversation(p.lastConversationId);
@@ -984,6 +984,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false){
   if(onCaptured)await onCaptured({source:captureSource,receipt:captureReceipt,result,stepId:r.step_execution_id});
   branches.bindResource(r.step_execution_id,result);
   const request=store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id;
+  if(onOpening)await onOpening({stepId:r.step_execution_id,generation:r.generation,requestId:request});
   coordination.updateRequest({requestId:request,updateId:`result-${id}`,kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'known resource result'}});
   const suffix=await claim();assert.equal(suffix.executionId,id);assert.ok(suffix.source.includes('suffix'));assert.equal(suffix.fence,1);settle(suffix);await branches.unitSaver.drain();
   if(onIssued)await onIssued({stepId:r.step_execution_id,generation:r.generation,agentId:agent.id,chatId:temporary.id});
@@ -1307,6 +1308,7 @@ test('issued resource seal binds later host facts and keeps ordinary rewind refu
   db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'issued-cut',receipt))();
   saved=f.branches.issuedResourceCapture(f.source.id,stepId,'issued-cut');assert.equal(saved.state,'retained');assert.equal(saved.snapshot.restore_supported,false);
   const snapshot=JSON.parse(db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(saved.checkpointId).snapshot_json);
+  assert.equal(readIssuedResourceContinuation(db,f.source.id,saved.checkpointId,saved.checkpointHash).selected.paths[0].state,'completed','a completed path waiting only for resource cleanup retains executable evidence');
   assert.deepEqual(snapshot.issuedResourceCustody,receipt);assert.notEqual(receipt.sha256,JSON.parse(journal.snapshot.selected.resources[0].capture_json).receipt.sha256);
   const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
   const service=new BranchResourceService(f.branches,f.store,async()=>assert.fail('Agents'),async()=>assert.fail('Chat'),async()=>assert.fail('Chat'));
@@ -1330,4 +1332,50 @@ test('issued resource seal binds later host facts and keeps ordinary rewind refu
   assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,saved.checkpointId,saved.checkpointHash,'not-admitted'),/unsupported|continuation|settled/);
  });
  await f.reopen();const replay=f.branches.issuedResourceCapture(f.source.id,saved.source.intent.resourceStepId,'issued-cut');assert.equal(replay.checkpointId,saved.checkpointId);assert.deepEqual(replay.receipt,saved.receipt);
+});
+
+
+// Deferred: capture an open resource Request, then validate its immutable prefix after source settlement/cleanup.
+test('issued resource executable envelope replays original prefix and reconstructs explicit fresh identities',async t=>{
+ const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let saved,maps,destination,reconstructed;
+ await f.finish(f.source.id,undefined,undefined,async({stepId,generation,requestId})=>{
+  const journal=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'executable-issued');
+  const c=journal.snapshot.issuedContinuation;assert.equal(c.schema,'ponderosa.branch.issued-resource-continuation.v1');
+  assert.equal(c.auditSha256,hash(stableJson(c.audit)));assert.ok(c.audit.some(e=>e.kind==='resource_created'));
+  const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'executable-inert',sha256:hash('executable-private-package'),byteLength:2};
+  const db=f.store.sqlite,last=c.audit.at(-1),changedTime='changed-during-capture';
+  db.prepare('UPDATE branch_checkpoints SET created_at=? WHERE id=?').run(changedTime,last.id);
+  assert.throws(()=>db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'executable-issued',receipt))(),/continuation|audit|unsupported/);
+  db.prepare('UPDATE branch_checkpoints SET created_at=? WHERE id=?').run(last.created_at,last.id);
+  db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'executable-issued',receipt))();
+  saved=f.branches.issuedResourceCapture(f.source.id,stepId,'executable-issued');
+  const read=readIssuedResourceContinuation(db,f.source.id,saved.checkpointId,saved.checkpointHash);
+  assert.deepEqual(read.continuation,c);assert.equal(read.selected.attempts.find(a=>a.request_id).request_id,requestId);
+  const wrongGeneration=structuredClone(read.selected),wrongHost=structuredClone(read.hostDependencies);
+  wrongGeneration.resources[0].generation=1;wrongHost.resources[0].row.generation=1;wrongHost.resources[0].sha256=hash(stableJson(wrongHost.resources[0].row));
+  const {resourceCaptureFrontierHash}=await import('../../packages/agents/dist/index.js');
+  assert.equal(issuedResourceContinuationSupported(db,f.source.id,wrongGeneration,wrongHost,{...c,frontierSha256:resourceCaptureFrontierHash(wrongGeneration),hostCutSha256:hash(stableJson(wrongHost))}),false,'rehashing cannot select a different resource generation');
+  const wrongRoot=structuredClone(read.hostDependencies);wrongRoot.roots[0].attemptId=randomUUID();
+  assert.equal(issuedResourceContinuationSupported(db,f.source.id,read.selected,wrongRoot,{...c,hostCutSha256:hash(stableJson(wrongRoot))}),false,'root must identify the exact issued Branch attempt');
+  const {branchContinuationIds}=await import('../../packages/agents/dist/branch-continuation-remap.js');
+  maps={idMap:Object.fromEntries(branchContinuationIds(read.selected).map(id=>[id,randomUUID()])),requestMap:Object.fromEntries(read.hostDependencies.requests.map(({row})=>[row.id,randomUUID()])),agentMap:Object.fromEntries(receipt.agentIds.map(id=>[id,randomUUID()]))};
+  destination={executionId:randomUUID(),conversationId:randomUUID(),resourceGeneration:0};
+  reconstructed=reconstructIssuedResourceContinuation(db,f.source.id,saved.checkpointId,saved.checkpointHash,destination,maps);
+  assert.equal(reconstructed.resource.step_execution_id,maps.idMap[stepId]);assert.equal(reconstructed.resource.chat_id,destination.conversationId);
+  assert.equal(reconstructed.frontier.attempts.find(a=>a.request_id).request_id,maps.requestMap[requestId]);
+  assert.deepEqual(reconstructed.requestBindings,[{sourceRequestId:requestId,requestId:maps.requestMap[requestId],stepExecutionId:maps.idMap[stepId]}]);
+  assert.equal(reconstructed.resource.root_agent_id,maps.agentMap[read.selected.resources[0].root_agent_id]);
+  assert.equal('chat_operation_json' in reconstructed.resource,false);assert.equal('import_operation_json' in reconstructed.resource,false);assert.equal('capture_json' in reconstructed.resource,false);
+  assert.throws(()=>reconstructIssuedResourceContinuation(db,f.source.id,saved.checkpointId,saved.checkpointHash,destination,{...maps,agentMap:{}}),/mapping/);
+  assert.throws(()=>reconstructIssuedResourceContinuation(db,f.source.id,saved.checkpointId,saved.checkpointHash,destination,{...maps,requestMap:{}}),/Request map/);
+  const omitted=structuredClone(c);omitted.audit=omitted.audit.filter(e=>e.kind!=='resource_created');omitted.auditSha256=hash(stableJson(omitted.audit));
+  assert.equal(issuedResourceContinuationSupported(db,f.source.id,read.selected,read.hostDependencies,omitted),false,'a rehashed dropped audit event cannot replace the owned prefix');
+  const oldSnapshot={...saved.snapshot,issuedResourceCustody:receipt};delete oldSnapshot.issuedContinuation;
+  const oldJson=stableJson(oldSnapshot),old=db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,oldJson,hash(oldJson));
+  assert.throws(()=>readIssuedResourceContinuation(db,f.source.id,Number(old.lastInsertRowid),hash(oldJson)),/unsupported/);
+ });
+ await f.reopen();
+ assert.deepEqual(reconstructIssuedResourceContinuation(f.store.sqlite,f.source.id,saved.checkpointId,saved.checkpointHash,destination,maps),reconstructed,'source progress and cleanup cannot substitute later audit or identities');
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,saved.checkpointId,saved.checkpointHash,'still-needs-destination-admission'),/unsupported|continuation/);
 });

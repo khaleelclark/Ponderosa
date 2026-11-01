@@ -977,18 +977,73 @@ snapshot during the asynchronous byte read refuses. This verifier supplies a byt
 integrity check only; its return value is not a reusable synchronous admission proof,
 owner authorization or human disclosure approval.
 
-The existing issued capture format has no `continuation` envelope or retained audit
-prefix. `issuedRequestFrontierSupported` currently refuses resource host cuts and
-requires persistent Agent targets; `resourceReservationSupported` accepts pre-opening
-reserved resources only. Therefore the ordinary Script continuation replay cannot
-validate an issued ephemeral organization, even after its package verifies. A future
-consumer must retain and validate executable resource continuation evidence at the
-original capture boundary (or implement a separately exhaustive bounded validator).
-It must not synthesize a historical audit from a later source execution, promote the
-existing `restore_supported:false` snapshot, or use graph ID remapping as participant
-or Branch continuation reconstruction. Destination reservation, explicit human fact
-review and atomic owner composition remain unconnected and restoration stays disabled.
+Prospective issued captures now retain `issuedContinuation`, schema
+`ponderosa.branch.issued-resource-continuation.v1`. It holds the original immutable
+ordered audit prefix and its digest, the runtime compatibility marker, version/binding
+IDs and hashes, safe configuration, selected-frontier digest and host-graph digest.
+The intent journals this envelope before package export. Sealing re-encodes against
+the same locked source boundary and requires byte-for-byte equality before saving
+it together with selected resource rows, host graph and independent custody receipt.
+A changed audit event or an extra audit event during export refuses sealing. The
+saved checkpoint hash covers the entire envelope and custody receipt.
+
+The dedicated codec calls the SAME `replayScriptCut` used by Script/control replay,
+with an explicit issued-resource context. That context validates exact resource
+membership, Chat, generation, release receipt, completed canonical import/members,
+opening Request/root/Step linkage, original payload and provenance. It recognizes
+`resource_created` and verifies its exact import-result/opening-Request evidence.
+Script prefix/result/control/counter/loop replay stays in the existing engine.
+Ordinary replay does not opt in and continues to refuse issued resource restoration.
+
+The bounded subset is one standalone nonsecret organization in generation **zero**,
+one ephemeral Agent Step definition and one issued root attempt, with the existing
+serial Node Script/condition/route prefix or suffix. ASYNC/SYNC captures can be
+running, waiting or completed. A completed path held in waiting solely for resource
+cleanup replays its sealed result without inventing a workflow-completed event. The
+selected resource must remain active/draining;
+its import must be completed and membership closed. EXIT captures, failed/canceled
+frontiers, Branch calls, parallel controls, multiple resources/generations, recovery,
+runtime artifacts, retired/deleted organizations and unsupported audit events refuse.
+Old d1 captures lacking `issuedContinuation` remain unsupported; the codec never
+fills missing historical evidence from a later live audit.
+
+Host exports from `@ponderosa/agents`:
+
+- `encodeIssuedResourceContinuation(db, executionId, selected, host)` requires the
+  capture transaction and produces the envelope after shared replay validates it.
+- `issuedResourceContinuationSupported(db, executionId, selected, host, envelope)`
+  returns eligibility without writing or approving anything.
+- `readIssuedResourceContinuation(db, executionId, checkpointId, expectedHash)` reads
+  the exact sealed snapshot, validates pins/audit/frontier/graph/custody bindings and
+  returns `{selected, hostDependencies, continuation, custody}`. Replay compares the
+  saved audit to the owned prefix through its original boundary; later events are
+  ignored. Original version/binding/owner/audit rows must remain retained. Source
+  live Agents, Chat or current Request state are not replay inputs.
+- `reconstructIssuedResourceContinuation(db, executionId, checkpointId, expectedHash,
+  destination, maps)` takes a fresh destination execution/Chat with resourceGeneration
+  zero and explicit complete `idMap`, `requestMap`, `agentMap`. It reuses
+  `remapBranchFrontier` and returns `{frontier, resource, agentIds, requestBindings,
+  executionState, executionCounters, sourceCheckpoint, continuation}`. The resource
+  row uses the mapped Step, root Agent and Chat with a fresh creation key. No old
+  Chat/import/capture operation receipts, admission, lease, process or grant is
+  returned as fresh authority. Reconstruction reads and returns rows; it does not
+  insert them or enqueue work.
+
+This completes the envelope/replay/reconstruction slice only. The destination
+composer must still supply fresh canonical import/Chat/resource receipts, current
+custody/owner/disclosure authority and explicit human approval, staged maps and final
+policy review, Branch acceptance/budget/lifecycle receipts and Runtime admission.
+It must insert the reconstructed frontier with the exact admitted Request IDs and
+compose real Step/attempt/resource/import/owner receipts synchronously before final
+readiness/wakes. Every public capture result remains `restoreSupported:false` until
+that separate consumer is connected.
 
 Additional deferred fixture source checks issued-byte verification, missing bytes,
 host-digest substitution before package access and snapshot mutation across the byte
 read. These fixtures have not been run.
+
+Deferred executable-envelope fixture source captures an actual open resource Request,
+refuses audit mutation at sealing and a rehashed dropped event, reconstructs explicit
+fresh Branch/Request/Agent identities, refuses incomplete maps and old missing-envelope
+snapshots, then reads the same selected prefix after source progress/cleanup/reopen.
+These fixtures have not been executed. No end-to-end destination admission is claimed.
