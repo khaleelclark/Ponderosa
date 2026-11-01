@@ -70,3 +70,35 @@ test('a failure at the final manifest insert rolls back definition publication, 
  const done=await api.confirm(preview.id,true,undefined,false,pkg.runtimeData.sha256);assert.notEqual(done.state,'completed');assert.match(done.error,/last manifest failure/);
  assert.equal(f.branches.getBranch(done.branchId).versionId,'');assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions WHERE branch_id=?').get(done.branchId).n,0);assert.equal(api.runtimeData(preview.id,done.branchId),undefined);
 });
+
+// Deferred: real composer roundtrip, not a forged acceptance or foreign SQLite copy.
+test('re-export keeps original private manifest and imports again without acceptance',async t=>{
+ const f=fixture(t,'sync');await f.prefix();const api=f.service();
+ const original=await api.export(f.source.id,'full');
+ const first=await api.preview(original,{agents:{},directories:{root:f.root}});
+ const done=await api.confirm(first.id,true,undefined,false,original.runtimeData.sha256);
+ const exported=await api.export(done.branchId,'full');
+ const origin=JSON.parse(exported.runtimeData.owners[0].facts.find(f=>f.kind==='import').json);
+ assert.deepEqual(origin.data,original.runtimeData);assert.equal(origin.receipt.currentAuthority,false);
+ assert.equal(origin.receipt.executionMap[f.execution.id],exported.runtimeData.owners[0].sourceExecutionId);
+ const second=await api.preview(exported,{agents:{},directories:{root:f.root}});
+ const again=await api.confirm(second.id,true,undefined,false,exported.runtimeData.sha256);
+ assert.equal(again.state,'completed',again.error);
+ const saved=api.runtimeData(second.id,again.branchId);
+ assert.deepEqual(saved.data,exported.runtimeData);assert.equal(saved.receipt.dispatched,false);
+ for(const id of Object.values(saved.receipt.executionMap))assert.equal(f.store.sqlite.prepare('SELECT admitted_at FROM branch_executions WHERE id=?').get(id).admitted_at,null);
+ await f.reopen();assert.deepEqual(f.service().runtimeData(second.id,again.branchId),saved);
+});
+test('automatic occurrence data retains its original hash and trigger identity without fresh trigger admission',async t=>{
+ const f=fixture(t,'sync');
+ // Contract fixture: input_hash is the trigger envelope hash, not the manual-input hash.
+ const occurrence='source-occurrence',inputHash=hash({payload:'original event'});
+ f.store.sqlite.prepare("UPDATE branch_executions SET admission_source='automatic',occurrence_key=?,input_hash=?,provenance_json=? WHERE id=?").run(`trigger:${occurrence}`,inputHash,stableJson({source:'trigger',occurrenceId:occurrence,contentInjected:false}),f.execution.id);
+ const api=f.service(),pkg=await api.export(f.source.id,'full');
+ assert.equal(JSON.parse(pkg.runtimeData.owners[0].facts.find(f=>f.kind==='frontier').json).execution[0].input_hash,inputHash);
+ const preview=await api.preview(pkg,{agents:{},directories:{root:f.root}}),done=await api.confirm(preview.id,true,undefined,false,pkg.runtimeData.sha256);
+ assert.equal(done.state,'completed',done.error);const saved=api.runtimeData(preview.id,done.branchId);
+ assert.equal(saved.receipt.dispatched,false);assert.equal(f.branches.execution(saved.receipt.executionMap[f.execution.id]).admissionSource,undefined);
+ f.store.sqlite.prepare("UPDATE branch_executions SET occurrence_key='wrong-occurrence' WHERE id=?").run(f.execution.id);
+ await assert.rejects(api.export(f.source.id,'full'),/occurrence provenance/);
+});

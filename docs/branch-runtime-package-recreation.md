@@ -14,7 +14,7 @@ claim that their absent runtime data was recreated.
 | Data | Export | Fresh import and readback |
 | --- | --- | --- |
 | Current workflow and installed Agent data | Existing definition/parameter/limit and full Agent package exporter, including current portable file fields | Existing publisher, composer, Agent import receipts, file/access/output-role review; no competing writer |
-| Standalone manual execution owners | Every owner of the selected Branch, bounded at 1,000; original input/hash/output/state, path/Step/attempt/fork/join/map/loop/sealed-result inventories through the shared selector | Fresh canonical execution identity with explicit `runtimeData` provenance and `waiting` hold; no acceptance, automatic execution-budget debit or admission |
+| Standalone manual and automatic execution owners | Every owner of the selected Branch, bounded at 1,000; original input/hash/output/state, path/Step/attempt/fork/join/map/loop/sealed-result inventories through the shared selector | Fresh canonical execution identity with explicit `runtimeData` provenance and `waiting` hold; no acceptance, automatic execution-budget debit or admission |
 | Nonsecret original pins, counters and application state | Exact definition/binding JSON, provenance and original nonsecret configuration; required secret refs are named | Original facts remain immutable data. For an exact current-definition, nonsecret, effect-free shared-codec frontier, the existing remapper/inserter recreates fresh paths/Steps/attempts/seals/control rows and original counters/configuration; receipt supplies its actual idMap. Other cuts explicitly report `evidence_only` |
 | Private saved checkpoints | Every initial and selected snapshot's original JSON bytes and hash, with source identity | Exact retained facts in the private Branch command manifest, not executable foreign checkpoint rows; no old invocation/lease adopted |
 | Transition and command journals | All owner transition evidence and command JSON bytes, original keys, input hashes and timestamps | Exact private facts; original command keys are not installed as action authority |
@@ -68,7 +68,7 @@ not create an undeletable host archive or weaken deletion/precleanup guards.
 ## Exact remaining implementation
 
 This is bounded standalone data recreation, not full Bible #8 or a fresh-machine
-resume claim. Called owners/cross-Branch trees and automatic-source owner packages
+resume claim. Called owners/cross-Branch trees
 currently refuse complete runtime export, so they cannot disappear from a nominally
 successful full export. Larger owner trees and their fresh per-Branch installations,
 Call ancestry/attempt allocation, and atomic dependency publication remain.
@@ -82,10 +82,46 @@ human reconciliation. No such continuation or retry authority is granted here.
 
 Prior external restoration/private-artifact references not owned by the selected
 Branch are retained as references, not expanded into foreign Chats or grants.
-Erased/unavailable custody bytes cannot be fabricated. Re-export of recreated
-held data owners (which have no original acceptance) is not yet supported. Git/config,
+Erased/unavailable custody bytes cannot be fabricated. Git/config,
 external-link/special-node/extended-metadata coverage remains Reliability-owned;
 its exact portability inventory still applies. Web review/rendering is UI-owned.
 All new fixture source is deferred, including ASYNC/SYNC held frontier recreation,
 exact manifest review, unknown lease evidence, execution Chat remapping, lost-response
 readback/restart, corruption/omission/alias/credential refusal and final-write rollback.
+
+## Standalone automatic-source and held re-export successor
+
+Standalone automatic-source owners now use the same reviewed held publication as
+manual owners. Trigger-origin owners retain the exact original occurrence payload,
+provenance, trigger snapshot, media type, activation configuration and input hash
+when the occurrence still exists. Missing original occurrence bytes are explicitly
+`unavailable_held`; no current trigger, schedule, occurrence or native activation is
+created. Trigger-origin manual admission likewise retains its original trigger hash
+rather than requiring the unrelated ordinary-manual-input hash. The existing runnable
+frontier codec still requires manual/called admission, so original automatic-source
+frontiers are retained as `evidence_only`; their fresh held execution owner and Chat
+ownership are recreated, but their native path/Step frontier is not. Unknown source
+families still refuse. This is data preservation, not trigger lifetime recreation.
+
+An imported held owner can be exported again. A private `import` fact retains the
+complete original manifest and receipt, including private checkpoint/custody facts
+that were never installed as executable rows. Validation follows nested original
+manifests, verifies hash/owner/input/installation identity and preserves absence of
+acceptance. Capture refuses a held owner that acquired admission or lost its original
+manifest. Existing nesting and byte bounds still apply; re-export can reach those
+bounds and refuses instead of dropping earlier generations. The original source
+facts remain under their original IDs in private evidence; fresh owner IDs describe
+the actual installation. No current custody or origin authentication is inferred.
+
+Deferred source fixtures cover an actual composer re-export/re-import/restart,
+no acceptance, exact original manifest preservation, and automatic occurrence input
+identity/refusal. The automatic fixture is a contract fixture, not provider or trigger
+qualification. All execution remains forbidden/unrun in this slice.
+
+**Incomplete requested work:** called/cross-Branch owner tree export and recreation
+still need per-Branch publisher/composer plans, dependency pin maps, actual remapped
+parent Call attempts and atomic publication across the complete tree. No tree guard
+was removed. Supported selected foreign-checkpoint continuation also remains
+unimplemented: import data alone cannot satisfy existing current custody, fresh
+acceptance, budget and human-review consumer requirements. These are implementation
+gaps, not approved exclusions or an assertion that all permutations are required.

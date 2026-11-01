@@ -264,7 +264,7 @@ export interface InstalledBranchPackage {
 }
 
 /** Private evidence bytes never carry dispatch, grants, leases or provider ownership. */
-export interface BranchPortableRuntimeFact {kind:'frontier'|'definition'|'bindings'|'configuration'|'provenance'|'host'|'initial'|'checkpoint'|'transition'|'command'|'custody';key:string;json:string;sha256:string}
+export interface BranchPortableRuntimeFact {kind:'frontier'|'definition'|'bindings'|'configuration'|'provenance'|'host'|'initial'|'checkpoint'|'transition'|'command'|'custody'|'import'|'trigger';key:string;json:string;sha256:string}
 export interface BranchPortableRuntimeOwner {sourceExecutionId:string;sourceBranchId:string;chatRefs:string[];facts:BranchPortableRuntimeFact[];sha256:string}
 export interface BranchPortableRuntimeData {schema:'ponderosa.branch-runtime-data.v1';sourceBranchId:string;identities:{chats:Record<string,string>;agents:Record<string,{chatRef:string;agentRef:string}>};owners:BranchPortableRuntimeOwner[];sha256:string}
 export interface BranchRuntimeFrontierReceipt {disposition:'recreated_held'|'evidence_only';idMap:Record<string,string>;reason?:string}
