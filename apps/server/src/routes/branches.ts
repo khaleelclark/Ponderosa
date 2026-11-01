@@ -8,7 +8,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
 import { readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
-import { BranchValidationError, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
+import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {branchOperationalSummary, type ProviderIntakeStatus} from '../branch-operations.js';
@@ -132,7 +132,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
     try{const result=await context.installations.cancel(request.params.id);await sources.refresh();notify();return result}catch(error){return reply.code(409).send({error:(error as Error).message})}
   });
   app.get<{Params:{id:string};Querystring:{mode?:'template'|'full';includeValues?:string}}>('/api/branches/:id/package',async(request,reply)=>{
-    try{return await context.installations.export(request.params.id,request.query.mode==='full'?'full':'template',request.query.includeValues==='true')}catch(error){return reply.code(400).send({error:(error as Error).message})}
+    try{const result=await context.installations.export(request.params.id,request.query.mode==='full'?'full':'template',request.query.includeValues==='true');if(request.query.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);return result}catch(error){return reply.code(400).send({error:(error as Error).message})}
   });
   app.post<{Body:{name:string;idempotencyKey:string}}>('/api/branches',async(request,reply)=>{
     try{return branches.create(request.body.name,request.body.idempotencyKey)}catch(error){return reply.code(400).send({error:(error as Error).message})}

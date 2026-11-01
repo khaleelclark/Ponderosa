@@ -142,24 +142,23 @@ test('default ten-minute automation invokes the check, stays quiet without chang
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
-test('workspace schema upgrade accepts only exact published predecessor and preserves malformed state',async()=>{
+test('workspace schema upgrade refuses hybrid predecessors and preserves malformed state',async()=>{
  const {mkdtempSync,mkdirSync,readFileSync,readdirSync,rmSync}=await import('node:fs'),{tmpdir}=await import('node:os'),path=await import('node:path'),{createRequire}=await import('node:module');
  const require=createRequire(new URL('../../apps/server/package.json',import.meta.url)),Database=require('better-sqlite3');
- for(const scenario of ['exact predecessor','missing one table']){
+ for(const scenario of ['hybrid predecessor','missing one table']){
   const root=mkdtempSync(path.join(tmpdir(),'assistant-state-upgrade-')),state=path.join(root,'data'),folder=path.join(root,'work');mkdirSync(folder);
   try{
    let store=new AgentStore(state);const chat=store.createProject({label:'Preserved Project',chatOwned:true,hostPath:folder,defaultEngine:'codex'});store.close();
    const db=new Database(path.join(state,'ponderosa.db'));
-   db.exec(scenario==='exact predecessor'?"DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'":'DROP TABLE assistant_report_scan');
-   if(scenario==='exact predecessor'){
-    // Reconstruct the exact 0028 predecessor, without newer pause tables or its marker.
+   db.exec(scenario==='hybrid predecessor'?"DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'":'DROP TABLE assistant_report_scan');
+   if(scenario==='hybrid predecessor'){
+    // Deliberately retain 0031+ objects: this is a hybrid, not a published 0028 prefix.
     db.exec('DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses');
     db.prepare('DELETE FROM _schema_version WHERE name IN (?,?)').run('0030_agent_run_pauses.sql','0029_assistant_workspace.sql');
    }
    db.close();
    const snapshot=()=>JSON.stringify(readdirSync(state).filter(name=>name.endsWith('.db')||name.endsWith('.json')||name.includes('layout-version')).sort().map(name=>[name,readFileSync(path.join(state,name)).toString('base64')]));const before=snapshot();
-   if(scenario==='exact predecessor'){store=new AgentStore(state);assert.equal(store.getProject(chat.id).label,'Preserved Project');assert.ok(store.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='workspace_agent_actions'").get());store.close();}
-   else{assert.throws(()=>new AgentStore(state));assert.equal(snapshot(),before);}
+   assert.throws(()=>new AgentStore(state));assert.equal(snapshot(),before);
   }finally{rmSync(root,{recursive:true,force:true});}
  }
 });
