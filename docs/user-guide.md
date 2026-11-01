@@ -592,8 +592,9 @@ With local memory configured, full packages also transfer the selected Chat
 team memory and included Agents' private memory, including versions and conflicts.
 The destination needs compatible local models and memory storage. Templates
 contain no memory. Fresh Branch workflow installations use the same path;
-memory-bearing updates to existing workflows currently require separate migration
-review and are refused explicitly.
+existing-workflow updates can select new Agents’ private memory and preserved
+Chats’ team memory through the additive review. Existing Agent memory remains
+unchanged. See [additive memory updates](branches-additive-memory-update.md).
 
 Installation capability restrictions/history and memory access grants stay at the
 destination; Agent management settings and workflow execution policy are separate

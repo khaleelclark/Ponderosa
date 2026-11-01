@@ -1742,6 +1742,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Existing TypeScript transpiler; actual TSX component with transport/hooks/download stubs",
       "origin": "Selected global-memory UI: selection, explicit review, cancellation, error retry and file limits"
+    },
+    {
+      "path": "tests/memory/workflow-additive.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native workspaces, existing owned Chroma and offline model fixtures; no provider account",
+      "origin": "Reviewed additive workflow memory: preserve destination, stale/selection/collision refusal, staged visibility, cancellation compensation and deterministic retry"
     }
   ],
   "retainedReleasePayload": [

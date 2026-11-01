@@ -104,7 +104,7 @@ test('template and full Branch packages preserve explicit and legacy schedule po
   installation.setPublisher((input,configuration)=>{const source=input.bindings.triggers.source.sourceConfig,normalized=normalizeTriggerSourceConfig('schedule',triggerSourceConfig('schedule',source));return f.branches.deploy(input,new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt},configuration)});
   for(const mode of ['template','full']){
    const pkg=await installation.export(f.branch.id,mode);assert.deepEqual(pkg.triggers.source.sourceConfig,config);
-   const preview=installation.preview(pkg,{agents:{},directories:{workspace:f.workspace}}),result=await installation.confirm(preview.id,mode==='full');assert.equal(result.state,'completed',result.error);
+   const preview=await installation.preview(pkg,{agents:{},directories:{workspace:f.workspace}}),result=await installation.confirm(preview.id,mode==='full');assert.equal(result.state,'completed',result.error);
    assert.deepEqual(f.branches.localConfiguration(result.branchId).triggers.source.sourceConfig,config);assert.deepEqual(f.branches.trigger(result.branchId).sourceConfig,config);
   }
   await installation.stop();f.noProviderWork();f.pass();

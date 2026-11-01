@@ -1,3 +1,4 @@
+import {selectBranchMemory} from './branch-memory-update.js';
 import {validateOutputRoles} from './portable-output-roles.js';
 import type {OutputAgentApps} from './output-agent-apps.js';
 import {agentPackageJsonUtf8Bytes} from '@ponderosa/core';
@@ -27,6 +28,9 @@ type InstallationJournal={chats:Array<ChatSnapshot&{applied?:ChatSnapshot}>;agen
 interface PackageEngine {
  setOutputApps(owner:OutputAgentApps):void;
  validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
+ exportMemory(chatId:string,agentIds:string[]):Promise<import('@ponderosa/core').PortableChatMemorySnapshotDto>;
+ verifyStagedMemory(operationId:string,pkg:AgentPortablePackageDto):Promise<void>;
+ rollbackStagedMemory(operationId:string):Promise<void>;
  exportAgent(id:string,mode:'template'|'full'):Promise<AgentPortablePackageDto>;
  importAgent(projectId:string,chatId:string,pkg:AgentPortablePackageDto,engines:Record<string,string>,key:string,options?:{signal?:AbortSignal;branchHooks?:{plan(agentIds:string[],creationOperationId?:string):void|Promise<void>;commit(result:ImportAgentPackageResponse):void;transaction?(operation:()=>void):void}}):Promise<ImportAgentPackageResponse>;
 }
@@ -36,7 +40,7 @@ export class BranchInstallationService {
  private outputApps?:OutputAgentApps;
  setOutputApps(owner:OutputAgentApps){this.outputApps=owner;}
  private roleBinding(pkg:InstalledBranchPackage,bindings:BranchBindings,branchId?:string){return createHash('sha256').update(stableJson({package:pkg,bindings,destination:branchId??'new'})).digest('hex');}
- private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{}:value;}
+ private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{}:value;}
  private finishRoles(plan:Row){
   const state=this.rolePlan(plan);if(state.review){if(!this.outputApps)throw new Error('Output role service unavailable');this.outputApps.finalizeImport(state.review.id,state.binding!,plan.id,state.mapping!);}
   this.compactPlan(plan.id,'completed');
@@ -220,12 +224,22 @@ export class BranchInstallationService {
   }));
   return validateBranchConfiguration({parameters:{...retained,...pkg.parameters},limits:pkg.limits,secretBindings:Object.fromEntries(Object.entries(current?.secretBindings??{}).filter(([key])=>pkg.definition.parameters?.[key]?.type==='secret'))},pkg.definition);
  }
- preview(value:unknown,bindings:BranchBindings,branchId?:string):BranchInstallationPreviewDto{
+ private async memoryInventory(branchId:string){
+  const snapshots:import('@ponderosa/core').PortableChatMemorySnapshotDto[]=[];
+  for(const chat of this.rows("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND agent_ref='' AND state='active' ORDER BY local_id",branchId)){
+   const ids=this.rows("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND chat_ref=(SELECT chat_ref FROM branch_installation_resources WHERE branch_id=? AND local_id=? AND agent_ref='') AND agent_ref!='' AND state='active' ORDER BY local_id",branchId,branchId,chat.local_id).map(r=>r.local_id as string);
+   const snapshot=await this.engine!.exportMemory(chat.local_id,ids);snapshot.chunks.sort((a,b)=>a.id.localeCompare(b.id));snapshot.conflicts.sort((a,b)=>a.id.localeCompare(b.id));snapshots.push(snapshot);
+  }
+  return snapshots;
+ }
+ private async checkMemory(plan:Row){const update=this.rolePlan(plan).memoryUpdate;if(update&&createHash('sha256').update(stableJson(await this.memoryInventory(plan.branch_id))).digest('hex')!==update.hash)throw new InstallationConflictError('Destination memory changed; review a new additive preview');}
+ async preview(value:unknown,bindings:BranchBindings,branchId?:string,memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto):Promise<BranchInstallationPreviewDto>{
   this.maintainPlans();
   const pkg=this.validate(value),branch=branchId?this.branches.getBranch(branchId):undefined;
   if(branchId&&this.row('SELECT 1 FROM branches WHERE id=? AND deleting=1',branchId))throw new Error('Branch deletion is pending');
   if(branchId&&!branch)throw new Error('Branch unavailable');
-  if(branchId&&pkg.chats.some(c=>c.agents.some(a=>a.definition.memory?.some(m=>m.snapshot.chunks.length||m.snapshot.conflicts.length))))throw new Error('Memory-bearing workflow packages currently require fresh installation; existing workflow memory updates need explicit migration review');
+  if(branchId&&memorySelection===undefined&&pkg.chats.some(c=>c.agents.some(a=>a.definition.memory?.some(m=>m.snapshot.chunks.length||m.snapshot.conflicts.length))))throw new Error('Memory-bearing workflow packages require fresh installation or explicit additive memory selections');
+  if(memorySelection!==undefined&&(!branchId||pkg.mode!=='full'))throw new Error('Additive memory selection requires an existing workflow and full package');
   if(branchId&&this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')",branchId))throw new Error('Another update is still applying');
   for(const directory of Object.values(bindings.directories))if(!statSync(realpathSync(interpolateBranchText(directory,pkg.definition,this.configurationFor(pkg,branchId)))).isDirectory())throw new Error('Working directories must exist');
   if(pkg.chats.length&&!bindings.directories.workspace)throw new Error('Choose a default working directory for imported Chats');
@@ -233,6 +247,13 @@ export class BranchInstallationService {
   for(const chat of pkg.chats)for(const agent of chat.agents)this.engine.validateAgent(agent.definition,bindings.engines??pkg.engines??{});
   if(branchId&&branch){for(const c of this.rows("SELECT id,project_id FROM conversations WHERE branch_id=? AND branch_execution_id IS NULL AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=conversations.id AND r.state!='active')",branchId)){this.identity(branchId,c.id);for(const a of this.store.listAgents(c.project_id))if(a.conversationId===c.id)this.identity(branchId,c.id,a.id);}}
   const existing=branchId?this.rows("SELECT * FROM branch_installation_resources WHERE branch_id=? AND state='active'",branchId):[];
+  if(memorySelection!==undefined&&existing.some(r=>r.package_id!==pkg.packageId))throw new Error('Additive memory update requires the same installed package identity');
+  let memoryUpdate:ReturnType<BranchInstallationService['rolePlan']>['memoryUpdate'];
+  if(memorySelection!==undefined){
+   const chosen=selectBranchMemory(pkg,memorySelection,existing as Array<{chat_ref:string;agent_ref:string}>),destination=await this.memoryInventory(branchId!);
+   memoryUpdate={review:{...chosen,destination},hash:createHash('sha256').update(stableJson(destination)).digest('hex')};
+   for(const c of pkg.chats)for(const a of c.agents){const old=existing.find(r=>r.chat_ref===c.ref&&r.agent_ref===a.ref);if(old)a.definition.agents[0]!.managementPermissions=this.store.getAgent(old.local_id)!.managementPermissions;}
+  }
   const keys=new Set<string>(),operations:BranchInstallationOperationDto[]=[];
   const compare=(resource:string,label:string,before:unknown,after:unknown)=>{if(stableJson(before??null)!==stableJson(after??null))operations.push({kind:'change',resource,label,before:before??null,after:after??null});};
   for(const c of pkg.chats){for(const a of [{ref:'',title:c.title},...c.agents.map(a=>({ref:a.ref,title:a.definition.agents[0]!.title}))]){
@@ -244,6 +265,7 @@ export class BranchInstallationService {
      if(old)operations.push({kind:'preserve-context',resource:'Agent',label:`${a.title}: existing history and opening instructions remain; incoming history does not replace them`});
     }else{const previous=old?this.store.getConversation(old.local_id):undefined;compare('Chat instructions',c.title,previous?{title:previous.title,instructions:previous.instructions??''}:null,{title:c.title,instructions:c.instructions??''});}
   }}
+  if(memoryUpdate)operations.push({kind:'preserve-context',resource:'Memory',label:'Existing Agent memory and destination permissions remain; only selected additions are imported',before:memoryUpdate.review.destination,after:memoryUpdate.review.incoming});
   for(const old of existing)if(!keys.has(stableJson([old.package_id,old.chat_ref,old.agent_ref])))operations.push({kind:'remove-after-active-executions-drain',resource:old.agent_ref?'Agent':'Chat',label:old.agent_ref?this.store.getAgent(old.local_id)?.title??old.agent_ref:this.store.getConversation(old.local_id)?.title??old.chat_ref});
   for(const resource of ['Workflow and scripts','Primary trigger','Parameter definitions','Branch dependencies','Organization relationships','Execution limits'])operations.push({kind:branch?'replace':'create',resource,label:resource});
   const previousDefinition=branch?.versionId?this.branches.version(branch.id,branch.versionId)?.definition:undefined;
@@ -267,10 +289,10 @@ export class BranchInstallationService {
   const outputRoleReview=targets?.length?this.outputApps?.reviewImport(targets,roleBinding,true,mapping):undefined;
   if(targets?.length&&!outputRoleReview)throw new Error('Output role service unavailable');
   if(targets)for(const target of targets)operations.push({kind:'change',resource:'Output role',label:target.ref,before:this.outputApps?.portableRoles(mapping[target.ref]?[mapping[target.ref]]:[]),after:target});
-  const packageJson=stableJson(pkg),bindingsJson=stableJson(bindings),previewJson=stableJson(outputRoleReview?{review:outputRoleReview,binding:roleBinding,operations}:operations);this.assertPlanCapacity(branchId,Buffer.byteLength(packageJson)+Buffer.byteLength(bindingsJson)+Buffer.byteLength(previewJson));
+  const packageJson=stableJson(pkg),bindingsJson=stableJson(bindings),previewJson=stableJson(outputRoleReview||memoryUpdate?{...(outputRoleReview?{review:outputRoleReview,binding:roleBinding}:{}),...(memoryUpdate?{memoryUpdate}:{}),operations}:operations);this.assertPlanCapacity(branchId,Buffer.byteLength(packageJson)+Buffer.byteLength(bindingsJson)+Buffer.byteLength(previewJson));
   const id=randomUUID(),createdAt=new Date().toISOString();this.run("INSERT INTO branch_installation_plans(id,branch_id,expected_version_id,expected_configuration_revision,package_json,bindings_json,preview_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",id,branchId??null,branch?.versionId??null,branchId?this.row('SELECT configuration_revision FROM branches WHERE id=?',branchId)!.configuration_revision:null,packageJson,bindingsJson,previewJson,createdAt,createdAt);
   if(branchId)this.run('UPDATE branch_installation_plans SET expected_resources_hash=? WHERE id=?',this.resourceRevision(branchId),id);
-  return {id,operations,...(outputRoleReview?{outputRoleReview}:{}),...(fullImportReview?{fullImportReview}:{})};
+  return {id,operations,...(memoryUpdate?{memoryUpdateReview:memoryUpdate.review}:{}),...(outputRoleReview?{outputRoleReview}:{}),...(fullImportReview?{fullImportReview}:{})};
  }
  async cancel(id:string):Promise<{branchId?:string;state:string;error?:string}>{
   let plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);
@@ -300,11 +322,13 @@ export class BranchInstallationService {
   return {deleted:!this.branches.getBranch(branchId),pending:Boolean(this.branches.getBranch(branchId))};
  }
  reviewPublishedRoles(id:string){const plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);if(!plan||plan.state!=='applying')throw new Error('Committed import unavailable');const state=this.rolePlan(plan);if(!state.published||!state.review)throw new Error('Import has no pending role finalization');return this.outputApps!.reReviewImport(state.review.id,state.binding!,id,state.mapping!);}
- async confirm(id:string,acknowledgeFullImport=false,outputRoleReviewId?:string):Promise<{branchId:string;state:string;error?:string}>{
+ async confirm(id:string,acknowledgeFullImport=false,outputRoleReviewId?:string,acknowledgeMemoryUpdate=false):Promise<{branchId:string;state:string;error?:string}>{
   const plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);if(!plan)throw new Error('Update preview unavailable');
   if(plan.state==='completed')return {branchId:plan.branch_id,state:plan.state};
   if(plan.state!=='preview'&&plan.state!=='applying')throw new Error('Update preview is no longer available; review the package again');
   if(plan.state==='preview'&&(JSON.parse(plan.package_json) as InstalledBranchPackage).mode==='full'&&!acknowledgeFullImport)throw new Error('Explicit acknowledgement is required to import full Agent context and files');
+  if(plan.state==='preview'&&this.rolePlan(plan).memoryUpdate&&!acknowledgeMemoryUpdate)throw new Error('Explicit acknowledgement is required for reviewed additive memory');
+  if(plan.state==='preview')await this.checkMemory(plan);
   let roleState=this.rolePlan(plan);
   if(outputRoleReviewId){if(!roleState.published||!roleState.review)throw new Error('No committed role outcome to review');this.outputApps!.claimImport(outputRoleReviewId,roleState.binding!,plan.id);const old=roleState.review.id;roleState={...roleState,review:this.outputApps!.checkImport(outputRoleReviewId,roleState.binding!,plan.id).review};this.run('UPDATE branch_installation_plans SET preview_json=?,next_attempt_at=NULL,error=NULL WHERE id=?',stableJson(roleState),plan.id);this.outputApps!.abandonReview(old);}
   if(roleState.review)this.outputApps!.claimImport(roleState.review.id,roleState.binding!,plan.id);
@@ -348,6 +372,7 @@ export class BranchInstallationService {
   }
   for(const r of this.rows("SELECT r.rowid position,r.*,chat.local_id chat_id FROM branch_installation_resources r JOIN branch_installation_resources chat ON chat.branch_id=r.branch_id AND chat.package_id=r.package_id AND chat.chat_ref=r.chat_ref AND chat.agent_ref='' WHERE r.state='retiring' AND r.agent_ref!='' AND chat.state='active' AND NOT EXISTS(SELECT 1 FROM branch_retirement_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.resource_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",this.agentCleanupCursor))try{
    this.agentCleanupCursor=r.position;
+   if(r.staging_plan_id&&r.creation_operation_id&&this.engine)await this.engine.rollbackStagedMemory(r.creation_operation_id);
    await this.deleteAgent(r.local_id);this.run("UPDATE branch_installation_resources SET state='deleted' WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=?",r.branch_id,r.package_id,r.chat_ref,r.agent_ref);
   }catch(error){this.retirementError(r.local_id,error)}
   for(const r of this.rows("SELECT r.rowid position,r.* FROM branch_installation_resources r WHERE r.state='retiring' AND r.agent_ref='' AND NOT EXISTS(SELECT 1 FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",this.chatCleanupCursor))try{
@@ -375,6 +400,7 @@ export class BranchInstallationService {
   this.ensureApplying(plan.id,branchId);
   // A crashed attempt must finish compensating before any new mutation is admitted.
   this.compensate(plan.id);
+  await this.checkMemory(plan);
   for(const c of pkg.chats)for(const a of c.agents)this.engine!.validateAgent(a.definition,bindings.engines??pkg.engines??{});
   for(const c of pkg.chats)for(const a of ['',...c.agents.map(a=>a.ref)])if(this.row("SELECT 1 FROM branch_installation_resources WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=? AND state='retiring'",branchId,pkg.packageId,c.ref,a))throw new Error('A matching resource is still retiring; this update will resume after it drains');
   const bind=(chat:string,agent:string,id:string,creationOperationId?:string)=>this.store.sqlite.transaction(()=>{this.run("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state,staging_plan_id,creation_operation_id) VALUES(?,?,?,?,?,'staging',?,?) ON CONFLICT(branch_id,package_id,chat_ref,agent_ref) DO UPDATE SET local_id=excluded.local_id,state='staging',staging_plan_id=excluded.staging_plan_id,creation_operation_id=excluded.creation_operation_id",branchId,pkg.packageId,chat,agent,id,plan.id,creationOperationId??null);this.rememberOwned(plan.id,id);})();
@@ -409,6 +435,7 @@ export class BranchInstallationService {
       if(receipt.status!=='completed')throw new Error('The staged Agent import is still being recovered');
       const result=receipt.result_json?JSON.parse(receipt.result_json) as ImportAgentPackageResponse:undefined;
       if(!result||result.rootAgentId!==id||result.agentIds.length!==1||result.agentIds[0]!==id)throw new InstallationConflictError('A staged Agent does not match its completed import receipt; review the package again');
+      await this.engine!.verifyStagedMemory(resource.creation_operation_id,a.definition);
      }
      if(!id){this.ensureApplying(plan.id,branchId);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
      const node=a.definition.agents[0]!;
@@ -416,6 +443,7 @@ export class BranchInstallationService {
     }
    }
    this.ensureApplying(plan.id,branchId);
+   await this.checkMemory(plan);
    if(plan.expected_resources_hash&&this.resourceRevision(branchId)!==plan.expected_resources_hash)throw new InstallationConflictError('Chats or Agent settings changed while the update was applying; review the package again');
    const journal:InstallationJournal={chats:[],agents:[]};
    for(const c of pkg.chats){
