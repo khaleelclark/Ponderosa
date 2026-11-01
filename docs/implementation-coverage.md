@@ -630,10 +630,28 @@ failed generation-zero evidence and automatic fresh-context retry maxAttempts=2.
 Current roots/maps exclude the old attempt; its full original evidence remains
 historical and nondispatchable. Original historical Project audit-read and no
 pending deletion are required at preparation/candidate/final authorization; only
-old/fresh Project equality is removed. No historical selection/review web UI,
-parallel/EXIT/gen>1/manual recovery/called-tree admission consumer is supplied.
+old/fresh Project equality is removed. The bounded historical selection/review web UI is assembled below;
+parallel/EXIT/gen>1/manual recovery/called-tree admission consumers remain absent.
 Erased original proof still prevents new admission; audit retains its bounded
 metadata-only projection and requires an original selectable group journal.
 Actual native/provider/package, accessibility/mobile and end-to-end qualification
 remain open. All deferred fixtures are source only. No tests/checks/build/types/
 Node/native/browser/preparation/execution/migrations/push/deploy/newworkers.
+
+Bounded serial generation-one UI678493ca is integrated in source: canonical
+resource Step IDs mount server preview/capture/status/discovery, exact saved
+preview and full historical selection persist before CAS POST, pure original-key
+GET recovers lost responses, and preparation carries historicalReviewHash.
+Human review shows retired generation-zero nondispatchable facts and original
+actors/audiences separately from current participant maps and policy; explicit
+approval and admission remain separate. Receipt display projects private seals/
+retirement bytes out; this does not remove intentionally authorized human fact
+review. Capture/preparation/choice/admit409 and unknown outcomes retain original
+commands for GET-only inspection, never POST replay. This supersedes earlier UI-
+pending notes ONLY for one standalone manual serial resource generation1,
+ASYNC/SYNC, retry attempt2of2. No parallel/EXIT/gen>1/manual recovery/tree admission,
+unknown payload/native/provider/effect expansion or erased-evidence recovery.
+Deferred helper/transport/mounted sources are present but unexecuted; runtime,
+package/provider/native/accessibility/mobile and end-to-end qualification remain
+open. No tests/checks/build/types/Node/native/browser/preparation/execution/
+migrations/push/deploy/newworkers.
