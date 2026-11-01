@@ -96,12 +96,9 @@ Content-only import remains available by leaving activation off.
 restrictions and requires an explicit choice using the server digest/opaque refs.
 Changed review clears the choice. Success or error refreshes canonical status;
 delayed mutation results do not replace later Stop/terminal state. Background
-progress and Stop remain available. The UI and accessibility owner remains the sole web writer, including
-BranchPackageDialog. Workflow folder controls, newManagedChatFolderName and live
-activation choices, actual workingRootReview confirmation, grouped Shared caller
-choices and mapped post-install Settings remain that owner’s implementation work.
-Backend grouped assembly and binding/recovery remain Branches-owner work. This
-Agent-package form does not assert coverage of that separate installer.
+progress and Stop remain available. All web callers are owned by this UI lane. Branches backend APIs are owned by
+the Branches lane. Workflow folder export/import controls are described below;
+the Agent-package form alone does not establish their coverage.
 
 ## Backend integration and remaining limits
 
@@ -119,7 +116,7 @@ Integrate these owners' source chains before combined execution:
   container validation does not establish playback qualification.
 
 No backend cherry-pick, push, merge or deployment occurred here. This isolated web
-branch intentionally depends on owners' newer core DTOs. Branches bundle controls,
+branch intentionally depends on owners' newer core DTOs. Grouped workflow folder composition/caller integration,
 full generation coverage, early voice response, consolidated compatibility,
 accessibility/mobile judging and performance acceptance remain external or
 unexecuted gates. Full #8, Bible and Phase 2 completion are not claimed.
@@ -156,5 +153,47 @@ No test/check/build/type/browser execution accompanied this increment.
 
 Branches delivered backend caller `d9fb504d766b24a3891a458657f58451e4a833ef`
 (no web edits), superseding earlier content-only backend limits. Its workflow
-package file-selection/live-activation controls still need a web caller; Agent
-package controls above do not close that separate surface.
+package file-selection/live-activation controls are now wired as described below;
+Agent-package controls alone do not establish the separate workflow coverage.
+
+## Workflow folder caller continuation
+
+`BranchPackageExportDialog` uses the complete paginated canonical workflow Agent
+list. Full export offers all Agent folders or explicit per-Agent whole/selected
+relative file choices and forwards local-ID-keyed fileSelections. The sensitive
+data warning remains in the shared confirmation dialog. No subtree is exported
+again on the client.
+
+`BranchImportFiles` collects target-keyed NEW recovery destinations. Retained
+existing Agents expose no folder mutation controls. Client lexical checks require
+complete, distinct, nonnested absolute destinations across all targets; backend
+canonical/link/ownership validation remains authoritative. Single-Agent fresh
+managed destinations forward newManagedChatFolderName and workingFilesActivation
+without a fabricated sharedRoot. Existing destination live activation is limited
+to source Separate Git mode. A staged workingRootReview displays the actual
+returned root and submits only an explicit confirmation to working-root-review.
+Success/error re-reads canonical status; stale mutation responses never overwrite
+a later Stop/terminal result. Stop and background progress remain available.
+
+Pending grouped access review now offers one independent choice for each source
+node with accessSettings and sends exhaustive agentActions with the complete
+grouped review digest. No single-Agent digest or blanket source grant is reused.
+Completed importResults are deduplicated by their canonical mapped identities and
+shown through the shared PostImportAccessReview before opening the workflow.
+Chat-wide memory choices remain grouped; browser choices use destination-local
+profiles. Conflicting mapped Settings receipts surface an error. No automatic
+grant/profile change occurs.
+
+Runtime recovery controls are already committed at 21569c922 and remain unchanged.
+All web surfaces are this lane's responsibility; backend owners supply APIs only.
+Grouped fresh-Chat folder activation is the current remaining caller dependency:
+8d5ee5a1 introduces connected composition and grouped review, but exact composed
+root inventory bootstrap and normal all-folder export root identity need the
+Branches owner's source-contract handoff before enabling that web path. The
+tracked dependency preserves the current UI continuation; no full UI completion
+is claimed. Disconnected same-Chat forests remain an explicit backend batch gap.
+
+Deferred source includes branch-package-files.test.mjs and
+branch-package-export-mounted.tsx. Existing post-import mounted regression mocks
+the new mapped-name reads. No tests/checks/types/build/browser/runner execution,
+push, merge or deployment occurred.

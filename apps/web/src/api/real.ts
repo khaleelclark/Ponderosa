@@ -321,6 +321,7 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
+  listBranchAgents(branchId:string):Promise<import('@ponderosa/core').BranchAgentChoiceDto[]>{return collectCollectionPages(`/api/branches/${encodeURIComponent(branchId)}/agents`);},
   getContextRecovery(agentId:string,idempotencyKey?:string):Promise<{
     support:import('@ponderosa/core').ProviderContextRecoverySupport;
     boundary:Pick<import('@ponderosa/core').ProviderContextRecoveryRequest,'providerSessionId'|'sourceRunId'|'toolContractHash'|'sourceFence'>|null;

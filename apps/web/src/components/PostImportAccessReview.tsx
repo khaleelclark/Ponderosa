@@ -6,6 +6,7 @@ import {chatBrowserOwnerId,type ImportAgentPackageResponse} from '@ponderosa/cor
 import {api} from '../api';
 import {requestJson} from '../api/real';
 import {useUnsavedForm} from '../reloadSafety';
+export type ImportSettingsResult=Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'>;
 type StateChange=(key:string,dirty:boolean,busy:boolean)=>void;
 type Suggestion=NonNullable<ImportAgentPackageResponse['accessSettingsToReview']>[number];
 
@@ -45,22 +46,26 @@ function BrowserChoice({suggestion,onStateChange,title}:{suggestion:Suggestion;o
   <Button onClick={()=>{void current.refetch();void profiles.refetch();}}>Reload browser settings</Button>
  </Stack></Paper>;
 }
-export function PostImportAccessReview({result,onDone,projectId}:{result:ImportAgentPackageResponse;onDone():void;projectId?:string}):JSX.Element {
+export function PostImportAccessReview({result,onDone,projectId}:{result:ImportSettingsResult;onDone():void;projectId?:string}):JSX.Element {
  const [states,setStates]=useState<Record<string,{dirty:boolean;busy:boolean}>>({});
  const [discard,setDiscard]=useState(false);
  const onStateChange=useCallback<StateChange>((key,dirty,busy)=>setStates(previous=>({...previous,[key]:{dirty,busy}})),[]);
  const busy=Object.values(states).some(item=>item.busy),dirty=Object.values(states).some(item=>item.dirty);
  const agents=useQuery({queryKey:['import-result-agents',projectId],enabled:Boolean(projectId),queryFn:()=>api.listAgents(projectId!),retry:false});
  const chats=useQuery({queryKey:['import-result-chats',projectId],enabled:Boolean(projectId),queryFn:()=>api.listConversations(projectId!),retry:false});
- const agentTitle=(id:string)=>agents.data?.find(item=>item.id===id)?.title??'Imported Agent';
  const suggestions=result.accessSettingsToReview??[];
+ const agentIds=[...new Set(suggestions.map(item=>item.agentId))],chatIds=[...new Set(suggestions.map(item=>item.conversationId))];
+ const mappedAgents=useQuery({queryKey:['import-result-mapped-agents',agentIds],enabled:!projectId&&agentIds.length>0,queryFn:()=>Promise.all(agentIds.map(async id=>(await api.getAgent(id,1)).agent)),retry:false});
+ const mappedChats=useQuery({queryKey:['import-result-mapped-chats',chatIds],enabled:!projectId&&chatIds.length>0,queryFn:()=>Promise.all(chatIds.map(async id=>(await api.getConversation(id,1)).conversation)),retry:false});
+ const agentTitle=(id:string)=>(agents.data??mappedAgents.data)?.find(item=>item.id===id)?.title??`Imported Agent ${id}`;
  const memory=new Map<string,Suggestion[]>();
  for(const item of suggestions)if(item.source.readGlobalMemory!==undefined)memory.set(item.conversationId,[...(memory.get(item.conversationId)??[]),item]);
  return <Stack spacing={2}><Typography variant="h6">Import complete</Typography>
+  {(mappedAgents.error||mappedChats.error)&&<Alert severity="error">{mappedAgents.error?.message||mappedChats.error?.message}</Alert>}
   {result.workingFilesDestination&&<Typography>Restored folder: {result.workingFilesDestination}</Typography>}
-  {result.workingRoots?.map(root=><Typography key={root.ref}>Restored folder: {root.destination} · {root.agentIds.length} Agents</Typography>)}
-  {result.liveWorkingRoots?.map(root=><Typography key={root.ref}>Live working folder: {root.path} · {root.agentIds.map(agentTitle).join(', ')}</Typography>)}
-  {[...memory].map(([chatId,items])=><MemoryChoice key={chatId} chatId={chatId} suggestions={items} chatTitle={chats.data?.find(item=>item.id===chatId)?.title??'Destination Chat'} agentTitle={agentTitle} onStateChange={onStateChange}/>)}
+  {result.workingRoots?.map(root=><Typography key={JSON.stringify([root.ref,root.destination])}>Restored folder: {root.destination} · {root.agentIds.length} Agents</Typography>)}
+  {result.liveWorkingRoots?.map(root=><Typography key={JSON.stringify([root.ref,root.path])}>Live working folder: {root.path} · {root.agentIds.map(agentTitle).join(', ')}</Typography>)}
+  {[...memory].map(([chatId,items])=><MemoryChoice key={chatId} chatId={chatId} suggestions={items} chatTitle={(chats.data??mappedChats.data)?.find(item=>item.id===chatId)?.title??'Destination Chat'} agentTitle={agentTitle} onStateChange={onStateChange}/>)}
   {suggestions.filter(item=>item.source.savedBrowserAllowed!==undefined||item.source.browserMode!==undefined).map(item=><BrowserChoice key={item.agentId} suggestion={item} title={agentTitle(item.agentId)} onStateChange={onStateChange}/>)}
   <Button variant="contained" disabled={busy} onClick={()=>dirty?setDiscard(true):onDone()}>Done</Button>
   <ConfirmDialog open={discard} title="Unapplied settings" confirmLabel="Discard choices" cancelLabel="Keep editing" onCancel={()=>setDiscard(false)} onConfirm={onDone}>Discard unapplied choices?</ConfirmDialog>

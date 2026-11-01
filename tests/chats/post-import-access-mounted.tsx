@@ -6,8 +6,10 @@ import {api} from '../../apps/web/src/api';
 const assert=(value:unknown,message:string)=>{if(!value)throw new Error(message);};
 const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 export async function postImportBrowserReviewRegression():Promise<void>{
- const original={getSavedBrowserAccess:api.getSavedBrowserAccess,getBrowserAgentPreference:api.getBrowserAgentPreference,listBrowserProfiles:api.listBrowserProfiles,setSavedBrowserAccess:api.setSavedBrowserAccess,updateBrowserAgentPreference:api.updateBrowserAgentPreference};
+ const original={getAgent:api.getAgent,getConversation:api.getConversation,getSavedBrowserAccess:api.getSavedBrowserAccess,getBrowserAgentPreference:api.getBrowserAgentPreference,listBrowserProfiles:api.listBrowserProfiles,setSavedBrowserAccess:api.setSavedBrowserAccess,updateBrowserAgentPreference:api.updateBrowserAgentPreference};
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ api.getAgent=async()=>({agent:{id:'imported',title:'Imported Agent'}} as Awaited<ReturnType<typeof api.getAgent>>);
+ api.getConversation=async()=>({conversation:{id:'new-chat',title:'New Chat'}} as Awaited<ReturnType<typeof api.getConversation>>);
  const writes:unknown[]=[];let allowed=false;
  api.getSavedBrowserAccess=async()=>({agentIds:allowed?['imported']:[]});
  api.getBrowserAgentPreference=async()=>({projectId:'destination',agentId:'imported',mode:'disposable',updatedAt:'now'});
