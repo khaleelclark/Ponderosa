@@ -461,7 +461,7 @@ Canonical group partial-capture abandonment hooks now compare whole raw intent/r
 
 ### Composed whole-group abandonment integration (source only)
 
-Successors535301c24/46ba3475e/9bbdaad1b are assembled without replaying already-equivalent lifecycle discovery. The separate fourth lifecycle group-capture collection exposes exact raw keys and full sources independently of destination review/drain. One complete private prepare journal precedes every package tombstone/archive; one Branch owner callback validates all proofs and one outer SQL commit releases group pins. Filesystem or SQL failure keeps every SQL cleanup pin held; unchanged explicit replay verifies original archives, including after owner removal. Current generation/import/member/subtree/attempt/Chat effect checks and reserve/seal revival fences remain mandatory. Retained/sealed groups, history/disk reclamation, unknown schemas/outcomes and external writers remain held. Dedicated group abandonment UI is not assembled. Fixture source includes actual Branch-hook/host composition with synthetic payloads and injected SQL failure; no execution occurred.
+Successors535301c24/46ba3475e/9bbdaad1b are assembled without replaying already-equivalent lifecycle discovery. The separate fourth lifecycle group-capture collection exposes exact raw keys and full sources independently of destination review/drain. One complete private prepare journal precedes every package tombstone/archive; one Branch owner callback validates all proofs and one outer SQL commit releases group pins. Filesystem or SQL failure keeps every SQL cleanup pin held; unchanged explicit replay verifies original archives, including after owner removal. Current generation/import/member/subtree/attempt/Chat effect checks and reserve/seal revival fences remain mandatory. Retained/sealed groups, history/disk reclamation, unknown schemas/outcomes and external writers remain held. Dedicated group abandonment UI356b90b77 is now assembled below. Fixture source includes actual Branch-hook/host composition with synthetic payloads and injected SQL failure; no execution occurred.
 
 
 ### Permanent Runtime generation-exit fence prerequisite (source only)
@@ -491,3 +491,34 @@ observed exit or completed drain. Historical participant partition/admission and
 precleanup/retry/replay gaps remain. Three deferred synthetic-resource canonical Runtime
 fixtures were source-read only; no tests/checks/build/types/Node/native/browser/preparation/
 execution/migration/push/deploy or qualification claim. See branch-generation-exit-fence.md.
+
+
+### Whole-group capture abandonment UI (source only)
+
+UI356b90b771672731ee45150d0aaa39262f70e9d2 adds a fourth independent Settings
+inventory for exact raw group capture keys/full original sources/captured subset.
+Opaque50-entry pages follow one revision until absent; malformed/409 pages unmount
+stale review/confirmation and require explicit restart. Destination failures do not
+block this collection. Current/retained labels remain audit evidence only.
+
+The separate whole-group review shows every package/source/file/revision/reference/
+blocker, and any member hold blocks all. Acknowledgement and final confirmation create
+one stable exact evidence-preserving body saved with original review before POST.
+Unknown/409/FS-SQL partial outcomes retain input; no automatic mutation replay, singular
+fallback or replacement key/hash. There is no receipt GET: recovery requires separate
+deliberate confirmation of the identical saved POST, including remount after owner or
+inventory disappearance. Origin/product-scoped unreadable storage blocks new choices.
+Receipt matching binds exact command/group/review/Branch input/source inventory,
+exhaustive unique package/proof identities, per-package review and preserved byte counts.
+Hash fields are shape-validated; actual source/file/archive hash verification remains
+host-owned. Only a selected receipt summary is displayed; originalCaptureRaw/private
+Branch snapshot is not stringified by the UI.
+
+All seven owner deliverables are assembled (three UI/helper sources, three deferred
+fixture sources and web-feature documentation). The f623c81ff preview read transaction
+correction remains assembled; no obsolete missing-correction note was restored.
+Retained/sealed-group history/disk reclamation, unknown schemas/outcomes, external
+writers, called trees/later generations, historical partition/Branch precleanup producer
+wiring and native/provider/accessibility/mobile qualification remain separate or open.
+Fixtures are source only: no tests/checks/build/types/Node/native/browser/runner preparation
+or execution/migrations/push/deploy/newworkers and no acceptance claim.
