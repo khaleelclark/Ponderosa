@@ -1,7 +1,7 @@
 # Current implementation coverage and backlog
 
 Source-only inventory includes Branch1aa09968 (2–32 serial/local-parallel resources; c462d403 predecessor), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
-retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner througheba8fa646 (91e8f8ad2/6ddf47dfa predecessors),
+retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner through12e744222 (eba8fa646 predecessor) (91e8f8ad2/6ddf47dfa predecessors),
 and lifecycle source throughf73a1e5a discovery atop393a02f5 (including Runtime713af3ad equivalent1e4d9e2). Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
@@ -165,7 +165,8 @@ current persisted approval hash/revision and fresh acknowledgement are required.
 Independent destination/choice readback permits revocation without source/preview proof.
 This UI has no group collection/original capture-key discovery or cross-device recovery;
 backend lifecycle discovery below does not reconstruct hashed GROUP capture keys. There is no
-mutation replay, partial-capture abandonment, group retirement or source-pin release UI.
+automatic mutation replay or partial-capture abandonment. Separate lifecycle discovery/whole-group
+retirement UI is now assembled below; it does not update this capture caller.
 Preparation discloses directory reuse/default Chat plus two owned resource Chats.
 Both deferred command and mounted fixtures are source only; none executed.
 
@@ -204,18 +205,18 @@ unchanged POST replay. Corrupt retained browser input blocks new mutations. Two 
 command/mounted fixture sources are present, unexecuted. See web-feature-completion.md.
 Backend f73a1e5a now supplies paginated current/deleted/retained import and singular/group
 current/retired destination discovery plus full supported unsealed capture source/key
-metadata independently of destination review. Existing UI does not consume those new
-collections yet; it still relies on its prior scoped identities/browser keys. No broader
-UI discovery or capture selector is claimed. Branch checkpoint retirement still depends
-on retained owner/source identity; no owner-independent journal.
-This is scoped lifecycle UI source, not broad discovery or executed qualification. The
-separate bounded group admission UI below does not add group retirement UI.
+metadata independently of destination review. UI12e744222 now consumes all three lifecycle
+collections with independent pagination/revision validation and explicit restart, and
+provides separate whole-group retirement controls. Branch checkpoint retirement still
+depends on retained owner/source identity; no owner-independent journal. These are
+source deliveries, not executed qualification; separate group capture preview/CAS UI
+and broader group capture/disclosure UI remain pending.
 
 - Features + Runtime: called resource trees, later-generation historical participants,
   retry/recovery, parallel cleanup-held frontiers and broader package payloads remain
   refused beyond the delivered 2–32 standalone generation-zero serial/local-parallel
-  consumer. UI beyond two serial resources, group retirement UI and atomic multi-package
-  group capture abandonment remain absent.
+  consumer. Capture/disclosure UI beyond two serial resources and atomic multi-package
+  group capture abandonment remain absent. Separate group retirement UI is integrated.
   Changed/secret bindings, exhausted-budget frontiers, Agent/child cancellation and
   cross-owner forwarded bundles remain open. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
@@ -328,7 +329,7 @@ Group destination retirement host source reuses the singular per-resource observ
 
 ### Lifecycle discovery source successor
 
-Operator audit discovery now provides revision-bound paginated import-operation, current/retired destination and supported unsealed capture/source collections under `/api/lifecycle/{agent-imports,destinations,checkpoint-captures}`. It preserves exact current/deletion-receipt/retained-only owner labels and original product/Branch/execution identities, validates retained hashes/receipts, and exposes complete source/capture keys without gating source discovery on destination deletion review. DTOs/BranchesClient and deferred source fixtures are present. Unknown evidence remains held; bounded inventories refuse rather than truncate. This closes the backend identity reachability gap, not UI integration/qualification, group capture abandonment, disk reclamation or broader lifecycle acceptance. No tests/checks/build/types/Node/native/browser/prep/execution/migrations/push/deploy/newworkers or web writes.
+Operator audit discovery now provides revision-bound paginated import-operation, current/retired destination and supported unsealed capture/source collections under `/api/lifecycle/{agent-imports,destinations,checkpoint-captures}`. It preserves exact current/deletion-receipt/retained-only owner labels and original product/Branch/execution identities, validates retained hashes/receipts, and exposes complete source/capture keys without gating source discovery on destination deletion review. DTOs/BranchesClient and deferred source fixtures are present. Unknown evidence remains held; bounded inventories refuse rather than truncate. This closes the backend identity reachability gap, with UI integration now described below; this does not qualify group capture abandonment, disk reclamation or broader lifecycle acceptance. No tests/checks/build/types/Node/native/browser/prep/execution/migrations/push/deploy/newworkers or web writes.
 
 Discovery limits: page size1–100/default50; follow nextCursor until absent, explicitly
 restart after revision409. SQL/recognized metadata inventories refuse above4096 records
@@ -402,8 +403,41 @@ and is incompatible for new capture until the pending UI successor adopts previe
 No web files were edited here. BranchesClient supplies discovery, preview, capture and
 status helpers; the additive BranchGroupClient capture method uses the shared exact input
 and result DTOs, while preserving all prior methods/exports. GET status is unchanged.
-UI discovery, broader 2–32/local-parallel UI and executable qualification remain pending.
+Branch group command discovery/preview UI, broader 2–32/local-parallel capture UI and executable qualification remain pending.
 Partial multi-package abandonment remains unsupported with all pins held. Existing
 historical participant, precleanup sealed evidence and broader payload limits remain.
 Deferred source covers preview purity/stale cut, serial/parallel exact and legacy keys,
 retained owner audit scope, paging/invalidation/reopen and partial pin retention; none ran.
+
+
+### Lifecycle global discovery and whole-group retirement UI (source only)
+
+UI12e744222 mounts three independent Settings inventories for imports, singular/group
+current/retired destinations and supported unsealed capture sources. Each follows opaque
+nextCursor in 50-entry pages with one revision; invalid/revised pages or409 hide stale
+entries, unmount review/confirmations and require explicit restart of that collection.
+Other collections remain available, including capture source discovery if destination
+review refuses. Original uncertain commands remain in scoped browser storage. Labels
+show current/deletion_receipt/retained_only evidence, operation/product/status/phase,
+all destination slots and full exact stored capture source/key. Unverified metadata
+supplies a count only; retained identity is not deletion/drain/authority proof.
+
+Discovered group admissions use separate group review/approve/retire/receipt routes,
+display all resource/slot evidence, require one durable whole-group choice and separate
+retirement confirmation, and reuse identical key/hash/body/pin disposition. Pending
+input is saved before POST; ambiguous outcomes lock new input and409 resets review
+confirmation without silently replacing original input. Pure receipt GET works after
+response loss/remount or without successful review/saved command (historical evidence
+only). Matching validates command/admission/review/pin identity and group resource-count,
+slot-array and evidence-hash shape; the UI does not independently re-prove host evidence
+or compare every receipt slot byte to the original review. Canonical backend proof
+remains authoritative. No polling, automatic mutation/retry or singular-action loop.
+
+This closes lifecycle discovery callers and group retirement UI source, not the separate
+Branch group capture/prepare discovery or e7 preview/CAS caller update. The existing
+eba8 capture UI still sends commandKey alone and remains incompatible for new POST;
+its shared input mismatch remains pending. Legacy lost GROUP keys cannot be recovered.
+Atomic multi-package abandonment remains unsupported/all pins held; existing eligibility,
+bounds, quiescence, references, historical partition and Branch precleanup-seal gaps
+remain. Two new deferred discovery fixture files plus command receipt additions were
+read, not executed; no native/browser/mobile/accessibility or release qualification.

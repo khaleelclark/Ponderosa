@@ -698,3 +698,11 @@ No tests/checks/types/build/Node/native/browser/runner preparation or execution,
 installs, migrations, backend writes, push/merge/deploy or new workers. Source
 integration and executed lifecycle/native/accessibility/mobile qualification remain
 open. No whole UI/group/lifecycle/Bible/Phase2 acceptance is claimed.
+
+
+Integration note: lifecycle discovery/group retirement successor12e744222 is assembled
+with equivalentf73a/393 backend source and Branch e7d27801 group command discovery/CAS.
+This successor does not adopt e7 capture preview/CAS: the existing eba8 capture UI still
+sends commandKey only, so new capture POST is incompatible until its separate successor.
+Lifecycle Settings discovery/retirement is distinct from that pending Branch capture UI.
+All execution qualification remains deferred.
