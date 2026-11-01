@@ -1760,7 +1760,6 @@
       "origin": "Reviewed additive workflow memory: preserve destination, stale/selection/collision refusal, staged visibility, cancellation compensation and deterministic retry"
     },
     {
-<<<<<<< HEAD
       "path": "tests/branches/output-settings-feedback.test.mjs",
       "feature": "branches",
       "lane": "web",
@@ -1788,14 +1787,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24 and installed web dependencies; no browser/provider",
       "origin": "Source-mapped history timestamp construction regression; preserve native absolute labels"
-=======
+    },
+    {
       "path": "tests/branches/additive-mounted-ownership.test.mjs",
       "feature": "branches",
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24; owned loopback HTTP listener and controlled browser setup/teardown failures; no browser or provider",
       "origin": "Additive mounted fixture setup and independent cleanup ownership regression"
->>>>>>> 0d1aa60acd334710eadf00c67685cc9002131993
     }
   ],
   "retainedReleasePayload": [
@@ -2048,7 +2047,6 @@
       "origin": "A21 collision dialog and role publication/restart browser qualification"
     },
     {
-<<<<<<< HEAD
       "path": "tests/branches/output-settings-accessibility.mjs",
       "feature": "branches",
       "lane": "manual",
@@ -2103,7 +2101,8 @@
       "lane": "manual",
       "moduleBase": "apps/server/package.json",
       "requirements": "Small owned loopback proof: existing outputs/Chrome, 10k seed, one actual controlled Run, two traced browser contexts; never heavy32"
-=======
+    },
+    {
       "path": "tests/memory/workflow-additive-fixture.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-controlled-fixture"
@@ -2117,7 +2116,6 @@
       "path": "tests/branches/additive-mounted-ownership.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-controlled-fixture"
->>>>>>> 0d1aa60acd334710eadf00c67685cc9002131993
     }
   ],
   "support": [
