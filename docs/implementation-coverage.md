@@ -331,3 +331,14 @@ In-progress parallel/map/Agent/provider/resource continuation remains missing.
 This source extension does not establish full checkpoint parity. Tests deferred.
 Runtime recovery migration 0035 and audio follow-up are reported in progress;
 await committed source and inspect schema/asset overlap when handed off.
+
+## Organization-folder UI mapping
+
+UI `bee78038` integrated conflict-free with existing `dc73a5c3` backend.
+Full organization opt-in reaches export/copy/download; preview groups opaque
+root identities and Agent memberships; explicit per-root new destinations reach
+access review and import. Edits invalidate review; lexical UI refusal complements
+authoritative backend filesystem checks. The former Agent root-bundle controls
+gap is closed in source. Live-root population/new Project, Branches bundles,
+mapped Settings actions and shared Chat/peer stream consumers remain missing.
+No execution or completion claim; tests remain deferred.
