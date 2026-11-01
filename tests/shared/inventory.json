@@ -2000,6 +2000,16 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Built web/server and installed Chromium; actual organization and Branch dialogs on controlled disposable providers",
       "origin": "A21 collision dialog and role publication/restart browser qualification"
+    },
+    {
+      "path": "tests/memory/workflow-additive-fixture.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/branches/additive-memory-mounted.browser.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
