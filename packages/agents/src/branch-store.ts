@@ -2,7 +2,7 @@ import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
-import {readBranchRunCounts} from './branch-run-status.js';
+import {readBranchRunCounts,readBranchLiveOutputs} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
 import {REQUEST_SOURCE_LINEAGE_CTE} from './coordination-v3-request-lineage.js';
 import { BranchTriggerStore } from "./branch-trigger-store.js";
@@ -1239,7 +1239,7 @@ export class BranchStore {
       p.result_json path_result_json`,'branch_map_items m JOIN branch_map_invocations mi ON mi.id=m.map_invocation_id JOIN branch_paths p ON p.id=m.path_id','m','mi.execution_id');
     const nextCursor=Object.values(positions).some(n=>n>0)?Buffer.from(JSON.stringify({executionId:id,positions})).toString('base64url'):undefined;
     const definition=this.definition(execution);
-    return { execution, ...inspectBranchExecution(this.sqlite,execution,definition,this.bindings(execution),decisions), ...(nextCursor?{nextCursor}:{}),
+    return { execution, liveOutputs:readBranchLiveOutputs(this.sqlite,id,attempts.map(attempt=>attempt.id)), ...inspectBranchExecution(this.sqlite,execution,definition,this.bindings(execution),decisions), ...(nextCursor?{nextCursor}:{}),
       sealedResults:sealedResults.map(r=>({id:r.id,executionId:id,pathId:r.path_id,stepExecutionId:r.step_execution_id,terminalAttemptId:r.terminal_attempt_id,result:JSON.parse(r.result_json),contentHash:r.content_hash,createdAt:r.created_at})),
       maps:maps.map(r=>({id:r.id,mapId:r.map_id,parentPathId:r.parent_path_id,joinId:r.join_id,...(r.source_result_id?{sourceResultId:r.source_result_id}:{}),itemCount:r.item_count,itemsHash:r.items_hash,state:r.state})),
       mapItems:mapItems.map(r=>({id:r.id,mapInvocationId:r.map_invocation_id,mapId:this.row('SELECT map_id FROM branch_map_invocations WHERE id=?',r.map_invocation_id)!.map_id,index:r.item_index,pathId:r.path_id,input:r.input_text,inputHash:r.input_hash,state:r.path_state,...(r.path_result_json?{result:JSON.parse(r.path_result_json)}:{}),...(r.step_execution_id?{stepExecutionId:r.step_execution_id,...this.mapItemAttemptSummary(r.step_execution_id)}:{attemptCount:0}),...(r.step_execution_id&&this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)!.id}:{})})),

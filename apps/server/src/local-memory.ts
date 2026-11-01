@@ -289,10 +289,11 @@ export class LocalMemoryService{
   await guard();await this.ready();const pending=this.core.database.restorePackageMemory(snapshot,chatId,agents,operationId,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
 
- private importMemoryGuard(operationId:string,agents?:Readonly<Record<string,string>>,signal?:AbortSignal){
+ private importMemoryGuard(operationId:string,agents?:Readonly<Record<string,string>>,signal?:AbortSignal,stagedReceipt=false){
   return async()=>{
    this.live();signal?.throwIfAborted();const store=this.ports.store,op=store.getAgentCreationOperation(operationId);
-   if(!op||op.kind!=='import'||op.status!=='preparing'||!op.conversationId)throw new MemoryDenied('Exact preparing package import required');
+   const completedStaging=stagedReceipt&&op?.status==='completed'&&op.agentIds.length>0&&op.agentIds.every(id=>store.sqlite.prepare("SELECT 1 FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.local_id=? AND r.creation_operation_id=? AND r.state='staging' AND p.state='applying'").get(id,operationId));
+   if(!op||op.kind!=='import'||op.status!=='preparing'&&!completedStaging||!op.conversationId)throw new MemoryDenied('Exact preparing package import required');
    const chat=store.getConversation(op.conversationId);
    if(!chat||chat.projectId!==op.projectId||store.sqlite.prepare('SELECT 1 FROM conversations WHERE id=? AND branch_execution_id IS NOT NULL').get(chat.id)||store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(op.projectId)||store.sqlite.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?').get(chat.id))throw new MemoryDenied('Package memory destination retired');
    if(chat.branchId&&!store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(chat.branchId))throw new MemoryDenied('Package Branch retired');
@@ -315,11 +316,16 @@ export class LocalMemoryService{
   const guard=this.importMemoryGuard(operationId,agents,signal);await guard();await this.ready();
   const pending=this.core.database.restorePackageMemory(entry.snapshot,op.conversationId,agents,namespace,guard,operationId);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
+ async verifyStagedMemory(operationId:string,pkg:import('@ponderosa/core').AgentPortablePackageDto){
+  if(!pkg.memory?.length)return;const op=this.ports.store.getAgentCreationOperation(operationId);if(!op?.conversationId||op.agentIds.length!==1)throw new MemoryDenied('Exact staged memory receipt required');
+  const guard=this.importMemoryGuard(operationId,Object.fromEntries(op.agentIds.map(id=>[id,id])),undefined,true);await guard();await this.ready();
+  for(const [index,entry] of pkg.memory.entries()){const mapping=Object.fromEntries(Object.keys(entry.agentRefs).map(id=>[id,op.agentIds[0]!]));const pending=this.core.database.restorePackageMemory(entry.snapshot,op.conversationId,mapping,operationId+':m:'+index,guard,operationId);this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}}
+ }
  async rollbackImportMemory(operationId:string){
   const store=this.ports.store,op=store.getAgentCreationOperation(operationId);const plan=(op?.result as {memoryPlan?:Array<{chatId:string;namespace:string;chunkIds:string[];conflictIds:string[]}>}|undefined)?.memoryPlan;
   if(!plan?.length)return;
-  const guard=async()=>{this.live();const current=store.getAgentCreationOperation(operationId);if(!current||current.kind!=='import'||!['preparing','rolling_back'].includes(current.status)||current.projectId!==op!.projectId||current.conversationId!==op!.conversationId)throw new MemoryDenied('Exact failed package import cleanup required');};
-  const pending=(async()=>{for(const item of plan){if(item.chatId!==op!.conversationId)throw new MemoryDenied('Memory cleanup Chat mismatch');await this.core.database.rollbackPackageMemory(item,operationId,guard);}await guard();store.updateAgentCreationOperation(operationId,{result:{phase:'memory_rolled_back'}});})();
+  const guard=async()=>{this.live();const current=store.getAgentCreationOperation(operationId);const staged=current?.status==='completed'&&current.agentIds.length>0&&current.agentIds.every(id=>store.sqlite.prepare("SELECT 1 FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.local_id=? AND r.creation_operation_id=? AND r.state='retiring' AND p.state IN ('canceling','review_required')").get(id,operationId));if(!current||current.kind!=='import'||!['preparing','rolling_back'].includes(current.status)&&!staged||current.projectId!==op!.projectId||current.conversationId!==op!.conversationId)throw new MemoryDenied('Exact failed package import cleanup required');};
+  const pending=(async()=>{for(const item of plan){if(item.chatId!==op!.conversationId)throw new MemoryDenied('Memory cleanup Chat mismatch');await this.core.database.rollbackPackageMemory(item,operationId,guard);}await guard();store.updateAgentCreationOperation(operationId,{result:op!.status==='completed'?Object.fromEntries(Object.entries(op!.result as object).filter(([key])=>key!=='memoryPlan')):{phase:'memory_rolled_back'}});})();
   this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}
  }
 

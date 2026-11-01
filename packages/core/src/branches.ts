@@ -141,7 +141,13 @@ export interface BranchAttemptDto {
   scriptEvidence?: {stderr?:string;stdout?:string;code?:number|null;error?:string;outputHash?:string;cwd?:string;runtime?:string;finishedAt?:string};
   error?: string; retryBlockedReason?: string; requestOutcomeUnknown?: boolean; availableAt?: string; purpose?: "step" | "recovery"; result?: BranchResult;
 }
+/** Exact current Attempt → started scheduler Run association, not execution authority. */
+export interface BranchLiveOutputDto {
+  attemptId:string; stepId:string; agentId:string; projectId:string; runId:string;
+}
 export interface BranchExecutionDetailDto {
+  /** Live telemetry targets for this bounded history page. */
+  liveOutputs?:BranchLiveOutputDto[];
   execution: BranchExecutionDto; steps: BranchStepExecutionDto[]; attempts: BranchAttemptDto[];
   paths: BranchPathDto[]; gates: BranchGateDto[]; resources: BranchResourceDto[];
   sealedResults?: BranchSealedResultDto[]; maps?: BranchMapInvocationDto[]; mapItems?: BranchMapItemDto[];
@@ -268,7 +274,9 @@ export interface BranchFullImportAgentReviewDto {
  history:{messages:number;bytes:number;roles:{user:number;assistant:number;system:number}};
  artifacts:{count:number;bytes:number;items:Array<{name:string;kind:string;mediaType:string;bytes:number}>};
 }
-export interface BranchInstallationPreviewDto {id:string;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
+export interface BranchMemoryUpdateSelectionDto {newAgents:Array<{chatRef:string;agentRef:string}>;teamChats:string[]}
+export interface BranchMemoryUpdateReviewDto {selection:BranchMemoryUpdateSelectionDto;incoming:Array<{chatRef:string;agentRef:string;snapshot:import('./dto/agents.js').PortableChatMemorySnapshotDto}>;destination:import('./dto/agents.js').PortableChatMemorySnapshotDto[];excludedRows:number}
+export interface BranchInstallationPreviewDto {id:string;memoryUpdateReview?:BranchMemoryUpdateReviewDto;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
 
 /** Scoped picker context comes from canonical membership, independent of search pagination. */
 export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTeam:boolean; chatTitle:string; managerTitle?:string };

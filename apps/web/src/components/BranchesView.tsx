@@ -72,7 +72,7 @@ function download(value:unknown,name:string):void{const url=URL.createObjectURL(
 function mergeHistory(pages:BranchExecutionDetailDto[]|undefined):BranchExecutionDetailDto|undefined{
  if(!pages?.length)return undefined;const first=pages[0]!;
  const merge=<T,>(select:(p:BranchExecutionDetailDto)=>T[],id:(row:T)=>string):T[]=>{const rows=new Map<string,T>();for(const page of [...pages].reverse())for(const row of select(page))rows.set(id(row),row);return [...rows.values()]};
- return {...first,steps:merge(p=>p.steps,r=>r.id),attempts:merge(p=>p.attempts,r=>r.id),gates:merge(p=>p.gates,r=>r.id),paths:merge(p=>p.paths,r=>r.id),resources:merge(p=>p.resources,r=>r.stepExecutionId),decisions:merge(p=>p.decisions??[],r=>r.id),sealedResults:merge(p=>p.sealedResults??[],r=>r.id),maps:merge(p=>p.maps??[],r=>r.id),mapItems:merge(p=>p.mapItems??[],r=>r.id)};
+ return {...first,liveOutputs:merge(p=>p.execution.id===first.execution.id&&p.execution.revision===first.execution.revision?p.liveOutputs??[]:[],r=>r.attemptId+':'+r.runId),steps:merge(p=>p.steps,r=>r.id),attempts:merge(p=>p.attempts,r=>r.id),gates:merge(p=>p.gates,r=>r.id),paths:merge(p=>p.paths,r=>r.id),resources:merge(p=>p.resources,r=>r.stepExecutionId),decisions:merge(p=>p.decisions??[],r=>r.id),sealedResults:merge(p=>p.sealedResults??[],r=>r.id),maps:merge(p=>p.maps??[],r=>r.id),mapItems:merge(p=>p.mapItems??[],r=>r.id)};
 }
 /** Branches has its own workflow-centered authoring and operations shell. */
 type Appearance={colorMode:ColorMode;onToggleColorMode():void};

@@ -1557,7 +1557,7 @@ export function registerAgentPackageRoutes(
         const commit=()=>{
           branchHooks?.commit(response);
           store.updateAgentCreationOperation(creationOperationId!, {
-            status: "completed", result: response, lastError: null,
+            status: "completed", result: branchHooks?{...response,memoryPlan:(store.getAgentCreationOperation(creationOperationId!)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan}:response, lastError: null,
           });
         };
         if(branchHooks?.transaction)branchHooks.transaction(commit);else store.sqlite.transaction(commit)();
@@ -2242,6 +2242,9 @@ export function registerAgentPackageRoutes(
         if(error)throw new Error(`${node.title}: ${error}`);
       }
     },
+    exportMemory:async(chatId,agentIds)=>{const memory=localMemoryFor(app);if(!memory)throw new Error('Configure destination local memory before reviewing memory updates');return memory.exportPackageMemory(chatId,agentIds);},
+    verifyStagedMemory:async(id,pkg)=>{if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for staged import verification');await memory.verifyStagedMemory(id,pkg);}},
+    rollbackStagedMemory:async id=>{const memory=localMemoryFor(app);const plan=(store.getAgentCreationOperation(id)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan;if(plan?.length){if(!memory)throw new Error('Local memory configuration required for staged import cleanup');await memory.rollbackImportMemory(id);}},
     exportAgent:(id,mode)=>withAgentImportAdmission(()=>buildPortablePackage(id,mode,false)),
     importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
       let status=200,body:unknown;

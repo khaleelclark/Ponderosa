@@ -6,11 +6,11 @@ import {join} from 'node:path';
 import {AgentStore,CoordinationV3Store,BranchStore} from '../../packages/agents/dist/index.js';
 import {readBranchRunCounts,readBranchWorkingStepCount} from '../../packages/agents/dist/branch-run-status.js';
 
-function fixture(t,{script=false,parallel=false,action=false}={}){
+function fixture(t,{script=false,parallel=false,action=false,freshArm=false}={}){
  const root=mkdtempSync(join(tmpdir(),'branch-run-counts-')),store=new AgentStore(root),coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
  const project=store.createProject({label:'Run counts',hostPath:root,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Workflow'}),agent=store.createAgent(project.id,{title:'Worker',engine:'codex',conversationId:chat.id});
  const work=script?{id:'work',kind:'script',runtime:'node',source:'console.log("controlled")',cwdRef:'root',timeoutMs:1000}:action?{id:'work',kind:'action',action:'notify',configRefs:[]}:{id:'work',kind:'agent',target:{kind:'persistent_organization',ref:'worker'},instructions:'Report the canonical result'};
- const definition={schema:'ponderosa.branch.v1',name:'Counts',trigger:{kind:'manual'},entry:parallel?'fork':'work',steps:[work,...(parallel?[{id:'approval',kind:'human_gate',prompt:'Waiting for a person',editable:false}]:[])],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['work-path','approval-path']}]:[],edges:parallel?[{id:'work-path',from:'fork',to:'work',on:'selected'},{id:'approval-path',from:'fork',to:'approval',on:'selected'},{id:'work-done',from:'work',to:'join',on:'success'},{id:'approval-done',from:'approval',to:'join',on:'approved'}]:[],policy:{maxConcurrentExecutions:100,maxPathInstances:1000,maxStepInvocations:1000,failure:{action:'stop'}}};
+ const definition={schema:'ponderosa.branch.v1',name:'Counts',trigger:{kind:'manual'},entry:parallel?'fork':'work',steps:[work,...(freshArm?[{...work,id:'fresh'}]:[]),...(parallel?[{id:'approval',kind:'human_gate',prompt:'Waiting for a person',editable:false}]:[])],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['work-path',...(freshArm?['fresh-path']:[]),'approval-path']}]:[],edges:parallel?[{id:'work-path',from:'fork',to:'work',on:'selected'},...(freshArm?[{id:'fresh-path',from:'fork',to:'fresh',on:'selected'},{id:'fresh-done',from:'fresh',to:'join',on:'success'}]:[]),{id:'approval-path',from:'fork',to:'approval',on:'selected'},{id:'work-done',from:'work',to:'join',on:'success'},{id:'approval-done',from:'approval',to:'join',on:'approved'}]:[],policy:{maxConcurrentExecutions:100,maxPathInstances:1000,maxStepInvocations:1000,failure:{action:'stop'}}};
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'definition',definition,bindings:{agents:{worker:agent.id},directories:{root}}}),execution=branches.accept(branch.id,'first','input');
  let passed=false;t.after(()=>{store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic('Retained count fixture: '+root)});
  return {store,coordination,branches,project,chat,agent,branch,execution,counts:()=>readBranchRunCounts(store.sqlite,[branch.id]).get(branch.id),working:()=>readBranchWorkingStepCount(store.sqlite,execution.id),pass(){passed=true}};
@@ -23,6 +23,7 @@ test('counts require exact started scheduler authority and distinguish accepted,
  f.coordination.updateRequest({requestId,updateId:'progress',kind:'progress',actor:{kind:'agent',id:f.agent.id},payload:{text:'Running, according to authored prose'}});
  assert.deepEqual(f.counts(),expected(0,1,0));const lease=f.coordination.leaseNextRun({workerId:'test'});assert.ok(lease);assert.deepEqual(f.counts(),expected(0,1,0),'A leased provider Run has not started');
  f.coordination.markRunStarted(lease.runId,lease.fencingToken);assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);
+ assert.deepEqual(f.branches.detail(f.execution.id).liveOutputs,[{attemptId:f.branches.detail(f.execution.id).attempts[0].id,stepId:'work',agentId:f.agent.id,projectId:f.project.id,runId:lease.runId}]);
  f.coordination.updateRequest({requestId,updateId:'dependency',kind:'waiting_dependency',actor:{kind:'agent',id:f.agent.id},payload:{text:'Waiting for related work'}});
  assert.deepEqual(f.counts(),expected(0,1,0),'A dependency wait is not working even before the provider unwinds');
  f.coordination.updateRequest({requestId,updateId:'resumed',kind:'progress',actor:{kind:'agent',id:f.agent.id},payload:{text:'Resume'}});assert.deepEqual(f.counts(),expected(1,0,0));
@@ -40,18 +41,25 @@ test('an answered question resumes through canonical Request-update lineage, not
  const resumed=f.coordination.leaseNextRun({workerId:'resumed'});assert.ok(resumed);assert.notEqual(resumed.runId,original.runId);
  assert.ok(f.store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations attached JOIN activation_sources source ON source.activation_id=attached.activation_id WHERE attached.run_id=? AND source.source_kind='request_update' AND source.source_id='answer'").get(resumed.runId));
  assert.deepEqual(f.counts(),expected(0,1,0),'A resumed lease alone is still pending');f.coordination.markRunStarted(resumed.runId,resumed.fencingToken);
- assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);f.pass();
+ assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);assert.equal(f.branches.detail(f.execution.id).liveOutputs[0].runId,resumed.runId);f.pass();
 });
 
 test('an unrelated started Run on the same Agent does not make the workflow Running',t=>{
  const f=fixture(t);f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,actorScope:'user:local-operator',idempotencyKey:'unrelated',requests:[{recipientAgentId:f.agent.id,lifetime:{kind:'indefinite'}}]});
- const other=f.coordination.leaseNextRun({workerId:'test'});f.coordination.markRunStarted(other.runId,other.fencingToken);f.branches.advance();assert.deepEqual(f.counts(),expected(0,1,0));assert.equal(f.working(),0);f.pass();
+ const other=f.coordination.leaseNextRun({workerId:'test'});f.coordination.markRunStarted(other.runId,other.fencingToken);f.branches.advance();assert.deepEqual(f.counts(),expected(0,1,0));assert.equal(f.working(),0);assert.deepEqual(f.branches.detail(f.execution.id).liveOutputs,[]);f.pass();
 });
 
 test('a parallel approval cannot hide a current working Script; queued leases and expired authority remain Pending',t=>{
- const f=fixture(t,{script:true,parallel:true});f.branches.advance();assert.ok(f.branches.detail(f.execution.id).gates.some(gate=>gate.state==='waiting'));
- const lease=f.branches.claimScript('controlled-no-process');assert.ok(lease);assert.deepEqual(f.counts(),expected(0,1,0));
- f.branches.authorizeScript(lease,{pid:123,pgid:123,birthMarker:'inert-fixture'});assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);
+ const f=fixture(t,{script:true,parallel:true,freshArm:true});
+ // Advance one committed unit at a time so the sibling starts before the gate interrupts fresh arms.
+ let lease;for(let n=0;n<8&&!lease;n++){f.branches.unitTransaction(()=>f.branches.advance())();lease=f.branches.claimScript('controlled-no-process');}
+ assert.ok(lease);assert.deepEqual(f.counts(),expected(0,1,0));
+ assert.equal(f.branches.detail(f.execution.id).gates.some(gate=>gate.state==='waiting'),false);
+ f.branches.authorizeScript(lease,{pid:123,pgid:123,birthMarker:'inert-fixture'});
+ f.branches.advance();assert.ok(f.branches.detail(f.execution.id).gates.some(gate=>gate.state==='waiting'));
+ assert.ok(f.branches.detail(f.execution.id).steps.some(step=>step.stepId==='fresh'&&step.state==='prepared'),'Fresh sibling is prepared, not absent');
+ assert.equal(f.branches.claimScript('fresh-arm'),undefined,'An open gate refuses new Script arms');
+ assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);
  const expired=new Date(Date.now()+60000).toISOString();assert.deepEqual(readBranchRunCounts(f.store.sqlite,[f.branch.id],expired).get(f.branch.id),expected(0,1,0));
  f.branches.scriptCleanupFailed(lease.attemptId,'Controlled uncertain outcome');assert.deepEqual(f.counts(),expected(0,1,0));f.pass();
 });
@@ -79,5 +87,30 @@ test('expired, fenced, terminal and noncurrent scheduler evidence cannot count a
   if(condition==='old-path')f.store.sqlite.prepare("UPDATE branch_paths SET state='arrived',step_execution_id=NULL WHERE execution_id=?").run(f.execution.id);
   if(condition==='canceled-attempt')f.store.sqlite.prepare('UPDATE branch_attempts SET cancel_requested=1 WHERE request_id IS NOT NULL').run();
   assert.deepEqual(f.counts(),expected(0,1,0),condition);f.pass();
+ }
+});
+
+
+test('live output identities refuse unstarted, expired, fenced and cancelled custody and never mutate canonical state',t=>{
+ const f=fixture(t);f.branches.advance();
+ const detail=()=>f.branches.detail(f.execution.id),attempt=detail().attempts[0];
+ assert.deepEqual(detail().liveOutputs,[]);
+ const lease=f.coordination.leaseNextRun({workerId:'live-output'});assert.ok(lease);assert.deepEqual(detail().liveOutputs,[]);
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ const before=f.store.sqlite.prepare('SELECT total_changes() n').get().n;
+ for(let i=0;i<3;i++)assert.deepEqual(detail().liveOutputs,[{attemptId:attempt.id,stepId:'work',agentId:f.agent.id,projectId:f.project.id,runId:lease.runId}]);
+ assert.equal(f.store.sqlite.prepare('SELECT total_changes() n').get().n,before,'telemetry read owns no authority changes');
+ const expiry=f.store.sqlite.prepare('SELECT lease_expires_at FROM scheduler_runs WHERE id=?').get(lease.runId).lease_expires_at;
+ f.store.sqlite.prepare('UPDATE scheduler_runs SET lease_expires_at=? WHERE id=?').run('2000-01-01T00:00:00.000Z',lease.runId);assert.deepEqual(detail().liveOutputs,[]);
+ f.store.sqlite.prepare('UPDATE scheduler_runs SET lease_expires_at=? WHERE id=?').run(expiry,lease.runId);
+ f.coordination.updateRequest({requestId:attempt.requestId,updateId:'completed-output',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Canonical final result'}});
+ assert.deepEqual(detail().liveOutputs,[],'terminal Request cannot stream unrelated later work');f.pass();
+});
+
+test('live output identities stop at side-effect fences and workflow cancellation',t=>{
+ for(const mode of ['fence','cancel']){
+  const f=fixture(t);f.branches.advance();const lease=f.coordination.leaseNextRun({workerId:mode});f.coordination.markRunStarted(lease.runId,lease.fencingToken);assert.equal(f.branches.detail(f.execution.id).liveOutputs.length,1);
+  if(mode==='fence')f.coordination.fenceRunSideEffects(lease.runId,lease.fencingToken,mode);else f.branches.cancel(f.execution.id);
+  assert.deepEqual(f.branches.detail(f.execution.id).liveOutputs,[]);f.pass();
  }
 });

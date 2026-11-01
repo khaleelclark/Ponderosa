@@ -1,6 +1,6 @@
 # Combined package migration
 
-This describes the existing product package contract, not a full installation backup or completion of Behavior Bible #8. A full Agent/organization package can carry the selected Chat memory and historical execution evidence together. A template carries setup only. Full workflow packages embed Agent packages and the workflow definition; a memory-bearing workflow package requires a fresh installation.
+This describes the existing product package contract, not a full installation backup or completion of Behavior Bible #8. A full Agent/organization package can carry the selected Chat memory and historical execution evidence together. A template carries setup only. Full workflow packages embed Agent packages and the workflow definition; memory-bearing updates may use the [explicit additive review](branches-additive-memory-update.md) for selected new Agents in preserved Chats, while existing Agents’ memory and destination permissions remain unchanged. Other memory-bearing updates still require fresh installation or a separate supported migration.
 
 | Data | Full package behavior | Destination authority |
 | --- | --- | --- |

@@ -46,6 +46,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
   if(name==='../../branchesRouting')return {branchRoutePath:route=>'/branches?'+new URLSearchParams(Object.entries(route))};
   if(name==='../../api/types')return {ApiRequestError};
   if(name==='../../api/real')return {requestJson:async(path,options)=>{requests.push({path,options});return transport(path,options)}};
+  if(name==='./BranchLiveOutput')return {BranchLiveOutputs:()=>null};
   if(name==='./BranchGraph')return {BranchGraph:()=>React.createElement('div',null,'Pinned Run Graph And Accessible Outline')};
   if(name==='../chat/ChatMessages')return {ChatMessageBody};
   if(name==='../decisions/DecisionCard')return {DecisionCard:props=>React.createElement('section',{'aria-label':'Shared Decision'},props.decision.question,React.createElement('button',{onClick:props.onResolved},'Resolve Through Existing Decision'))};
@@ -282,4 +283,47 @@ test('scheduled update reconciliation requires an observed outcome, checked effe
  const pending=view.root.props.onConfirm();await new Promise(resolve=>setImmediate(resolve));view=f.render();assert.equal(view.root.props.pending,true);assert.equal(outcome().props.disabled,true);assert.equal(await f.submit(),undefined,'Pending decisions cannot submit twice');
  f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=19;view=f.render();assert.equal(view.root.props.confirmDisabled,false);assert.equal(outcome().props.disabled,true);await f.submit();assert.equal(f.bodies[1].body,f.bodies[0].body);
  const intent=JSON.parse(f.bodies[0].body);assert.equal(intent.action,'resolve_schedule_update');assert.equal(intent.occurrenceId,'exact-occurrence');assert.equal(intent.updateApplied,true);assert.equal(intent.externalEffectsReconciled,true);assert.equal(intent.reason,'Verified actual Agent output and external effects');assert.equal(intent.expectedRevision,7);
+});
+
+
+const liveOutputSource=await readFile(new URL('../../apps/web/src/components/branches/BranchLiveOutput.tsx',import.meta.url),'utf8');
+function liveOutputFixture(){
+ const target={attemptId:'attempt-a',stepId:'work',agentId:'agent-a',projectId:'project-a',runId:'scheduler-a'},data={runOutput:[]},connection={connectionStatus:'live'},calls=[];
+ const mui=Object.fromEntries(['Alert','Paper','Stack','Typography'].map(name=>[name,props=>React.createElement(props.component??'div',props.role?{role:props.role}:{},props.children)]));
+ const scope={exports:{},require:name=>{
+  if(name==='react/jsx-runtime')return require(name);
+  if(name==='@mui/material')return mui;
+  if(name==='../../hooks/queries')return {useAgent:id=>{calls.push(['query',id]);return {data,error:data.error}}};
+  if(name==='../../hooks/useAgentStream')return {useAgentStream:(agentId,projectId)=>{calls.push(['stream',agentId,projectId]);return connection}};
+  throw Error('Unexpected live output dependency '+name);
+ }};
+ vm.runInNewContext(ts.transpileModule(liveOutputSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,scope);
+ return {target,data,connection,calls,render:()=>renderToStaticMarkup(React.createElement(scope.exports.BranchLiveOutput,{targets:[target],labels:{work:'Document review'}}))};
+}
+
+test('real Branch live-output view renders incremental exact-Run response telemetry before a final Step result',()=>{
+ const f=liveOutputFixture();assert.match(f.render(),/Waiting for output/);
+ f.data.runOutput=[{id:'earlier',executionId:'other-run',kind:'response',text:'DO_NOT_SHOW_OTHER_RUN'},{id:'reason',executionId:'scheduler-a',kind:'reasoning',text:'DO_NOT_SHOW_REASONING'},{id:'delta',executionId:'scheduler-a',kind:'response',text:'First phrase'}];
+ let html=f.render();assert.match(html,/First phrase/);assert.doesNotMatch(html,/DO_NOT_SHOW/);
+ f.data.runOutput[2]={...f.data.runOutput[2],text:'First phrase and next phrase'};html=f.render();assert.match(html,/First phrase and next phrase/);assert.equal((html.match(/First phrase/g)??[]).length,1);
+ assert.deepEqual(f.calls.at(-1),['stream','agent-a','project-a']);assert.deepEqual(f.calls.at(-2),['query','agent-a']);
+ assert.match(html,/Document review.*Live work/);
+});
+
+test('live output keeps exact cached Run text while reconnecting and reconciles canonical replacement without duplicate deltas',()=>{
+ const f=liveOutputFixture();f.data.runOutput=[{id:'live',executionId:'scheduler-a',kind:'response',text:'Retained prefix'}];
+ f.connection.connectionStatus='reconnecting';let html=f.render();assert.match(html,/Retained prefix/);assert.match(html,/Live updates unavailable/);
+ f.data.runOutput=[{id:'canonical',executionId:'scheduler-a',kind:'response',text:'Retained prefix complete',completed:true}];f.connection.connectionStatus='live';html=f.render();assert.match(html,/Retained prefix complete/);assert.equal((html.match(/Retained prefix/g)??[]).length,1);assert.doesNotMatch(html,/unavailable/);
+ f.target.runId='new-run';assert.doesNotMatch(f.render(),/Retained prefix/);
+ f.data.error=Error('Exact controlled projection read failure');assert.match(f.render(),/Exact controlled projection read failure/);
+});
+
+
+test('loaded live-output history merges exact current revision targets and excludes stale or foreign pages',async()=>{
+ const source=await readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const body=source.slice(source.indexOf('function mergeHistory('),source.indexOf('/** Branches has its own'));
+ const scope={};vm.runInNewContext(ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText+';globalThis.merge=mergeHistory',scope);
+ const page=(revision,liveOutputs,id='run-a')=>({execution:{id,revision},liveOutputs,steps:[],attempts:[],gates:[],paths:[],resources:[]});
+ const a={attemptId:'a',runId:'scheduler-a'},b={attemptId:'b',runId:'scheduler-b'};
+ assert.deepEqual(JSON.parse(JSON.stringify(scope.merge([page(2,[a]),page(2,[b,a]),page(1,[{attemptId:'stale',runId:'old'}]),page(2,[{attemptId:'foreign',runId:'foreign'}],'other')]).liveOutputs)),[b,a]);
 });
