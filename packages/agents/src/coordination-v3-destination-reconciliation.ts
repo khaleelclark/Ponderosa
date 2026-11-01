@@ -1,3 +1,4 @@
+import {destinationResourceEvidence} from './coordination-v3-destination-resource-evidence.js';
 import type Database from 'better-sqlite3';
 import type {CoordinationDestinationReservation,CoordinationDestinationReconciliationInput,CoordinationDestinationReconciliationReview,CoordinationDestinationReconciliationReceipt,CoordinationDestinationGroupReconciliationReview,CoordinationDestinationGroupReconciliationSlot,CoordinationDestinationStage} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
@@ -77,6 +78,7 @@ export class CoordinationV3DestinationReconciliation {
    ||stableJson(JSON.parse(row.snapshot_json))!==row.snapshot_json||payloadHash(JSON.parse(row.snapshot_json))!==reservation.checkpointHash
    ||row.branch_id!==reservation.branchId||row.source_execution_id!==reservation.sourceExecutionId||row.checkpoint_id!==reservation.checkpointId
    ||row.project_id!==reservation.destination.projectId||row.conversation_id!==reservation.destination.conversationId)throw Error('Group reservation evidence differs');
+  destinationResourceEvidence(JSON.parse(row.snapshot_json),reservation);
   if(stage&&stableJson(stage)!==row.stage_json)throw Error('Group stage bytes differ');
   const groupChats=this.groupSlots(row.id,reservation),members=this.db.prepare('SELECT * FROM coordination_destination_members WHERE admission_id=? ORDER BY agent_id').all(row.id) as Row[];
   const operations:Row[]=[],expectedMembers:{admission_id:string;source_agent_id:string;agent_id:string}[]=[],operationIds=new Set<string>();
@@ -164,6 +166,9 @@ export class CoordinationV3DestinationReconciliation {
     ||stableJson(receipt.resources)!==stableJson(evidence.review.reservation.resources)
     ||stableJson(receipt.groupChats)!==stableJson(evidence.groupChats)||stableJson(evidence.groupChats)!==stableJson(evidence.review.groupChats)
     ||stableJson(evidence.members)!==row.members_json)throw Error('Group retirement retained evidence differs');
+   const snapshot=JSON.parse(evidence.row.snapshot_json);
+   if(stableJson(snapshot)!==evidence.row.snapshot_json||payloadHash(snapshot)!==evidence.review.reservation.checkpointHash)throw Error('Retired checkpoint differs');
+   destinationResourceEvidence(snapshot,evidence.review.reservation);
    const {reviewHash,...review}=evidence.review;
    if(reviewHash!==payloadHash({operatorId:receipt.operatorId,review,row:evidence.row,members:evidence.members,operations:evidence.operations}))throw Error('Group retirement review evidence differs');
    const input=JSON.parse(row.input_json);

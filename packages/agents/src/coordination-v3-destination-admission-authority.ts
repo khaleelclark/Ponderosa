@@ -1,3 +1,4 @@
+import {destinationResourceEvidence} from './coordination-v3-destination-resource-evidence.js';
 import {branchContinuationIds} from './branch-continuation-remap.js';
 import {CoordinationV3DestinationReconciliation} from './coordination-v3-destination-reconciliation.js';
 import {readDestinationHistoricalPartition,destinationHistoricalFacts,commitDestinationHistoricalPartition,verifyDestinationHistoricalPartition} from './coordination-v3-historical-partition.js';
@@ -88,7 +89,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const reservation=JSON.parse(row.reservation_json) as CoordinationDestinationReservation,snapshot=JSON.parse(row.snapshot_json);
   if(stableJson(reservation)!==row.reservation_json||payloadHash(reservation)!==row.reservation_hash
     ||stableJson(snapshot)!==row.snapshot_json||payloadHash(snapshot)!==reservation.checkpointHash)throw Error('Destination retained evidence differs');
-  const {cut}=retainedBranchHostGraph(snapshot,reservation.sourceExecutionId,true,true);
+  const {cut}=this.group?destinationResourceEvidence(snapshot,reservation):retainedBranchHostGraph(snapshot,reservation.sourceExecutionId,true,true);
   if(!verifyBranchHostCut(cut,reservation.sourceExecutionId)||!cut.coverage.complete)throw Error('Destination retained cut is incomplete');
   if(this.group&&row.id&&context==='current'){
    const chats=this.db.prepare('SELECT source_chat_id,source_execution_id,conversation_id FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(row.id);
@@ -386,6 +387,15 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(allBindings.length!==cut.roots.filter(r=>r.requestId).length||unique(allBindings.map(b=>b.sourceRequestId)).length!==allBindings.length)throw Error('Issued root bindings must be exhaustive and nonaliasing');
   for(const resourceInput of resources){
   const d=resourceInput.destination,owner=owners.find(o=>o.resourceStepId===d.resourceStepId);
+  if(this.group){
+  const sourceOwner=cut.resources.find(e=>e.row.step_execution_id===resourceInput.custody.intent.resourceStepId)?.row.execution_id;
+  const retained=JSON.parse((this.db.prepare('SELECT snapshot_json FROM coordination_destination_admissions WHERE id=?').get(graph.destination!.admissionId) as Row).snapshot_json);
+  const branch=retainedBranchHostGraph(retained,reservation.sourceExecutionId,true,true).owners.find(o=>o.executionId===sourceOwner)?.branchId;
+  const chat=this.db.prepare('SELECT project_id,branch_id,execution_id FROM conversations WHERE id=?').get(d.conversationId) as Row|undefined;
+  const execution=this.db.prepare('SELECT branch_id FROM branch_executions WHERE id=?').get(d.executionId) as Row|undefined;
+  if(execution&&execution.branch_id!==branch)throw Error('Destination execution owner Branch differs');
+  if((!audit||chat)&&(!chat||!execution||chat.project_id!==d.projectId||chat.branch_id!==branch||chat.execution_id!==d.executionId))throw Error('Destination resource owner Branch differs');
+  }
   if(!owner)throw Error('Group resource owner receipt missing');
   const localStage=resourceStage(resourceInput,stage,cut),roots=cut.roots.filter(r=>cut.requests.find(e=>e.row.id===r.requestId)?.row.conversation_id===resourceInput.custody.sourceChatId);
   if(owner.executionId!==d.executionId||owner.resourceStepId!==d.resourceStepId||owner.resourceGeneration!==d.resourceGeneration||owner.creationOperationId!==localStage.importPlan.creationOperationId||!nonempty(owner.receiptId)
@@ -423,13 +433,6 @@ export class CoordinationV3DestinationAdmissionAuthority {
    ||unique(resources.map(r=>r.destination.resourceStepId)).length!==resources.length||resources.some(r=>r.destination.projectId!==row.project_id)
    ||stableJson(resources[0])!==stableJson({custody:reservation.custody,destination:reservation.destination})
    ||snapshot.issuedGroupCustody?.length!==resources.length||resources.some(r=>!snapshot.issuedGroupCustody.some((c:Row)=>stableJson(c)===stableJson(r.custody))))throw Error('Original group audit resource inventory differs');
-  for(const resource of resources){
-   const {version,custodyId,boundaryId,sha256,byteLength,...source}=resource.custody;
-   const original=snapshot.selected.resources.find((r:Row)=>r.step_execution_id===source.intent.resourceStepId);
-   if(!receiptMatchesSource(resource.custody,source)||!original||source.intent.executionId!==reservation.sourceExecutionId||source.sourceChatId!==original.chat_id||source.intent.resourceGeneration!==original.generation
-    ||source.intent.frontierSha256!==resourceCaptureFrontierHash(snapshot.selected)||source.intent.hostCutSha256!==payloadHash(cut)||source.intent.bindingSha256!==snapshot.issuedContinuation?.bindingHash
-    ||source.intent.configurationSha256!==payloadHash(snapshot.issuedContinuation.configuration)||stableJson(source.agentIds)!==stableJson(JSON.parse(original.import_operation_json).result.agentIds))throw Error('Original group audit custody binding differs');
-  }
   const checkpoint=this.db.prepare('SELECT execution_id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(reservation.checkpointId) as Row|undefined;
   if(checkpoint&&(checkpoint.execution_id!==reservation.sourceExecutionId||checkpoint.content_hash!==reservation.checkpointHash||checkpoint.snapshot_json!==row.snapshot_json))throw Error('Original group checkpoint differs');
   const slots=(archived?.groupChats??this.db.prepare('SELECT admission_id,source_chat_id,source_execution_id,conversation_id,stage_json FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(admissionId)) as Row[];
@@ -444,7 +447,8 @@ export class CoordinationV3DestinationAdmissionAuthority {
    // Admitted audit uses the retained canonical stage when a live slot was removed.
    const local=slot?(slot.stage_json?JSON.parse(slot.stage_json):null):stage&&row.state==='admitted'?resourceStage(resource,stage,cut):null;
    const chat=this.db.prepare('SELECT project_id,branch_id,execution_id FROM conversations WHERE id=?').get(resource.destination.conversationId) as Row|undefined;
-   if(chat&&(chat.project_id!==resource.destination.projectId||chat.branch_id!==reservation.branchId||chat.execution_id!==resource.destination.executionId))throw Error('Original group audit Chat ownership differs');
+   const sourceOwner=retainedBranchHostGraph(snapshot,reservation.sourceExecutionId,true,true).owners.find(o=>o.executionId===resource.custody.intent.executionId);
+   if(chat&&(chat.project_id!==resource.destination.projectId||chat.branch_id!==sourceOwner?.branchId||chat.execution_id!==resource.destination.executionId))throw Error('Original group audit Chat ownership differs');
    if(!local)continue;
    if((slot&&stableJson(local)!==slot.stage_json)||!exactKeys(local.agentMap,resource.custody.agentIds)||unique(Object.values(local.agentMap) as string[]).length!==resource.custody.agentIds.length
     ||local.importPlan?.projectId!==resource.destination.projectId||local.importPlan?.conversationId!==resource.destination.conversationId
@@ -466,7 +470,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(stage&&(!exactKeys(stage.imports,resources.map(r=>r.custody.sourceChatId))||stableJson(stage.importPlan)!==stableJson(stage.imports[reservation.custody.sourceChatId])))throw Error('Original group audit complete import map differs');
   if(unique(Object.values(agentMap)).length!==Object.keys(agentMap).length||stage&&stableJson(stage.agentMap)!==stableJson(agentMap))throw Error('Original group audit full Agent map differs');
   const receipt=!retirement&&row.state==='admitted'?this.readGroupAudit(admissionId,row.reservation_hash):null;
-  return {reservation,reservationHash:row.reservation_hash,state:retirement?'retired':row.state,agentMap,imports,receipt,retirement,sourceIds:branchContinuationIds(snapshot.selected),snapshotSha256:payloadHash(snapshot),evidenceSha256:payloadHash({row,slots,retirement})};
+  return {reservation,reservationHash:row.reservation_hash,state:retirement?'retired':row.state,agentMap,imports,receipt,retirement,sourceIds:unique((snapshot.continuation?.schema==='ponderosa.branch.script-tree-continuation.v1'?snapshot.continuation.owners.map((o:Row)=>o.selected):[snapshot.selected]).flatMap((selected:Row)=>branchContinuationIds(selected))),snapshotSha256:payloadHash(snapshot),evidenceSha256:payloadHash({row,slots,retirement})};
  }
  /** Operator-retained evidence only. Never used by admission/replay or current disclosure reads. */
  readGroupAudit(admissionId:string,reservationHash:string):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
