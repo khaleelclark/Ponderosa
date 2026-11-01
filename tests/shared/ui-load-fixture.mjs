@@ -88,8 +88,8 @@ export function readLeasedRun(store,agentId,runId,sessionId){
 export async function sendQualificationTask(f,prefix,agentId,text,onAttempt=()=>{}){
  const idempotencyKey=randomUUID();
  for(let attempt=0;attempt<30;attempt++){
-  const response=await f.api('POST',`${prefix}/agents/${agentId}/messages`,{text,idempotencyKey});onAttempt({attempt,idempotencyKey,status:response.statusCode,body:response.json()});
-  if(response.statusCode!==409||response.json().error!=='Agent asset maintenance is in progress; retry safely')return f.ok(response);
+  const response=await f.api('POST',`${prefix}/agents/${agentId}/messages`,{text,idempotencyKey});onAttempt({attempt,idempotencyKey,status:response.status,body:response.body});
+  if(response.status!==409||response.body.error!=='Agent asset maintenance is in progress; retry safely')return f.ok(response);
   await delay(100);
  }
  throw Error('Agent asset maintenance did not settle; no guard bypass');
