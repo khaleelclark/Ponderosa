@@ -338,8 +338,8 @@ quarantined import filenames produce a count, never guessed IDs or quarantine wr
 The read-only reader calls only pure import validation, not readOperation/hydration.
 Current/deletion_receipt/retained_only labels are evidence states, never deletion proof
 or eligibility. Supported singular resource/issued capture schemas expose stored full
-source and exact key; unknown matched schemas refuse, while hashed GROUP capture journals
-are not exposed or reconstructed. Group multi-package abandonment remains unsupported.
+source and exact key; unknown matched schemas refuse, while this lifecycle collection excludes GROUP capture journals. Separate canonical
+group discovery below exposes prospective retained keys without reconstructing legacy hashes. Group multi-package abandonment remains unsupported.
 Discovery changes no pins, policies or payloads and returns no Request/snapshot bodies.
 Five deferred metadata/SQLite fixtures are present and source-read, not executed.
 
@@ -374,3 +374,36 @@ capture completion is claimed. Five deferred synthetic-handle fixture cases cove
 readback, complete inventory/rebinding/fences, savepoint failures, legacy coverage refusal
 and Windows restart refusal; none ran, and they do not qualify actual provider/native exit.
 All existing Branch group, retirement, discovery and scoped UI limits remain in force.
+
+
+
+### Canonical group discovery and capture CAS (source only)
+
+Branch e7d27801 delivers operator-only paginated retained capture/prepare intent discovery,
+including original keys, source identities, resource counts and current admission or
+retirement state without live destination membership. Prospective capture journals retain
+original commandKey, reviewHash and versionId. Legacy hashed keys are explicitly
+unsupported_legacy_key; supplied known legacy keys still support exact GET status.
+This collection is separate from lifecycle singular-capture discovery and does not
+reconstruct reclaimed journals or grant action eligibility. Pages default to 50, accept
+1–100, and require nextCursor traversal. Any database write or daemon restart can
+conservatively invalidate the cursor with 409; restart explicitly, never auto-replay.
+
+Pure authoritative capture preview exposes the exact selected/host hashes, binding/version
+and complete 2–32 serial/local-parallel generation-zero resource inventory without IDs,
+intent writes or package effects. Reservation recomputes reviewHash/versionId in the owner
+transaction before allocation; each remaining package effect rechecks preview and seals
+retain existing transaction validation. Existing intent cannot be reallocated against a
+changed cut. Exact retained commands read saved seals without recapture.
+
+INTERIM UI GAP: capture POST now requires exactly commandKey/reviewHash/versionId.
+The currently assembled two-serial BranchGroupReview still persists/sends commandKey only
+and is incompatible for new capture until the pending UI successor adopts preview/CAS.
+No web files were edited here. BranchesClient supplies discovery, preview, capture and
+status helpers; the additive BranchGroupClient capture method uses the shared exact input
+and result DTOs, while preserving all prior methods/exports. GET status is unchanged.
+UI discovery, broader 2–32/local-parallel UI and executable qualification remain pending.
+Partial multi-package abandonment remains unsupported with all pins held. Existing
+historical participant, precleanup sealed evidence and broader payload limits remain.
+Deferred source covers preview purity/stale cut, serial/parallel exact and legacy keys,
+retained owner audit scope, paging/invalidation/reopen and partial pin retention; none ran.

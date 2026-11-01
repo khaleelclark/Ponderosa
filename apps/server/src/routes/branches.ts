@@ -31,13 +31,21 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   const groups=new BranchIssuedGroupDestinationService(store,branches,context.coordination,()=>context.resources.destinationPackageEngine());
   const groupPath='/api/branches/:id/executions/:executionId/destination-groups';
   type GroupParams={id:string;executionId:string;admissionId:string};
+  app.get<{Querystring:{kind:'captures'|'admissions';limit?:string;cursor?:string}}>('/api/branches/destination-groups/discovery',(request,reply)=>{
+    try{return groups.discover({kind:request.query.kind,limit:request.query.limit===undefined?undefined:Number(request.query.limit),cursor:request.query.cursor});}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:GroupParams}>(groupPath+'/capture-preview',(request,reply)=>{
+    try{return groups.previewCapture(request.params.id,request.params.executionId);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:GroupParams;Querystring:{commandKey:string}}>(groupPath+'/capture',(request,reply)=>{
     try{const p=request.params;return groups.captureStatus(p.id,p.executionId,request.query.commandKey);}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.post<{Params:GroupParams;Body:unknown}>(groupPath+'/capture',async(request,reply)=>{
-    try{const p=request.params,body=validatedObject(request.body,'Issued group capture');exactObjectFields(body,['commandKey'],'Issued group capture');
-      if(typeof body.commandKey!=='string')throw Error('Capture command key required');const result=await groups.capture(p.id,p.executionId,body.commandKey);notify();return result;
+    try{const p=request.params,body=validatedObject(request.body,'Issued group capture');exactObjectFields(body,['commandKey','reviewHash','versionId'],'Issued group capture');
+      if(typeof body.commandKey!=='string'||typeof body.reviewHash!=='string'||typeof body.versionId!=='string')throw Error('Exact capture command and preview required');const result=await groups.capture(p.id,p.executionId,body.commandKey,{reviewHash:body.reviewHash,versionId:body.versionId});notify();return result;
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.get<{Params:GroupParams;Querystring:{commandKey:string}}>(groupPath,(request,reply)=>{

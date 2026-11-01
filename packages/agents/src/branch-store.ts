@@ -1,4 +1,4 @@
-import {readIssuedGroup,readIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
+import {readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
 import {readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
@@ -1300,9 +1300,13 @@ export class BranchStore {
     if(!v)throw Error('Group capture command unavailable');
     return {state:v.state,cleanupHeld:v.state==='capturing',abandonment:'unsupported',sources:v.sources.map((source:Row)=>({checkpointId:source.checkpointId,resourceStepId:source.intent.resourceStepId,sourceChatId:source.sourceChatId,sealed:v.receipts.some((receipt:Row)=>receipt.checkpointId===source.checkpointId)})),...(v.state==='retained'?{checkpointId:v.checkpointId,checkpointHash:v.checkpointHash}:{})};
   }
-  reserveIssuedGroupCapture(executionId:string,commandKey:string){
+  previewIssuedGroupCapture(executionId:string){
     const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Group capture restricted');
-    return this.unitTransaction(()=>reserveIssuedGroupCapture(this.sqlite,executionId,commandKey)).immediate();
+    return previewIssuedGroupCapture(this.sqlite,executionId);
+  }
+  reserveIssuedGroupCapture(executionId:string,commandKey:string,expectedReview?:{reviewHash:string;versionId:string}){
+    const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Group capture restricted');
+    return this.unitTransaction(()=>reserveIssuedGroupCapture(this.sqlite,executionId,commandKey,expectedReview)).immediate();
   }
   sealIssuedGroupMember(executionId:string,commandKey:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt){
     const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current group sealing restricted');

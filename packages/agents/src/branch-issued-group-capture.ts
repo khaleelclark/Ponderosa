@@ -33,6 +33,7 @@ export function readIssuedGroupCapture(db:Database.Database,executionId:string,c
  const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row|undefined;
  if(!row)return;
  const v=JSON.parse(row.result_json),snapshot=v.snapshot,resources=snapshot?.selected?.resources;
+ if(v.commandKey!==undefined&&(v.commandKey!==commandKey||v.reviewHash!==payloadHash(snapshot)||v.versionId!==snapshot?.selected?.execution?.[0]?.version_id))throw Error('Group capture retained preview differs');
  if(stableJson(v)!==row.result_json||row.input_hash!==payloadHash({commandKey})||!['capturing','retained'].includes(v.state)
   ||snapshot?.schema!=='branch-unit-selected.v2'||snapshot.captureKind!=='issued_group'||snapshot.issuedContinuation?.group!==true
   ||snapshot.selected.execution[0]?.id!==executionId||!verifyBranchHostCut(snapshot.hostDependencies,executionId)||!Array.isArray(resources)||resources.length<2||resources.length>32
@@ -55,10 +56,7 @@ export function readIssuedGroupCapture(db:Database.Database,executionId:string,c
  }
  return v;
 }
-export function reserveIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string):Row {
- if(!db.inTransaction||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Group capture owner transaction/command required');
- const old=readIssuedGroupCapture(db,executionId,commandKey);
- if(old)return old;
+export function previewIssuedGroupCapture(db:Database.Database,executionId:string){
  const selected=selectBranchUnit(db,executionId),host=captureBranchHostCut(db,executionId,selected),e=selected.execution![0]!;
  if(selected.resources!.length<2||selected.resources!.length>32||!host?.coverage.complete||host.artifactRefs.length||e.parent_execution_id
   ||selected.resources!.some(r=>r.generation!==0||r.retry_draining||!['active','draining'].includes(r.state)))throw Error('Two to thirty-two generation-zero issued resources required');
@@ -66,13 +64,25 @@ export function reserveIssuedGroupCapture(db:Database.Database,executionId:strin
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row;
  if(!branch?.enabled||branch.deleting||branch.active_version_id!==e.version_id||branch.binding_revision_id!==e.binding_revision_id||branch.configuration_json!==configuration.configuration_json)throw Error('Current group owner pins unavailable');
  const issuedContinuation=encodeIssuedResourceContinuation(db,executionId,selected,host,true);
- const sources:CheckpointPackageSource[]=selected.resources!.map(r=>{
+ const sources=selected.resources!.map(r=>{
   const ids=JSON.parse(r.import_operation_json).result.agentIds as string[];
   for(const id of ids)if(!db.prepare('SELECT 1 FROM agents WHERE id=? AND conversation_id=? AND deleted_at IS NULL').get(id,r.chat_id)
    ||db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM agent_deletion_pending WHERE agent_id=? LIMIT 1").get(id,id,id))throw Error('Group participants must survive with observed runtime drain');
-  return {checkpointId:randomUUID(),sourceChatId:r.chat_id,agentIds:ids,intent:{executionId,resourceStepId:r.step_execution_id,resourceGeneration:0,frontierSha256:resourceCaptureFrontierHash(selected),hostCutSha256:payloadHash(host),bindingSha256:issuedContinuation.bindingHash,configurationSha256:payloadHash(issuedContinuation.configuration)}};
+  return {resourceStepId:r.step_execution_id,sourceChatId:r.chat_id,generation:r.generation,agentIds:ids};
  });
- const value={state:'capturing',sources,receipts:[],snapshot:{schema:'branch-unit-selected.v2',captureKind:'issued_group',restore_supported:false,selected,hostDependencies:host,issuedContinuation}};
+ const snapshot={schema:'branch-unit-selected.v2',captureKind:'issued_group',restore_supported:false,selected,hostDependencies:host,issuedContinuation};
+ return {snapshot,resources:sources,reviewHash:payloadHash(snapshot),versionId:e.version_id,bindingRevisionId:e.binding_revision_id};
+}
+export function reserveIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string,expectedReview?:{reviewHash:string;versionId:string}):Row {
+ if(!db.inTransaction||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Group capture owner transaction/command required');
+ const old=readIssuedGroupCapture(db,executionId,commandKey);
+ if(old){if(expectedReview&&(old.reviewHash!==expectedReview.reviewHash||old.versionId!==expectedReview.versionId))throw Error('Group capture command preview conflict');return old;}
+ if(!expectedReview||expectedReview.versionId===undefined)throw Error('Exact capture preview required');
+ const preview=previewIssuedGroupCapture(db,executionId);
+ if(preview.reviewHash!==expectedReview.reviewHash||preview.versionId!==expectedReview.versionId)throw Error('Group capture preview changed');
+ const {snapshot}=preview,{selected,hostDependencies:host,issuedContinuation}=snapshot;
+ const sources:CheckpointPackageSource[]=preview.resources.map(r=>({checkpointId:randomUUID(),sourceChatId:r.sourceChatId,agentIds:r.agentIds,intent:{executionId,resourceStepId:r.resourceStepId,resourceGeneration:0,frontierSha256:resourceCaptureFrontierHash(selected),hostCutSha256:payloadHash(host),bindingSha256:issuedContinuation.bindingHash,configurationSha256:payloadHash(issuedContinuation.configuration)}}));
+ const value={commandKey,reviewHash:preview.reviewHash,versionId:preview.versionId,state:'capturing',sources,receipts:[],snapshot:{schema:'branch-unit-selected.v2',captureKind:'issued_group',restore_supported:false,selected,hostDependencies:host,issuedContinuation}};
  db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(executionId,key(commandKey),payloadHash({commandKey}),stableJson(value),new Date().toISOString());return value;
 }
 export function sealIssuedGroupMember(db:Database.Database,executionId:string,commandKey:string,receipt:CheckpointPackageReceipt):void {

@@ -1,3 +1,4 @@
+import {sqliteCollectionGeneration} from './collection-page.js';
 import {createHash} from 'node:crypto';
 import {readIssuedGroup,stableJson,workspaceCreationId,type AgentStore,type BranchStore,type CoordinationV3Store,type CoordinationDestinationGroupAuthority} from '@ponderosa/agents';
 import type {BranchIssuedDestinationInput,AgentPortablePackageDto} from '@ponderosa/core';
@@ -34,16 +35,49 @@ export class BranchIssuedGroupDestinationService {
    ||a.accessSettings?.restrictedCapabilityIds.length||a.managementPermissions.allowAutomaticDescendantDeletion||a.managementPermissions.allowAutomaticDescendantReorganization)
    ||stableJson(pkg.agents.map(a=>a.ref))!==stableJson(receipt.agentIds))throw Error('Group supports only artifact-free private organizations without memory, working roots, restrictions or elevated grants');
  }
+ previewCapture(branchId:string,executionId:string){
+  if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Group capture owner unavailable');
+  const p=this.branches.previewIssuedGroupCapture(executionId);
+  return {reviewHash:p.reviewHash,versionId:p.versionId,bindingRevisionId:p.bindingRevisionId,frontierHash:hash(p.snapshot.selected),hostCutHash:hash(p.snapshot.hostDependencies),resources:p.resources};
+ }
+ /** Operator audit discovery also works after owner deletion; never executes a saved command. */
+ discover(input:{kind:'captures'|'admissions';limit?:number;cursor?:string}):import('@ponderosa/core').BranchGroupDiscoveryPage {
+  const limit=input.limit??50;if(!Number.isSafeInteger(limit)||limit<1||limit>100)throw Error('Group discovery limit must be 1..100');
+  if(!['captures','admissions'].includes(input.kind))throw Error('Group discovery kind required');
+  const prefix=input.kind==='captures'?'issued-group-capture:%':'issued-group-destination:%';
+  const generation=hash({connection:sqliteCollectionGeneration(this.db),changes:this.db.prepare('SELECT total_changes() value').get(),external:this.db.pragma('data_version',{simple:true})});
+  let after=0;
+  if(input.cursor){if(input.cursor.length>4096)throw Error('Group cursor too long');const c=JSON.parse(Buffer.from(input.cursor,'base64url').toString('utf8'));if(c.kind!==input.kind||c.generation!==generation||!Number.isSafeInteger(c.after)||c.after<0)throw Error('Group discovery cursor stale or invalid');after=c.after;}
+  const rows=this.db.prepare('SELECT rowid,execution_id,command_key,input_hash,result_json FROM branch_commands WHERE command_key LIKE ? AND rowid>? ORDER BY rowid LIMIT ?').all(prefix,after,limit+1) as Row[];
+  const items=rows.slice(0,limit).map(row=>{
+   const v=JSON.parse(row.result_json);if(stableJson(v)!==row.result_json)throw Error('Noncanonical group journal');
+   const capture=input.kind==='captures',e=capture?v.snapshot?.selected?.execution?.[0]:undefined;
+   const resources=capture?v.snapshot?.selected?.resources:v.reservation?.resources;
+   if(!Array.isArray(resources)||resources.length<2||resources.length>32||capture&&(v.snapshot?.captureKind!=='issued_group'||!['capturing','retained'].includes(v.state)||v.sources?.length!==resources.length)||!capture&&v.schema!=='ponderosa.branch.issued-group-destination.v1')throw Error('Group discovery journal shape differs');
+   const branchId=capture?e?.branch_id:v.reservation?.branchId,executionId=capture?e?.id:v.reservation?.sourceExecutionId,commandKey=capture?v.commandKey:v.input?.commandKey;
+   if(typeof branchId!=='string'||executionId!==row.execution_id||!capture&&v.reservation?.operatorId!==BRANCH_DISCLOSURE_OPERATOR)throw Error('Group audit journal scope differs');
+   if(capture&&commandKey!==undefined&&(v.reviewHash!==hash(v.snapshot)||v.versionId!==e?.version_id))throw Error('Group discovery preview differs');
+   if(commandKey!==undefined&&(typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200||row.command_key!==`${capture?'issued-group-capture':'issued-group-destination'}:${hash(commandKey)}`||row.input_hash!==hash(capture?{commandKey}:v.input)))throw Error('Group discovery key integrity differs');
+   const admission=!capture?this.db.prepare('SELECT state,reservation_hash,reservation_json FROM coordination_destination_admissions WHERE id=?').get(v.admissionId) as Row|undefined:undefined;
+   const retirement=!capture?this.db.prepare('SELECT receipt_json,evidence_json FROM coordination_destination_retirements WHERE admission_id=?').get(v.admissionId) as Row|undefined:undefined;
+   if(admission&&(admission.reservation_hash!==v.reservationHash||admission.reservation_json!==stableJson(v.reservation)))throw Error('Group discovery reservation differs');
+   if(retirement){const evidence=JSON.parse(retirement.evidence_json);if(evidence.row?.reservation_json!==stableJson(v.reservation)||hash(v.reservation)!==v.reservationHash)throw Error('Group retired discovery evidence differs');}
+   return {branchId,executionId,kind:input.kind,commandKey,discovery:commandKey===undefined?'unsupported_legacy_key':'exact',state:capture?v.state:retirement?'retired':admission?.state??'unavailable',admissionId:capture?undefined:v.admissionId,checkpointId:capture?v.checkpointId:v.input.checkpointId,checkpointHash:capture?v.checkpointHash:v.input.expectedHash,reviewHash:capture?v.reviewHash:undefined,versionId:capture?v.versionId:undefined,resourceCount:capture?v.sources?.length:v.reservation.resources?.length,ownerPresent:this.branches.execution(executionId)?.branchId===branchId} as import('@ponderosa/core').BranchGroupDiscoveryItem;
+  });
+  return {items,...(rows.length>limit?{nextCursor:Buffer.from(JSON.stringify({kind:input.kind,generation,after:rows[limit-1]!.rowid})).toString('base64url')}:{})};
+ }
  captureStatus(branchId:string,executionId:string,commandKey:string){
   if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Group capture owner unavailable');
   return this.branches.issuedGroupCaptureStatus(executionId,commandKey);
  }
- async capture(branchId:string,executionId:string,commandKey:string){
+ async capture(branchId:string,executionId:string,commandKey:string,expectedReview:{reviewHash:string;versionId:string}){
   if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Group capture owner unavailable');
-  let journal=this.branches.reserveIssuedGroupCapture(executionId,commandKey);
+  let journal=this.branches.reserveIssuedGroupCapture(executionId,commandKey,expectedReview);
   for(const source of journal.sources)if(!journal.receipts.some((r:Row)=>r.checkpointId===source.checkpointId)){
+   const current=this.previewCapture(branchId,executionId);
+   if(current.reviewHash!==expectedReview.reviewHash||current.versionId!==expectedReview.versionId)throw Error('Group capture preview changed before package effect');
    await this.packages().captureCheckpoint(source,receipt=>this.branches.sealIssuedGroupMember(executionId,commandKey,receipt));
-   journal=this.branches.reserveIssuedGroupCapture(executionId,commandKey);
+   journal=this.branches.reserveIssuedGroupCapture(executionId,commandKey,expectedReview);
   }
   if(journal.state!=='retained')throw Error('Group capture remains unsealed');
   readIssuedGroup(this.db,executionId,journal.checkpointId,journal.checkpointHash);

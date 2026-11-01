@@ -1768,11 +1768,26 @@ async function twoIssuedResources(t,mode,count=2,parallel=false,completedIndices
  };
  const {BranchIssuedGroupDestinationService}=await import('../../apps/server/dist/branch-issued-group-destination.js');
  const service=()=>new BranchIssuedGroupDestinationService(f.store,f.branches,coord(),()=>engine);
+ const beforePreview=db().prepare('SELECT COUNT(*) n FROM branch_commands').get().n;
+ const preview=service().previewCapture(f.branch.id,f.source.id);
+ assert.deepEqual(service().previewCapture(f.branch.id,f.source.id),preview);
+ assert.equal(preview.resources.length,count);assert.equal(db().prepare('SELECT COUNT(*) n FROM branch_commands').get().n,beforePreview);assert.equal(custody.size,0);
+ await assert.rejects(service().capture(f.branch.id,f.source.id,'stale-preview',{...preview,reviewHash:'0'.repeat(64)}),/preview changed/);
+ assert.equal(db().prepare('SELECT COUNT(*) n FROM branch_commands').get().n,beforePreview);assert.equal(custody.size,0);
+ const oldWait=db().prepare('SELECT wait_reason FROM branch_executions WHERE id=?').get(f.source.id).wait_reason;
+ db().prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run('changed after operator preview',f.source.id);
+ await assert.rejects(service().capture(f.branch.id,f.source.id,'changed-cut',preview));
+ assert.equal(db().prepare('SELECT COUNT(*) n FROM branch_commands').get().n,beforePreview);assert.equal(custody.size,0);
+ db().prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run(oldWait,f.source.id);
+
  if(partialCapture){
-  await assert.rejects(service().capture(f.branch.id,f.source.id,'two-resource-cut'),/injected final capture failure/);
+  await assert.rejects(service().capture(f.branch.id,f.source.id,'two-resource-cut',preview),/injected final capture failure/);
   return {f,service,issued};
  }
- const captured=await service().capture(f.branch.id,f.source.id,'two-resource-cut');
+ const captured=await service().capture(f.branch.id,f.source.id,'two-resource-cut',preview);
+ const discovery=service().discover({kind:'captures',limit:1});assert.equal(discovery.items[0].commandKey,'two-resource-cut');assert.equal(discovery.items[0].discovery,'exact');
+ assert.equal(service().captureStatus(f.branch.id,f.source.id,discovery.items[0].commandKey).checkpointId,captured.checkpointId);
+
  for(const [index,item] of issued.entries())if(!completedIndices.includes(index))complete(item);
  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
  for(const item of issued){const preview=f.store.previewAgentDeletion([item.agentId]);f.store.deleteAgentSubtrees([item.agentId],preview.previewHash,id=>coord().handleAgentDeletion(id));const receipt=f.store.commitConversationDeletion(item.chatId);f.store.finishConversationDeletionStorageCleanup(receipt);f.store.markConversationDeletionServerCleanupComplete(item.chatId);f.branches.resourceRetired(item.stepId);await f.branches.unitSaver.drain();}
@@ -1885,4 +1900,32 @@ test('parallel three-resource rehashed audit/custody/member tampering refuses be
   await assert.rejects(x.service().prepare(f.branch.id,f.source.id,{...input,expectedHash:changedHash}),/integrity|custody|unsupported/);assert.equal(x.imports,0);
  }
  db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,input.expectedHash,input.checkpointId);
+});
+
+for(const parallel of [false,true])test(`group ${parallel?'parallel':'serial'} discovery validates keys and legacy capture disposition`,async t=>{
+ const x=await twoIssuedResources(t,'sync',3,parallel),{f}=x,s=x.service(),db=f.store.sqlite;
+ await s.prepare(f.branch.id,f.source.id,x.input);
+ const page=s.discover({kind:'admissions',limit:1});assert.equal(page.items[0].commandKey,x.input.commandKey);assert.equal(page.items[0].branchId,f.branch.id);
+ // Simulate an absent source owner lookup; discovery must use retained audit scope.
+ const execution=f.branches.execution;f.branches.execution=()=>undefined;
+ try{const absent=s.discover({kind:'admissions'}).items[0];assert.equal(absent.ownerPresent,false);assert.equal(absent.commandKey,x.input.commandKey);}finally{f.branches.execution=execution;}
+
+ const row=db.prepare("SELECT command_key,result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id),saved=JSON.parse(row.result_json);
+ delete saved.commandKey;delete saved.reviewHash;delete saved.versionId;
+ db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson(saved),f.source.id,row.command_key);
+ const legacy=s.discover({kind:'captures'}).items.find(i=>i.executionId===f.source.id);assert.equal(legacy.discovery,'unsupported_legacy_key');assert.equal(legacy.commandKey,undefined);
+ assert.equal(s.captureStatus(f.branch.id,f.source.id,'two-resource-cut').state,'retained');
+ await f.reopen();assert.equal(x.service().discover({kind:'captures'}).items.find(i=>i.executionId===f.source.id).discovery,'unsupported_legacy_key');
+});
+
+test('group discovery pagination rejects changed inventory and finds partial exact intents after reopen',async t=>{
+ const x=await twoIssuedResources(t,'sync',3,true,[],true),{f}=x,s=x.service();
+ const preview=s.previewCapture(f.branch.id,f.source.id);
+ f.branches.reserveIssuedGroupCapture(f.source.id,'second-reviewed-intent',preview);
+ const first=s.discover({kind:'captures',limit:1});assert.equal(first.items.length,1);assert.ok(first.nextCursor);
+ const second=s.discover({kind:'captures',limit:1,cursor:first.nextCursor});assert.equal(second.items[0].commandKey,'second-reviewed-intent');assert.equal(second.nextCursor,undefined);
+ f.branches.reserveIssuedGroupCapture(f.source.id,'third-reviewed-intent',preview);
+ assert.throws(()=>s.discover({kind:'captures',limit:1,cursor:first.nextCursor}),/stale/);
+ await f.reopen();assert.equal(x.service().discover({kind:'captures'}).items.filter(i=>i.executionId===f.source.id).length,3);
+ for(const resource of preview.resources)assert.equal(f.branches.issuedResourceCapturePending(resource.resourceStepId),true);
 });

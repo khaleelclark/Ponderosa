@@ -389,3 +389,17 @@ export type BranchResourceCustodyReleaseStatus=BranchResourceCustodyReleaseDto|{
 /** Operator-only issued private-byte capture; this is not restoration admission. */
 export interface BranchIssuedResourceCaptureInput {commandKey:string;expectedGeneration:number}
 export interface BranchIssuedResourceCaptureDto {commandKey:string;state:'not_found'|'capturing'|'retained';checkpointId?:number;checkpointHash?:string;receipt?:CheckpointPackageReceipt;restoreSupported:false}
+
+/** Operator-only audit discovery. Legacy capture keys cannot be recovered from hashes. */
+export interface BranchGroupDiscoveryItem {
+ kind:'captures'|'admissions';branchId:string;executionId:string;commandKey?:string;
+ discovery:'exact'|'unsupported_legacy_key';state:string;ownerPresent:boolean;
+ admissionId?:string;checkpointId?:number;checkpointHash?:string;reviewHash?:string;versionId?:string;resourceCount:number;
+}
+export interface BranchGroupDiscoveryPage {items:BranchGroupDiscoveryItem[];nextCursor?:string}
+export interface BranchGroupCapturePreview {
+ reviewHash:string;versionId:string;bindingRevisionId:string;frontierHash:string;hostCutHash:string;
+ resources:{resourceStepId:string;sourceChatId:string;generation:number;agentIds:string[]}[];
+}
+export interface BranchGroupCaptureInput {commandKey:string;reviewHash:string;versionId:string}
+export interface BranchGroupCaptureResult {state:'retained';checkpointId:number;checkpointHash:string;receipts:CheckpointPackageReceipt[]}
