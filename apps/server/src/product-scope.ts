@@ -6,7 +6,7 @@ import type {
   WorkspacePreferencesDto,
   UpdateWorkspacePreferencesRequest,
 } from '@ponderosa/core';
-import { managedArtifactProductSql, artifactAgentProductSql, REQUEST_SOURCE_LINEAGE_CTE, projectProductSql,type ProductScope, type AgentStore, type WorkspaceStore } from '@ponderosa/agents';
+import { managedArtifactProductSql, REQUEST_SOURCE_LINEAGE_CTE, projectProductSql,type ProductScope, type AgentStore, type WorkspaceStore } from '@ponderosa/agents';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import {activeChatResourceOwner} from './branch-resource-owner.js';
@@ -32,10 +32,6 @@ export function triggerProductSql(triggerAlias:string,product:ProductScope):stri
 }
 export function occurrenceProductSql(occurrenceAlias:string,product:ProductScope):string {
   return `json_extract(${occurrenceAlias}.trigger_snapshot_json,'$.productScope')='${product}'`;
-}
-export function artifactAgentInProduct(store:Pick<AgentStore,'sqlite'>,agentId:string,projectId:string,product:ProductScope):boolean {
-  return Boolean(store.sqlite.prepare(`SELECT 1 FROM agents artifact_agent WHERE artifact_agent.id=?
-    AND artifact_agent.project_id=? AND ${artifactAgentProductSql('artifact_agent',product)}`).get(agentId,projectId));
 }
 export function artifactInProduct(store:AgentStore,projectId:string,artifactId:string,product:ProductScope):boolean {
   return store.operatorCanReadProjectArtifact(projectId,artifactId)&&Boolean(store.sqlite.prepare(`SELECT 1 FROM managed_artifact_projection artifact WHERE artifact.project_id=? AND artifact.artifact_id=? AND ${managedArtifactProductSql('artifact',product)}`).get(projectId,artifactId));

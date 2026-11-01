@@ -1,23 +1,11 @@
+import type { PortableAgentPreview } from "./agent-package-preview.types";
 import { agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 interface PreviewRequest {
   id: number;
   blob: Blob;
 }
 
-interface PortableAgentPreview {
-  sourceLabel: string;
-  hasOutputRoles: boolean;
-  sourceProjectInstructions?: string;
-  mode: "template" | "full";
-  kind: "agent" | "organization";
-  agentCount: number;
-  artifactCount: number;
-  historyMessageCount: number;
-  agentTitles: string[];
-  sourceEngines: string[];
-  elevatedAgentRefs: string[];
-  invalidPermissionShape: boolean;
-}
+
 
 type PreviewResponse =
   | { id: number; phase: "Reading import" | "Validating" | "Preparing summary" }

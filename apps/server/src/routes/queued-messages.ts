@@ -35,14 +35,6 @@ export type QueuedEditRevisionOutboxPayload = {
   artifact?: PreparedCommunicationArtifact;
 };
 
-export type QueuedMessageChangeOutboxPayload = {
-  activationId: string;
-  projectId: string;
-  agentId: string;
-  conversationId: string;
-  action: "cancelled";
-};
-
 export function applyQueuedMessageChangeOutbox(
   input: { activationId: string },
   dependencies: Pick<

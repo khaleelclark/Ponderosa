@@ -1,4 +1,3 @@
-import {branchScriptFailureSummary} from "@ponderosa/core";
 import {createClientId} from '../../clientId.js';
 import type { AgentPortablePackageDto, BranchBindings, BranchExecutionDetailDto, BranchControl, BranchDefinition, BranchStep } from '@ponderosa/core';
 export type WorkflowNode=BranchStep|BranchControl;
@@ -139,13 +138,6 @@ export function isCurrentWorkflowResponse(started:{branchId?:string;selection:nu
 /** Only current failed invocations need attention; historical failed retry attempts do not. */
 export function currentFailedInvocations(detail:BranchExecutionDetailDto):BranchExecutionDetailDto['steps']{
  return detail.steps.filter(step=>(step.state==='failed'||step.state==='outcome_unknown')&&detail.paths.some(path=>path.id===step.pathId&&path.stepExecutionId===step.id&&!['arrived','canceled','completed','skipped'].includes(path.state)));
-}
-export function executionFailures(detail:BranchExecutionDetailDto):{stepId:string;invocationId:string;reason:string}[]{
- return currentFailedInvocations(detail).map(step=>{
-  const attempt=detail.attempts.filter(a=>a.stepExecutionId===step.id).sort((a,b)=>b.number-a.number)[0];
-  const reason=attempt?.error||(attempt?.scriptEvidence?branchScriptFailureSummary(attempt.scriptEvidence.code,attempt.scriptEvidence.error):undefined)||attempt?.result?.output||step.result?.output||(step.state==='outcome_unknown'?'The previous attempt’s outcome is unknown. Review its effects before retrying.':'The Engine did not record a failure explanation. Open the Step for available evidence.');
-  return {stepId:step.stepId,invocationId:step.id,reason};
- });
 }
 
 /** The explicit failure edge is the runtime's first choice; inactive policies are retained. */

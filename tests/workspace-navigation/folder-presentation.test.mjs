@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import '../shared/web-typescript-loader.mjs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-const { sidebarChatItems, changedWorkspaceDirectoryKinds, sortChatFolderMembers } = await import('../../apps/web/src/resourcePreferences.ts');
+const { sidebarChatItems, changedWorkspaceDirectoryKinds, sortResourceFolderMembers } = await import('../../apps/web/src/resourcePreferences.ts');
 const { workspaceDirectoryItems } = await import('../../apps/web/src/hooks/useWorkspaceDirectory.ts');
 const { ChatFolders } = await import('../../apps/web/src/components/ChatFolders.tsx');
 const rows = Array.from({ length: 60 }, (_, i) => ({ kind: 'conversation',
@@ -11,6 +11,10 @@ const rows = Array.from({ length: 60 }, (_, i) => ({ kind: 'conversation',
   conversation: { id: 'chat-' + i, projectId: 'project', title: 'Chat ' + String(i).padStart(2, '0'), updatedAt: new Date(Date.UTC(2026, 9, 19, 0, i)).toISOString() } }));
 const folder = { id: 'folder', name: 'Complete', expanded: true, starred: true, conversationIds: rows.slice(30).map(item => item.conversation.id) };
 const preferences = { projectSort: 'last_used', projectOrder: [], starredProjectIds: [], chatSort: 'alphabetical', chatOrder: [], chatFolders: [folder] };
+// Adapt fixture rows to the same generic folder contract used by ResourceFolders.
+const sortChatFolderMembers = (folder, items, sort) => sortResourceFolderMembers(
+  {...folder, memberIds: folder.conversationIds},
+  items.map(item => ({...item, id:item.conversation.id, title:item.conversation.title, updatedAt:item.lastUsedAt??item.conversation.updatedAt})), sort);
 const ids = items => items.map(item => item.conversation.id);
 const render = items => renderToStaticMarkup(React.createElement(ChatFolders, {
   items, folders: [folder], sort: 'alphabetical', starredIds: new Set(), filtering: false,

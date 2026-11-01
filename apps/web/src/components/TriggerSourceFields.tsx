@@ -8,10 +8,6 @@ export function isoToDatetimeLocal(value: string): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 23);
 }
 
-export function changedSourceConfig(original: TriggerSourceConfig, next: TriggerSourceConfig): TriggerSourceConfig | undefined {
-  return JSON.stringify(original) === JSON.stringify(next) ? undefined : next;
-}
-
 export function intervalSourceConfig(everyMs: number, original?: { startsAt: string }): Extract<TriggerScheduleConfig,{scheduleKind:"interval"}> {
   return { scheduleKind: "interval", everyMs, startsAt: original?.startsAt ?? new Date().toISOString() };
 }
@@ -32,12 +28,6 @@ export function intervalParts(everyMs: number): { value: string; unit: IntervalU
     if (Number.isInteger(value)) return { value: String(value), unit };
   }
   return { value: String(everyMs / INTERVAL_UNIT_MS.minutes), unit: "minutes" };
-}
-
-export function intervalSummary(everyMs: number): string {
-  const { value, unit } = intervalParts(everyMs);
-  const singular = Number(value) === 1 ? unit.slice(0, -1) : unit;
-  return `every ${value} ${singular}`;
 }
 
 export function filesystemWindowErrors(quietValue: string, maxValue: string): { quiet?: string; max?: string } {

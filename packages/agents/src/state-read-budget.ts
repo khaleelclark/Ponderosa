@@ -58,7 +58,6 @@ export class StateReadBudget {
 const budgets = new WeakMap<Database.Database, StateReadBudget>();
 const scopes = new WeakMap<Database.Database, StateReads>();
 let invocation: StateReadBudget | undefined;
-export const currentStateReadInvocation = (): StateReadBudget | undefined => invocation;
 /** Accounting context only: never schema, admission or publication authority. */
 export function withStateReadInvocation<T>(budget: StateReadBudget, action: () => T): T {
   if (invocation && invocation !== budget) fail("foreign-invocation");

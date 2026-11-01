@@ -147,15 +147,6 @@ function capturedAppInfo(value: Buffer): boolean {
   } catch { return false; }
 }
 
-/**
- * Retain the screenshot-only entry point and its original two-field/8KiB bounds.
- * The shared parser additionally admits qualified Motion Photo fields when the
- * caller opts in; unrecognized fields and SEF versions remain rejected.
- */
-export function hasSamsungScreenshotTrailer(body: Buffer): boolean {
-  return hasSamsungImageTrailer(body, false);
-}
-
 export function hasSamsungImageTrailer(body: Buffer, allowMotion = true): boolean {
   if (body.length < 36 || body.subarray(-4).toString("latin1") !== "SEFT") return false;
   const directoryLength = body.readUInt32LE(body.length - 8);

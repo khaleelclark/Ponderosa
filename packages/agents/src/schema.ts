@@ -368,11 +368,7 @@ export const runOutputHeads = sqliteTable("run_output_heads", {
 });
 
 export type ProjectRow = typeof projects.$inferSelect;
-export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
-export type AgentDeletionTombstoneRow = typeof agentDeletionTombstones.$inferSelect;
-export type ConversationRow = typeof conversations.$inferSelect;
-export type AgentConversationMembershipRow = typeof agentConversationMemberships.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type WorkItemRow = typeof workItems.$inferSelect;

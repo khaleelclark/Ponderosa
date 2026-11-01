@@ -63,3 +63,40 @@ test('check 93: cumulative usage is not current context pressure; an active cycl
   assert.equal(shouldRequestAutomaticContextRollover(high, undefined), true);
   assert.equal(shouldRequestAutomaticContextRollover(high, { state: 'requested' }), false);
 });
+
+
+test('shared history schema is idempotent for empty and established indexes and preserves indexed rows', async () => {
+  const {default:Database}=await import('better-sqlite3');
+  const {ensureHistoryIndex}=await import('../../packages/agents/dist/compaction-history-schema.js');
+  const db=new Database(':memory:');
+  try {
+    ensureHistoryIndex(db);
+    db.prepare("INSERT INTO compaction_history_messages(project_id,communication_event_id,canonical_ordinal,created_at,content_sha256,text) VALUES('p','e',1,'now','hash','retained')").run();
+    const before=db.prepare("SELECT name,sql FROM sqlite_master WHERE name LIKE '%compaction_history%' ORDER BY name").all();
+    ensureHistoryIndex(db);
+    assert.deepEqual(db.prepare("SELECT name,sql FROM sqlite_master WHERE name LIKE '%compaction_history%' ORDER BY name").all(),before);
+    assert.equal(db.prepare('SELECT text FROM compaction_history_messages').get().text,'retained');
+    assert.ok(before.some(row=>row.name==='compaction_history_fts'));
+    assert.ok(before.some(row=>row.name==='idx_compaction_history_relation_candidates_lookup'));
+  } finally {db.close()}
+});
+
+test('startup and retrieval independently establish the shared history indexes', async () => {
+  const {AgentStore}=await import('@ponderosa/agents');
+  const {mkdtempSync,rmSync}=await import('node:fs');
+  const {tmpdir}=await import('node:os');
+  const {join}=await import('node:path');
+  const root=mkdtempSync(join(tmpdir(),'history-schema-hygiene-'));
+  const store=new AgentStore(root);
+  try {
+    const project=store.createProject({label:'History schema',hostPath:root,defaultEngine:'codex'});
+    const chat=store.createConversation(project.id,{title:'History'});
+    const agent=store.createAgent(project.id,{title:'Reader',engine:'codex',conversationId:chat.id});
+    const index=()=>store.sqlite.prepare("SELECT name FROM sqlite_master WHERE name='idx_compaction_history_messages_boundary'").get();
+    assert.ok(index(),'startup establishes the index');
+    store.sqlite.exec('DROP INDEX idx_compaction_history_messages_boundary');
+    assert.equal(index(),undefined);
+    assert.throws(()=>store.searchCompactionHistory({agentId:agent.id,query:'absent fact',excludedCommunicationEventIds:new Set()}),/durable compaction boundary anchor is missing or mismatched/);
+    assert.ok(index(),'retrieval independently reestablishes the index without bypassing boundary authority');
+  } finally {store.close();rmSync(root,{recursive:true,force:true})}
+});

@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import sharp from 'sharp';
 import {prepareAssetUpload} from '../../apps/server/dist/assets.js';
-import {hasSamsungScreenshotTrailer} from '../../apps/server/dist/jpeg-container.js';
+import {hasSamsungImageTrailer} from '../../apps/server/dist/jpeg-container.js';
 import { managedArtifactContentPath } from '@ponderosa/agents';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
@@ -309,14 +309,14 @@ test('Samsung screenshots accept required comp and optional bounded inert capurl
   const image=await screenshotJpeg(),comp='com.example.photos/.Screenshot';
   for(const info of [{comp},{comp,capurl:'https://example.test/screenshot'},{capurl:'https://example.test/',comp},{comp,capurl:''},{comp,capurl:'x'.repeat(1024)},{comp,capurl:'javascript:inert-metadata'}]){
     const body=samsungScreenshot(image,captureInfo(info));
-    assert.equal(hasSamsungScreenshotTrailer(body),true);
+    assert.equal(hasSamsungImageTrailer(body,false),true);
     const prepared=await prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'});
     assert.equal(prepared.sha256,createHash('sha256').update(body).digest('hex'));
     assert.equal(prepared.width,2);assert.equal(prepared.height,2);
   }
-  assert.equal(hasSamsungScreenshotTrailer(samsungScreenshot(image,'com.example.photos')),true);
+  assert.equal(hasSamsungImageTrailer(samsungScreenshot(image,'com.example.photos'),false),true);
   const png=samsungScreenshot(await sharp(image).png().toBuffer(),captureInfo({comp,capurl:'https://example.test/'}));
-  assert.equal(hasSamsungScreenshotTrailer(png),true);
+  assert.equal(hasSamsungImageTrailer(png,false),true);
   assert.equal((await prepareAssetUpload({body:png,name:'screenshot.png',declaredType:'image/png'})).mediaType,'image/png');
 });
 
@@ -333,7 +333,7 @@ test('Samsung screenshot metadata retains strict shape, encoding, bounds and ima
   const malformed=[...invalid.map(captureInfo),canonical+'\n',canonical.slice(0,-1),noncanonical,invalidUtf8,Buffer.from('{').toString('base64'),'A'.repeat(4100)];
   for(const value of malformed){
     const body=samsungScreenshot(image,value);
-    assert.equal(hasSamsungScreenshotTrailer(body),false,'Malformed captured-app metadata was accepted');
+    assert.equal(hasSamsungImageTrailer(body,false),false,'Malformed captured-app metadata was accepted');
     await assert.rejects(prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'}),error=>error.statusCode===415);
   }
   const app=captureInfo({comp,capurl:'https://example.test/'}),valid=samsungScreenshot(image,app);
