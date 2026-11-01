@@ -21,7 +21,7 @@ await stage('primary-profile',async()=>{
 });
 if(full)await stage('accepted-inputs',async()=>{
  const required=['tests/workspace-navigation/event-timing-observer.mjs','tests/workspace-navigation/active-load-qualification.mjs','tests/workspace-navigation/qualification-ledger.mjs','tests/shared/ui-load-fixture.mjs','tests/shared/fixture.mjs','tests/shared/serve-ui-fixture.mjs','apps/web/rsbuild.config.ts','pnpm-lock.yaml','tests/workspace-navigation/lighthouse-13.6.0/profile.json'];
- for(const root of ['apps/web/dist','apps/server/dist','packages/core/dist','packages/agents/dist','packages/engines/dist','packages/native-host/dist'])for(const entry of await readdir(root,{recursive:true,withFileTypes:true}))if(entry.isFile())required.push(entry.parentPath+'/'+entry.name);
+ for(const root of ['apps/web/src','apps/server/src','packages/core/src','packages/agents/src','packages/engines/src','packages/native-host/src','apps/web/dist','apps/server/dist','packages/core/dist','packages/agents/dist','packages/engines/dist','packages/native-host/dist'])for(const entry of await readdir(root,{recursive:true,withFileTypes:true}))if(entry.isFile())required.push(entry.parentPath+'/'+entry.name);
  required.push(primaryProfile.source);for(const record of primaryProfile.records??[])required.push('tests/workspace-navigation/lighthouse-13.6.0/'+record.path);
  ledger.acceptedMethod=await verifyAcceptedMethod(process.env.PONDEROSA_ACCEPTED_METHOD_RECEIPT,process.env.PONDEROSA_ACCEPTED_METHOD_SHA256,required);
 });

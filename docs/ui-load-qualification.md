@@ -267,3 +267,40 @@ is claimed. Remaining: independently accepted METHOD; source attribution of the
 cold request delay and remaining rendering cost; contemporary browser-inclusive
 capacity receipt; accepted twenty-active continuity proof and explicit GO before
 32 sessions. This packet does not close #21/#27/#29 or Phase 2.
+
+## Fail-closed METHOD successor after independent 4b62 review
+
+Qualification now requires an explicit document ID and document namespace,
+window time origin/start/last-presentation frame, normalized first-input occurrence
+cutoff (handler observation retained separately), continuous visible lifecycle,
+registered/drained observer and supported zero-drop callback receipts. Trusted input
+and browser event-count receipts are retained and checked. Unknown dropped-entry
+support, absent callbacks, missing identity/window, or hidden-then-visible history
+keeps native-count data diagnostic. Legitimate all-subfloor populations remain
+supported only with complete independent health evidence. Older raw captures are
+unchanged and cannot acquire newly required health receipts by offline inference.
+
+The final window ends at the retained second animation-frame timestamp; observer
+delivery/drain time is separate. Canonical persisted checkpoint receipts must bind
+actual provider work and observed output advancement to the same Agent/Run inside
+navigation-to-last-presentation, with a frozen 10s maximum gap and all twenty
+Agents present. Postcapture sampling cannot create credit. Each snapshot compares
+lease owner/fence and actual process PID/PGID/birth epoch, not just Run/session.
+Pending samples are drained before assertion and after deactivation; shutdown and
+cleanup failures enter the terminal ledger and invalidate qualification.
+
+Full mode reads a retained JSON METHOD acceptance receipt whose exact SHA256 is
+provided separately. It requires decision ACCEPT, scope METHOD, actual independent
+review path/hash with an explicit ACCEPT line, distinct required source/build/
+profile/prerequisite inputs with verified hashes, and an explicit manager GO32
+communication reference. A file/env value does not confer authority. No accepted
+receipt or GO is created by these helpers. All product source trees and built output
+trees, drivers/collector/fixture, lockfile and primary-source bytes must be bound.
+All32 cells are predeclared before profile/fixture/browser setup and become complete,
+failed, or terminal not-run, including setup/activation/context and cleanup errors.
+
+Bounded checks at this successor are source/helper tests and an intentionally
+missing-profile negative setup. They do not repeat the credited official profile,
+10k tail or one-lease browser proofs, launch any active load, establish callback
+health in installed Chrome, or supply METHOD acceptance. The missing-profile driver
+refuses before fixture/browser construction and writes32 terminal not-run rows.
