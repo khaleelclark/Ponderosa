@@ -21,6 +21,15 @@ test('Branch package atomically activates staged Chat and Agent before validatin
   agentBindings:{speaker:{chatRef:'chat',agentRef:'speaker'}}};
  const badDestinations=await app.inject({method:'POST',url:'/api/branches/install-preview',payload:{package:pkg,bindings:{directories:{workspace:root},agents:{},engines:{codex:'codex'}},fileSelections:{[JSON.stringify(['chat','speaker'])]:{workingRootDestinations:{a:path.join(root,'new'),b:path.join(root,'new','child')}}}}});
  assert.equal(badDestinations.statusCode,400);assert.match(badDestinations.json().error,/distinct|nest/);
+ for(const choice of [
+  {workingFilesActivation:{}},
+  {workingFilesActivation:{sharedRoot:root},workingFilesDestination:path.join(root,'recovery')},
+  {newManagedChatFolderName:'../escape',workingFilesActivation:{},workingFilesDestination:path.join(root,'recovery')}
+ ]){
+  const invalid=await app.inject({method:'POST',url:'/api/branches/install-preview',payload:{package:pkg,bindings:{directories:{workspace:root},agents:{},engines:{codex:'codex'}},fileSelections:{[JSON.stringify(['chat','speaker'])]:choice}}});
+  assert.equal(invalid.statusCode,400,'live roots require recovery copies and post-creation exact review');
+ }
+
  const preview=await api('POST','/api/branches/install-preview',{package:pkg,bindings:{directories:{workspace:root},agents:{},engines:{codex:'codex'}}});
  const result=await api('POST','/api/branches/installations/'+preview.id+'/confirm',{});
  assert.equal(result.state,'completed',result.error);

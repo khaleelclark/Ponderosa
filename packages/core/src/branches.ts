@@ -302,7 +302,7 @@ export interface BranchHistoricalCheckpointDto {
   eligibility:'script_control_frontier'|'unsupported_dependency';
 }
 
-/** Explicit new content destinations per JSON.stringify([chatRef,agentRef]); no live root authority. */
-export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>}
+/** Explicit reviewed recovery destinations and optional live activation per JSON.stringify([chatRef,agentRef]). */
+export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>;workingFilesActivation?:{sharedRoot?:string};newManagedChatFolderName?:string}
 export type BranchImportFileSelections=Record<string,BranchImportFileSelection>;
 export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:string[];wholeWorkingFolder?:boolean}>;

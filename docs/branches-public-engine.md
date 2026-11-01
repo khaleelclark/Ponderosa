@@ -202,9 +202,8 @@ Chat-wide memory effects/current revisions and separately call human Settings
 APIs for memory, saved-browser access and destination profile choices. No grant,
 profile, credential, old native ownership or session is automatically adopted.
 
-Restored files are retained content. Live Project/managed-worktree binding remains
-portability-owner implementation work; this caller cannot grant it by changing
-paths. In-progress checkpoint resource/provider/parallel/map codecs and general
+Content-only destinations remain the default. Explicit live activation now uses
+the portability service described below, requiring fresh local ownership. In-progress checkpoint resource/provider/parallel/map codecs and general
 external-writer reconciliation likewise remain incomplete. No test execution or
 full portability/parity verdict accompanies these forwarding changes.
 
@@ -223,3 +222,30 @@ This closes a specific stale-coverage admission gap, not general cross-store
 crash atomicity. In-progress fork/map replay, fresh Request/Join lineage, created
 resource membership and reviewed secret/recovery bindings still require dedicated
 continuation codecs. The single-path validator remains enforced.
+
+
+### Reviewed live working-root activation (portability f3a009bac dependency)
+
+Per-target `fileSelections` accepts `workingFilesActivation:{}` for Separate-only
+imports into an existing Git Project. Recovery destinations remain required.
+To create a fresh managed destination, select `newManagedChatFolderName` plus
+`workingFilesActivation:{}` for a single-Agent package Chat. The workflow uses the
+ordinary managed Chat creator, then pauses with status
+`workingRootReview:{chatRef,agentRef,chatId,sharedRoot}`. No Agent import occurs
+until the human confirms the actual returned root through
+`POST /api/branches/installations/:id/working-root-review` with
+`{chatRef,agentRef,sharedRoot}`. The public client exposes
+`resolveImportWorkingRoot`. A later ordinary confirmation/scheduler pass performs
+import. Initial previews cannot fabricate a confirmed Shared root. Confirmation
+is exact, durable, refused after cancellation, and excludes overlapping recovery
+paths. The importer revalidates managed ownership, empty destination, mode and
+fresh local working-copy receipts before population.
+
+Status `importResults` retains `liveWorkingRoots` along with recovery destinations
+and reviewed-grant suggestions, through receipt recovery and terminal compaction.
+Omission retains content-only behavior. Grouped Shared activation still requires
+a grouped importer call: workflow packages currently import one Agent at a time,
+so managed live activation refuses package Chats containing multiple Agents.
+Existing access/folder UI callers remain implemented; UI must additionally expose
+this new creation/activation choice and actual-root confirmation. No tests, build,
+types, browser or runner preparation were executed for this source change.

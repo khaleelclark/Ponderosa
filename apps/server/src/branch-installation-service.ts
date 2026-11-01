@@ -29,6 +29,7 @@ type AgentSnapshot={id:string;title:string;handle:string;activeEngine:string;mod
 type InstallationJournal={chats:Array<ChatSnapshot&{applied?:ChatSnapshot}>;agents:Array<AgentSnapshot&{applied?:Omit<AgentSnapshot,'managerAgentId'>;appliedManager?:string|null;configurationRestored?:boolean}>};
 type AccessReview=import('@ponderosa/core').AgentAccessImportReviewDto;
 type AccessChoice=NonNullable<import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']>;
+type PendingWorkingRoot={chatRef:string;agentRef:string;chatId:string;sharedRoot:string};
 type PendingAccess={chatRef:string;agentRef:string;chatId:string;review:AccessReview};
 /** Coordinates existing Chat/Agent lifecycle operations. It never creates provider Runs. */
 export class BranchInstallationService {
@@ -36,7 +37,7 @@ export class BranchInstallationService {
  private outputApps?:OutputAgentApps;
  setOutputApps(owner:OutputAgentApps){this.outputApps=owner;}
  private roleBinding(pkg:InstalledBranchPackage,bindings:BranchBindings,branchId?:string){return createHash('sha256').update(stableJson({package:pkg,bindings,destination:branchId??'new'})).digest('hex');}
- private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'>>;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
+ private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;pendingWorkingRoot?:PendingWorkingRoot;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'>>;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
  private finishRoles(plan:Row){
   const state=this.rolePlan(plan);if(state.review){if(!this.outputApps)throw new Error('Output role service unavailable');this.outputApps.finalizeImport(state.review.id,state.binding!,plan.id,state.mapping!);}
   this.compactPlan(plan.id,'completed');
@@ -53,7 +54,7 @@ export class BranchInstallationService {
  private refreshRuntime?:()=>Promise<void>;
  private runtimeRefreshPending=false;
  setPublisher(publish:(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration)=>BranchDto,refreshRuntime?:()=>Promise<void>):void{this.publish=publish;this.refreshRuntime=refreshRuntime;}
- status(id:string):{branchId?:string;state:string;error?:string;accessSettingsReview?:PendingAccess;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'>>}|undefined{const p=this.row("SELECT * FROM branch_installation_plans WHERE id=?",id);return p?{branchId:p.branch_id??undefined,state:p.state,error:p.error??undefined,importResults:this.rolePlan(p).importResults,...(this.rolePlan(p).pendingAccess?{accessSettingsReview:this.rolePlan(p).pendingAccess}:{})}:undefined;}
+ status(id:string):{branchId?:string;state:string;error?:string;accessSettingsReview?:PendingAccess;workingRootReview?:PendingWorkingRoot;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'>>}|undefined{const p=this.row("SELECT * FROM branch_installation_plans WHERE id=?",id);return p?{branchId:p.branch_id??undefined,state:p.state,error:p.error??undefined,importResults:this.rolePlan(p).importResults,workingRootReview:this.rolePlan(p).pendingWorkingRoot,...(this.rolePlan(p).pendingAccess?{accessSettingsReview:this.rolePlan(p).pendingAccess}:{})}:undefined;}
  constructor(private store:AgentStore,private branches:BranchStore,private deleteChat:(id:string)=>Promise<void>,private deleteAgent:(id:string)=>Promise<void>,private createChat:ChatCreator,private settleNotifications?:(branchId:string)=>void){}
  setEngine(engine:BranchPackageEngine):void{this.engine=engine;}
  private rows(sql:string,...args:unknown[]):Row[]{return this.store.sqlite.prepare(sql).all(...args) as Row[];}
@@ -96,10 +97,28 @@ export class BranchInstallationService {
   if(agentId&&!a){a={agent_ref:randomUUID()};this.run("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,?,?,?,'active')",branchId,b.package_id,c.chat_ref,a.agent_ref,agentId);}
   return {packageId:b.package_id,chatRef:c.chat_ref,...(a?{agentRef:a.agent_ref}:{})};
  }
+ resolveWorkingRoot(id:string,chatRef:string,agentRef:string,sharedRoot:string){
+  this.store.sqlite.transaction(()=>{
+   const plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);
+   if(!plan||plan.state!=='applying')throw new Error('Installation is not awaiting working-root review');
+   const state=this.rolePlan(plan),pending=state.pendingWorkingRoot;
+   if(!pending||pending.chatRef!==chatRef||pending.agentRef!==agentRef||pending.sharedRoot!==sharedRoot)throw new Error('Working-root review changed');
+   const chat=this.store.getConversation(pending.chatId),project=chat&&this.store.getProject(chat.projectId);
+   if(!project||project.hostPath!==sharedRoot||this.store.listAgents(project.id).length)throw new Error('NEW managed Chat root changed or is no longer empty');
+   const key=JSON.stringify([chatRef,agentRef]),selection=state.fileSelections?.[key];
+   if(!selection?.newManagedChatFolderName)throw new Error('Managed destination creation choice unavailable');
+   const root=resolve(sharedRoot);
+   for(const file of Object.values(state.fileSelections??{}))for(const destination of [file.workingFilesDestination,...Object.values(file.workingRootDestinations??{})]){
+    if(destination!==undefined){const retained=resolve(destination);if(retained===root||retained.startsWith(root+sep)||root.startsWith(retained+sep))throw new Error('Recovery destinations must be separate from the new live root');}
+   }
+   const {pendingWorkingRoot,...rest}=state;
+   this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...rest,fileSelections:{...state.fileSelections,[key]:{...selection,workingFilesActivation:{sharedRoot}}}}),id);
+  }).immediate();return this.status(id)!;
+ }
  private retainImportResult(planId:string,key:string,result:ImportAgentPackageResponse){
   const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',planId)!;
   const state=this.rolePlan(current);
-  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,importResults:{...state.importResults,[key]:{workingFilesDestination:result.workingFilesDestination,workingRoots:result.workingRoots,accessSettingsToReview:result.accessSettingsToReview}}}),planId);
+  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,importResults:{...state.importResults,[key]:{workingFilesDestination:result.workingFilesDestination,workingRoots:result.workingRoots,accessSettingsToReview:result.accessSettingsToReview,liveWorkingRoots:result.liveWorkingRoots}}}),planId);
  }
  async export(branchId:string,mode:'template'|'full',includeValues=false,fileSelections:import('@ponderosa/core').BranchExportFileSelections={}):Promise<InstalledBranchPackage>{
   if(!this.engine)throw new Error('Package Engine unavailable');
@@ -247,8 +266,20 @@ export class BranchInstallationService {
   if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid working folder destinations');
   const targetKeys=new Set(pkg.chats.flatMap(c=>c.agents.map(a=>JSON.stringify([c.ref,a.ref])))),paths:string[]=[];
   for(const [key,selection] of Object.entries(fileSelections)){
-   if(!targetKeys.has(key)||!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['workingFilesDestination','workingRootDestinations'].includes(k)))throw new Error('Invalid working folder destination target');
+   if(!targetKeys.has(key)||!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['workingFilesDestination','workingRootDestinations','workingFilesActivation','newManagedChatFolderName'].includes(k)))throw new Error('Invalid working folder destination target');
    if(selection.workingFilesDestination&&selection.workingRootDestinations)throw new Error('Choose one folder destination format');
+   if(selection.newManagedChatFolderName!==undefined){
+    if(typeof selection.newManagedChatFolderName!=='string'||! /^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(selection.newManagedChatFolderName))throw new Error('Choose a safe NEW managed Chat folder name');
+    const [chatRef]=JSON.parse(key);if(pkg.chats.find(c=>c.ref===chatRef)!.agents.length!==1)throw new Error('Managed live activation currently requires one imported Agent per Chat');
+    if(selection.workingFilesActivation===undefined||selection.workingFilesActivation.sharedRoot!==undefined)throw new Error('Choose live activation, then confirm the actual created root in the staged review');
+   }
+   if(selection.workingFilesActivation!==undefined){
+    const activation=selection.workingFilesActivation;
+    if(!activation||typeof activation!=='object'||Array.isArray(activation)||Object.keys(activation).some(k=>k!=='sharedRoot')
+      ||activation.sharedRoot!==undefined&&(typeof activation.sharedRoot!=='string'||!isAbsolute(activation.sharedRoot)))throw new Error('Invalid live working-root activation');
+    if(!selection.workingFilesDestination&&!Object.keys(selection.workingRootDestinations??{}).length)throw new Error('Live activation requires separate NEW recovery destinations');
+    if(activation.sharedRoot!==undefined)throw new Error('Shared root confirmation is accepted only after NEW managed Chat creation in the staged working-root review');
+   }
    if(selection.workingRootDestinations&&(typeof selection.workingRootDestinations!=='object'||Array.isArray(selection.workingRootDestinations)))throw new Error('Invalid working roots');
    for(const path of [selection.workingFilesDestination,...Object.values(selection.workingRootDestinations??{})].filter(p=>p!==undefined)){
     if(typeof path!=='string'||!isAbsolute(path))throw new Error('Choose NEW absolute working folder destinations');const canonical=resolve(path);
@@ -277,8 +308,9 @@ export class BranchInstallationService {
   const keys=new Set<string>(),operations:BranchInstallationOperationDto[]=[];
   for(const [key,selection] of Object.entries(fileSelections)){
    const [chatRef,agentRef]=JSON.parse(key) as string[];
+   if(selection.newManagedChatFolderName&&existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef))throw new Error('Choose a NEW installation Chat for managed live activation');
    if(existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef&&r.agent_ref===agentRef))throw new Error('Existing Agents retain their working roots; choose a new Agent for imported folder content');
-   operations.push({kind:'retain-content',resource:'Working folder',label:'New retained content only; live working-root binding requires a separate reviewed operation',after:{target:key,...selection}});
+   operations.push({kind:'retain-content',resource:'Working folder',label:selection.workingFilesActivation!==undefined?'Retain NEW recovery copies and activate fresh locally owned working roots':'Retain NEW recovery copies only',after:{target:key,...selection}});
   }
   const compare=(resource:string,label:string,before:unknown,after:unknown)=>{if(stableJson(before??null)!==stableJson(after??null))operations.push({kind:'change',resource,label,before:before??null,after:after??null});};
   for(const c of pkg.chats){for(const a of [{ref:'',title:c.title},...c.agents.map(a=>({ref:a.ref,title:a.definition.agents[0]!.title}))]){
@@ -432,7 +464,7 @@ export class BranchInstallationService {
    this.compensate(plan.id);
    if(plan.branch_id)this.stopStaging(plan.branch_id);
   }catch(error){this.run('UPDATE branch_installation_plans SET error=?,updated_at=? WHERE id=?','Restoring the prior resource state remains pending: '+(error as Error).message,new Date().toISOString(),plan.id);}
-  if(this.engine)for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='applying' AND json_extract(preview_json,'$.pendingAccess') IS NULL AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1",now.toISOString()))try{await this.apply(plan);}catch(error){
+  if(this.engine)for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='applying' AND json_extract(preview_json,'$.pendingAccess') IS NULL AND json_extract(preview_json,'$.pendingWorkingRoot') IS NULL AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1",now.toISOString()))try{await this.apply(plan);}catch(error){
    if(error instanceof InstallationStoppedError||this.planState(plan.id)!=='applying')continue;
    if((error as import('./routes/agent-packages.js').BranchPackageImportError).accessSettingsReview){const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!;const state=this.rolePlan(current);this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,accessChoices:{}}),plan.id);}
    if(error instanceof InstallationConflictError){if(plan.branch_id)this.stopStaging(plan.branch_id);this.compactPlan(plan.id,'review_required',error.message);continue;}
@@ -481,7 +513,8 @@ export class BranchInstallationService {
     let chatResource=get(c.ref,''),chatId=chatResource?.local_id as string|undefined;
     if(!chatId){
      const first=c.agents[0]?.definition.agents[0];
-     const created=await this.createChat({label:c.title,hostPath:interpolateBranchText(bindings.directories.workspace!,pkg.definition,configuration),
+     const folderChoice=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!).fileSelections?.[JSON.stringify([c.ref,c.agents[0]?.ref])]?.newManagedChatFolderName;
+     const created=await this.createChat({label:c.title,...(folderChoice?{createFolderName:folderChoice}:{hostPath:interpolateBranchText(bindings.directories.workspace!,pkg.definition,configuration)}),
        defaultEngine:bindings.engines?.[first?.engine??'default']??first?.engine??bindings.engines?.default??'codex'},
        'branch-install-'+createHash('sha256').update(plan.id+':'+c.ref).digest('hex'),{branchId});
      chatId=created.id;bind(c.ref,'',chatId);chatResource=get(c.ref,'');
@@ -490,6 +523,11 @@ export class BranchInstallationService {
     const chat=this.store.getConversation(chatId);if(!chat)throw new Error('Installed Chat unavailable');
     if(chatResource?.state!=='active')this.store.updateConversation(chatId,{title:c.title,instructions:c.instructions??''});
     for(const a of c.agents){
+     const fileState=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!),fileChoice=fileState.fileSelections?.[JSON.stringify([c.ref,a.ref])];
+     if(fileChoice?.newManagedChatFolderName&&fileChoice.workingFilesActivation?.sharedRoot===undefined){
+      const project=this.store.getProject(chat.projectId);if(!project)throw new Error('Created managed Project unavailable');
+      this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...fileState,pendingWorkingRoot:{chatRef:c.ref,agentRef:a.ref,chatId,sharedRoot:project.hostPath}}),plan.id);return;
+     }
      let resource=get(c.ref,a.ref),id=resource?.local_id as string|undefined;
      if(id&&!this.store.getAgent(id)){
       if(resource?.state==='active')throw new InstallationConflictError('An installed Agent is missing; review the package again');
@@ -507,7 +545,7 @@ export class BranchInstallationService {
       this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);
       await this.engine!.verifyStagedMemory(resource.creation_operation_id,a.definition);
      }
-     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,...this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!).fileSelections?.[JSON.stringify([c.ref,a.ref])],branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});this.ensureApplying(plan.id,branchId);this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
+     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,...(fileChoice?{workingFilesDestination:fileChoice.workingFilesDestination,workingRootDestinations:fileChoice.workingRootDestinations,workingFilesActivation:fileChoice.workingFilesActivation}:{}),branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});this.ensureApplying(plan.id,branchId);this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
      const node=a.definition.agents[0]!;
      if(resource?.state!=='active')this.store.updateAgent(id,{title:node.title,activeEngine:bindings.engines?.[node.engine]??pkg.engines?.[node.engine]??node.engine,model:node.model??null,effort:node.effort??null,managementPermissions:node.managementPermissions});
     }

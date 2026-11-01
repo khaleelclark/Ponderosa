@@ -62,13 +62,29 @@ test('manager-tree inverse restores independent entries before retrying a tempor
 // Deferred: terminal compaction must retain destination receipts without extending their TTL.
 test('retained workflow file destinations and nonsecret suggestions survive compaction and reopen',async t=>{
  const f=compensationFixture(t);f.journal('content-receipt',{chats:[],agents:[]});
- const result={rootAgentId:'historical',agentIds:['historical'],workingFilesDestination:'/retained/content',workingRoots:[{ref:'source-root',destination:'/retained/root',agentIds:['historical']}],accessSettingsToReview:[{agentId:'historical',conversationId:f.chat.id,source:{restrictedCapabilityIds:[],readGlobalMemory:true}}]};
+ const result={rootAgentId:'historical',agentIds:['historical'],workingFilesDestination:'/retained/content',liveWorkingRoots:[{ref:'source-root',path:'/live/root',agentIds:['historical']}],workingRoots:[{ref:'source-root',destination:'/retained/root',agentIds:['historical']}],accessSettingsToReview:[{agentId:'historical',conversationId:f.chat.id,source:{restrictedCapabilityIds:[],readGlobalMemory:true}}]};
  f.service.retainImportResult('content-receipt',JSON.stringify(['chat','agent']),result);
  f.service.compactPlan('content-receipt','completed');
  const before=f.store.sqlite.prepare('SELECT updated_at FROM branch_installation_plans WHERE id=?').get('content-receipt').updated_at;
  f.reopen();await f.service.tick();
  const retained=f.service.status('content-receipt').importResults[JSON.stringify(['chat','agent'])];
- assert.equal(retained.workingFilesDestination,result.workingFilesDestination);assert.deepEqual(retained.workingRoots,result.workingRoots);assert.deepEqual(retained.accessSettingsToReview,result.accessSettingsToReview);
+ assert.equal(retained.workingFilesDestination,result.workingFilesDestination);assert.deepEqual(retained.workingRoots,result.workingRoots);assert.deepEqual(retained.accessSettingsToReview,result.accessSettingsToReview);assert.deepEqual(retained.liveWorkingRoots,result.liveWorkingRoots);
  assert.equal(f.store.sqlite.prepare('SELECT updated_at FROM branch_installation_plans WHERE id=?').get('content-receipt').updated_at,before);
  assert.equal(f.store.listAgents(f.project.id).length,0);
+});
+
+
+test('staged managed root confirmation is exact, durable and canceled plans cannot adopt it',t=>{
+ const f=compensationFixture(t),key=JSON.stringify(['chat','agent']);f.journal('root-review',{chats:[],agents:[]});
+ const pending={chatRef:'chat',agentRef:'agent',chatId:f.chat.id,sharedRoot:f.project.hostPath};
+ f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=? WHERE id='root-review'").run(JSON.stringify({pendingWorkingRoot:pending,fileSelections:{[key]:{newManagedChatFolderName:'reviewed-root',workingFilesActivation:{},workingFilesDestination:path.join(path.dirname(f.project.hostPath),'recovery-sibling')}}}));
+ f.reopen();assert.deepEqual(f.service.status('root-review').workingRootReview,pending);
+ assert.throws(()=>f.service.resolveWorkingRoot('root-review','chat','agent','/foreign'),/review changed/);
+ f.service.resolveWorkingRoot('root-review','chat','agent',pending.sharedRoot);
+ assert.equal(f.service.status('root-review').workingRootReview,undefined);
+ const saved=JSON.parse(f.store.sqlite.prepare("SELECT preview_json FROM branch_installation_plans WHERE id='root-review'").get().preview_json);
+ assert.deepEqual(saved.fileSelections[key].workingFilesActivation,{sharedRoot:pending.sharedRoot});
+ assert.throws(()=>f.service.resolveWorkingRoot('root-review','chat','agent',pending.sharedRoot),/review changed/);
+ f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='canceling',preview_json=? WHERE id='root-review'").run(JSON.stringify({pendingWorkingRoot:pending}));
+ assert.throws(()=>f.service.resolveWorkingRoot('root-review','chat','agent',pending.sharedRoot),/not awaiting/);
 });
