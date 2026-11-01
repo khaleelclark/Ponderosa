@@ -643,3 +643,18 @@ business rule about event age, express it as a workflow condition using event
 payload data. Existing occurrence records and their historical provenance are
 retained. Historical database credential columns and old local key files are
 inert; this change neither reads nor deletes those files.
+
+### Reviewed workflow restoration
+
+Open the Run’s resource review to preview the exact server-supported cut. Standalone
+resource groups support complete generation-zero inventories of 2–32 resources. History
+review supports one resource invocation through generations 1–32 when the server supplies
+serial or local-parallel proof and its saved budget. Called-tree review supports one
+manual parent and one called child, one generation-zero serial resource each.
+
+Review the original facts, mapped owners and current policies before separate approval
+and admission. Preparation reuses the owner Project directory; it creates no separate
+working copy. Unconfirmed commands stay saved: read their exact result rather than repeat
+the action. Missing legacy evidence stays unavailable. Call ancestry/counters/numeric owner
+budgets not supplied by the current tree contract are labeled unavailable. See the
+[current implementation boundaries](implementation-coverage.md) for remaining limits.

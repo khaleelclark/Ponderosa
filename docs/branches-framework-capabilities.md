@@ -1,6 +1,6 @@
 # Branch framework capability inventory
 
-Inventory base: 3a999571db29491060603ff587a0f11b8f9b695e. Source navigation,
+Current integration source: c38b209b395dcf53744702758addf1c74944d0b2. Source navigation,
 not an equivalence verdict. Released Python comparator baseline:
 [LangGraph 1.0.5](https://pypi.org/project/langgraph/1.0.5/) and
 [LangChain 1.0.8](https://pypi.org/project/langchain/1.0.8/).
@@ -13,7 +13,7 @@ not newer event-stream projections. Source compatibility remains unqualified.
 | --- | --- | --- |
 | Graphs | core BranchDefinition; agents branch-store; WorkflowCanvas | application.ts deploys real fork/join edges through the public client. |
 | State | execution input, parameters, immutable step results and ordered result bundles | Child topic parameter and parent input/result flow; arbitrary shared mutable/reducer state is not supplied by this example. |
-| Checkpoints and rewind | branch-unit-saver, script/parallel replay, host-cut and issued destination | inspect lists canonical retained checkpoints; no automatic rewind or disclosure. Issued destination adds one generation-zero organization with local parallel state; multi-resource/tree/later-generation consumers remain missing. |
+| Checkpoints and rewind | branch-unit-saver, script/parallel replay, host-cut and issued destination | inspect lists canonical retained checkpoints; no automatic rewind or disclosure. Reviewed issued destination supports standalone gen0 groups/maps2–32, one-resource serial/local-parallel history1–32, and one manual parent plus one called child with one gen0 serial resource each. Broader families remain outside the delivered bound; see implementation-coverage.md and U4 in phase2-remaining-implementation.md. |
 | Human-in-the-loop | human_gate, revisioned BranchGateResolution and public execution actions | Editable final review; resolve requires the current gate and an explicit caller choice. |
 | Streaming | BranchesClient.streamAgent, BranchLiveOutput and canonical shared streams | Exact current execution/Agent/Run filter; server example also supplies SSE HTTP forwarding. Reconnect qualification deferred. |
 | Tools | native Adapter harness tool routing, Agent access settings, Script/action steps | Research/critic request existing permitted tools; no fake tool outputs or new grants. Tool availability/parity is not established by an instruction. |
