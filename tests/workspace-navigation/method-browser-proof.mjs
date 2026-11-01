@@ -36,7 +36,7 @@ try{
    await writeFile(out+'/result-in-progress.json',JSON.stringify(result,null,2));
   }
  }
- assert.deepEqual(result.errors,[]);assert.deepEqual(result.externalRequests,[]);assert.deepEqual(f.failures,[]);result.status='bounded-proof-complete';
+ assert.deepEqual(result.errors,[]);assert.deepEqual(result.externalRequests,[]);await f.settled(agent.id);result.controlledRunSettled=true;result.status='bounded-proof-complete';
 }catch(error){result.status='failed';result.error=error.stack;throw error;}finally{
  result.cleanup=[];for(const [name,close] of [['browser',()=>browser?.close()],['web',()=>web?.close()],['fixture',()=>f.dispose(false)]]){try{await close();result.cleanup.push({name,status:'complete'});}catch(error){result.cleanup.push({name,status:'failed',error:String(error)});result.status='failed';}}
  // Exactly one new explicit20-capacity preflight, after browser-overhead estimate; never auto-start load.

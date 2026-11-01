@@ -1763,6 +1763,14 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
+    },
+    {
+      "path": "tests/chats/message-timestamp.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed web dependencies; no browser/provider",
+      "origin": "Source-mapped history timestamp construction regression; preserve native absolute labels"
     }
   ],
   "retainedReleasePayload": [
