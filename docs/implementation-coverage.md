@@ -1,7 +1,8 @@
 # Current implementation coverage and backlog
 
 Source-only inventory includes Branch8ccf446bb, Runtime publication7bc728008,
-retirement9edf00516 and memory exposure13bf72442, plus sole UI-owner2c7db556e. Integration owns
+retirement9edf00516 and memory exposure13bf72442, sole UI-owner2c7db556e,
+and lifecycle source through c1d831646. Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
 No tests/checks/build/types/Node/native/browser/runner preparation or execution,
@@ -24,11 +25,11 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 5 | Configurable native/memory/browser integrations; limits remain explicit. No new infrastructure dependency added. | Runtime; dependency/limit justification review deferred. |
 | 6 | Human access/settings reviews plus explicit historical disclosure choice; live policy revisions rechecked at admission. Access review alone grants no disclosure. | Runtime/UI; authority invariant trials deferred. |
 | 7 | Runtime source disposition: dedicated operator authentication is already absent; origin/cross-site checks remain. See runtime-publication-and-voice.md for live gate references. | Runtime; boundary qualification deferred. |
-| 8 | Shared full package composer, independent reporting forests, working files/roots, authored history, memory, roles/settings and retained custody source assembled. Existing-Agent regrouping and broad workflow restoration families remain gaps. | Reliability/Features; fresh-instance equivalence deferred. |
+| 8 | Shared full package composer, independent reporting forests, working files/roots, authored history, memory, roles/settings and retained custody source assembled. Cross-Chat existing-Agent/root relocation and broad workflow restoration families remain gaps; same-Chat reporting uses its existing canonical writer. | Reliability/Features; fresh-instance equivalence deferred. |
 | 9 | Shared DTOs/composer/dialogs and canonical graph writer retained; no broad dead-code verdict. | All; dead-code/duplication analysis deferred. |
 | 10 | Public Branch routes/SDK and standalone examples/branches-client/client.ts present. | Features/Integration; external-client execution deferred. |
 | 11 | Canonical scoped asks/results and artifact references remain the communication path. | Runtime; token/log efficiency judging deferred. |
-| 12 | Durable journals/outbox/receipts and retained custody; unknown effects stay held. Broader crash/external-writer reconciliation and orphan reclamation remain gaps. | Reliability/Runtime/Features; crash trials deferred. |
+| 12 | Durable journals/outbox/receipts and retained custody; unknown effects stay held. Explicit package/import/memory reconciliation and Branch checkpoint retirement source now exist; destination/abandoned-intent and external-writer gaps remain. | Reliability/Runtime/Features; crash trials deferred. |
 | 13 | Steering/fences/pause/review controls assembled; held destinations do not silently reimport or release. | Runtime/UI; state-specific steering trials deferred. |
 | 14 | Provider errors, explicit unconfirmed outcomes and recovery surfaces assembled. | Runtime/UI; backoff/failure delivery trials deferred. |
 | 15 | Marker-only unlink and nonrecursive tombstone cleanup preserve unexpected user content; private custody is independent. | Reliability; racing-file/deletion trials deferred. |
@@ -46,7 +47,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 27 | Semantic controls, keyboard/text-size/theme source assembled. | UI; accessibility/device qualification deferred. |
 | 28 | Branches remains subject to all32; partial source slices confer no acceptance. | All; whole-product qualification deferred. |
 | 29 | Shared Chat/output/Assistant/folder/navigation source assembled. | UI; blind panel/mobile/flicker judging deferred. |
-| 30 | Unified local-memory search/settings and portable memory source assembled. Failed/unknown remote mutation holds have no automatic reconciliation/reclamation. | Runtime/Reliability/Features; backend permission/search trials deferred. |
+| 30 | Unified local-memory search/settings and portable memory source assembled. Exact effect-bearing failed holds have explicit reviewed preserve-current reconciliation; legacy/unknown cases stay held and no automatic reclamation exists. | Runtime/Reliability/Features; backend permission/search trials deferred. |
 | 31 | Runtime adds explicit document/mixed-route/attached-Request final generation through canonical publication, and native-receipt-qualified early voice acknowledgement. Separate UI acknowledgement/answer buffers and exact private Request previews are assembled with validated Request memory exposure; see runtime-publication-and-voice.md. | Runtime/UI; source only, native/UI execution and latency/recordings deferred. |
 | 32 | Parallel/control, persistent issued graph/tree/recapture, pre-opening resource rewind, bounded fresh issued-resource destination and review UI assembled. See exact scope and missing-code list below. | Features/Runtime/UI; framework equivalence and all execution deferred. |
 
@@ -104,8 +105,10 @@ admission pins remain enforced; no operator assertion substitutes for observed d
   release for unadmitted destinations only. Retired identities stay held; admitted
   provenance cannot retire. See coordination-destination-reconciliation.md.
 - Features + Reliability still must implement exhaustive current owner/capture/restore/package
-  reference and observed-exit/resolved-outcome evidence, deleted-owner authority, durable
-  human review and operator routes. Abandoned owner references require explicit reconciliation;
+  destination-specific reference and observed-exit/resolved-outcome evidence, deleted-owner
+  authority, durable human review and operator retirement routes. General Branch owner
+  review/selected-history retirement and package reference composition are now wired;
+  combined abandoned-intent/package retirement remains missing. Abandoned destination references require explicit reconciliation;
   unknown import/effect outcomes remain held. Retaining pins has no later release upgrade
   in this slice. This host boundary alone is not end-to-end lifecycle reclamation.
 - Features + Reliability: artifact/memory/working-copy/source-restriction/elevated-grant
@@ -115,8 +118,10 @@ admission pins remain enforced; no operator assertion substitutes for observed d
   source-turn reconciliation remain external-contract gaps. Explicit selected
   document/mixed-route/Request generation and early native voice receipt source
   and UI consumers now exist; native/browser execution remains deferred.
-- Reliability + UI: existing-Agent regrouping; broader external-writer/remote-memory
-  failed-hold reconciliation. Arbitrary shell/native/user-folder writers are outside the
+- Reliability + UI: cross-Chat existing-Agent/root relocation; broader external-writer and
+  legacy/independently unresolved remote-memory effects. Exact effect-bearing holds have
+  preserve-current operator reconciliation; backend drain text is testimony, not native
+  result-query proof. Arbitrary shell/native/user-folder writers are outside the
   participating source-boundary guarantee.
 - Features: comparator version pins and matched equivalence dispositions remain missing.
   Nine capability source dispositions and a public-client research/critique/subgraph/human
