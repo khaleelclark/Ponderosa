@@ -605,7 +605,8 @@ historical facts stay labelled data; no native Run/session/lease is restored.
 Host-cut evidence is scoped to original participants and immutable saved bytes.
 
 Operator host Request/graph review/adoption endpoints and public SDK are present.
-This does not establish completed browser review/adoption callers or UX acceptance.
+Browser review/adoption callers are now assembled in the successor below; UX
+acceptance remains deferred.
 Same-transaction canonical/frontier insertion and readback, final-only wakes,
 immutable provenance maps and lost-response receipts are source coverage only.
 
@@ -619,3 +620,25 @@ unknown native outcomes and broader crash reconciliation remain unsupported.
 Pinned framework examples/equivalence and prior Runtime/UI/performance gaps
 remain open. No tests/checks/build/types/Node/native/browser/runner preparation
 or execution, push/deploy, complete #32/Bible/Phase2 or passing claim.
+
+
+## Reviewed historical Request and graph browser caller assembled
+
+Sole UI-owner successor41797eb8b integrated as a4fe236ca atop6c3dfa854;
+all six deliverables are present. BranchHistoryReview mounts in ExecutionPanel,
+loads paginated checkpoints and obtains exact scoped Request/graph review before
+fresh adoption, graph restoration or historical rewind. Controls require current
+review, explicit effects reconciliation, changed-binding/secret acknowledgements
+where applicable and a fresh instruction for adoption. Unsupported graph cuts
+remain gated. Retained exact submissions reconcile ambiguous outcomes with the
+same command key; stale409 clears prior acknowledgement and refreshes review.
+These are source behaviors, not observed browser results.
+
+Backend/core and existing historical provenance rendering are preserved. No
+resource access-review or custody-release UI is included; those controls remain
+separately assigned. Branch resource consumer and issued/parallel/tree extensions
+remain separately tracked, not integrated by this UI successor. Existing source
+gaps and qualification limits above continue to apply. Deferred regression files
+branch-history-review.test.mjs and branch-history-review-mounted.tsx are present;
+no tests/checks/build/types/Node/native/browser/runner preparation or execution,
+push/deploy or full #32/Bible/Phase2 verdict.
