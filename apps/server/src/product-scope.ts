@@ -405,7 +405,13 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       if(typeof object.conversationId==='string'&&!(draftOwner&&object.conversationId===draftOwner.surfaceId
         &&ordinaryBelongs(draftOwner.agentId,'agent',product)&&ordinaryBelongs(draftOwner.conversationId,'conversation',product))
         &&!belongs(object.conversationId,'conversation',product))return undefined;
-      if(!scopedArtifact&&typeof object.projectId==='string'&&!belongs(object.projectId,'project',product))return undefined;
+      // Promotion returns the new saved owner while the request still names its source Chat.
+      const promotedSavedBrowser=request.method==='POST'&&request.routeOptions.url==='/api/projects/:projectId/browser/promote'
+        &&object.projectId==='saved-browser'&&typeof object.owner==='object'&&object.owner!==null
+        &&(object.owner as {version?:unknown;kind?:unknown}).version===1&&(object.owner as {kind?:unknown}).kind==='saved'
+        &&browserOwnerFromId((request.params as {projectId:string}).projectId)?.kind==='chat'
+        &&browserHandleInProduct(store,request,(request.params as {projectId:string}).projectId,product);
+      if(!scopedArtifact&&!promotedSavedBrowser&&typeof object.projectId==='string'&&!belongs(object.projectId,'project',product))return undefined;
       const result:Record<string,unknown>=Object.create(null);
       for(const [key,v] of Object.entries(object)){
         if(key==='unavailableRecipients'&&request.routeOptions.url==='/api/conversations/:id/direct-messages'&&Array.isArray(v)){
