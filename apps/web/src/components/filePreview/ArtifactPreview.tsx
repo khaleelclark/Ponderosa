@@ -181,7 +181,7 @@ export function ProjectArtifactPreview({
   const displayLabel = artifactDisplayLabel(artifact, presentedPath.displayPath);
   return <Box>
     {informational ? <Alert severity="info" sx={{ mb: 1 }}>{informational}</Alert> : null}
-    {!agent ? <Alert severity="info" sx={{ mb: 1 }}>The originating Agent is no longer available. This preview uses the retained artifact.</Alert> : null}
+    {artifact.origin?.kind === "operator" ? <Alert severity="info" sx={{ mb: 1 }}>Operator-created result · private Chat artifact</Alert> : !agent ? <Alert severity="info" sx={{ mb: 1 }}>The originating Agent is no longer available. This preview uses the retained artifact.</Alert> : null}
     <FilePreview
       title={displayLabel}
       path={presentedPath.displayPath}
@@ -195,7 +195,7 @@ export function ProjectArtifactPreview({
       error={text.error ?? undefined}
       truncated={text.data?.truncated}
       totalBytes={text.data?.totalBytes}
-      emptyMessage="This file has no safe inline preview. Download it or open its originating Agent record when available."
+      emptyMessage={artifact.origin?.kind === "operator" ? "This operator result has no safe inline preview. Download it to inspect its contents." : "This file has no safe inline preview. Download it or open its originating Agent record when available."}
     />
   </Box>;
 }

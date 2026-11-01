@@ -36,8 +36,27 @@ export async function browserObservationRegression():Promise<void>{
   state={};await render('missing-receipt');button('Inspect recording status').click();await settle();assert(localStorage.getItem(key)&&(button('Start recording') as HTMLButtonElement).disabled,'missing receipt never proves failed start');
   await render('epoch-drift',{...session,controlEpoch:8});button('Inspect recording status').click();await settle();assert(localStorage.getItem(key)&&starts===1,'epoch drift never replaces or replays saved command');
   localStorage.setItem(key,'{broken');await render('corrupt-storage');assert((button('Start recording') as HTMLButtonElement).disabled,'corrupt saved command holds new mutations');localStorage.removeItem(key);
-  await render('shared',session,{...adapter,queryKey:['shared'],recordingProjectId:undefined});assert(document.body.textContent?.includes('Recording unavailable'),'honest shared-browser boundary');assert(!button('Start recording'),'no shared recording mutation');
+  await render('shared',session,{...adapter,queryKey:['shared'],recordingProjectId:undefined});assert(document.body.textContent?.includes('Recording destination unavailable'),'missing canonical destination boundary');assert(!button('Start recording'),'no shared recording mutation');
   await render('agent-control',{...session,controlOwner:'agent'});assert((button('Query console') as HTMLButtonElement).disabled,'Agent control cannot imply operator authority');
   assert(starts===1&&stops===1,'no automatic mutation replay');
  }finally{root.unmount();host.remove();globalThis.fetch=fetch;if(saved===null)localStorage.removeItem(key);else localStorage.setItem(key,saved);}
+}
+
+export async function sharedRecordingRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);let root=createRoot(host);
+ const queryKey=['shared-recording-fixture'],key=`browser-recording:${JSON.stringify([window.location.origin,currentProductScope(),queryKey])}`,destinationKey=`${key}:destination`;
+ const prior=localStorage.getItem(key),priorDestination=localStorage.getItem(destinationKey);localStorage.removeItem(key);localStorage.removeItem(destinationKey);
+ const destination={projectId:'project',conversationId:'actual-chat'},session:any={id:'shared-session',controlEpoch:3,status:'ready',controlOwner:'operator',activePageId:'page',pages:[{id:'page'}]};
+ const recording={id:'recording-id',pageId:'page',startedAt:'2026-11-01T00:00:00Z'},artifact={destination,artifactId:'independent-artifact',artifactRef:'ponderosa://artifact/independent-artifact',path:'browser/independent-artifact.recording.json',mediaType:'application/json',frames:1,reason:'explicit_stop',downloadUrl:'/api/projects/project/artifacts/independent-artifact/download'};
+ let state:any={},starts=0,stops=0;
+ const exact=(input:any)=>assert(input.sessionId===session.id&&input.expectedControlEpoch===3&&input.destination?.conversationId===destination.conversationId,'exact immutable canonical destination/session/epoch');
+ const adapter:any={queryKey,recordingProjectId:'project',sharedRecording:destination,observations:{recordingStatus:async(input:any)=>{exact(input);return state;},startRecording:async(input:any)=>{exact(input);const command=JSON.parse(localStorage.getItem(key)!);assert(command.destinationEvidence.projectId==='project'&&command.context.destination.conversationId===destination.conversationId,'whole destination saved before effect');assert(localStorage.getItem(destinationKey),'binding saved');starts++;state={recording,destination};throw Error('Lost start');},stopRecording:async(input:any)=>{exact(input);assert(input.recordingId===recording.id,'original recording ID independent from artifact');stops++;state={recording,destination,artifact};throw Error('Lost stop');}}};
+ const render=async()=>{root.render(<BrowserObservations adapter={adapter} session={session} pageId="page"/>);await settle();button('Console & recording').click();await settle();};
+ try{
+  await render();assert(!document.querySelector('[aria-label="Recording destination Chat"]'),'Chat owner cannot be switched');button('Inspect recording status').click();await settle();button('Start recording').click();await settle();button('Confirm recording').click();await settle();
+  root.unmount();root=createRoot(host);await render();button('Inspect recording status').click();await settle();assert(starts===1&&!localStorage.getItem(key),'same destination remount recovery no start replay');
+  button('Stop & publish JSON').click();await settle();state={...state,artifact:{...artifact,destination:{...destination,conversationId:'wrong-chat'}}};button('Inspect recording status').click();await settle();assert(localStorage.getItem(key),'foreign destination receipt held');
+  state={recording,destination,artifact};button('Inspect recording status').click();await settle();assert(stops===1&&!localStorage.getItem(key),'same destination exact managed artifact recovered');assert(document.body.textContent?.includes('Producer · Operator'),'operator attribution');
+  root.unmount();root=createRoot(host);adapter.sharedRecording={projectId:'project'};await render();assert(!document.querySelector('[aria-label="Recording destination Chat"]'),'saved browser retains immutable bound destination after remount');assert(starts===1&&stops===1,'no retry');
+ }finally{root.unmount();host.remove();for(const [name,value] of [[key,prior],[destinationKey,priorDestination]]){if(value===null)localStorage.removeItem(name);else localStorage.setItem(name,value);}}
 }

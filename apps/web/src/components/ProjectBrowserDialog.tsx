@@ -51,7 +51,7 @@ export function ProjectBrowserDialog({ projectId, conversationId, agent, open, r
   const savedAccess = useQuery({ queryKey: ["saved-browser-access", chatOwnerId], queryFn: () => api.getSavedBrowserAccess(chatOwnerId!), enabled: Boolean(open && !agent && chatOwnerId && view === "saved"), refetchInterval: browserSurface.focused ? 3_000 : false });
   const adapter = useMemo<BrowserEndpointAdapter<BrowserSession>>(() => agent && agentBrowserKind === "run"
     ? agentBrowserAdapter(projectId ?? "", agent.id, agentLocation.data?.runId ?? agent.runId)
-    : projectBrowserAdapter(ownerId ?? ""), [ownerId, projectId, agent?.id, agent?.runId, agentBrowserKind, agentLocation.data?.runId]);
+    : projectBrowserAdapter(ownerId ?? "", projectId), [ownerId, projectId, agent?.id, agent?.runId, agentBrowserKind, agentLocation.data?.runId]);
   const browser = useBrowserController<BrowserSession>({ adapter, enabled: Boolean(ownerId && open && (!agent || (agentBrowserKind && agentBrowserKind !== "none"))), pollingEnabled: browserSurface.focused });
   useEffect(() => {
     if (agent && open) void agentLocation.refetch();

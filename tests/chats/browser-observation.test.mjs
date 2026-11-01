@@ -22,3 +22,14 @@ test('saved commands retain exact original session and epoch, never inferred own
  assert.ok(recordingCommandValid({context,operation:'start',pageId:'page',previousRecordingId:'old'}));assert.ok(recordingCommandValid({context,operation:'stop',recordingId:'original'}));
  for(const value of [null,{}, {context:{...context,expectedControlEpoch:-1},operation:'start',pageId:'page'},{context,operation:'stop',recordingId:''},{context,operation:'start',pageId:'page',previousRecordingId:12}])assert.equal(recordingCommandValid(value),false);
 });
+
+test('shared recording binds exact destination and independent managed artifact ID',()=>{
+ const destination={projectId:'actual-project',conversationId:'actual-chat'};
+ const shared={artifactId:'artifact-uuid',artifactRef:'ponderosa://artifact/artifact-uuid',path:'browser/artifact-uuid.recording.json',mediaType:'application/json',frames:1,reason:'explicit_stop',downloadUrl:'/api/projects/actual-project/artifacts/artifact-uuid/download',destination};
+ assert.ok(recordingArtifactValid(shared,destination.projectId,destination));
+ assert.equal(recordingArtifactValid(shared,'other-project',destination),false);
+ assert.equal(recordingArtifactValid({...shared,destination:{...destination,conversationId:'other-chat'}},destination.projectId,destination),false);
+ assert.equal(recordingArtifactValid({...shared,destination:undefined},destination.projectId,destination),false);
+ assert.ok(recordingCommandValid({context:{sessionId:'session',expectedControlEpoch:2,destination:{conversationId:destination.conversationId}},destinationEvidence:destination,operation:'start',pageId:'page'}));
+ assert.equal(recordingCommandValid({context:{sessionId:'session',expectedControlEpoch:2,destination:{conversationId:'redirect'}},destinationEvidence:destination,operation:'start',pageId:'page'}),false);
+});

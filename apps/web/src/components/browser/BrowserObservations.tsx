@@ -1,11 +1,12 @@
 import {useEffect,useRef,useState} from 'react';
 import {Alert,Box,Button,Checkbox,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,MenuItem,Select,Stack,Typography} from '@mui/material';
-import type {BrowserConsoleQuery,BrowserConsoleResult,BrowserOperatorRecordingResult,BrowserRecordingData,BrowserRecordingStatus} from '@ponderosa/core';
+import type {BrowserConsoleQuery,BrowserConsoleResult,BrowserOperatorRecordingResult,BrowserRecordingData,BrowserRecordingStatus,BrowserRecordingDestination,ConversationDto} from '@ponderosa/core';
+import {api} from '../../api';
 import {requestJson} from '../../api/real';
 import {currentProductScope,productApiPath} from '../../api/productScope';
 import {useWorkspaceReadOnly} from '../WorkspaceReadOnlyContext';
 import type {BrowserEndpointAdapter,BrowserSession} from './browserAdapters';
-import {consoleResultValid,recordingArtifactValid,recordingCommandValid,recordingDataValid,recordingStatusValid,type RecordingCommand} from './browserObservation';
+import {consoleResultValid,recordingArtifactValid,recordingCommandValid,recordingDataValid,recordingStatusValid,recordingDestinationValid,type RecordingCommand} from './browserObservation';
 
 export function BrowserObservations({adapter,session,pageId,busy=false}:{adapter:BrowserEndpointAdapter<BrowserSession>;session?:BrowserSession;pageId?:string;busy?:boolean}) {
  const scope=JSON.stringify([window.location.origin,currentProductScope(),adapter.queryKey]);
@@ -14,8 +15,14 @@ export function BrowserObservations({adapter,session,pageId,busy=false}:{adapter
 function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;adapter:BrowserEndpointAdapter<BrowserSession>;session?:BrowserSession;pageId?:string;busy:boolean}) {
  const storageKey=`browser-recording:${scope}`;
  const [restored]=useState(()=>{try{const bytes=localStorage.getItem(storageKey);if(!bytes)return {};const command:unknown=JSON.parse(bytes);return recordingCommandValid(command)?{command}:{error:'Saved recording command invalid · new attempts held'};}catch{return {error:'Saved recording command unavailable · new attempts held'};}});
+ const destinationKey=`${storageKey}:destination`;
+ const [binding]=useState(()=>{try{const raw=localStorage.getItem(destinationKey);if(!raw&&!restored.command?.destinationEvidence)return {};const value:unknown=raw?JSON.parse(raw):restored.command!.destinationEvidence;if(!recordingDestinationValid(value)||!adapter.sharedRecording||value.projectId!==adapter.sharedRecording.projectId||adapter.sharedRecording.conversationId&&value.conversationId!==adapter.sharedRecording.conversationId)throw Error();return {value};}catch{return {error:'Saved recording destination invalid · recording held'};}});
+ const [bound,setBound]=useState<BrowserRecordingDestination|undefined>(binding.value),[choices,setChoices]=useState<ConversationDto[]>([]),[choice,setChoice]=useState('');
+ const shared=adapter.sharedRecording;
+ const destination=bound??(shared?.conversationId?{projectId:shared.projectId,conversationId:shared.conversationId}:shared&&choice?{projectId:shared.projectId,conversationId:choice}:undefined);
+ const destinationReady=!shared||!!destination;
  const [pending,setPending]=useState<RecordingCommand|undefined>(restored.command);
- const [storageError,setStorageError]=useState(restored.error??'');
+ const [storageError,setStorageError]=useState(restored.error??binding.error??'');
  const [open,setOpen]=useState(false),[working,setWorking]=useState(false),[message,setMessage]=useState('');
  const [level,setLevel]=useState<BrowserConsoleQuery['level']>(),[consolePage,setConsolePage]=useState<BrowserConsoleResult>();
  const [recording,setRecording]=useState<BrowserRecordingStatus>(),[artifact,setArtifact]=useState<BrowserOperatorRecordingResult>();
@@ -37,23 +44,27 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
   try{await action();}catch(error){if(mounted.current){setMessage(`${mutation?'Outcome unknown · inspect status and Project artifacts · ':''}${error instanceof Error?error.message:String(error)}`);if(mutation)setUnknown(true);}}
   finally{fence.current=false;if(mounted.current){setWorking(false);setConfirm(undefined);setAck(false);if(live.current!==original){setChecked(false);setRecording(undefined);setArtifact(undefined);setUnknown(true);setMessage('Browser authority changed · outcome unconfirmed · inspect Project artifacts');}}}
  };
- const context=()=>({sessionId:session!.id,expectedControlEpoch:session!.controlEpoch});
+ const context=()=>({sessionId:session!.id,expectedControlEpoch:session!.controlEpoch,...(destination?{destination:{conversationId:destination.conversationId}}:{})});
+ 
  const clearPending=()=>{localStorage.removeItem(storageKey);setPending(undefined);};
  const inspect=()=>void guarded(async()=>{
+  if(!destinationReady||storageError)throw Error('Select exact destination Chat');
   const original=authority,result=await adapter.observations!.recordingStatus(context());
   if(live.current!==original||!mounted.current)return;
-  if(!result||typeof result!=='object'||(result.recording&&!recordingStatusValid(result.recording))||(result.artifact&&(!result.recording||!recordingArtifactValid(result.artifact,adapter.recordingProjectId!))))throw Error('Recording status proof unavailable');
+  if(!result||typeof result!=='object'||(shared&&result.recording&&(!recordingDestinationValid(result.destination)||result.destination.projectId!==destination?.projectId||result.destination.conversationId!==destination?.conversationId))||(result.recording&&!recordingStatusValid(result.recording))||(result.artifact&&(!result.recording||!recordingArtifactValid(result.artifact,adapter.recordingProjectId!,destination))))throw Error('Recording status proof unavailable');
   if(pending){
-   if(JSON.stringify(pending.context)!==JSON.stringify(context()))throw Error('Original session/epoch changed · command retained');
+   if(JSON.stringify(pending.context)!==JSON.stringify(context())||JSON.stringify(pending.destinationEvidence)!==JSON.stringify(destination))throw Error('Original session/epoch changed · command retained');
    const matches=result.recording&&(pending.operation==='start'?result.recording.pageId===pending.pageId&&result.recording.id!==pending.previousRecordingId:result.recording.id===pending.recordingId&&!!result.artifact);
    if(!matches)throw Error('Original outcome unconfirmed · command retained');
    clearPending();
   }
+  if(shared&&result.recording&&destination){localStorage.setItem(destinationKey,JSON.stringify(destination));setBound(destination);}
   setRecording(result.recording);setArtifact(result.artifact);setChecked(true);setUnknown(false);setMessage(result.artifact?'Managed recording recovered':result.recording?'Original recording recovered':'No recording receipt · status is not crash-durable');
  });
  const send=(command:RecordingCommand)=>void guarded(async()=>{
-  if(storageError||pending||!recordingCommandValid(command)||JSON.stringify(command.context)!==JSON.stringify(context())||(command.operation==='start'&&(command.pageId!==session?.activePageId||command.pageId!==pageId))||(command.operation==='stop'&&command.recordingId!==recording?.id))throw Error('Original recording scope unavailable');
-  try{if(localStorage.getItem(storageKey))throw Error('Saved command already exists');localStorage.setItem(storageKey,JSON.stringify(command));}catch{setStorageError('Recording command could not be saved · new attempts held');throw Error('Recording command storage unavailable');}
+  if(!destinationReady||storageError||pending||!recordingCommandValid(command)||JSON.stringify(command.context)!==JSON.stringify(context())||(command.operation==='start'&&(command.pageId!==session?.activePageId||command.pageId!==pageId))||(command.operation==='stop'&&command.recordingId!==recording?.id))throw Error('Original recording scope unavailable');
+  if(shared&&(!command.destinationEvidence||JSON.stringify(command.destinationEvidence)!==JSON.stringify(destination)))throw Error('Exact destination evidence missing');
+  try{if(localStorage.getItem(storageKey))throw Error('Saved command already exists');localStorage.setItem(storageKey,JSON.stringify(command));if(command.destinationEvidence){localStorage.setItem(destinationKey,JSON.stringify(command.destinationEvidence));setBound(command.destinationEvidence);}}catch{setStorageError('Recording command could not be saved · new attempts held');throw Error('Recording command storage unavailable');}
   setPending(command);const original=authority;
   if(command.operation==='start'){
    const result=await adapter.observations!.startRecording({...command.context,pageId:command.pageId});
@@ -62,7 +73,7 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
    setRecording(result);setArtifact(undefined);
   }else{
    const result=await adapter.observations!.stopRecording({...command.context,recordingId:command.recordingId});
-   if(!recordingArtifactValid(result,adapter.recordingProjectId!))throw Error('Managed artifact receipt differs');
+   if(!recordingArtifactValid(result,adapter.recordingProjectId!,command.destinationEvidence))throw Error('Managed artifact receipt differs');
    if(live.current!==original||!mounted.current)return;
    setArtifact(result);
   }
@@ -90,12 +101,13 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
      <Button disabled={!available||!selected||!consolePage} onClick={()=>queryConsole(consolePage!.next)}>Next console entries</Button>
     </Stack>
     {consolePage?<><Typography variant="caption">Cursor · {consolePage.next} · {consolePage.entries.length} entries</Typography>{consolePage.truncated?<Alert severity="warning">Earlier console entries evicted</Alert>:null}<Box component="ol" aria-label="Console entries" sx={{m:0,pl:3,maxHeight:240,overflow:'auto',overflowWrap:'anywhere'}}>{consolePage.entries.map(entry=><li key={entry.sequence}><Typography variant="caption">{entry.at} · {entry.level} · {entry.pageId}</Typography><Box component="pre" sx={{whiteSpace:'pre-wrap',m:0}}>{entry.text}</Box></li>)}</Box>{!consolePage.entries.length?<Typography role="status" variant="caption">No matching entries</Typography>:null}</>:null}
-    {!adapter.recordingProjectId?<Alert severity="info">Recording unavailable · Chat/saved browser artifact publication unsupported</Alert>:<>
+    {!adapter.recordingProjectId?<Alert severity="info">Recording destination unavailable</Alert>:<>
+     {shared?<><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Producer · Operator · destination {destination?`${destination.projectId} / ${destination.conversationId}`:'select a live Chat'}</Typography>{!shared.conversationId&&!bound?<Stack direction={{xs:'column',sm:'row'}} spacing={1}><Button disabled={!available||!!pending} onClick={()=>void guarded(async()=>{setChoices([]);setChoice('');setChecked(false);const chats=await api.listConversations(shared.projectId);setChoices(chats.filter(chat=>chat.projectId===shared.projectId&&!chat.deletedAt&&!chat.executionId));})}>Load destination Chats</Button><Select size="small" inputProps={{'aria-label':'Recording destination Chat'}} value={choice} disabled={working||!!pending} onChange={event=>{setChoice(event.target.value);setChecked(false);setRecording(undefined);setArtifact(undefined);}}><MenuItem value="">Choose Chat</MenuItem>{choices.map(chat=><MenuItem key={chat.id} value={chat.id}>{chat.title} · {chat.id}</MenuItem>)}</Select></Stack>:null}<Typography variant="caption">Current access and active Chat ownership revalidated by server · no Agent sharing</Typography></>:null}
      <Typography variant="caption">JPEG frames · 60 s / 120 frames / 8 MiB limit · no audio</Typography>
      <Stack direction={{xs:'column',sm:'row'}} spacing={1}>
-      <Button disabled={!available} onClick={inspect}>Inspect recording status</Button>
-      <Button disabled={!available||!!storageError||!!pending||unknown||!checked||(!!recording&&!artifact)||!selected||pageId!==session?.activePageId} onClick={()=>setConfirm({context:context(),operation:'start',pageId:pageId!,...(recording?{previousRecordingId:recording.id}:{})})}>Start recording</Button>
-      <Button disabled={!available||!!storageError||!!pending||unknown||!recording||!!artifact} onClick={()=>send({context:context(),operation:'stop',recordingId:recording!.id})}>Stop & publish JSON</Button>
+      <Button disabled={!available||!destinationReady||!!storageError} onClick={inspect}>Inspect recording status</Button>
+      <Button disabled={!available||!destinationReady||!!storageError||!!pending||unknown||!checked||(!!recording&&!artifact)||!selected||pageId!==session?.activePageId} onClick={()=>setConfirm({context:context(),...(destination?{destinationEvidence:destination}:{}),operation:'start',pageId:pageId!,...(recording?{previousRecordingId:recording.id}:{})})}>Start recording</Button>
+      <Button disabled={!available||!destinationReady||!!storageError||!!pending||unknown||!recording||!!artifact} onClick={()=>send({context:context(),...(destination?{destinationEvidence:destination}:{}),operation:'stop',recordingId:recording!.id})}>Stop & publish JSON</Button>
      </Stack>
      {recording?<Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Recording · {recording.id} · {recording.pageId} · {recording.startedAt}</Typography>:null}
      {unknown||pending?<Alert severity="warning">Outcome unconfirmed · no replay · inspect status and Project artifacts</Alert>:null}

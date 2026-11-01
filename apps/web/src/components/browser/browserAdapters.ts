@@ -32,6 +32,7 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   queryKey: readonly unknown[];
   observations?: BrowserOperatorObservationClient;
   recordingProjectId?: string;
+  sharedRecording?: {projectId:string; conversationId?:string};
   get(): Promise<Session>;
   open?(url?: string): Promise<Session>;
   navigate?(url: string): Promise<Session>;
@@ -49,9 +50,10 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   resizeViewport?(pageId: string, size: BrowserViewportSize, expectedControlEpoch: number): Promise<unknown>;
 }
 
-export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
+export function projectBrowserAdapter(projectId: string, destinationProjectId?: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
   return {
     queryKey: queryKeys.projectBrowser.project(projectId),
+    ...(destinationProjectId ? {recordingProjectId:destinationProjectId,sharedRecording:{projectId:destinationProjectId,...(projectId.startsWith("chat:v1:")?{conversationId:projectId.slice("chat:v1:".length)}:{})}} : {}),
     observations: operatorObservations(`/api/projects/${encodeURIComponent(projectId)}/browser`),
     get: () => api.getProjectBrowser(projectId),
     open: (url) => api.openProjectBrowser(projectId, url),

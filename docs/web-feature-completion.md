@@ -354,3 +354,33 @@ remount GET, drift, cron refusal and no replay. All remain unexecuted. No checks
 build/typecheck/Node/provider/native/browser preparation or execution authorized.
 Backend/runtime composition, actual provider qualification, HTTP recovery and
 rendered accessibility/mobile/keyboard/screen-reader validation remain pending.
+
+## Shared Chat/saved recording successor (source only)
+
+Consumes frozen backend/core `3bd24282d6d023fe61b12f0ade786e0a869f6746`
+from /tmp/ponderosa-browser-chat-recording. Chat browser adapter binds its canonical
+owner Chat. Saved browser offers explicit actual live Chat choices from the current
+Project's canonical conversation listing; no automatic selection, Agent grant or
+Run inference. Deleted and execution-owned Chats are excluded locally; active,
+staged, deleting, product and temporary scope refusals remain server-enforced.
+All shared status/start/stop calls retain nested destination:{conversationId}.
+The full original command includes destination Project/Chat evidence, saved before
+mutation together with an immutable destination binding retained across remount.
+An existing binding cannot be redirected by selection or changed response. Status
+is in-memory recovery only. Missing/wrong destination/status/receipt remains held;
+no automatic retry. Private Agent/Run behavior remains distinct and unchanged.
+
+Shared receipt destination must match both retained IDs; download namespace,
+artifactRef and path bind the fresh artifact ID, independently from recording ID.
+Playback keeps exact recording/page/time and bounded timestamped JPEG JSON checks.
+Chat result lists and retained previews render Operator producer without fictitious
+Agent attribution or automatic sharing. Concise destination/access evidence is shown.
+
+Source deliverables: ProjectBrowserDialog.tsx, ConversationFilesResults.tsx,
+browser/{browserAdapters.ts,BrowserObservations.tsx,browserObservation.ts},
+filePreview/ArtifactPreview.tsx, tests/chats/browser-observation{.test.mjs,-mounted.tsx},
+and this report. Deferred fixtures include immutable destination, independent
+artifact identity, saved-before-effect, lost start/stop, remount, wrong destination
+and Operator rendering. No execution/checks/build/typechecks/Node/native/browser or
+provider preparation. Actual HTTP/download/lifecycle qualification, current-scope
+refusals and rendered accessibility/mobile/keyboard/screen-reader validation remain.

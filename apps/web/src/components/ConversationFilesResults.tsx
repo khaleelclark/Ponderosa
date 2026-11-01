@@ -116,7 +116,7 @@ export function ConversationFilesResults({
     }))
     .filter(group => group.artifacts.length > 0);
   const hasMore = older?.hasMore ?? artifacts.data?.history.hasMore ?? false;
-  const previewOwner = previewArtifact
+  const previewOwner = previewArtifact && previewArtifact.origin?.kind!=="operator"
     ? agentById.get(previewArtifact.originAgentId ?? previewArtifact.agentId)
     : undefined;
   const loadOlderFiles = async () => {
@@ -236,7 +236,8 @@ export function ConversationFilesResults({
               <List disablePadding aria-label={`${group.label} items`} sx={{ display: "grid", gap: 0.75 }}>
                 {group.artifacts.map(artifact => {
                   const ownerId = artifact.originAgentId ?? artifact.agentId;
-                  const owner = agentById.get(ownerId);
+                  const owner = artifact.origin?.kind === "operator" ? undefined : agentById.get(ownerId);
+                  const producer = artifact.origin?.kind === "operator" ? "Operator" : owner?.title ?? `Deleted Agent · ${ownerId.slice(0, 8)}`;
                   const displayPath = projectArtifactDisplayPath(
                     artifact,
                     projectRoot,
@@ -257,7 +258,7 @@ export function ConversationFilesResults({
                     >
                       <ListItemButton
                         component="a" href={artifact.previewUrl ?? artifact.downloadUrl}
-                        aria-label={`Preview ${label} from ${owner?.title ?? "Deleted Agent"}`}
+                        aria-label={`Preview ${label} from ${producer}`}
                         title={displayPath}
                         onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); setPreviewArtifact(artifact); } }}
                         sx={{ minWidth: 0 }}
@@ -269,7 +270,7 @@ export function ConversationFilesResults({
                         primary={label}
                         secondary={[
                           displayPath,
-                          owner?.title ?? `Deleted Agent · ${ownerId.slice(0, 8)}`,
+                          producer,
                           new Date(artifact.createdAt).toLocaleString(),
                         ].join(" · ")}
                         primaryTypographyProps={{ fontWeight: 750, noWrap: true }}

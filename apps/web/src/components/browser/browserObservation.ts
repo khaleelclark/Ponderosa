@@ -1,11 +1,11 @@
-import type {BrowserConsoleQuery,BrowserConsoleResult,BrowserOperatorObservationContext,BrowserOperatorRecordingResult,BrowserRecordingData,BrowserRecordingStatus} from '@ponderosa/core';
+import type {BrowserConsoleQuery,BrowserConsoleResult,BrowserOperatorObservationContext,BrowserOperatorRecordingResult,BrowserRecordingData,BrowserRecordingStatus,BrowserRecordingDestination} from '@ponderosa/core';
 
 const id=(value:unknown):value is string=>typeof value==='string'&&value.length>0&&value.length<=200;
-export type RecordingCommand={context:BrowserOperatorObservationContext}&({operation:'start';pageId:string;previousRecordingId?:string}|{operation:'stop';recordingId:string});
+export type RecordingCommand={context:BrowserOperatorObservationContext;destinationEvidence?:BrowserRecordingDestination}&({operation:'start';pageId:string;previousRecordingId?:string}|{operation:'stop';recordingId:string});
 export function recordingCommandValid(value:unknown):value is RecordingCommand {
  if(!value||typeof value!=='object')return false;
  const v=value as RecordingCommand;
- return !!v.context&&id(v.context.sessionId)&&Number.isSafeInteger(v.context.expectedControlEpoch)&&v.context.expectedControlEpoch>=0&&
+ return (v.destinationEvidence===undefined||recordingDestinationValid(v.destinationEvidence)&&v.context?.destination?.conversationId===v.destinationEvidence.conversationId)&&!!v.context&&id(v.context.sessionId)&&Number.isSafeInteger(v.context.expectedControlEpoch)&&v.context.expectedControlEpoch>=0&&
   ((v.operation==='start'&&id(v.pageId)&&(v.previousRecordingId===undefined||id(v.previousRecordingId)))||(v.operation==='stop'&&id(v.recordingId)));
 }
 export function recordingStatusValid(value:unknown):value is BrowserRecordingStatus {
@@ -13,9 +13,12 @@ export function recordingStatusValid(value:unknown):value is BrowserRecordingSta
  return !!v&&id(v.id)&&id(v.pageId)&&typeof v.startedAt==='string'&&Number.isFinite(Date.parse(v.startedAt));
 }
 const reasons=['explicit_stop','duration_limit','frame_limit','byte_limit','page_closed'];
-export function recordingArtifactValid(value:unknown,projectId:string):value is BrowserOperatorRecordingResult {
+export function recordingDestinationValid(value:unknown):value is BrowserRecordingDestination {
+ const v=value as BrowserRecordingDestination;return !!v&&id(v.projectId)&&id(v.conversationId);
+}
+export function recordingArtifactValid(value:unknown,projectId:string,destination?:BrowserRecordingDestination):value is BrowserOperatorRecordingResult {
  const v=value as BrowserOperatorRecordingResult;
- return !!v&&id(v.artifactId)&&v.artifactRef===`ponderosa://artifact/${v.artifactId}`&&v.path===`browser/${v.artifactId}.recording.json`&&v.mediaType==='application/json'&&Number.isSafeInteger(v.frames)&&v.frames>0&&v.frames<=120&&reasons.includes(v.reason)&&
+ return !!v&&(destination?recordingDestinationValid(v.destination)&&v.destination.projectId===destination.projectId&&v.destination.conversationId===destination.conversationId:v.destination===undefined)&&id(v.artifactId)&&v.artifactRef===`ponderosa://artifact/${v.artifactId}`&&v.path===`browser/${v.artifactId}.recording.json`&&v.mediaType==='application/json'&&Number.isSafeInteger(v.frames)&&v.frames>0&&v.frames<=120&&reasons.includes(v.reason)&&
   v.downloadUrl===`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(v.artifactId)}/download`;
 }
 export function consoleResultValid(value:unknown,pageId:string,after?:number,level?:BrowserConsoleQuery['level']):value is BrowserConsoleResult {
