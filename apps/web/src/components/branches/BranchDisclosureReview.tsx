@@ -1,5 +1,5 @@
 import {BranchGenerationOne} from './BranchGenerationOne';
-import {generationOneReceiptProjection,type GenerationOneSelection} from './branchGenerationOne';
+import {generationHistoryKindLabel,generationOneSelectionMatches,generationOneReceiptProjection,type GenerationOneSelection} from './branchGenerationOne';
 import {LifecycleReview} from '../lifecycle/LifecycleReview';
 import {useRef,useState} from 'react';
 import {useInfiniteQuery,useMutation,useQuery} from '@tanstack/react-query';
@@ -39,7 +39,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged,r
    setNotice('');setReceipt(value);clearPending();
   }else{
    if(!('destination' in value)||value.commandKey!==command.body.commandKey||command.kind==='prepare'&&(value.checkpointId!==command.body.checkpointId||value.checkpointHash!==command.body.expectedHash)||command.kind==='admit'&&value.admissionId!==command.admissionId)throw Error('Destination receipt differs from the retained command.');
-   if(command.kind==='prepare'&&command.generationOne&&JSON.stringify(value.historicalPartition)!==JSON.stringify(command.generationOne.preview.historicalPartition))throw Error('Historical selection differs from the saved server capture.');
+   if(command.kind==='prepare'&&command.generationOne&&(!generationOneSelectionMatches(command.generationOne,executionId)||command.body.checkpointId!==command.generationOne.capture.checkpointId||command.body.expectedHash!==command.generationOne.capture.checkpointHash||command.body.historicalReviewHash!==command.generationOne.preview.historicalReviewHash||JSON.stringify(value.historicalPartition)!==JSON.stringify(command.generationOne.preview.historicalPartition)))throw Error('Historical selection differs from the saved server capture.');
    setNotice('');setReceipt(value);setSelected(value.commandKey);
    if(command.kind==='prepare'&&['awaiting_disclosure','admitted'].includes(value.state)||command.kind==='admit'&&value.state==='admitted')clearPending();
    else setNotice('Preparation or admission remains held. No effect retry was performed.');
@@ -75,7 +75,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged,r
  const exactReview=Boolean(target&&review&&disclosureReviewMatches(review,target,branchId,executionId));
  const approveReady=fresh&&exactReview&&reviewed&&target?.state==='awaiting_disclosure'&&review?.active!==true;
  const admitReady=fresh&&exactReview&&reviewed&&target?.state==='awaiting_disclosure'&&review?.active===true&&target.disclosure.state==='approved'&&target.disclosure.reviewHash===review.reviewHash&&target.disclosure.revision===review.revision;
- const prepareReady=fresh&&effects&&Boolean(generationOne||checkpoint?.branchId===branchId&&checkpoint.executionId===executionId);
+ const prepareReady=fresh&&effects&&Boolean(generationOne?generationOneSelectionMatches(generationOne,executionId):checkpoint?.branchId===branchId&&checkpoint.executionId===executionId);
  const revokeReady=fresh&&disclosureCanRevoke(target);
  const ready=confirm==='prepare'?prepareReady:confirm==='approve'?approveReady:confirm==='revoke'?revokeReady:confirm==='admit'?admitReady:false;
  const apply=()=>{
@@ -130,7 +130,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged,r
      <Stack direction="row" gap={1}><Button disabled={!approveReady} onClick={()=>setConfirm('approve')}>Approve disclosure</Button><Button variant="contained" disabled={!admitReady} onClick={()=>setConfirm('admit')}>Admit reviewed destination</Button></Stack>
     </>}
     {resourceStepIds.map(stepId=><BranchGenerationOne key={stepId} branchId={branchId} executionId={executionId} stepId={stepId} enabled={fresh} onSelect={value=>{discardReview();setEffects(false);setCheckpoint(undefined);setGenerationOne(value);}}/>)}
-    {generationOne&&<Alert severity="info">Exact source generation {generationOne.preview.generation} capture selected · {generationOne.capture.checkpointId} · {generationOne.capture.checkpointHash}. Preparation uses historical selection hash {generationOne.preview.historicalReviewHash}. Consumed attempts {generationOne.preview.consumedAttempts??'not supplied by saved status'} · pinned maximum attempts {generationOne.preview.maxAttempts??'not supplied by saved status'}. No retry budget is reset. Every original Project and historical Request Project requires audit-read separately from fresh Project ownership.</Alert>}
+    {generationOne&&<Alert severity="info">{generationHistoryKindLabel(generationOne.preview.historyKind)} · exact source generation {generationOne.preview.generation} capture selected · {generationOne.capture.checkpointId} · {generationOne.capture.checkpointHash}. Preparation uses historical selection hash {generationOne.preview.historicalReviewHash}. Consumed attempts {generationOne.preview.consumedAttempts??'not supplied by saved status'} · pinned maximum attempts {generationOne.preview.maxAttempts??'not supplied by saved status'}. No retry budget is reset. Every original Project and historical Request Project requires audit-read separately from fresh Project ownership.</Alert>}
     <details><summary>Prepare from saved checkpoint</summary><Stack spacing={2} sx={{pt:1}}>
      <TextField select label="Source checkpoint" value={checkpoint?.id??''} disabled={locked} onChange={event=>{setEffects(false);setGenerationOne(undefined);setCheckpoint(checkpoints.data?.pages.flat().find(item=>item.id===Number(event.target.value)));}}>{checkpoints.data?.pages.flat().map(item=><MenuItem key={item.id} value={item.id}>{item.id} · {item.contentHash}</MenuItem>)}</TextField>
      {checkpoints.error&&<Alert severity="error">{checkpoints.error.message}</Alert>}

@@ -2,7 +2,7 @@
 import '../shared/web-typescript-loader.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {generationCaptureEvidence,generationCaptureBudgetMatches,generationCaptureBudgetLabel,generationHistoryPreviewMatches,generationOnePreviewMatches,generationSelectionMatches,generationOneCaptureMatches,generationOneReceiptProjection} from '../../apps/web/src/components/branches/branchGenerationOne.ts';
+import {generationHistoryKindLabel,generationOneSelectionMatches,generationCaptureEvidence,generationCaptureBudgetMatches,generationCaptureBudgetLabel,generationHistoryPreviewMatches,generationOnePreviewMatches,generationSelectionMatches,generationOneCaptureMatches,generationOneReceiptProjection} from '../../apps/web/src/components/branches/branchGenerationOne.ts';
 import {disclosureReviewMatches,historicalFactGeneration} from '../../apps/web/src/components/branches/branchDisclosureReview.ts';
 const hash=i=>i.toString(16).padStart(64,'0');
 export function historyFixture(generation){
@@ -18,12 +18,12 @@ export function historyFixture(generation){
 }
 for(const generation of [2,3,32])test(`generation ${generation} requires every ordered selection, original package/fact and unchanged budget`,()=>{
  const {preview,capture,review,target}=historyFixture(generation),copy=x=>structuredClone(x);
- assert.equal(generationHistoryPreviewMatches(preview,'source','step'),true);
+ assert.equal(generationHistoryPreviewMatches({...preview,historyKind:'serial'},'source','step'),true);
  assert.equal(generationOnePreviewMatches(preview,'source','step'),false,'gen1 compatibility validator stays bounded');
  assert.equal(generationOneCaptureMatches(capture,preview,'original'),true);
- for(const change of [{consumedAttempts:1},{consumedAttempts:generation},{maxAttempts:generation},{maxAttempts:34},{generation:33},{historicalPartition:preview.historicalPartition.slice(0,-1)},{historicalPartition:[...preview.historicalPartition].reverse()}])assert.equal(generationHistoryPreviewMatches({...preview,...change},'source','step'),false);
- const alias=copy(preview);alias.historicalPartition.at(-1).checkpointId=alias.historicalPartition[0].checkpointId;assert.equal(generationHistoryPreviewMatches(alias,'source','step'),false);
- const changed=copy(preview);changed.historicalPartition.at(-1).discloseTo=['old-agent'];assert.equal(generationHistoryPreviewMatches(changed,'source','step'),false);
+ for(const change of [{consumedAttempts:1},{consumedAttempts:generation},{maxAttempts:generation},{maxAttempts:34},{generation:33},{historicalPartition:preview.historicalPartition.slice(0,-1)},{historicalPartition:[...preview.historicalPartition].reverse()}])assert.equal(generationHistoryPreviewMatches({...preview,historyKind:'serial',...change},'source','step'),false);
+ const alias=copy(preview);alias.historicalPartition.at(-1).checkpointId=alias.historicalPartition[0].checkpointId;assert.equal(generationHistoryPreviewMatches({...alias,historyKind:'serial'},'source','step'),false);
+ const changed=copy(preview);changed.historicalPartition.at(-1).discloseTo=['old-agent'];assert.equal(generationHistoryPreviewMatches({...changed,historyKind:'serial'},'source','step'),false);
  assert.equal(generationOneCaptureMatches({...capture,generation:generation-1},preview,'original'),false);
  assert.equal(generationOneCaptureMatches({...capture,checkpointId:preview.historicalPartition[0].checkpointId},preview,'original'),false,'current cut cannot alias a prior package checkpoint');
  assert.equal(generationOneCaptureMatches({...capture,historicalPartition:preview.historicalPartition.slice(0,-1)},preview,'original'),false);
@@ -63,4 +63,21 @@ test('canonical saved budgets require proof, exact top-level values and unchange
   assert.equal(generationOneCaptureMatches(legacy,preview,'original'),true,'legacy original preview remains preserved');
   assert.equal(generationOneCaptureMatches(legacy,recovered,'original'),false,'verified discovery cannot downgrade during status recovery');
  }
+});
+
+for(const shape of ['fork/join','one-item map'])for(const generation of [1,2,32])test(`${shape} generation ${generation} uses exact server local_parallel classification`,()=>{
+ const {preview,capture}=historyFixture(generation);
+ const p={...preview,historyKind:'local_parallel'},v={...capture,historyKind:'local_parallel',consumedAttempts:generation+1,maxAttempts:33,retryBudget:{state:'verified',consumedAttempts:generation+1,maxAttempts:33,evidenceHash:hash(800)}};
+ assert.equal(generationHistoryPreviewMatches(p,'source','step'),true);
+ assert.equal(generationHistoryPreviewMatches({...p,historyKind:undefined},'source','step'),false,'fresh previews require server classification');
+ assert.equal(generationHistoryPreviewMatches({...p,historyKind:'map'},'source','step'),false,'UI cannot invent more shapes');
+ const saved=generationCaptureEvidence(v);
+ assert.equal(saved.historyKind,'local_parallel');assert.equal(generationOneCaptureMatches(v,p,'original'),true);
+ assert.equal(generationOneSelectionMatches({preview:saved,capture:v},'source'),true);
+ for(const historyKind of ['serial',undefined,'unknown'])assert.equal(generationOneCaptureMatches({...v,historyKind},saved,'original'),false);
+ assert.equal(generationOneSelectionMatches({preview:saved,capture:{...v,historyKind:'serial'}},'source'),false,'preparation cannot accept a changed classification');
+ assert.equal(generationOneCaptureMatches({...v,checkpointId:2000},saved,'original'),false);
+ assert.equal(generationCaptureBudgetMatches({...capture,historyKind:'local_parallel'}),false,'unavailable budget does not prove parallel eligibility');
+ assert.equal(generationOneCaptureMatches(v,preview,'original'),true,'original legacy selection may recover exact classified status without view inference');
+ assert.equal(generationHistoryKindLabel(undefined).includes('unavailable'),true);
 });

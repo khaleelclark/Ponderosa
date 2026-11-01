@@ -1190,3 +1190,63 @@ separately authorized runtime/provider/native/filesystem/accessibility/mobile
 qualification remain; no Phase 2 acceptance claimed.
 
 Integration: df05c945 backend/core is already assembled as57eab4596 (coverage40f4472be). This UI successor adopts that exact DTO without SDK/backend writes, ancestor replay or reference-source copies. Source-only status budget adoption is delivered; real runtime and broader qualification remain open.
+
+
+### Server-classified bounded local parallel history (source only)
+
+Successor to UI `cd92e8b06c6eeac07e1afbe8e22d51f67293dec3` requires exact
+backend/core `bc524ed308a615a613ecb4360563998ec855f039` at
+`/tmp/ponderosa-branches-parallel-history`, including
+`docs/branch-local-parallel-history.md`, shared preview/status DTOs, canonical
+capture status/discovery and the original source history validators. Previous
+backend/core and UI dependency requirements remain, or verified equivalents.
+
+Fresh history previews require server `historyKind: 'serial' | 'local_parallel'`.
+The complete preview, including classification, is saved before capture POST.
+Canonical discovery copies classification intact; issued status must match any
+previously classified preview/discovery, original ordered selections, cut/hash,
+verified budget/evidence hash and retained current checkpoint ID/hash. Unknown
+classification or a classified status without verified saved-budget proof refuses.
+Legacy absent classification stays explicitly unavailable, never inferred from
+UI layout, siblings or budget numbers. Original unclassified commands can still
+recover exact status, adopting classification only when actually supplied by the
+server; fresh preview cannot replace that original cut.
+
+The UI now explains the actual bound: one standalone manual owner and one resource
+Step invocation, generations 1–32, ASYNC/SYNC, serial or local fork/join and one-item
+map only after server proof; settled siblings without Request roots/active effects,
+unchanged consumed attempts and pinned retry limit. Multi-item maps, multiple
+resource invocations, active/unknown siblings, called trees, offset restore and
+unsupported generations remain refused. UI does not implement a second eligibility
+validator or inspect workflow shape. Historical actors/audiences/packages remain
+nondispatchable evidence; current recipients/maps and all-facts policy approval stay
+separate. No old-Agent imports, effect replay or retry reset.
+
+Preparation persists matching preview/capture classification with the original
+selection, verifies that pair before enabling preparation, and validates it again
+when resolving the saved preparation receipt. The actual preparation DTO/receipt
+has no historyKind field: the wire still sends only original checkpoint/hash,
+historicalReviewHash, command key and reconcileEffects. Receipt must match the
+saved current checkpoint and full historicalPartition; no invented classifier
+field is sent or expected. Original Project/historical Request Project audit-read,
+private byte projection, pending/corrupt command holds, explicit stale rediscovery
+and pure original-key GET recovery remain.
+
+Seven deliverables physically inventoried/source-read: UI
+`apps/web/src/components/branches/{branchGenerationOne.ts,BranchGenerationOne.tsx,BranchDisclosureReview.tsx}`;
+`tests/chats/{branch-generation-history.test.mjs,branch-generation-one-mounted.tsx,branch-generation-history-mounted.tsx}`;
+this report. Deferred fork/join and one-item map transport fixtures cover
+1/2/32-generation preview CAS, save-before-POST, lost-response/remount GET,
+classification mismatch hold, canonical recovery, full saved preparation and exact
+receipt readback. UI receives the same local_parallel discriminator for fork/map;
+actual shape/settled-sibling eligibility is covered by backend-owned producer
+fixtures, not manufactured in UI fixtures. Legacy unavailable and unknown kinds,
+missing proof, current-checkpoint and budget conflicts remain covered.
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, backend writes, push/merge/deploy or new workers. Fixtures unexecuted.
+Remaining: backend/core assembly and separately authorized runtime/provider/native/
+filesystem/accessibility/mobile qualification. No full UI/lifecycle/Bible/Phase2
+acceptance claimed.
+
+Integration: bc524ed backend/core is already assembled ase5e677551 (coverage6c3f9dcfe). This UI successor adopts that exact server historyKind and saved budget contract without backend/SDK writes or ancestor replay. Bounded parallel UI adoption is delivered in source; all executed qualification remains deferred.
