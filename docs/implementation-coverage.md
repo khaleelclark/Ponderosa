@@ -342,3 +342,35 @@ source and exact key; unknown matched schemas refuse, while hashed GROUP capture
 are not exposed or reconstructed. Group multi-package abandonment remains unsupported.
 Discovery changes no pins, policies or payloads and returns no Request/snapshot bodies.
 Five deferred metadata/SQLite fixtures are present and source-read, not executed.
+
+
+## Prospective observed provider exit evidence (source only)
+
+Runtime successor 61ad0416 adds immutable process registration and actual observed-exit
+receipts in the existing lifecycle 0040 ledger. Four Run executor registration sites
+supply the original spawn/turn fence. POSIX PID/PGID/birth/scope and code-owned Windows
+Job lifetime bindings retain exact Project/Agent/Chat ownership and every same-lifetime
+Run revision. `pruneExited` requires actual `isAlive() === false`; termination also
+requires awaited successful `close()`. Receipt publication and POSIX authority removal
+share one savepoint; failed publication/removal retains the hold. Native handles remain
+held until publication succeeds. Neither deletion, terminal scheduler state, signal
+submission nor absence of authority rows supplies observed exit.
+
+`readProviderExitEvidence` requires the live original Chat, complete members and Run
+inventory, exact registration coverage, terminal fences and all actual exit receipts.
+The aggregate revision supports reserve/recheck before a Branch seal; retained readback
+verifies immutable ledger bytes after owner removal and grants no new action authority.
+Bounds are 256 participants, 4096 Runs per participant, 4096 total registrations and
+16 MiB aggregate evidence, with 4 MiB ledger values and bounded retained readback.
+See [provider-exit-evidence.md](provider-exit-evidence.md).
+
+This prospective producer/reader does not implement Branch precleanup generation/frontier/
+host/custody reservation, sealed package capture and same-transaction revision recheck,
+native-script/Request/Join/effect closure, or retry/replay. Runtime historical-only
+participant partition remains missing. Pre-upgrade removed rows cannot be reconstructed;
+legacy empty registration coverage, missing Run spawn fences and Windows restart without
+an observed retained Job exit remain held. No historical admission or later-generation
+capture completion is claimed. Five deferred synthetic-handle fixture cases cover exit/
+readback, complete inventory/rebinding/fences, savepoint failures, legacy coverage refusal
+and Windows restart refusal; none ran, and they do not qualify actual provider/native exit.
+All existing Branch group, retirement, discovery and scoped UI limits remain in force.
