@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from '@ponderosa/native-host/fs';
-import {sourceMutationState,stableJson,type AgentStore,type BranchCustodyLifecycle,type CoordinationV3Store,type CoordinationDestinationReconciliationAuthority} from '@ponderosa/agents';
+import {sourceMutationState,stableJson,type AgentStore,type BranchCustodyLifecycle,type CoordinationV3Store,type CoordinationDestinationReconciliationAuthority,type CoordinationDestinationGroupReconciliationAuthority} from '@ponderosa/agents';
 import type {CoordinationDestinationReservation,CoordinationDestinationStage,DestinationRetirementChoice,DestinationRetirementApprovalDto,DestinationRetirementReviewDto} from '@ponderosa/core';
 import {lifecycleHash,lifecycleJournal} from './lifecycle-journal.js';
 type Row=Record<string,any>;
@@ -85,6 +85,11 @@ export function destinationLifecycle(context:{dataDir:string;store:AgentStore;co
    const mutation=sourceMutationState();if(mutation.activeWriters||mutation.activeCaptures||mutation.uncertainWriters)throw Error('Host source/effect registry remains unsettled');
    const operations=db.prepare('SELECT * FROM agent_creation_operations WHERE conversation_id=? ORDER BY id').all(conversationId) as Row[];
    if(operations.some(op=>op.status!=='rolled_back')||plan&&!operations.some(op=>op.id===plan.creationOperationId))throw Error('Destination import outcomes must have exact rollback receipts');
+   const policyEvidence=['capability_policies','capability_policy_history'].map(table=>{
+    const rows=db.prepare(`SELECT * FROM ${table} ORDER BY rowid LIMIT 4097`).all();
+    if(rows.length>4096||Buffer.byteLength(stableJson(rows))>16*1024*1024)throw Error('Lifecycle policy inventory exceeds bound');
+    return {table,rows};
+   });
    const imports=metadata(path.join(context.dataDir,'agent-import-operations'));
    for(const entry of imports){const operation=entry.value;
     if(/^[a-f0-9-]{36}\.json$/.test(entry.name)&&(operation.id!==entry.name.slice(0,-5)||typeof operation.conversationId!=='string'||!['pending','failed','completed'].includes(operation.status)))throw Error('Unrecognized background import record');
@@ -92,7 +97,9 @@ export function destinationLifecycle(context:{dataDir:string;store:AgentStore;co
     if(operation.status!=='failed'||operation.result||!operations.some(op=>op.idempotency_key===operation.requestId&&op.status==='rolled_back'))throw Error('Background destination import effects remain unresolved');
    }
    const source={checkpointId:reservation.custody.checkpointId,sourceChatId:reservation.custody.sourceChatId,agentIds:reservation.custody.agentIds,intent:reservation.custody.intent};
-   const branch=context.owner().inspect(source),references=branch.references.filter(ref=>ref.kind!=='admission'||ref.key!==id).map(ref=>`${ref.kind}:${ref.ownerId}:${ref.key}:${ref.sha256}`);
+   const branch=context.owner().inspect(source);
+   if(group&&(!Array.isArray(branch.abandonmentBlockers)||branch.abandonmentBlockers.length))throw Error('Group source owner runtime/native/effect outcomes remain unresolved');
+   const references=branch.references.filter(ref=>ref.kind!=='admission'||ref.key!==id).map(ref=>`${ref.kind}:${ref.ownerId}:${ref.key}:${ref.sha256}`);
    const packages=metadata(path.join(context.dataDir,'checkpoint-package-custody'));
    for(const pkg of packages){if(contains(pkg.value,[conversationId,...ids]))references.push(`package:${pkg.name}:${pkg.sha256}`);}
    const needles=[reservation.custody.checkpointId,reservation.custody.custodyId,conversationId,...ids];
@@ -106,29 +113,31 @@ export function destinationLifecycle(context:{dataDir:string;store:AgentStore;co
      const value=JSON.parse(bytes);if(contains(value,needles))references.push(`${table}:${candidate.rowid}:${column.name}:${lifecycleHash(value)}`);
     }
    }
-   return {revision:lifecycleHash({reservation,stage,project:project??null,deletedProject:deletedProject??null,chat,members,tombstones,deletions,operations,execution:execution??null,owners,nativeAttempts,nativeExits,destinationCommands,branch,packages,imports,mutation}),references:[...new Set(references)].sort()};
+   return {revision:lifecycleHash({reservation,stage,project:project??null,deletedProject:deletedProject??null,chat,members,tombstones,deletions,operations,execution:execution??null,owners,nativeAttempts,nativeExits,destinationCommands,branch,packages,imports,policyEvidence,mutation}),references:[...new Set(references)].sort()};
  };
  const authority=(id:string):CoordinationDestinationReconciliationAuthority=>({
-  inspect:({operatorId,reservation,stage})=>{
+  inspect:({operatorId,reservation,stage,groupChats})=>{
    if(!group)return inspectResource(id,operatorId,reservation,stage as CoordinationDestinationStage|null);
    const resources=reservation.resources;
    if(!resources||resources.length<2||resources.length>32)throw Error('Bounded complete group resource inventory required');
    const full=stage as CoordinationDestinationStage|null;
+   if(!groupChats||groupChats.length!==resources.length)throw Error('Exact canonical group slot inventory required');
    const evidence=resources.map(resource=>{
-    const slot=db.prepare('SELECT stage_json FROM coordination_destination_group_chats WHERE admission_id=? AND source_chat_id=?').get(id,resource.custody.sourceChatId) as Row|undefined;
+    const slot=groupChats.find(actual=>actual.source_chat_id===resource.custody.sourceChatId);
     const partial=slot?.stage_json?JSON.parse(slot.stage_json) as CoordinationDestinationStage:null;
     const plan=full?.imports?.[resource.custody.sourceChatId];
     const actual=plan?{importPlan:plan,agentMap:full!.agentMap,artifactMap:full!.artifactMap}:partial;
     return inspectResource(id,operatorId,{...reservation,custody:resource.custody,destination:resource.destination},actual,true);
    });
-   return {revision:lifecycleHash({reservation,stage,evidence}),references:[...new Set(evidence.flatMap(item=>item.references))].sort()};
+   return {revision:lifecycleHash({reservation,stage,groupChats,evidence}),references:[...new Set(evidence.flatMap(item=>item.references))].sort()};
   },
   requireApproval(input,review){const saved=journal.read(`approval:${id}:${input.commandKey}`);
    const exact={commandKey:input.commandKey,expectedReviewHash:input.expectedReviewHash,releaseSourcePins:input.releaseSourcePins,authorizeDeletedOwner:true};
    if(!saved||saved.admissionId!==id||saved.operatorId!==OPERATOR||stableJson(saved.choice)!==stableJson(exact)||saved.reviewHash!==review.reviewHash)throw Error('Durable exact human retirement approval required');
   },
  });
- const review=(id:string)=>group?context.coordination.reviewCoordinationDestinationGroupReconciliation(id,OPERATOR,authority(id)):context.coordination.reviewCoordinationDestinationReconciliation(id,OPERATOR,authority(id));
+ const groupAuthority=(id:string):CoordinationDestinationGroupReconciliationAuthority=>({inspectGroup:input=>authority(id).inspect(input),requireGroupApproval:(input,review)=>authority(id).requireApproval(input,review)});
+ const review=(id:string)=>group?context.coordination.reviewCoordinationDestinationGroupReconciliation(id,OPERATOR,groupAuthority(id)):context.coordination.reviewCoordinationDestinationReconciliation(id,OPERATOR,authority(id));
  return {
   review(id:string):DestinationRetirementReviewDto{return db.transaction(()=>{const current=review(id);return {...current,preserveOnlyPermanent:true as const,globalRuntimeQuiescenceRequired:true as const,canReleaseSourcePins:current.references.length===0};})();},
   approve(id:string,choice:DestinationRetirementChoice):DestinationRetirementApprovalDto{return db.transaction(()=>{
@@ -140,7 +149,7 @@ export function destinationLifecycle(context:{dataDir:string;store:AgentStore;co
   retire(id:string,choice:DestinationRetirementChoice){return db.transaction(()=>{
    const input={admissionId:id,commandKey:choice.commandKey,operatorId:OPERATOR,expectedReviewHash:choice.expectedReviewHash,releaseSourcePins:choice.releaseSourcePins};
    if(choice.authorizeDeletedOwner!==true)throw Error('Explicit deleted-owner disposition required');
-   return group?context.coordination.retireCoordinationDestinationGroup(input,authority(id)):context.coordination.retireCoordinationDestination(input,authority(id));
+   return group?context.coordination.retireCoordinationDestinationGroup(input,groupAuthority(id)):context.coordination.retireCoordinationDestination(input,authority(id));
   }).immediate();},
   receipt:(id:string)=>group?context.coordination.readCoordinationDestinationGroupRetirement(id):context.coordination.readCoordinationDestinationRetirement(id),
  };

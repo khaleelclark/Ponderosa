@@ -1,3 +1,4 @@
+import type {CoordinationDestinationGroupReconciliationReview} from './coordination-destination.js';
 import type {CoordinationDestinationReconciliationReview} from './coordination-destination.js';
 export interface MemoryMutationEffect {
   scope:string;log:boolean;operation:'create_collection'|'delete_collection'|'upsert'|'add'|'update'|'delete'|'modify';
@@ -70,7 +71,7 @@ export interface DestinationRetirementReviewDto extends CoordinationDestinationR
 /** Whole-group commands use one admission and one immutable disposition for all resources. */
 export type DestinationGroupRetirementChoice=DestinationRetirementChoice;
 export type DestinationGroupRetirementApprovalDto=DestinationRetirementApprovalDto;
-export interface DestinationGroupRetirementReviewDto extends DestinationRetirementReviewDto {
- reservation:DestinationRetirementReviewDto['reservation']&{resources:import('./coordination-destination.js').CoordinationDestinationGroupResource[]};
+export interface DestinationGroupRetirementReviewDto extends CoordinationDestinationGroupReconciliationReview {
+ preserveOnlyPermanent:true;globalRuntimeQuiescenceRequired:true;canReleaseSourcePins:boolean;
 }
-export type DestinationGroupRetirementReceipt=import('./coordination-destination.js').CoordinationDestinationReconciliationReceipt;
+export type DestinationGroupRetirementReceipt=import('./coordination-destination.js').CoordinationDestinationGroupReconciliationReceipt;
