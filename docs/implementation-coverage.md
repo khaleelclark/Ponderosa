@@ -307,3 +307,17 @@ Restored folders are retained content, **not live Agent roots**: reviewed Projec
 creation or safe fresh managed-worktree population is still missing. Shared
 Project.hostPath and Separate Git ownership invariants remain intact. This closes
 source-byte omission without completing #8. Regression source remains unexecuted.
+
+## UI access and provenance consumers
+
+UI ancestry `1240f777` -> `31112e62` -> `b01c287c` integrated conflict-free.
+Agent staged restriction review, whole-root export, on-demand structured imported
+Communication/original links, generic scoped text status and workflow installation
+policy choice UI are now present. New review clears prior choice; mutation
+completion refreshes canonical status so late responses do not overwrite Stop.
+These supersede earlier absent-review/provenance UI backlog entries.
+
+Organization root-bundle controls, mapped post-import memory/browser Settings
+actions, new-root Chat flow, shared human Chat and peer preview consumers remain
+missing. Generic text preview also still awaits held Runtime successor source.
+No execution, passing test, playback/latency or full portability claim.
