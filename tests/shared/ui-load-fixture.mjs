@@ -50,7 +50,7 @@ export async function createLoadFixture(out,{messages=10000}={}){
      const n=(progress.get(agent.id)??0)+1;progress.set(agent.id,n);lastProgress.set(agent.id,Date.now());session.events.push({type:'text',delta:`Working checkpoint ${n}. `});record({event:'provider-work',product,agentId:agent.id,sessionId:session.engineAgentId,sequence:n,runId:run.id,runStatus:run.status,processIdentity:session.processIdentity,tool:'ponderosa_workspace_projects',success:result.success});
      await delay(2000);
     }
-   }}]);await f.api('POST',`${p.prefix}/agents/${agent.id}/messages`,{text:'Continuously inspect granted workspace status and report short progress until qualification ends.',idempotencyKey:randomUUID()}).then(f.ok);}
+   }}]);await sendQualificationTask(f,p.prefix,agent.id,'Continuously inspect granted workspace status and report short progress until qualification ends.',attempt=>record({event:'keyed-task-submission',agentId:agent.id,...attempt}));}
    await until(()=>p.agents.every(a=>(progress.get(a.id)??0)>=2),'twenty working provider loops',60000);
    const value=await snapshot(product);assert.equal(value.runs.filter(r=>r.status==='running'&&r.alive&&r.progress>=2).length,20);monitor=setInterval(()=>{const task=snapshot(product).catch(error=>{continuityFailures.push({reason:String(error)});record({event:'monitor-failed',error:String(error)});});pending.add(task);task.finally(()=>pending.delete(task));},1000);
    return value;
@@ -83,4 +83,14 @@ export function readLeasedRun(store,agentId,runId,sessionId){
  const lease=store.sqlite.prepare('SELECT id,agent_id,status,lease_owner,lease_expires_at,fencing_token,provider_session_id,heartbeat_at,scope_key FROM scheduler_runs WHERE id=?').get(runId);
  assert(lease&&lease.agent_id===agentId&&lease.status==='running'&&lease.lease_owner&&lease.fencing_token>0&&Date.parse(lease.lease_expires_at)>Date.now(),'Canonical scheduler lease must be live and fenced');
  assert.equal(lease.provider_session_id,sessionId,'Provider session must belong to exact scheduler Run');return lease;
+}
+
+export async function sendQualificationTask(f,prefix,agentId,text,onAttempt=()=>{}){
+ const idempotencyKey=randomUUID();
+ for(let attempt=0;attempt<30;attempt++){
+  const response=await f.api('POST',`${prefix}/agents/${agentId}/messages`,{text,idempotencyKey});onAttempt({attempt,idempotencyKey,status:response.statusCode,body:response.json()});
+  if(response.statusCode!==409||response.json().error!=='Agent asset maintenance is in progress; retry safely')return f.ok(response);
+  await delay(100);
+ }
+ throw Error('Agent asset maintenance did not settle; no guard bypass');
 }
