@@ -116,8 +116,7 @@ Integrate these owners' source chains before combined execution:
   container validation does not establish playback qualification.
 
 No backend cherry-pick, push, merge or deployment occurred here. This isolated web
-branch intentionally depends on owners' newer core DTOs. Grouped workflow folder composition/caller integration,
-full generation coverage, early voice response, consolidated compatibility,
+branch intentionally depends on owners' newer core DTOs. Combined source integration, full generation coverage, early voice response, consolidated compatibility,
 accessibility/mobile judging and performance acceptance remain external or
 unexecuted gates. Full #8, Bible and Phase 2 completion are not claimed.
 
@@ -186,14 +185,30 @@ grant/profile change occurs.
 
 Runtime recovery controls are already committed at 21569c922 and remain unchanged.
 All web surfaces are this lane's responsibility; backend owners supply APIs only.
-Grouped fresh-Chat folder activation is the current remaining caller dependency:
-8d5ee5a1 introduces connected composition and grouped review, but exact composed
-root inventory bootstrap and normal all-folder export root identity need the
-Branches owner's source-contract handoff before enabling that web path. The
-tracked dependency preserves the current UI continuation; no full UI completion
-is claimed. Disconnected same-Chat forests remain an explicit backend batch gap.
+Grouped fresh managed activation now consumes Branches
+537b12517dd51c88ec719869174480455bd501be and shared composer
+portability d7ca2d196a6e1e90d3f80ff46f7bd5a0b9644da0 (atop 82cf46284).
+Both connected organizations and same-Chat forests select only the first authored
+reporting root; child target selections are removed. Existing-Agent regrouping
+is refused. Shared source identities, including exports without workingRootRef,
+are composed by the backend; the browser never recreates their hashing scheme.
+
+A non-confirmable discovery preview reads retain-content.after workingRootRefs
+and groupedAgentRefs. It discards old per-package mappings, requests NEW recovery
+paths for exact composed refs, and requires a second preview before confirmation.
+Changes to package, destination bindings, parameters, memory choices or managed
+folder identity invalidate the inventory. Missing canonical inventory refuses
+confirmation. Changed returned refs discard prior paths again. Root and access
+review success explicitly continues the same installation through confirm; stale
+review errors refresh status and require fresh choices. Stop remains available.
+No backend dependency was cherry-picked here. Combined integration and executed
+qualification remain required; no full UI, #8, #12, Bible or Phase 2 pass is claimed.
 
 Deferred source includes branch-package-files.test.mjs and
 branch-package-export-mounted.tsx. Existing post-import mounted regression mocks
 the new mapped-name reads. No tests/checks/types/build/browser/runner execution,
 push, merge or deployment occurred.
+
+Grouped regression source extends branch-package-files.test.mjs for discovery,
+canonical-map replacement, child selection refusal, retained-Agent refusal,
+changed root identities and independent reporting roots. Execution remains deferred.

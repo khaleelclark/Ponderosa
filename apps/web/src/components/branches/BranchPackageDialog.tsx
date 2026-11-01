@@ -15,7 +15,8 @@ export function BranchPackageDialog({pkg,branchId,branches,engines,onClose,onIns
  const [fileSelections,setFileSelections]=useState<import('@ponderosa/core').BranchImportFileSelections>({});
  const [showSettings,setShowSettings]=useState(false),[settingsReviewed,setSettingsReviewed]=useState(false),[rootAcknowledged,setRootAcknowledged]=useState('');
  const retained=new Set(existing.data?.packageId===pkg.packageId?existing.data.chats.flatMap(chat=>chat.agents.map(agent=>branchPackageTarget(chat.ref,agent.ref))):[]);
- const fileError=branchPackageFileError(pkg,fileSelections,retained);
+ const [rootInventory,setRootInventory]=useState<import('./branchPackageFiles').BranchRootInventory>({});
+ const fileError=branchPackageFileError(pkg,fileSelections,retained,rootInventory);
  useEffect(()=>{setFileSelections({});setSettingsReviewed(false);setShowSettings(false);},[pkg,branchId]);
  const [roleRecovery,setRoleRecovery]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
  const active=useRef(true),generation=useRef(0),finishing=useRef(false);
@@ -23,10 +24,30 @@ export function BranchPackageDialog({pkg,branchId,branches,engines,onClose,onIns
  const current=(token:number)=>active.current&&generation.current===token;
  const dismiss=()=>{active.current=false;generation.current++;onClose()};
  const [parameters,setParameters]=useState<Record<string,string|number|boolean>>(pkg.parameters??{});
+ const inventoryContext=JSON.stringify([pkg,branchId,bindings,parameters,additive,memorySelection,Object.entries(fileSelections).filter(([,selection])=>selection.newManagedChatFolderName!==undefined).map(([key,selection])=>[key,selection.newManagedChatFolderName])]);
+ useEffect(()=>{setRootInventory({});setPreview(undefined);},[inventoryContext]);
  const dirs=useMemo(()=>[...new Set(['workspace',...pkg.definition.steps.filter(s=>s.kind==='script').map(s=>s.cwdRef)])],[pkg]);
  const engineRefs=useMemo(()=>[...new Set(['default',...pkg.chats.flatMap(c=>c.agents.flatMap(a=>a.definition.agents.map(n=>n.engine))),...Object.values(pkg.definition.templates??{}).flatMap(t=>t.agents.map(a=>a.engine))])],[pkg]);
  const cancelButton=useRef<HTMLButtonElement>(null);
- const review=useMutation({mutationFn:async()=>{const token=generation.current,result=await requestJson<BranchInstallationPreviewDto>('/api/branches/install-preview',{method:'POST',body:JSON.stringify({package:{...pkg,...(Object.keys(parameters).length?{parameters}:{})},bindings,branchId,fileSelections,...(additive?{memorySelection}:{})})});if(!current(token))return;return {result,token}},onSuccess:value=>{if(value&&current(value.token)){setAcknowledgeFullImport(false);setAcknowledgeMemoryUpdate(false);setPreview(value.result)}}});
+ const review=useMutation({mutationFn:async()=>{const token=generation.current,result=await requestJson<BranchInstallationPreviewDto>('/api/branches/install-preview',{method:'POST',body:JSON.stringify({package:{...pkg,...(Object.keys(parameters).length?{parameters}:{})},bindings,branchId,fileSelections,...(additive?{memorySelection}:{})})});if(!current(token))return;return {result,token}},onSuccess:value=>{if(value&&current(value.token)){setAcknowledgeFullImport(false);setAcknowledgeMemoryUpdate(false);
+ const discovered:import('./branchPackageFiles').BranchRootInventory={};
+ for(const operation of value.result.operations){
+  if(operation.kind!=='retain-content'||!operation.after||typeof operation.after!=='object')continue;
+  const after=operation.after as {target?:unknown;groupedAgentRefs?:unknown;workingRootRefs?:unknown};
+  if(typeof after.target==='string'&&Array.isArray(after.groupedAgentRefs)&&Array.isArray(after.workingRootRefs)&&after.workingRootRefs.every(ref=>typeof ref==='string'))discovered[after.target]=after.workingRootRefs as string[];
+ }
+ const expectedGroups=Object.entries(fileSelections).filter(([key,selection])=>selection.newManagedChatFolderName!==undefined&&pkg.chats.find(chat=>chat.ref===JSON.parse(key)[0])!.agents.length>1);
+ if(expectedGroups.some(([key])=>!discovered[key]?.length)){setFinishError('The server did not return the canonical grouped working roots. Review with the current grouped installer before continuing.');setPreview(undefined);return;}
+ setFinishError('');
+ if(Object.entries(discovered).some(([key,roots])=>JSON.stringify(rootInventory[key])!==JSON.stringify(roots))){
+  setRootInventory(discovered);
+  setFileSelections(current=>Object.fromEntries(Object.entries(current).map(([key,selection])=>{
+   if(!discovered[key])return [key,selection];
+   const {workingFilesDestination,workingRootDestinations,...rest}=selection;
+   return [key,{...rest,workingRootDestinations:Object.fromEntries(discovered[key]!.map(ref=>[ref,'']))}];
+  })));
+  setPreview(undefined);
+ }else setPreview(value.result)}}});
  type InstallationStatus={branchId?:string;state:string;error?:string;workingRootReview?:{chatRef:string;agentRef:string;chatId:string;sharedRoot:string};importResults?:Record<string,ImportSettingsResult>;accessSettingsReview?:{chatRef:string;agentRef:string;chatId:string;review:import('@ponderosa/core').AgentAccessImportReviewDto;agentRefs?:string[]}};
  const apply=useMutation({mutationFn:()=>requestJson<InstallationStatus>(`/api/branches/installations/${preview!.id}/confirm`,{method:'POST',body:JSON.stringify({acknowledgeFullImport,acknowledgeMemoryUpdate,...(roleRecovery?{outputRoleReviewId:roleRecovery.id}:{})})}),onMutate:()=>{setOperationId(preview!.id);return {token:generation.current,id:preview!.id}},onSuccess:async(_status,_variables,context)=>{if(current(context.token))await client.invalidateQueries({queryKey:['branch-installation',context.id]});}});
  const progress=useQuery({queryKey:['branch-installation',operationId],queryFn:()=>requestJson<InstallationStatus>(`/api/branches/installations/${operationId}`),enabled:Boolean(operationId),refetchInterval:query=>['completed','canceled','expired','review_required'].includes(query.state.data?.state??'')?false:3000,retry:false});
@@ -43,7 +64,7 @@ export function BranchPackageDialog({pkg,branchId,branches,engines,onClose,onIns
  const resolveAccess=useMutation({
   mutationFn:async(input:{operationId:string;review:NonNullable<InstallationStatus['accessSettingsReview']>;action:'keep_destination'|'use_source';agentActions?:Record<string,'keep_destination'|'use_source'>})=>requestJson<InstallationStatus>(`/api/branches/installations/${encodeURIComponent(input.operationId)}/access-review`,{method:'POST',body:JSON.stringify({chatRef:input.review.chatRef,agentRef:input.review.agentRef,resolution:{action:input.action,...(input.agentActions?{agentActions:input.agentActions}:{}),reviewSha256:input.review.review.reviewSha256}})}),
   onMutate:()=>({token:generation.current}),
-  onSuccess:async(_status,_input,context)=>{if(current(context.token)){setAccessAction('');setAgentActions({});await progress.refetch();}},
+  onSuccess:async(_status,_input,context)=>{if(current(context.token)){setAccessAction('');setAgentActions({});await requestJson(`/api/branches/installations/${encodeURIComponent(_input.operationId)}/confirm`,{method:'POST',body:JSON.stringify({acknowledgeFullImport,acknowledgeMemoryUpdate})});await progress.refetch();}},
   onError:async(_error,_input,context)=>{if(context&&current(context.token)){setAccessAction('');setAgentActions({});await progress.refetch();}},
   onSettled:()=>{accessSubmitting.current=false;},
  });
@@ -51,7 +72,7 @@ export function BranchPackageDialog({pkg,branchId,branches,engines,onClose,onIns
  const workingRootKey=JSON.stringify([operationId,workingRootReview]);
  useEffect(()=>setRootAcknowledged(''),[workingRootKey]);
  const rootSubmitting=useRef(false);
- const resolveRoot=useMutation({mutationFn:(input:{id:string;review:NonNullable<InstallationStatus['workingRootReview']>})=>requestJson(`/api/branches/installations/${encodeURIComponent(input.id)}/working-root-review`,{method:'POST',body:JSON.stringify({chatRef:input.review.chatRef,agentRef:input.review.agentRef,sharedRoot:input.review.sharedRoot})}),onMutate:()=>({token:generation.current}),onSettled:async(_data,_error,_variables,context)=>{if(context&&current(context.token)){setRootAcknowledged('');await progress.refetch();}rootSubmitting.current=false;}});
+ const resolveRoot=useMutation({mutationFn:(input:{id:string;review:NonNullable<InstallationStatus['workingRootReview']>})=>requestJson(`/api/branches/installations/${encodeURIComponent(input.id)}/working-root-review`,{method:'POST',body:JSON.stringify({chatRef:input.review.chatRef,agentRef:input.review.agentRef,sharedRoot:input.review.sharedRoot})}),onMutate:()=>({token:generation.current}),onSuccess:async(_data,input,context)=>{if(current(context.token))await requestJson(`/api/branches/installations/${encodeURIComponent(input.id)}/confirm`,{method:'POST',body:JSON.stringify({acknowledgeFullImport,acknowledgeMemoryUpdate})});},onSettled:async(_data,_error,_variables,context)=>{if(context&&current(context.token)){setRootAcknowledged('');await progress.refetch();}rootSubmitting.current=false;}});
  let settingsResult:ImportSettingsResult|undefined,settingsError='';
  try{if(progress.data?.importResults&&Object.keys(progress.data.importResults).length)settingsResult=mergeBranchImportResults(progress.data.importResults);}catch(cause){settingsError=(cause as Error).message;}
  const confirmationRejected=apply.isError&&progress.data?.state==='preview';
@@ -100,7 +121,7 @@ export function BranchPackageDialog({pkg,branchId,branches,engines,onClose,onIns
    </>}</>}
    {pkg.mode==='full'&&<>
     {existing.error&&<Alert severity="error">Could not load retained Agent identities: {existing.error.message}</Alert>}
-    <BranchImportFiles pkg={pkg} value={fileSelections} onChange={setFileSelections} retained={retained} disabled={review.isPending||Boolean(branchId&&existing.isFetching)}/>
+    <BranchImportFiles pkg={pkg} value={fileSelections} onChange={setFileSelections} retained={retained} inventory={rootInventory} disabled={review.isPending||Boolean(branchId&&existing.isFetching)}/>
     {fileError&&<Alert severity="info">{fileError}</Alert>}
    </>}
    {dirs.map(ref=><TextField key={ref} disabled={review.isPending} label={ref==='workspace'?'Default working directory':`Working directory: ${ref}`} value={bindings.directories[ref]??''} onChange={e=>setBindings({...bindings,directories:{...bindings.directories,[ref]:e.target.value}})}/>)}

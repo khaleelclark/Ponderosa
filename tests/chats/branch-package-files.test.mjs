@@ -24,3 +24,16 @@ test('group receipts deduplicate Settings without fabricating Agent identities',
  assert.equal(merged.accessSettingsToReview[0].agentId,'new-child');
  assert.throws(()=>mergeBranchImportResults({root:receipt,child:{accessSettingsToReview:[{...receipt.accessSettingsToReview[0],source:{restrictedCapabilityIds:[],readGlobalMemory:false}}]}}),/Conflicting/);
 });
+test('group discovery accepts only root-owned choices then requires canonical composed mappings',()=>{
+ const discovery={[root]:{workingFilesDestination:'/recovery/discovery',newManagedChatFolderName:'Restored',workingFilesActivation:{}}};
+ assert.equal(branchPackageFileError(pkg,discovery,new Set()),undefined);
+ const inventory={[root]:['composed-shared','composed-separate']};
+ assert.match(branchPackageFileError(pkg,discovery,new Set(),inventory),/discard previous root mappings/);
+ const grouped={[root]:{newManagedChatFolderName:'Restored',workingFilesActivation:{},workingRootDestinations:{'composed-shared':'/recovery/shared','composed-separate':'/recovery/separate'}}};
+ assert.equal(branchPackageFileError(pkg,grouped,new Set(),inventory),undefined);
+ assert.match(branchPackageFileError(pkg,{...grouped,[child]:destinations[child]},new Set(),inventory),/Grouped children/);
+ assert.match(branchPackageFileError(pkg,grouped,new Set([child]),inventory),/Existing Agents/);
+ assert.match(branchPackageFileError(pkg,grouped,new Set(),{[root]:['changed-ref']}),/discard previous root mappings/);
+ const forest=structuredClone(pkg);delete forest.chats[0].agents[1].managerRef;
+ assert.equal(branchPackageFileError(forest,grouped,new Set(),inventory),undefined);
+});
