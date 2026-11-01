@@ -1,3 +1,4 @@
+import { claudeTurnContent } from "./typed-input.js";
 import { ClaudeControls } from "./claude-controls.js";
 import { requestNativeApproval } from "./native-approvals.js";
 import { once } from "node:events";
@@ -220,7 +221,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.active = true;
     this.activeInputId = turnId;
     try {
-      await this.writeInput(prompt, turnId);
+      await this.writeInput(prompt, turnId, input.inputFiles);
     } catch (error) {
       this.active = false;
       this.contextObservations.endTurn();
@@ -347,7 +348,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     if (this.nativeCommand || !this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
     this.contextObservations.submit(turnId);
-    await this.writeInput(input.prompt, turnId);
+    await this.writeInput(input.prompt, turnId, input.inputFiles);
     return { status: "accepted", turnId };
   }
 
@@ -449,14 +450,18 @@ export class ClaudeStreamSession implements RuntimeSession {
     return shared;
   }
 
-  private async writeInput(prompt: string, id: string): Promise<void> {
+  private async writeInput(prompt: string, id: string, inputFiles?: RuntimeTurnInput["inputFiles"]): Promise<void> {
     if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
     const frame = {
       type: "user",
       uuid: id,
       session_id: this.engineAgentId,
-      message: { role: "user", content: [{ type: "text", text: prompt }] },
+      message: { role: "user", content: claudeTurnContent({ prompt, kind: "user_message", inputFiles }) },
     };
+    // Replay is required by compact receipts; reserve 1 MiB for its native envelope.
+    if (Buffer.byteLength(JSON.stringify(frame), "utf8") > JSONL_MAX_RECORD_BYTES - 1024 * 1024) {
+      throw new Error("Claude input exceeds the 3 MiB replay-safe frame budget");
+    }
     await this.writeFrame(frame);
   }
 

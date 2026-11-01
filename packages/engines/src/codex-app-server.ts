@@ -1,4 +1,5 @@
 import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
+import { codexTurnContent } from "./typed-input.js";
 import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
 import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
@@ -978,7 +979,7 @@ export class CodexAppServerSession implements RuntimeSession {
     const providerModelGeneration = this.providerModelGeneration;
     const response = await this.rpc.request<TurnResponse>("turn/start", {
       threadId: this.engineAgentId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: codexTurnContent(input, prompt),
       ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       ...(input.model ? { model: input.model } : {}),
       serviceTier: serviceTierForSpeed(input.speed),
@@ -1004,7 +1005,7 @@ export class CodexAppServerSession implements RuntimeSession {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
         threadId: this.engineAgentId,
         expectedTurnId: this.activeTurnId,
-        input: [{ type: "text", text: input.prompt, text_elements: [] }],
+        input: codexTurnContent(input),
         ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       });
       return { status: "accepted", turnId: response.turnId };
