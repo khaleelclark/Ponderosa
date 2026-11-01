@@ -7,7 +7,7 @@ import {fixture,until} from './fixture.mjs';
 import {AgentStore} from '../../packages/agents/dist/index.js';
 import {sampleLinuxResources,RESOURCE_ADMISSION_DEFAULTS} from '../../apps/server/dist/resource-admission.js';
 export async function createLoadFixture(out,{messages=10000}={}){
- let store,closing=false,monitor;const work=new Map(),progress=new Map(),lastProgress=new Map(),lastCanonicalProgress=new Map(),continuityFailures=[],pending=new Set(),identities=new Map();
+ let store,closing=false,monitor;const work=new Map(),progress=new Map(),lastProgress=new Map(),lastCanonicalProgress=new Map(),continuityFailures=[],pending=new Set(),identities=new Map(),canonicalReceipts=[],providerReceipts=new Map();
  const record=value=>appendFileSync(out+'/lifecycle.jsonl',JSON.stringify({time:Date.now(),...value})+'\n');
  const sample=await sampleLinuxResources();record({event:'preflight',sample,admissionDefaults:RESOURCE_ADMISSION_DEFAULTS});
  assert.ok(sample.availableBytes>=RESOURCE_ADMISSION_DEFAULTS.reserveBytes+20*RESOURCE_ADMISSION_DEFAULTS.startupBytes,'Real effective headroom must admit twenty, without a guard override');
@@ -31,18 +31,17 @@ export async function createLoadFixture(out,{messages=10000}={}){
    const p=products[product],runs=[];
    for(const agent of p.agents){const d=f.ok(await f.api('GET',`${p.prefix}/agents/${agent.id}`));const run=d.runs.find(r=>r.status==='running');runs.push({agentId:agent.id,canonicalRun:run??null,sessionId:f.sessions.get(agent.id)?.engineAgentId??null,progressAgeMs:Date.now()-(lastProgress.get(agent.id)??0),runId:run?.id,status:run?.status,progress:progress.get(agent.id)??0,alive:f.sessions.get(agent.id)?.isAlive()??false});}
    for(const run of runs){
-    const persisted=readCanonicalProgress(store,run.agentId,run.runId);run.canonicalProgress=persisted;
-    const previous=lastCanonicalProgress.get(run.agentId);if(!previous||persisted.sequence>previous.sequence)lastCanonicalProgress.set(run.agentId,{sequence:persisted.sequence,at:Date.now()});
+    const persisted=readCanonicalProgress(store,run.agentId,run.runId);run.canonicalProgress=persisted;const observedAt=Date.now();
+    const lease=readLeasedRun(store,run.agentId,run.runId,run.sessionId);run.lease=lease;run.processIdentity=f.sessions.get(run.agentId)?.processIdentity;const key=`${product}/${run.agentId}`,identity=workIdentity(run);
+    if(identities.has(key)&&identities.get(key)!==identity)continuityFailures.push({agentId:run.agentId,reason:'Run/session/lease owner/fence/process epoch changed'});identities.set(key,identity);
+    const previous=lastCanonicalProgress.get(run.agentId);if(!previous||persisted.sequence>previous.sequence){lastCanonicalProgress.set(run.agentId,{sequence:persisted.sequence,at:observedAt});const provider=providerReceipts.get(run.agentId)?.get(persisted.sequence);canonicalReceipts.push({agentId:run.agentId,runId:run.runId,sequence:persisted.sequence,providerAt:provider?.runId===run.runId?provider.at:null,observedAt,identity});}
     else if(Date.now()-previous.at>10000)continuityFailures.push({agentId:run.agentId,reason:'Canonical persisted progress gap exceeds 10s'});
-    const key=`${product}/${run.agentId}`,identity=JSON.stringify([run.runId,run.sessionId]);
-    if(identities.has(key)&&identities.get(key)!==identity)continuityFailures.push({agentId:run.agentId,reason:'Run/session identity changed'});
-    identities.set(key,identity);
     if(run.status!=='running'||!run.alive||run.progressAgeMs>10000)continuityFailures.push({agentId:run.agentId,reason:'inactive or progress gap exceeds 10s',run});
    }
    const leases=runs.map(run=>{
     return readLeasedRun(store,run.agentId,run.runId,run.sessionId);
    });
-   const sample=await sampleLinuxResources(),value={product,runs,leases,canonicalMessageCount:store.getConversationMessages(p.chat.id).length,sample,failures:f.failures?.map(String)??[]};record({event:'active-snapshot',...value});return value;
+   const sample=await sampleLinuxResources(),value={product,runs,leases,canonicalMessageCount:store.getConversationMessages(p.chat.id).length,sample,continuityFailures:[...continuityFailures],observedAt:Date.now()};record({event:'active-snapshot',...value});return value;
   }
   async function activate(product){
    const p=products[product];
@@ -50,7 +49,7 @@ export async function createLoadFixture(out,{messages=10000}={}){
     while(!closing&&work.get(agent.id)&&session.isAlive()){
      const result=await session.tool('ponderosa_workspace_projects',{});assert.equal(result.success,true,result.text);
      const detail=f.ok(await f.api('GET',`${p.prefix}/agents/${agent.id}`)),run=detail.runs.find(r=>r.status==='running');assert.ok(run,'Each progress tick requires its canonical running Run');
-     const n=(progress.get(agent.id)??0)+1;progress.set(agent.id,n);lastProgress.set(agent.id,Date.now());session.events.push({type:'text',delta:`Working checkpoint ${n}. `});record({event:'provider-work',product,agentId:agent.id,sessionId:session.engineAgentId,sequence:n,runId:run.id,runStatus:run.status,processIdentity:session.processIdentity,tool:'ponderosa_workspace_projects',success:result.success});
+     const n=(progress.get(agent.id)??0)+1;progress.set(agent.id,n);lastProgress.set(agent.id,Date.now());if(!providerReceipts.has(agent.id))providerReceipts.set(agent.id,new Map());providerReceipts.get(agent.id).set(n,{at:Date.now(),runId:run.id});session.events.push({type:'text',delta:`Working checkpoint ${n}. `});record({event:'provider-work',product,agentId:agent.id,sessionId:session.engineAgentId,sequence:n,runId:run.id,runStatus:run.status,processIdentity:session.processIdentity,tool:'ponderosa_workspace_projects',success:result.success});
      await delay(2000);
     }
    }}]);await sendQualificationTask(f,p.prefix,agent.id,'Continuously inspect granted workspace status and report short progress until qualification ends.',attempt=>record({event:'keyed-task-submission',agentId:agent.id,...attempt}));}
@@ -63,10 +62,11 @@ export async function createLoadFixture(out,{messages=10000}={}){
    for(const agent of products[product].agents)work.set(agent.id,false);
    await until(async()=>{for(const a of products[product].agents){const d=f.ok(await f.api('GET',`${products[product].prefix}/agents/${a.id}`));if(d.runs.some(r=>['running','preparing'].includes(r.status)))return false;}return true;},'controlled work completes',30000);
    for(const agent of products[product].agents)await f.sessions.get(agent.id)?.close();
-   record({event:'deactivated',product});
+   assertContinuity();record({event:'deactivated',product});
   }
+  function assertContinuity(){assert.deepEqual(continuityFailures,[],'Per-Agent continuity failure; no active-work credit');}
   writeFileSync(out+'/seed.json',JSON.stringify({root:f.root,products},null,2));
-  return {f,products,activate,deactivate,snapshot,assertContinuity(){assert.deepEqual(continuityFailures,[],'Per-Agent continuity failure; no active-work credit');},async close(){closing=true;clearInterval(monitor);await Promise.all(pending);record({event:'closing'});await f.dispose(false);record({event:'fixture-closed-owned-roots-observed-exited'});}};
+  return {f,products,activate,deactivate,snapshot,assertContinuity,async drain(){await Promise.all([...pending]);assertContinuity();},assertWindow(product,start,end){return assertProgressWindow(products[product].agents.map(a=>a.id),canonicalReceipts,start,end);},async close(){closing=true;clearInterval(monitor);await Promise.all(pending);record({event:'closing'});await f.dispose(false);record({event:'fixture-closed-owned-roots-observed-exited'});assertContinuity();}};
  }catch(error){closing=true;record({event:'setup-failed',error:error.stack});await f.dispose(false);throw error;}
 }
 
@@ -102,4 +102,23 @@ export function readCanonicalProgress(store,agentId,runId){
  const outputs=store.getRunOutputs(agentId).filter(row=>row.executionId===runId);
  const checkpoints=outputs.flatMap(row=>[...row.text.matchAll(/(?:Working|Canonical method) checkpoint (\d+)\./g)].map(match=>Number(match[1])));
  return {sequence:Math.max(0,...checkpoints),outputs:outputs.map(({id,executionId,seq,sourceSeqStart,sourceSeqEnd,completed})=>({id,executionId,seq,sourceSeqStart,sourceSeqEnd,completed}))};
+}
+
+export function workIdentity(run){
+ const lease=run.lease,p=run.processIdentity;
+ assert(lease?.lease_owner&&lease.fencing_token>0&&p?.pid>0&&p?.pgid>0&&p.birthMarker,'Lease owner/fence and actual process epoch required');
+ return JSON.stringify([run.agentId,run.runId,run.sessionId,lease.lease_owner,lease.fencing_token,p.pid,p.pgid,p.birthMarker]);
+}
+
+export function assertProgressWindow(agentIds,receipts,start,end,maxGapMs=10000){
+ assert.equal(new Set(agentIds).size,20,'Exactly twenty distinct Agents');
+ assert(Number.isFinite(start)&&Number.isFinite(end)&&end>start,'Bounded navigation-to-last-presentation window');
+ return agentIds.map(agentId=>{
+  const rows=receipts.filter(r=>r.agentId===agentId&&r.providerAt>=start&&r.providerAt<=r.observedAt&&r.observedAt<=end).sort((a,b)=>a.observedAt-b.observedAt);
+  assert(rows.length>0,'Each Agent must persist actual in-window work: '+agentId);
+  assert(rows.every(r=>r.identity===rows[0].identity&&r.runId===rows[0].runId),'Stable in-window lease/fence/process identity');
+  for(let i=1;i<rows.length;i++)assert(rows[i].sequence>rows[i-1].sequence,'Canonical progress must advance');
+  const times=[start,...rows.map(r=>r.observedAt),end];for(let i=1;i<times.length;i++)assert(times[i]-times[i-1]<=maxGapMs,'In-window canonical progress gap');
+  return {agentId,start,end,receipts:rows};
+ });
 }
