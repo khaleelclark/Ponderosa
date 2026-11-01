@@ -1,7 +1,7 @@
 # Current implementation coverage and backlog
 
 Source-only inventory includes Branchc462d403 (two serial resources), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
-retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner2c7db556e,
+retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner through91e8f8ad2/6ddf47dfa,
 and lifecycle source through1544fee9d. Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
@@ -161,6 +161,21 @@ retirement stays refused and pinned; no preserve-only upgrade or cascading retir
 Source only; focused regression/crash execution deferred. Lifecycle migration renamed
 `0040_lifecycle_reconciliation.sql` after existing Runtime0039; both registered once,
 neither executed.
+
+Scoped lifecycle UI source now provides Settings custody/memory inventories and orphan
+staging evidence, actual import-operation review, canonical Branch destination retirement
+and source-bound checkpoint/capture review. Commands persist before POST; ambiguous
+outcomes retain exact input, stale409 refreshes without automatic replay, and destination
+approval/retirement require separate confirmations with identical choice/key/hash.
+Only destination retirement has a pure receipt GET; other recovery requires explicit
+unchanged POST replay. Corrupt retained browser input blocks new mutations. Two deferred
+command/mounted fixture sources are present, unexecuted. See web-feature-completion.md.
+Global/deleted-owner import and destination inventories remain absent; scoped destination
+listing requires source ownership and is capped at50. Custody review lacks complete
+source intent, so unsealed capture discovery remains missing; destination review may
+refuse before deletion proof and limit Branch/capture reachability. Branch checkpoint
+retirement still depends on retained owner/source identity; no owner-independent journal.
+This is scoped UI source, not broad discovery, group UI or executed lifecycle qualification.
 
 - Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
   consumers beyond the delivered EXACTLY TWO standalone serial generation-zero
