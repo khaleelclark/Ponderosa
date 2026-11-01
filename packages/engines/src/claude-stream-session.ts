@@ -1,3 +1,4 @@
+import { ClaudeReplayFraming } from "./claude-replay-framing.js";
 import { claudeTurnContent } from "./typed-input.js";
 import { ClaudeControls } from "./claude-controls.js";
 import { requestNativeApproval } from "./native-approvals.js";
@@ -23,7 +24,7 @@ import type {
 import { spawnContainedCli } from "./contained-spawn.js";
 import { claudeStreamEventMapper } from "./claude-stream-events.js";
 import { ClaudeContextUsage } from "./claude-context-usage.js";
-import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError } from "./jsonl.js";
 import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { claudeBillingEnvironment } from "./runtime-environment.js";
@@ -61,6 +62,7 @@ export function claudeCapabilityRestrictionArgs(
 }
 
 export class ClaudeStreamSession implements RuntimeSession {
+  private replayFraming?: ClaudeReplayFraming;
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   private readonly child: ChildProcess;
@@ -462,11 +464,14 @@ export class ClaudeStreamSession implements RuntimeSession {
       session_id: this.engineAgentId,
       message: { role: "user", content: claudeTurnContent({ prompt, kind: "user_message", inputFiles }) },
     };
-    // Replay is required by compact receipts; reserve 1 MiB for its native envelope.
-    if (Buffer.byteLength(JSON.stringify(frame), "utf8") > JSONL_MAX_RECORD_BYTES - 1024 * 1024) {
-      throw new Error("Claude input exceeds the 3 MiB replay-safe frame budget");
-    }
-    await this.writeFrame(frame);
+    const media = frame.message.content.some(block => block.type === "image" || block.type === "document");
+    if (media) this.mediaReplayFraming().expect(id, frame.message, Buffer.byteLength(JSON.stringify(frame), "utf8"));
+    try { await this.writeFrame(frame); }
+    catch (error) { this.replayFraming?.forget(id); throw error; }
+  }
+
+  private mediaReplayFraming(): ClaudeReplayFraming {
+    return this.replayFraming ??= new ClaudeReplayFraming(this.engineAgentId);
   }
 
   private async writeFrame(frame: unknown): Promise<void> {
@@ -484,7 +489,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
     const map = claudeStreamEventMapper();
     try {
-      for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+      for await (const raw of this.mediaReplayFraming().parse(stdout as AsyncIterable<Buffer>)) {
         if (this.controls.observe(raw) || this.handleNativeRequest(raw)) continue;
         this.captureModelInitialization(raw);
         const capabilities = normalizeClaudeInitCapabilities(raw, this.selectedModel);
