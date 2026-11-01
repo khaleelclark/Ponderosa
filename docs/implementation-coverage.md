@@ -157,3 +157,18 @@ Reliability's remaining #8 transport work is assigned back to that owner.
 No measured performance improvement is claimed; existing mapped LCP failure
 remains unresolved. All runtime, accessibility, phone and comparative judgments
 remain deferred. Baseline and owners' worktrees remain untouched.
+
+## Direct reply and selected-file UI increment
+
+UI commit `1227d1b5` integrated: shared ChatPane presents host-authorized
+`presentation:text` snapshots for the latest direct user message in DM, Assistant
+and output apps. Preview checks exact message/Agent/Run/scope, memory exposure,
+fence/stream identity and sequence; canonical authored reply replaces it. Both
+audio consumers reject text presentation. This remains dependent on Runtime's
+core field/endpoint implementation and does not cover other Communication scopes.
+SSE refresh plus sequential 500 ms fallback is source behavior, not measured latency.
+
+Selected relative working-file copy/download controls and import destination
+folder/working-copy controls are integrated pending Reliability's transport
+successor. Permission adoption remains blocked on its structured preview contract;
+no adoption defaults were introduced. No new test execution or preparation.
