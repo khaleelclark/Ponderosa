@@ -89,7 +89,7 @@ export class BranchExecutionBudgetAuthority {
       const debit=this.db.prepare('UPDATE branch_execution_budgets SET used=used+1,updated_at=? WHERE branch_id=? AND used<limit_count+allowance').run(now,execution.branch_id);
       if(!debit.changes)return false;
     }
-    this.db.prepare('UPDATE branch_executions SET admitted_at=?,admission_json=?,budget_wait=0 WHERE id=?').run(now,stableJson({kind:charged?'charged':execution.admission_source==='manual'?'manual':'unlimited',periodId:row.period_id,revision:row.revision}),executionId);
+    this.db.prepare('UPDATE branch_executions SET admitted_at=?,admission_json=?,budget_wait=0 WHERE id=?').run(now,stableJson({kind:charged?'charged':execution.admission_source==='manual'?'manual':'unlimited',periodId:row.period_id,revision:row.revision,budget:this.read(execution.branch_id,now)}),executionId);
     return true;
   }
 }

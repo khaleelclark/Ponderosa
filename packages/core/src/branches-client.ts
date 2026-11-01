@@ -64,6 +64,7 @@ export class BranchesClient {
  invoke(id:string,input:string,occurrenceKey:string,options?:BranchesRequestOptions){return this.json<BranchExecutionDto>(`/api/branches/${part(id)}/executions`,'POST',{input,occurrenceKey},options);}
  executions(id:string,options:BranchesRequestOptions&{before?:string;state?:string}={}){return this.json<BranchExecutionDto[]>(`/api/branches/${part(id)}/executions`+query({before:options.before,state:options.state}),'GET',undefined,options);}
  /** Current graph state and historical rows are paged by the server; follow nextCursor explicitly. */
+ sharedState(executionId:string,options?:BranchesRequestOptions){return this.json<import('./branches.js').BranchSharedStateDto>(`/api/branch-executions/${part(executionId)}/shared-state`,'GET',undefined,options);}
  state(executionId:string,cursor?:string,options?:BranchesRequestOptions){return this.json<BranchExecutionDetailDto>(`/api/branch-executions/${part(executionId)}/full-detail`+query({cursor}),'GET',undefined,options);}
  actions(executionId:string,cursor?:string,options?:BranchesRequestOptions){return this.json<BranchExecutionActionsDto>(`/api/branch-executions/${part(executionId)}/actions`+query({cursor}),'GET',undefined,options);}
  operations(executionId:string,options?:BranchesRequestOptions){return this.json<BranchOperationalSummaryDto>(`/api/branch-executions/${part(executionId)}/operations`,'GET',undefined,options);}

@@ -85,6 +85,9 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
     try{const p=request.params,body=validatedObject(request.body,'Human group disclosure');exactObjectFields(body,['commandKey','action','reviewHash','expectedRevision'],'Human group disclosure');return await groups.disclosures.choose(p.id,p.executionId,p.admissionId,body as unknown as import('@ponderosa/core').BranchDisclosureChoice);}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  app.get<{Params:{executionId:string}}>('/api/branch-executions/:executionId/shared-state',(request,reply)=>{
+    try{return branches.sharedState(request.params.executionId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   const destinationPath='/api/branches/:id/executions/:executionId/destinations';
   type DestinationParams={id:string;executionId:string};
   app.get<{Params:DestinationParams;Querystring:{commandKey?:string}}>(destinationPath,(request,reply)=>{

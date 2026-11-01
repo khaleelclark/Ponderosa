@@ -17,3 +17,10 @@ Independent current-generation coverage: group reservation now constructs Map it
 Deferred real ASYNC/SYNC fixtures cover actual parent/call/resource/custody capture, source settlement and Agent/Chat cleanup, per-owner pin refusal, both owners' human facts, child policy drift, final-owner rollback, fresh call ancestry, owner-specific Chat Branches, per-owner checkpoints, admission journal audit and byte-free restart receipt readback. Multi-item generation-zero fixtures cover 2, 3 and 32 resources, final-import rollback, exact mapped item identities and restart. Package/provider/native handles remain inert adapters; these fixtures are source only and have not been run.
 
 Remaining unsupported: broader called trees, parallel/EXIT called frontiers, multiple resources per called owner, called retry history, standalone multi-resource/multi-item retry history, recovery/unknown/forwarded/secret/artifact families, missing original scopes/proofs and web adoption. Existing tree journals conservatively hold Branch deletion; this change adds no tree abandonment or pin-release bypass. Repeated restored owners with different attempt/generation offsets remain outside historical retry support. All execution, package filesystem, native/provider, and live product qualification remains unperformed.
+
+
+The additive `reviewEvidence` group response contract now exposes exact saved
+original/fresh ancestry, maps/counters and per-owner numeric acceptance budgets.
+See [branch-finite-contract-dispositions.md](branch-finite-contract-dispositions.md).
+Legacy plans report missing saved evidence explicitly; current mutable quotas are
+never substituted. UI rendering and all executable qualification remain separate.

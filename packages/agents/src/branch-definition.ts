@@ -48,7 +48,7 @@ export function validateBranchDefinition(value: unknown): BranchDefinition {
 function validateDefinition(value: unknown): BranchDefinition {
   const serialized = stableJson(value, { maxDepth: 32, maxNodes: 10_000 });
   if (Buffer.byteLength(serialized) > 512_000) throw new Error("Branch definition too large");
-  const d = keys(JSON.parse(serialized), ["schema", "name", "trigger", "parameters", "templates", "entry", "steps", "controls", "edges", "policy"]);
+  const d = keys(JSON.parse(serialized), ["schema", "name", "trigger", "parameters", "state", "templates", "entry", "steps", "controls", "edges", "policy"]);
   if (d.schema !== "ponderosa.branch.v1") throw new Error("Unsupported Branch schema");
   d.name = branchText(d.name);
   if (!d.name || String(d.name).length > 240) throw new Error("Invalid Branch name");
@@ -63,6 +63,10 @@ function validateDefinition(value: unknown): BranchDefinition {
     if (p.required !== undefined && typeof p.required !== 'boolean') throw new Error('Invalid parameter requirement');
     if (p.type === 'secret' && p.default !== undefined) throw new Error('Secret defaults are forbidden');
     if (p.default !== undefined && ((p.type === 'text'||p.type==='path') ? typeof p.default !== 'string' : p.type==='number' ? typeof p.default !== 'number'||!Number.isFinite(p.default) : typeof p.default !== 'boolean')) throw new Error('Invalid parameter default');
+  }
+  if(d.state!==undefined)for(const [name,raw] of Object.entries(record(d.state))){
+    branchKey(name);const channel=keys(raw,['initial','reducer']);
+    if(!Object.hasOwn(channel,'initial')||!['replace','append','sum'].includes(String(channel.reducer))||channel.reducer==='append'&&!Array.isArray(channel.initial)||channel.reducer==='sum'&&(typeof channel.initial!=='number'||!Number.isFinite(channel.initial)))throw Error('Invalid state channel');
   }
   if (d.templates !== undefined) for (const [ref, template] of Object.entries(record(d.templates))) {
     try { branchKey(ref); validateBranchTemplate(template); }
@@ -85,8 +89,12 @@ function validateDefinition(value: unknown): BranchDefinition {
     let section: BranchValidationIssue["section"] = "task", field: string | undefined;
     try {
     if (step.failure !== undefined) failurePolicy(step.failure);
+    if(step.stateWrites!==undefined){
+      if(!['script','agent'].includes(String(step.kind))||!Array.isArray(step.stateWrites)||!step.stateWrites.length||new Set(step.stateWrites).size!==step.stateWrites.length)throw Error('State writes require distinct declared channels on a Script or Agent');
+      for(const key of step.stateWrites){branchKey(key);if(!Object.hasOwn(record(d.state),String(key)))throw Error('Unknown state channel');}
+    }
     if (step.kind === "agent") {
-      keys(step, ["id", "label", "kind", "target", "instructions", "failure", "requireUserCommunication"]);
+      keys(step, ["id", "label", "kind", "target", "instructions", "failure", "stateWrites", "requireUserCommunication"]);
       if(step.requireUserCommunication!==undefined&&typeof step.requireUserCommunication!=='boolean')throw Error('requireUserCommunication must be boolean');
       field = "target"; const target = record(step.target);
       if (target.kind === "persistent_agent" || target.kind === "persistent_organization") { keys(target, ["kind", "ref"]); branchKey(target.ref); }
@@ -100,7 +108,7 @@ function validateDefinition(value: unknown): BranchDefinition {
       keys(step,['id','label','kind','branchRef','canceled','failure']); field = 'branchRef'; branchKey(step.branchRef);
       if (step.canceled !== undefined && !['retry','ask_human','terminate'].includes(String(step.canceled))) throw new Error('Invalid canceled child policy');
     } else if (step.kind === "script") {
-      keys(step, ["id", "label", "kind", "runtime", "source", "cwdRef", "timeoutMs", "failure"]);
+      keys(step, ["id", "label", "kind", "runtime", "source", "cwdRef", "timeoutMs", "failure", "stateWrites"]);
       if (step.runtime !== "node") throw new Error("Unsupported Script runtime");
       field = "source"; if (typeof step.source !== "string" || Buffer.byteLength(step.source) > 256_000) throw new Error("Invalid Script source");
       section = "advanced"; field = "cwdRef"; branchKey(step.cwdRef); field = "timeoutMs"; boundedInteger(step.timeoutMs, 1, 3_600_000, "Script timeout");

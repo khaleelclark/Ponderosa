@@ -17,7 +17,10 @@ export interface BranchExecutionBudgetUpdate {
 export interface BranchExecutionBudgetGrant {
   commandKey: string; expectedRevision: number; expectedPeriodId: string; additional: number;
 }
-export interface BranchResult { failed: boolean; output?: string }
+export type BranchStateValue = null | boolean | number | string | BranchStateValue[] | {[key:string]:BranchStateValue};
+export interface BranchStateChannel {initial:BranchStateValue;reducer:'replace'|'append'|'sum'}
+export interface BranchSharedStateDto {revision:number;values:Record<string,BranchStateValue>;evidenceHash:string}
+export interface BranchResult { failed: boolean; output?: string; stateUpdate?:{revision:number;updates:Record<string,BranchStateValue>} }
 /** Failure output can reach recovery Agents; raw Script streams stay in evidence. */
 export function branchScriptFailureSummary(code: number | null | undefined, error?: string): string | undefined {
   return error || (code === undefined || code === 0 ? undefined : code === null
@@ -64,7 +67,7 @@ export interface BranchLimits { maxCallDepth: number; maxLoopIterations: number;
 export type BranchCheckpointMode = 'async' | 'sync' | 'exit';
 export interface BranchConfiguration { checkpointMode?: BranchCheckpointMode; parameters: Record<string, string | number | boolean>; limits: BranchLimits; secretBindings?: Record<string, string> }
 export interface BranchRuntimeOutcome { kind: "child_canceled" | "limit_exhausted"; limit?: keyof BranchLimits; configured?: number; observed?: number }
-interface StepBase { id: string; label?: string; failure?: BranchFailurePolicy }
+interface StepBase { id: string; label?: string; failure?: BranchFailurePolicy; stateWrites?:string[] }
 export type BranchStep =
   | (StepBase & { kind: "agent"; target: BranchTarget; instructions: string; requireUserCommunication?: boolean })
   | (StepBase & { kind: "branch_call"; branchRef: string; canceled?: "retry" | "ask_human" | "terminate" })
@@ -82,6 +85,7 @@ export interface BranchDefinition {
   name: string;
   trigger: { kind: "manual" } | { kind: "schedule" | "webhook" | "filesystem"; configRef: string };
   parameters?: Record<string, BranchParameter>;
+  state?:Record<string,BranchStateChannel>;
   templates?: Record<string, AgentPortablePackageDto>;
   entry: string;
   steps: BranchStep[];

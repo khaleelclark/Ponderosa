@@ -12,7 +12,7 @@ not newer event-stream projections. Source compatibility remains unqualified.
 | Named capability | Existing implementation | Representative application / limit |
 | --- | --- | --- |
 | Graphs | core BranchDefinition; agents branch-store; WorkflowCanvas | application.ts deploys real fork/join edges through the public client. |
-| State | execution input, parameters, immutable step results and ordered result bundles | Child topic parameter and parent input/result flow; arbitrary shared mutable/reducer state is not supplied by this example. |
+| State | `BranchDefinition.state`, declared Script/Agent partial writes, immutable revisioned seal projection, sum/append/replace reducers, public shared-state read | `state.ts` demonstrates parallel contributions and a custom aggregate through the existing Script after Join. Settlement-order semantics differ from LangGraph supersteps; message-ID reducers, manual state editing and implicit cross-Call state are not claimed. See branch-finite-contract-dispositions.md. |
 | Checkpoints and rewind | branch-unit-saver, script/parallel replay, host-cut and issued destination | inspect lists canonical retained checkpoints; no automatic rewind or disclosure. Reviewed issued destination supports standalone gen0 groups/maps2–32, one-resource serial/local-parallel history1–32, and one manual parent plus one called child with one gen0 serial resource each. Broader families remain outside the delivered bound; see implementation-coverage.md and U4 in phase2-remaining-implementation.md. |
 | Human-in-the-loop | human_gate, revisioned BranchGateResolution and public execution actions | Editable final review; resolve requires the current gate and an explicit caller choice. |
 | Streaming | BranchesClient.streamAgent, BranchLiveOutput and canonical shared streams | Exact current execution/Agent/Run filter; server example also supplies SSE HTTP forwarding. Reconnect qualification deferred. |
@@ -51,3 +51,12 @@ top-level framework releases; provider packages/model versions remain caller inp
 In-memory comparator checkpoints/store do not survive process loss. Approved memory
 publication follows the interrupt in a separate node. Neither example establishes
 crash durability, model quality, native effect safety, or framework parity.
+
+## Finite contract successor
+
+U2/U4/U6 and M4 source dispositions are detailed in
+[branch-finite-contract-dispositions.md](branch-finite-contract-dispositions.md).
+Pinned release source establishes the state gap; the new public state application
+is additional source, not an executed replacement for the existing comparator.
+Shared-state results use the existing selected checkpoint/replay/remap; original
+consumed retry allowance may be up to100 even when retained history is at most32.

@@ -3,7 +3,7 @@
 This is source assembly, not executable qualification. The supported source bound
 is one manual standalone owner, one serial issued resource, ASYNC/SYNC, current
 generation 1–32, and a configured fresh-context retry policy with maxAttempts
-between current generation + 1 and 33. Every generation starts an actual new
+between current generation + 1 and the existing definition ceiling100. Every generation starts an actual new
 resource import and opening. The current resource attempt number is generation
 + 1; destination remapping preserves that consumed number and the original pinned
 maxAttempts. Acceptance does not replenish the retry budget. Existing generation
@@ -91,7 +91,7 @@ handles remain inert adapters. No test/check/typecheck/build/Node/native/browser
 execution or preparation was performed; no passing or live qualification is claimed.
 
 Local parallel retry admission, called-owner atomic destination consumption,
-generations above 32, configured maxAttempts above 33, EXIT, manual recovery,
+generations above 32, EXIT, manual recovery,
 unknown/forwarded/secret/artifact families, missing preupgrade proof and web adoption
 remain unsupported/refused. Runtime owner-tree work and its existing Join are
 untouched. Live provider/native/filesystem custody and restored runtime behavior

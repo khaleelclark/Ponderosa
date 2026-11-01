@@ -85,7 +85,7 @@ called-tree admission, missing-old-proof or executable qualification limits.
 ## Bounded serial generation history
 
 The existing later-generation serial module and shared serial replay now cover
-current generations 1–32, configured maxAttempts up to 33, exhaustive prior seals/
+current generations 1–32, original configured maxAttempts up to100, exhaustive prior seals/
 retirement/failed-Request/attempt/provider/native/custody evidence, and current-only
 host capture. Later precleanup seals retain the full original selected cut but
 capture only that generation's failed root; their prior chain prefix is bound in

@@ -171,6 +171,7 @@ export { branchRequirements, exportBranchPackage, importBranchPackage } from "./
 export * from "./branch-parameters.js";
 export { validateBranchDefinition, validateBranchBindings } from "./branch-definition.js";
 export { branchDefinitionChanges } from "./branch-definition-diff.js";
+export {branchSharedState,branchStateResult,validateBranchStateSeal} from './branch-shared-state.js';
 export type { BranchResourceProvision, BranchActionLease, BranchGateNotificationEvent, BranchScriptLease } from "./branch-store.js";
 export { BranchTriggerStore } from "./branch-trigger-store.js";
 export type * from "./branch-trigger-types.js";
@@ -223,3 +224,4 @@ export {readGroupAuditJournal,listGroupAuditJournals} from './branch-group-journ
 export {issuedGroupOwners,issuedGroupResources,issuedGroupHost} from './branch-issued-group-capture.js';
 
 export { CoordinationV3SourceEffectsAuthority, SourceEffectConflictError } from "./coordination-v3-source-effects-authority.js";
+export {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';

@@ -1,7 +1,7 @@
 import {groupJournalDigest} from './group-journal-audit.js';
 import {sqliteCollectionGeneration} from './collection-page.js';
 import {createHash} from 'node:crypto';
-import {issuedGroupOwners,issuedGroupResources,readIssuedGroup,listGroupAuditJournals,stableJson,workspaceCreationId,type AgentStore,type BranchStore,type CoordinationV3Store,type CoordinationDestinationGroupAuthority} from '@ponderosa/agents';
+import {groupOwnerReviewEvidence,issuedGroupOwners,issuedGroupResources,readIssuedGroup,listGroupAuditJournals,stableJson,workspaceCreationId,type AgentStore,type BranchStore,type CoordinationV3Store,type CoordinationDestinationGroupAuthority} from '@ponderosa/agents';
 import type {BranchIssuedDestinationInput,AgentPortablePackageDto} from '@ponderosa/core';
 import {BRANCH_DISCLOSURE_OPERATOR,BranchDisclosureReviewService} from './branch-disclosure-review.js';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
@@ -36,6 +36,21 @@ export class BranchIssuedGroupDestinationService {
    }
    const revisions=r.resources.map(item=>this.packages().verifyCheckpointNow(item.custody));return hash({source,revisions});
   },authorizeGroupDisclosure:this.disclosures.authorizeDisclosure,resolveArtifact:()=>{throw Error('Group runtime artifacts unsupported');}};
+ }
+ private reviewEvidence(plan:Row,committed:boolean):import('@ponderosa/core').BranchGroupReviewEvidence {
+  const evidence=plan.reviewEvidence;
+  if(evidence===undefined){if(plan.reviewEvidenceHash!==undefined)throw Error('Group review evidence missing');return {state:'unavailable',reason:'legacy_missing_saved_evidence'};}
+  if(stableJson(Object.keys(evidence).sort())!==stableJson(['idMap','ownerMap','owners'])||hash(evidence)!==plan.reviewEvidenceHash||stableJson(evidence.idMap)!==stableJson(plan.idMap)||stableJson(evidence.ownerMap)!==stableJson(plan.ownerMap))throw Error('Saved group review evidence differs');
+  const saved=readIssuedGroup(this.db,plan.reservation.sourceExecutionId,plan.input.checkpointId,plan.input.expectedHash),owners=issuedGroupOwners(saved);
+  if(!Array.isArray(evidence.owners)||evidence.owners.length!==owners.length)throw Error('Group review owner inventory differs');
+  for(const o of owners){
+   const v=evidence.owners.find((v:Row)=>v.sourceExecutionId===o.executionId),target=this.db.prepare('SELECT parent_execution_id,parent_attempt_id,admission_source,admitted_at,admission_json FROM branch_executions WHERE id=?').get(plan.ownerMap[o.executionId]) as Row|undefined;
+   const admission=target&&JSON.parse(target.admission_json),version=this.db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row|undefined;
+   if(!v||!target||!admission?.budget||!version)throw Error('Exact group owner review receipt unavailable');
+   const expected=groupOwnerReviewEvidence(o,JSON.parse(version.definition_json),plan.idMap,plan.ownerMap,{source:target.admission_source,admittedAt:target.admitted_at,kind:admission.kind,budget:admission.budget});
+   if(stableJson(v)!==stableJson(expected)||committed&&((target.parent_execution_id??null)!==v.destinationParentExecutionId||(target.parent_attempt_id??null)!==v.destinationParentAttemptId))throw Error('Exact group owner review receipt differs');
+  }
+  return {state:'verified',evidenceHash:plan.reviewEvidenceHash,ancestry:committed?'committed':'prospective',...evidence};
  }
  private supported(pkg:AgentPortablePackageDto,receipt:Row){
   if(pkg.memory?.length||pkg.agents.some(a=>a.artifacts?.length||a.workingFiles?.length||a.workingFolder||a.workingRootRef||a.workingCopyMode==='separate_git'
@@ -124,7 +139,7 @@ export class BranchIssuedGroupDestinationService {
  inspect(branchId:string,executionId:string,commandKey:string){
   const plan=this.branches.issuedGroupDestinationPlan(branchId,executionId,commandKey),row=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(plan.admissionId) as Row;
   const choice=row.stage_json?this.disclosures.readChoice(branchId,executionId,plan.admissionId):{revision:0,state:'unreviewed'};
-  const base={ownerMap:plan.ownerMap,scope:plan.ownerMap&&Object.keys(plan.ownerMap).length>1?'owner_tree':'standalone',commandKey,admissionId:plan.admissionId,checkpointId:plan.input.checkpointId,checkpointHash:plan.input.expectedHash,resources:plan.reservation.resources,disclosure:choice};
+  const base={reviewEvidence:this.reviewEvidence(plan,row.state==='admitted'),ownerMap:plan.ownerMap,scope:plan.ownerMap&&Object.keys(plan.ownerMap).length>1?'owner_tree':'standalone',commandKey,admissionId:plan.admissionId,checkpointId:plan.input.checkpointId,checkpointHash:plan.input.expectedHash,resources:plan.reservation.resources,disclosure:choice};
   if(row.state==='admitted'){
    const receipt=this.coordination.readCoordinationDestinationGroup(plan.admissionId,plan.reservationHash,this.authority());
    const saved=readIssuedGroup(this.db,executionId,plan.input.checkpointId,plan.input.expectedHash);

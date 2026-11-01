@@ -11,7 +11,7 @@ import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore,stableJson,readIssuedResourceContinuation,reconstructIssuedResourceContinuation,issuedResourceContinuationSupported,readDestinationHistoricalPartition,destinationHistoricalFacts} from '../../packages/agents/dist/index.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
-function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainHistory=false){
+function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainHistory=false,sharedState=false){
  const dir=mkdtempSync(join(tmpdir(),'historical-rewind-'));let store,branches;
  const open=()=>{store=new AgentStore(dir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
@@ -19,11 +19,19 @@ function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainH
  const definition={schema:'ponderosa.branch.v1',name:'Historical',trigger:{kind:'manual'},entry:'a',steps:['a','b'].map(id=>({id,kind:'script',runtime:'node',source:`// ${id} never executed`,cwdRef:'root',timeoutMs:5000})),controls:[{id:'c',kind:'condition',predicate:{source:'input',equals:'prefix'},otherwise:'b'}],edges:[{id:'a-c',from:'a',to:'c',on:'success'},{id:'yes',from:'c',to:loop?'a':'b',on:'selected',...(loop?{loop:true}:{})},{id:'no',from:'c',to:'b',on:'failure'}],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}},...(secret?{parameters:{private:{type:'secret'}}}:{})};
  if(exitHistory){definition.steps.push({id:'d',kind:'script',runtime:'node',source:'// d never executed',cwdRef:'root',timeoutMs:5000});definition.edges.push({id:'b-d',from:'b',to:'d',on:'success'});}
  if(chainHistory){definition.steps.push(...['e','f'].map(id=>({id,kind:'script',runtime:'node',source:`// ${id} never executed`,cwdRef:'root',timeoutMs:5000})));definition.edges.push({id:'d-e',from:'d',to:'e',on:'success'},{id:'e-f',from:'e',to:'f',on:'success'});}
+ if(sharedState){definition.state={total:{initial:0,reducer:'sum'},notes:{initial:[],reducer:'append'},phase:{initial:'new',reducer:'replace'}};for(const step of definition.steps)step.stateWrites=['total','notes','phase'];definition.controls[0].predicate.equals=JSON.stringify({total:2,notes:['prefix'],phase:'prefix'});}
+ if(sharedState==='parallel'){
+  definition.entry='fork';definition.steps.push({id:'reduce',kind:'script',runtime:'node',source:'// custom aggregate never executed',cwdRef:'root',timeoutMs:5000,stateWrites:['phase']});
+  definition.controls=[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['a-arm','b-arm']}];
+  definition.edges=[{id:'a-arm',from:'fork',to:'a',on:'selected'},{id:'b-arm',from:'fork',to:'b',on:'selected'},{id:'a-join',from:'a',to:'join',on:'success'},{id:'b-join',from:'b',to:'join',on:'success'},{id:'reduce-edge',from:'join',to:'reduce',on:'success'}];
+ }
+
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{},directories:{root:dir}}});
  branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode,...(secret?{secretBindings:{private:'opaque-never-embed'}}:{})},0);
  const source=branches.accept(branch.id,'source','input');
- const claim=async()=>{let lease;for(let n=0;n<16&&!lease;n++){await branches.unitSaver.drain();branches.advance();lease=branches.claimScript('inert');}assert.ok(lease);await branches.unitSaver.drain();assert.equal(branches.checkpointDispatch(lease),'ready');return lease;};
+ const claim=async()=>{let lease;for(let n=0;n<16&&!lease;n++){await branches.unitSaver.drain();branches.advance();lease=branches.claimScript('inert');}assert.ok(lease);await branches.unitSaver.drain();assert.equal(branches.checkpointDispatch(lease),'ready');if(sharedState)branches.authorizeScript(lease,{pid:818181,pgid:818181,birthMarker:'inert-shared-state'});return lease;};
  return {get store(){return store},get branches(){return branches},branch,source,definition,dir,claim,
+  settleState(lease,result){branches.recordScriptEvidence(lease,{pid:818181,pgid:818181,birthMarker:'inert-shared-state'},{stdout:result.output??'',outputHash:hash(result.output??''),code:result.failed?1:0,...(result.failed?{error:result.output}:{})});branches.settleScript(lease,result);},
   async prefix(){const lease=await claim();branches.settleScript(lease,{failed:false,output:'prefix'});await branches.unitSaver.drain();return branches.historicalCheckpoints(branch.id,source.id).find(cp=>{const s=JSON.parse(store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);return cp.restoreSupported&&s.selected.paths[0]?.node_id==='c'&&s.selected.steps.length===1;});},
   async finish(){if(loop){const second=await claim();branches.settleScript(second,{failed:false,output:'stop'});}const last=await claim();branches.settleScript(last,{failed:false,output:'later suffix'});await branches.unitSaver.drain();assert.equal(branches.execution(source.id).state,'completed');},
   async reopen(){await branches.unitSaver.drain();store.close();open();}};
@@ -966,7 +974,7 @@ async function openCalledTreeResource(store,branches,dir,executionId,branchId){
  branches.bindResource(r.step_execution_id,result);await branches.unitSaver.drain();
  return {requestId:store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=? ORDER BY number DESC LIMIT 1').get(r.step_execution_id).request_id,agentId:id,chatId:chat.id,stepId:r.step_execution_id};
 }
-async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false,calledResources=false){
+async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false,calledResources=false,stateful=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
  const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
@@ -975,11 +983,11 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
  const count=typeof twoResources==='number'?twoResources:twoResources?2:1;
  const teams=Array.from({length:parallel==='map'?1:count},(_,i)=>i?`team${i+1}`:'team');
- const resourceSteps=teams.map((id,i)=>({id,kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:i?'Additional inert local result':'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:typeof freshRetry==='number'?freshRetry:2,delayMs:0,freshContext:true}}:{})}));
+ const resourceSteps=teams.map((id,i)=>({id,...(stateful?{stateWrites:['count']}:{}),kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:i?'Additional inert local result':'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:typeof freshRetry==='number'?freshRetry:2,delayMs:0,freshContext:true}}:{})}));
  const arms=teams.map(id=>`${id}-arm`);
  const controls=parallel==='map'?[{id:'fork',kind:'map',joinId:'join',workerId:'team',source:'lines',maxItems:count,maxConcurrentItems:count},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[]}]:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[...arms,'side-arm']}]:[];
  const edges=parallel==='map'?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},...teams.flatMap((id,i)=>[{id:arms[i],from:'fork',to:id,on:'selected'},{id:`${id}-join`,from:id,to:'join',on:'success'}]),{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...teams.map((id,i)=>({id:`${id}-next`,from:id,to:teams[i+1]??'suffix',on:'success'}))];
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),...resourceSteps,script('suffix')],controls,edges,policy:{maxConcurrentExecutions:8,maxEphemeralAgents:Math.max(2,count),failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}});
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{...(stateful?{state:{count:{initial:0,reducer:'sum'}}}:{}),schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),...resourceSteps,script('suffix')],controls,edges,policy:{maxConcurrentExecutions:8,maxEphemeralAgents:Math.max(2,count),failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  let parent,root,source;
  if(childOwner){
@@ -2211,8 +2219,9 @@ for(const mode of ['async','sync'])test(`called issued owner tree ${mode} captur
 });
 
 // Deferred real serial/local-parallel chain source. No execution/qualification claim; provider/package handles remain inert.
-for(const mode of ['async','sync'])for(const [parallel,generation] of [[false,2],[false,3],[false,32],[true,1],[true,2],[true,32],['map',1],['map',2],['map',32]])test(`${parallel?'local parallel':'serial'} ${parallel==='map'?'map':'fork'} generation ${generation} ${mode} discloses every prior generation and preserves budget`,async t=>{
- const f=await reservationHistoryFixture(t,mode,false,parallel,generation+1),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+for(const mode of ['async','sync'])for(const [parallel,generation,budgetOverride] of [[false,2,100],[false,2],[false,3],[false,32],[true,1],[true,2],[true,32],['map',1],['map',2],['map',32]])test(`${parallel?'local parallel':'serial'} ${parallel==='map'?'map':'fork'} generation ${generation} ${mode} discloses every prior generation and preserves budget`,async t=>{
+ const maxAttempts=budgetOverride??generation+1;
+ const f=await reservationHistoryFixture(t,mode,false,parallel,maxAttempts),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
  const db=f.store.sqlite,coordination=new CoordinationV3Store(db),dir=f.branches.localConfiguration(f.branch.id).directories.root;
  const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
  const seals=[],requests=[],agents=[],chats=[];
@@ -2237,7 +2246,7 @@ for(const mode of ['async','sync'])for(const [parallel,generation] of [[false,2]
   const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);f.branches.resourceRetired(opened.stepId);await f.branches.unitSaver.drain();
  }
  const current=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id),preview=f.branches.previewGenerationHistoryCapture(f.source.id);
- assert.equal(preview.generation,generation);assert.equal(preview.consumedAttempts,generation+1);assert.equal(preview.maxAttempts,generation+1);
+ assert.equal(preview.generation,generation);assert.equal(preview.consumedAttempts,generation+1);assert.equal(preview.maxAttempts,maxAttempts);
  assert.deepEqual(preview.historicalPartition.map(v=>v.generation),Array.from({length:generation},(_,i)=>i));
  assert.ok(preview.historicalPartition.every(v=>stableJson(v.discloseTo)===stableJson([current.agentId])));
  if(generation>1)assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/requires current generation one/);else assert.equal(f.branches.previewGenerationOneCapture(f.source.id).generation,1);
@@ -2262,7 +2271,7 @@ for(const mode of ['async','sync'])for(const [parallel,generation] of [[false,2]
  assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].historicalPartition,preview.historicalPartition);
  // Empty-client recovery uses only saved capture identity, never a new preview.
  const status=resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut'),budget=status.retryBudget;
- assert.equal(budget.state,'verified');assert.equal(status.consumedAttempts,generation+1);assert.equal(status.maxAttempts,generation+1);assert.match(budget.evidenceHash,/^[a-f0-9]{64}$/);
+ assert.equal(budget.state,'verified');assert.equal(status.consumedAttempts,generation+1);assert.equal(status.maxAttempts,maxAttempts);assert.match(budget.evidenceHash,/^[a-f0-9]{64}$/);
  assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);assert.equal(status.historyKind,preview.historyKind);
  assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run('{}',f.branch.id);assert.deepEqual(resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut').retryBudget,budget);throw Error('restore mutable policy');})(),/restore mutable policy/);
 
@@ -2291,12 +2300,12 @@ for(const mode of ['async','sync'])for(const [parallel,generation] of [[false,2]
  assert.ok(requests.every(id=>!Object.hasOwn(admitted.receipt.requestMap,id)));assert.ok(agents.every(id=>!Object.hasOwn(admitted.receipt.agentMap,id)));
  await f.reopen();const read=await x.services().composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash);assert.deepEqual(read.receipt,admitted.receipt);
  const restartedResources=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));assert.deepEqual(restartedResources.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);
- // The accepted owner cannot spend the original budget again after its current Request fails.
+ // Original remaining budget is preserved, including policies above the evidence count bound.
  new CoordinationV3Store(f.store.sqlite).updateRequest({requestId:read.receipt.requestMap[current.requestId],updateId:'consumed-budget-failure',kind:'failed',actor:{kind:'agent',id:read.receipt.agentMap[current.agentId]},payload:{text:'remaining retry budget is zero'}});
  for(let n=0;n<8;n++){f.branches.advance();await f.branches.unitSaver.drain();}
  const remaining=f.store.sqlite.prepare('SELECT a.number FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND s.id=?').all(prepared.destination.executionId,read.receipt.owner.resourceStepId);
- assert.deepEqual(remaining.map(a=>a.number),[generation+1]);
- assert.equal(f.store.sqlite.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(read.receipt.owner.resourceStepId).retry_draining,0);
+ assert.deepEqual(remaining.map(a=>a.number),maxAttempts>generation+1?[generation+1,generation+2]:[generation+1]);
+ assert.equal(f.store.sqlite.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(read.receipt.owner.resourceStepId).retry_draining,maxAttempts>generation+1?1:0);
 });
 
 // Deferred SOURCE: actual Branch deletion transaction; package proofs remain synthetic.
@@ -2397,6 +2406,20 @@ for(const mode of ['async','sync'])test(`called owner tree ${mode} retains exact
  db.prepare('UPDATE branches SET enabled=1 WHERE id=?').run(f.branch.id);
  const p=await s.prepare(f.parent.id,f.root.id,input);
  assert.equal(p.scope,'owner_tree');assert.equal(new Set(p.resources.map(r=>r.destination.executionId)).size,2);
+ assert.equal(p.reviewEvidence.state,'verified');assert.equal(p.reviewEvidence.ancestry,'prospective');
+ assert.deepEqual(p.reviewEvidence.ownerMap,p.ownerMap);
+ const childEvidence=p.reviewEvidence.owners.find(o=>o.sourceExecutionId===f.source.id);
+ assert.equal(childEvidence.acceptance.source,'call');assert.ok(Number.isSafeInteger(childEvidence.acceptance.budget.used));
+ const savedBudget=structuredClone(childEvidence.acceptance);
+ const planRow=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE ?').get(f.root.id,'issued-group-destination:%'),originalPlan=JSON.parse(planRow.result_json);
+ const badPlan=structuredClone(originalPlan);badPlan.reviewEvidence.owners[0].counters.traversals++;
+ db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key LIKE ?').run(stableJson(badPlan),f.root.id,'issued-group-destination:%');
+ assert.throws(()=>s.inspect(f.parent.id,f.root.id,input.commandKey),/review evidence/);
+ db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key LIKE ?').run(planRow.result_json,f.root.id,'issued-group-destination:%');
+ // Mutable current quota cannot replace the immutable fresh-acceptance snapshot.
+ db.prepare('UPDATE branch_execution_budgets SET allowance=allowance+5,revision=revision+1 WHERE branch_id=?').run(f.branch.id);
+ assert.deepEqual(s.inspect(f.parent.id,f.root.id,input.commandKey).reviewEvidence.owners.find(o=>o.sourceExecutionId===f.source.id).acceptance,savedBudget);
+
  const savedSource=JSON.parse(cp.snapshot_json),childProject=savedSource.continuation.owners.find(o=>o.executionId===f.source.id).hostDependencies.requests[0].row.project_id,getProject=f.store.getProject.bind(f.store);
  f.store.getProject=id=>id===childProject?undefined:getProject(id);await assert.rejects(s.disclosures.prepare(f.parent.id,f.root.id,p.admissionId),/Original Project operator audit-read/);f.store.getProject=getProject;
  const review=await s.disclosures.prepare(f.parent.id,f.root.id,p.admissionId);
@@ -2414,10 +2437,85 @@ for(const mode of ['async','sync'])test(`called owner tree ${mode} retains exact
  assert.equal(db.prepare('SELECT receipt_json FROM coordination_destination_admissions WHERE id=?').get(p.admissionId).receipt_json,null);
  x.setFailure(false);const admitted=await s.admit(f.parent.id,f.root.id,input.commandKey,finalReviewHash);
  assert.equal(admitted.receipt.owners.length,2);assert.equal(Object.keys(admitted.receipt.requestMap).length,2);
+ assert.equal(admitted.reviewEvidence.ancestry,'committed');assert.equal(admitted.reviewEvidence.evidenceHash,p.reviewEvidence.evidenceHash);
+ assert.equal(admitted.reviewEvidence.owners.find(o=>o.sourceExecutionId===f.source.id).destinationParentAttemptId,admitted.reviewEvidence.idMap[childEvidence.sourceParentAttemptId]);
  for(const item of p.resources){const chat=f.store.getConversation(item.destination.conversationId),original=f.branches.execution(item.custody.intent.executionId);assert.equal(chat.branchId,original.branchId);assert.equal(chat.executionId,p.ownerMap[original.id]);}
  const childOwner=f.branches.execution(childTarget),plan=f.branches.issuedGroupDestinationPlan(f.parent.id,f.root.id,input.commandKey);
  const original=f.store.sqlite.prepare('SELECT parent_attempt_id FROM branch_executions WHERE id=?').get(f.source.id);
  assert.equal(childOwner.parentAttemptId,plan.idMap[original.parent_attempt_id]);
  const {groupJournalAudit}=await import('../../apps/server/dist/group-journal-audit.js');const selection=s.discover({kind:'admissions',limit:50}).items.find(v=>v.admissionId===p.admissionId).auditSelection;assert.deepEqual(groupJournalAudit(db,new CoordinationV3Store(db)).read(selection).receipt.requestMap,admitted.receipt.requestMap);
- await f.reopen();x.setBytes(false);const before=x.imports;assert.deepEqual((await x.service().admit(f.parent.id,f.root.id,input.commandKey,finalReviewHash)).receipt,admitted.receipt);assert.equal(x.imports,before);
+ await f.reopen();x.setBytes(false);const before=x.imports;const restarted=await x.service().admit(f.parent.id,f.root.id,input.commandKey,finalReviewHash);assert.deepEqual(restarted.receipt,admitted.receipt);assert.deepEqual(restarted.reviewEvidence,admitted.reviewEvidence);assert.equal(x.imports,before);
+});
+
+// Deferred actual scheduler/state/checkpoint integration. Script bodies remain inert.
+for(const mode of ['async','sync'])test(`shared reducer state survives ${mode} capture, rewind and restart without prefix writes`,async t=>{
+ const f=fixture(t,mode,false,false,false,false,true),first=await f.claim();
+ assert.deepEqual(first.state.values,{total:0,notes:[],phase:'new'});assert.equal(first.state.revision,0);
+ const output=JSON.stringify({total:2,notes:['prefix'],phase:'prefix'});
+ f.settleState(first,{failed:false,output});await f.branches.unitSaver.drain();
+ const state=f.branches.sharedState(f.source.id);assert.deepEqual(state.values,{total:2,notes:['prefix'],phase:'prefix'});assert.equal(state.revision,1);
+ const cp=f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(cp=>{const cut=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);return cp.restoreSupported&&cut.selected.paths[0]?.node_id==='c';});assert.ok(cp);
+ const suffix=await f.claim();assert.deepEqual(suffix.state,state);
+ assert.throws(()=>f.branches.settleScript(suffix,{failed:false,output:JSON.stringify({undeclared:1})}),/declared|Unknown/);
+ assert.deepEqual(f.branches.sharedState(f.source.id),state);
+ f.settleState(suffix,{failed:false,output:JSON.stringify({total:3,notes:['old suffix'],phase:'old done'})});await f.branches.unitSaver.drain();
+ const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cp.id,cp.contentHash,'state-fork');
+ assert.deepEqual(f.branches.sharedState(next.id),state);await f.reopen();assert.deepEqual(f.branches.sharedState(next.id),state);
+ const resumed=await f.claim();assert.equal(resumed.executionId,next.id);assert.deepEqual(resumed.state,state);
+ f.settleState(resumed,{failed:false,output:JSON.stringify({total:5,notes:['new suffix'],phase:'done'})});await f.branches.unitSaver.drain();
+ assert.deepEqual(f.branches.sharedState(next.id).values,{total:7,notes:['prefix','new suffix'],phase:'done'});
+ assert.equal(f.branches.sharedState(next.id).revision,2);
+ const row=f.store.sqlite.prepare("SELECT * FROM branch_sealed_results WHERE execution_id=? AND json_extract(result_json,'$.stateUpdate.revision')=2").get(next.id),bad=JSON.parse(row.result_json);bad.stateUpdate.revision=1;
+ f.store.sqlite.prepare('UPDATE branch_sealed_results SET result_json=?,content_hash=? WHERE id=?').run(stableJson(bad),hash(stableJson(bad)),row.id);
+ assert.throws(()=>f.branches.sharedState(next.id),/revision/);
+});
+
+for(const mode of ['async','sync'])test(`parallel shared state ${mode} folds committed contributions once across rewind`,async t=>{
+ const f=fixture(t,mode,false,false,false,false,'parallel'),a=await f.claim(),b=await f.claim();
+ assert.equal(a.state.revision,0);assert.equal(b.state.revision,0);
+ f.settleState(b,{failed:false,output:JSON.stringify({total:3,notes:['second lease'],phase:'b'})});await f.branches.unitSaver.drain();
+ f.settleState(a,{failed:false,output:JSON.stringify({total:2,notes:['first lease'],phase:'a'})});await f.branches.unitSaver.drain();
+ const state=f.branches.sharedState(f.source.id);assert.equal(state.revision,2);assert.deepEqual(state.values,{total:5,notes:['second lease','first lease'],phase:'a'});
+ const cp=f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(cp=>{const cut=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);return cp.restoreSupported&&cut.selected.sealedResults.length===2;});assert.ok(cp);
+ const reducer=await f.claim();assert.deepEqual(reducer.state,state);
+ f.settleState(reducer,{failed:false,output:JSON.stringify({phase:'original reducer'})});await f.branches.unitSaver.drain();
+ const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cp.id,cp.contentHash,'parallel-state-fork');assert.deepEqual(f.branches.sharedState(next.id),state);
+ await f.reopen();const resumed=await f.claim();assert.equal(resumed.executionId,next.id);assert.deepEqual(resumed.state,state);
+ f.settleState(resumed,{failed:false,output:JSON.stringify({phase:'fresh custom aggregate'})});await f.branches.unitSaver.drain();
+ assert.deepEqual(f.branches.sharedState(next.id).values,{total:5,notes:['second lease','first lease'],phase:'fresh custom aggregate'});
+ assert.equal(f.branches.sharedState(next.id).revision,3);
+});
+
+test('shared state rejects rehashed alias, missing revision, undeclared writes and invalid reducer values',async()=>{
+ const {branchSharedState,branchStateResult,validateBranchStateSeal}=await import('../../packages/agents/dist/index.js');
+ const definition={state:{count:{initial:0,reducer:'sum'}},steps:[{id:'write',stateWrites:['count']}]},steps=[{id:'one',step_id:'write'},{id:'two',step_id:'write'}];
+ const make=(id,result)=>({step_execution_id:id,result_json:stableJson(result),content_hash:hash(stableJson(result))});
+ const first=make('one',branchStateResult(definition,steps,[],'write',{failed:false,output:'{"count":2}'}));
+ const second=make('two',branchStateResult(definition,steps,[first],'write',{failed:false,output:'{"count":3}'}));
+ assert.equal(branchSharedState(definition,steps,[second,first]).values.count,5);
+ assert.throws(()=>validateBranchStateSeal(definition,steps,[],second),/revision/);
+ assert.throws(()=>branchSharedState(definition,steps,[first,make('two',JSON.parse(first.result_json))]),/revision/);
+ assert.throws(()=>branchSharedState(definition,steps,[make('one',{failed:false,output:'{"count":2}'})]),/missing/);
+ assert.throws(()=>branchStateResult(definition,steps,[],'write',{failed:false,output:'{"foreign":2}'}),/declared/);
+ assert.throws(()=>branchStateResult(definition,steps,[],'write',{failed:false,output:'{"count":"wrong"}'}),/finite/);
+ assert.throws(()=>branchStateResult(definition,steps,[],'write',{failed:false,output:'{}',stateUpdate:{revision:1,updates:{}}}),/Caller/);
+ const failed={failed:true,output:'retained failure'};assert.deepEqual(branchStateResult(definition,steps,[first],'write',failed),failed);
+});
+
+for(const valid of [true,false])test(`Agent shared-state Request ${valid?'commits exact update':'holds malformed terminal output visibly'}`,async t=>{
+ const f=await reservationHistoryFixture(t,'sync',false,false,false,false,false,true),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ const opened=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id),db=f.store.sqlite;
+ const request=db.prepare('SELECT payload_json FROM coordination_requests WHERE id=?').get(opened.requestId);
+ assert.deepEqual(JSON.parse(request.payload_json).sharedState.values,{count:0});
+ new CoordinationV3Store(db).updateRequest({requestId:opened.requestId,updateId:'state-agent-terminal',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:valid?'{"count":7}':'unstructured output'}});
+ for(let n=0;n<4;n++){assert.doesNotThrow(()=>f.branches.advance());await f.branches.unitSaver.drain();}
+ if(valid){
+  assert.deepEqual(f.branches.sharedState(f.source.id).values,{count:7});assert.equal(f.branches.sharedState(f.source.id).revision,1);
+  const suffix=await f.claim();assert.equal(suffix.state.values.count,7);
+ }else{
+  const attempt=db.prepare('SELECT state,error FROM branch_attempts WHERE step_execution_id=? ORDER BY number DESC LIMIT 1').get(opened.stepId);
+  assert.equal(attempt.state,'waiting');assert.match(attempt.error,/State update rejected.*explicit reconciliation/);
+  assert.equal(f.branches.sharedState(f.source.id).revision,0);
+ }
+ await f.reopen();assert.equal(f.branches.sharedState(f.source.id).values.count,valid?7:0);
 });

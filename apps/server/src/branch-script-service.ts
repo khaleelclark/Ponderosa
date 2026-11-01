@@ -12,7 +12,8 @@ import { recoveredRuntimeProcessHandle, runtimeEnvironment, runtimeProcessHandle
 const SCRIPT_BOOTSTRAP = `
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-const source = readFileSync(3, 'utf8');
+const {source,sharedState} = JSON.parse(readFileSync(3, 'utf8'));
+globalThis.ponderosaState = sharedState;
 if (createHash('sha256').update(source).digest('hex') !== process.argv[1]) process.exit(1);
 await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 `;
@@ -176,7 +177,7 @@ export class BranchScriptService {
         }
       })();
       this.active.set(lease.attemptId, { handle: ownedHandle, done });
-      control.end(lease.source);
+      control.end(JSON.stringify({source:lease.source,...(lease.state?{sharedState:lease.state}:{})}));
       child.stdin!.end(lease.input);
     } catch (error) {
       if (handle) {

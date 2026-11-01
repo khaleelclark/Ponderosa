@@ -2,8 +2,23 @@ import type {GroupJournalAuditSelection,GroupJournalAuditReadback} from './lifec
 import type {BranchGroupCaptureResult,BranchGroupCaptureInput,BranchGroupCapturePreview,BranchTreeGroupCapturePreview,BranchTreeGroupCaptureStatus,BranchGroupDiscoveryPage,BranchIssuedGroupCaptureStatus} from './branches.js';
 import type {BranchDisclosureChoice,BranchDisclosureReceipt,BranchDisclosureReviewDto,BranchIssuedDestinationDto,BranchIssuedDestinationInput,CoordinationDestinationGroupResource,CoordinationDestinationGroupReceipt} from './coordination-destination.js';
 
+export interface BranchGroupOwnerReviewEvidence {
+ branchId:string;sourceExecutionId:string;destinationExecutionId:string;
+ sourceParentExecutionId:string|null;sourceParentAttemptId:string|null;destinationParentExecutionId:string|null;destinationParentAttemptId:string|null;
+ counters:{traversals:number;loopIterations:number;recoveryTraversals:number;callDepth:number;depthCeiling:number;
+ paths:{sourcePathId:string;destinationPathId:string;traversals:number}[];
+ steps:{sourceStepExecutionId:string;destinationStepExecutionId:string;invocation:number}[];
+ loops:{sourcePathId:string;destinationPathId:string;edgeId:string;iterations:number}[]};
+ capacity:{maxConcurrentExecutions:number;maxPathInstances:number;maxStepInvocations:number;maxEphemeralAgents:number};
+ selectedUsage:{paths:number;stepInvocations:number;requestedAgents:number};
+ limits:import('./branches.js').BranchLimits;policy:import('./branches.js').BranchDefinition['policy'];
+ acceptance:{source:string;admittedAt:string;kind:'manual'|'charged'|'unlimited';budget:import('./branches.js').BranchExecutionBudgetDto};
+}
+export type BranchGroupReviewEvidence = {state:'unavailable';reason:'legacy_missing_saved_evidence'} | {
+ state:'verified';evidenceHash:string;ancestry:'prospective'|'committed';idMap:Record<string,string>;ownerMap:Record<string,string>;owners:BranchGroupOwnerReviewEvidence[];
+};
 /** Group wire output differs from the singular destination output. */
-export type BranchIssuedGroupDestinationDto=Omit<BranchIssuedDestinationDto,'destination'|'receipt'>&{scope?:'owner_tree'|'standalone';ownerMap?:Record<string,string>;resources:CoordinationDestinationGroupResource[];receipt?:CoordinationDestinationGroupReceipt};
+export type BranchIssuedGroupDestinationDto=Omit<BranchIssuedDestinationDto,'destination'|'receipt'>&{reviewEvidence?:BranchGroupReviewEvidence;scope?:'owner_tree'|'standalone';ownerMap?:Record<string,string>;resources:CoordinationDestinationGroupResource[];receipt?:CoordinationDestinationGroupReceipt};
 /** POST capture seals packages; GET capture returns status without these receipts. */
 export type BranchIssuedGroupCaptureReceipt=BranchGroupCaptureResult;
 /** Uses the caller's existing operator transport; never retries mutations. */

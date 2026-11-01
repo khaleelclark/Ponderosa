@@ -31,3 +31,11 @@ are explicit caller operations. A rewind may repeat external model/tool effects;
 it is not equivalent to reviewed Branch custody admission. Comparator memory and
 checkpoints live only in the process. The nine-capability inventory links official
 source documentation and distinguishes these semantics from the Branch example.
+
+
+`state.ts` adds a public-client shared-state application: two Script contributions
+use append/sum channels; a Script after Join computes a custom aggregate into a
+replace channel. Caller supplies Chat/working directory and explicitly invokes it.
+Read using `BranchesClient.sharedState`. This is authored source, never deployed
+or executed as part of this change; settlement ordering differs from LangGraph
+supersteps. See `docs/branch-finite-contract-dispositions.md` for exact semantics.

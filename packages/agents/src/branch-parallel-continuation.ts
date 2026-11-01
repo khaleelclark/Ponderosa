@@ -1,3 +1,4 @@
+import {branchSharedState,validateBranchStateSeal,branchResultWithoutState} from './branch-shared-state.js';
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import {createHash} from 'node:crypto';
 import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
@@ -7,6 +8,7 @@ import {interpolateBranchText} from './branch-parameters.js';
 import {stableJson,payloadHash} from './coordination-v3-canonical-json.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import type {BranchHostCut} from './branch-host-cut.js';
+import {hostRequestPayload} from './branch-host-provenance.js';
 import {issuedRequestFrontierSupported,retainedAgentResult} from './branch-issued-continuation.js';
 import type {Selected,ScriptOwnerContext} from './branch-script-continuation.js';
 type Row=Record<string,any>;
@@ -22,6 +24,7 @@ export function parallelDefinitionSupported(d:BranchDefinition,calls=false,issue
 }
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
+  branchSharedState(d,s.steps!,s.sealedResults!);
   if(!issuedRequestFrontierSupported(s,d,hostCut,context?.issuedResource,context?.issuedGroup,false,context?.resourceGeneration))return false;
   const expected=['execution',...keys,'actions','resources'];
   if(!parallelDefinitionSupported(d,!!context,context?.issuedResource)||stableJson(Object.keys(s).sort())!==stableJson(expected.sort())||expected.some(k=>!Array.isArray(s[k])))return false;
@@ -52,7 +55,7 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
     if(step.state==='waiting'&&!attempt.request_id&&!s.gates!.some(g=>g.step_execution_id===step.id&&g.state==='waiting')&&!context?.children[attempt.id])return false;
    }else{
     const result=JSON.parse(step.result_json);
-    if(result.failed!==(step.state==='failed')||Object.keys(result).some(k=>!['failed','output'].includes(k))||result.output!==undefined&&branchText(result.output)!==result.output||stableJson(result)!==step.result_json||r.length!==1)return false;
+    if(result.failed!==(step.state==='failed')||Object.keys(result).some(k=>!['failed','output','stateUpdate'].includes(k))||result.output!==undefined&&branchText(result.output)!==result.output||stableJson(result)!==step.result_json||r.length!==1)return false;
     if(r[0]!.execution_id!==e.id||r[0]!.path_id!==step.path_id||r[0]!.terminal_attempt_id!==attempt.id||r[0]!.result_json!==step.result_json||r[0]!.content_hash!==hash(step.result_json))return false;
    }
   }
@@ -66,6 +69,7 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
 /** Replay graph transitions, not scheduler timing. Unknown observations never supply authority. */
 export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfiguration,events:Row[],checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
+  branchSharedState(d,s.steps!,s.sealedResults!);
   if(!parallelFrontierSupported(context?.resourceRetry?.selected??s,d,context?.resourceRetry?{...context,resourceRetry:undefined,resourceGeneration:context.resourceRetry.generation}:context,context?.resourceRetry?.currentHost??hostCut))return false;
   const e=s.execution![0]!,root=s.paths!.find(p=>p.parent_path_id===null)!;
   const m:Selected=Object.fromEntries(keys.map(k=>[k,[]]));
@@ -120,6 +124,10 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
   };
   for(const event of events){
    const v=JSON.parse(event.evidence_json),key=event.transition_key;
+   if(d.state&&['request_bound','resource_created'].includes(event.kind)){
+    const request=hostCut?.requests.find(q=>q.row.id===v.requestId)?.row;
+    require(request&&stableJson((hostRequestPayload(hostCut!,request) as Row).sharedState)===stableJson(branchSharedState(d,s.steps!,m.sealedResults!)));
+   }
    require(!pendingLoops.length||event.kind==='loop_traversed'||event.kind==='map_item_canceled'&&cancelledItems.has(v.itemId)||event.kind==='gate_canceled'&&cancelledGates.has(v.gateId));
    switch(event.kind){
     case 'trigger_accepted':require(!accepted&&!started&&v.versionId===e.version_id&&v.bindingRevisionId===e.binding_revision_id&&v.inputHash===e.input_hash);accepted=true;break;
@@ -176,6 +184,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      const a=find('attempts',id),step=find('steps',a.step_execution_id),node=d.steps.find(n=>n.id===step.step_id);
      require(node?.kind==='script');
      if(event.kind==='script_leased'){
+      const state=d.state?branchSharedState(d,s.steps!,m.sealedResults!):undefined;require(v.stateHash===state?.evidenceHash&&v.stateRevision===state?.revision);
       require(!interruption&&a.state==='prepared'&&(!a.available_at||event.created_at>=a.available_at)&&key===`leased:${a.id}:${v.fence}`&&v.fence===a.fence+1&&v.sourceHash===hash(node.source));const match=/^branch-result-bundle:([0-9a-f-]{36}):([0-9a-f-]{36})$/u.exec(step.input_text),bundle=match&&match[1]===e.id?m.bundles!.find(row=>row.id===match[2]):undefined;require(v.inputBundleId===bundle?.id&&v.inputBundleHash===bundle?.content_hash);a.fence=v.fence;a.state='leased';step.state='leased';find('paths',step.path_id).state='active';
      }else if(event.kind==='script_authorized'){
       require(!interruption&&a.state==='leased'&&key===`launched:${a.id}:${a.fence}`&&!authorized.has(a.id));authorized.add(a.id);a.state='running';step.state='running';
@@ -200,7 +209,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      const node=d.steps.find(row=>row.id===step.step_id);
      require(key===`settled:${a.id}`&&stableJson(v.result)===final('attempts',a.id).result_json);
      if(node?.kind==='script')require(a.state==='running'&&authorized.has(a.id)&&exited.has(a.id));
-     else if(node?.kind==='agent'){const prior=retry?.generations[retryIndex]?.prior,result=prior?.id===a.id?JSON.parse(prior.result_json):retainedAgentResult(hostCut,a.request_id);require(a.state==='waiting'&&boundRequests.has(a.id)&&!node.requireUserCommunication&&result&&stableJson(v.result)===stableJson(result));}
+     else if(node?.kind==='agent'){const prior=retry?.generations[retryIndex]?.prior,result=prior?.id===a.id?JSON.parse(prior.result_json):retainedAgentResult(hostCut,a.request_id);require(a.state==='waiting'&&boundRequests.has(a.id)&&!node.requireUserCommunication&&result&&stableJson(branchResultWithoutState(v.result))===stableJson(result));}
      else if(node?.kind==='branch_call')require(a.state==='waiting'&&completedChildren.has(a.id)&&stableJson(v.result)===stableJson({failed:context!.children[a.id]!.failed===true,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})}));
      else {require(a.state==='waiting'&&node?.kind==='human_gate');const gate=m.gates!.find(row=>row.step_execution_id===step.id);require(gate&&gateDecisions.has(gate.id));const response=JSON.parse(gate.response_json),output=response.output??response.choice??gate.proposal_text,routed=gateDecisions.get(gate.id)==='approve'||d.edges.some(edge=>edge.from===node.id&&edge.on==='rejected');require(stableJson(v.result)===stableJson({failed:false,output:routed?output:`Approval rejected at ${node.label||node.id}.`}));}
      a.state=step.state=v.result.failed?'failed':'completed';a.result_json=step.result_json=stableJson(v.result);break;
@@ -227,7 +236,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      const node=d.steps.find(node=>node.id===step.step_id),policy=node?.failure??d.policy.failure,a=find('attempts',r.terminal_attempt_id);
      require(a.step_execution_id===step.id&&a.result_json===step.result_json);
      if(step.state==='failed'&&node?.kind==='script'&&policy.action==='retry'&&!d.edges.some(edge=>edge.from===step.step_id&&edge.on==='failure'))require(a.number>=policy.maxAttempts);
-     m.sealedResults!.push({...r});p.last_result_id=r.id;
+     validateBranchStateSeal(d,s.steps!,m.sealedResults!,r);m.sealedResults!.push({...r});p.last_result_id=r.id;
      const result=JSON.parse(step.result_json),gate=m.gates!.find(row=>row.step_execution_id===step.id),on=gate?(gateDecisions.get(gate.id)==='approve'?'approved':'rejected'):result.failed?'failure':'success';const edge=d.edges.find(edge=>edge.from===step.step_id&&edge.on===on);move(p,edge,result.output??'',result);if(gate&&on==='rejected'&&!edge){if(pendingArrivals.has(p.id))pendingOutcomes.set(p.id,'unselected');else p.state='skipped';}break;
     }
     case 'fork_started':{
