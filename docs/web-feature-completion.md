@@ -968,3 +968,84 @@ runtime/accessibility/mobile verification. Audit adds neither a retention writer
 reclamation or action authority. No whole UI/group/lifecycle/Bible/Phase2 acceptance.
 
 Integration: backend38ec is assembled as61386c0ed; preview read-transaction f623 equivalent and whole-group abandonment9bb remain preserved. The precleanup producer and independent Branch-owner guard are assembled ate4cdff692; this UI adds no generation-exit controls or execution qualification.
+
+## Bounded serial generation-one UI source
+
+Successor to UI `19bb4f26dc3c95aa1b7538423fd8fd104a5dfd8c`; source only,
+not executable qualification. Requires exact backend/core
+`1fb4b4e541e623c4295131e0575e013d6c3dab20` from
+`/tmp/ponderosa-branches-generation-one`, specifically the actual contract in
+`docs/branch-generation-one-destination.md`, BranchesClient, branches DTOs,
+coordination-destination DTOs, issued resource service and routes. This older UI
+base intentionally imports the successor's named BranchGenerationOnePreview,
+BranchIssuedResourceCaptureDto and historical selection fields; it does not
+copy or modify backend-owned contracts. Existing requestJson operator transport
+calls the exact SDK wire contract; no additional shared adapter is needed.
+Prior group capture/CAS, preview transaction correction f623c81, group abandonment
+9bb tightenings and historical group audit dependencies remain required.
+Historical group audit partition correction ff40d389fe37d566fb6d513e24153b101ca168a5
+is a separate required source successor for bounded historicalPartition summaries;
+it does not change journal selectors or grant action authority.
+
+The existing singular destination dialog mounts bounded generation-one surfaces
+for canonical resource Step IDs from the Run DTO. Pure GET generation-one-preview
+supplies exact reviewHash, historicalReviewHash and one original retired selection;
+no old IDs/maps are entered or inferred. Only generation 1 and one exact retired
+generation-zero selection with complete checkpoint/envelope/fence/current-ref
+identities are accepted. Server eligibility remains authoritative: standalone
+manual serial one-resource ASYNC/SYNC, failed first attempt and retry attempt 2
+of 2. Parallel, called-tree, generation >1 and unknown evidence are refused by
+the producer; this UI does not broaden that bound.
+
+Explicit acknowledgement plus separate confirmation persists the complete
+original preview and {commandKey,expectedGeneration:1,expectedReviewHash} before
+POST issued-checkpoint. A separate pure GET issued-checkpoint with that original
+key must match full selection/hash and retained checkpoint before preparation.
+Lost response, conflict, pending capture and corrupt saved command remain held;
+no capture POST retry or replacement hash. Remount uses the original saved key.
+Empty-browser recovery explicitly GETs bounded generation-one-captures, then
+reads the chosen canonical original key and saved selection via GET status.
+The inventory is server-bounded to100, refusing overflow rather than implying
+pagination. Failure clears stale inventory/preview/confirmation and parent
+preparation selection; rediscovery is explicit. Unknown capture pins stay held.
+
+Preparation reuses singular command persistence, confirmation and readback with
+exact historicalReviewHash from that capture. The full saved server selection
+stays with the local pending preparation command; returned historicalPartition
+must equal it before resolving pending status. The wire input does not accept a
+human selection: the server derives/reserves it from the hash. Retained preparation,
+choice and admission commands survive409 for pure original-key receipt inspection;
+no POST replay or external-effect replay. Fresh review/reapproval remains required
+for policy drift, and revocation remains available independently of a new review.
+
+Human disclosure displays every original fact, actor, audience, hash and mapped
+fresh recipient, marking historical_generation facts as retired generation-zero,
+nondispatchable evidence. Full retired selection and custody are separate from
+current package participant maps and final policy. Matching requires the exact
+reservation/target historical selection, all current source refs and the complete
+server review fact inventory, including actor/audience/recipient metadata. The
+explicit all-facts checkbox and separate approve/admit confirmations remain.
+Only current generation-one package participants become fresh live maps. Original
+Project audit-read and fresh destination Project ownership are separately required
+by the server; neither creates a new authorization mechanism. Retirement receipt display projects only selection/hash/nondispatchable metadata,
+excluding native seal and raw retirement result bytes. Native/process and
+private payload expansion are not added.
+
+Deliverables: apps/web/src/components/branches/BranchGenerationOne.tsx,
+branchGenerationOne.ts, BranchDisclosureReview.tsx, branchDisclosureReview.ts,
+ExecutionPanel.tsx; tests/chats/branch-generation-one.test.mjs and
+branch-generation-one-mounted.tsx; updated branch-disclosure-review.test.mjs and
+branch-disclosure-review-mounted.tsx canonical fact inventories; this report. Deferred fixtures cover exact
+selection/CAS, malformed/other-generation cuts, omitted facts/actor/audience/map
+drift, consumed attempts, save-before-POST, lost response/remount/pure GET,
+empty-browser exact canonical discovery and409 clearing/no replay. Existing
+singular fixtures remain applicable. No fixtures have been executed.
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, backend writes, push/merge/deploy or new workers. Integration owns
+backend/core/equivalent source assembly. Runtime, native/provider, accessibility,
+mobile and all full Phase2/Bible qualification remain open. Journals actually
+erased by source deletion remain unavailable; no retention writer or reclamation
+is introduced.
+
+Integration: backend/core1fb4b4e is assembled asf94aedeaa and ff40 historical audit identity/privacy correction is assembled asba14fb7bc. This UI successor is now source-connected to those contracts; no reference backend copies or ancestor replay. Current called-tree producer, original owner fences, group UI and lifecycle source remain preserved. Historical generation-one selection/review UI is delivered only for the bounded serial case; all executed qualification remains deferred.

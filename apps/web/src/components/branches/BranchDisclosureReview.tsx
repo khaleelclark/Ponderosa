@@ -1,3 +1,5 @@
+import {BranchGenerationOne} from './BranchGenerationOne';
+import {generationOneReceiptProjection,type GenerationOneSelection} from './branchGenerationOne';
 import {LifecycleReview} from '../lifecycle/LifecycleReview';
 import {useRef,useState} from 'react';
 import {useInfiniteQuery,useMutation,useQuery} from '@tanstack/react-query';
@@ -9,20 +11,21 @@ import {createClientId} from '../../clientId';
 import {ConfirmDialog} from '../ConfirmationDialogs';
 import {disclosureCanRevoke,disclosureReceiptMatches,disclosureReviewMatches} from './branchDisclosureReview';
 
-type Command={kind:'prepare';body:BranchIssuedDestinationInput}|{kind:'choice';admissionId:string;body:BranchDisclosureChoice}|{kind:'admit';admissionId:string;body:{commandKey:string;reviewHash:string}};
+type Command={kind:'prepare';body:BranchIssuedDestinationInput;generationOne?:GenerationOneSelection}|{kind:'choice';admissionId:string;body:BranchDisclosureChoice}|{kind:'admit';admissionId:string;body:{commandKey:string;reviewHash:string}};
 type Action='prepare'|'approve'|'revoke'|'admit';
-export function BranchDisclosureReview({branchId,executionId,enabled,onChanged}:{branchId:string;executionId:string;enabled:boolean;onChanged():void}):JSX.Element {
+export function BranchDisclosureReview({branchId,executionId,enabled,onChanged,resourceStepIds=[]}:{branchId:string;executionId:string;enabled:boolean;onChanged():void;resourceStepIds?:string[]}):JSX.Element {
  const base=`/api/branches/${encodeURIComponent(branchId)}/executions/${encodeURIComponent(executionId)}/destinations`,storageKey=`branch-disclosure-command:${branchId}:${executionId}`;
  const [open,setOpen]=useState(false),[selected,setSelected]=useState(''),[checkpoint,setCheckpoint]=useState<BranchHistoricalCheckpointDto>();
  const [review,setReview]=useState<BranchDisclosureReviewDto>(),[reviewed,setReviewed]=useState(false),[effects,setEffects]=useState(false),[confirm,setConfirm]=useState<Action>();
  const [pending,setPending]=useState<Command|undefined>(()=>{try{return JSON.parse(localStorage.getItem(storageKey)??'null')??undefined;}catch{return undefined;}});
  const [receipt,setReceipt]=useState<BranchDisclosureReceipt|BranchIssuedDestinationDto>(),[notice,setNotice]=useState('');
+ const [generationOne,setGenerationOne]=useState<GenerationOneSelection>();
  const fence=useRef(false),epoch=useRef(0);
  const list=useQuery({queryKey:['branch-issued-destinations',branchId,executionId],queryFn:()=>requestJson<BranchIssuedDestinationDto[]>(base),enabled:open,retry:false,refetchOnWindowFocus:false,refetchOnReconnect:false});
  const checkpoints=useInfiniteQuery({queryKey:['branch-disclosure-checkpoints',branchId,executionId],initialPageParam:undefined as number|undefined,queryFn:({pageParam})=>requestJson<BranchHistoricalCheckpointDto[]>(`/api/branches/${encodeURIComponent(branchId)}/executions/${encodeURIComponent(executionId)}/historical-checkpoints${pageParam===undefined?'':`?before=${pageParam}`}`),getNextPageParam:page=>page.length?Math.min(...page.map(item=>item.id)):undefined,enabled:open,retry:false,refetchOnWindowFocus:false});
  const target=list.data?.find(item=>item.commandKey===selected);
  const discardReview=()=>{epoch.current++;setReview(undefined);setReviewed(false);setEffects(false);setConfirm(undefined);};
- const refresh=async()=>{discardReview();await list.refetch();};
+ const refresh=async()=>{discardReview();setGenerationOne(undefined);setCheckpoint(undefined);await list.refetch();};
  const preview=useMutation({retry:false,mutationFn:async()=>{
   if(!target||!['awaiting_disclosure','admitted'].includes(target.state))throw Error('Choose a staged destination.');
   const token=epoch.current,value=await requestJson<BranchDisclosureReviewDto>(`${base}/${encodeURIComponent(target.admissionId)}/disclosure`);
@@ -36,6 +39,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged}:
    setNotice('');setReceipt(value);clearPending();
   }else{
    if(!('destination' in value)||value.commandKey!==command.body.commandKey||command.kind==='prepare'&&(value.checkpointId!==command.body.checkpointId||value.checkpointHash!==command.body.expectedHash)||command.kind==='admit'&&value.admissionId!==command.admissionId)throw Error('Destination receipt differs from the retained command.');
+   if(command.kind==='prepare'&&command.generationOne&&JSON.stringify(value.historicalPartition)!==JSON.stringify(command.generationOne.preview.historicalPartition))throw Error('Historical selection differs from the saved server capture.');
    setNotice('');setReceipt(value);setSelected(value.commandKey);
    if(command.kind==='prepare'&&['awaiting_disclosure','admitted'].includes(value.state)||command.kind==='admit'&&value.state==='admitted')clearPending();
    else setNotice('Preparation or admission remains held. No effect retry was performed.');
@@ -50,8 +54,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged}:
  },onError:(error,command)=>{
   setNotice(error.message);setConfirm(undefined);
   if(error instanceof ApiRequestError&&error.status===409){
-   // Preparation can persist a reservation before a refusal; preserve its command.
-   if(command.kind!=='prepare')clearPending();
+   // Keep the exact original command for pure receipt recovery after any refusal.
    void refresh();onChanged();
   }
  },onSettled:()=>{fence.current=false;setConfirm(undefined);}});
@@ -72,13 +75,14 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged}:
  const exactReview=Boolean(target&&review&&disclosureReviewMatches(review,target,branchId,executionId));
  const approveReady=fresh&&exactReview&&reviewed&&target?.state==='awaiting_disclosure'&&review?.active!==true;
  const admitReady=fresh&&exactReview&&reviewed&&target?.state==='awaiting_disclosure'&&review?.active===true&&target.disclosure.state==='approved'&&target.disclosure.reviewHash===review.reviewHash&&target.disclosure.revision===review.revision;
- const prepareReady=fresh&&checkpoint?.branchId===branchId&&checkpoint.executionId===executionId&&effects;
+ const prepareReady=fresh&&effects&&Boolean(generationOne||checkpoint?.branchId===branchId&&checkpoint.executionId===executionId);
  const revokeReady=fresh&&disclosureCanRevoke(target);
  const ready=confirm==='prepare'?prepareReady:confirm==='approve'?approveReady:confirm==='revoke'?revokeReady:confirm==='admit'?admitReady:false;
  const apply=()=>{
   if(!ready||fence.current)return;
   let command:Command;
-  if(confirm==='prepare'&&checkpoint)command={kind:'prepare',body:{commandKey:createClientId(),checkpointId:checkpoint.id,expectedHash:checkpoint.contentHash,reconcileEffects:true}};
+  if(confirm==='prepare'&&generationOne)command={kind:'prepare',generationOne,body:{commandKey:createClientId(),checkpointId:generationOne.capture.checkpointId!,expectedHash:generationOne.capture.checkpointHash!,historicalReviewHash:generationOne.preview.historicalReviewHash,reconcileEffects:true}};
+  else if(confirm==='prepare'&&checkpoint)command={kind:'prepare',body:{commandKey:createClientId(),checkpointId:checkpoint.id,expectedHash:checkpoint.contentHash,reconcileEffects:true}};
   else if(confirm==='admit'&&target&&review)command={kind:'admit',admissionId:target.admissionId,body:{commandKey:target.commandKey,reviewHash:review.reviewHash}};
   else if(confirm==='approve'&&target&&review)command={kind:'choice',admissionId:target.admissionId,body:{commandKey:createClientId(),action:'approve',reviewHash:review.reviewHash,expectedRevision:review.revision}};
   else if(confirm==='revoke'&&target?.disclosure.reviewHash)command={kind:'choice',admissionId:target.admissionId,body:{commandKey:createClientId(),action:'revoke',reviewHash:target.disclosure.reviewHash,expectedRevision:target.disclosure.revision}};
@@ -114,29 +118,32 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged}:
     {review&&exactReview&&<>
      <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Checkpoint {review.review.reservation.checkpointId} · {review.review.reservation.checkpointHash} · host cut {review.hostCutSha256}</Typography>
      <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Review {review.reviewHash} · policy {review.policyRevision} · revision {review.revision} · active {String(review.active)}</Typography>
-     <details><summary>Custody, fresh participant maps and current policy</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto',fontSize:12}}>{JSON.stringify({custody:review.review.reservation.custody,stage:review.review.stage,policy:review.policy},null,2)}</Typography></details>
+     <details><summary>Custody, fresh participant maps and current policy</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto',fontSize:12}}>{JSON.stringify({historicalPartition:review.review.reservation.historicalPartition,custody:review.review.reservation.custody,currentGenerationOneParticipants:review.review.stage,policy:review.policy},null,2)}</Typography></details>
+     {review.review.reservation.historicalPartition?.length&&<Alert severity="warning">Retired generation-zero facts are immutable nondispatchable evidence. Only the current generation-one package participants enter fresh maps. Original Project audit access and fresh destination Project ownership are separately required; neither is a new authorization system.</Alert>}
      {review.facts.map(fact=><Stack key={`${fact.kind}:${fact.id}`} spacing={.5}>
-      <Typography variant="subtitle2">{fact.kind} {fact.id}</Typography><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Original participants: {fact.originalAgentIds.join(', ')} · fresh recipients: {fact.destinationAgentIds.join(', ')}</Typography>
+      <Typography variant="subtitle2">{fact.kind==='historical_generation'?'Retired generation zero · nondispatchable evidence':fact.kind} {fact.id}</Typography><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Original participants: {fact.originalAgentIds.join(', ')} · fresh recipients: {fact.destinationAgentIds.join(', ')}</Typography>
       <Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Original actor: {JSON.stringify(fact.originalActor??null)} · original audience: {JSON.stringify(fact.originalAudience)}</Typography>
       <details><summary>Exact historical fact · {fact.sha256}</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto',fontSize:12}}>{JSON.stringify(fact.content,null,2)}</Typography></details>
      </Stack>)}
      <FormControlLabel control={<Checkbox checked={reviewed} disabled={locked||list.isFetching} onChange={(_,checked)=>setReviewed(checked)}/>} label="I reviewed the exact historical facts, audiences, fresh recipients and current policy"/>
      <Stack direction="row" gap={1}><Button disabled={!approveReady} onClick={()=>setConfirm('approve')}>Approve disclosure</Button><Button variant="contained" disabled={!admitReady} onClick={()=>setConfirm('admit')}>Admit reviewed destination</Button></Stack>
     </>}
+    {resourceStepIds.map(stepId=><BranchGenerationOne key={stepId} branchId={branchId} executionId={executionId} stepId={stepId} enabled={fresh} onSelect={value=>{discardReview();setEffects(false);setCheckpoint(undefined);setGenerationOne(value);}}/>)}
+    {generationOne&&<Alert severity="info">Exact generation-one capture selected · {generationOne.capture.checkpointId} · {generationOne.capture.checkpointHash}. Preparation uses historical selection hash {generationOne.preview.historicalReviewHash}. Original Project audit-read is required separately from fresh Project ownership.</Alert>}
     <details><summary>Prepare from saved checkpoint</summary><Stack spacing={2} sx={{pt:1}}>
-     <TextField select label="Source checkpoint" value={checkpoint?.id??''} disabled={locked} onChange={event=>{setEffects(false);setCheckpoint(checkpoints.data?.pages.flat().find(item=>item.id===Number(event.target.value)));}}>{checkpoints.data?.pages.flat().map(item=><MenuItem key={item.id} value={item.id}>{item.id} · {item.contentHash}</MenuItem>)}</TextField>
+     <TextField select label="Source checkpoint" value={checkpoint?.id??''} disabled={locked} onChange={event=>{setEffects(false);setGenerationOne(undefined);setCheckpoint(checkpoints.data?.pages.flat().find(item=>item.id===Number(event.target.value)));}}>{checkpoints.data?.pages.flat().map(item=><MenuItem key={item.id} value={item.id}>{item.id} · {item.contentHash}</MenuItem>)}</TextField>
      {checkpoints.error&&<Alert severity="error">{checkpoints.error.message}</Alert>}
      {checkpoints.hasNextPage&&<Button disabled={locked||checkpoints.isFetchingNextPage} onClick={()=>void checkpoints.fetchNextPage()}>Older checkpoints</Button>}
      <Typography variant="caption">Only supported sealed issued-resource cuts are admitted. Preparation creates held fresh participants; it does not approve disclosure.</Typography>
      <FormControlLabel control={<Checkbox checked={effects} disabled={locked} onChange={(_,checked)=>setEffects(checked)}/>} label="I reconciled original external effects before preparing fresh participants"/>
      <Button disabled={!prepareReady} onClick={()=>setConfirm('prepare')}>Prepare fresh destination</Button>
     </Stack></details>
-    {receipt&&<Alert severity="info"><Typography>{'action' in receipt?`${receipt.action} receipt: ${receipt.state} · currently active ${String(receipt.active)}`:`Destination: ${receipt.state}`}</Typography><Typography variant="caption">Historical receipt state does not authorize a new approval or prove original work succeeded.</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto',fontSize:12}}>{JSON.stringify(receipt,null,2)}</Typography></Alert>}
+    {receipt&&<Alert severity="info"><Typography>{'action' in receipt?`${receipt.action} receipt: ${receipt.state} · currently active ${String(receipt.active)}`:`Destination: ${receipt.state}`}</Typography><Typography variant="caption">Historical receipt state does not authorize a new approval or prove original work succeeded.</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto',fontSize:12}}>{JSON.stringify('destination' in receipt?generationOneReceiptProjection(receipt):receipt,null,2)}</Typography></Alert>}
    </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={()=>{epoch.current++;setOpen(false);}}>Close</Button></DialogActions>
   </Dialog>
   <ConfirmDialog open={Boolean(confirm)} title={confirm==='prepare'?'Prepare held fresh participants?':confirm==='approve'?'Approve this exact disclosure?':confirm==='revoke'?'Revoke persisted disclosure?':'Admit reviewed destination?'} confirmLabel={confirm==='prepare'?'Prepare destination':confirm==='approve'?'Approve exact disclosure':confirm==='revoke'?'Revoke exact choice':'Admit destination'} cancelLabel="Back" pending={submit.isPending} confirmDisabled={!ready} onCancel={()=>setConfirm(undefined)} onConfirm={apply}>
    <Typography>{confirm==='prepare'?'Creates a fresh managed Project, Chat and held participants.':confirm==='approve'?'Permits the listed historical facts to reach the exact fresh recipients under the reviewed policy. Creates no activation.':confirm==='revoke'?'Revokes the persisted choice; earlier approval receipts cannot revive it. Already disclosed facts are not erased.':'Commits mapped Requests and Joins and permits eligible new work to run. Original external effects are not replayed.'}</Typography>
-   <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{confirm==='prepare'?`Checkpoint ${checkpoint?.id} · ${checkpoint?.contentHash}`:`Admission ${target?.admissionId} · hash ${confirm==='revoke'?target?.disclosure.reviewHash:review?.reviewHash} · revision ${confirm==='revoke'?target?.disclosure.revision:review?.revision}`}</Typography>
+   <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{confirm==='prepare'?`Checkpoint ${generationOne?.capture.checkpointId??checkpoint?.id} · ${generationOne?.capture.checkpointHash??checkpoint?.contentHash} · historical selection ${generationOne?.preview.historicalReviewHash??'none'}`:`Admission ${target?.admissionId} · hash ${confirm==='revoke'?target?.disclosure.reviewHash:review?.reviewHash} · revision ${confirm==='revoke'?target?.disclosure.revision:review?.revision}`}</Typography>
   </ConfirmDialog>
  </>;
 }

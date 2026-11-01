@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {disclosureCanRevoke,disclosureReceiptMatches,disclosureReviewMatches} from '../../apps/web/src/components/branches/branchDisclosureReview.ts';
 const target={admissionId:'admission',checkpointId:4,checkpointHash:'cut',destination:{projectId:'project',conversationId:'chat',executionId:'fresh-run',resourceStepId:'step',resourceGeneration:0},disclosure:{state:'approved',revision:2,reviewHash:'chosen'}};
-const preview={admissionId:'admission',reviewHash:'current-review',review:{admissionId:'admission',reservation:{branchId:'branch',sourceExecutionId:'source-run',checkpointId:4,checkpointHash:'cut',destination:target.destination}}};
+const preview={admissionId:'admission',reviewHash:'current-review',facts:[],review:{facts:[],admissionId:'admission',reservation:{branchId:'branch',sourceExecutionId:'source-run',checkpointId:4,checkpointHash:'cut',destination:target.destination}}};
 test('disclosure preview binds exact source checkpoint, admission and destination generation',()=>{
  assert.equal(disclosureReviewMatches(preview,target,'branch','source-run'),true);
  assert.equal(disclosureReviewMatches({...preview,admissionId:'other'},target,'branch','source-run'),false);
