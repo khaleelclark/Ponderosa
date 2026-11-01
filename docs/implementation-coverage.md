@@ -83,7 +83,9 @@ Owner handoffs must distinguish an absent behavior from deferred qualification.
 1. Integration added the previously absent standalone public HTTP example and
    corrected source billing/setup documentation plus remaining Inbox comment.
 2. Reliability commit `b003ae28b8c3eeb3b0890971d552ffa68d138da6` integrated
-   as `1fab1e1f4` without conflicts. Features, Runtime and UI handoffs remain open.
+   as `1fab1e1f4` without conflicts. UI commit `99a5b75211a61330197e95117a2444b516717330` integrated as
+   `cee7295ab` without conflicts. Features and Runtime handoffs remain open;
+   Reliability and Runtime are assigned additional implementation successors.
    Source changes cover portable Agent setup, safe tombstone cleanup and exact
    additive predecessor matching; regression source is present but unexecuted.
 3. Concrete #8 implementation backlog (Reliability; Cliff assigns continuation):
@@ -128,3 +130,25 @@ Pinned LangGraph/LangChain versions and runnable representative application
 coverage must remain explicit in the feature owner's handoff; this table does
 not invent external-framework parity. Capabilities outside these nine stay
 recorded gaps. Existing Python/native prerequisites are not new feature claims.
+
+## UI integration increment
+
+Shared Agent/task/Branches response rendering, ordered SSE batching, standalone
+Output/Assistant chat and call controls, microphone recording/review/playback,
+100–200% device text size and mobile/keyboard layout changes are integrated.
+`docs/web-feature-completion.md` maps the source; regressions remain unexecuted.
+Integration also connects `PackageExportDisclosure` to core's shared warning;
+its deferred regression retains an explicit mocked shared-constant binding.
+
+Pending backend combination: schedule `expectedBindingRevisionId`, no-app
+Assistant `setupError.message`, model changes updating workflow binding, validated
+audio MIME/admission, general authorized canonical Chat publication and actual
+early qualified voice acknowledgment. These are implementation dependencies,
+not deferred judging. Await Features/Runtime contracts before wiring missing DTO
+fields. Runtime increment `5511e2bd` is held pending its assigned successor:
+nonvoice publication, transactional account binding and recovery/crash handling.
+Reliability's remaining #8 transport work is assigned back to that owner.
+
+No measured performance improvement is claimed; existing mapped LCP failure
+remains unresolved. All runtime, accessibility, phone and comparative judgments
+remain deferred. Baseline and owners' worktrees remain untouched.

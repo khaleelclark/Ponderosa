@@ -6,12 +6,13 @@ import vm from 'node:vm';
 const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript');
 const source=readFileSync(new URL('../../apps/web/src/components/PackageExportDisclosure.tsx',import.meta.url),'utf8');
 const compiled=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+const sharedWarning='History and stored data may contain sensitive information. Known credential fields are excluded; re-enter credentials after import. Global memory, installation permissions, live work and provider sessions are excluded.';
 const jsx=(type,props)=>({type,props}),exports={};
-vm.runInNewContext(compiled,{exports,require:name=>({'react/jsx-runtime':{jsx,jsxs:jsx},'@mui/material':{Alert:'Alert'},'./ConfirmationDialogs':{ConfirmDialog:'ConfirmDialog'}}[name]??assert.fail(name))});
+vm.runInNewContext(compiled,{exports,require:name=>({'react/jsx-runtime':{jsx,jsxs:jsx},'@mui/material':{Alert:'Alert'},'@ponderosa/core':{FULL_PACKAGE_EXPORT_WARNING:sharedWarning},'./ConfirmationDialogs':{ConfirmDialog:'ConfirmDialog'}}[name]??assert.fail(name))});
 test('full workflow export discloses exclusions before confirmation and preserves cancel/retry callbacks',async()=>{
  let exportsRequested=0,cancelled=0;const confirm=async()=>{exportsRequested++;},cancel=()=>{cancelled++;};
  const view=exports.FullPackageExportDialog({name:'Reviewed workflow',pending:false,error:'Download unavailable',onCancel:cancel,onConfirm:confirm});
- assert.equal(exportsRequested,0);assert.equal(view.props.open,true);assert.equal(view.props.title,'Export Reviewed workflow');assert.equal(view.props.error,'Download unavailable');assert.equal(view.props.children.props.children,exports.fullPackageExportWarning);assert.match(exports.fullPackageExportWarning,/sensitive information/);assert.match(exports.fullPackageExportWarning,/Global memory, installation permissions, live work and provider sessions are excluded/);
+ assert.equal(exports.fullPackageExportWarning,sharedWarning);assert.equal(exportsRequested,0);assert.equal(view.props.open,true);assert.equal(view.props.title,'Export Reviewed workflow');assert.equal(view.props.error,'Download unavailable');assert.equal(view.props.children.props.children,exports.fullPackageExportWarning);assert.match(exports.fullPackageExportWarning,/sensitive information/);assert.match(exports.fullPackageExportWarning,/Global memory, installation permissions, live work and provider sessions are excluded/);
  view.props.onCancel();assert.equal(cancelled,1);assert.equal(exportsRequested,0);await view.props.onConfirm();assert.equal(exportsRequested,1);
  const closed=exports.FullPackageExportDialog({pending:false,onCancel:cancel,onConfirm:confirm});assert.equal(closed.props.open,false);
  const pending=exports.FullPackageExportDialog({name:'Reviewed workflow',pending:true,onCancel:cancel,onConfirm:confirm});assert.equal(pending.props.pending,true);
