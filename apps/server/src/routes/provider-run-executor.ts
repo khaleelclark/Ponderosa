@@ -524,14 +524,14 @@ export function startProviderRunExecution(
             if (state.handle && state.handle !== handle) {
               // Retain a distinct duplicate root under its own handle; it must
               // never replace the lifetime that already owns this opening.
-              providerProcessAuthority.register(handle, { purpose: "duplicate provider readiness", projectId: project.id, agentId: agent.id, runId });
+              providerProcessAuthority.register(handle, { purpose: "duplicate provider readiness", projectId: project.id, agentId: agent.id, runId, runFence:v3FencingToken });
               void handle.close().catch((error) => {
                 app.log.error({ err: error, agentId: agent.id }, "duplicate opening provider handle failed to terminate");
               });
               throw new Error(`provider adapter registered multiple opening handles for ${agent.id}`);
             }
             providerProcessAuthority.register(handle, {
-              purpose: "persistent provider runtime", projectId: project.id, agentId: agent.id, runId,
+              purpose: "persistent provider runtime", projectId: project.id, agentId: agent.id, runId, runFence:v3FencingToken,
             }, identity);
             state.handle = handle;
           }, identity))
@@ -603,6 +603,7 @@ export function startProviderRunExecution(
           projectId: project.id,
           agentId: agent.id,
           runId,
+          runFence:v3FencingToken,
         }, persistentRuntime.identity);
         activeRun.persistentRuntimeIdentity = persistentRuntime.identity;
         activeRun.runtimeSession = persistentRuntime.session;
@@ -616,6 +617,7 @@ export function startProviderRunExecution(
           projectId: project.id,
           agentId: agent.id,
           runId,
+          runFence:v3FencingToken,
         });
         const authority = runtimeAuthority(agent.id, true)!;
         const existing = authority.oneShots.get(runId);
