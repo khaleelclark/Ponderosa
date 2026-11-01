@@ -11,7 +11,7 @@ try{
  const routes={core:`/projects/${core.projectId}/chats/${core.id}`,branches:`/branches?branch=${branch.id}&tab=chats&chat=${chat.id}`,assistant:'/assistant',output:output.url};
  web=await serveFixture(f);xv=spawn('Xvfb',['-displayfd','1','-screen','0','1600x1100x24','-nolisten','tcp'],{stdio:['ignore','pipe','inherit']});const display=':'+String((await once(xv.stdout,'data'))[0]).trim(),env={...process.env,DISPLAY:display};
  browser=await chromium.launch({executablePath:'/opt/google/chrome/chrome',headless:false,env,args:['--no-sandbox','--window-size=1280,1000']});
- for(const [product,route] of Object.entries(routes))for(const theme of ['light','dark'])for(const zoom of [1,2,4]){
+ for(const [product,route] of Object.entries(routes))for(const theme of ['light','dark'])for(const zoom of (process.env.PONDEROSA_A11Y_ZOOMS??'1,2,4').split(',').map(Number)){
   const row={product,theme,zoom,status:'started',errors:[],requests:[]};rows.push(row);const context=await browser.newContext({viewport:null});const page=await context.newPage();page.setDefaultTimeout(10000);
   try{
    page.on('pageerror',e=>row.errors.push(e.message));page.on('request',r=>{if(r.method()==='POST'&&r.url().includes('/messages'))row.requests.push({url:r.url(),body:r.postData()});});
@@ -26,7 +26,7 @@ try{
    await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');const text=`matrix-${product}-${theme}-${zoom}`;await page.keyboard.type(text);await page.keyboard.press('Shift+Enter');await page.keyboard.type('tail');
    const send=page.getByRole('button',{name:'Send message',exact:true});row.tabsToSend=await tabTo(page,send);const sent=page.waitForResponse(r=>r.request().method()==='POST'&&r.request().postData()?.includes(text));await page.keyboard.press('Enter');row.sendStatus=(await sent).status();assert.equal(row.sendStatus,['assistant','output'].includes(product)?202:200);
    await page.addScriptTag({path:process.env.AXE_CORE_PATH});row.scan=await page.evaluate(()=>window.axe.run());await page.screenshot({path:`${out}/${product}-${theme}-${zoom}.png`});
-   assert.deepEqual(row.scan.violations.filter(v=>v.impact==='critical').map(v=>v.id),[]);assert.deepEqual(row.errors,[]);row.status='pass';
+   assert.deepEqual(row.scan.violations.filter(v=>v.impact==='critical').map(v=>v.id),[]);if(process.env.PONDEROSA_ASSERT_LANDMARK_REPAIR==='1'){assert.deepEqual(row.scan.violations.filter(v=>['landmark-one-main','landmark-unique','region'].includes(v.id)).map(v=>v.id),[]);assert.equal(await page.getByRole('main').count(),1);}assert.deepEqual(row.errors,[]);row.status='pass';
   }catch(error){row.status='fail';row.error=error.stack;await page.screenshot({path:`${out}/${product}-${theme}-${zoom}-failure.png`}).catch(()=>{});throw error;}
   finally{await context.close();await writeFile(out+'/results.json',JSON.stringify({browser:await browser.version(),rows},null,2));}
  }

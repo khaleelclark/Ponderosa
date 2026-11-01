@@ -59,3 +59,15 @@ all normal cleanup exits must accompany any result.
 the real unloaded app at the same4x mobile profile when active-load capacity is
 refused. Its result explicitly records zero active Agents and is never load
 acceptance. Set PONDEROSA_OBSERVER_EVIDENCE to an owned directory.
+
+## Mounted landmark correction
+
+The current four-surface matrix reproduced moderate missing-main/uncontained
+content findings in Assistant/output and repeated named landmark regions for
+inline Run receipts. Standalone output now owns one main landmark. Run receipts
+are articles in both presentations, so a timeline of independent work records
+does not flood landmark navigation with identically named regions. Their labels,
+IDs, focus targets and activity controls remain. Targeted replay can set
+PONDEROSA_A11Y_ZOOMS=1 and PONDEROSA_ASSERT_LANDMARK_REPAIR=1 to check all four
+surfaces/themes against those exact axe rules and one-main semantics; that
+eight-cell replay does not replace the retained native zoom matrix.

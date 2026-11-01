@@ -27,7 +27,7 @@ export function OutputAgentApp():JSX.Element{
  const act=async(work:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await work();await refresh();}catch(cause){setError((cause as Error).message);}finally{setBusy(false);}};
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled})}));
  useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({initialize:true})}));},[assistant,status.data?.initialized]);
- return <WorkspaceConnectionProvider value={connection}><Box sx={{height:'100dvh',display:'flex',flexDirection:'column',minHeight:0}}>
+ return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'100dvh',display:'flex',flexDirection:'column',minHeight:0}}>
   <Stack direction="row" alignItems="center" spacing={1} sx={{p:1,borderBottom:1,borderColor:'divider'}}>
    <Typography variant="h6" sx={{flex:1,minWidth:0,overflowWrap:'anywhere'}}>{app?.title??'Assistant'}</Typography><Button href="/home">Ponderosa</Button><Button onClick={()=>setSettings(true)}>Settings</Button>
   </Stack>
