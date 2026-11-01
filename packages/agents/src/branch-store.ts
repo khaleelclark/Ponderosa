@@ -235,7 +235,7 @@ export class BranchStore {
   }
   private checkpointDefinitionSupported(executionId:string):boolean {
     const execution=this.execution(executionId)!,definition=this.definition(execution);
-    return scriptDefinitionSupported(definition,true)||!execution.parentExecutionId&&scriptDefinitionSupported(definition,false,true)&&resourceReservationSupported(selectBranchUnit(this.sqlite,executionId),definition);
+    return scriptDefinitionSupported(definition,true)||scriptDefinitionSupported(definition,false,true)&&resourceReservationSupported(selectBranchUnit(this.sqlite,executionId),definition);
   }
   private checkpointOwnerChainSupported(executionId:string):boolean {
     const chain=this.ancestors(executionId);
@@ -836,7 +836,7 @@ export class BranchStore {
         const capture=retainedResourceCapture(o.selected);
         if(capture){const current=this.resourceCaptureJournal(resource.step_execution_id);if(current?.state!=='retained'||stableJson(current.receipt)!==stableJson(capture.receipt))throw Error('Historical resource checkpoint custody was released or changed');}
         const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',resource.step_execution_id);if(!row||row.execution_id!==o.executionId||['template_ref','requested_count','creation_key','generation'].some(k=>row[k]!==resource[k]))throw Error('Historical resource custody identity unavailable');}
-      if(!this.resourceHistoryCustodySettled(executionId))throw Error('Historical resource custody is not retired or verified');
+      if(c.owners.some((o:Row)=>!this.resourceHistoryCustodySettled(o.executionId)))throw Error('Historical resource custody is not retired or verified');
     }
     for(const o of c.owners){
       const e=o.selected.execution[0],branch=this.getBranch(e.branch_id);
@@ -1033,7 +1033,7 @@ export class BranchStore {
         const origin=JSON.parse(this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",r.execution_id)!.evidence_json),source=this.execution(origin.sourceRootId)!;
         const current=this.getBranch(r.branch_id)!,execution=this.execution(r.execution_id)!;
         if(!source||current.versionId!==execution.versionId||current.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(r.branch_id))!==stableJson(execution.configuration)
-          ||this.rewindHistorical(source.branchId,source.id,origin.checkpointId,origin.checkpointHash,origin.commandKey).id!==r.execution_id)return 'fenced';
+          ||this.rewindHistorical(source.branchId,source.id,origin.checkpointId,origin.checkpointHash,origin.commandKey).id!==this.ancestors(r.execution_id).at(-1)?.id)return 'fenced';
       }catch{return 'fenced';}
     }
     if(!r||r.state!=='reserved'||r.cancel_requested||r.deleting||creationKey&&r.creation_key!==creationKey
@@ -1064,7 +1064,7 @@ export class BranchStore {
   }
   resourceCaptureEligible(stepExecutionId:string):boolean {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),e=r&&this.execution(r.execution_id);
-    if(!e||e.parentExecutionId||Object.keys(e.configuration.secretBindings??{}).length||!scriptDefinitionSupported(this.definition(e),false,true)||this.definition(e).steps.filter(s=>s.kind==='agent').length!==1)return false;
+    if(!e||Object.keys(e.configuration.secretBindings??{}).length||!scriptDefinitionSupported(this.definition(e),false,true)||this.definition(e).steps.filter(s=>s.kind==='agent').length!==1)return false;
     const selected=selectBranchUnit(this.sqlite,e.id);
     return selected.resources!.length===1&&selected.paths!.length===1&&!selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id);
   }

@@ -77,7 +77,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       ||Object.hasOwn(o.configuration,'secretBindings')||Object.keys(JSON.parse(actual.configuration_json).secretBindings??{}).length)return false;
     const {secretBindings,...safe}=JSON.parse(actual.configuration_json);if(stableJson(safe)!==stableJson(o.configuration))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
-    const resourceFrontier=owners.length===1&&resourceReservationSupported(o.selected,definition);
+    const resourceFrontier=resourceReservationSupported(o.selected,definition);
     const capture=retainedResourceCapture(o.selected);
     if(capture&&(capture.source.intent.bindingSha256!==o.bindingHash||capture.source.intent.configurationSha256!==payloadHash(o.configuration)))return false;
     if(capture){

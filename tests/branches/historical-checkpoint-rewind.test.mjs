@@ -946,7 +946,7 @@ for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutab
 });
 
 // Resource replay stops before any external Chat/import release; suffix work uses fresh custody.
-async function reservationHistoryFixture(t,mode='async'){
+async function reservationHistoryFixture(t,mode='async',childOwner=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
  const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
@@ -955,7 +955,13 @@ async function reservationHistoryFixture(t,mode='async'){
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result'},script('suffix')],controls:[],edges:[{id:'to-team',from:'prefix',to:'team',on:'success'},{id:'to-suffix',from:'team',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
- const source=branches.accept(branch.id,'resource-source','input');
+ let parent,root,source;
+ if(childOwner){
+  parent=branches.deploy({chatId:chat.id,idempotencyKey:'resource-parent',definition:{schema:'ponderosa.branch.v1',name:'Resource parent',trigger:{kind:'manual'},entry:'call',steps:[{id:'call',kind:'branch_call',branchRef:'resource'}],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir},branches:{resource:branch.id}}});
+  root=branches.accept(parent.id,'resource-root','input');
+  for(let n=0;n<30&&!source;n++){branches.advance();await branches.unitSaver.drain();const child=store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(root.id);if(child)source=branches.execution(child.id);}
+  assert.ok(source,'canonical Branch call admits the resource owner');
+ }else source=branches.accept(branch.id,'resource-source','input');
  const claim=async()=>{for(let n=0;n<60;n++){await branches.unitSaver.drain();branches.advance();const lease=branches.claimScript('resource-inert');if(lease){await branches.unitSaver.drain();assert.equal(branches.checkpointDispatch(lease),'ready');return lease;}}assert.fail('expected resource Script lease');};
  const settle=lease=>{branches.authorizeScript(lease,inertIdentity);branches.recordScriptEvidence(lease,inertIdentity,{stdout:'known',outputHash:hash('known'),code:0});branches.settleScript(lease,{failed:false,output:'known'});};
  const reservation=id=>store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(id);
@@ -984,7 +990,7 @@ async function reservationHistoryFixture(t,mode='async'){
   const receipt=store.commitConversationDeletion(temporary.id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(temporary.id);branches.resourceRetired(r.step_execution_id);await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');
   return {chatId:temporary.id,agentId,chatToken,token};
  };
- return {get store(){return store},get branches(){return branches},branch,source,claim,settle,reservation,advance,capture,resume,finish,async reopen(){await branches.unitSaver.drain();store.close();open();}};
+ return {get store(){return store},get branches(){return branches},branch,parent,root,source,claim,settle,reservation,advance,capture,resume,finish,async reopen(){await branches.unitSaver.drain();store.close();open();}};
 }
 for(const mode of ['async','sync','exit'])test(`resource reservation ${mode} executable A and restored B with fresh custody`,async t=>{
  const f=await reservationHistoryFixture(t,mode),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);const a=await f.capture(f.source.id);assert.ok(a,'actual resource reservation unit must be executable');
@@ -1192,4 +1198,39 @@ for(const mode of ['async','sync','exit'])test(`prospective imported resource ${
  assert.equal(f.store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(resource.step_execution_id).request_id,null);
  const before=allocationCounts(f);await f.reopen();assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'retained-resource').id,fresh.id);assert.deepEqual(allocationCounts(f),before);
  assert.throws(()=>f.branches.resourceCaptureRelease(retained.stepId,'releasing'),/referenced/);
+});
+
+// Deferred: source-only child custody, owner transaction rollback and restart readback.
+for(const mode of ['async','sync'])test(`retained resource in ${mode} child owner rewinds under a fresh parent`,async t=>{
+ const f=await reservationHistoryFixture(t,mode,true),prefix=await f.claim();
+ assert.equal(prefix.executionId,f.source.id);f.settle(prefix);await f.advance(f.source.id);
+ let checkpoint,retained;
+ await f.finish(f.source.id,async c=>{
+  retained=c;
+  checkpoint=f.branches.historicalCheckpoints(f.parent.id,f.root.id).find(cp=>cp.restoreSupported&&captureBytes(f,cp.id).continuation?.owners.some(o=>o.executionId===f.source.id&&o.selected.resources[0]?.capture_json));
+  assert.ok(checkpoint,'ancestor cut includes the exact retained child generation');
+  const owners=captureBytes(f,checkpoint.id).continuation.owners;
+  assert.equal(owners.length,2);assert.equal(owners.find(o=>o.executionId===f.source.id).selected.resources[0].root_agent_id,c.result.rootAgentId);
+ });
+ for(let n=0;n<20&&f.branches.execution(f.root.id).state!=='completed';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(f.root.id).state,'completed');
+ const before=allocationCounts(f);
+ f.store.sqlite.exec("CREATE TRIGGER reject_child_custody BEFORE INSERT ON branch_commands WHEN NEW.command_key LIKE 'resource-restore:%' BEGIN SELECT RAISE(ABORT,'child custody insertion failed'); END");
+ assert.throws(()=>f.branches.rewindHistorical(f.parent.id,f.root.id,checkpoint.id,checkpoint.contentHash,'child-rollback'),/child custody insertion failed/);
+ assert.deepEqual(allocationCounts(f),before);f.store.sqlite.exec('DROP TRIGGER reject_child_custody');
+ const next=f.branches.rewindHistorical(f.parent.id,f.root.id,checkpoint.id,checkpoint.contentHash,'child-custody');
+ const child=f.store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(next.id);
+ assert.ok(child);assert.notEqual(child.id,f.source.id);
+ const resource=f.reservation(child.id),journal=f.branches.resourceRestoreJournal(resource.step_execution_id);
+ assert.deepEqual(journal.receipt,retained.receipt);assert.equal(journal.sourceStepId,retained.stepId);
+ assert.equal(resource.chat_id,null);assert.equal(resource.root_agent_id,null);
+ await f.reopen();const allocated=allocationCounts(f);
+ assert.equal(f.branches.rewindHistorical(f.parent.id,f.root.id,checkpoint.id,checkpoint.contentHash,'child-custody').id,next.id);
+ assert.deepEqual(allocationCounts(f),allocated);
+ for(let n=0;n<20&&f.branches.resourceRelease(resource.step_execution_id)!=='ready';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.resourceRelease(resource.step_execution_id),'ready','child release validates the mapped root receipt');
+ f.store.sqlite.prepare('UPDATE conversation_deletion_receipts SET storage_cleanup_completed=0 WHERE conversation_id=?').run(retained.source.sourceChatId);
+ assert.equal(f.branches.resourceRelease(resource.step_execution_id),'fenced','ancestor readback checks child source cleanup');
+ assert.throws(()=>f.branches.rewindHistorical(f.parent.id,f.root.id,checkpoint.id,checkpoint.contentHash,'child-new-command'),/custody/);
+ assert.deepEqual(allocationCounts(f),allocated);
 });
