@@ -37,3 +37,13 @@ test('checkpoint saver captures host dependencies but never marks an Agent front
  const snapshot=JSON.parse(row.snapshot_json);assert.equal(snapshot.restore_supported,false);assert.ok(verifyBranchHostCut(snapshot.hostDependencies,f.source.id));
  const owners=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n;assert.ok(f.branches.historicalCheckpoints(f.branch.id,f.source.id).every(cp=>!cp.restoreSupported));assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,owners);
 });
+
+// Deferred: manager/roster visibility never grants private dependency capture.
+test('host cut refuses a dependency owned outside root participants',async t=>{
+ const f=fixture(t);for(let n=0;n<20&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ const root=f.branches.detail(f.source.id).attempts[0].requestId;
+ f.coordination.updateRequest({requestId:root,updateId:'private-question',kind:'question',actor:{kind:'agent',id:f.agent.id},payload:{text:'Dependency?'}});
+ const foreign=f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,requesterAgentId:f.peer.id,actorScope:'controlled-host-fixture',idempotencyKey:'foreign',requests:[{recipientAgentId:f.agent.id,lifetime:{kind:'indefinite'},payload:{text:'Private dependency'}}],join:{mode:'all'}});
+ const now=new Date().toISOString();f.store.sqlite.prepare("INSERT INTO coordination_question_suspensions(question_update_id,request_id,owner_agent_id,dependency_kind,dependency_id,state,created_at,updated_at) VALUES(?,?,?,'join',?,'open',?,?)").run('private-question',root,f.agent.id,foreign.joinId,now,now);
+ assert.throws(()=>f.capture(),/root participant scope/);
+});

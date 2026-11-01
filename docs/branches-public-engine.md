@@ -421,3 +421,15 @@ secret-dependent authority through an explicit review workflow, provider-native
 historical state and general crash reconciliation. Existing strict current-pin
 checks and retired-resource ownership checks are retained. Atomic SQLite restore
 rollback does not roll back external effects. No full #32 claim follows.
+
+Runtime contract review further constrains host capture to the Branch Chat and
+root Request participant scope. A related Join owned outside that scope or a
+member unavailable to its Join owner refuses capture; manager/roster visibility
+is not authorization. The saved bundle is private evidence, not a grant to
+Branch readers: capture/read/adoption services must recheck current grants and
+original Communication/artifact audiences before disclosure. Those service
+paths and fresh Request admission remain unfinished. This serializer freezes
+the current transaction boundary; arbitrary older Join state cannot be rebuilt
+from mutable Join rows, which have no complete transition journal. An older cut
+requires its already saved immutable bundle. Deferred privacy regression source
+is included; no tests or execution were performed.
