@@ -1,6 +1,6 @@
 import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
-import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPackageReceipt} from '../checkpoint-agent-packages.js';
-export type {CheckpointPackageSource,CheckpointPackageReceipt} from '../checkpoint-agent-packages.js';
+import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPackageReceipt,type CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
+export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
 import {withoutPortableSecrets} from '../portable-secrets.js';
 import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder} from '../portable-working-files.js';
@@ -88,6 +88,7 @@ export interface BranchPackageImportOptions {
 }
 /** Shared packaging boundary; callers own durable human review and destination selection. */
 export interface BranchPackageEngine {
+  inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
   captureCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageReceipt>;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
   releaseCheckpoint(receipt:CheckpointPackageReceipt):Promise<void>;
@@ -2498,10 +2499,14 @@ export function registerAgentPackageRoutes(
     }
   });
   return {packageEngine:{
+    inspectCheckpoint:source=>checkpointCustody.inspect(source),
     captureCheckpoint:source=>withAgentImportAdmission(async()=>{
+      const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};
+      const status=await checkpointCustody.inspect(frozen);
+      if(status.state==='retained')return status.receipt;
+      if(status.state!=='missing')throw new Error(`Checkpoint custody ${status.state}; cannot recapture this intent`);
       const boundary=context.withCheckpointSourceBoundary;
       if(!boundary)throw new Error('Checkpoint source capture boundary unavailable');
-      const frozen={...source,agentIds:[...source.agentIds]};
       return boundary(frozen,async boundaryId=>checkpointCustody.capture(frozen,boundaryId,async()=>{
         const inputs:AgentPackageCompositionInput[]=[];
         for(const id of frozen.agentIds){
