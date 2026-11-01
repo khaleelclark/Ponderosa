@@ -2,6 +2,7 @@ import {Alert,Paper,Stack,Typography} from '@mui/material';
 import type {BranchLiveOutputDto} from '@ponderosa/core';
 import {useAgent} from '../../hooks/queries';
 import {useAgentStream} from '../../hooks/useAgentStream';
+import {RunOutputFullText} from '../activity/ActivityOutput';
 
 export function BranchLiveOutputs({targets,labels}:{targets:BranchLiveOutputDto[];labels:Record<string,string>}):JSX.Element {
  const agents=[...new Set(targets.map(target=>target.agentId))];
@@ -19,7 +20,7 @@ export function BranchLiveOutput({targets,labels}:{targets:BranchLiveOutputDto[]
    {agent.error&&<Alert severity="error">{agent.error.message}</Alert>}
    {stream.connectionStatus!=='live'&&<Typography role="status">{stream.connectionStatus==='connecting'?'Connecting…':'Live updates unavailable; reconnecting…'}</Typography>}
    {!entries.length&&<Typography color="text.secondary">Waiting for output…</Typography>}
-   {entries.map(entry=><Typography key={entry.id} component="div" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{entry.text}</Typography>)}
+   {entries.map(entry=><RunOutputFullText key={entry.id} segment={entry} render={text=><Typography component="div" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{text}</Typography>}/>)}
   </Stack></Paper>;
  })}</Stack>;
 }
