@@ -1742,6 +1742,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Existing TypeScript transpiler; actual TSX component with transport/hooks/download stubs",
       "origin": "Selected global-memory UI: selection, explicit review, cancellation, error retry and file limits"
+    },
+    {
+      "path": "tests/agents/activation-projection.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/core; no provider, listener or writable store",
+      "origin": "Bible9 shared fresh-Run/steering activation projection preserves payload and error contract"
     }
   ],
   "retainedReleasePayload": [

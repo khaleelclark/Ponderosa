@@ -164,3 +164,24 @@ export {
   reconcileQueuedProjectMessages,
 };
 export type { MainTimelineEntry };
+
+
+export interface MainHistoryState {
+  messages: ConversationMessageDto[];
+  decisionEvents: ConversationDecisionEventDto[];
+  cursor?: string;
+  hasMore: boolean;
+}
+
+export function mergeMainHistoryPage(
+  page: { messages: ConversationMessageDto[]; decisionEvents?: ConversationDecisionEventDto[]; history?: { cursor?: string; hasMore?: boolean } },
+  current: MainHistoryState | undefined,
+  live: { messages?: ConversationMessageDto[]; decisionEvents?: ConversationDecisionEventDto[] } | undefined,
+): MainHistoryState {
+  return {
+    messages: mergeConversationMessages(page.messages, current?.messages ?? [], live?.messages ?? []),
+    decisionEvents: mergeDecisionEvents(page.decisionEvents ?? [], current?.decisionEvents ?? [], live?.decisionEvents ?? []),
+    cursor: page.history?.cursor,
+    hasMore: page.history?.hasMore ?? false,
+  };
+}

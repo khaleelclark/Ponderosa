@@ -1,5 +1,5 @@
+import { mergeMainHistoryPage, type MainHistoryState } from "./ConversationView.helpers";
 import type {
-  ConversationDecisionEventDto,
   ConversationMessageDto,
   TeamOperationalEventDto,
 } from "@ponderosa/core";
@@ -22,12 +22,7 @@ import {
 import { useMessageDeliveryReceipts } from "./useMessageDeliveryReceipts";
 import type { ConversationActiveView } from "./useConversationActiveView";
 
-interface OlderMainHistory {
-  messages: ConversationMessageDto[];
-  decisionEvents: ConversationDecisionEventDto[];
-  cursor?: string;
-  hasMore: boolean;
-}
+type OlderMainHistory = MainHistoryState;
 
 interface OlderCollaborationHistory {
   messages: ConversationMessageDto[];
@@ -168,20 +163,7 @@ export function useConversationHistory(
             100,
             mainHistory.cursor,
           );
-          setOlderMain(current => ({
-            messages: mergeConversationMessages(
-              page.messages,
-              current?.messages ?? [],
-              detailQuery.data?.messages ?? [],
-            ),
-            decisionEvents: mergeDecisionEvents(
-              page.decisionEvents ?? [],
-              current?.decisionEvents ?? [],
-              detailQuery.data?.decisionEvents ?? [],
-            ),
-            cursor: page.history?.cursor,
-            hasMore: page.history?.hasMore ?? false,
-          }));
+          setOlderMain(current => mergeMainHistoryPage(page, current, detailQuery.data));
         } else {
           const loadMessages =
             collaborationHistory.hasMore && Boolean(collaborationHistory.cursor);

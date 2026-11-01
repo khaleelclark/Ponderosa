@@ -19,7 +19,6 @@ export interface PreparingRunObservation {
   leaseExpiresAt: string;
   promptInjectionState: "not_injected" | "injecting" | "injected";
 }
-export interface QueuedDeliveryObservation { createdAt: string }
 export interface AgentHealthProjectionInput {
   scope: AgentHealthProjectionDto["scope"];
   agents: AgentDto[];

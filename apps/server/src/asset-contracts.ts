@@ -1,4 +1,3 @@
-import { existsSync, mkdirSync } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import {
   DEFAULT_ASSET_LIMITS,
@@ -164,9 +163,4 @@ export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedAr
 
 export class AssetError extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
-}
-
-export function mkdirSyncSafe(dataDir: string): void {
-  // The server creates this root before stores open their durable state.
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 }

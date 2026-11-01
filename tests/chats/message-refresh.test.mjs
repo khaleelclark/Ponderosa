@@ -1,3 +1,4 @@
+import '../shared/web-typescript-loader.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -45,4 +46,19 @@ test('coordination workspace invalidations refresh the exact Agent even without 
   });
   assert.deepEqual(scheduled,['one','two'],'a duplicate snapshot may be omitted, never its scoped detail refresh');
   assert.deepEqual(scope,['chat','chat']);
+});
+
+
+test('main history page merge keeps live precedence and page pagination for focus and older loads', async () => {
+  const {mergeMainHistoryPage}=await import('../../apps/web/src/components/ConversationView.helpers.ts');
+  const message=(id,text)=>({id,text,createdAt:'2026-01-01',canonicalOrderKey:id});
+  const decision=(id,label)=>({id,label,createdAt:'2026-01-01'});
+  const page={messages:[message('a','old'),message('b','page')],decisionEvents:[decision('d','old')],history:{cursor:'next-page',hasMore:true}};
+  const current={messages:[message('b','retained')],decisionEvents:[decision('d','retained')],cursor:'stale',hasMore:false};
+  const live={messages:[message('b','live')],decisionEvents:[decision('d','live')]};
+  const result=mergeMainHistoryPage(page,current,live);
+  assert.deepEqual(result.messages.map(m=>m.text),['old','live']);
+  assert.equal(result.decisionEvents[0].label,'live');assert.equal(result.cursor,'next-page');assert.equal(result.hasMore,true);
+  assert.deepEqual(mergeMainHistoryPage({messages:[]},undefined,undefined),{messages:[],decisionEvents:[],cursor:undefined,hasMore:false});
+  assert.equal(page.messages[1].text,'page');assert.equal(current.messages[0].text,'retained');
 });

@@ -203,10 +203,3 @@ export function recentResourceRows<Item extends FolderResource>(folders: readonl
     ...loose.map(item => ({ id: `resource:${item.id}`, at: item.updatedAt, folder: undefined as ResourceFolder | undefined, item })),
   ].sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
 }
-export function sortChatFolderMembers(folder: ChatFolderDto, items: readonly WorkspaceConversationDirectoryItemDto[], sort: ProjectSort): WorkspaceConversationDirectoryItemDto[] {
-  const members = sortResourceFolderMembers({...folder, memberIds: folder.conversationIds}, items.map(item => ({...item, id: item.conversation.id, title: item.conversation.title, updatedAt: item.lastUsedAt ?? item.conversation.updatedAt, original: item})), sort);
-  return members.map(item => item.original);
-}
-export function sortChatFolders(folders: readonly ChatFolderDto[], items: readonly WorkspaceConversationDirectoryItemDto[], sort: ProjectSort): ChatFolderDto[] {
-  return sortResourceFolders(folders.map(folder => ({...folder, memberIds: folder.conversationIds})), items.map(item => ({id: item.conversation.id, title: item.conversation.title, updatedAt: item.lastUsedAt ?? item.conversation.updatedAt})), sort).map(({memberIds: _, ...folder}) => folder);
-}

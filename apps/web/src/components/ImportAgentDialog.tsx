@@ -1,3 +1,4 @@
+import type { PortableAgentPreview } from "./agent-package-preview.types";
 import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
@@ -40,20 +41,7 @@ import { ChatInstructionsImportChoice, chatInstructionsResolution, type ChatInst
 const MAX_IMPORT_FILE_BYTES = AGENT_PACKAGE_MAX_BYTES;
 const LARGE_PASTE_CHARACTERS = 256 * 1024;
 
-interface PortableAgentPreview {
-  sourceLabel: string;
-  hasOutputRoles: boolean;
-  sourceProjectInstructions?: string;
-  mode: "template" | "full";
-  kind: "agent" | "organization";
-  agentCount: number;
-  artifactCount: number;
-  historyMessageCount: number;
-  agentTitles: string[];
-  sourceEngines: string[];
-  elevatedAgentRefs: string[];
-  invalidPermissionShape: boolean;
-}
+
 
 export function ImportAgentForm({
   projectId,

@@ -220,13 +220,13 @@ test('Branch Settings section changes preserve mounted drafts and guard profile 
 });
 
 test('historical failed Scripts show exit diagnostics rather than stdout or a missing explanation',async()=>{
- const {executionFailures}=await import('../../apps/web/src/components/branches/model.ts');
+ const {branchScriptFailureSummary}=await import('@ponderosa/core');
  const detail={steps:[{id:'invocation',stepId:'script',pathId:'path',state:'failed',result:{failed:true,output:'MISLEADING_SUCCESS'}}],paths:[{id:'path',stepExecutionId:'invocation',state:'failed'}],attempts:[{stepExecutionId:'invocation',number:1,state:'failed',result:{failed:true,output:'MISLEADING_SUCCESS'},scriptEvidence:{code:7,stdout:'MISLEADING_SUCCESS',stderr:'PRIVATE_STDERR'}}]};
- assert.equal(executionFailures(detail)[0].reason,'Script exited with code 7. Inspect Step evidence for error output.');
+ assert.equal(branchScriptFailureSummary(detail.attempts[0].scriptEvidence.code,detail.attempts[0].scriptEvidence.error),'Script exited with code 7. Inspect Step evidence for error output.');
  detail.attempts[0].scriptEvidence={code:null};
- assert.equal(executionFailures(detail)[0].reason,'Script terminated without an exit code. Inspect Step evidence for error output.');
+ assert.equal(branchScriptFailureSummary(detail.attempts[0].scriptEvidence.code,detail.attempts[0].scriptEvidence.error),'Script terminated without an exit code. Inspect Step evidence for error output.');
  detail.attempts[0].scriptEvidence={code:null,error:'Script timeout'};
- assert.equal(executionFailures(detail)[0].reason,'Script timeout');
+ assert.equal(branchScriptFailureSummary(detail.attempts[0].scriptEvidence.code,detail.attempts[0].scriptEvidence.error),'Script timeout');
 });
 
 

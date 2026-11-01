@@ -16,7 +16,6 @@ import { initializeCurrentDatabase } from "./db.js";
 import { stateSchemaSignature } from "./state-schema-signature.js";
 import { StateReadBudget, stateReadBudget, bindStateReadBudget, withStateReadInvocation, withStateReads } from "./state-read-budget.js";
 
-export const STATE_EPOCH = 2;
 export const STATE_SCHEMA_CONTRACT = "ponderosa.state.current-single-db";
 export const STATE_MARKER = ".ponderosa-layout-version";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;

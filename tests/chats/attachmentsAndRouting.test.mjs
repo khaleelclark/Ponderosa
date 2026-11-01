@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { collectAttachments, packageFolder } from '../../apps/web/src/components/chat/folderAttachments.ts';
 import { composerSubmissionText, shouldExtractLongPaste } from '../../apps/web/src/components/chat/composerUtils.ts';
-import { newChatSubmission, uploadFilesForRecipients, fileSelectionFingerprint } from '../../apps/web/src/conversationRouting.ts';
+import { managerBroadcastText, uploadFilesForRecipients, fileSelectionFingerprint } from '../../apps/web/src/conversationRouting.ts';
 import { buildMarkdownTranscript } from '../../apps/web/src/chatTranscript.ts';
 
 test('check 19: folder ZIP preserves nested UTF-8 filenames and bytes, rejects unsafe/oversized input', async t => {
@@ -49,9 +49,9 @@ test('checks 8, 22: partial recipient upload failure cleans exact successful cop
 });
 
 test('check 5: ordinary new-Chat input selects Agent creation and explicit Broadcast preserves its intended text', () => {
-  assert.deepEqual(newChatSubmission('Ordinary request'), { kind: 'agent', text: 'Ordinary request' });
-  assert.deepEqual(newChatSubmission('#broadcast Shared fixture fact'), { kind: 'broadcast', text: 'Shared fixture fact' });
-  assert.equal(newChatSubmission('Mention #broadcasting as plain text').kind, 'agent');
+  assert.equal(managerBroadcastText('Ordinary request'), undefined);
+  assert.equal(managerBroadcastText('#broadcast Shared fixture fact'), 'Shared fixture fact');
+  assert.equal(managerBroadcastText('Mention #broadcasting as plain text'), undefined);
 });
 
 test('check 83: Chat and Team transcripts contain only their selected communication and disclose partial coverage', () => {
