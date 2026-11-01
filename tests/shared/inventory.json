@@ -1749,13 +1749,6 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, existing TypeScript and React; actual TSX with host hooks/UI leaves stubbed; no provider or browser"
-    },
-    {
-      "path": "tests/branches/output-settings-accessibility.mjs",
-      "feature": "branches",
-      "lane": "manual",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Exact built web/server/packages, existing Chrome/playwright-core and AXE_CORE_PATH; owned loopback fixture; controlled response failure, no provider inference"
     }
   ],
   "retainedReleasePayload": [
@@ -2006,6 +1999,13 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Built web/server and installed Chromium; actual organization and Branch dialogs on controlled disposable providers",
       "origin": "A21 collision dialog and role publication/restart browser qualification"
+    },
+    {
+      "path": "tests/branches/output-settings-accessibility.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Exact built web/server/packages, existing Chrome/playwright-core and AXE_CORE_PATH; owned loopback fixture; controlled response failure, no provider inference"
     }
   ],
   "support": [
