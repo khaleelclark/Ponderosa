@@ -170,6 +170,7 @@ function ChatPaneComponent({
   );
   const chatMessages = agentChat.messages;
   const latestDirectInput=[...chatMessages].reverse().find(message=>message.role==='user'&&message.communicationIntent==='user_dm');
+  const latestBroadcastInput=[...chatMessages].reverse().find(message=>message.role==='user'&&message.communicationIntent==='broadcast');
   const visibleRunIds = useMemo(
     () => new Set(agentChat.runs.map(run => run.id)),
     [agentChat.runs],
@@ -522,7 +523,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
-              belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{message===latestDirectInput&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={`${message.id}:${agentId}`} sent={message} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
+              belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(message===latestDirectInput||message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={`${message.id}:${agentId}`} sent={message} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
               attachmentDensity: "compact",
               status:
                 (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (

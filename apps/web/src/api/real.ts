@@ -325,6 +325,10 @@ export const realApi = {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/voice-replies/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`, {cache:"no-store"});
   },
 
+  getTextReplyStatus(conversationId:string,messageId:string,agentId:string):Promise<import("@ponderosa/core").VoiceReplyStatus>{
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/reply-streams/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`,{cache:"no-store"});
+  },
+
   getAssetLimits(): Promise<AssetLimitsDto> { return requestJson<AssetLimitsDto>("/api/asset-limits"); },
   listProjects(): Promise<ProjectDto[]> {
     return collectCollectionPages<ProjectDto>("/api/projects");
@@ -807,14 +811,14 @@ export const realApi = {
       body: JSON.stringify(input),
     });
   },
-  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = []): Promise<AgentPortablePackageDto> {
-    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: workingFiles.length ? JSON.stringify(workingFiles) : undefined })}`);
+  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false): Promise<AgentPortablePackageDto> {
+    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&wholeWorkingFolder ? 'true' : undefined })}`);
   },
-  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = []): Promise<string> {
-    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: workingFiles.length ? JSON.stringify(workingFiles) : undefined })}`);
+  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false): Promise<string> {
+    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&wholeWorkingFolder ? 'true' : undefined })}`);
   },
-  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = []): string {
-    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: workingFiles.length ? JSON.stringify(workingFiles) : undefined, download: 1 })}`);
+  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false): string {
+    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&wholeWorkingFolder ? 'true' : undefined, download: 1 })}`);
   },
   importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
@@ -829,6 +833,10 @@ export const realApi = {
   previewAgentOutputRoles(projectId:string,packageBlob:Blob,metadata:Omit<ImportAgentPackageRequest,'package'>):Promise<import('@ponderosa/core').OutputRoleImportReviewDto>{
     const body=new Blob([`${JSON.stringify(metadata)}\n`,packageBlob],{type:'application/vnd.ponderosa.agent-import'});
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-role-preview`,{method:'POST',headers:{'content-type':body.type},body});
+  },
+  previewAgentAccess(projectId:string,packageBlob:Blob,metadata:Omit<ImportAgentPackageRequest,'package'>):Promise<import('@ponderosa/core').AgentAccessImportReviewDto>{
+    const body=new Blob([`${JSON.stringify(metadata)}\n`,packageBlob],{type:'application/vnd.ponderosa.agent-import'});
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-access-preview`,{method:'POST',headers:{'content-type':body.type},body});
   },
   importAgentPackageBlob(
     projectId: string,

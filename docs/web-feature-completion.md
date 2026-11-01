@@ -21,7 +21,7 @@ Regression source is written for the later combined verification.
 | Inbox | Existing Inbox UI/code naming retained; no legacy user-facing label introduced. |
 | Imports | `ImportAgentDialog` role warning moved outside action row; role review invalidates on package/destination/provider-mapping changes. Branch package preview retains server-owned collision warning/confirmation. |
 
-The Branches owner confirmed that output model saves use the existing `realApi.updateAgent(agentId, {activeEngine, model})` contract: output workflows target that same persistent Agent, so no duplicate graph model or new endpoint is needed. Schedule saves send both `expectedVersionId` and the observed `expectedSettingsRevision`. Server/core validated audio formats still need the respective owner handoff. A genuine early qualified Agent voice acknowledgement must originate in runtime/workflow, not canned browser text. Broader source audit and combined verification remain required; this document is coverage, not a True verdict or release claim.
+The Branches owner confirmed that output model saves use the existing `realApi.updateAgent(agentId, {activeEngine, model})` contract: output workflows target that same persistent Agent, so no duplicate graph model or new endpoint is needed. Schedule saves send both `expectedVersionId` and the observed `expectedSettingsRevision`. Server/core validated audio formats were delivered in the joined owner handoff; source integration is required. A genuine early qualified Agent voice acknowledgement must originate in runtime/workflow, not canned browser text. Broader source audit and combined verification remain required; this document is coverage, not a True verdict or release claim.
 
 ## Portability and authorized DM text continuation
 
@@ -41,3 +41,39 @@ sequential 500 ms fallback covers reconnects. It never publishes Communication o
 speaks text. Both voice snapshot entry points reject text presentation. Other
 communication scopes remain runtime dependencies. No execution or qualification
 was performed; combined verification remains deferred.
+
+## Joined API integration
+
+Backend source dependencies: Branches `c7acbd864e01fd3becdc3ace733d5d25dbaa270e`,
+portability/audio `94f7bafc63f17c82ff231d0211b61b0cf2d0bace`, and runtime text
+`8d9dfaa84ac190aca5f60f5887d0680e319016df`. These must be integrated with this web
+branch; no backend cherry-pick or execution occurred here.
+
+- `ImportAgentDialog` now previews source/destination restrictions using the staged
+  upload endpoint, requires explicit keep/apply choice, and forwards the returned
+  digest. Package/destination/provider/folder/instructions changes invalidate it;
+  delayed previews cannot replace a newer draft. Failed imports require review again.
+- `AgentPackageDialogs`, `useAgentPackageActions`, and `realApi` forward explicit
+  whole-root-folder export through both copy/download. Selected files remain an
+  alternative; fixed newline splitting for multi-file entry. Existing new-folder
+  import control remains explicit and never rebinds an existing Chat.
+- `ImportedCommunications` is an on-demand owning-Agent technical-view reader,
+  with bounded/versioned pages, immutable source/audience and revision disclosure,
+  and only server-authorized original download links. It does not insert history
+  into live Chat or confer source authority.
+- Shared Agent Chat human broadcast and DM text previews use generic reply-stream
+  status. `textReplyRoute` rejects wrong intent, peer recipients, voice and foreign
+  source/conversation; existing exact Agent/Run/fence/memory checks remain.
+  `tests/chats/text-reply-route.test.mjs` is written, not executed.
+- Recorder MIME preferences match backend audio WebM/Opus, Ogg/Opus and MP4 admission;
+  backend preserves metadata/reload originals. Container admission is not playback
+  qualification, and integration has not been executed.
+
+Remaining implementation gaps: same-Chat peer provisional text and the separate
+shared human Chat consumer still need expansion beyond the Agent Chat consumer;
+post-import mapped memory/browser suggestion review and explicit Settings actions,
+and a convenient new-root Chat creation flow remain unwired. Existing Chat creation
+and Settings remain available; source grants/profile IDs are never applied. Genuine
+early qualified voice acknowledgement remains runtime-owned. Full portability,
+performance, Bible and Phase 2 completion are not claimed. All tests, types, builds,
+browser runs and consolidated qualification remain deferred by direction.

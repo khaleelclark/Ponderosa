@@ -73,6 +73,9 @@ export function ImportAgentForm({
   const operationQuery=useQuery({queryKey:['role-import-operation',projectId,roleOperation?.id],queryFn:()=>api.getAgentImportOperation(projectId,roleOperation!.id),enabled:Boolean(roleOperation),refetchInterval:q=>q.state.data?.status==='completed'||q.state.data?.status==='failed'?false:500});
   useEffect(()=>{const current=operationQuery.data;if(!current)return;setRoleOperation(current);if(current.status==='completed'){setRoleOperation(undefined);(onSubmitted??onCancel)();}else if(current.status==='failed'){setRoleOperation(undefined);importRequestId.current=createClientId();setError(current.error??'Import failed');}else if(current.error)setError(current.error);},[operationQuery.dataUpdatedAt]);
   const [roleReview,setRoleReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
+  const [accessReview,setAccessReview]=useState<import('@ponderosa/core').AgentAccessImportReviewDto>();
+  const [accessAction,setAccessAction]=useState<''|'keep_destination'|'use_source'>('');
+
   const [packagePreview, setPackagePreview] = useState<PortableAgentPreview>();
   const [inspecting, setInspecting] = useState(false);
   const [inspectionPhase, setInspectionPhase] = useState<string>();
@@ -91,6 +94,7 @@ export function ImportAgentForm({
   const instructionsConflict = Boolean(sourceInstructions && destinationInstructions && sourceInstructions !== destinationInstructions);
   useEffect(() => { setInstructionsAction(""); importRequestId.current = createClientId(); }, [sourceInstructions, destinationInstructions, conversationId]);
   const [error, setError] = useState<string>();
+  useEffect(()=>{setAccessReview(undefined);setAccessAction('');importRequestId.current=createClientId();},[packageBlob,conversationId,engineMapping,workingFilesDestination,workingCopyMode,instructionsAction]);
   const destinationAgentsQuery = useQuery<AgentDto[]>({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -173,12 +177,17 @@ export function ImportAgentForm({
   }, [engines, sourceEngines.join("\0")]);
   const importAgents = useMutation({
     mutationFn: async () => {
-      if(packagePreview?.hasOutputRoles&&!roleReview){setRoleReview(await api.previewAgentOutputRoles(projectId,packageBlob!,{conversationId,engineMapping}));return;}
+      setError(undefined);
+      const reviewedRequestId=importRequestId.current;
+      if(!accessReview){const review=await api.previewAgentAccess(projectId,packageBlob!,{conversationId,engineMapping,...(workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),...(workingCopyMode?{workingCopyMode}:{})});if(importRequestId.current===reviewedRequestId)setAccessReview(review);return;}
+      if(!accessAction)throw new Error('Choose which capability restrictions to use.');
+      if(packagePreview?.hasOutputRoles&&!roleReview){const review=await api.previewAgentOutputRoles(projectId,packageBlob!,{conversationId,engineMapping});if(importRequestId.current===reviewedRequestId)setRoleReview(review);return;}
       return api.startAgentPackageImport(
       projectId,
       packageBlob!,
       {
         conversationId, engineMapping,
+        accessSettingsResolution:{action:accessAction,reviewSha256:accessReview.reviewSha256},
         ...(workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),
         ...(workingCopyMode?{workingCopyMode}:{}),
         ...(roleReview?{outputRoleReviewId:roleReview.id}:{}),
@@ -200,7 +209,7 @@ export function ImportAgentForm({
       onPendingChange?.(false);
       (onSubmitted ?? onCancel)();
     },
-    onError: (reason) => setError(reason instanceof Error ? reason.message : "Import failed"),
+    onError: (reason) => {setAccessReview(undefined);setAccessAction('');importRequestId.current=createClientId();setError(reason instanceof Error ? reason.message : "Import failed");},
     onSettled: () => {
       pendingRef.current = false;
       onPendingChange?.(false);
@@ -433,6 +442,12 @@ export function ImportAgentForm({
         />
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
+      {accessReview&&<Paper variant="outlined" sx={{p:2}}><Typography component="h3" variant="subtitle1">Capability restrictions</Typography>
+        {accessReview.source.map(item=><Typography key={item.ref} variant="body2">{item.ref}: {item.settings?.restrictedCapabilityIds?.join(', ')||'No source restrictions'}</Typography>)}
+        <Typography variant="body2" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>Current destination policy: {accessReview.destination.restrictedCapabilityIds.join(', ')||'No capability restrictions'}</Typography>
+        <TextField select fullWidth label="Restrictions for imported Agents" value={accessAction} onChange={event=>{setAccessAction(event.target.value as typeof accessAction);importRequestId.current=createClientId();}} sx={{mt:1}}><MenuItem value="keep_destination">Keep destination restrictions</MenuItem><MenuItem value="use_source">Apply source restrictions to new Agents</MenuItem></TextField>
+        <Typography variant="body2">Memory and saved-browser access require separate choices in Settings.</Typography>
+      </Paper>}
       {roleReview?.warning&&<Alert severity="warning">{roleReview.warning}</Alert>}
       <Stack direction="row" spacing={1} sx={{
         flexWrap:"wrap",gap:1,
@@ -453,7 +468,7 @@ export function ImportAgentForm({
       {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review output roles again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm output roles</Button></>}</>}
 
       <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
-      <Button variant="contained" disabled={Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
+      <Button variant="contained" disabled={Boolean(accessReview&&!accessAction)||Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
         const target = engines.find(engine => engine.id === engineMapping[source]);
         return !engineIsAvailable(target);
       }) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => {
@@ -462,7 +477,7 @@ export function ImportAgentForm({
         onPendingChange?.(true);
         importAgents.mutate();
       }}>
-        {importAgents.isPending ? "Importing…" : packagePreview?.hasOutputRoles&&!roleReview ? "Review output roles" : "Import"}
+        {importAgents.isPending ? "Importing…" : !accessReview ? "Review access settings" : packagePreview?.hasOutputRoles&&!roleReview ? "Review output roles" : "Import"}
       </Button>
       </Stack>
   </Stack>;
