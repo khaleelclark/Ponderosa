@@ -99,6 +99,6 @@ two-resource cases remain. These fixtures use real Branch/Runtime/Chat/Request/
 choice/transaction writers with inert package/import/provider adapters.
 
 No tests, checks, builds, typechecks, Node/native/browser processes, runner preparation
-or migrations were executed. No UI/client work, separate filesystem workspace, capture abandonment or later-generation partition is implemented in this consumer. Separate
+or migrations were executed. The separate UI eba8fa646 offers exactly two serial resources; 2–32/parallel UI remains absent. No separate filesystem workspace, capture abandonment or later-generation partition is implemented in this consumer. Separate
 group destination retirement source is integrated, with execution still deferred. Source capability
 is not provider/native/runtime qualification, parity or Phase 2 acceptance.

@@ -1,7 +1,7 @@
 # Current implementation coverage and backlog
 
 Source-only inventory includes Branch1aa09968 (2–32 serial/local-parallel resources; c462d403 predecessor), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
-retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner through91e8f8ad2/6ddf47dfa,
+retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner througheba8fa646 (91e8f8ad2/6ddf47dfa predecessors),
 and lifecycle source through393a02f5 (including Runtime713af3ad equivalent1e4d9e2). Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
@@ -144,8 +144,29 @@ Called trees, later-generation evidence-only participants/resource retry/recover
 parallel cleanup-held frontiers, broader package payloads and atomic multi-package
 group capture abandonment remain incomplete/refused. The fresh ordinary Project reuses
 the owner Project directory and its usual default Chat plus N separately reserved
-owned resource Chats. Group UI and separate filesystem workspace/imported native
-working roots remain absent. No qualification or acceptance claim.
+owned resource Chats. UI is limited to exactly two serial resources as described below;
+2–32/parallel UI and separate filesystem workspace/imported native working roots remain absent. No qualification or acceptance claim.
+
+### Bounded two-resource serial UI
+
+UI eba8fa646 adds BranchGroupReview beside the singular execution review, an additive
+BranchGroupClient with distinct group outputs, and two deferred regression sources.
+The existing BranchesClient/coordination exports and backend capture-status DTO remain.
+Only a complete standalone exactly-two serial generation-zero presentation is offered;
+backend2–32/local-parallel support is not broader UI support. Real eligibility remains
+host-validated. Capture accepts only commandKey, with no count/cut CAS; a concurrent
+broader result is rejected and held, never prepared. Both exact retained source seals
+are required before preparation, plus terminal source and external-effects acknowledgement.
+Full original commands persist before POST; browser-local capture/prepare keys survive
+success for pure GET status/destination/choice recovery. Unknown outcomes lock new
+mutations; corrupt/unwritable storage blocks them. Choice CAS409 invalidates review;
+staging/admission409 retains input. Human whole-fact approval and admission are separate;
+current persisted approval hash/revision and fresh acknowledgement are required.
+Independent destination/choice readback permits revocation without source/preview proof.
+There is no group collection or original capture-key discovery, cross-device recovery,
+mutation replay, partial-capture abandonment, group retirement or source-pin release UI.
+Preparation discloses directory reuse/default Chat plus two owned resource Chats.
+Both deferred command and mounted fixtures are source only; none executed.
 
 ## Actual missing implementation / owner requirements
 
@@ -185,12 +206,14 @@ listing requires source ownership and is capped at50. Custody review lacks compl
 source intent, so unsealed capture discovery remains missing; destination review may
 refuse before deletion proof and limit Branch/capture reachability. Branch checkpoint
 retirement still depends on retained owner/source identity; no owner-independent journal.
-This is scoped UI source, not broad discovery, group UI or executed lifecycle qualification.
+This is scoped lifecycle UI source, not broad discovery or executed qualification. The
+separate bounded group admission UI below does not add group retirement UI.
 
 - Features + Runtime: called resource trees, later-generation historical participants,
   retry/recovery, parallel cleanup-held frontiers and broader package payloads remain
   refused beyond the delivered 2–32 standalone generation-zero serial/local-parallel
-  consumer. Group UI and atomic multi-package group capture abandonment remain absent.
+  consumer. UI beyond two serial resources, group retirement UI and atomic multi-package
+  group capture abandonment remain absent.
   Changed/secret bindings, exhausted-budget frontiers, Agent/child cancellation and
   cross-owner forwarded bundles remain open. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
