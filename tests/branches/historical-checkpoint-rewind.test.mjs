@@ -1678,38 +1678,7 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
   }
   assert.equal(db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(stepId).retry_draining,1);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_attempts WHERE step_execution_id=?').get(stepId).n,2);
-  const ids=members.map(m=>m.agent_id);
-  const fenced=f.branches.fenceGenerationExit(stepId);assert.equal(fenced.state,'fencing');
-  const fenceRow=db.prepare("SELECT * FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(fenced.intakeFence.identity);
-  assert.equal(fenceRow.receipt_sha256,fenced.intakeFence.sha256);
-  assert.deepEqual(f.branches.fenceGenerationExit(stepId),fenced);
-  const fenceKey=`resource-generation-exit:${stepId}:0`,fenceJournal=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,fenceKey);
-  db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson({...fenced,intakeFence:{...fenced.intakeFence,sha256:'tampered'}}),f.source.id,fenceKey);
-  assert.throws(()=>f.branches.generationExitCapture(f.source.id,stepId,0),/fence receipt differs/);
-  db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(fenceJournal.result_json,f.source.id,fenceKey);
-  assert.equal(f.branches.resourceCanRetire(stepId,ids),false);
-  assert.throws(()=>f.branches.reserveGenerationExit(f.source.id,stepId,0),/coverage|Run inventory|fence unavailable/);
-  const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
-  const authority=new ProviderProcessAuthority(db,'inert-generation-provider');const handles=new Map();authority.recover=identity=>handles.get(identity.pid);
-  for(const [index,agentId] of ids.entries()){
-   const agent=f.store.getAgent(agentId),runId=randomUUID(),now=new Date().toISOString();
-   // Synthetic terminal Run/process lifetime; real canonical evidence writers below.
-   db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,terminal_at) VALUES(?,?,?,'completed','fixture',?,1,'injected',?,?,?,?)").run(runId,agent.projectId,agentId,now,now,now,now,now);
-   for(const activation of db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(agentId))coordination.cancelPendingActivation({activationId:activation.id,projectId:agent.projectId,idempotencyKey:`exit-fixture:${activation.id}`});
-   let alive=true;const handle={processIdentity:{pid:424242+index,pgid:424242+index,birthMarker:`inert-generation-${index}`},isAlive:()=>alive,close:async()=>{alive=false;}};handles.set(handle.processIdentity.pid,handle);
-   authority.register(handle,{purpose:'provider Run',projectId:agent.projectId,agentId,runId,runFence:1});
-  }
-  await authority.terminateAgents(new Set(ids),'inert precleanup fixture');
-  const journal=f.branches.reserveGenerationExit(f.source.id,stepId,0);assert.equal(journal.state,'capturing');assert.deepEqual(journal.envelope.intakeFence,fenced.intakeFence);
-  const custody={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'inert-generation-exit',sha256:hash('private generation bytes'),byteLength:1};
-  const originalWait=db.prepare('SELECT wait_reason FROM branch_executions WHERE id=?').get(f.source.id).wait_reason;
-  db.prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run('changed cut',f.source.id);
-  assert.throws(()=>db.transaction(()=>f.branches.sealGenerationExit(f.source.id,stepId,0,custody))(),/changed/);
-  assert.equal(f.branches.resourceCanRetire(stepId,ids),false);db.prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run(originalWait,f.source.id);
-  db.transaction(()=>f.branches.sealGenerationExit(f.source.id,stepId,0,custody))();
-  const sealed=f.branches.generationExitCapture(f.source.id,stepId,0);assert.equal(sealed.state,'sealed');assert.equal(sealed.envelope.providerExitEvidence.receipts.length,ids.length);
-  assert.equal(sealed.envelope.nativeScriptExits.length>0,true);assert.equal(f.branches.resourceCanRetire(stepId,ids),true);
-  const preview=f.store.previewAgentDeletion(ids);
+  const ids=members.map(m=>m.agent_id),preview=f.store.previewAgentDeletion(ids);
   f.store.deleteAgentSubtrees(ids,preview.previewHash,x=>coordination.handleAgentDeletion(x));
   const deletion=f.store.commitConversationDeletion(oldResource.chat_id);
   f.store.finishConversationDeletionStorageCleanup(deletion);f.store.markConversationDeletionServerCleanupComplete(oldResource.chat_id);
@@ -1725,8 +1694,6 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
   assert.equal(hash(retained.result_json),retained.input_hash);
   const value=JSON.parse(retained.result_json);
   assert.equal(value.schema,'branch-resource-generation-retired.v1');
-  assert.equal(value.priorGeneration.checkpointHash,sealed.checkpointHash);
-  assert.deepEqual(f.branches.generationExitCapture(f.source.id,stepId,0),sealed);
   assert.equal(value.resource.generation,0);assert.equal(value.resource.chat_id,oldResource.chat_id);
   assert.deepEqual(value.members,members);assert.equal(value.context.chat_id,oldResource.chat_id);
   assert.deepEqual(value.operations.map(row=>JSON.parse(row.result_json).phase),['chat','import']);

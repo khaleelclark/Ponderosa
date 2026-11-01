@@ -348,9 +348,9 @@ Bounds are 256 participants, 4096 Runs per participant, 4096 total registrations
 16 MiB aggregate evidence, with 4 MiB ledger values and bounded retained readback.
 See [provider-exit-evidence.md](provider-exit-evidence.md).
 
-The prospective provider producer/reader alone does not implement Branch precleanup capture;
-the separately assembled Branch producer and deletion guard are described below. Broader
-retry/replay remains unsupported. Runtime historical-only
+This prospective producer/reader does not implement Branch precleanup generation/frontier/
+host/custody reservation, sealed package capture and same-transaction revision recheck,
+native-script/Request/Join/effect closure, or retry/replay. Runtime historical-only
 participant partition remains missing. Pre-upgrade removed rows cannot be reconstructed;
 legacy empty registration coverage, missing Run spawn fences and Windows restart without
 an observed retained Job exit remain held. No historical admission or later-generation
@@ -386,7 +386,7 @@ and additive BranchGroupClient retain shared DTOs and all prior exports/methods.
 status remains compatible, with an additive disposition field. The Branch preview
 read-transaction correction is assembled; executable qualification remains open.
 Partial multi-package abandonment requires the separate explicit whole-group protocol below. Existing
-historical participant and broader payload limits remain; prospective precleanup evidence is assembled below.
+historical participant, precleanup sealed evidence and broader payload limits remain.
 Deferred source covers preview purity/stale cut, serial/parallel exact and legacy keys,
 retained owner audit scope, paging/invalidation/reopen and partial pin retention; none ran.
 
@@ -448,7 +448,7 @@ Preview transaction correction (source only): Branch owner f623c81ffe0cfee94ab44
 Owner-independent group command readback remains missing: discovery can show retained
 owners while exact scoped GET still refuses missing source owners. Partial multi-package
 abandonment uses the separate explicit protocol below, with all pins held until commit. Called trees, later generations,
-historical-only participant partition, broader Branch precleanup/retry/replay, broader
+historical-only participant partition, Branch precleanup seals/retry/replay, broader
 payload/native roots and unknown external effects remain gaps. Directory reuse/default
 Chat plus one Chat per resource warning remains. Deferred helper/transport/mounted
 sources cover2/3/32 inventory and last-policy binding, stale cut, exact CAS persistence,
@@ -481,10 +481,14 @@ may record continuations, but fenced identities cannot acquire new scheduler lea
 Product/source visibility, destination-admission checks and package capture capability
 checks remain unchanged by explicit owner design, so source package reads remain possible.
 
-The Branch producer and direct-deletion guard are now assembled below. It publishes
-fenceBranchGenerationExit with the initial journal and retains identity/hash through
-final evidence. Fencing is not observed exit or completed drain. Historical participant
-partition/admission and broader retry/replay gaps remain. Three deferred synthetic-resource canonical Runtime
+IMPORTANT dependency: current assembled Branch has no producer caller of
+fenceBranchGenerationExit and no initial resource-generation-exit journal wiring.
+This Runtime prerequisite alone publishes no fence and completes no precleanup capture.
+Branch must publish it with the initial journal, retain identity/hash in final evidence,
+cancel/drain existing leases and actual provider/native handles, close Requests/Joins/
+effects and revalidate generation/member/frontier/exit proof at sealing. Fencing is not
+observed exit or completed drain. Historical participant partition/admission and broader
+precleanup/retry/replay gaps remain. Three deferred synthetic-resource canonical Runtime
 fixtures were source-read only; no tests/checks/build/types/Node/native/browser/preparation/
 execution/migration/push/deploy or qualification claim. See branch-generation-exit-fence.md.
 
@@ -514,38 +518,25 @@ All seven owner deliverables are assembled (three UI/helper sources, three defer
 fixture sources and web-feature documentation). The f623c81ff preview read transaction
 correction remains assembled; no obsolete missing-correction note was restored.
 Retained/sealed-group history/disk reclamation, unknown schemas/outcomes, external
-writers, called trees/later generations, historical partition/broader Branch precleanup and native/provider/accessibility/mobile qualification remain separate or open.
+writers, called trees/later generations, historical partition/Branch precleanup producer
+wiring and native/provider/accessibility/mobile qualification remain separate or open.
 Fixtures are source only: no tests/checks/build/types/Node/native/browser/runner preparation
 or execution/migrations/push/deploy/newworkers and no acceptance claim.
 
-Prospective retry-generation exit capture producer source: durable pre-drain identity journal and owner hold, real server runtime/process drain wiring, complete selected/host/native/effect/provider envelope, real package engine outside SQL and exact same-owner revision seal before Agent/Chat cleanup. Retirement retains immutable seal reference; after-deletion reader verifies retained provider ledger evidence. Canonical Runtime intake/lease fence is now published in the same owner transaction, with its immutable receipt bound into every journal/envelope/readback. Direct Agent/Chat/Project deletion guard029fade1e is assembled with the producer. Existing package visibility checks remain unchanged. Missing/preupgrade registrations, open parallel effects, deleted earlier roots and unsupported families remain held; historical partition/admission stays disabled. Deferred synthetic-provider/canonical-writer fixture source only.
 
+### Precleanup producer isolation after Runtime handoff
 
-### Precleanup producer and direct deletion protection (source only)
-
-Branch a28f82d73 plus connecting4fdae620 are assembled without replaying the already
-equivalent5bb7f6f2/b568 Runtime fence. Exact Runtime deletion guard029fade1e is
-assembled first. Actual server drain cancels resource work, drains current runtime and
-terminates/observes provider processes while original identities remain. Same-owner
-initial journal publishes immutable intake fence; reservation binds exact generation,
-selected frontier/host/native Script exit/effect/provider evidence; actual package engine
-capture occurs outside SQL. Its synchronous callback rechecks full envelope and original
-provider revision in the same owner transaction before custody/checkpoint sealing.
-Cleanup/retirement require the seal and retain its hash reference. Retained reader verifies
-journal/snapshot/custody/native/provider hashes without recapture after source cleanup.
-
-Agent subtree preview/pending/commit, Chat pending/storage/commit and Project pending/
-commit independently require matching sealed journal, immutable intake fence/envelope,
-provider/native evidence and custody/selected snapshot. Bare sealed flags and missing or
-changed evidence refuse. Branch final deletion requires original owned Chats absent,
-whose removal must pass these guards. Owner/journal removal does not release permanent
-intake fencing; later deletion without seal evidence conservatively holds.
-
-Enabled source scope is prospective standalone1–32 current local-resource retry cleanup
-with complete original identities/registrations/settled host closure. Parallel open effects,
-already-deleted earlier roots, missing preupgrade evidence, called owners, secret bindings,
-host artifacts and unknown package outcomes hold. Historical partition/admission remains
-false; nativeState stays not_captured. This is not later-generation admission or executed
-provider/native/custody qualification. Deferred serial/parallel ASYNC/SYNC fixture source
-uses synthetic process handles/terminal Runs and inert receipts with real evidence writers;
-direct deletion refusal fixture adds missing/pending/forged seal cases. None ran.
+Runtime guard029fade1e is assembled for direct Agent/Chat/Project deletion. It does
+not independently guard Branch owner deletion after original Chats are removed or
+reparented. Existing Branch deletion checks current owned Chats before erasing
+journals/snapshots; that is insufficient for the requested retained-fence boundary.
+Consequently Branch producer a28f82d73/4fdae620 and its live wiring are NOT assembled.
+Their complete source assembly remains isolated at commit
+5ee6f33e2a133a7b4ab9fb54b8b4320feb163b6b on
+phase2-precleanup-producer-isolated-5ee6f33. An exact Branch-owner retained-fence
+guard is required before reassembly; no duplicate guard was implemented here.
+The permanent Runtime fence and direct deletion guard remain assembled, alongside
+all prior group custody/UI/lifecycle/observed-exit work. Prospective precleanup
+producer enablement and historical/later-generation admission remain held.
+Source inspection only; no tests/checks/build/types/Node/native/browser/preparation,
+migrations, push/deploy or new workers. No qualification or acceptance claim.
