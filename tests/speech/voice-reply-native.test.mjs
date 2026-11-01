@@ -110,20 +110,31 @@ async function fixture(options={},runCheck){
     if(generation)yield {type:'context_usage',providerSessionId:generation,providerSessionGeneration:generation,usedTokens:1000,windowTokens:200000,requestOutputIncluded:true};
     yield {type:'turn_done'};return;
    }
+   const nativeMap=options.claudeNative?(await import('../../packages/engines/dist/claude-stream-events.js')).claudeStreamEventMapper():undefined;
+   nativeMap?.({type:'system',subtype:'init',session_id:'native-session'});
+   const responseEvents=(kind,text)=>{
+    if(!nativeMap)return [candidate(kind,text,options.unknown?{phase:'unknown'}:{})];
+    const frame=event=>({type:'stream_event',session_id:'native-session',parent_tool_use_id:null,event});
+    if(kind==='start'){nativeMap(frame({type:'message_start',message:{id:'native-answer'}}));return nativeMap(frame({type:'content_block_start',index:0,content_block:{type:'text',text:''}}));}
+    if(kind==='delta')return nativeMap(frame({type:'content_block_delta',index:0,delta:{type:'text_delta',text}}));
+    return nativeMap({type:'assistant',session_id:'native-session',parent_tool_use_id:null,message:{id:'native-answer',content:[{type:'text',text}]}});
+   };
    yield {type:'text',delta:'FORBIDDEN WORK LOG'};
   if(options.ordinaryWork)yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'webSearch',id:'ordinary',query:'PRIVATE NATIVE PAYLOAD'}}},dir);
-  yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:'ponderosa_voice_reply',arguments:{}}}},dir);
+  if(nativeMap)yield* nativeMap({type:'assistant',session_id:'native-session',parent_tool_use_id:null,message:{id:'native-authorization',content:[{type:'tool_use',id:'native-voice-call',name:'mcp__ponderosa__voice_reply',input:{}}]}});
+  else yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:'ponderosa_voice_reply',arguments:{}}}},dir);
   const fence=coord.latestAcknowledgedSteeringInjection(coord.activeAgentRun(agent.id).id);
   const authorization=await createProviderDynamicToolHandler(app,[PONDEROSA_VOICE_REPLY_TOOL],opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN)({id:'voice-rpc',operationId:'voice-authorize',name:'ponderosa_voice_reply',arguments:fence?{steeringInjectionId:fence}:{}});
   assert.deepEqual(JSON.parse(authorization.text),{...JSON.parse(armed.body),...(authorization.success?{}:{statusCode:armed.statusCode})},'actual provider tool route receipt, including normalized failure status');
   if(authorization.success){
    // Normal authorizing acknowledgement must not invalidate the stream.
-   for(const ack of mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:'ponderosa_voice_reply',success:true,contentItems:[{text:armed.body,type:'inputText'}]}}},dir))yield ack;
+   if(nativeMap)yield* nativeMap({type:'user',session_id:'native-session',parent_tool_use_id:null,message:{content:[{type:'tool_result',tool_use_id:'native-voice-call',is_error:false,content:[{type:'text',text:armed.body}]}]}});
+   else for(const ack of mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:'ponderosa_voice_reply',success:true,contentItems:[{text:armed.body,type:'inputText'}]}}},dir))yield ack;
    if(options.delayedAuthorStart)yield {type:'tool_call',id:'voice-authorize',name:'ponderosa_voice_reply',input:{}};
    const work=function*(){if(options.nativeItems){for(const notification of options.nativeItems)yield* mapCodexAppServerNotification(notification,dir);}else yield options.work;};
    if(options.workAt==='before')yield* work();
-   yield candidate('start','',options.unknown?{phase:'unknown'}:{});
-   yield candidate('delta','First stable phrase. ',options.unknown?{phase:'unknown'}:{});
+   yield* responseEvents('start','');
+   yield* responseEvents('delta','First stable phrase. ');
    yield {type:'reasoning',delta:'FORBIDDEN REASONING'};
    if(options.workAt==='during')yield* work();
    if(options.workAt==='after'){yield candidate('complete','First stable phrase. ');yield* work();}
@@ -135,7 +146,7 @@ async function fixture(options={},runCheck){
    if(options.overflow)yield candidate('delta','x'.repeat(10001));
    reached=true; await gate;
    // Deliberately yield late bytes even after abort; host must fence them.
-   yield candidate('delta','Second phrase.');yield candidate('complete','First stable phrase. Second phrase.');
+   yield* responseEvents('delta','Second phrase.');yield* responseEvents('complete','First stable phrase. Second phrase.');
   }else{await gate;const result=await app.inject({method:'POST',url:'/api/agent-messages',headers:{authorization:`Bearer ${opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN}`},payload:{text:'Canonical fallback.',...(fence?{steeringInjectionId:fence}:{})}});assert.equal(result.statusCode,200,result.body);}
   yield {type:'turn_done'};
  }catch(error){console.log("VOICE FIXTURE ERROR",error.stack);throw error;}finally{completion();}};
@@ -534,4 +545,83 @@ test('retained-context boundary '+JSON.stringify({memory,voice,streaming}),()=>f
  }
  const fresh=memory&&voice;assert.deepEqual(f.modes,fresh?['seed','seed']:['seed','continue'],'opaque retained memory cannot authorize a fresh voice exposure');
  assert.equal(f.submitted[1].sourceManifest.providerSessionDisposition,fresh?'fresh_task':'continued_session');
+}));
+
+test('durable voice lookup survives unrelated event volume and remains exact to Agent/message/Run', async () => {
+ const root=await mkdtemp(path.join(tmpdir(),'voice-exact-status-'));
+ const store=new AgentStore(path.join(root,'data'));
+ try {
+  const project=store.createProject({label:'Voice history',hostPath:root,defaultEngine:'fixture',chatOwned:true});
+  const agent=store.createAgent(project.id,{engine:'fixture',conversationId:project.lastConversationId,title:'Voice'});
+  const first={...snapshot(),projectId:project.id,agentId:agent.id,conversationId:agent.conversationId,sequence:1,state:'completed',text:'Retained final reply.'};
+  store.appendEvent(agent.id,{type:'voice_reply',reply:first});
+  for(let i=0;i<300;i++)store.appendEvent(agent.id,{type:'text',delta:'Later unrelated work '+i});
+  store.appendEvent(agent.id,{type:'voice_reply',reply:{...first,runId:'other-run',sequence:2,text:'Foreign Run'}});
+  store.appendEvent(agent.id,{type:'voice_reply',reply:{...first,messageId:'other-message',sequence:3,text:'Foreign input'}});
+  assert.deepEqual(store.latestVoiceReply(agent.id,'m','r'),first);
+  assert.equal(store.latestVoiceReply(agent.id,'missing','r'),undefined);
+  assert.equal(store.latestVoiceReply('other-agent','m','r'),undefined);
+  const final={...first,sequence:4,text:'Exact latest revision'};
+  store.appendEvent(agent.id,{type:'voice_reply',reply:final});
+  assert.deepEqual(store.latestVoiceReply(agent.id,'m','r'),final);
+ } finally { store.close(); await rm(root,{recursive:true,force:true}); }
+});
+
+test('voice status route retains a completed reply beyond the recent-event window',async()=>fixture({},async f=>{
+ f.release();await f.done;
+ await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'completed voice Run');
+ const before=await f.app.inject({method:'GET',url:f.url,headers:f.headers});
+ assert.equal(before.statusCode,200,before.body);assert.equal(before.json().reply.state,'completed');
+ for(let i=0;i<300;i++)f.store.appendEvent(f.agent.id,{type:'text',delta:'Unrelated later work '+i});
+ const after=await f.app.inject({method:'GET',url:f.url,headers:f.headers});
+ assert.equal(after.statusCode,200,after.body);assert.deepEqual(after.json().reply,before.json().reply);
+}));
+
+test('Claude native MCP receipt binds exact host operation before response candidates can stream', async () => {
+ const {claudeStreamEventMapper}=await import('../../packages/engines/dist/claude-stream-events.js');
+ const map=claudeStreamEventMapper(),s=new VoiceReplyStream(snapshot(),[],'mcp-operation');
+ map({type:'system',subtype:'init',session_id:'native-session'});
+ const message=content=>({type:'assistant',session_id:'native-session',parent_tool_use_id:null,message:{id:'native-message',content}});
+ const receipt={authorized:true,streamId:'s',operationId:'mcp-operation'};
+ const result=(id,patch={})=>({type:'user',session_id:'native-session',parent_tool_use_id:null,message:{content:[{type:'tool_result',tool_use_id:id,content:[{type:'text',text:JSON.stringify(receipt)}],...patch}]}});
+ const unrelated=map(result('unrelated'));
+ assert.ok(unrelated.every(event=>!event.voiceReplyStreamId));
+ map(message([{type:'tool_use',id:'native-voice-call',name:'mcp__ponderosa__voice_reply',input:{}}]));
+ const acknowledged=map(result('native-voice-call'));
+ assert.equal(acknowledged[0].voiceReplyStreamId,'s');assert.equal(acknowledged[0].voiceReplyOperationId,'mcp-operation');
+ assert.equal(s.observeWork(acknowledged[0]),false);
+ const frame=event=>({type:'stream_event',session_id:'native-session',parent_tool_use_id:null,event});
+ map(frame({type:'message_start',message:{id:'answer'}}));
+ for(const event of map(frame({type:'content_block_start',index:0,content_block:{type:'text',text:''}})))if(event.type==='response_text')s.accept(event,'start');
+ for(const event of map(frame({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Early authorized answer.'}})))if(event.type==='response_text')s.accept(event,'partial');
+ assert.equal(s.snapshot.state,'streaming');assert.equal(s.snapshot.text,'Early authorized answer.');
+ const complete=map({...message([{type:'text',text:'Early authorized answer. Complete.'}]),message:{id:'answer',content:[{type:'text',text:'Early authorized answer. Complete.'}]}});
+ for(const event of complete)if(event.type==='response_text')s.accept(event,'complete');
+ assert.equal(s.finalText(),'Early authorized answer. Complete.');
+ // Completion cleared this message identity; a new native message owns later work.
+ map(frame({type:'message_start',message:{id:'later-message'}}));
+ for(const event of map(frame({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'later',name:'Bash'}})))s.observeWork(event);
+ assert.equal(s.finalText(),undefined);
+});
+
+test('failed, foreign and arbitrary Claude tool receipts cannot manufacture voice candidates', async()=>{
+ const {claudeStreamEventMapper}=await import('../../packages/engines/dist/claude-stream-events.js');
+ for(const kind of ['failed','foreign','other-tool','replayed']){
+  const map=claudeStreamEventMapper();map({type:'system',subtype:'init',session_id:'s'});
+  map({type:'assistant',session_id:'s',parent_tool_use_id:null,message:{id:'m',content:[{type:'tool_use',id:'call',name:kind==='other-tool'?'mcp__other__voice_reply':'mcp__ponderosa__voice_reply',input:{}}]}});
+  const events=map({type:'user',session_id:kind==='foreign'?'foreign':'s',parent_tool_use_id:null,isReplay:kind==='replayed',message:{content:[{type:'tool_result',tool_use_id:'call',is_error:kind==='failed',content:[{type:'text',text:JSON.stringify({authorized:true,streamId:'s',operationId:'op'})}]}]}});
+  assert.ok(events.every(event=>!event.voiceReplyStreamId));
+  const answer=map({type:'assistant',session_id:'s',parent_tool_use_id:null,message:{id:'answer',content:[{type:'text',text:'Not authorized for speech'}]}});
+  assert.ok(answer.every(event=>event.type!=='response_text'));
+ }
+});
+
+test('Claude-native normalized authorization and partials use the actual server publisher exactly once',async()=>fixture({claudeNative:true},async f=>{
+ const early=await f.app.inject({method:'GET',url:f.url,headers:f.headers});
+ assert.equal(early.statusCode,200,early.body);assert.equal(early.json().reply.state,'streaming');assert.equal(early.json().reply.text,'First stable phrase. ');
+ assert.equal(f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent').length,0);
+ f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'Claude normalized completion');
+ const replies=f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent');
+ assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.text,'First stable phrase. Second phrase.');
+ const final=await f.app.inject({method:'GET',url:f.url,headers:f.headers});assert.equal(final.json().reply.state,'completed');
 }));

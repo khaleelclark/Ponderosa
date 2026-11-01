@@ -77,9 +77,7 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
       const t = c.coordinationV3.voiceReplyRunTiming(messageId, agentId);
       const active = c.activeRuns.get(agentId)?.voiceReply?.snapshot;
       const s = active?.messageId === messageId && active.runId === t?.runId ? active
-        : c.store.readEventsSince(agentId, Math.max(0, c.store.lastSeqOf(agentId) - 256), 256)
-          .map(e => e.event).filter(e => e.type === "voice_reply" && e.reply.messageId === messageId && e.reply.runId === t?.runId)
-          .flatMap(e => e.type === "voice_reply" ? [e.reply] : []).at(-1);
+        : t?.runId ? c.store.latestVoiceReply(agentId, messageId, t.runId) : undefined;
       return { messageId, acceptedAt: input.createdAt, ...t,
         memoryExposure: await voiceMemoryExposure({...c.memoryPorts,validateMemory:async runId=>localMemoryFor(app)?.speechStatus(runId)??false}, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId }),
         ...(s?.messageId === messageId && s.runId === t?.runId ? { reply: { ...s } } : {}) } satisfies VoiceReplyStatus;

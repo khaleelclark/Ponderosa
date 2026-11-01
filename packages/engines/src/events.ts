@@ -1,3 +1,4 @@
+import { tokenCount, tokenSum } from "./token-count.js";
 import { providerResetAt } from "@ponderosa/core";
 import { normalizedToolResult } from "./tool-result.js";
 // Codex JSONL → normalized AgentEvent mapping. THE HEART OF THIS CHUNK.
@@ -120,14 +121,11 @@ export function mapFileChangeKind(kind: string | undefined): FileChangeKind {
 
 function mapUsage(u: RawEvent["usage"]): TokenUsage | undefined {
   if (!u) return undefined;
-  const inputTokens = u.input_tokens;
-  const cachedInputTokens = u.cached_input_tokens;
-  const outputTokens = u.output_tokens;
-  const reasoningOutputTokens = u.reasoning_output_tokens;
-  const totalTokens =
-    inputTokens !== undefined || outputTokens !== undefined
-      ? (inputTokens ?? 0) + (outputTokens ?? 0)
-      : undefined;
+  const inputTokens = tokenCount(u.input_tokens);
+  const cachedInputTokens = tokenCount(u.cached_input_tokens);
+  const outputTokens = tokenCount(u.output_tokens);
+  const reasoningOutputTokens = tokenCount(u.reasoning_output_tokens);
+  const totalTokens = tokenSum(inputTokens, outputTokens);
   const usage: TokenUsage = {};
   if (inputTokens !== undefined) usage.inputTokens = inputTokens;
   if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;

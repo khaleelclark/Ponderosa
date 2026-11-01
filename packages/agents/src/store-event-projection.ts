@@ -165,6 +165,20 @@ export class AgentEventProjectionStore {
     }));
   }
 
+  /** Select by canonical source identity, never an unrelated recent-event tail. */
+  latestVoiceReply(agentId: string, messageId: string, runId: string): import("@ponderosa/core").VoiceReplySnapshot | undefined {
+    const row = this.statement(`
+      SELECT payload_json FROM events
+      WHERE agent_id = ? AND type = 'voice_reply'
+        AND json_extract(payload_json, '$.reply.messageId') = ?
+        AND json_extract(payload_json, '$.reply.runId') = ?
+      ORDER BY seq DESC LIMIT 1
+    `).get(agentId, messageId, runId) as { payload_json: string } | undefined;
+    if (!row) return undefined;
+    const event = JSON.parse(row.payload_json) as LogEvent;
+    return event.type === "voice_reply" ? event.reply : undefined;
+  }
+
   lastSeq(agentId: string): number {
     const row = this.statement(`
       SELECT last_seq FROM agent_event_head_projection WHERE agent_id = ?

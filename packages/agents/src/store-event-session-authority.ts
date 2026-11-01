@@ -132,6 +132,10 @@ export class AgentEventSessionAuthority {
     return this.eventProjection.readSince(agentId, sinceSeq, limit);
   }
 
+  latestVoiceReply(agentId: string, messageId: string, runId: string): import("@ponderosa/core").VoiceReplySnapshot | undefined {
+    return this.eventProjection.latestVoiceReply(agentId, messageId, runId);
+  }
+
   lastSeqOf(agentId: string): number {
     return this.eventProjection.lastSeq(agentId);
   }

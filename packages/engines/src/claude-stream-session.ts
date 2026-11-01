@@ -1,3 +1,4 @@
+import { StderrTail } from "./stderr-tail.js";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -11,7 +12,7 @@ import type {
   RuntimeTurnInput,
 } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
-import { mapClaudeEvent } from "./claude-events.js";
+import { claudeStreamEventMapper } from "./claude-stream-events.js";
 import { ClaudeContextUsage } from "./claude-context-usage.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
@@ -57,7 +58,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
   private active = false;
   private closed = false;
-  private stderrTail = "";
+  private readonly stderrTail = new StderrTail();
   private closePromise?: Promise<void>;
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
   private capabilitiesSnapshot?: EngineCapabilities;
@@ -97,6 +98,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       "--output-format", "stream-json",
       "--verbose",
       "--replay-user-messages",
+      "--include-partial-messages",
       "--permission-mode", opts.permissionMode,
       ...(opts.systemPrompt ? ["--append-system-prompt", opts.systemPrompt] : []),
       ...(ponderosaMcp ? ["--mcp-config", ponderosaMcp] : []),
@@ -126,7 +128,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       if (rootExitReported || !rootExit) return;
       rootExitReported = true;
       if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
-      opts.onRuntimeRootExit?.({ ...rootExit, stderr: this.stderrTail,
+      opts.onRuntimeRootExit?.({ ...rootExit, stderr: this.stderrTail.text(),
         ...(this.terminalEvent ? { terminalEvent: this.terminalEvent } : {}) });
     };
     const observeRootExit = (code?: number | null, signal?: NodeJS.Signals | null) => {
@@ -146,7 +148,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {
-      this.stderrTail = (this.stderrTail + chunk).slice(-8192);
+      this.stderrTail.append(chunk);
     });
     opts.signal.addEventListener("abort", () => { void this.close().catch(() => undefined); });
     this.child.stdin?.write(`${JSON.stringify({
@@ -249,6 +251,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       yield { type: "error", message: "Claude runtime stdout is unavailable" };
       return;
     }
+    const map = claudeStreamEventMapper();
     try {
       for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
         this.captureModelInitialization(raw);
@@ -266,7 +269,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         }
         const observation = this.contextObservations.observe(raw);
         if (observation) yield observation;
-        for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
+        for (const event of map(raw, { cwd: this.opts.cwd })) {
           if(event.type==='error')this.terminalEvent=event;
           if (event.type === "turn_done" || event.type === "error") {
             this.active = false;
@@ -303,7 +306,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       this.reportDrainedRootExit?.();
     }
     if (!this.closed) {
-      yield { type: "error", message: `Claude stream stopped${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}` };
+      yield { type: "error", message: `Claude stream stopped${this.stderrTail.text().trim() ? `: ${this.stderrTail.text().trim()}` : ""}` };
     }
   }
 

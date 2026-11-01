@@ -11,16 +11,18 @@ export class VoiceReplyStream {
   private acknowledged = false;
   private rawText = "";
   constructor(initial: VoiceReplySnapshot, private readonly steeringIds: readonly string[] = [], private readonly authorizingOperationId?: string) { this.snapshot = initial; }
-  authorizationResult(): { authorized: true; streamId: string; instruction: string } | { authorized: false; error: string } {
+  authorizationResult(): { authorized: true; streamId: string; operationId?: string; instruction: string } | { authorized: false; error: string } {
     if (this.broken) return { authorized: false, error: "voice reply authority invalidated; use ordinary ponderosa_message" };
     return { authorized: true, streamId: this.snapshot.streamId,
+      ...(this.authorizingOperationId ? { operationId: this.authorizingOperationId } : {}),
       instruction: "Write one final answer now. Its explicitly authorized bytes will stream to this exact voice DM. Successful completion publishes one canonical reply through ponderosa_message authority. Do not publish a duplicate or call any other tool. Missing phase/deltas use completed-text fallback." };
   }
   observeWork(event: AgentEvent): boolean {
     // Only the exact operation that armed this stream and its successful acknowledgement
     // are exempt. Tool names/suffixes and arbitrary result prose confer no exemption.
     if (event.type === "tool_call" && event.id === this.authorizingOperationId && event.name === "ponderosa_voice_reply") return false;
-    if (event.type === "tool_result" && event.id === this.authorizingOperationId && event.isError === false &&
+    if (event.type === "tool_result" && this.authorizingOperationId !== undefined &&
+        (event.id === this.authorizingOperationId || event.voiceReplyOperationId === this.authorizingOperationId) && event.isError === false &&
         event.voiceReplyStreamId === this.snapshot.streamId) { this.acknowledged = true; return false; }
     return ["work_start", "command", "file_change", "tool_call", "tool_result", "error"].includes(event.type) && this.invalidate();
   }

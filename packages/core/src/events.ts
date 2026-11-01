@@ -102,6 +102,8 @@ export type AgentEvent =
       output: string;
       /** Engine-normalized successful host voice authorization receipt, never audience authority. */
       voiceReplyStreamId?: string;
+      /** Exact host operation echoed by the native MCP authorization receipt. */
+      voiceReplyOperationId?: string;
       isError?: boolean;
       failureCategory?: ToolFailureCategory;
       retryable?: boolean;

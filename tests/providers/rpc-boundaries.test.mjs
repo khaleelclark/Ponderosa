@@ -200,3 +200,115 @@ test('stderr tail counts incremental omissions and keeps Unicode boundaries inta
   const short = new StderrTail(); short.append('😀'); short.append(' ok');
   assert.equal(short.text(), '😀 ok');
 });
+
+// Implementation-first regressions: execute with the assembled implementation.
+test('native token mappers preserve partial counters without inventing totals', async () => {
+  const { mapCodexTokenUsage, sumProviderRequestUsage } = await import('../../packages/engines/dist/codex-app-server.js');
+  const { mapCodexEvent } = await import('../../packages/engines/dist/events.js');
+  const { mapClaudeAssistantUsage } = await import('../../packages/engines/dist/claude-events.js');
+  for (const partial of [{ inputTokens: 7 }, { outputTokens: 9 }, { cachedInputTokens: 4 }, { reasoningOutputTokens: 2 }]) {
+    assert.deepEqual(mapCodexTokenUsage(partial), partial);
+  }
+  assert.deepEqual(mapCodexTokenUsage({ totalTokens: 0 }), { totalTokens: 0 });
+  assert.deepEqual(mapCodexTokenUsage({ inputTokens: 7, outputTokens: 9, cachedInputTokens: 3 }),
+    { inputTokens: 7, outputTokens: 9, cachedInputTokens: 3, totalTokens: 16 });
+  for (const invalid of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '3']) {
+    assert.equal(mapCodexTokenUsage({ inputTokens: invalid }), undefined);
+  }
+  assert.equal(mapCodexTokenUsage({ inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 1 }).totalTokens, undefined);
+  assert.equal(sumProviderRequestUsage([
+    { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 0, totalTokens: Number.MAX_SAFE_INTEGER },
+    { inputTokens: 1, outputTokens: 0, totalTokens: 1 },
+  ]), undefined, 'overflow must not become an exact aggregate');
+  for (const usage of [{ input_tokens: 7 }, { output_tokens: 9 }, { cached_input_tokens: 3 }]) {
+    const done = mapCodexEvent({ type: 'turn.completed', usage }).find(e => e.type === 'turn_done');
+    assert.equal(done.usage.totalTokens, undefined);
+  }
+  const claude = usage => mapClaudeAssistantUsage({ type: 'assistant', message: { usage } });
+  assert.deepEqual(claude({ cache_read_input_tokens: 4 }), { cachedInputTokens: 4 });
+  assert.deepEqual(claude({ input_tokens: 7 }), { inputTokens: 7 });
+  assert.deepEqual(claude({ output_tokens: 9 }), { outputTokens: 9 });
+  assert.deepEqual(claude({ input_tokens: 7, cache_read_input_tokens: 4, cache_creation_input_tokens: 2, output_tokens: 9 }),
+    { inputTokens: 13, cachedInputTokens: 4, cacheWriteInputTokens: 2, outputTokens: 9, totalTokens: 22 });
+  assert.deepEqual(claude({ input_tokens: 7, cache_read_input_tokens: -1, output_tokens: 9 }), { outputTokens: 9 });
+});
+
+test('persistent Claude root diagnostics disclose discarded stderr and retain the final cause', { timeout: 5_000 }, async () => {
+  const { ClaudeStreamSession } = await import('../../packages/engines/dist/claude-stream-session.js');
+  const root = mkdtempSync(path.join(os.tmpdir(), 'claude-tail-regression-'));
+  const bin = path.join(root, 'fake-claude');
+  const { chmodSync } = await import('node:fs');
+  writeFileSync(bin, '#!' + process.execPath + '\nprocess.stdin.resume();process.stderr.write("😀"+"x".repeat(8191)+"END!",()=>process.exit(7));\n');
+  chmodSync(bin, 0o700);
+  const roots = [];
+  let runtime;
+  try {
+    runtime = new ClaudeStreamSession({ bin, cwd: root, history: [], sandboxMode: 'danger-full-access', permissionMode: 'bypassPermissions',
+      killGraceMs: 100, signal: new AbortController().signal, onRuntimeSpawned() {}, onRuntimeRootExit: value => roots.push(value) });
+    const events = [];
+    for await (const event of runtime.events) events.push(event);
+    const drained = roots.find(value => typeof value.stderr === 'string');
+    assert.match(drained.stderr, /^\[stderr truncated: 5 UTF-16 code units omitted;/u);
+    assert.ok(drained.stderr.endsWith('END!'));
+    assert.equal(drained.exitCode, 7);
+    assert.match(events.find(event => event.type === 'error').message, /stderr truncated/u);
+  } finally { await runtime?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('Claude native partial text streams once, reconciles completion and preserves native tool events', async () => {
+  const { claudeStreamEventMapper } = await import('../../packages/engines/dist/claude-stream-events.js');
+  const map = claudeStreamEventMapper();
+  const wrap = event => ({ type: 'stream_event', session_id: 'session', parent_tool_use_id: null, event });
+  map({ type: 'system', subtype: 'init', session_id: 'session' });
+  map(wrap({ type: 'message_start', message: { id: 'message-1' } }));
+  assert.deepEqual(map(wrap({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })), []);
+  assert.deepEqual(map(wrap({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello ' } })), [{ type: 'text', delta: 'Hello ' }]);
+  assert.deepEqual(map({ ...wrap({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'foreign' } }), session_id: 'foreign' }), []);
+  assert.deepEqual(map({ ...wrap({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'child' } }), parent_tool_use_id: 'child-tool' }), []);
+  const complete = content => ({ type: 'assistant', session_id: 'session', parent_tool_use_id: null, message: { id: 'message-1', content } });
+  assert.deepEqual(map(complete([{ type: 'text', text: 'Hello world' }, { type: 'tool_use', id: 'native-call', name: 'Bash', input: { command: 'echo fixture' } }])),
+    [{ type: 'text', delta: 'world' }, { type: 'command', command: 'echo fixture', cwd: '', callId: 'native-call' }]);
+  map(wrap({ type: 'message_start', message: { id: 'message-1' } }));
+  map(wrap({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Provisional' } }));
+  assert.deepEqual(map(complete([{ type: 'text', text: 'Corrected' }])),
+    [{ type: 'text', delta: '\n[Claude corrected provisional streamed text; complete text follows]\nCorrected' }]);
+  map(wrap({ type: 'message_start', message: { id: 'message-1' } }));
+  map(wrap({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Old' } }));
+  map({ type: 'result', subtype: 'success', is_error: false });
+  assert.deepEqual(map(complete([{ type: 'text', text: 'Full completed fallback' }])), [{ type: 'text', delta: 'Full completed fallback' }]);
+});
+
+for (const persistent of [false, true]) test(`Claude native launch emits partial execution text before completion: retained=${persistent}`, { timeout: 5_000 }, async () => {
+  const { ClaudeAdapter } = await import('../../packages/engines/dist/claude.js');
+  const { ClaudeStreamSession } = await import('../../packages/engines/dist/claude-stream-session.js');
+  const { chmodSync } = await import('node:fs');
+  const root = mkdtempSync(path.join(os.tmpdir(), 'claude-partial-launch-'));
+  const bin = path.join(root, 'fake-claude');
+  const emit = value => `console.log(${JSON.stringify(JSON.stringify(value))});`;
+  const envelope = event => ({ type: 'stream_event', session_id: 'fixture-session', parent_tool_use_id: null, event });
+  writeFileSync(bin, '#!' + process.execPath + '\n' +
+    'if(!process.argv.includes("--include-partial-messages"))throw Error("Native partials were not requested");\n' +
+    emit({ type: 'system', subtype: 'init', session_id: 'fixture-session' }) +
+    emit(envelope({ type: 'message_start', message: { id: 'fixture-message' } })) +
+    emit(envelope({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })) +
+    emit(envelope({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Early native text. ' } })) +
+    'setTimeout(()=>{' + emit({ type: 'assistant', session_id: 'fixture-session', parent_tool_use_id: null,
+      message: { id: 'fixture-message', content: [{ type: 'text', text: 'Early native text. Completed tail.' }] } }) +
+    emit({ type: 'result', subtype: 'success', is_error: false }) + 'process.exit(0);},100);\n');
+  chmodSync(bin, 0o700);
+  let runtime;
+  const handles = [];
+  const options = { cwd: root, history: [], prompt: 'Synthetic input', signal: new AbortController().signal,
+    onRuntimeSpawned: handle => handles.push(handle), onRuntimeRootExit() {} };
+  try {
+    runtime = persistent ? new ClaudeStreamSession({ ...options, bin, permissionMode: 'bypassPermissions', killGraceMs: 100 }) : undefined;
+    const source = runtime?.events ?? new ClaudeAdapter({ bin, killGraceMs: 100 }).seed(options);
+    const events = [];
+    for await (const event of source) {
+      events.push(event);
+      if (event.type === 'turn_done') break;
+    }
+    assert.deepEqual(events.filter(event => event.type === 'text').map(event => event.delta), ['Early native text. ', 'Completed tail.']);
+    assert.equal(events.at(-1).type, 'turn_done');
+  } finally { await runtime?.close(); await Promise.all(handles.map(handle => handle.close())); await rm(root, { recursive: true, force: true }); }
+});

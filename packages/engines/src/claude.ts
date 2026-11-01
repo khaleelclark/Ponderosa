@@ -25,7 +25,7 @@ import type {
   RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
-import { mapClaudeEvent } from "./claude-events.js";
+import { claudeStreamEventMapper } from "./claude-stream-events.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { streamProcess } from "./process.js";
 import { composerCapabilities, discoverCliMcps, parseClaudeMcpList } from "./capabilities.js";
@@ -126,6 +126,7 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude";
+  readonly supportsVoiceReplyStream = true;
   readonly contextRecoverySupport = UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY;
   readonly displayName = "Claude";
   readonly trustedSystemPromptChannel = "system" as const;
@@ -287,6 +288,7 @@ export class ClaudeAdapter implements Adapter {
       "--output-format",
       "stream-json",
       "--verbose",
+      "--include-partial-messages",
       "--permission-mode",
       this.permissionMode,
     ];
@@ -334,7 +336,7 @@ export class ClaudeAdapter implements Adapter {
       onRuntimeSpawned,
       environment,
       killGraceMs: this.killGraceMs,
-      map: mapClaudeEvent,
+      map: claudeStreamEventMapper(),
       label: "claude",
     })) {
       yield event;

@@ -1,9 +1,10 @@
+import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
 // Claude Code (`claude`) stream-json → normalized AgentEvent mapping.
 //
 // Like events.ts (Codex), this is the ONLY place that knows Claude Code's event
-// shapes (AGENTS.md invariant 2). Driven by the subscription-authenticated
-// `claude` CLI — never the Anthropic API, never an API key (invariant 1).
+// shapes (AGENTS.md invariant 2). Both subscription and configured API-key
+// modes use the same native `claude` CLI, never direct provider HTTP.
 //
 // Grounding (recorded from claude-code 2.1.x `--output-format stream-json`):
 //   {"type":"system","subtype":"init","session_id":"...","cwd":"...","tools":[...]}
@@ -100,20 +101,21 @@ const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "Updat
 
 function mapUsage(u: RawClaudeEvent["usage"]): TokenUsage | undefined {
   if (!u) return undefined;
-  const cachedInputTokens = u.cache_read_input_tokens;
-  const cacheWriteInputTokens = u.cache_creation_input_tokens;
-  const inputTokens = u.input_tokens !== undefined || cachedInputTokens !== undefined || u.cache_creation_input_tokens !== undefined
-    ? (u.input_tokens ?? 0) + (cachedInputTokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
-    : undefined;
-  const outputTokens = u.output_tokens;
+  const cachedInputTokens = tokenCount(u.cache_read_input_tokens);
+  const cacheWriteInputTokens = tokenCount(u.cache_creation_input_tokens);
+  // Claude reports uncached input separately. Omitted cache counters are zero,
+  // but a missing base input or a malformed supplied counter is unknown.
+  const inputTokens = tokenSum(tokenCount(u.input_tokens),
+    u.cache_read_input_tokens === undefined ? 0 : cachedInputTokens,
+    u.cache_creation_input_tokens === undefined ? 0 : cacheWriteInputTokens);
+  const outputTokens = tokenCount(u.output_tokens);
+  const totalTokens = tokenSum(inputTokens, outputTokens);
   const usage: TokenUsage = {};
   if (inputTokens !== undefined) usage.inputTokens = inputTokens;
   if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
   if (cacheWriteInputTokens !== undefined) usage.cacheWriteInputTokens = cacheWriteInputTokens;
   if (outputTokens !== undefined) usage.outputTokens = outputTokens;
-  if (inputTokens !== undefined || outputTokens !== undefined) {
-    usage.totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0);
-  }
+  if (totalTokens !== undefined) usage.totalTokens = totalTokens;
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
@@ -204,7 +206,7 @@ export function mapClaudeEvent(raw: unknown, ctx: CodexMapContext = {}): AgentEv
       return out;
     }
 
-    // stream_event (partials, not requested), etc. → nothing.
+    // Partial frames are handled by the per-session claudeStreamEventMapper.
     default:
       return [];
   }

@@ -109,7 +109,8 @@ async function handle(request: RpcRequest): Promise<void> {
     try {
       const response = await fetch(targetUrl, {
         method: isDirectory ? "GET" : "POST",
-        headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json",
+          ...(params.name === "voice_reply" ? { "x-ponderosa-voice-operation-id": String(request.id) } : {}) },
         ...(!isDirectory ? { body: JSON.stringify(workspaceOperation ? {...(params.arguments&&typeof params.arguments==='object'?params.arguments:{}),operation:workspaceOperation} : localMemoryOperation ? {...(params?.arguments&&typeof params.arguments==="object"?params.arguments:{}),operation:localMemoryOperation} : browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
           : params?.name === "import_file"

@@ -7,3 +7,8 @@ Nonzero process-exit errors expose this notice through the existing error path. 
 Controlled coverage: `tests/providers/rpc-boundaries.test.mjs` runs actual local Node fake providers for both transports at and above the retention boundary, checks final cause/omission notices and observed teardown, and checks incremental Unicode-safe accounting. It requires no provider credentials or network.
 
 The shared root-exit contract permits at most 8,320 UTF-16 units: the 8,192-unit tail plus a bounded omission notice. The server validates this bound before redacting diagnostics for persistence; oversized or malformed observations remain invalid. Valid formatted tails preserve exit code, signal and drain metadata.
+
+Persistent Claude streaming sessions also use the shared tail helper, including
+root-exit and EOF diagnostics. Their discarded prefix is counted cumulatively
+instead of silently slicing each incoming chunk. Regression source lives in the
+existing RPC-boundary test file; execution is deferred to the combined run.

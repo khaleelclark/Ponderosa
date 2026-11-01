@@ -1,3 +1,4 @@
+import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
 import {
   truncateUnicodeCodePoints,
@@ -1067,6 +1068,7 @@ export function sumProviderRequestUsage(requests: TokenUsage[]): TokenUsage | un
       if (request[key] !== undefined) sums.set(key, (sums.get(key) ?? 0) + request[key]!);
     }
   }
+  if ([...sums.values()].some(value => tokenCount(value) === undefined)) return undefined;
   return {
     inputTokens: sums.get("inputTokens")!,
     ...(sums.has("cachedInputTokens") ? { cachedInputTokens: sums.get("cachedInputTokens")! } : {}),
@@ -1107,7 +1109,7 @@ export function subtractUsage(total: TokenUsage, baseline: TokenUsage): TokenUsa
 export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
-  const number = (key: string) => typeof raw[key] === "number" && Number.isFinite(raw[key]) ? raw[key] as number : undefined;
+  const number = (key: string) => tokenCount(raw[key]);
   const inputTokens = number("inputTokens");
   const cachedInputTokens = number("cachedInputTokens");
   const outputTokens = number("outputTokens");
@@ -1118,12 +1120,13 @@ export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   // guessing from input totals; downstream TokenUsage still preserves cache
   // writes for providers that report them canonically.
   if ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, providerTotal].every((item) => item === undefined)) return undefined;
+  const totalTokens = providerTotal ?? tokenSum(inputTokens, outputTokens);
   return {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
-    totalTokens: providerTotal ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
 }
 
