@@ -97,8 +97,8 @@ No tests, checks, typechecks, builds, Node/native/browser runs, runner preparati
 installs, push, merge, deployment or workers were performed. Fixtures are authored
 and unexecuted. Source reading and Git/file inventory are the only verification.
 
-Remaining: integration must assemble this successor with the previously required
-backend/core commits, then separately authorize deferred fixtures and rendered
+Integration: this successor and required backend/core equivalents are assembled.
+Remaining: separately authorized deferred fixtures and rendered
 copy/accessibility/mobile/font-size/keyboard/reader qualification. Short source
 hints can still wrap on narrow displays; no visual or whole-Bible-29 acceptance
 follows from this census. The existing owner-tree DTO limitation remains: Call

@@ -1,16 +1,16 @@
 # Phase 2 remaining implementation inventory
 
-Source snapshot: `78b320962`, integration worktree.
+Source snapshot: `f2b05c5584a947f9ee03214d983093cea1367064`, integration worktree.
 Includes bounded called-owner-tree UI and correlated Claude native command recovery;
-M1 and M6 are resolved in source, with runtime qualification deferred.
+M1, M5 and M6 are resolved in source, with runtime qualification deferred.
 Basis: full `/tmp/ponderosa-phase2-upgrade-c8ace/published/bible-2.md`, all 32
 commandments, verification/Phase 2 instructions and all Build-list text. Source/document reconciliation; current guides and coverage are maintained together.
 No owner worktrees changed, no workers created, no execution or preparation.
 
 **No: the earlier four categories were not four final tasks.** This inventory
 accounts for all 35 top-level requirements (32 commandments + 3 Build features),
-with 24 explicit Build behavior rows below. It identifies **10 remaining source
-work/disposition entries: 4 concrete implementation/contract items and 6
+with 24 explicit Build behavior rows below. It identifies **9 remaining source
+work/disposition entries: 3 concrete implementation/contract items and 6
 unresolved contract/scope items**, plus **1 separate deferred-fixture source repair**.
 These are finite inventory counts, not acceptance percentages or a promise that
 future verification cannot discover another defect. Unresolved does not mean code
@@ -27,7 +27,6 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 | M2 — missing code/contract | #1, #4, #12 crash survival | Recover a compaction whose acknowledgement/operation identities were lost, without repeating mutation. Codex now reads stored completion only for an accepted operation with both already observed turn/item IDs; durable caller-key lookup/idempotency across crashes is absent. | Runtime | External exact-session operation-key/result contract plus internal durable binding. Existing host durable-event reconciliation covers a different, already-recorded event gap. |
 | M3 — missing code/contract | #12 work survives restart; #13 unfinished work retained; #17 reliability | Resolve original uncertain source Run/tool/publication effects from exact original receipts instead of leaving source work indefinitely unknown. Context completion does not settle those effects; sourceWork remains held_unknown. | Runtime + Reliability | External/native result evidence where no host receipt exists, then canonical internal per-effect reconciliation. Never infer success from process exit or repeat effects. |
 | M4 — missing review display contract | #2 inspectable mechanisms, #3 clear controls, #24 accurate figures, #28/#32 checkpoint/subgraph review | Bounded tree web preview/capture/discovery/prepare/all-facts choice/admit/recovery is integrated. Actual DTO omits Call parentAttemptId, Branch idMap/counters and numeric fresh per-owner acceptance budgets; UI labels them unavailable/server-verified. Expose the appropriate nonsecret review evidence and render exact returned values. Backend already validates ancestry, mapped frontier and each fresh budget; do not invent values or expose private saved snapshots. | Features + Runtime DTO; UI rendering | Internal additive review/readback contract. These fields explain the already implemented mapped destination and acceptance; this does not require broader tree eligibility. |
-| M5 — missing UI cleanup | #29 zero explanatory paragraphs, also #3/#26 and Output/Assistant #29 | Remove explanatory blocks from newly added review/history controls while preserving consequential consent and exact evidence. `BranchGenerationOne.tsx:18` contains a multi-sentence eligibility paragraph; `BranchGroupReview.tsx` contains directory/working-copy explanatory prose. Existing text inventory predates these additions. | UI | Internal concise labels/one-line hints and docs links; dynamic census/visual judging is separate verification. |
 | U1 — unresolved source disposition | #4 **every** native harness capability | Exhaustive provider capability inventory has no established complete mapping to the inspected implementation. Browser/native tools and capability discovery exist; the identified compact gaps are not proof that they are the only parity gaps. | Runtime | Internal mapping against pinned official harness surfaces; provider compatibility execution separate. Do not create features from vague parity language without identifying the native capability. |
 | U2 — unresolved limit disposition | #5 no unjustified rules, #6 human-only access, #32 human-set limits | Determine which hard bounds are stability/byte bounds and which constrain user capability without the required justification/control. Generation32/maxAttempts33, group32 and evidence-size caps are explicit; the Bible permits documented stability limits, so increasing every cap is not automatically required work. | Features + Runtime; Cliff scope | Internal limit-purpose/access classification, then code only for a demonstrated violation. This is not a request to implement arbitrary combinations. |
 | U3 — unresolved portability scope | #8 everything needed to recreate Agent/org/workflow, excluding known secrets | Complete package/file semantics beyond current regular-file/new-managed-root transport: symlink/special/hardlink topology and native/Git ownership are refused/excluded. Shared/Separate roots, independent same-Chat roots, authored history, artifacts, memory and reviewed access suggestions already have source. Cross-Chat relocation of an existing Agent is not itself required by export/import and is not counted as a new feature. | Reliability + Features; Cliff scope | Internal field/topology inventory and explicit recreation semantics. If a refusal loses required nonsecret data, implement transport or record an approved exception; no arbitrary shell-writer guarantee is assumed. |
@@ -38,6 +37,8 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 M1 is resolved in source by correlated Claude native command completion plus fresh
 occupancy control; provider/runtime compatibility remains unqualified. M2/M3 remain
 different observable behaviors: compaction does not resolve lost identity or source effects.
+M5 concise copy/evidence-row cleanup is resolved in source; see phase2-ui-copy-census.md.
+Rendered wrapping/accessibility/mobile and whole #29 judging remain deferred.
 M4 now concerns missing review evidence fields, not tree control adoption. M6 (current documentation correction) is resolved by the current coverage/framework/guide rewrite; historical snapshots are separate. M4 does not broaden backend eligibility. U2/U4 prevent turning every documented
 unsupported permutation into invented scope. Unknown proof remains held visibly.
 
@@ -53,7 +54,7 @@ criteria, a complete audit may still find concrete missing code.
 | --- | --- | --- |
 | 1 | M2/M3 | `packages/agents/src/coordination-v3-context-recovery-authority.ts`, `packages/engines/src/codex-app-server.ts`, `packages/engines/src/claude.ts`; Claude correlated native compact/fresh usage and durable known-event recovery exist; lost native identities/source effects remain unknown. |
 | 2 | S | Canonical admission/context authority modules and adjacent docs; whole mechanism/run-history correspondence still unverified. |
-| 3 | S + M4/M5 | Shared `OutputAgentApp.tsx`, `BranchGroupReview.tsx`, `BranchGenerationOne.tsx`; desktop/mobile comparative quality is verification. |
+| 3 | S + M4 | Shared `OutputAgentApp.tsx`, `BranchGroupReview.tsx`, `BranchGenerationOne.tsx`; desktop/mobile comparative quality is verification. |
 | 4 | M2 + U1 | Native adapters include Claude native compact with fresh usage and Codex exact known-ID reads; `runtime-native-recovery-contract.md`; complete parity U1 remains unestablished. |
 | 5 | S + U2 | `server-request-hooks.ts` separates capacity admission from authority; explicit codec/byte limits need complete purpose classification. |
 | 6 | S + U2 | `capability-policy-store.ts`, `runtime-capability-policy.ts`, human import/disclosure review; read-only audit did not establish another automatic grant change. |
@@ -76,17 +77,17 @@ criteria, a complete audit may still find concrete missing code.
 | 23 | S | Current coverage/framework/guides reconciled; historical snapshots separated. Public-guide behavior execution deferred. |
 | 24 | S | Verified saved retry budget/hash UI and exact usage/billing source; numeric traces deferred. |
 | 25 | S | `packages/engines/src/auth.ts`, `routes/engines.ts`, human provider/model settings; both billing modes/state-preserving switch execution deferred. |
-| 26 | S + M5 | Shared confirmation/chat/settings components; complete pattern review deferred. |
+| 26 | S | Shared confirmation/chat/settings components; complete pattern review deferred. |
 | 27 | S | `TextSizeSetting.tsx`, shared themes/dialog labels; keyboard/reader/contrast/critical-accessibility trials deferred. |
 | 28 | A | All rows apply to Branches too. No separate magic implementation closes this aggregate criterion. |
-| 29 | M5 | Concrete explanatory blocks remain; folder/shared chat source present. Blind panel and flicker/overlap evidence separate. |
+| 29 | S | M5 concise copy/evidence-row successor integrated; exact content and consequential consent retained. Blind panel, rendered layout and flicker/overlap evidence remain separate. |
 | 30 | S + U5 | `local-memory-catalog.ts` explicitly defaults search across authorized chat/global; `local-memory.ts` preserves human settings. Seeded recall/log misuse trials deferred. |
 | 31 | S | `reply-stream-publication.ts`, `voice-reply-stream.ts`, `speech/voiceReplyStream.ts`, `BranchLiveOutput.tsx`, shared Request/Chat streams; early acknowledgement/answer separation exists. All-surface recording and <1s average/never>2s call result unqualified. |
 | 32 | S + M4/U2/U4/U6 | Public graph/HITL/tools/memory/subgraph/multi-agent source and representative application/comparator present. Broader feature contract remains unresolved; no parity verdict. |
 
 ## Every Build behavior accounted for
 
-All rows inherit M5 and #29/#31 verification; no stripped Output/Assistant shell is
+All rows inherit #29/#31 verification; no stripped Output/Assistant shell is
 assumed from the absence of a dedicated implementation for each shared behavior.
 
 | ID | Required behavior | Source disposition / anchor |
@@ -100,7 +101,7 @@ assumed from the absence of a dedicated implementation for each shared behavior.
 | O7 | Simple automatic on/off and frequency settings reach workflow | S: Output Settings schedule PUT with expected version/settings revision; event schedules explicitly redirect to More options. |
 | O8 | Model setting reaches bound Agent | S: Output Settings `realApi.updateAgent(activeEngine,model)`; identity/history not replaced by this control. |
 | O9 | More options opens owning workflow | S: explicit Branch workflow URL in Output Settings. |
-| O10 | iOS Messages quality, no paragraphs, streaming | M5 plus verification: same shared shell/streams; no visual or stream acceptance claimed. |
+| O10 | iOS Messages quality, no paragraphs, streaming | S plus verification: same shared shell/streams and concise-copy successor; no visual or stream acceptance claimed. |
 | A1 | Named Assistant, automatic organization, preferred-model default | S: `AssistantEntry.tsx` POST initialization and `output-agent-apps.ts` resumable setup pins saved model/effort. |
 | A2 | Create Chat on request | S: `routes/agent-workspace.ts` canonical managed Chat action/receipt. |
 | A3 | Start work across Projects within human access | S: same route resolves current source/destination policy and canonical Request/scheduler work. |
@@ -149,6 +150,6 @@ is never labeled whole implementation. Current-head source was preserved; active
 owner work remains outside this snapshot until separately handed off/integrated.
 
 This is exhaustive **requirement accounting**, not an exhaustive proof that there
-are only four concrete gaps in a large codebase. The bounded read cannot close U1–U6 or
+are only three concrete gaps in a large codebase. The bounded read cannot close U1–U6 or
 unrun universal criteria. Cliff should assign each numbered entry or resolve its
 scope; “four categories left” and “all implemented” would both overstate evidence.
