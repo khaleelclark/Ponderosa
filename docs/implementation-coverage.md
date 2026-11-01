@@ -412,3 +412,18 @@ All eleven changed-file entries across both commits were inspected in source;
 shared docs overlap once, yielding ten distinct paths. No tests, checks, builds,
 types, browser, native execution or runner preparation performed. No push/deploy,
 full #8, #32 or Phase 2 completion claim.
+
+## Grouped organization per-Agent access backend
+
+Reliability `82cf46284f918efbd187a5ff3e6df3eab7371c47` integrated
+conflict-free. The shared import resolution accepts an exhaustive agentActions
+map for source nodes with accessSettings, retaining required action and one
+complete-package/actual-destination reviewSha256. Missing/foreign refs refuse
+before writes, each explicit choice controls only its fresh Agent restriction,
+and current destination policy is rechecked before commit. Existing whole
+same-Chat importer supports one-operation Shared-root population. Deferred
+regression source covers two members sharing actual live cwd and mixed reviewed
+restriction choices. All five owner deliverables are present and source-read.
+Branches grouped package assembly/ref remapping, fresh-ID binding/recovery and
+staged human decisions remain owner work. No UI completion or full #8 claim.
+No tests/checks/builds/types/native/browser/runner execution; no push/deploy.
