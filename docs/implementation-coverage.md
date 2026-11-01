@@ -83,9 +83,15 @@ and web-feature-completion.md for ordering and limits.
 - Features + Runtime: broader issued-resource/tree/multi-resource/local-parallel/later-generation
   consumers; changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
   cancellation and cross-owner forwarded bundles. Keep unsupported families refused.
-- Features + Runtime + Reliability: abandoned stage/failed-import/unknown-effect owner
-  reconciliation, deleted-owner/orphan custody retention/release and safe admission-pin
-  reclamation. Existing RESTRICT pins and holds fail closed; do not delete rows to bypass.
+- Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
+  approval/evidence recheck, immutable receipt/tombstone and optional proven-safe source-pin
+  release for unadmitted destinations only. Retired identities stay held; admitted
+  provenance cannot retire. See coordination-destination-reconciliation.md.
+- Features + Reliability still must implement exhaustive current owner/capture/restore/package
+  reference and observed-exit/resolved-outcome evidence, deleted-owner authority, durable
+  human review and operator routes. Abandoned owner references require explicit reconciliation;
+  unknown import/effect outcomes remain held. Retaining pins has no later release upgrade
+  in this slice. This host boundary alone is not end-to-end lifecycle reclamation.
 - Features + Reliability: artifact/memory/working-copy/source-restriction/elevated-grant
   support in the new issued destination consumer; its current narrower refusal is explicit.
   Old metadata-only cuts cannot reconstruct purged private bytes.
