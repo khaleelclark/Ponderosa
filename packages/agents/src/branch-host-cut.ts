@@ -48,7 +48,7 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
    const history=db.prepare(`SELECT id,request_id,kind,actor_kind,actor_id,in_reply_to_update_id,payload_json,payload_hash,resulting_state,resulting_version,created_at FROM coordination_request_updates WHERE request_id=? ORDER BY resulting_version,id LIMIT 513`).all(row.id) as Row[];
    if(history.length>512)throw Error('Request update capture exceeds 512 records');
    let version=0,updatePrefixComplete=true;
-   for(const update of history){parse(update.payload_json);if(update.resulting_version!==++version)updatePrefixComplete=false;updates.set(update.id,update);}
+   for(const update of history){if(update.kind==='historical_question'||update.kind==='historical_answer')missingReferences.push({kind:'historical_restoration_provenance',id:update.id});parse(update.payload_json);if(update.resulting_version!==++version)updatePrefixComplete=false;updates.set(update.id,update);}
    updatePrefixComplete&&=version===row.version&&(!history.length||history.at(-1)!.resulting_state===row.state);requestVersions.push({requestId:row.id,version:row.version,updatePrefixComplete});
    if(row.open_question_update_id&&!history.some(update=>update.id===row.open_question_update_id&&update.kind==='question'))missingReferences.push({kind:'open_question',id:row.open_question_update_id});
    for(const result of db.prepare('SELECT id,request_id,kind,actor_agent_id,payload_json,payload_hash,created_at FROM coordination_request_late_results WHERE request_id=? ORDER BY id').all(row.id) as Row[]){parse(result.payload_json);lateResults.set(result.id,result);}

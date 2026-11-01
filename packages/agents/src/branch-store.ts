@@ -652,6 +652,12 @@ export class BranchStore {
   adoptHostRequest(branchId:string,executionId:string,input:import('@ponderosa/core').BranchHostRequestAdoption,grant:HostArtifactGrant,now=new Date().toISOString()):import('@ponderosa/core').BranchHostRequestAdoptionDto {
     return this.unitTransaction(()=>adoptBranchHostRequest(this.sqlite,this.coordination,branchId,executionId,input,grant,now)).immediate();
   }
+  reviewHostGraph(branchId:string,executionId:string,input:{checkpointId:number;expectedHash:string},grant:HostArtifactGrant):import('@ponderosa/core').BranchHostGraphReviewDto {
+    return this.sqlite.transaction(()=>this.coordination.reviewHostCoordinationCut(branchId,executionId,input,grant)).deferred();
+  }
+  restoreHostGraph(branchId:string,executionId:string,input:import('@ponderosa/core').BranchHostGraphRestoreInput,grant:HostArtifactGrant,now=new Date().toISOString()):import('@ponderosa/core').BranchHostGraphRestoreDto {
+    return this.unitTransaction(()=>this.coordination.restoreHostCoordinationCut(branchId,executionId,input,grant,now)).immediate();
+  }
   /** Saved rows only; pagination never manufactures a capture or saver acknowledgement. */
   historicalCheckpoints(branchId:string,executionId:string,before=Number.MAX_SAFE_INTEGER):import('@ponderosa/core').BranchHistoricalCheckpointDto[] {
     if(!Number.isSafeInteger(before)||before<1)throw Error('Invalid checkpoint cursor');

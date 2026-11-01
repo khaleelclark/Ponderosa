@@ -1,3 +1,5 @@
+import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
+import type {HostArtifactGrant} from './branch-host-adoption.js';
 import { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
 import { requireAdmittedDatabase } from "./state-admission.js";
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
@@ -140,6 +142,13 @@ export { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@pon
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */
 export class CoordinationV3Store {
+  /** Host-only: immutable retained selection, never provider-supplied rows or actors. */
+  reviewHostCoordinationCut(branchId:string,executionId:string,input:{checkpointId:number;expectedHash:string},grant:HostArtifactGrant):import('@ponderosa/core').BranchHostGraphReviewDto {
+    return new CoordinationV3CutRestorationAuthority(this.sqlite,input=>this.createActivation(input)).review(branchId,executionId,input,grant);
+  }
+  restoreHostCoordinationCut(branchId:string,executionId:string,input:import('@ponderosa/core').BranchHostGraphRestoreInput,grant:HostArtifactGrant,now:string):import('@ponderosa/core').BranchHostGraphRestoreDto {
+    return new CoordinationV3CutRestorationAuthority(this.sqlite,input=>this.createActivation(input)).restore(branchId,executionId,input,grant,now);
+  }
   private readonly sqlite: Database.Database;
   private readonly activationReadModel: CoordinationV3ActivationReadModel;
   private readonly activationCommandAuthority: CoordinationV3ActivationCommandAuthority;
@@ -831,7 +840,7 @@ export class CoordinationV3Store {
     communicationEventId?: string;
     requestPreview?: string;
     hasUpdates?: boolean;
-    latestUpdateKind?: import("@ponderosa/core").CoordinationRequestUpdateKind;
+    latestUpdateKind?: import("@ponderosa/core").CoordinationStoredRequestUpdateKind;
     latestUpdateAt?: string;
     hasResult?: boolean;
     createdAt: string;

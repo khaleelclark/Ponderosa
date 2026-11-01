@@ -594,3 +594,83 @@ Question/history readers must label imported provenance and support new live
 answers without treating historical facts as freshly authored messages. Until
 that authority, reader and final-delivery path exists together, Branches refuses
 issued-Request graph restoration. Provenance tables alone cannot enable it.
+
+### Retained canonical coordination graph import (source continuation)
+
+`BranchesClient.reviewHostGraph` / `restoreHostGraph` call operator-only
+`host-graph-review` / `restore-host-graph` execution routes. The server selects an
+already retained hash-verified complete host cut; request bodies never supply
+canonical rows, actors, grants or SQL. Every Request is reviewed independently
+against its exact original live Project/Chat/requester/recipient and original
+Communication, plus current artifact grants for every participant receiving its
+material. A Join owner is a participant of every member, never an inferred
+manager/roster grant. Review hashes bind the per-Request current authority reviews
+and the entire selected graph. Reads and idempotent adoption recheck original
+scopes; deleted participants or revoked artifacts refuse.
+
+The new internal `CoordinationV3CutRestorationAuthority` validates the saved
+transition prefix with a dedicated fact-validation path over the canonical
+reducer. It inserts fresh Request identities and final projections, mapped
+updates/open-question/answer pointers, fresh ordered Join memberships and
+continuations, and mapped question suspensions. It never calls live `coordinate`
+or live `updateRequest` to synthesize history. Imported question/answer rows use
+`historical_question` / `historical_answer` and system import authorship. Other
+historical update facts also have system import authorship and immutable origin
+rows containing source identity, version, original envelope hash and original
+actor as evidence. No historical actor is impersonated. The live authorizer does
+not accept the historical kinds. Source payloads are nested, explicitly labelled
+untrusted evidence; they do not supply reply/run/lease/session authority.
+
+The migration registers immutable restoration receipts and update origins. The
+receipt maps, canonical rows, suspensions, only final pending Activations and
+outbox records commit in the same immediate owner transaction. A precommit
+failure rolls them all back. A committed lost response returns the same maps
+without a second activation after rechecking scope and new Request identities;
+a changed command conflicts. This covers this admission transaction, not external
+effects or general recovery.
+
+An outstanding historical question gets its fresh mapped ID and one question
+delivery to its original requester Agent (or remains an operator-visible question
+when the requester was the user). An open Join keeps its continuation suspended.
+A new live answer references the mapped historical question and uses the normal
+answer reducer and delivery path; future new member completions use the canonical
+Join authority and wake mapped continuations. Answered/runnable recipients get
+explicit reconciliation work. Completed facts do not relaunch their effects.
+Terminal Join deliveries require frozen observations to agree with final selected
+member versions and payloads; later post-resolution member changes refuse. There
+are no intermediate historical progress/question/answer/result wakes. Each final
+delivery is bounded to 256 KB and uses normal pending-intake limits.
+
+Question retraction/failure readers recognize historical questions; lifecycle
+history and summaries order by canonical version, expose immutable origin labels,
+and show historical question/answer labels and numbering in the existing Request
+card. Imported facts cannot become newly authored Agent Communications. Artifact
+publication ownership is not copied. Re-capturing an imported question/answer as
+a second restorable cut currently marks coverage incomplete until restoration
+provenance itself has a retained-cut codec.
+
+Current refusal boundaries: original graph/source must be settled and participants
+must have observed drained runtime with no conflicting pending delivery or live
+Request ownership; temporary participants require custody transfer; pending Agent
+creation, unknown outcomes, supersession/recovery chains, expired lifetimes,
+Decision suspensions, untracked dependency waits, changed or secret-dependent
+graph pins and inconsistent frozen Join outcomes are not admitted. Explicit
+`reconcileEffects:true` is required. This never authorizes replay of an unknown
+native effect.
+
+**Remaining Branch execution seam:** the new caller restores canonical coordination
+and returns the complete typed maps from the retained Branch cut. It does not yet
+attach those maps to fresh Branch Step/attempt/path identities or relax the
+existing `rewindHistorical` prefix verification. Issued-Request Branch frontier
+rewind therefore remains refused. This operation is beyond independent evidence
+adoption, but is not by itself complete Branch graph rewind. Released resource
+custody, graph binding/secret remapping, Agent/child cancellation, forwarded-bundle
+pointer/hash transfer, human/Agent/operator recovery and exhausted-budget codecs,
+and broader crash reconciliation also remain internal unfinished work.
+
+Deferred regression source in `tests/branches/host-cut.test.mjs` covers imported
+terminal facts without effect relaunch, fresh identity/provenance/receipt replay,
+rollback during origin insertion, exact mapped historical question/live answer,
+and new member completion waking the mapped Join continuation. These files have
+not been executed. No tests, typechecks, builds, Node/native/browser/runner
+preparation or execution was performed for this source continuation.

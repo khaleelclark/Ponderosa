@@ -136,3 +136,59 @@ for(const mode of ['async','sync'])test(`before-Request ${mode} Agent graph cut 
  assert.equal(f.branches.execution(next.id).state,'completed');assert.equal(f.branches.execution(next.id).output,'fresh result');
  assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'agent-graph').id,next.id);
 });
+
+// Deferred source regression: no provider/runner execution is needed by these fixtures.
+test('canonical historical graph restoration preserves facts, fresh identities and atomic receipt replay',async t=>{
+ const f=await adoptionFixture(t);
+ // Fixture source updates were authored without leasing the queued delivery.
+ f.store.sqlite.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const selection={checkpointId:f.selection.checkpointId,expectedHash:f.selection.expectedHash};
+ const review=f.branches.reviewHostGraph(f.branch.id,f.source.id,selection,f.grant),input={...selection,reviewHash:review.reviewHash,commandKey:'restore-graph',reconcileEffects:true};
+ const before=f.store.sqlite.prepare('SELECT COUNT(*) n FROM agent_activations').get().n;
+ const result=f.branches.restoreHostGraph(f.branch.id,f.source.id,input,f.grant),fresh=result.requestMap[f.selection.requestId];
+ assert.notEqual(fresh,f.selection.requestId);assert.equal(f.coordination.getRequest(fresh).state,'completed');
+ const row=f.store.sqlite.prepare('SELECT reply_authority_json,origin_run_id,communication_event_id FROM coordination_requests WHERE id=?').get(fresh);
+ assert.deepEqual(row,{reply_authority_json:null,origin_run_id:null,communication_event_id:null});
+ const history=f.coordination.requestLifecycleDetails({projectId:f.project.id,conversationId:f.chat.id,recordId:fresh});
+ assert.equal(history.updates[0].actorKind,'system');assert.equal(history.updates[0].historicalOrigin.sourceRequestId,f.selection.requestId);assert.match(history.updates[0].text,/Imported historical/);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM agent_activations').get().n,before,'terminal facts do not relaunch their effects');
+ const replay=new BranchStore(f.store.sqlite,f.coordination).restoreHostGraph(f.branch.id,f.source.id,input,f.grant);assert.equal(replay.replayed,true);assert.deepEqual(replay.requestMap,result.requestMap);
+ f.store.sqlite.prepare('UPDATE agents SET conversation_id=NULL WHERE id=?').run(f.agent.id);assert.throws(()=>f.branches.restoreHostGraph(f.branch.id,f.source.id,input,f.grant),/grant/);
+});
+test('historical graph receipt and provenance insertion failure roll back every fresh identity',async t=>{
+ const f=await adoptionFixture(t);f.store.sqlite.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const selection={checkpointId:f.selection.checkpointId,expectedHash:f.selection.expectedHash},review=f.branches.reviewHostGraph(f.branch.id,f.source.id,selection,f.grant),input={...selection,reviewHash:review.reviewHash,commandKey:'graph-crash',reconcileEffects:true};
+ const counts=()=>['coordination_requests','coordination_request_updates','coordination_cut_restorations','coordination_restored_update_origins','agent_activations','activation_outbox'].map(table=>f.store.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
+ f.store.sqlite.exec("CREATE TEMP TRIGGER refuse_restored_origin BEFORE INSERT ON coordination_restored_update_origins BEGIN SELECT RAISE(ABORT,'controlled origin failure'); END");
+ assert.throws(()=>f.branches.restoreHostGraph(f.branch.id,f.source.id,input,f.grant),/controlled origin failure/);assert.deepEqual(counts(),before);
+ f.store.sqlite.exec('DROP TRIGGER refuse_restored_origin');assert.ok(f.branches.restoreHostGraph(f.branch.id,f.source.id,input,f.grant).restorationId);
+});
+
+test('mapped historical question accepts a live answer and completes its fresh Join continuation',async t=>{
+ const {stableJson,payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const f=fixture(t);for(let n=0;n<30&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ const root=f.branches.detail(f.source.id).attempts[0].requestId;
+ const child=f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,requesterAgentId:f.agent.id,actorScope:'controlled-host-fixture',idempotencyKey:'historical-question-join',requests:[{recipientAgentId:f.peer.id,lifetime:{kind:'indefinite'},payload:{text:'Inspect without repeating effects'}}],join:{mode:'all',continuationRequestIds:[root]}});
+ f.coordination.updateRequest({requestId:child.requestIds[0],updateId:'historical-question-source',kind:'question',actor:{kind:'agent',id:f.peer.id},payload:{text:'Which retained source should be inspected?'}});
+ const cut=f.capture(),snapshot={schema:'branch-unit-selected.v2',hostDependencies:cut},bytes=stableJson(snapshot),expectedHash=payloadHash(snapshot);
+ const checkpointId=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,expectedHash).lastInsertRowid);
+ f.coordination.updateRequest({requestId:child.requestIds[0],updateId:'settled-child',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Original task settled'}});
+ f.coordination.updateRequest({requestId:root,updateId:'settled-root',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Original root settled'}});
+ for(let n=0;n<30&&f.branches.execution(f.source.id).state!=='completed';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(f.source.id).state,'completed');
+ // No provider was launched by the fixture; retire its synthetic queued deliveries.
+ f.store.sqlite.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const selection={checkpointId,expectedHash},grant=()=>true,review=f.branches.reviewHostGraph(f.branch.id,f.source.id,selection,grant),command={...selection,reviewHash:review.reviewHash,commandKey:'restore-question-join',reconcileEffects:true};
+ const restored=f.branches.restoreHostGraph(f.branch.id,f.source.id,command,grant),childId=restored.requestMap[child.requestIds[0]],questionId=restored.updateMap['historical-question-source'],rootId=restored.requestMap[root],joinId=restored.joinMap[child.joinId];
+ const pending=f.store.sqlite.prepare("SELECT agent_id,kind,payload_json FROM agent_activations WHERE state='pending'").all();
+ assert.equal(pending.length,1);assert.equal(pending[0].agent_id,f.agent.id);assert.equal(pending[0].kind,'coordination_question');assert.equal(JSON.parse(pending[0].payload_json).inReplyToUpdateId,questionId);
+ const imported=f.store.sqlite.prepare('SELECT kind,actor_kind,actor_id FROM coordination_request_updates WHERE id=?').get(questionId);assert.deepEqual(imported,{kind:'historical_question',actor_kind:'system',actor_id:'host-cut-restoration'});
+ assert.throws(()=>f.coordination.updateRequest({requestId:childId,updateId:'forged-history',kind:'historical_question',actor:{kind:'system'},payload:{text:'Forged'}}),/Unsupported live/);
+ assert.throws(()=>f.coordination.updateRequest({requestId:childId,updateId:'wrong-answer',kind:'answer',actor:{kind:'user'},inReplyToUpdateId:'historical-question-source',payload:{text:'Wrong identity'}}),/outstanding question/);
+ f.coordination.updateRequest({requestId:childId,updateId:'fresh-answer',kind:'answer',actor:{kind:'user'},inReplyToUpdateId:questionId,payload:{text:'Inspect only the retained source.'}});
+ assert.equal(f.coordination.getRequest(childId).state,'in_progress');
+ f.coordination.updateRequest({requestId:childId,updateId:'fresh-completion',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Reconciled; no effect replayed'}});
+ const wake=f.store.sqlite.prepare("SELECT payload_json FROM agent_activations WHERE kind='coordination_join_satisfied' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='join' AND source_id=?)").get(joinId);
+ assert.ok(wake);const payload=JSON.parse(wake.payload_json);assert.equal(payload.outcomes[0].requestId,childId);assert.equal(payload.continuations[0].requestId,rootId);assert.equal(payload.outcomes[0].update.id,'fresh-completion');
+ assert.equal(f.coordination.getRequest(root).state,'completed');assert.equal(f.coordination.getRequest(rootId).state,'waiting_dependency');
+});

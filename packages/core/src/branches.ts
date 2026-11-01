@@ -318,6 +318,19 @@ export interface BranchHostRequestAdoption extends BranchHostRequestSelection {
   reviewHash:string;commandKey:string;instruction:string;mode:'reconcile'|'independent';
   acknowledgeChangedBindings?:boolean;acknowledgeSecretBindings?:boolean;
 }
+/** Whole retained graph. Review remains operator-only and checks every original audience. */
+export interface BranchHostGraphReviewDto {
+ checkpointId:number;checkpointHash:string;reviewHash:string;
+ requests:BranchHostRequestReviewDto[];
+ joins:{id:string;ownerAgentId:string;state:string;mode:string;quorum:number;memberRequestIds:string[];continuationRequestIds:string[]}[];
+}
+export interface BranchHostGraphRestoreInput {
+ checkpointId:number;expectedHash:string;reviewHash:string;commandKey:string;reconcileEffects:true;
+}
+export interface BranchHostGraphRestoreDto {
+ restorationId:string;checkpointId:number;checkpointHash:string;
+ requestMap:Record<string,string>;updateMap:Record<string,string>;joinMap:Record<string,string>;replayed:boolean;
+}
 export interface BranchHostRequestAdoptionDto {
   requestId:string;sourceRequestId:string;checkpointId:number;checkpointHash:string;reviewHash:string;replayed:boolean;
 }

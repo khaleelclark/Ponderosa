@@ -411,6 +411,20 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
     try{return branches.historicalCheckpoints(request.params.id,request.params.executionId,request.query.before===undefined?undefined:Number(request.query.before));}
     catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical checkpoints unavailable'});}
   });
+  app.post<{Params:{id:string;executionId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/host-graph-review',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Host graph review');exactObjectFields(body,['checkpointId','expectedHash'],'Host graph review');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string')throw Error('Invalid host graph selection');
+      return branches.reviewHostGraph(request.params.id,request.params.executionId,{checkpointId:body.checkpointId,expectedHash:body.expectedHash},hostArtifactGrant);
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Host graph review unavailable'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/restore-host-graph',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Host graph restore');exactObjectFields(body,['checkpointId','expectedHash','reviewHash','commandKey','reconcileEffects'],'Host graph restore');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.reviewHash!=='string'||typeof body.commandKey!=='string'||body.reconcileEffects!==true)throw Error('Invalid reviewed graph reconciliation');
+      const result=branches.restoreHostGraph(request.params.id,request.params.executionId,body as unknown as import('@ponderosa/core').BranchHostGraphRestoreInput,hostArtifactGrant);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Host graph restoration refused'});}
+  });
   app.post<{Params:{id:string;executionId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/host-request-review',async(request,reply)=>{
     try{
       const body=validatedObject(request.body,'Host Request review');exactObjectFields(body,['checkpointId','expectedHash','requestId'],'Host Request review');

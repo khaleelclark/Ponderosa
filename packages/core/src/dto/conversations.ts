@@ -7,7 +7,7 @@ import type {
 } from "../communication.js";
 import type {
   CoordinationRequestState,
-  CoordinationRequestUpdateKind,
+  CoordinationStoredRequestUpdateKind,
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
 import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artifacts.js";
@@ -326,7 +326,7 @@ export interface CoordinationRequestSummaryDto {
   communicationEventId?: string;
   preview?: string;
   hasUpdates: boolean;
-  latestUpdateKind?: CoordinationRequestUpdateKind;
+  latestUpdateKind?: CoordinationStoredRequestUpdateKind;
   latestUpdateAt?: string;
   hasResult: boolean;
   updatedAt: string;
@@ -432,7 +432,8 @@ export interface CoordinationRequestArtifactDto {
 
 export interface CoordinationRequestUpdateDto {
   id: string;
-  kind: CoordinationRequestUpdateKind;
+  kind: CoordinationStoredRequestUpdateKind;
+  historicalOrigin?: {restorationId:string;sourceRequestId:string;sourceUpdateId:string;sourceKind:string;sourceVersion:number};
   actorKind: "agent" | "user" | "system" | "supervisor";
   actorId?: string;
   inReplyToUpdateId?: string;

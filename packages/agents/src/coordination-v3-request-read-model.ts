@@ -107,9 +107,12 @@ export class CoordinationV3RequestReadModel {
           SELECT source.activation_id
           FROM activation_sources source
           JOIN agent_activations candidate ON candidate.id = source.activation_id
-          WHERE source.source_kind = 'request' AND source.source_id = request.id
-            AND candidate.kind = 'coordination_request'
+          WHERE ((source.source_kind = 'request' AND source.source_id = request.id)
+            OR (source.source_kind='request_update' AND EXISTS(
+              SELECT 1 FROM coordination_request_updates u WHERE u.id=source.source_id AND u.request_id=request.id)))
+            AND candidate.kind IN ('coordination_request','coordination_answer','coordination_dependency_resolved')
             AND candidate.agent_id = request.recipient_agent_id
+          ORDER BY candidate.created_at DESC,candidate.rowid DESC
           LIMIT 1
         )
       WHERE request.id = ?

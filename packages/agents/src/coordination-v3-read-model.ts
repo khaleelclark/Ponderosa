@@ -3,7 +3,7 @@ import type {
   CoordinationJoinWakePolicy,
   CoordinationRequestLifecycleDto,
   CoordinationRequestState,
-  CoordinationRequestUpdateKind,
+  CoordinationStoredRequestUpdateKind as CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
 import { outcomeCauseExplanation, outcomeCauseFromPayload, publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
@@ -292,14 +292,14 @@ export class CoordinationV3ReadModel {
             SELECT request_update.kind
             FROM coordination_request_updates request_update
             WHERE request_update.request_id = request.id
-            ORDER BY request_update.created_at DESC, request_update.id DESC
+            ORDER BY request_update.resulting_version DESC, request_update.id DESC
             LIMIT 1
           ) AS latest_update_kind,
           (
             SELECT request_update.created_at
             FROM coordination_request_updates request_update
             WHERE request_update.request_id = request.id
-            ORDER BY request_update.created_at DESC, request_update.id DESC
+            ORDER BY request_update.resulting_version DESC, request_update.id DESC
             LIMIT 1
           ) AS latest_update_at,
           EXISTS (
@@ -398,14 +398,14 @@ export class CoordinationV3ReadModel {
               SELECT request_update.kind
               FROM coordination_request_updates request_update
               WHERE request_update.request_id = request.id
-              ORDER BY request_update.created_at DESC, request_update.id DESC
+              ORDER BY request_update.resulting_version DESC, request_update.id DESC
               LIMIT 1
             ) AS latest_update_kind,
             (
               SELECT request_update.created_at
               FROM coordination_request_updates request_update
               WHERE request_update.request_id = request.id
-              ORDER BY request_update.created_at DESC, request_update.id DESC
+              ORDER BY request_update.resulting_version DESC, request_update.id DESC
               LIMIT 1
             ) AS latest_update_at,
             EXISTS (
@@ -413,7 +413,7 @@ export class CoordinationV3ReadModel {
               WHERE request_update.request_id = request.id
                 AND (
                   request_update.kind IN (
-                    'answer', 'completed', 'blocked', 'failed',
+                    'answer', 'historical_answer', 'completed', 'blocked', 'failed',
                     'recipient_unavailable', 'outcome_unknown'
                   )
                   OR EXISTS (
@@ -1059,10 +1059,10 @@ export class CoordinationV3ReadModel {
             )) AS provider_failure_category
           FROM coordination_request_updates
           WHERE request_id = ?
-          ORDER BY created_at DESC, id DESC
+          ORDER BY resulting_version DESC, id DESC
           LIMIT ?
         ) recent_updates
-        ORDER BY created_at, id
+        ORDER BY resulting_version, id
       `).all(request.id, REQUEST_LIFECYCLE_UPDATE_LIMIT + 1) as Array<{
         id: string;
         kind: CoordinationRequestUpdateKind;
@@ -1128,6 +1128,7 @@ export class CoordinationV3ReadModel {
           updatedAt: request.updated_at,
         },
         updates: updateRows.map((row) => {
+          const origin=this.sqlite.prepare('SELECT restoration_id,source_request_id,source_update_id,source_kind,source_resulting_version FROM coordination_restored_update_origins WHERE update_id=?').get(row.id) as {restoration_id:string;source_request_id:string;source_update_id:string;source_kind:string;source_resulting_version:number}|undefined;
           const payload = parseStoredJson(row.payload_json);
           const parsedCause = row.kind === "outcome_unknown" && row.actor_kind === "supervisor"
             ? outcomeCauseFromPayload(payload) : undefined;
@@ -1154,6 +1155,7 @@ export class CoordinationV3ReadModel {
           return {
             id: row.id,
             kind: row.kind,
+            ...(origin ? {historicalOrigin:{restorationId:origin.restoration_id,sourceRequestId:origin.source_request_id,sourceUpdateId:origin.source_update_id,sourceKind:origin.source_kind,sourceVersion:origin.source_resulting_version}} : {}),
             actorKind: row.actor_kind,
             ...(row.actor_id ? { actorId: row.actor_id } : {}),
             ...(row.in_reply_to_update_id

@@ -72,6 +72,7 @@ const schemaExtensions = [
   "0033_branch_checkpoint_invocations.sql",
   "0034_provider_context_recovery_requests.sql",
   "0035_provider_context_recovery_progress.sql",
+  "0035_coordination_cut_restorations.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

@@ -33,6 +33,8 @@ function stateLabel(state: string): string {
 }
 
 function updateKindLabel(kind: CoordinationRequestUpdateDto["kind"]): string {
+  if (kind === "historical_question") return "Historical question";
+  if (kind === "historical_answer") return "Historical answer";
   if (kind === "waiting_dependency") return "Waiting on dependency";
   if (kind === "dependency_resolved") return "Dependency resolved";
   if (kind === "recipient_unavailable") return "Recipient unavailable";
@@ -44,6 +46,7 @@ function updateActor(
   update: CoordinationRequestUpdateDto,
   agentTitle: (agentId: string | undefined) => string,
 ): string {
+  if (update.historicalOrigin) return "Historical import";
   if (update.actorKind === "agent") return agentTitle(update.actorId);
   if (update.actorKind === "user") return "You";
   if (update.actorKind === "supervisor") return "Supervisor";
@@ -136,9 +139,9 @@ function RequestUpdate({
   const unresolvedArtifactRefs = update.refs.filter((ref) =>
     ref.startsWith("ponderosa://artifact/")
     && !update.artifacts.some((artifact) => ref.endsWith(`/${artifact.id}`)));
-  const actionLabel = update.kind === "question"
+  const actionLabel = (update.kind === "question" || update.kind === "historical_question")
     ? "View full question"
-    : ["answer", "completed", "blocked", "failed"].includes(update.kind)
+    : ["answer", "historical_answer", "completed", "blocked", "failed"].includes(update.kind)
       ? "View full result"
       : "View full update";
 
@@ -303,7 +306,7 @@ export function RequestLifecycleCard({
     () =>
       new Map(
         (lifecycle?.updates ?? [])
-          .filter((update) => update.kind === "question")
+          .filter((update) => (update.kind === "question" || update.kind === "historical_question"))
           .map((update, index) => [update.id, index + 1]),
       ),
     [lifecycle?.updates],

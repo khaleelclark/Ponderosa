@@ -141,6 +141,7 @@ export class CoordinationV3StoreSupport {
     kind: CoordinationRequestUpdateKind,
     actor: Actor,
   ): void {
+    if(!Object.hasOwn(REQUEST_UPDATE_AUTHORIZATION,kind))throw new Error('Unsupported live Request update kind');
     const authorization: CoordinationActorClass =
       REQUEST_UPDATE_AUTHORIZATION[kind];
     const isRecipient =
