@@ -1,4 +1,5 @@
 import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
+import {assertCheckpointMembership} from '../checkpoint-package-membership.js';
 import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPackageReceipt,type CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
@@ -2508,6 +2509,9 @@ export function registerAgentPackageRoutes(
       const boundary=context.withCheckpointSourceBoundary;
       if(!boundary)throw new Error('Checkpoint source capture boundary unavailable');
       return boundary(frozen,async boundaryId=>checkpointCustody.capture(frozen,boundaryId,async()=>{
+        const chat=store.getConversation(frozen.sourceChatId);
+        if(!chat)throw new Error('Checkpoint source Chat unavailable');
+        assertCheckpointMembership(frozen.sourceChatId,frozen.agentIds,store.listAgents(chat.projectId,{includePendingCreation:true}));
         const inputs:AgentPackageCompositionInput[]=[];
         for(const id of frozen.agentIds){
           const agent=store.getAgent(id);
