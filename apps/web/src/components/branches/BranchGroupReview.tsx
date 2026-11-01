@@ -2,7 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {useMutation} from '@tanstack/react-query';
 import {Alert,Button,Checkbox,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,Stack,Typography} from '@mui/material';
 import {BranchGroupClient} from '@ponderosa/core';
-import type {BranchGroupCapturePreview,BranchGroupDiscoveryItem,BranchDefinition,BranchExecutionDetailDto,BranchDisclosureReviewDto,BranchDisclosureReceipt,BranchIssuedGroupCaptureStatus,BranchIssuedGroupDestinationDto} from '@ponderosa/core';
+import type {BranchTreeGroupCaptureStatus,BranchGroupDiscoveryItem,BranchDefinition,BranchExecutionDetailDto,BranchDisclosureReviewDto,BranchDisclosureReceipt,BranchIssuedGroupDestinationDto} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
 import {ApiRequestError} from '../../api/types';
 import {currentProductScope} from '../../api/productScope';
@@ -11,7 +11,7 @@ import {ConfirmDialog} from '../ConfirmationDialogs';
 import {useWorkspaceReadOnly} from '../WorkspaceReadOnlyContext';
 import {disclosureReceiptMatches} from './branchDisclosureReview';
 import {GroupJournalAudit} from './GroupJournalAudit';
-import {groupPreviewSupported,groupCaptureMatches,groupDestinationMatches,groupReviewMatches,restoreGroupJournal,type GroupCommand,type GroupJournal} from './branchGroupReview';
+import {treeCut,treePreviewSupported,captureResourceIds,type GroupCaptureCut,type GroupCaptureStatus,groupPreviewSupported,groupCaptureMatches,groupDestinationMatches,groupReviewMatches,restoreGroupJournal,type GroupCommand,type GroupJournal} from './branchGroupReview';
 type Action='capture'|'prepare'|'approve'|'revoke'|'admit';
 const Evidence=({title,value}:{title:string;value:unknown})=><details><summary>{title}</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:360,overflow:'auto',fontSize:12}}>{JSON.stringify(value,null,2)}</Typography></details>;
 /** Whole-group actions use server eligibility and exact retained command identities. */
@@ -20,9 +20,12 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
  const api=new BranchGroupClient(branchId,executionId,requestJson);
  const storageKey=JSON.stringify(['branch-group',window.location.origin,currentProductScope(),branchId,executionId]);
  const [restored]=useState(()=>restoreGroupJournal(storageKey)),[journal,setJournal]=useState<GroupJournal>(restored.journal),[storageError,setStorageError]=useState(restored.error);
- const [open,setOpen]=useState(false),[capture,setCapture]=useState<BranchIssuedGroupCaptureStatus>(),[target,setTarget]=useState<BranchIssuedGroupDestinationDto>();
+ const [open,setOpen]=useState(false),[capture,setCapture]=useState<GroupCaptureStatus>(),[target,setTarget]=useState<BranchIssuedGroupDestinationDto>();
  const [review,setReview]=useState<BranchDisclosureReviewDto>(),[receipt,setReceipt]=useState<BranchDisclosureReceipt>(),[reviewed,setReviewed]=useState(false),[effects,setEffects]=useState(false),[confirm,setConfirm]=useState<Action>(),[notice,setNotice]=useState('');
- const [cut,setCut]=useState<BranchGroupCapturePreview>(),[cutReviewed,setCutReviewed]=useState(false);
+ const [cut,setCut]=useState<GroupCaptureCut>(),[cutReviewed,setCutReviewed]=useState(false);
+ const [treeInventory,setTreeInventory]=useState<(BranchTreeGroupCaptureStatus&{commandKey:string})[]>();
+ const supportedCut=(value:GroupCaptureCut)=>treeCut(value)?treePreviewSupported(value):groupPreviewSupported(value);
+ const captureRead=(command:Extract<GroupCommand,{kind:'capture'}>)=>command.scope==='owner_tree'?api.treeCaptureStatus(command.body.commandKey):api.captureStatus(command.body.commandKey);
  const [audit,setAudit]=useState<unknown>();
  const [inventory,setInventory]=useState<{kind:'captures'|'admissions';items:BranchGroupDiscoveryItem[];nextCursor?:string}>();
  const fence=useRef(false),epoch=useRef(0);
@@ -30,14 +33,14 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
  useEffect(()=>{discard();},[detail,definition,enabled]);
  const keep=(value:GroupJournal)=>{try{localStorage.setItem(storageKey,JSON.stringify(value));setJournal(value);}catch{setStorageError('Cannot persist exact group input. Preserve browser storage; new changes are blocked.');throw Error('Group input could not be persisted.');}};
  const clearPending=()=>keep({...journal,pending:undefined});
- const acceptCapture=(value:BranchIssuedGroupCaptureStatus)=>{
+ const acceptCapture=(value:GroupCaptureStatus)=>{
   if(!journal.capture||!groupCaptureMatches(value,journal.capture))throw Error('Capture identity differs or is outside this 2–32-resource UI. All pins remain held.');
   setCapture(value);
   if(value.state==='retained'&&journal.pending?.kind==='capture')clearPending();
   else if(value.state==='capturing')setNotice('Capture is incomplete. All member cleanup pins stay held; group abandonment and recapture are unavailable here.');
  };
  const acceptTarget=(value:BranchIssuedGroupDestinationDto)=>{
-  if(!journal.prepare||!groupDestinationMatches(value,journal.prepare,executionId,journal.capture?.resourceStepIds??value.resources?.map(r=>r.custody.intent.resourceStepId)??[]))throw Error('Group command, checkpoint or every resource identity differ.');
+  if(!journal.prepare||!groupDestinationMatches(value,journal.prepare,executionId,journal.capture?.resourceStepIds??value.resources?.map(r=>r.custody.intent.resourceStepId)??[],journal.capture))throw Error('Group command, checkpoint or every resource identity differ.');
   if(journal.pending?.kind==='admit'&&(value.admissionId!==journal.pending.admissionId||value.state==='admitted'&&value.disclosure.reviewHash!==journal.pending.body.reviewHash))throw Error('Admitted readback differs from original whole-group approval.');
   setTarget(value);
   if(journal.pending?.kind==='prepare'&&['awaiting_disclosure','admitted'].includes(value.state)||journal.pending?.kind==='admit'&&value.state==='admitted')clearPending();
@@ -47,7 +50,7 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
   discard();setTarget(undefined);setCapture(undefined);setNotice('');
   // Source status, destination and choice reads remain independent when another proof refuses.
   const reads:Promise<unknown>[]=[];
-  if(journal.capture)reads.push(api.captureStatus(journal.capture.body.commandKey).then(acceptCapture));
+  if(journal.capture)reads.push(captureRead(journal.capture).then(acceptCapture));
   if(journal.prepare)reads.push(api.inspect(journal.prepare.commandKey).then(acceptTarget));
   if(journal.pending?.kind==='choice'){
    const command=journal.pending;
@@ -84,11 +87,24 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
    if(local){keep({prepare:input});setTarget(value);}else setAudit({identity:row,destination:value});
   }
  },onError:error=>{discard();setNotice(error.message);setAudit(undefined);setTarget(undefined);setCapture(undefined);}});
- const capturePreview=useMutation({retry:false,mutationFn:async()=>{
-  discard();const token=epoch.current,value=await api.previewCapture();
-  if(!groupPreviewSupported(value))throw Error('Unsupported or invalid server resource inventory.');
+ const treeDiscovery=useMutation({retry:false,mutationFn:async()=>{
+  discard();setTreeInventory(undefined);setCapture(undefined);const token=epoch.current,page=await api.discoverTreeCaptures();
+  if(!page||!Array.isArray(page.items)||page.items.length>100||new Set(page.items.map(r=>r.commandKey)).size!==page.items.length||page.items.some(r=>!r.commandKey||!r.sources?.some(s=>s.executionId===executionId)||!groupCaptureMatches(r,{kind:'capture',scope:'owner_tree',body:{commandKey:r.commandKey,reviewHash:r.reviewHash,versionId:r.versionId},resourceStepIds:r.sources?.map(s=>s.resourceStepId)??[],treeSources:r.sources})))throw Error('Invalid canonical tree inventory; explicitly rediscover.');
+  if(token===epoch.current)setTreeInventory(page.items);
+ },onError:()=>{setTreeInventory(undefined);setCapture(undefined);discard();}});
+ const treeRecovery=useMutation({retry:false,mutationFn:async(row:BranchTreeGroupCaptureStatus&{commandKey:string})=>{
+  if(journal.pending||storageError)throw Error('Original pending command must resolve first.');
+  discard();setCapture(undefined);setTarget(undefined);
+  const command:Extract<GroupCommand,{kind:'capture'}>={kind:'capture',scope:'owner_tree',body:{commandKey:row.commandKey,reviewHash:row.reviewHash,versionId:row.versionId},resourceStepIds:row.sources.map(s=>s.resourceStepId),treeSources:row.sources,checkpointId:row.checkpointId,checkpointHash:row.checkpointHash};
+  const value=await api.treeCaptureStatus(row.commandKey);
+  if(!groupCaptureMatches(value,command))throw Error('Canonical tree selection changed; keep pins held.');
+  keep({capture:command});setCapture(value);
+ },onError:error=>{setTreeInventory(undefined);setCapture(undefined);discard();setNotice(error.message);}});
+ const capturePreview=useMutation({retry:false,mutationFn:async(scope?:'owner_tree')=>{
+  discard();const token=epoch.current,value=await (scope==='owner_tree'?api.previewTreeCapture():api.previewCapture());
+  if(!supportedCut(value)||treeCut(value)&&!value.owners.some(o=>o.executionId===executionId&&o.branchId===branchId))throw Error('Unsupported or invalid server resource inventory.');
   if(token===epoch.current)setCut(value);
- },onError:()=>discard()});
+ },onError:()=>{setTreeInventory(undefined);discard();}});
  const preview=useMutation({retry:false,mutationFn:async()=>{
   if(!target)throw Error('Read the exact group destination first.');
   discard();const token=epoch.current,value=await api.review(target.admissionId);
@@ -99,14 +115,14 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
   const next={...journal,pending:command,...(command.kind==='capture'?{capture:command}:{}),...(command.kind==='prepare'?{prepare:command.body}:{})};
   keep(next);discard();setNotice('');setReceipt(undefined);
   if(command.kind==='capture'){
-   await api.capture(command.body);
+   await (command.scope==='owner_tree'?api.captureTree(command.body):api.capture(command.body));
    // Require the independent no-byte status even after a successful sealing response.
-   const value=await api.captureStatus(command.body.commandKey);
+   const value=await captureRead(command);
    if(!groupCaptureMatches(value,command)||value.state!=='retained')throw Error('Capture remains held or differs from the exact resource inventory.');
    setCapture(value);keep({...next,pending:undefined});
   }else if(command.kind==='prepare'||command.kind==='admit'){
    const value=command.kind==='prepare'?await api.prepare(command.body):await api.admit(command.body),input=next.prepare;
-   if(!input||!groupDestinationMatches(value,input,executionId,next.capture?.resourceStepIds??value.resources?.map(r=>r.custody.intent.resourceStepId)??[])||command.kind==='admit'&&(value.admissionId!==command.admissionId||value.state==='admitted'&&value.disclosure.reviewHash!==command.body.reviewHash))throw Error('Group result differs from retained source and command.');
+   if(!input||!groupDestinationMatches(value,input,executionId,next.capture?.resourceStepIds??value.resources?.map(r=>r.custody.intent.resourceStepId)??[],next.capture)||command.kind==='admit'&&(value.admissionId!==command.admissionId||value.state==='admitted'&&value.disclosure.reviewHash!==command.body.reviewHash))throw Error('Group result differs from retained source and command.');
    setTarget(value);
    if(command.kind==='prepare'&&['awaiting_disclosure','admitted'].includes(value.state)||command.kind==='admit'&&value.state==='admitted')keep({...next,pending:undefined});
    else setNotice('Group outcome remains held. Read its original key; no mutation retry.');
@@ -118,13 +134,13 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
   onChanged();
  },onError:(error,command)=>{
   discard();setNotice(error.message);
-  if(error instanceof ApiRequestError&&error.status===409)setInventory(undefined);
+  if(error instanceof ApiRequestError&&error.status===409){setInventory(undefined);setTreeInventory(undefined);}
   // Choice CAS refusals precede its transactional commit. Other 409s may follow staging.
   if(error instanceof ApiRequestError&&error.status===409&&command.kind==='choice'){clearPending();setTarget(undefined);onChanged();}
  },onSettled:()=>{fence.current=false;setConfirm(undefined);}});
- const busy=refresh.isPending||preview.isPending||submit.isPending||discover.isPending||recover.isPending||capturePreview.isPending;
+ const busy=refresh.isPending||preview.isPending||submit.isPending||discover.isPending||recover.isPending||treeDiscovery.isPending||treeRecovery.isPending||capturePreview.isPending;
  const fresh=enabled&&!readOnly&&!storageError&&!journal.pending&&!busy;
- const captureReady=fresh&&Boolean(cut&&groupPreviewSupported(cut))&&cutReviewed&&!journal.capture&&!journal.prepare&&effects;
+ const captureReady=fresh&&Boolean(cut&&supportedCut(cut))&&cutReviewed&&!journal.capture&&!journal.prepare&&effects;
  const prepareReady=fresh&&capture?.state==='retained'&&!journal.prepare&&effects&&['completed','failed','canceled'].includes(execution.state);
  const exact=Boolean(target&&review&&groupReviewMatches(review,target,branchId,executionId));
  const approveReady=fresh&&exact&&reviewed&&target?.state==='awaiting_disclosure'&&!review?.active;
@@ -133,7 +149,7 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
  const ready=confirm==='capture'?captureReady:confirm==='prepare'?prepareReady:confirm==='approve'?approveReady:confirm==='revoke'?revokeReady:confirm==='admit'?admitReady:false;
  const apply=()=>{
   if(!ready||fence.current)return;let command:GroupCommand;
-  if(confirm==='capture'&&cut)command={kind:'capture',body:{commandKey:createClientId(),reviewHash:cut.reviewHash,versionId:cut.versionId},resourceStepIds:cut.resources.map(r=>r.resourceStepId),preview:cut};
+  if(confirm==='capture'&&cut)command={kind:'capture',body:{commandKey:createClientId(),reviewHash:cut.reviewHash,versionId:cut.versionId},resourceStepIds:captureResourceIds(cut),preview:cut,...(treeCut(cut)?{scope:'owner_tree' as const}:{})};
   else if(confirm==='prepare'&&capture?.checkpointId&&capture.checkpointHash)command={kind:'prepare',body:{commandKey:createClientId(),checkpointId:capture.checkpointId,expectedHash:capture.checkpointHash,reconcileEffects:true}};
   else if(confirm==='admit'&&target&&review)command={kind:'admit',admissionId:target.admissionId,body:{commandKey:target.commandKey,reviewHash:review.reviewHash}};
   else if(confirm==='approve'&&target&&review)command={kind:'choice',admissionId:target.admissionId,body:{commandKey:createClientId(),action:'approve',reviewHash:review.reviewHash,expectedRevision:review.revision}};
@@ -145,9 +161,12 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
   <Dialog open={open} fullWidth maxWidth="md" disableEscapeKeyDown={busy} onClose={()=>{if(!busy){discard();setOpen(false);}}}>
    <DialogTitle>Resource group</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     <Alert severity="warning">Preparation reuses the current owner Project directory. It creates a fresh Project with its usual default Chat and one Chat for every resource, sharing the existing filesystem directory. It creates no separate workspace or working copy.</Alert>
-    <Typography>The server preview determines eligibility for 2–32 generation-zero resources in supported standalone serial or local parallel flow. Called trees, later generations and broader native or package payloads remain unavailable. The host checks the exact cut, packages, current ownership, drain and policies.</Typography>
+    <Typography>The server preview determines eligibility for 2–32 generation-zero resources in supported standalone serial or local parallel flow. Standalone multi-item generation-zero maps are eligible only when the server validates all 2–32 resources. Called owner trees require a separate exact tree preview: manual parent plus one called child, one generation-zero resource each, serial ASYNC/SYNC. Larger, parallel or later-generation called trees remain refused. Original Projects require separate audit access; every owner’s current policy and fresh acceptance budget must pass. The host checks the exact cut, packages, current ownership, drain and policies.</Typography>
     <Alert severity="info">Canonical command discovery includes current and retained source owners. Any database write or restart can invalidate pagination: restart explicitly after a refusal. Legacy missing keys cannot be reconstructed. Readback may still refuse absent source owners; retained identity does not prove eligibility.</Alert>
     <Stack direction="row" spacing={1}><Button disabled={busy} onClick={()=>discover.mutate({kind:'captures'})}>Restart capture discovery</Button><Button disabled={busy} onClick={()=>discover.mutate({kind:'admissions'})}>Restart admission discovery</Button></Stack>
+    <Button disabled={busy} onClick={()=>treeDiscovery.mutate()}>Discover called-tree captures</Button>
+    {treeDiscovery.error&&<Alert severity="error">{treeDiscovery.error.message} Restart tree discovery explicitly.</Alert>}
+    {treeInventory?.map(row=><Stack key={row.commandKey}><Evidence title="Canonical owner-tree capture; evidence only" value={row}/><Button disabled={busy||Boolean(journal.pending)||Boolean(storageError)} onClick={()=>treeRecovery.mutate(row)}>Read exact called-tree capture</Button></Stack>)}
     {discover.error&&<Alert severity="error">{discover.error.message} Stale selections and confirmations cleared. Restart explicitly.</Alert>}
     {inventory&&<><Typography>{inventory.kind} · canonical records (all source Runs)</Typography>{inventory.items.map((row,i)=><Stack key={`${row.branchId}:${row.executionId}:${row.commandKey??i}`}><Evidence title={`${row.state} · ${row.resourceCount} resources · source owner ${row.ownerPresent?'current':'retained / absent'}`} value={row}/><GroupJournalAudit key={JSON.stringify(row.auditSelection)} row={row} api={api} onRead={discard} onStale={()=>{discard();setInventory(undefined);setAudit(undefined);setTarget(undefined);setCapture(undefined);setNotice('Historical selector/evidence refused. Explicitly restart group discovery; no audit or action was inferred.');}}/>{row.discovery==='unsupported_legacy_key'?<Typography>Unsupported legacy capture: original key unavailable; no guessed recovery.</Typography>:<Button disabled={busy||Boolean(journal.pending)||Boolean(storageError)} onClick={()=>recover.mutate(row)}>Read discovered {row.kind==='captures'?'capture':'admission'} command</Button>}{(row.branchId!==branchId||row.executionId!==executionId)&&<Typography>Readback here is audit evidence for this other source Run. Open that Run for disclosure actions; lifecycle review remains available from Settings.</Typography>}</Stack>)}{inventory.nextCursor&&<Button disabled={busy} onClick={()=>discover.mutate({kind:inventory.kind,more:true})}>Load more group commands</Button>}</>}
     {audit&&<Evidence title="Canonical readback from another source Run; no action authorization" value={audit}/>}
@@ -158,9 +177,9 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
     <Button disabled={busy||Boolean(storageError)||!journal.capture&&!journal.prepare} onClick={()=>refresh.mutate()}>Read retained group commands</Button>
     {refresh.error&&<Alert severity="error">{refresh.error.message}</Alert>}
     <Evidence title="Retained command and readback identities" value={journal}/>
-    {capture&&<><Typography>Capture {capture.state} · cleanup held {String(capture.cleanupHeld)} · checkpoint {capture.checkpointId} · {capture.checkpointHash}</Typography><Evidence title="Every exact source seal" value={capture}/></>}
+    {capture&&<><Typography>Capture {capture.state} · cleanup held {'cleanupHeld' in capture?String(capture.cleanupHeld):'not supplied; tree journals still hold owner deletion'} · checkpoint {capture.checkpointId} · {capture.checkpointHash}</Typography><Evidence title="Every exact source seal" value={capture}/></>}
     {!journal.capture&&<>
-     <Button disabled={!fresh||Boolean(journal.prepare)} onClick={()=>capturePreview.mutate()}>Preview authoritative capture cut</Button>
+     <Button disabled={!fresh||Boolean(journal.prepare)} onClick={()=>capturePreview.mutate(undefined)}>Preview authoritative capture cut</Button><Button disabled={!fresh||Boolean(journal.prepare)} onClick={()=>capturePreview.mutate('owner_tree')}>Preview called owner tree</Button>
      {capturePreview.error&&<Alert severity="error">{capturePreview.error.message}</Alert>}
      {cut&&<><Evidence title="Exact capture preview: every resource, participant and cut hash" value={cut}/><FormControlLabel control={<Checkbox checked={cutReviewed} disabled={!fresh} onChange={(_,v)=>setCutReviewed(v)}/>} label="I reviewed the complete server capture inventory and exact cut hashes"/></>}
     </>}
@@ -169,7 +188,7 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
      <Button disabled={!prepareReady} onClick={()=>setConfirm('prepare')}>Prepare held group</Button></>}
     {target&&<>
      <Typography>Admission {target.admissionId} · {target.state} · persisted disclosure {target.disclosure.state}, revision {target.disclosure.revision}</Typography>
-     <Evidence title="All packages and exact fresh resource identities" value={target.resources}/>
+     <Typography>Destination scope: {target.scope??'legacy standalone evidence'}. Parent/child owners keep separate executions and resource Chats; Call attempt ancestry, original counters and current acceptance budgets remain server-verified.</Typography>{target.scope==='owner_tree'&&<Alert severity="info">Call attempt IDs, original Branch counters and numeric fresh acceptance budgets are not returned by this contract. They remain unavailable here; the server verifies ancestry and each owner’s current budget. Owner maps do not substitute for ancestry or budget proof.</Alert>}{target.scope==='owner_tree'&&target.ownerMap&&<Typography sx={{overflowWrap:'anywhere'}}>Original root {executionId} → fresh parent {target.ownerMap[executionId]}. {Object.entries(target.ownerMap).filter(([id])=>id!==executionId).map(([id,fresh])=>`Original called child ${id} → fresh child ${fresh}.`).join(' ')}</Typography>}<Evidence title="Exact original owner to fresh owner map; no flattening" value={target.ownerMap??'not supplied by legacy server'}/><Evidence title="All packages and exact fresh resource identities" value={target.resources}/>
      {['reserved','import_unknown'].includes(target.state)&&<Alert severity="warning">Unknown or reserved slots stay held. No reimport or independent member admission.</Alert>}
      <Button disabled={!fresh||!['awaiting_disclosure','admitted'].includes(target.state)} onClick={()=>preview.mutate()}>Review whole-group disclosure</Button>
      <Button color="error" disabled={!revokeReady} onClick={()=>setConfirm('revoke')}>Revoke whole-group disclosure</Button>
@@ -177,7 +196,7 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
     {preview.error&&<Alert severity="error">{preview.error.message}</Alert>}
     {review&&exact&&<>
      <Typography sx={{overflowWrap:'anywhere'}}>Whole review {review.reviewHash} · host cut {review.hostCutSha256} · policy hash {review.policyRevision} · revision {review.revision}</Typography>
-     <Evidence title="Exact reservation, all packages, fresh maps and every current policy" value={{reservation:review.review.reservation,stage:review.review.stage,policies:review.policy}}/>
+     <Evidence title="Exact reservation, all packages, fresh maps and every current owner policy" value={{reservation:review.review.reservation,stage:review.review.stage,policies:review.policy}}/>
      {review.facts.map(f=><Stack key={`${f.kind}:${f.id}`} spacing={.5}>
       <Typography>{f.kind} {f.id} · {f.sha256}</Typography>
       <Typography sx={{overflowWrap:'anywhere'}}>Original participants {f.originalAgentIds.join(', ')} · fresh recipients {f.destinationAgentIds.join(', ')}</Typography>
@@ -194,7 +213,7 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
   </Dialog>
   <ConfirmDialog open={Boolean(confirm)} title={confirm==='capture'?'Capture this whole cut?':confirm==='prepare'?'Prepare held group?':confirm==='approve'?'Approve all listed facts?':confirm==='revoke'?'Revoke whole-group disclosure?':'Admit all resources atomically?'} confirmLabel="Confirm exact group action" cancelLabel="Back" pending={submit.isPending} confirmDisabled={!ready} onCancel={()=>setConfirm(undefined)} onConfirm={apply}>
    <Typography>{confirm==='capture'?'Captures every actual private package. Partial capture retains all cleanup pins and has no abandonment command.':confirm==='prepare'?'Creates held fresh identities using the current Project directory. No separate workspace is created.':confirm==='approve'?'Authorizes every listed historical fact for the exact fresh recipients under all reviewed policies. Approval alone starts no work.':confirm==='revoke'?'Revokes the exact persisted revision without needing package bytes. Previously disclosed facts are not erased.':'Commits one whole mapped graph and all imports, then permits eligible new work. Original external effects are not replayed.'}</Typography>
-   <Typography sx={{overflowWrap:'anywhere'}}>Capture cut {cut?.reviewHash} · version {cut?.versionId} · resources {cut?.resources.length} · Checkpoint {capture?.checkpointId??target?.checkpointId} · {capture?.checkpointHash??target?.checkpointHash} · admission {target?.admissionId} · review {confirm==='revoke'?target?.disclosure.reviewHash:review?.reviewHash}</Typography>
+   <Typography sx={{overflowWrap:'anywhere'}}>Capture cut {cut?.reviewHash} · version {cut?.versionId} · resources {cut?captureResourceIds(cut).length:undefined} · Checkpoint {capture?.checkpointId??target?.checkpointId} · {capture?.checkpointHash??target?.checkpointHash} · admission {target?.admissionId} · review {confirm==='revoke'?target?.disclosure.reviewHash:review?.reviewHash}</Typography>
   </ConfirmDialog>
  </>;
 }

@@ -1250,3 +1250,80 @@ filesystem/accessibility/mobile qualification. No full UI/lifecycle/Bible/Phase2
 acceptance claimed.
 
 Integration: bc524ed backend/core is already assembled ase5e677551 (coverage6c3f9dcfe). This UI successor adopts that exact server historyKind and saved budget contract without backend/SDK writes or ancestor replay. Bounded parallel UI adoption is delivered in source; all executed qualification remains deferred.
+### Called parent/child group destination and standalone multi-item generation zero (source only)
+
+UI successor to `5c4accc096de441ac21ff01eb1c5abf339102afa` requires exact
+backend/core `47ec3a1e8087d2d0225952cd0f98ac6598262e8b` at
+`/tmp/ponderosa-branches-tree-consumer`, including
+`docs/branch-issued-owner-tree-destination.md`, actual tree preview/status/discovery
+DTOs, group scope/ownerMap and Runtime per-owner evidence integration. Previous
+history/audit/lifecycle/abandonment dependencies remain required or verified equivalents.
+The prospective selectable journal retention successor
+`e68dedeedc85d1355fad5f4672339a52675b69a6` is separate backend-owned work; no new
+UI selector/API is needed, no erased journals or current authority inferred.
+
+Existing group dialog now offers a separate canonical tree preview and bounded
+(maximum100; overflow refused by server) tree capture inventory. Exact
+`tree-capture-preview`, `tree-captures` and original-key `tree-capture` GETs and one
+CAS POST are used through the additive UI-owned BranchGroupClient adapters.
+Whole server preview/owners/resource Step IDs, reviewHash/versionId and stable
+command are persisted before capture POST. Status must match both original
+execution/Step/Chat identities and CAS; discovered retained checkpoint ID/hash
+also stay bound. Tree status has no cleanupHeld field: UI does not infer pin release from retained
+state; tree journals still hold owner deletion. Partial/unknown/409 holds retain the original command with no
+POST replay, singular fallback or new owner/map selection. Explicit rediscovery
+is required after stale canonical tree readback. Standalone capture, history,
+historical read-only audit and lifecycle surfaces remain separate and preserved.
+
+Retained tree capture feeds existing whole-group prepare/review/approve/revoke/
+admit/original-key readback. `scope:'owner_tree'` requires exactly two original
+owners, one generation-zero resource each, distinct fresh executions and exact
+ownerMap. Resource custody/frontier/binding/configuration/host hashes stay local
+to each original owner, rather than forced equal. Every current resource keeps its
+actual fresh owner and Chat; admitted readback requires both owner receipts and
+identical resource evidence. Known tree capture cannot become standalone or
+substitute another child/Step/Chat. Whole review binds complete per-owner resource
+inventory, every returned fact summary/actor/audience/recipient to its displayed
+content and one current policy per source Chat. Child policy drift invalidates
+whole-group approval; no independent child admission. All facts still require a
+separate acknowledgement and final choice. Original Project audit access remains
+distinct from fresh Project ownership; original external effects are not replayed.
+
+Server eligibility only: manual parent plus one called child, one gen0 serial
+ASYNC/SYNC resource each. Larger/parallel/later-generation called trees remain
+refused. Existing standalone server preview also supports complete 2–32 gen0
+multi-item map resources without a UI path/layout heuristic. Historical multi-item
+retry support is not inferred. Source settlement, exact Call ancestry, current
+per-owner capacities/policies/budgets, all imports and ONE final admission
+transaction remain backend responsibilities. This UI adds no graph writer.
+
+Contract display limitation: actual group result exposes scope, ownerMap and
+resource identities, and review exposes host facts, stage and current policies.
+It does NOT expose Branch parentAttemptId/idMap, original Branch counters or
+numeric current per-owner acceptance budgets. UI explicitly labels these fields
+unavailable and says the backend verifies them; it never reconstructs ancestry
+from Request IDs or ownerMap, or invents budget numbers. Full fresh parent/child
+owner mapping, resources, original actor/audience facts, policies and final
+per-owner receipts are visible. A backend-owned DTO successor is required for
+actual numeric budget/counter and Call-attempt ancestry display. No private saved
+Branch snapshot is added to the UI to fill that gap.
+
+Six deliverables: `packages/core/src/branch-group-client.ts`;
+`apps/web/src/components/branches/{BranchGroupReview.tsx,branchGroupReview.ts}`;
+`tests/chats/{branch-owner-tree-group.test.mjs,branch-group-review-mounted.tsx}`;
+this report.
+Deferred pure fixtures cover parent/child preview/status/CAS, original storage,
+partial captures, child substitution/flattening/per-owner hash differences,
+missing non-first facts/policy/receipt, exact tree routes and no mutation replay.
+Mounted fixtures reuse full lost-response capture/prepare/choice/admit/revoke
+recovery with owner_tree scope, both original/fresh owners and child private
+facts, plus exact empty-client tree discovery and stale409 explicit rediscovery.
+Standalone mounted variants cover complete2/3/32 gen0 inventories from the actual
+server preview; backend fixtures own real map replay and item identity checks.
+
+Source only: no tests/checks/types/build/Node/native/browser/runner preparation or
+execution, installs, backend writes, push/merge/deploy or new workers. Fixtures
+unexecuted. Remaining: backend/core source assembly, the explicit missing ancestry/
+budget display fields, and separately authorized runtime/provider/native/package
+filesystem/accessibility/mobile qualification. No whole UI/group/lifecycle/Bible/
+Phase2 acceptance claimed.

@@ -1,5 +1,5 @@
 import type {GroupJournalAuditSelection,GroupJournalAuditReadback} from './lifecycle-reconciliation.js';
-import type {BranchGroupCaptureResult,BranchGroupCaptureInput,BranchGroupCapturePreview,BranchGroupDiscoveryPage,BranchIssuedGroupCaptureStatus} from './branches.js';
+import type {BranchGroupCaptureResult,BranchGroupCaptureInput,BranchGroupCapturePreview,BranchTreeGroupCapturePreview,BranchTreeGroupCaptureStatus,BranchGroupDiscoveryPage,BranchIssuedGroupCaptureStatus} from './branches.js';
 import type {BranchDisclosureChoice,BranchDisclosureReceipt,BranchDisclosureReviewDto,BranchIssuedDestinationDto,BranchIssuedDestinationInput,CoordinationDestinationGroupResource,CoordinationDestinationGroupReceipt} from './coordination-destination.js';
 
 /** Group wire output differs from the singular destination output. */
@@ -11,6 +11,10 @@ export class BranchGroupClient {
  private readonly base:string;
  constructor(branchId:string,executionId:string,private readonly request:<T>(path:string,init?:RequestInit)=>Promise<T>){this.base=`/api/branches/${encodeURIComponent(branchId)}/executions/${encodeURIComponent(executionId)}/destination-groups`;}
  private post<T>(path:string,body:unknown){return this.request<T>(path,{method:'POST',body:JSON.stringify(body)});}
+ previewTreeCapture(){return this.request<BranchTreeGroupCapturePreview>(this.base+'/tree-capture-preview',{cache:'no-store'});}
+ discoverTreeCaptures(){return this.request<{items:(BranchTreeGroupCaptureStatus&{commandKey:string})[]}>(this.base+'/tree-captures',{cache:'no-store'});}
+ captureTree(input:BranchGroupCaptureInput){return this.post<BranchIssuedGroupCaptureReceipt>(this.base+'/tree-capture',input);}
+ treeCaptureStatus(commandKey:string){return this.request<BranchTreeGroupCaptureStatus>(this.base+'/tree-capture?commandKey='+encodeURIComponent(commandKey),{cache:'no-store'});}
  previewCapture(){return this.request<BranchGroupCapturePreview>(this.base+'/capture-preview',{cache:'no-store'});}
  discover(kind:'captures'|'admissions',cursor?:string){return this.request<BranchGroupDiscoveryPage>('/api/branches/destination-groups/discovery?kind='+kind+'&limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):''),{cache:'no-store'});}
  journalAudit(selection:GroupJournalAuditSelection){const query=new URLSearchParams();for(const [key,value] of Object.entries(selection))if(value!==undefined)query.set(key,String(value));return this.request<GroupJournalAuditReadback>('/api/lifecycle/destination-groups/journal?'+query.toString(),{cache:'no-store'});}

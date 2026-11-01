@@ -7,29 +7,33 @@ const assert=(value:unknown,message:string)=>{if(!value)throw Error(message);};
 const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
 const button=(text:string)=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent===text)!;
 const check=(label:string)=>{const input=Array.from(document.querySelectorAll('label')).find(l=>l.textContent===label)?.querySelector('input');assert(input,label);input!.click();};
-export async function branchGroupReviewRegression():Promise<void>{
+export async function branchGroupReviewRegression(scope:'standalone'|'owner_tree'='standalone',count=3):Promise<void>{
  const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
  const storageKey=JSON.stringify(['branch-group',window.location.origin,currentProductScope(),'branch','source']),saved=localStorage.getItem(storageKey);localStorage.removeItem(storageKey);
  let root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
  const hash='a'.repeat(64),changed='b'.repeat(64),sent:{url:string;body:Record<string,unknown>}[]=[],gets:string[]=[];
- const sources=[0,1,2].map(i=>({checkpointId:`package${i}`,resourceStepId:`step${i}`,sourceChatId:`chat${i}`,sealed:true}));
- const resources=sources.map((s,i)=>({custody:{checkpointId:s.checkpointId,custodyId:`custody${i}`,sourceChatId:s.sourceChatId,sha256:hash,agentIds:[`original${i}`],intent:{executionId:'source',resourceStepId:s.resourceStepId,resourceGeneration:0,frontierSha256:hash,hostCutSha256:hash,bindingSha256:hash,configurationSha256:hash}},destination:{projectId:'fresh-project',conversationId:`fresh-chat${i}`,executionId:'fresh-run',resourceStepId:`fresh-step${i}`,resourceGeneration:0}}));
+ const sources=Array.from({length:scope==='owner_tree'?2:count},(_,i)=>i).map(i=>({checkpointId:`package${i}`,resourceStepId:`step${i}`,sourceChatId:`chat${i}`,sealed:true}));
+ const resources=sources.map((s,i)=>({custody:{checkpointId:s.checkpointId,custodyId:`custody${i}`,sourceChatId:s.sourceChatId,sha256:hash,agentIds:[`original${i}`],intent:{executionId:scope==='owner_tree'&&i===1?'child-source':'source',resourceStepId:s.resourceStepId,resourceGeneration:0,frontierSha256:hash,hostCutSha256:hash,bindingSha256:hash,configurationSha256:hash}},destination:{projectId:'fresh-project',conversationId:`fresh-chat${i}`,executionId:scope==='owner_tree'&&i===1?'fresh-child':'fresh-run',resourceStepId:`fresh-step${i}`,resourceGeneration:0}}));
  let key='',state='awaiting_disclosure',revision=0,choiceState='unreviewed',reviewHash=hash,sourceState='waiting',stale=true,captureUnavailable=false,previewUnavailable=false,capturePreviewStale=true;
- const target=()=>({commandKey:key,admissionId:'admission',checkpointId:4,checkpointHash:hash,resources,state,restoreSupported:state==='admitted',disclosure:{revision,state:choiceState,reviewHash:choiceState==='unreviewed'?undefined:reviewHash}});
- const preview=()=>({admissionId:'admission',reviewHash,hostCutSha256:hash,policyRevision:hash,revision,state:choiceState,active:choiceState==='approved',review:{admissionId:'admission',reservation:{branchId:'branch',sourceExecutionId:'source',commandKey:key,checkpointId:4,checkpointHash:hash,resources},stage:{agentMap:{original0:'fresh0',original1:'fresh1'},artifactMap:{}}},policy:sources.map(s=>({sourceChatId:s.sourceChatId,policy:{revision:'current'}})),facts:[{kind:'communication',id:'private',sha256:hash,originalAgentIds:['original0','original1'],destinationAgentIds:['fresh0','fresh1'],originalActor:{agentId:'original0'},originalAudience:{agentIds:['original0','original1']},content:{text:'Exact whole-group private fact'}}]});
+ const ownerMap=scope==='owner_tree'?{'source':'fresh-run','child-source':'fresh-child'}:{source:'fresh-run'};
+ const target=()=>({scope,ownerMap,...(scope==='owner_tree'&&state==='admitted'?{receipt:{resources,owners:resources.map(r=>({executionId:r.destination.executionId,resourceStepId:r.destination.resourceStepId,resourceGeneration:0,receiptId:'owner-receipt',requestBindings:[]}))}}:{}),commandKey:key,admissionId:'admission',checkpointId:4,checkpointHash:hash,resources,state,restoreSupported:state==='admitted',disclosure:{revision,state:choiceState,reviewHash:choiceState==='unreviewed'?undefined:reviewHash}});
+ const facts=[{kind:'communication',id:'private',sha256:hash,originalAgentIds:['original0','original1'],destinationAgentIds:['fresh0','fresh1'],originalActor:{agentId:'original0'},originalAudience:{projectId:'original-project',agentIds:['original0','original1']},content:{text:'Exact whole-group private fact'}},{kind:'request',id:'child-private',sha256:hash,originalAgentIds:['original1'],destinationAgentIds:['fresh1'],originalActor:{agentId:'original1'},originalAudience:{projectId:'child-project',agentIds:['original1']},content:{text:'Exact called child private fact'}}];
+ const preview=()=>({admissionId:'admission',reviewHash,hostCutSha256:hash,policyRevision:hash,revision,state:choiceState,active:choiceState==='approved',review:{admissionId:'admission',reservation:{branchId:'branch',sourceExecutionId:'source',commandKey:key,checkpointId:4,checkpointHash:hash,resources},stage:{agentMap:{original0:'fresh0',original1:'fresh1'},artifactMap:{}},facts:facts.map(({content,...f})=>f)},policy:sources.map(s=>({sourceChatId:s.sourceChatId,policy:{revision:'current'}})),facts});
  const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
  globalThis.fetch=async(input,init)=>{
   const url=String(input),method=init?.method??'GET';
   if(method==='POST'){
    const body=JSON.parse(String(init?.body));sent.push({url,body});assert(localStorage.getItem(storageKey)?.includes(String(body.commandKey)),'entire command key persisted before POST');
-   if(url.endsWith('/capture')){assert(Object.keys(body).sort().join(',')==='commandKey,reviewHash,versionId','exact prospective CAS fields');assert(body.reviewHash===hash&&body.versionId==='version','original preview retained');throw new TypeError('Capture response lost after exact seals');}
+   if(url.endsWith('/capture')||url.endsWith('/tree-capture')){assert(Object.keys(body).sort().join(',')==='commandKey,reviewHash,versionId','exact prospective CAS fields');assert(body.reviewHash===hash&&body.versionId==='version','original preview retained');throw new TypeError('Capture response lost after exact seals');}
    if(url.endsWith('/admit')){state='admitted';throw new TypeError('Admission response lost');}
    if(body.checkpointId){key=String(body.commandKey);throw new TypeError('Prepare response lost');}
    if(body.action==='approve'&&stale){stale=false;reviewHash=changed;return json({error:'Second Chat policy changed'},409);}
    choiceState=body.action==='approve'?'approved':'revoked';revision++;throw new TypeError('Choice response lost');
   }
   gets.push(url);
-  if(url.endsWith('/capture-preview')&&capturePreviewStale){capturePreviewStale=false;return json({error:'cut changed'},409);}
+  if((url.endsWith('/capture-preview')||url.endsWith('/tree-capture-preview'))&&capturePreviewStale){capturePreviewStale=false;return json({error:'cut changed'},409);}
+  if(url.endsWith('/tree-capture-preview'))return json({reviewHash:hash,versionId:'version',currentAuthority:false,actionEligible:false,owners:sources.map((s,i)=>({executionId:i?'child-source':'source',branchId:i?'child-branch':'branch',resourceStepId:s.resourceStepId,sourceChatId:s.sourceChatId,agentIds:[`original${i}`]}))});
+  if(url.includes('/tree-capture?'))return captureUnavailable?json({error:'Source checkpoint unavailable'},409):json({state:'retained',reviewHash:hash,versionId:'version',currentAuthority:false,actionEligible:false,checkpointId:4,checkpointHash:hash,sources:sources.map((s,i)=>({executionId:i?'child-source':'source',resourceStepId:s.resourceStepId,sourceChatId:s.sourceChatId,sealed:true}))});
   if(url.endsWith('/capture-preview'))return json({reviewHash:hash,versionId:'version',bindingRevisionId:'binding',frontierHash:hash,hostCutHash:hash,resources:sources.map((s,i)=>({resourceStepId:s.resourceStepId,sourceChatId:s.sourceChatId,generation:0,agentIds:[`original${i}`]}))});
   if(url.includes('/capture?'))return captureUnavailable?json({error:'Source checkpoint unavailable'},409):json({state:'retained',cleanupHeld:false,abandonment:'unsupported',checkpointId:4,checkpointHash:hash,sources});
   if(url.includes('/disclosure?')){
@@ -48,12 +52,12 @@ export async function branchGroupReviewRegression():Promise<void>{
  const acknowledge=async()=>{check('I reviewed every original fact, actor, audience, mapped recipient, every resource identity and current policy');await settle();};
  try{
   await open();assert(document.body.textContent?.includes('no separate workspace'),'directory reuse warning');
-  button('Preview authoritative capture cut').click();await settle();assert(button('Capture exact resource cut').disabled,'stale preview cannot capture');
-  button('Preview authoritative capture cut').click();await settle();check('I reviewed the complete server capture inventory and exact cut hashes');await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Capture exact resource cut').click();await confirm();
-  assert(sent.length===1,'one capture attempt');assert(localStorage.getItem(storageKey)?.includes('pending'),'lost capture retained');
+  button(scope==='owner_tree'?'Preview called owner tree':'Preview authoritative capture cut').click();await settle();assert(button('Capture exact resource cut').disabled,'stale preview cannot capture');
+  button(scope==='owner_tree'?'Preview called owner tree':'Preview authoritative capture cut').click();await settle();check('I reviewed the complete server capture inventory and exact cut hashes');await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Capture exact resource cut').click();await confirm();
+  assert(sent.length===1,'one capture attempt');if(scope==='owner_tree')assert(JSON.parse(localStorage.getItem(storageKey)!).capture.preview.owners[1].executionId==='child-source','whole original tree saved before capture');assert(localStorage.getItem(storageKey)?.includes('pending'),'lost capture retained');
   root.unmount();root=createRoot(host);await open();button('Read retained group commands').click();await settle();assert(sent.length===1,'remount GET does not recapture');
   sourceState='completed';render();await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Prepare held group').click();await confirm();
-  assert(sent.length===2,'one prepare attempt');button('Read retained group commands').click();await settle();assert(sent.length===2,'pure prepare lookup');
+  assert(sent.length===2,'one prepare attempt');button('Read retained group commands').click();await settle();assert(sent.length===2,'pure prepare lookup');if(scope==='owner_tree')assert(document.body.textContent?.includes('fresh-child')&&document.body.textContent?.includes('Call attempt IDs'),'both owners displayed without invented ancestry IDs or budgets');
   button('Review whole-group disclosure').click();await settle();assert(document.body.textContent?.includes('Exact whole-group private fact'),'whole private inventory shown');
   await acknowledge();button('Approve whole-group disclosure').click();await confirm();
   assert(!button('Admit whole group')||button('Admit whole group').disabled,'stale policy clears approval');
@@ -97,4 +101,22 @@ export async function branchGroupDiscoveryRegression():Promise<void>{
   assert(!document.body.textContent?.includes('Every exact source seal'),'stale capture selection cleared');assert(!button('Read discovered capture command'),'stale selectable row removed');
   assert(button('Capture exact resource cut').disabled,'stale confirmation cannot authorize capture');assert(gets.some(url=>url.includes('cursor=opaque-current-revision')),'exact opaque pagination');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(key);else localStorage.setItem(key,saved);}
+}
+
+export async function calledOwnerTreeGroupRegression():Promise<void>{await branchGroupReviewRegression('owner_tree');}
+export async function standaloneMultiItemGroupRegression():Promise<void>{for(const count of [2,3,32])await branchGroupReviewRegression('standalone',count);}
+
+export async function calledTreeCanonicalDiscoveryRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{mutations:{retry:false}}}),originalFetch=globalThis.fetch;
+ const key=JSON.stringify(['branch-group',window.location.origin,currentProductScope(),'branch','source']),old=localStorage.getItem(key);localStorage.removeItem(key);
+ const hash='a'.repeat(64),sources=['source','child'].map((executionId,i)=>({executionId,resourceStepId:`step${i}`,sourceChatId:`chat${i}`,sealed:true}));let stale=true;const calls:string[]=[];
+ const row={commandKey:'server tree / original',reviewHash:hash,versionId:'version',currentAuthority:false,actionEligible:false,state:'retained',checkpointId:4,checkpointHash:hash,sources};
+ const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(input,init)=>{assert(!init?.method||init.method==='GET','tree recovery never POSTs');const url=String(input);calls.push(url);if(url.endsWith('/tree-captures'))return json({items:[row]});if(url.includes('/tree-capture?commandKey=server%20tree%20%2F%20original'))return stale?json({error:'selection changed'},409):json(row);throw Error('unexpected '+url);};
+ try{
+  const detail={execution:{id:'source',branchId:'branch',state:'completed'},resources:[],paths:[],attempts:[],steps:[],gates:[]};
+  root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail as never} enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review resource group').click();await settle();
+  button('Discover called-tree captures').click();await settle();button('Read exact called-tree capture').click();await settle();assert(!button('Read exact called-tree capture'),'stale selector removed');assert(!localStorage.getItem(key),'refused selection not persisted');assert(calls.length===2,'no automatic retry');
+  stale=false;button('Discover called-tree captures').click();await settle();button('Read exact called-tree capture').click();await settle();assert(localStorage.getItem(key)?.includes('server tree / original'),'canonical original key persisted');assert(document.body.textContent?.includes('child'),'both exact original source owners visible');assert(calls.length===4,'only explicit canonical GETs');
+ }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(old===null)localStorage.removeItem(key);else localStorage.setItem(key,old);}
 }
