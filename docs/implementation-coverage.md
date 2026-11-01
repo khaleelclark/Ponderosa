@@ -1,6 +1,6 @@
 # Current implementation coverage and backlog
 
-Source snapshot: `c38b209b395dcf53744702758addf1c74944d0b2`, integration branch
+Source snapshot: `78b320962`, integration branch
 `phase2-implementation-integration`. Source inspection only; no acceptance verdict.
 [Historical snapshots](implementation-coverage-history.md) are archival, not current limits.
 
@@ -29,7 +29,7 @@ producer/deletion fences and additive migrations 0035–0040 remain assembled an
 
 The canonical [remaining inventory](phase2-remaining-implementation.md) supplies exact
 requirement, user behavior, owner and dependency for each row. M6 documentation correction
-is resolved here; it is not another pending item. Four concrete gaps plus six unresolved
+is resolved here; M1 Claude native compaction is delivered in source, not runtime-qualified. Neither remains pending implementation. Four concrete gaps plus six unresolved
 scope/contract dispositions remain. Scope disposition is not proof that new code is required.
 
 | ID / state | Exact requirement | Concrete user behavior missing or unresolved; implemented boundary | Owner | Dependency |

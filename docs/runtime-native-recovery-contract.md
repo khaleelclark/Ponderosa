@@ -14,7 +14,7 @@ The event is written by `AgentStore.recordProviderRecoveryContextUsage` only aft
 - `packages/engines/src/claude.ts`: now advertises managed_compaction with hold_without_native_query. The updated assignment permits documented native command input, while ordinary model prose remains unusable as proof.
 - `packages/core/src/context-recovery.ts`: managed recovery explicitly retains hold_without_native_query; context recovery never settles prior uncertain source effects.
 
-The previous no-command-input constraint has been superseded by explicit authorization of the documented command/result protocol. The successor implements Claude completion/occupancy correlation. Native lost-outcome recovery still requires a supported durable native operation identity/result query or provider idempotency guarantee tied to the original session and operation. This source inspection establishes those missing integrations, not universal vendor capability absence. No new provider protocol, session-file parser, HTTP integration, authority callback or automatic mutation retry was invented.
+Claude completion/occupancy correlation uses the documented command/result protocol. Native lost-outcome recovery still requires a supported durable native operation identity/result query or provider idempotency guarantee tied to the original session and operation. This source inspection establishes those missing integrations, not universal vendor capability absence. No new provider protocol, session-file parser, HTTP integration, authority callback or automatic mutation retry was invented.
 
 Deferred `tests/providers/provider-recovery.test.mjs` covers recorded completion after phase loss/reopen, absent evidence, repeat idempotency and unchanged unknown source Run/no native commands. Existing unknown-result/refusal fixtures remain. No execution qualification is claimed.
 
@@ -60,50 +60,24 @@ provider turn completion alone cannot prove canonical tool/publication effects;
 those still need exact host receipts and original Run/fence custody. No endpoint
 implementing those stronger guarantees was established by the sources inspected.
 
-### Prior constraint disposition, superseded by native command authorization
+### Implemented Claude native command and fresh usage
 
-Claude DOES document retained-session compaction through native command input:
-[official SDK command guide](https://code.claude.com/docs/en/agent-sdk/skills#compact-history-with-compact).
-This corrects any suggestion that Claude has no supported compaction at all.
-Its compact_boundary reports that compaction ran; a successful result without a
-boundary can mean no compaction occurred. The
-[official SDK reference](https://code.claude.com/docs/en/agent-sdk/typescript)
-provides local_command result discrimination, submitted-message correlation and a
-separate getContextUsage control. These are useful existing provider surfaces,
-not a dedicated structured compact control or a durable compact operation query.
+[Claude native command recovery](claude-native-command-recovery.md) records the
+current adapter-owned `/compact` wire command, exact submitted UUID acknowledgement,
+manual boundary and local_command terminal receipt, followed by a new correlated
+get_context_usage control with exact session/model checks. This implements M1 in
+source; it does not use authored prose as completion proof or invent a compact
+control subtype. The pinned provider references and deferred transport/parser
+fixtures are in that document. Native compatibility has not been executed.
 
-The official Python SDK
-[control implementation](https://github.com/anthropics/claude-agent-sdk-python/blob/2146f9d8985513053e904b13200c8f744b36785a/src/claude_agent_sdk/_internal/query.py)
-sends get_context_usage through the existing control protocol. Its enumerated
-[control request types](https://github.com/anthropics/claude-agent-sdk-python/blob/2146f9d8985513053e904b13200c8f744b36785a/src/claude_agent_sdk/types.py)
-do not define a compact operation. A structured occupancy query cannot perform
-compaction. The previous assignment was interpreted as excluding command-input recovery;
-therefore no /compact user frame, invented compact subtype or direct Messages API
-compaction request was added. ClaudeAdapter was unsupported under that earlier
-constraint; the implemented successor below supersedes that disposition. This is a constraint-specific limitation, not universal provider
-capability absence.
-
-Minimal upstream contract under that constraint: a documented structured compact
-control for the retained exact session, correlated terminal receipt and fresh
-occupancy; durable operation-key lookup is additionally needed across lost
-outcomes. The subsequent explicit scope change authorizes the documented native command
-transport; local-command/boundary verification plus get_context_usage are now
-implemented, while lost outcomes stay held.
-No permission question or invented protocol is substituted for this distinction.
+Both providers still lack integrated durable original-operation key/result lookup
+for lost acknowledgement/identity across crashes (M2). Original source effects
+require their own exact canonical receipts (M3); context acceptance never resolves
+or replays them. Uncertain sessions remain fenced. Earlier constraint discussions
+are historical, not a current missing-compaction claim.
 
 Deferred `tests/providers/capabilities.test.mjs` adds exact stored turn/item,
 foreign session, substitution, duplicate, pagination, unsupported-method and
 missing-identity refusal cases. These fixtures have not run. All implementation,
 provider compatibility and native behavior remain unqualified until the separately
 requested whole testing phase.
-
-
-## Claude command successor
-
-The documented native command transport is now explicitly authorized and
-implemented. See [Claude native command recovery](claude-native-command-recovery.md)
-for the exact usable API, proof sequence, canonical fence/drain connection and
-deferred fixtures. Earlier structured-control-only disposition above records the
-prior constraint, not a current missing Claude implementation. The implementation
-does not invent a compact control subtype or infer completion from model text.
-Cross-crash lost outcomes without durable provider key/query remain held.

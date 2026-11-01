@@ -1,15 +1,16 @@
 # Phase 2 remaining implementation inventory
 
-Source snapshot: `c38b209b395dcf53744702758addf1c74944d0b2`, integration worktree.
-Includes the bounded called-owner-tree UI successor; documentation reconciliation follows.
+Source snapshot: `78b320962`, integration worktree.
+Includes bounded called-owner-tree UI and correlated Claude native command recovery;
+M1 and M6 are resolved in source, with runtime qualification deferred.
 Basis: full `/tmp/ponderosa-phase2-upgrade-c8ace/published/bible-2.md`, all 32
 commandments, verification/Phase 2 instructions and all Build-list text. Source/document reconciliation; current guides and coverage are maintained together.
 No owner worktrees changed, no workers created, no execution or preparation.
 
 **No: the earlier four categories were not four final tasks.** This inventory
 accounts for all 35 top-level requirements (32 commandments + 3 Build features),
-with 24 explicit Build behavior rows below. It identifies **11 remaining source
-work/disposition entries: 5 concrete implementation/contract items and 6
+with 24 explicit Build behavior rows below. It identifies **10 remaining source
+work/disposition entries: 4 concrete implementation/contract items and 6
 unresolved contract/scope items**, plus **1 separate deferred-fixture source repair**.
 These are finite inventory counts, not acceptance percentages or a promise that
 future verification cannot discover another defect. Unresolved does not mean code
@@ -23,7 +24,6 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 
 | ID / state | Exact requirement | Concrete user behavior missing or unresolved; implemented boundary | Owner | Dependency |
 | --- | --- | --- | --- | --- |
-| M1 — missing code | #1 managed history, #4 native harness parity | Claude recovery cannot invoke a structured retained-session compact and correlate completion plus fresh occupancy under the current no-prompt recovery constraint. `claude.ts` explicitly advertises unsupported; documented native `/compact` command transport is not an implemented structured control. | Runtime | External documented control contract, or an explicit scope decision allowing native command transport; then internal adapter work. No universal vendor-absence claim. |
 | M2 — missing code/contract | #1, #4, #12 crash survival | Recover a compaction whose acknowledgement/operation identities were lost, without repeating mutation. Codex now reads stored completion only for an accepted operation with both already observed turn/item IDs; durable caller-key lookup/idempotency across crashes is absent. | Runtime | External exact-session operation-key/result contract plus internal durable binding. Existing host durable-event reconciliation covers a different, already-recorded event gap. |
 | M3 — missing code/contract | #12 work survives restart; #13 unfinished work retained; #17 reliability | Resolve original uncertain source Run/tool/publication effects from exact original receipts instead of leaving source work indefinitely unknown. Context completion does not settle those effects; sourceWork remains held_unknown. | Runtime + Reliability | External/native result evidence where no host receipt exists, then canonical internal per-effect reconciliation. Never infer success from process exit or repeat effects. |
 | M4 — missing review display contract | #2 inspectable mechanisms, #3 clear controls, #24 accurate figures, #28/#32 checkpoint/subgraph review | Bounded tree web preview/capture/discovery/prepare/all-facts choice/admit/recovery is integrated. Actual DTO omits Call parentAttemptId, Branch idMap/counters and numeric fresh per-owner acceptance budgets; UI labels them unavailable/server-verified. Expose the appropriate nonsecret review evidence and render exact returned values. Backend already validates ancestry, mapped frontier and each fresh budget; do not invent values or expose private saved snapshots. | Features + Runtime DTO; UI rendering | Internal additive review/readback contract. These fields explain the already implemented mapped destination and acceptance; this does not require broader tree eligibility. |
@@ -35,8 +35,9 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 | U5 — unresolved reconciliation scope | #12 no silent data loss; #15 files; #30 memory | Define terminal user recovery for legacy remote-memory holds lacking effect metadata and independently unresolved external writes. Evidence-bearing preserve-current memory reconciliation, package/import journals, abandonment/retirement and prospective group-journal retention exist; old erased evidence and nonparticipating shell/native writers do not become proven by these mechanisms. | Reliability + Runtime | External backend effect evidence where available; internal explicit disposition otherwise. No automatic retry, cascade retirement or blanket disk reclamation is a Bible requirement. |
 | U6 — unresolved state semantics | #32 pinned named **state** capability | Establish whether execution input/parameters, immutable Step results and ordered bundles satisfy the required pinned state capability. Representative source does not implement arbitrary mutable shared/reducer state. No accepted state-semantics disposition establishes whether another operation is required. | Features; Cliff scope | Internal comparison of exact named state operations with LangGraph1.0.5/LangChain1.0.8 baseline. Transitive/model pins and running examples are verification prerequisites, not proof of missing product code. |
 
-M1–M3 overlap in prerequisites but are different observable behaviors; one
-compaction adapter does not resolve a lost identity or an uncertain source effect.
+M1 is resolved in source by correlated Claude native command completion plus fresh
+occupancy control; provider/runtime compatibility remains unqualified. M2/M3 remain
+different observable behaviors: compaction does not resolve lost identity or source effects.
 M4 now concerns missing review evidence fields, not tree control adoption. M6 (current documentation correction) is resolved by the current coverage/framework/guide rewrite; historical snapshots are separate. M4 does not broaden backend eligibility. U2/U4 prevent turning every documented
 unsupported permutation into invented scope. Unknown proof remains held visibly.
 
@@ -50,10 +51,10 @@ criteria, a complete audit may still find concrete missing code.
 
 | # | Disposition | Current source evidence / exact remaining boundary |
 | --- | --- | --- |
-| 1 | M1–M3 | `packages/agents/src/coordination-v3-context-recovery-authority.ts`, `packages/engines/src/codex-app-server.ts`, `packages/engines/src/claude.ts`; durable known-event recovery exists, native unknowns remain. |
+| 1 | M2/M3 | `packages/agents/src/coordination-v3-context-recovery-authority.ts`, `packages/engines/src/codex-app-server.ts`, `packages/engines/src/claude.ts`; Claude correlated native compact/fresh usage and durable known-event recovery exist; lost native identities/source effects remain unknown. |
 | 2 | S | Canonical admission/context authority modules and adjacent docs; whole mechanism/run-history correspondence still unverified. |
 | 3 | S + M4/M5 | Shared `OutputAgentApp.tsx`, `BranchGroupReview.tsx`, `BranchGenerationOne.tsx`; desktop/mobile comparative quality is verification. |
-| 4 | M1/M2 + U1 | Native adapters, discovery, `runtime-native-recovery-contract.md`; complete parity not established. |
+| 4 | M2 + U1 | Native adapters include Claude native compact with fresh usage and Codex exact known-ID reads; `runtime-native-recovery-contract.md`; complete parity U1 remains unestablished. |
 | 5 | S + U2 | `server-request-hooks.ts` separates capacity admission from authority; explicit codec/byte limits need complete purpose classification. |
 | 6 | S + U2 | `capability-policy-store.ts`, `runtime-capability-policy.ts`, human import/disclosure review; read-only audit did not establish another automatic grant change. |
 | 7 | S | `server-request-hooks.ts` admits ordinary operator calls without an operator token; native account login and scoped Agent capabilities have separate domain roles. Origin checks allowed. |
@@ -148,6 +149,6 @@ is never labeled whole implementation. Current-head source was preserved; active
 owner work remains outside this snapshot until separately handed off/integrated.
 
 This is exhaustive **requirement accounting**, not an exhaustive proof that there
-are only five concrete gaps in a large codebase. The bounded read cannot close U1–U6 or
+are only four concrete gaps in a large codebase. The bounded read cannot close U1–U6 or
 unrun universal criteria. Cliff should assign each numbered entry or resolve its
 scope; “four categories left” and “all implemented” would both overstate evidence.
