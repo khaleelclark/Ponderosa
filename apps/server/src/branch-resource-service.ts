@@ -1,4 +1,4 @@
-import {generationHistoricalSelections} from '@ponderosa/agents';
+import {issuedCaptureRetryBudget,generationHistoricalSelections} from '@ponderosa/agents';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
 import type {ChatCreator} from "./routes/projects.js";
 import {createHash} from 'node:crypto';
@@ -88,7 +88,8 @@ export class BranchResourceService {
   issuedResourceCaptureStatus(executionId:string,stepId:string,commandKey:string):import('@ponderosa/core').BranchIssuedResourceCaptureDto {
     const journal=this.branches.issuedResourceCapture(executionId,stepId,commandKey);
     const retry=journal?.snapshot.issuedContinuation?.generationRetry,selection=retry?generationHistoricalSelections(retry):undefined;
-    return journal?{commandKey,generation:journal.source.intent.resourceGeneration,state:journal.state,...(journal.reviewHash?{reviewHash:journal.reviewHash}:{}),...(selection?{historicalPartition:selection,historicalReviewHash:createHash('sha256').update(stableJson(selection)).digest('hex')}:{}),...(journal.state==='retained'?{checkpointId:journal.checkpointId,checkpointHash:journal.checkpointHash,receipt:journal.receipt}:{}),restoreSupported:false}:{commandKey,state:'not_found',restoreSupported:false};
+    const retryBudget=journal?issuedCaptureRetryBudget(this.store.sqlite,executionId,journal):undefined;
+    return journal?{retryBudget,...(retryBudget?.state==='verified'?{consumedAttempts:retryBudget.consumedAttempts,maxAttempts:retryBudget.maxAttempts}:{}),commandKey,generation:journal.source.intent.resourceGeneration,state:journal.state,...(journal.reviewHash?{reviewHash:journal.reviewHash}:{}),...(selection?{historicalPartition:selection,historicalReviewHash:createHash('sha256').update(stableJson(selection)).digest('hex')}:{}),...(journal.state==='retained'?{checkpointId:journal.checkpointId,checkpointHash:journal.checkpointHash,receipt:journal.receipt}:{}),restoreSupported:false}:{commandKey,state:'not_found',restoreSupported:false};
   }
   async captureIssuedResource(executionId:string,stepId:string,generation:number,commandKey:string,expectedReviewHash?:string):Promise<import('@ponderosa/core').BranchIssuedResourceCaptureDto> {
     const previous=this.branches.issuedResourceCapture(executionId,stepId,commandKey);

@@ -6,7 +6,7 @@ import {selectBranchUnit} from './branch-unit-selection.js';
 import {captureBranchHostCut} from './branch-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {receiptMatchesSource,resourceCaptureFrontierHash} from './branch-resource-capture.js';
-import {encodeIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+import {issuedResourceContinuationSupported,encodeIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 type Row=Record<string,any>;
 const key=(commandKey:string)=>`issued-resource-capture:${commandKey}`;
 
@@ -75,4 +75,17 @@ export function sealIssuedResourceCapture(db:Database.Database,executionId:strin
  const snapshot={...journal.snapshot,issuedResourceCustody:receipt},snapshotHash=payloadHash(snapshot);
  const result=db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(executionId,stableJson(snapshot),snapshotHash);
  db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson({...journal,state:'retained',receipt,checkpointId:Number(result.lastInsertRowid),checkpointHash:snapshotHash}),executionId,key(commandKey));
+}
+
+/** Read only the saved, hash-bound continuation; mutable active Branch policy is irrelevant. */
+export function issuedCaptureRetryBudget(db:Database.Database,executionId:string,journal:Row):import('@ponderosa/core').BranchCaptureRetryBudget {
+ const snapshot=journal.snapshot,c=snapshot?.issuedContinuation;
+ if(!c?.generationRetry)return {state:'unavailable',reason:'missing_saved_retry_proof'};
+ if(journal.reviewHash!==payloadHash({selected:snapshot.selected,host:snapshot.hostDependencies,generationRetry:c.generationRetry,issuedContinuation:c})||c.bindingHash!==journal.source.intent.bindingSha256||payloadHash(c.configuration)!==journal.source.intent.configurationSha256||!issuedResourceContinuationSupported(db,executionId,snapshot.selected,snapshot.hostDependencies,c))throw Error('Saved capture retry budget proof differs');
+ const r=snapshot.selected.resources[0],attempts=snapshot.selected.attempts.filter((a:Row)=>a.step_execution_id===r.step_execution_id);
+ const version=db.prepare('SELECT definition_json FROM branch_versions WHERE id=? AND branch_id=?').get(c.versionId,snapshot.selected.execution[0].branch_id) as Row;
+ const step=snapshot.selected.steps.find((s:Row)=>s.id===r.step_execution_id),policy=JSON.parse(version.definition_json).steps.find((s:Row)=>s.id===step?.step_id)?.failure;
+ const attempt=attempts[0];
+ if(attempts.length!==1||!Number.isSafeInteger(attempt?.number)||attempt.number!==r.generation+1||!attempt.request_id||policy?.action!=='retry'||!Number.isSafeInteger(policy.maxAttempts)||policy.maxAttempts<attempt.number)throw Error('Saved capture retry budget inventory differs');
+ return {state:'verified',consumedAttempts:attempt.number,maxAttempts:policy.maxAttempts,evidenceHash:payloadHash({snapshot,reviewHash:journal.reviewHash})};
 }

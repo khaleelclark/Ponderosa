@@ -388,7 +388,8 @@ export type BranchResourceCustodyReleaseStatus=BranchResourceCustodyReleaseDto|{
 
 /** Operator-only issued private-byte capture; this is not restoration admission. */
 export interface BranchIssuedResourceCaptureInput {commandKey:string;expectedGeneration:number;expectedReviewHash?:string}
-export interface BranchIssuedResourceCaptureDto {commandKey:string;generation?:number;reviewHash?:string;state:'not_found'|'capturing'|'retained';checkpointId?:number;checkpointHash?:string;receipt?:CheckpointPackageReceipt;historicalPartition?:import('./coordination-destination.js').CoordinationHistoricalGenerationSelection[];historicalReviewHash?:string;restoreSupported:false}
+export type BranchCaptureRetryBudget = {state:'unavailable';reason:'missing_saved_retry_proof'} | {state:'verified';consumedAttempts:number;maxAttempts:number;evidenceHash:string};
+export interface BranchIssuedResourceCaptureDto {retryBudget?:BranchCaptureRetryBudget;consumedAttempts?:number;maxAttempts?:number;commandKey:string;generation?:number;reviewHash?:string;state:'not_found'|'capturing'|'retained';checkpointId?:number;checkpointHash?:string;receipt?:CheckpointPackageReceipt;historicalPartition?:import('./coordination-destination.js').CoordinationHistoricalGenerationSelection[];historicalReviewHash?:string;restoreSupported:false}
 
 /** Operator-only audit discovery. Legacy capture keys cannot be recovered from hashes. */
 export interface BranchGroupDiscoveryItem {

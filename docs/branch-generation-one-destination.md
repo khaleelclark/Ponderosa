@@ -96,3 +96,8 @@ unknown/forwarded/secret/artifact families, missing preupgrade proof and web ado
 remain unsupported/refused. Runtime owner-tree work and its existing Join are
 untouched. Live provider/native/filesystem custody and restored runtime behavior
 remain unqualified.
+
+
+Saved capture budget recovery: issued-capture status and canonical generation-history discovery return `retryBudget` (`verified` with `consumedAttempts`, `maxAttempts`, and `evidenceHash`, or `unavailable` with `missing_saved_retry_proof`). Verified budgets also populate the top-level optional numeric fields. The SDK's existing typed status/discovery methods receive these shared DTO fields. The hash binds the complete saved snapshot and review hash; retained status additionally verifies the checkpoint seal. Verification replays the saved continuation and original attempt inventory against the pinned, hash-checked version definition, not active Branch policy or a fresh preview. Missing legacy proof supplies no numbers; malformed present proof refuses. Generation-one saved proofs use the same reader. `not_found` has no budget. This is evidence of consumed original attempts, never a replenished retry allowance.
+
+Deferred source regression covers empty-client identity recovery, discovery equality, restart, changed mutable configuration, corrupted original attempt and explicit legacy unavailability. No execution qualification is claimed.

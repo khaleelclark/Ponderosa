@@ -2259,6 +2259,18 @@ for(const mode of ['async','sync'])for(const generation of [2,3,32])test(`serial
  const saved=f.branches.issuedResourceCapture(f.source.id,current.stepId,'chain-cut');
  const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');const resourceService=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));
  assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].historicalPartition,preview.historicalPartition);
+ // Empty-client recovery uses only saved capture identity, never a new preview.
+ const status=resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut'),budget=status.retryBudget;
+ assert.equal(budget.state,'verified');assert.equal(status.consumedAttempts,generation+1);assert.equal(status.maxAttempts,generation+1);assert.match(budget.evidenceHash,/^[a-f0-9]{64}$/);
+ assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);
+ assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run('{}',f.branch.id);assert.deepEqual(resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut').retryBudget,budget);throw Error('restore mutable policy');})(),/restore mutable policy/);
+
+ const {issuedCaptureRetryBudget}=await import('../../packages/agents/dist/index.js');
+ const corrupted=structuredClone(saved);corrupted.snapshot.issuedContinuation.generationRetry.originalSelected.attempts.find(a=>a.number===generation+1).number=1;
+ assert.throws(()=>issuedCaptureRetryBudget(db,f.source.id,corrupted),/budget proof/);
+ const legacy=structuredClone(saved);delete legacy.snapshot.issuedContinuation.generationRetry;
+ assert.deepEqual(issuedCaptureRetryBudget(db,f.source.id,legacy),{state:'unavailable',reason:'missing_saved_retry_proof'});
+
  coordination.updateRequest({requestId:current.requestId,updateId:'current-chain-completed',kind:'completed',actor:{kind:'agent',id:current.agentId},payload:{text:'current chain result'}});
  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
  const deletion=f.store.previewAgentDeletion([current.agentId]);f.store.deleteAgentSubtrees([current.agentId],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
@@ -2277,6 +2289,7 @@ for(const mode of ['async','sync'])for(const generation of [2,3,32])test(`serial
  assert.deepEqual(destinationAttempts.map(a=>a.number),[generation+1]);
  assert.ok(requests.every(id=>!Object.hasOwn(admitted.receipt.requestMap,id)));assert.ok(agents.every(id=>!Object.hasOwn(admitted.receipt.agentMap,id)));
  await f.reopen();const read=await x.services().composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash);assert.deepEqual(read.receipt,admitted.receipt);
+ const restartedResources=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));assert.deepEqual(restartedResources.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);
  // The accepted owner cannot spend the original budget again after its current Request fails.
  new CoordinationV3Store(f.store.sqlite).updateRequest({requestId:read.receipt.requestMap[current.requestId],updateId:'consumed-budget-failure',kind:'failed',actor:{kind:'agent',id:read.receipt.agentMap[current.agentId]},payload:{text:'remaining retry budget is zero'}});
  for(let n=0;n<8;n++){f.branches.advance();await f.branches.unitSaver.drain();}
