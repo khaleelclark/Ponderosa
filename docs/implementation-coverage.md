@@ -851,10 +851,8 @@ immutable nondispatchable receipt, rollback and restart readback are reused unch
 
 Server preview and verified saved-budget status/discovery expose historyKind serial
 or local_parallel from exact current cut. Existing SDK methods receive shared DTO;
-unavailable legacy proof supplies no shape eligibility. Web remains unchanged and
-still describes serial-only eligibility, does not validate/display/persist historyKind;
-parallel-history UI adoption and updated UI fixture/DTO compatibility verification
-remain separate owner work. Do not claim current UI is qualified for parallel cuts.
+unavailable legacy proof supplies no shape eligibility. The subsequent UI integration below adopts server historyKind in source and
+updates deferred fixture contracts. Executed UI qualification remains deferred.
 
 Deferred actual producer-to-destination source now includes ASYNC/SYNC fork and
 one-item map generations1/2/32 alongside serial2/3/32. Source includes original provider
@@ -873,3 +871,53 @@ Runtime owner-tree dependency/Branch Join separate. Real package/custody/provide
 native/runtime/end-to-end/accessibility/mobile and full Phase2/Bible qualification
 remain open. ZERO tests/checks/build/types/Node/native/browser/runner preparation or
 execution, migrations, push/deploy/newworkers. Hooks disabled; source/files/Git only.
+
+
+### Server-classified local-parallel history UI integration — source only
+
+UI5c4accc09 is assembled as9438fbc81 on6c3f9dcfe. All seven required files
+physically present/source-read: BranchDisclosureReview.tsx, BranchGenerationOne.tsx,
+branchGenerationOne.ts; web-feature-completion.md; generation-history helper/mounted
+and generation-one mounted deferred fixtures. Six owner-byte-equal; report reconciles
+only additive notes and records already assembled bc524ed backend/core. This coverage
+is eighth task path. Current writer Integration, phase2-implementation-integration.
+No ancestor replay, reference copies or server/core/SDK changes.
+
+Fresh previews require exact server historyKind serial/local_parallel and persist
+complete classification/current cut/ordered history/budget before capture POST.
+Discovery and original-key status preserve classification; classified evidence cannot
+change or downgrade, and classification without verified saved-budget proof refuses.
+Legacy absence stays explicitly unavailable, never inferred from workflow UI or budget.
+Exact older commands can adopt server classification only with matching saved cut.
+Verified budget/top-level numbers/proof hash, full selected history, current checkpoint
+ID/hash and original-key GET/no replay checks remain. Drift clears stale discovery
+and holds for explicit rediscovery; legacy saved-preview budget stays intact.
+
+Preparation verifies retained preview/capture pair before enabling, persists it beside
+command, and validates it again with original checkpoint/hash/historicalReviewHash and
+whole historicalPartition when resolving receipt. historyKind is local evidence only:
+existing wire DTO gets no invented classification field. Human full-facts/current maps,
+original Project/Request audit-read, private receipt projection and separate approve/
+admit remain unchanged. UI explains exact bound: standalone manual one owner/ONE
+resource invocation, ASYNC/SYNC generations1–32, serial or server-proved local fork/join
+or actual one-item map; settled siblings without Request roots/active effects only.
+Pinned maxAttempts<=33 and32-selection/32MiB bounds remain backend authority.
+
+Bounded parallel UI adoption gap is resolved in SOURCE, not qualification. Deferred
+fork/join and one-item-map transport cases1/2/32 inspect server classifier persistence,
+CAS/save-before-POST, lost response/remount GET, mismatch hold, canonical recovery and
+full preparation/readback. UI fork/map cases share local_parallel discriminator;
+backend-owned actual workflow fixtures prove shape eligibility separately when run.
+Unknown/missing classifications, missing proof, cut/checkpoint/budget conflict and
+legacy unavailable cases remain source-covered. None executed.
+
+Preserved all current serial/history/budget/audit privacy/tree producer/owner fences/
+group/lifecycle.0035–0040 physically present, registered once in order, unchanged and
+unexecuted. Remaining: multi-resource/multi-item/active or unknown siblings/tree
+consumer/EXIT/offset restoration/manual recovery; missing/preupgrade/erased proofs/
+selectable journals and broader unknown/payload/secret/artifact/native/provider/external
+effects remain held. Runtime owner-tree dependency/Branch Join separate. Real package/
+custody/provider/native/runtime/end-to-end/accessibility/mobile and full Phase2/Bible
+qualification remain open. ZERO tests/checks/build/types/Node/native/browser/runner
+preparation or execution, migrations, push/deploy/newworkers. Hooks disabled;
+source/files/Git inspection only.
