@@ -43,6 +43,7 @@ export class AuthorityStorage implements MemoryStorage{
   return {rows:{scope:effect.scope,log:effect.log,rows},rowCount:rows.length};
  }
  reviewMutationHold(id:string,guard:()=>Promise<void>){return this.raw.exclusive(()=>this.mutationBoundary().review(id,effect=>this.observeMutation(effect,guard)));}
+ preserveUnknownMutationHold(id:string,input:import('@ponderosa/core').MemoryMutationPreserveUnknownInput,guard:()=>Promise<void>){return this.raw.exclusive(async()=>{await guard();return this.mutationBoundary().preserveUnknown(id,input);});}
  reconcileMutationHold(id:string,input:MemoryMutationReconcileInput,guard:()=>Promise<void>){return this.raw.exclusive(()=>this.mutationBoundary().reconcile(id,input,effect=>this.observeMutation(effect,guard)));}
  packageVisible?:(operationId:string)=>boolean;
  onRead?:(authority:MemoryAuthority,row:Chunk)=>void;

@@ -259,6 +259,9 @@ export class LocalMemoryService{
   if(!id)return this.core.database.listMutationHolds();
   return input?this.core.database.reconcileMutationHold(id,input,guard):this.core.database.reviewMutationHold(id,guard);
  }
+ async preserveUnknownMutation(request:FastifyRequest,id:string,input:import('@ponderosa/core').MemoryMutationPreserveUnknownInput){
+  this.operator(request);await this.ready();return this.core.database.preserveUnknownMutationHold(id,input,async()=>{this.operator(request);});
+ }
  async executeOperator(request:FastifyRequest,operation:string,args:Record<string,unknown>){
   this.operator(request);const parsed=validateMemoryCall(operation,args);await this.ready();const write=['save','update','forget'].includes(operation);if(write?parsed.destination!=='global':parsed.source!=='global')throw new MemoryDenied('Explicit global scope required',400);if(parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);
   const authority:MemoryAuthority={chatId:'operator-global',actor:{kind:'user',id:this.principalId},runId:'operator-request:'+request.id,fenceToken:request.id,sourceType:'user_statement',readChat:false,readGlobal:true,writeScope:write?'global':undefined,targetId:write&&operation!=='save'?parsed.chunk_id:undefined,guard:async()=>{this.operator(request);}};
@@ -353,6 +356,10 @@ export function registerLocalMemory(app:FastifyInstance,ports:Ports){
  app.get<{Params:{id:string}}>('/api/local-memory/mutation-holds/:id',async(request,reply)=>{try{return await memory.mutationReconciliation(request,request.params.id);}catch(e){return reply.code(409).send({error:(e as Error).message});}});
  app.post<{Params:{id:string};Body:import('@ponderosa/core').MemoryMutationReconcileInput}>('/api/local-memory/mutation-holds/:id/reconcile',async(request,reply)=>{
   try{const body=request.body;if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['commandKey','reviewSha256','backendDrainEvidence','preserveCurrentBackend'].includes(key)))throw new MemoryDenied('Invalid memory reconciliation command',400);return await memory.mutationReconciliation(request,request.params.id,body);}
+  catch(e){return reply.code(e instanceof MemoryDenied?e.statusCode:409).send({error:(e as Error).message});}
+ });
+ app.post<{Params:{id:string};Body:import('@ponderosa/core').MemoryMutationPreserveUnknownInput}>('/api/local-memory/mutation-holds/:id/preserve-unknown',async(request,reply)=>{
+  try{const body=request.body;if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['commandKey','reviewSha256','reason','preserveUnknown'].includes(key)))throw new MemoryDenied('Invalid preserve-unknown command',400);return await memory.preserveUnknownMutation(request,request.params.id,body);}
   catch(e){return reply.code(e instanceof MemoryDenied?e.statusCode:409).send({error:(e as Error).message});}
  });
  app.get('/api/local-memory/global-transfer',async(request,reply)=>{try{return await memory.globalTransfer(request,'inventory');}catch(e){return error(reply,e);}});

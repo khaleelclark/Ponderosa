@@ -76,6 +76,9 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
       folder.mode??=node.workingFolder.mode;folder.mtime??=node.workingFolder.mtime;
       const directories=new Map(folder.directories.map(dir=>[dir.path,dir]));
       for(const dir of node.workingFolder.directories){const prior=directories.get(dir.path);if(prior&&stableJson(prior)!==stableJson(dir))throw new Error('Conflicting captured Shared directory metadata');if(!prior){folder.directories.push(dir);directories.set(dir.path,dir);}}
+      const links=new Map((folder.links??[]).map(link=>[link.path,link]));
+      for(const link of node.workingFolder.links??[]){const prior=links.get(link.path);if(prior&&stableJson(prior)!==stableJson(link))throw new Error('Conflicting captured Shared link topology');links.set(link.path,link);}
+      if(links.size)folder.links=[...links.values()];
       folder.excludedPaths=[...new Set([...folder.excludedPaths,...node.workingFolder.excludedPaths])];
     }
     for(const file of node.workingFiles??[]){

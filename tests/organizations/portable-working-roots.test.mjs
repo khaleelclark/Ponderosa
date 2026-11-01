@@ -21,3 +21,15 @@ test('organization roots reject missing manifests, duplicate originals owners an
   const unbound=bundle();delete unbound.agents[1].workingRootRef;
   assert.throws(()=>validatePortableAgentPackage(unbound),/identify every Agent/);
 });
+
+test('package parser preserves passive link topology and refuses malformed native/parent targets',()=>{
+  const source=bundle();
+  source.agents[0].workingFolder.links=[{path:'relative',kind:'symlink',target:'missing'}];
+  assert.deepEqual(validatePortableAgentPackage(source).package,source);
+  for(const links of [
+    [{path:'relative',kind:'symlink',target:'../foreign'}],
+    [{path:'relative',kind:'symlink',target:'.codex/auth.json'}],
+    [{path:'relative',kind:'hardlink',target:'missing'}],
+    [{path:'relative',kind:'symlink',target:'safe',authority:true}],
+  ]){const invalid=structuredClone(source);invalid.agents[0].workingFolder.links=links;assert.throws(()=>validatePortableAgentPackage(invalid));}
+});

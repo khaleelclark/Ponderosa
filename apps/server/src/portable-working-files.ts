@@ -2,13 +2,51 @@ import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import type {PortableArtifactDto} from '@ponderosa/core';
+import type {PortableArtifactDto,PortableWorkingLinkDto} from '@ponderosa/core';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
 
 export function portableWorkingPath(value:unknown):string {
   if(typeof value!=='string'||!value||value.includes('\\')||value.includes('\0')||value.includes(':')||value.startsWith('/')||value.split('/').some(p=>!p||p==='.'||p==='..'))throw new Error('Select relative regular-file paths inside the working folder');
   if(value.split('/').some(p=>['.git','.ponderosa-import-backups','.ssh','.aws','.gnupg','.codex','.claude','browser-profiles'].includes(p)||/^\.env(?:\.|$)/i.test(p)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(p)))throw new Error(`Known credential/native ownership path cannot be exported: ${value}`);
   return value;
+}
+
+/** Relative symbolic targets retain their spelling, including dangling in-root targets. */
+export function portableLinkTarget(link:PortableWorkingLinkDto):string {
+  portableWorkingPath(link.path);
+  if(!['symlink','hardlink'].includes(link.kind)||typeof link.target!=='string'||!link.target||link.target.includes('\\')||link.target.includes('\0')||link.target.includes(':')||path.posix.isAbsolute(link.target))throw new Error('Working links require relative in-root targets');
+  const resolved=link.kind==='hardlink'?portableWorkingPath(link.target):path.posix.normalize(path.posix.join(path.posix.dirname(link.path),link.target));
+  if(resolved!=='.')portableWorkingPath(resolved);
+  if(link.mtime!==undefined&&(typeof link.mtime!=='string'||!Number.isFinite(Date.parse(link.mtime))))throw new Error('Invalid working-link timestamp');
+  return resolved;
+}
+
+/** Validate before any destination write. Links are leaves, never traversed during installation. */
+export function validateWorkingTopology(files:readonly {path:string}[],directories:readonly {path:string}[],links:readonly PortableWorkingLinkDto[]):void {
+  if(files.length+directories.length+links.length>10000)throw new Error('Working-folder topology exceeds 10000 entries');
+  const leaves=new Set(files.map(file=>portableWorkingPath(file.path))),folders=new Set(directories.map(dir=>portableWorkingPath(dir.path)));
+  if(leaves.size!==files.length||folders.size!==directories.length)throw new Error('Duplicate working-folder paths');
+  for(const link of links){
+    portableLinkTarget(link);
+    if(leaves.has(link.path)||folders.has(link.path))throw new Error('Conflicting working-link path');
+    if(link.kind==='hardlink'&&!files.some(file=>file.path===link.target))throw new Error('Hardlinks require an included regular original');
+    leaves.add(link.path);
+  }
+  const symbolic=new Map(links.filter(link=>link.kind==='symlink').map(link=>[link.path,link.target]));
+  for(const link of links.filter(link=>link.kind==='symlink')){
+    const pending=[...path.posix.dirname(link.path).split('/').filter(p=>p!=='.'),...link.target.split('/')],resolved:string[]=[];
+    let expansions=0;
+    while(pending.length){
+      const part=pending.shift()!;if(!part||part==='.')continue;
+      if(part==='..'){if(!resolved.length)throw new Error('Working symlink chain leaves the selected root');resolved.pop();continue;}
+      resolved.push(part);const target=symbolic.get(resolved.join('/'));
+      if(target!==undefined){if(++expansions>10000)throw new Error('Cyclic working symlinks need explicit separate preservation');resolved.pop();pending.unshift(...target.split('/'));}
+    }
+    if(resolved.length)portableWorkingPath(resolved.join('/'));
+  }
+  for(const name of [...leaves,...folders]){
+    if(leaves.has(name)&&folders.has(name)||name.split('/').slice(0,-1).some((_,i)=>leaves.has(name.split('/').slice(0,i+1).join('/'))))throw new Error('Working files and links cannot be parent folders');
+  }
 }
 
 export function validateWorkingFileData(relative:string,data:Buffer):void {
@@ -25,8 +63,17 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
 }
 
 /** Explicit selection only; no implicit traversal of user folders or native profiles. */
-export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
+export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[]):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
   const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
+  validateWorkingTopology(selected.map(path=>({path})),[],links);
+  const verifyLinks=async()=>{for(const link of links){
+    const name=path.join(root,link.path);
+    if(await fs.realpath(path.dirname(name))!==path.dirname(name))throw new Error('Working-link parent changed');
+    const stat=await fs.lstat(name,{bigint:true});
+    if(link.kind==='symlink'){if(!stat.isSymbolicLink()||await fs.readlink(name)!==link.target||link.mtime!==undefined&&stat.mtime.toISOString()!==link.mtime)throw new Error('Working symlink changed during export');}
+    else {const target=await fs.lstat(path.join(root,link.target),{bigint:true});if(!stat.isFile()||stat.dev!==target.dev||stat.ino!==target.ino)throw new Error('Working hardlink changed during export');}
+  }};
+  await verifyLinks();
   let bytes=0;
   if(selected.length>10000||new Set(selected).size!==selected.length)throw new Error('Select at most 10000 distinct working files');
   for(const item of selected){
@@ -37,7 +84,7 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     let data:Buffer,mode:number,mtime:string;
     try{
       const before=await handle.stat({bigint:true});
-      if(!before.isFile()||before.nlink!==1n||before.size>BigInt(Math.min(maxBytes-bytes,64*1024*1024)))throw new Error(`Working file is not a bounded single-link regular original: ${relative}`);
+      if(!before.isFile()||before.nlink!==BigInt(1+links.filter(link=>link.kind==='hardlink'&&link.target===relative).length)||before.size>BigInt(Math.min(maxBytes-bytes,64*1024*1024)))throw new Error(`Working file lacks a bounded complete regular-link inventory: ${relative}`);
       if(await fs.realpath(path.dirname(current))!==path.dirname(current))throw new Error('Working-file directory changed during export');
       data=Buffer.alloc(Number(before.size));let offset=0;
       while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error(`Working file shortened during export: ${relative}`);offset+=read.bytesRead;}
@@ -46,15 +93,19 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
       if(before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||BigInt(data.length)!==before.size)throw new Error(`Working file changed during export: ${relative}`);
     }finally{await handle.close();}
     validateWorkingFileData(relative,data);
+    for(const link of links.filter(link=>link.kind==='hardlink'&&link.target===relative))validateWorkingFileData(link.path,data);
     bytes+=data.length;if(bytes>maxBytes)throw new Error('Selected working files exceed the portable artifact limit');
     const ref=randomUUID();files.push({path:relative,artifactRef:ref,mode:mode!,mtime:mtime!});
     artifacts.push({ref,kind:'document',path:relative,summary:relative,createdAt:new Date().toISOString(),mediaType:'application/octet-stream',dataBase64:data.toString('base64')});
   }
+  await verifyLinks();
   return {files,artifacts,bytes};
 }
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
-export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string}):Promise<void>{
+export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[]):Promise<void>{
+  validateWorkingTopology(files,directories,links);
+  for(const link of links.filter(link=>link.kind==='hardlink'))validateWorkingFileData(link.path,files.find(file=>file.path===link.target)!.data);
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination)throw new Error('Choose an absolute new working-files destination');
   const parent=await fs.realpath(path.dirname(destination));
   if(parent!==path.dirname(destination))throw new Error('Working-files destination parent must be canonical');
@@ -64,6 +115,19 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     await fs.mkdir(freshRoot.backupRoot,{mode:0o700});
     if(await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot)throw new Error('Recovery folder changed');
   }else await fs.mkdir(destination,{mode:0o700});
+  const preserveBaseline=async(relative:string)=>{
+    if(freshRoot){
+        const target=path.join(destination,relative);
+        let stat;try{stat=await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+        if(stat){
+          if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Fresh baseline path is not a regular original');
+          // Preserve even racing local bytes; never unlink a displaced baseline.
+          const backup=path.join(freshRoot.backupRoot,randomUUID());
+          await fs.writeFile(backup+'.path.json',JSON.stringify({path:relative}),{flag:'wx',mode:0o600});
+          await fs.rename(target,backup);
+        }
+      }
+  };
   try{
     for(const folder of [...directories].sort((a,b)=>a.path.split('/').length-b.path.split('/').length)){
       const relative=portableWorkingPath(folder.path);
@@ -79,19 +143,28 @@ export async function importWorkingFiles(destination:string,files:readonly {path
         const stat=await fs.lstat(dir);if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(dir)!==dir)throw new Error('Working-files destination changed');
       }
       if(createHash('sha256').update(file.data).digest('hex')!==file.sha256)throw new Error('Staged working-file identity changed');
-      if(freshRoot){
-        const target=path.join(destination,relative);
-        let stat;try{stat=await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-        if(stat){
-          if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Fresh baseline path is not a regular original');
-          // Preserve even racing local bytes; never unlink a displaced baseline.
-          const backup=path.join(freshRoot.backupRoot,randomUUID());
-          await fs.writeFile(backup+'.path.json',JSON.stringify({path:relative}),{flag:'wx',mode:0o600});
-          await fs.rename(target,backup);
-        }
-      }
+      await preserveBaseline(relative);
       const handle=await fs.open(path.join(destination,relative),'wx',0o600);
       try{await handle.writeFile(file.data);if(file.mode!==undefined)await handle.chmod(file.mode&0o777);if(file.mtime)await handle.utimes(new Date(file.mtime),new Date(file.mtime));await handle.sync();}finally{await handle.close();}
+    }
+    for(const link of [...links].sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
+      const target=path.join(destination,link.path),parent=path.dirname(target);
+      let current=destination;
+      for(const component of link.path.split('/').slice(0,-1)){
+        current=path.join(current,component);
+        try{await fs.mkdir(current,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+        if(!(await fs.lstat(current)).isDirectory()||await fs.realpath(current)!==current)throw new Error('Working-link destination parent changed');
+      }
+      if(await fs.realpath(parent)!==parent)throw new Error('Working-link destination parent changed');
+      await preserveBaseline(link.path);
+      if(link.kind==='hardlink'){
+        const original=path.join(destination,link.target),stat=await fs.lstat(original);
+        if(!stat.isFile()||stat.isSymbolicLink()||await fs.realpath(original)!==original)throw new Error('Hardlink original changed');
+        await fs.link(original,target);
+      }else{
+        await fs.symlink(link.target,target);
+        if(link.mtime)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
+      }
     }
     for(const folder of [...directories].sort((a,b)=>b.path.split('/').length-a.path.split('/').length)){
       const target=path.join(destination,portableWorkingPath(folder.path));
@@ -103,28 +176,36 @@ export async function importWorkingFiles(destination:string,files:readonly {path
 }
 
 /** Explicit whole-folder selection. Omit native ownership/credential paths and report every omission. */
-export async function inventoryWorkingFolder(rootPath:string):Promise<{mode:number;mtime:string;paths:string[];directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[]}> {
+export async function inventoryWorkingFolder(rootPath:string):Promise<{mode:number;mtime:string;paths:string[];directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links:PortableWorkingLinkDto[]}> {
   const root=await fs.realpath(rootPath),paths:string[]=[],directories:Array<{path:string;mode:number;mtime:string}>=[],excludedPaths:string[]=[];
+  const links:PortableWorkingLinkDto[]=[],originals=new Map<string,{path:string;nlink:bigint;count:number}>();
   let entries=0;
   const walk=async(relative:string):Promise<void>=>{
     const directory=relative?path.join(root,relative):root;
     if(await fs.realpath(directory)!==directory)throw new Error('Working folder changed during inventory');
     const before=await fs.lstat(directory,{bigint:true});
-    for(const entry of await fs.readdir(directory,{withFileTypes:true})){
+    for(const entry of (await fs.readdir(directory,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>10000)throw new Error('Whole working folder exceeds 10000 entries');
       const name=relative?`${relative}/${entry.name}`:entry.name;
       try{portableWorkingPath(name);}catch{excludedPaths.push(name);continue;}
-      const stat=await fs.lstat(path.join(root,name));
-      if(stat.isSymbolicLink()||!stat.isDirectory()&&!stat.isFile())throw new Error(`Unsupported working-folder entry: ${name}`);
+      const stat=await fs.lstat(path.join(root,name),{bigint:true});
+      if(stat.isSymbolicLink()){const link:PortableWorkingLinkDto={path:name,kind:'symlink',target:await fs.readlink(path.join(root,name)),mtime:stat.mtime.toISOString()};portableLinkTarget(link);links.push(link);continue;}
+      if(!stat.isDirectory()&&!stat.isFile())throw new Error(`Live socket/device/FIFO has no portable regular bytes; preserve and recreate explicitly: ${name}`);
       if(stat.isDirectory()){
-        directories.push({path:name,mode:stat.mode&0o777,mtime:stat.mtime.toISOString()});
+        directories.push({path:name,mode:Number(stat.mode)&0o777,mtime:stat.mtime.toISOString()});
         await walk(name);
-      }else paths.push(name);
+      }else {
+        const key=`${stat.dev}:${stat.ino}`,original=originals.get(key);
+        if(original){if(original.nlink!==stat.nlink)throw new Error('Hardlink topology changed');original.count++;links.push({path:name,kind:'hardlink',target:original.path});}
+        else {originals.set(key,{path:name,nlink:stat.nlink,count:1});paths.push(name);}
+      }
     }
     const after=await fs.lstat(directory,{bigint:true});
     if(before.dev!==after.dev||before.ino!==after.ino||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Working folder changed during inventory');
   };
   await walk('');
+  for(const original of originals.values())if(original.nlink!==BigInt(original.count))throw new Error(`Hardlink has aliases outside the selected nonsecret root; include a complete root or preserve separately: ${original.path}`);
+  validateWorkingTopology(paths.map(path=>({path})),directories,links);
   const rootStat=await fs.stat(root);
-  return {mode:rootStat.mode&0o777,mtime:rootStat.mtime.toISOString(),paths,directories,excludedPaths};
+  return {mode:rootStat.mode&0o777,mtime:rootStat.mtime.toISOString(),paths,directories,excludedPaths,links};
 }

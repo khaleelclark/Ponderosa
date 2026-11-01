@@ -107,3 +107,23 @@ The separate [group capture abandonment protocol](checkpoint-group-capture-aband
 ## Owner-independent group journal audit
 
 [Group journal audit readback](group-journal-audit-readback.md) uses the exact `auditSelection` supplied by group discovery with `BranchesClient.groupJournalAudit`. It reads original retained capture/command/receipt/retirement evidence after source-owner loss without invoking current-owner disclosure authority. Every result is historical, held and ineligible for action. Missing original journals and unverifiable or conflicting retained evidence refuse; this source does not supply reclamation or recovery mutation.
+
+
+## Explicit memory preserve-unknown decision
+
+`GET /api/local-memory/mutation-holds` returns each original hold and its distinct
+`preserveUnknownReviewSha256`, even if the backend cannot be observed. Operator
+`POST /api/local-memory/mutation-holds/:id/preserve-unknown` accepts
+`{commandKey,reviewSha256,reason,preserveUnknown:true}`; copy that distinct hash,
+not the evidence-bearing reconciliation review hash. This works for legacy holds
+without effect metadata and known-effect holds with unavailable/undrained backend.
+
+The durable decision receipt says `disposition:'preserve_unknown',outcome:'unknown',
+held:true,replayed:false,backendModified:false`. Original hold remains unsettled
+and original capture fences remain. Exact explicit replay returns the same choice;
+changed input or conflicting original evidence refuses. No backend lookup, effect
+replay, hold retirement, native drain, source-pin release or cleanup follows.
+Existing collection-snapshot/drain-testimony reconciliation remains separate.
+See [the exact U5 evidence/disposition table and API](portability-recreation-inventory.md).
+UI must offer this separately from reconciliation and never label it completion.
+Source/deferred fixtures only; no execution or passing claim.

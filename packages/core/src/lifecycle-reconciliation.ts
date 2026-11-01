@@ -3,10 +3,17 @@ import type {CoordinationDestinationReconciliationReview} from './coordination-d
 export interface MemoryMutationEffect {
   scope:string;log:boolean;operation:'create_collection'|'delete_collection'|'upsert'|'add'|'update'|'delete'|'modify';
 }
-export interface MemoryMutationHoldDto {id:string;sha256:string;effect?:MemoryMutationEffect;state:'unsettled'|'reconciled';legacy:boolean}
+export interface MemoryMutationHoldDto {id:string;sha256:string;effect?:MemoryMutationEffect;state:'unsettled'|'reconciled';legacy:boolean;preserveUnknownReviewSha256?:string;disposition?:MemoryMutationPreserveUnknownReceipt}
 export interface MemoryMutationReviewDto {
   hold:MemoryMutationHoldDto;reviewSha256:string;backendSha256?:string;rowCount?:number;
   canReconcile:boolean;backendDrainEvidenceRequired:true;reason?:string;
+}
+/** A terminal operator decision about handling uncertainty, never an effect completion receipt. */
+export interface MemoryMutationPreserveUnknownInput {commandKey:string;reviewSha256:string;reason:string;preserveUnknown:true}
+export interface MemoryMutationPreserveUnknownReceipt {
+  version:1;id:string;commandKey:string;reviewSha256:string;holdSha256:string;reason:string;
+  operatorId:'local-operator';disposition:'preserve_unknown';outcome:'unknown';held:true;
+  replayed:false;backendModified:false;
 }
 export interface MemoryMutationReconcileInput {
   commandKey:string;reviewSha256:string;backendDrainEvidence:string;

@@ -140,3 +140,28 @@ assembly/durable grouped hooks still its owner. No tests/checks/build/types/brow
 Node/module/runner preparation or execution; no passing/full#8 completion claim.
 Deferred composition regression additionally covers identical team-row deduplication,
 separate private source audiences and conflicting team snapshot refusal.
+
+
+### U3/U5 bounded source disposition
+
+[Complete package-field, file-topology and native/recovery inventory](portability-recreation-inventory.md)
+now replaces the blanket link refusal above for whole-root exports. Relative
+in-root symlinks (including dangling targets) and complete in-root hardlink sets
+are represented by `workingFolder.links`, validated before destination writes,
+retained for re-export, composed with Shared roots and forwarded through existing
+new-folder and confirmed live-root imports. No foreign native ownership is copied.
+Git user history/refs/index, broad native-directory nonsecret config, required
+cross-root/cyclic/absolute-link and special-node/extended-metadata semantics remain
+specific unsupported data transports, not approved exclusions or another unknown
+scope category. Current full-portability acceptance remains unestablished.
+
+New operator memory preserve-unknown receipts provide an explicit recovery decision
+for legacy missing-effect and known unavailable-backend holds. They bind exact
+original hold bytes and retain the original unsettled hold/fence. No backend read,
+write, replay or success/drain claim follows. The existing evidence-bearing
+preserve-current reconciliation remains distinct. UI must adopt the new action;
+external original-effect proof still requires an actual matching backend receipt.
+
+Deferred fixture source covers link/parser/refusal/source preservation and memory
+preserve-unknown/reopen/exact command/hash/held semantics. No execution or runner
+preparation, types, build, native/browser action, install, push or deployment.

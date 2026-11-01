@@ -29,3 +29,13 @@ test('composition deduplicates identical team memory and preserves separate priv
   inputs[1].package.memory[0].snapshot.chunks[0].text='different capture';
   await assert.rejects(composeAgentPackages(inputs),/Conflicting captured memory rows/);
 });
+
+test('Shared composition preserves identical topology and rejects conflicting alias targets',async()=>{
+  const inputs=['a','b'].map(ref=>{const pkg=definition(ref);pkg.agents[0].workingFolder={directories:[],excludedPaths:[],links:[{path:'alias',kind:'hardlink',target:'file.txt'},{path:'symbolic',kind:'symlink',target:'file.txt'}]};return {ref,package:pkg};});
+  const result=await composeAgentPackages(inputs),owner=result.package.agents.find(node=>node.workingFolder);
+  assert.equal(owner.workingFolder.links.length,2);
+  assert.deepEqual(owner.workingFolder.links,inputs[0].package.agents[0].workingFolder.links);
+  assert.equal(result.package.agents.filter(node=>node.workingFolder).length,1);
+  inputs[1].package.agents[0].workingFolder.links[1].target='different';
+  await assert.rejects(composeAgentPackages(inputs),/Conflicting captured Shared link topology/);
+});

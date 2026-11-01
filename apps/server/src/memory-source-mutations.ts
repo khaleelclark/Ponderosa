@@ -2,7 +2,7 @@ import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import fs from '@ponderosa/native-host/fs';
 import {beginSourceMutation,sourceMutationState,reconcileSourceMutation,stableJson} from '@ponderosa/agents';
-import type {MemoryMutationEffect,MemoryMutationHoldDto,MemoryMutationReviewDto,MemoryMutationReconcileInput,MemoryMutationReconcileReceipt} from '@ponderosa/core';
+import type {MemoryMutationEffect,MemoryMutationHoldDto,MemoryMutationReviewDto,MemoryMutationReconcileInput,MemoryMutationReconcileReceipt,MemoryMutationPreserveUnknownInput,MemoryMutationPreserveUnknownReceipt} from '@ponderosa/core';
 
 /** A failed/unknown remote write stays ineligible across restart until explicit reconciliation. */
 export function memorySourceMutations(directory:string){
@@ -18,11 +18,20 @@ export function memorySourceMutations(directory:string){
     const hold=JSON.parse(fs.readFileSync(file,'utf8')) as {version:number;id:string;effect?:MemoryMutationEffect};
     if(hold.version!==1||hold.id!==id)throw Error('Memory hold identity differs');return hold;
   };
-  const inspect=(id:string):MemoryMutationHoldDto=>{const hold=read(id);return {id,sha256:digest(hold),effect:hold.effect,state:'unsettled',legacy:!hold.effect};};
+  const preserved=(id:string,holdSha256:string):MemoryMutationPreserveUnknownReceipt|undefined=>{
+    const file=path.join(directory,'preserved-unknown',`${id}.json`);
+    try{
+      const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>16384)throw Error('Preserve-unknown receipt unavailable');
+      const receipt=JSON.parse(fs.readFileSync(file,'utf8')) as MemoryMutationPreserveUnknownReceipt;
+      if(receipt.version!==1||receipt.id!==id||receipt.holdSha256!==holdSha256||receipt.operatorId!=='local-operator'||receipt.disposition!=='preserve_unknown'||receipt.outcome!=='unknown'||receipt.held!==true||receipt.replayed!==false||receipt.backendModified!==false||typeof receipt.commandKey!=='string'||!receipt.commandKey.trim()||receipt.commandKey.length>256||typeof receipt.reason!=='string'||receipt.reason.trim().length<16||receipt.reason.length>4096||receipt.reviewSha256!==digest({purpose:'preserve_unknown',id,holdSha256}))throw Error('Preserve-unknown receipt conflicts with original hold');
+      return receipt;
+    }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+  };
+  const inspect=(id:string):MemoryMutationHoldDto=>{const hold=read(id),sha256=digest(hold),disposition=preserved(id,sha256);return {id,sha256,effect:hold.effect,state:'unsettled',legacy:!hold.effect,preserveUnknownReviewSha256:digest({purpose:'preserve_unknown',id,holdSha256:sha256}),...(disposition?{disposition}:{})};};
   const review=async(id:string,observe:(effect:MemoryMutationEffect)=>Promise<{rows:unknown;rowCount:number}>)=>{
     const before=sourceMutationState(),hold=inspect(id);
     if(before.activeWriters)throw Error('Source writers must drain before memory reconciliation');
-    if(!hold.effect)return {dto:{hold,reviewSha256:digest({hold,before}),canReconcile:false,backendDrainEvidenceRequired:true,reason:'Legacy hold has no exact collection/effect evidence; preserve it until independently reconciled'} as MemoryMutationReviewDto,epoch:before.epoch};
+    if(!hold.effect)return {dto:{hold,reviewSha256:digest({hold,before}),canReconcile:false,backendDrainEvidenceRequired:true,reason:'Legacy hold lacks collection/effect identity. Record preserve_unknown to retain uncertainty; exact source capture remains held. Do not replay the write or infer completion.'} as MemoryMutationReviewDto,epoch:before.epoch};
     const observed=await observe(hold.effect),confirmed=await observe(hold.effect),after=sourceMutationState();
     if(after.activeWriters||before.epoch!==after.epoch||digest(observed)!==digest(confirmed)||inspect(id).sha256!==hold.sha256)throw Error('Memory backend or hold changed during review');
     const dto:MemoryMutationReviewDto={hold,reviewSha256:digest({hold,before,backend:digest(observed.rows)}),backendSha256:digest(observed.rows),rowCount:observed.rowCount,canReconcile:true,backendDrainEvidenceRequired:true};
@@ -31,6 +40,22 @@ export function memorySourceMutations(directory:string){
   return {
     list:():MemoryMutationHoldDto[]=>fs.readdirSync(directory).filter(name=>/^[a-f0-9-]{36}\.json$/.test(name)).sort().map(name=>inspect(name.slice(0,-5))),
     review:async(id:string,observe:(effect:MemoryMutationEffect)=>Promise<{rows:unknown;rowCount:number}>)=>(await review(id,observe)).dto,
+    async preserveUnknown(id:string,input:MemoryMutationPreserveUnknownInput):Promise<MemoryMutationPreserveUnknownReceipt>{
+      if(!input||typeof input.commandKey!=='string'||!input.commandKey.trim()||input.commandKey.length>256||typeof input.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(input.reviewSha256)||input.preserveUnknown!==true||typeof input.reason!=='string'||input.reason.trim().length<16||input.reason.length>4096)throw Error('Exact review and explicit preserve-unknown reason required');
+      const hold=inspect(id),previous=hold.disposition;
+      if(previous){if(previous.commandKey!==input.commandKey||previous.reviewSha256!==input.reviewSha256||previous.reason!==input.reason)throw Error('Preserve-unknown command conflict');syncAudit(path.join(directory,'preserved-unknown'));sync();return previous;}
+      // The immutable original is the review: unavailable/unknown backends need no guessed lookup.
+      if(hold.preserveUnknownReviewSha256!==input.reviewSha256)throw Error('Exact preserve-unknown review required');
+      const receipt:MemoryMutationPreserveUnknownReceipt={version:1,id,commandKey:input.commandKey,reviewSha256:input.reviewSha256,holdSha256:hold.sha256,reason:input.reason,operatorId:'local-operator',disposition:'preserve_unknown',outcome:'unknown',held:true,replayed:false,backendModified:false};
+      // Keep the original hold and uncertain writer fence. No call to reconcileSourceMutation.
+      const audit=path.join(directory,'preserved-unknown');
+      fs.mkdirSync(audit,{recursive:true,mode:0o700});
+      if(inspect(id).sha256!==hold.sha256)throw Error('Memory hold changed before preserve-unknown publication');
+      const file=path.join(audit,`${id}.json`),temporary=path.join(audit,`${id}.${randomUUID()}.tmp`),fd=fs.openSync(temporary,'wx',0o600);
+      try{fs.writeFileSync(fd,stableJson(receipt));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+      fs.linkSync(temporary,file);fs.unlinkSync(temporary);
+      syncAudit(audit);sync();return receipt;
+    },
     async reconcile(id:string,input:MemoryMutationReconcileInput,observe:(effect:MemoryMutationEffect)=>Promise<{rows:unknown;rowCount:number}>):Promise<MemoryMutationReconcileReceipt>{
       filename(id);
       if(typeof input.commandKey!=='string'||!input.commandKey||input.commandKey.length>256||typeof input.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(input.reviewSha256)||input.preserveCurrentBackend!==true||typeof input.backendDrainEvidence!=='string'||input.backendDrainEvidence.trim().length<16||input.backendDrainEvidence.length>4096)throw Error('Explicit operator backend-drain evidence and preserve-current choice required');

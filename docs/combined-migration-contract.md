@@ -93,7 +93,9 @@ times. Special ownership bits are never adopted. Whole-folder inventory is bound
 to 10,000 entries and existing package/artifact byte budgets. Native ownership and
 known credential paths are omitted and listed in `workingFolder.excludedPaths`;
 text secret assignments, known private-key content and JSON secret fields refuse
-export. Symlinks, hardlinks and special files refuse rather than being dereferenced.
+export. Whole-folder in-root relative symlinks and complete hardlink sets now use
+`workingFolder.links`; special files, external/absolute/cyclic link semantics still
+refuse. See the [complete field/topology inventory](portability-recreation-inventory.md).
 There is no guarantee that arbitrary opaque user data contains no secret.
 
 Import uses the existing explicit `workingFilesDestination`, which must be a NEW
@@ -242,7 +244,10 @@ recovery folder is excluded from future package export. Files are installed with
 exclusive creation after displacement; a racing writer cannot be overwritten by
 that installation. Failure retains recovery copies, displaced bytes and live roots,
 with locations in the durable receipt/error; no recursive user-file cleanup is added.
-Git history, symlink topology, credentials and source native receipts remain excluded.
+Git history, credentials and source native receipts remain excluded. In-root
+relative symlink/hardlink topology now travels through the same confirmed live-root
+population path; exclusions and exact remaining nonsecret data limits are
+[enumerated separately](portability-recreation-inventory.md).
 UI/Branches callers must explicitly select activation and fresh Shared Chat creation;
 there is no silent activation or modification of an existing Shared root.
 An all-Separate-Git import into a NEW empty managed Chat may likewise confirm
@@ -307,3 +312,23 @@ Caller must compose BEFORE reviewing access; one complete-package review hash pl
 exhaustive `agentActions` holds independent human choices. Persist the composed
 package/mapping and ONE receipt; cancellation/staleness/actual-created-root review
 remain caller responsibilities. Do not reuse separate package review hashes.
+
+
+### Current U3 recreation boundary
+
+The [field-by-field recreation inventory](portability-recreation-inventory.md)
+is the current disposition of every Agent/organization/installed-workflow package
+field and filesystem/native family. Whole-root export now preserves relative
+in-root symlink spelling/timestamps and complete regular hardlink aliases. Import
+validates leaf/parent/target topology before creating the new folder, restores
+links after regular originals, and passes the same manifest through confirmed
+fresh live-root population and Shared composition. Failure retains original and
+partially copied bytes. Selected regular-file-only export keeps its existing
+refusal of nonregular paths; use whole-root selection for topology.
+
+Blanket `.git` exclusion still omits user history/refs/index as well as native
+ownership: it is an exact remaining #8 gap, not an approved secret exception.
+Nonsecret custom data under broad provider/native excluded directories and required
+extended/special-file or external/cyclic-link semantics are likewise explicitly
+unimplemented. Existing absolute source ownership is never adopted. No fresh
+machine equivalence or arbitrary external-writer snapshot guarantee is claimed.

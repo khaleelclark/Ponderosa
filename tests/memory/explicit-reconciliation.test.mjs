@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -21,5 +21,37 @@ test('operator reconciliation preserves backend evidence, clears exactly reviewe
   await assert.rejects(mutations.run(async()=>{throw Error('legacy unknown');}));
   const legacy=mutations.list()[0];assert.equal((await mutations.review(legacy.id,observe)).canReconcile,false);
   await assert.rejects(mutations.reconcile(legacy.id,{...input,reviewSha256:(await mutations.review(legacy.id,observe)).reviewSha256},observe),/current memory reconciliation/);
+ }finally{db.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+// Deferred source only; preserve_unknown is a decision receipt, never backend proof.
+test('legacy operator disposition survives reopen and retains exact original unknown hold',async()=>{
+ const directory=mkdtempSync(path.join(tmpdir(),'memory-preserve-unknown-')),db=new Database(':memory:');let effects=0;
+ try{
+  const mutations=memorySourceMutations(directory);
+  await assert.rejects(mutations.run(async()=>{effects++;throw Error('legacy remote outcome unknown');}));
+  const hold=mutations.list()[0],original=readFileSync(path.join(directory,`${hold.id}.json`));
+  const review=await mutations.review(hold.id,async()=>{throw Error('unknown scope must not query a guessed collection');});
+  const input={commandKey:'preserve-original',reviewSha256:review.hold.preserveUnknownReviewSha256,reason:'Keep original remote evidence; no completion proof exists',preserveUnknown:true};
+  await assert.rejects(mutations.preserveUnknown(hold.id,{...input,reviewSha256:'0'.repeat(64)}),/review/);
+  const receipt=await mutations.preserveUnknown(hold.id,input);
+  assert.equal(receipt.outcome,'unknown');assert.equal(receipt.held,true);assert.equal(receipt.backendModified,false);assert.equal(receipt.replayed,false);
+  assert.deepEqual(readFileSync(path.join(directory,`${hold.id}.json`)),original);
+  assert.equal(mutations.list().length,1);assert.equal(mutations.list()[0].state,'unsettled');
+  assert.throws(()=>mutations.assertSettled(),/reconciliation/);
+  assert.throws(()=>beginSourceCapture(db),/unsettled writer/);
+  const reopened=memorySourceMutations(directory);
+  assert.deepEqual(reopened.list()[0].disposition,receipt);
+  assert.deepEqual(await reopened.preserveUnknown(hold.id,input),receipt);
+  await assert.rejects(reopened.preserveUnknown(hold.id,{...input,commandKey:'different'}),/conflict/);
+  assert.equal(effects,1);
+  await assert.rejects(reopened.run(async()=>{effects++;throw Error('backend unavailable');},{scope:'global',log:false,operation:'upsert'}));
+  const known=reopened.list().find(item=>!item.legacy);
+  const preservedKnown=await reopened.preserveUnknown(known.id,{...input,commandKey:'preserve-known-unconfirmed',reviewSha256:known.preserveUnknownReviewSha256});
+  assert.equal(preservedKnown.held,true);assert.equal(reopened.list().length,2);assert.throws(()=>reopened.assertSettled());
+  const receiptFile=path.join(directory,'preserved-unknown',`${hold.id}.json`);
+  writeFileSync(receiptFile,JSON.stringify({...receipt,holdSha256:'0'.repeat(64)}));
+  assert.throws(()=>reopened.list(),/conflicts/);
+  assert.deepEqual(readFileSync(path.join(directory,`${hold.id}.json`)),original);
  }finally{db.close();rmSync(directory,{recursive:true,force:true});}
 });

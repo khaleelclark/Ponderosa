@@ -903,7 +903,7 @@ export function registerAgentPackageRoutes(
       const folderInventory=firstRoot||agent.id===root.id&&wholeWorkingFolder?await inventoryWorkingFolder(sourceRoot):undefined;
       const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
       const workingFiles=(firstRoot||agent.id===root.id)&&(selectedPaths.length||folderInventory)
-        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes):undefined;
+        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links):undefined;
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');artifacts.push(...workingFiles.artifacts);reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance
@@ -920,7 +920,7 @@ export function registerAgentPackageRoutes(
         managementPermissions: agent.managementPermissions,
         workingCopyMode:agent.workingCopy.mode,
         ...(organizationWorkingFolders?{workingRootRef:workingRoots.get(sourceRoot)!}:{}),
-        ...(folderInventory?{workingFolder:{mode:folderInventory.mode,mtime:folderInventory.mtime,directories:folderInventory.directories,excludedPaths:folderInventory.excludedPaths}}:mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFolder?{workingFolder:importedHistories.get(agent.id)!.portableState!.workingFolder}:{}),
+        ...(folderInventory?{workingFolder:{mode:folderInventory.mode,mtime:folderInventory.mtime,directories:folderInventory.directories,excludedPaths:folderInventory.excludedPaths,...(folderInventory.links.length?{links:folderInventory.links}:{})}}:mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFolder?{workingFolder:importedHistories.get(agent.id)!.portableState!.workingFolder}:{}),
         ...(workingFiles?{workingFiles:workingFiles.files}:mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFiles?{workingFiles:importedHistories.get(agent.id)!.portableState!.workingFiles}:{}),
         sourceChat:{ref:agent.conversationId,title:store.getConversation(agent.conversationId)?.title??agent.conversationId},
         accessSettings:{restrictedCapabilityIds:new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds,
@@ -1761,7 +1761,7 @@ export function registerAgentPackageRoutes(
         store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),workingFilesDestination:body.workingFilesDestination,workingRootDestinations:body.workingRootDestinations}});
         const folder=nodes.find(node=>node.workingFolder)?.workingFolder;
         retainedWorkingFiles=true;
-        await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined);
+        await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,undefined,folder?.links);
       }
       signal?.throwIfAborted();
       if(body.workingFilesActivation?.sharedRoot!==undefined){
@@ -1806,7 +1806,7 @@ export function registerAgentPackageRoutes(
           store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingRoots}});
           const files=(node.workingFiles??[]).map(file=>{const artifact=node.artifacts.find(a=>a.destinationId===file.artifactRef)!;return {path:file.path,data:artifact.data,sha256:artifact.sha256,mode:file.mode,mtime:file.mtime};});
           const release=context.workingCopies!.beginModeChange(agent.id);
-          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot);}finally{release();}
+          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links);}finally{release();}
         }
       }
 

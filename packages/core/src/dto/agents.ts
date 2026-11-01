@@ -136,6 +136,8 @@ export interface PortableArtifactDto {
   sourcePath?: string;
   dataBase64: string;
 }
+/** Passive topology inside one selected root; never imports an external/native owner. */
+export interface PortableWorkingLinkDto {path:string;kind:'symlink'|'hardlink';target:string;mtime?:string}
 export interface PortableAgentNodeDto {
   ref: string;
   title: string;
@@ -159,7 +161,7 @@ export interface PortableAgentNodeDto {
   /** Opaque package-local identity; equal refs share one exported folder. */
   workingRootRef?: string;
   workingFiles?: Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;
-  workingFolder?: {mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[]};
+  workingFolder?: {mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links?:PortableWorkingLinkDto[]};
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
 }

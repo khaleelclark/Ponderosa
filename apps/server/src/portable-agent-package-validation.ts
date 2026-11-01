@@ -1,5 +1,5 @@
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
-import {portableWorkingPath} from './portable-working-files.js';
+import {portableWorkingPath,validateWorkingTopology} from './portable-working-files.js';
 import {BUILT_IN_CAPABILITIES,parseConnectorCapabilityId} from '@ponderosa/core';
 import {validatePortableCommunication} from './portable-communication.js';
 import {validateOutputRoles} from './portable-output-roles.js';
@@ -52,8 +52,10 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       for(const relative of paths)if(relative.split('/').slice(0,-1).some((_,i)=>paths.has(relative.split('/').slice(0,i+1).join('/'))))throw new Error('A working file cannot also be a parent folder');
     }
     if(node.workingFolder!==undefined){
-      const folder=validatedObject(node.workingFolder,'Working folder');exactObjectFields(folder,['mode','mtime','directories','excludedPaths'],'Working folder');if(folder.mode!==undefined&&(!Number.isInteger(folder.mode)||Number(folder.mode)<0||Number(folder.mode)>0o777)||folder.mtime!==undefined&&(typeof folder.mtime!=='string'||!Number.isFinite(Date.parse(folder.mtime))))throw new Error('Invalid root-folder metadata');
+      const folder=validatedObject(node.workingFolder,'Working folder');exactObjectFields(folder,['mode','mtime','directories','excludedPaths','links'],'Working folder');if(folder.mode!==undefined&&(!Number.isInteger(folder.mode)||Number(folder.mode)<0||Number(folder.mode)>0o777)||folder.mtime!==undefined&&(typeof folder.mtime!=='string'||!Number.isFinite(Date.parse(folder.mtime))))throw new Error('Invalid root-folder metadata');
       if(portable.mode!=='full'||!Array.isArray(folder.directories)||folder.directories.length>10000||!Array.isArray(folder.excludedPaths)||folder.excludedPaths.some(p=>typeof p!=='string'))throw new Error('Invalid working-folder manifest');
+      if(folder.links!==undefined){if(!Array.isArray(folder.links)||folder.links.length>10000)throw new Error('Invalid working links');for(const candidate of folder.links)exactObjectFields(validatedObject(candidate,'Working link'),['path','kind','target','mtime'],'Working link');}
+      validateWorkingTopology((node.workingFiles??[]) as {path:string}[],folder.directories as {path:string}[],(folder.links??[]) as import('@ponderosa/core').PortableWorkingLinkDto[]);
       const paths=new Set<string>();
       for(const candidate of folder.directories){const dir=validatedObject(candidate,'Working directory');exactObjectFields(dir,['path','mode','mtime'],'Working directory');const relative=portableWorkingPath(dir.path);if(paths.has(relative)||!Number.isInteger(dir.mode)||Number(dir.mode)<0||Number(dir.mode)>0o777||typeof dir.mtime!=='string'||!Number.isFinite(Date.parse(dir.mtime)))throw new Error('Invalid working-directory metadata');paths.add(relative);}
       for(const relative of paths)if(relative.split('/').slice(0,-1).some((_,i)=>!paths.has(relative.split('/').slice(0,i+1).join('/'))))throw new Error('Whole-folder directory parents must be declared');
