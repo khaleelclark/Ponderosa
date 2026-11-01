@@ -462,3 +462,32 @@ Canonical group partial-capture abandonment hooks now compare whole raw intent/r
 ### Composed whole-group abandonment integration (source only)
 
 Successors535301c24/46ba3475e/9bbdaad1b are assembled without replaying already-equivalent lifecycle discovery. The separate fourth lifecycle group-capture collection exposes exact raw keys and full sources independently of destination review/drain. One complete private prepare journal precedes every package tombstone/archive; one Branch owner callback validates all proofs and one outer SQL commit releases group pins. Filesystem or SQL failure keeps every SQL cleanup pin held; unchanged explicit replay verifies original archives, including after owner removal. Current generation/import/member/subtree/attempt/Chat effect checks and reserve/seal revival fences remain mandatory. Retained/sealed groups, history/disk reclamation, unknown schemas/outcomes and external writers remain held. Dedicated group abandonment UI is not assembled. Fixture source includes actual Branch-hook/host composition with synthetic payloads and injected SQL failure; no execution occurred.
+
+
+### Permanent Runtime generation-exit fence prerequisite (source only)
+
+Runtime b56852d995ecf9d134ad1cd9613dd1c15732394a is assembled as an isolated
+successor; its parent was not replayed. The existing observed-exit producer/reader,
+0040 immutable host lifecycle table and preview transaction correction already supply
+its source dependencies. No parent-only API reference is unresolved.
+
+The new exported fence API requires the same owner transaction as Branch's initial
+fencing journal and stores exact original execution/Step/generation/Project/Chat/member
+identities plus resource/member rows. Exact replay verifies retained canonical bytes;
+all phases and owner/journal deletion retain the hold. Public intake/current scope
+checks, external activation creation and independent scheduler candidate SQL reject
+original identities and current members of the original Chat. Trusted terminal closure
+may record continuations, but fenced identities cannot acquire new scheduler leases.
+Product/source visibility, destination-admission checks and package capture capability
+checks remain unchanged by explicit owner design, so source package reads remain possible.
+
+IMPORTANT dependency: current assembled Branch has no producer caller of
+fenceBranchGenerationExit and no initial resource-generation-exit journal wiring.
+This Runtime prerequisite alone publishes no fence and completes no precleanup capture.
+Branch must publish it with the initial journal, retain identity/hash in final evidence,
+cancel/drain existing leases and actual provider/native handles, close Requests/Joins/
+effects and revalidate generation/member/frontier/exit proof at sealing. Fencing is not
+observed exit or completed drain. Historical participant partition/admission and broader
+precleanup/retry/replay gaps remain. Three deferred synthetic-resource canonical Runtime
+fixtures were source-read only; no tests/checks/build/types/Node/native/browser/preparation/
+execution/migration/push/deploy or qualification claim. See branch-generation-exit-fence.md.
