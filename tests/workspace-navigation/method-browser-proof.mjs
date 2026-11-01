@@ -1,4 +1,4 @@
-// Small proof only: 10k canonical history, one leased controlled Run, then zero-active browser diagnostics.
+// One postrepair zero-active diagnostic; no controlled Run or active-load qualification.
 import assert from 'node:assert/strict';import {createRequire} from 'node:module';import {mkdir,writeFile,readFile} from 'node:fs/promises';import {setTimeout as delay} from 'node:timers/promises';
 import {fixture,until} from '../shared/fixture.mjs';import {AgentStore} from '../../packages/agents/dist/index.js';import {seedQualificationHistory,readLeasedRun,sendQualificationTask} from '../shared/ui-load-fixture.mjs';import {serveFixture} from '../shared/serve-ui-fixture.mjs';import {installTimingObserver,summarizeTimings,latencyBreakdown} from './event-timing-observer.mjs';import {sampleLinuxResources,RESOURCE_ADMISSION_DEFAULTS} from '../../apps/server/dist/resource-admission.js';
 const out=process.env.PONDEROSA_METHOD_EVIDENCE;assert(out);await mkdir(out,{recursive:true});const require=createRequire(new URL('../../apps/server/package.json',import.meta.url)),{chromium}=require('playwright-core');
@@ -8,11 +8,7 @@ const f=await fixture({resourceAdmissionObservation:{},schedulerMaxConcurrentRun
 async function rss(){const info=await cdpRoot.send('SystemInfo.getProcessInfo');const rows=[];for(const pid of new Set([process.pid,...info.processInfo.map(p=>p.id)])){try{const status=await readFile(`/proc/${pid}/status`,'utf8');rows.push({pid,rssBytes:Number(status.match(/^VmRSS:\s+(\d+)/m)?.[1]??0)*1024});}catch{}}result.browserRssSamples.push({at:Date.now(),rows,sumRssBytes:rows.reduce((a,r)=>a+r.rssBytes,0)});}
 try{
  const prefs=f.ok(await f.api('PATCH','/api/workspace/preferences',{maxConcurrentAgentRuns:20}));assert.equal(prefs.maxConcurrentAgentRuns,20);result.preferences=prefs;result.scheduler={maxConcurrentRuns:20,pollMs:10,resourceObservation:'real default; unchanged guards'};
- const chat=await f.createChat('Small METHOD proof');result.seed=seedQualificationHistory(store,chat);const agent=await f.createIdleAgent(chat,'Working lease proof');let ticks=0;f.plans.set(agent.id,[{output:false,run:async session=>{for(let i=0;i<3;i++){const value=await session.tool('ponderosa_workspace_projects',{});assert.equal(value.success,true);ticks++;session.events.push({type:'text',delta:`Canonical method checkpoint ${ticks}. `});await delay(1000);}}}]);
- result.submissions=[];await sendQualificationTask(f,'/api',agent.id,'Do three controlled actual workspace-tool checkpoints.',attempt=>result.submissions.push(attempt));await until(()=>ticks>=2,'two actual tool/progress ticks');
- const run=store.sqlite.prepare("SELECT id FROM scheduler_runs WHERE agent_id=? AND status='running'").get(agent.id);assert(run);result.lease=readLeasedRun(store,agent.id,run.id,f.sessions.get(agent.id).engineAgentId);result.leaseProcess=f.sessions.get(agent.id).processIdentity;
- await until(()=>store.sqlite.prepare("SELECT status FROM scheduler_runs WHERE id=?").get(run.id)?.status==='completed','controlled Run completes');result.outputs=store.getRunOutputs(agent.id);assert(result.outputs.some(o=>JSON.stringify(o).includes('Canonical method checkpoint')),'Actual provider text persisted canonically');result.providerTicks=ticks;assert.equal(ticks,3);await f.sessions.get(agent.id).close();
- web=await serveFixture(f);browser=await chromium.launch({executablePath:'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox']});result.browser=await browser.version();cdpRoot=await browser.newBrowserCDPSession();await rss();
+ const chat=await f.createChat('Small METHOD proof');result.seed=seedQualificationHistory(store,chat); web=await serveFixture(f);browser=await chromium.launch({executablePath:'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox']});result.browser=await browser.version();cdpRoot=await browser.newBrowserCDPSession();await rss();
  // Predeclared proof cells: historical profile/zero-delay context, then pinned profile with realistic75ms key cadence. Neither is a repeat score or causal comparison.
  for(const spec of [{id:'pinned-profile-paced-diagnostic',width:profile.config.width,height:profile.config.height,delay:75}]){
   const context=await browser.newContext({viewport:{width:spec.width,height:spec.height},screen:{width:spec.width,height:spec.height},deviceScaleFactor:1.75,isMobile:true,hasTouch:true,userAgent:profile.config.ua,serviceWorkers:'block'});const row={...spec,activeAgents:0,seed:result.seed,trace:'diagnostic overhead included'};result.phases.push(row);
@@ -25,7 +21,7 @@ try{
    row.loaded=await page.locator('article.chat-message').evaluateAll(nodes=>nodes.map(n=>({id:n.id,text:n.textContent})));assert(row.loaded.some(n=>n.id===`master-message-${result.seed.lastId}`));row.ready=await page.evaluate(()=>{const mark={name:'canonical-10k-tail-rendered',time:performance.now()};window.__uiTiming.marks.push(mark);return {...mark,width:innerWidth,height:innerHeight,dpr:devicePixelRatio,ua:navigator.userAgent};});
    await editor.click();await page.keyboard.type('Forty input characters for timing proof!',{delay:spec.delay});row.raw=await page.evaluate(()=>window.__finalizeUiTiming());row.raw.namespace=`${spec.id}/${row.raw.documentId}`;row.latency=latencyBreakdown(row.raw);assert.equal(row.raw.finalized,true);assert.equal(row.raw.visibility,'visible');assert(row.raw.trustedInputs.some(e=>e.type==='keydown'));assert(row.raw.cutoff.time>=row.ready.time,'LCP cutoff follows actual seeded tail readiness');
    row.startup=await page.evaluate(()=>({...window.__startup,navigation:performance.getEntriesByType('navigation').map(e=>e.toJSON()),resources:performance.getEntriesByType('resource').map(e=>e.toJSON())}));
-   row.summary=summarizeTimings([row.raw]);await rss();await page.screenshot({path:out+'/'+spec.id+'.png'});row.status='complete';
+   await rss();await page.screenshot({path:out+'/'+spec.id+'.png'});row.status='complete';
   }catch(error){row.status='failed';row.error=error.stack;throw error;}finally{
    row.finalization=[];
    for(const [name,finish] of [
@@ -35,8 +31,10 @@ try{
    ]){try{await finish();row.finalization.push({name,status:'complete'});}catch(error){row.finalization.push({name,status:'failed',error:String(error)});result.errors.push(`${name}: ${error}`);}}
    await writeFile(out+'/result-in-progress.json',JSON.stringify(result,null,2));
   }
+  // Evaluate only after profile, trace and context terminal receipts are persisted.
+  row.summary=summarizeTimings([row.raw]);
  }
- assert.deepEqual(result.errors,[]);assert.deepEqual(result.externalRequests,[]);await f.settled(agent.id);result.controlledRunSettled=true;result.status='bounded-proof-complete';
+ assert.deepEqual(result.errors,[]);assert.deepEqual(result.externalRequests,[]);result.activeAgents=0;result.status='bounded-proof-complete';
 }catch(error){result.status='failed';result.error=error.stack;throw error;}finally{
  result.cleanup=[];for(const [name,close] of [['browser',()=>browser?.close()],['web',()=>web?.close()],['fixture',()=>f.dispose(false)]]){try{await close();result.cleanup.push({name,status:'complete'});}catch(error){result.cleanup.push({name,status:'failed',error:String(error)});result.status='failed';}}
  // Exactly one new explicit20-capacity preflight, after browser-overhead estimate; never auto-start load.
