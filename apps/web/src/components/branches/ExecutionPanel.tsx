@@ -1,5 +1,6 @@
 import {BranchHistoryReview} from './BranchHistoryReview';
 import {BranchDisclosureReview} from './BranchDisclosureReview';
+import {BranchGroupReview} from './BranchGroupReview';
 import {BranchResourceReview} from './BranchResourceReview';
 import {createClientId} from '../../clientId';
 import {branchRoutePath} from '../../branchesRouting';
@@ -137,6 +138,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  return <Stack spacing={2}>
   <Stack spacing={1}>
    <BranchHistoryReview key={execution.id} branchId={execution.branchId} executionId={execution.id} enabled={authorityFresh} onChanged={refresh}/>
+   <BranchGroupReview key={`group:${execution.id}`} detail={detail} definition={definition} enabled={authorityFresh} onChanged={refresh}/>
    <BranchDisclosureReview key={`disclosure:${execution.id}`} branchId={execution.branchId} executionId={execution.id} enabled={authorityFresh} onChanged={refresh}/>
    <Typography variant="body2" color="text.secondary">{new Date(execution.createdAt).toLocaleString()} · {execution.admissionSource==='automatic'?'Triggered':execution.admissionSource==='call'?'Called by another workflow':'Manual'}</Typography>
    <Stack direction="row" gap={1} alignItems="center" justifyContent="space-between" flexWrap="wrap"><SemanticStatus status={operations.data?branchOperationalStatusKinds[operations.data.state]:execution.state==='failed'?'failed':execution.state==='completed'?'completed':ongoing?'waiting':'idle'} label={execution.budgetWait?'Waiting For Budget':operations.data?.label??(operations.isPending?'Loading run status…':execution.state)}/>{ongoing&&<Button color="error" disabled={cancel.isPending||!authorityFresh} onClick={()=>cancel.mutate()}>Cancel Run</Button>}</Stack>

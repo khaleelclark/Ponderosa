@@ -528,3 +528,86 @@ Ten named deliverables for this continuation: `apps/web/src/components/lifecycle
 document. Corrupt/unreadable retained browser commands block new mutations rather
 than silently resetting an unknown outcome. Branch selection is bounded to 128
 exact owner checkpoints, matching the route's admission limit.
+
+## Bounded two-resource group UI continuation
+
+Source-only successor of `6ddf47dfacb72b965bd224599852b4c6394f540c`. The original
+consumer is `c462d40367d16d14f6d417e80e990c1850709de3`; exact pure capture status
+requires Branch successor `1aa09968ebde45edde84a8e70315f7c95a857bae` in
+`/tmp/ponderosa-branches-resource-groups` and its existing Runtime/core prerequisites.
+The latter backend supports broader resource groups, but this UI remains bounded
+to two serial resources. Integration must preserve the backend's existing exported
+`BranchIssuedGroupCaptureStatus` in `packages/core/src/branches.ts`; it is not
+redefined here. Backend DTOs/routes are source-read rather than copied into this
+older web checkout. No backend routes, stores, migrations or grants are changed.
+
+`BranchGroupReview` is mounted beside the singular review in `ExecutionPanel`.
+Capture is offered only from a complete current standalone two-resource, one-path
+view and a definition without fork/join/called Branch Steps. This is a presentation
+bound, not a claim of capture eligibility. Generation, native drain, issued roots,
+exact frontier/configuration/binding/audit pins and supported package contents remain
+host-validated. The host capture input accepts only `{commandKey}`, with no count or
+cut CAS input: if concurrent changes yield a broader result, this UI rejects its
+status and keeps the original command held. It never prepares a broader group.
+Only retained exact two-source GET capture status unlocks preparation, which also
+requires a terminal source and explicit external-effects acknowledgement. Partial
+capture, unsealed members and unknown imports stay held; no POST is replayed and
+no group abandonment or per-member lifecycle fallback is offered.
+
+The backend owner explicitly authorized minimal shared group output/client work.
+`packages/core/src/branch-group-client.ts` exports `BranchGroupClient`, using the
+caller's existing operator JSON transport, plus distinct group destination and
+POST capture output DTOs. It reuses existing input/disclosure/group-resource DTOs.
+This isolated web base lacks the backend's `branches-client.ts`; the new small
+module avoids replacing or duplicating that larger SDK. It is exported from core's
+index. GET capture returns status without package receipts; POST capture is a
+separate receipt output. Helpers encode every opaque path/key and never retry.
+
+Full original capture/prepare/choice/admission commands are persisted before POST
+in browser localStorage scoped by origin, product, Branch and execution. Capture
+and prepare keys remain after success so remounts can recover their canonical
+server state. Unknown responses retain inputs and block new mutations. GET capture,
+GET group `?commandKey=` and exact disclosure choice GET perform pure readback.
+They run independently: source proof failure does not suppress destination/choice
+readback or no-preview revocation. Retained capture, whole checkpoint/hash, exact
+both-resource identities and destination scope are verified before use. Only an
+exact admitted readback with the original admission/hash resolves pending admit.
+Corrupt or unwritable storage blocks mutations. No UI identity entry is offered.
+
+There is no group collection or original capture-key discovery API in frozen1aa.
+Capture journals store only a hashed key and cannot recover the original from
+checkpoint identity. This view therefore supports its own client-local retained
+keys, not canonical cross-device/global group discovery. It does not adopt singular
+destination discovery or decode hashed commands. Reliability's separately announced
+lifecycle discovery work is not integrated or claimed here; it needs its committed
+exact contract and a separately authorized caller continuation.
+
+Preparation explicitly warns that the fresh ordinary Project reuses the current
+owner Project's directory, creates the usual default Chat plus two resource Chats,
+and creates no separate filesystem workspace/copy. No imported grant is adopted.
+Both actual source package/resource identities, mapped fresh identities, whole-cut
+hash, exact original private fact content/actor/audience/recipients, both final
+policies and policy hash appear in one review. Human approval and atomic admission
+are separate confirmations. The review binds the same full resource arrays and
+checkpoint/admission/source identity as canonical readback. Approval is never
+inferred from a historical receipt. Admission additionally requires matching current
+persisted approval hash/revision and a newly acknowledged preview. Revocation uses
+the current persisted revision/hash even without package bytes or preview. A choice
+CAS409 clears review/confirmation and the rejected transactional choice; staging or
+admission409 retains original input because side effects may already exist. Parent
+source/definition/freshness changes discard review acknowledgement. No automatic
+replay, independent member admission, retirement, source-pin release, >2/parallel/
+tree/later-generation UI or broad lifecycle qualification is introduced.
+
+Deferred regression source: `tests/chats/branch-group-review.test.mjs` covers both
+seals, partial holds, resource/package/policy identity, corrupt retained input and
+encoded SDK GET-only recovery. `tests/chats/branch-group-review-mounted.tsx` covers
+capture/prepare/choice/admission lost responses, remount, policy CAS staleness,
+whole private facts, independent source-failure recovery and no-preview revocation.
+Neither ran. New required deliverables: `BranchGroupReview.tsx`,
+`branchGroupReview.ts`, `branch-group-client.ts`, the two deferred regression files,
+plus existing `ExecutionPanel.tsx`, core `index.ts`, and this document.
+
+No tests/checks/build/types/Node/native/browser/runner preparation or execution,
+installs, backend writes, push/merge/deploy or new workers. Integration and executed
+qualification remain open; no whole UI/group/lifecycle/Bible/Phase2 acceptance.

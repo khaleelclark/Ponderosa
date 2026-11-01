@@ -33,3 +33,4 @@ export * from "./decision-questions.js";
 export * from "./context-recovery.js";
 
 export * from "./coordination-destination.js";
+export * from "./branch-group-client.js";
