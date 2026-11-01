@@ -140,10 +140,15 @@ Output/Assistant chat and call controls, microphone recording/review/playback,
 Integration also connects `PackageExportDisclosure` to core's shared warning;
 its deferred regression retains an explicit mocked shared-constant binding.
 
-Pending backend combination: schedule `expectedBindingRevisionId`, no-app
-Assistant `setupError.message`, model changes updating workflow binding, validated
-audio MIME/admission, general authorized canonical Chat publication and actual
-early qualified voice acknowledgment. These are implementation dependencies,
+UI follow-up `944a6e00` integrated: schedule sends `expectedBindingRevisionId`
+and no-app Assistant renders `setupError.message`; corresponding Branches DTOs
+remain pending integration. Owner confirms existing `updateAgent` model changes
+already reach subsequent workflow Runs, resolving the model API question.
+`5e65ed01` is byte-identical to our already integrated shared-warning source
+change, so no duplicate commit was applied.
+
+Pending backend combination: validated audio MIME/admission, general authorized
+canonical Chat publication and actual early qualified voice acknowledgment. These are implementation dependencies,
 not deferred judging. Await Features/Runtime contracts before wiring missing DTO
 fields. Runtime increment `5511e2bd` is held pending its assigned successor:
 nonvoice publication, transactional account binding and recovery/crash handling.
