@@ -295,3 +295,15 @@ while end-to-end human UI remains missing. No policy adoption default introduced
 Runtime `8d9dfaa8` is received but held for the lane's next successor under
 manager direction; no Runtime integration/completion credit is assigned here.
 All implementation remains unvalidated; no tests/builds/types/browser/runner work.
+
+## Distinct organization working-root transport
+
+Reliability `dc73a5c3` integrated without conflicts. Opt-in full organization
+export deduplicates roots with opaque workingRootRef and preserves child Separate
+Git folder originals. Exact nonnested new workingRootDestinations mapping is
+retained before writes and returned with destination Agent membership.
+UI full/organization opt-in and per-root destination controls remain pending.
+Restored folders are retained content, **not live Agent roots**: reviewed Project
+creation or safe fresh managed-worktree population is still missing. Shared
+Project.hostPath and Separate Git ownership invariants remain intact. This closes
+source-byte omission without completing #8. Regression source remains unexecuted.
