@@ -122,7 +122,7 @@ export class BranchStore {
       if(!invocation)continue;
       const execution=this.execution(id);if(!execution)continue;
       const terminal=!['queued','running','waiting'].includes(execution.state);
-      const gate=this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",id);
+      const gate=this.row("SELECT g.id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",id);
       if(!terminal&&!gate&&!['interrupting','interrupted'].includes(invocation.state))continue;
       const outstanding=this.row(`WITH RECURSIVE owned(id) AS (
         SELECT ? UNION ALL SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id
@@ -145,6 +145,7 @@ export class BranchStore {
       if(stableJson(next)!==stableJson(invocation)){
         this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson(next),id);
         context.written.add(id);
+        if(gate&&!terminal&&state==='interrupted')this.checkpoint(id,`gate-invocation:${invocation.id}`,'gate_checkpoint_closed',{gateId:gate.id,invocationId:invocation.id,ordinal:invocation.ordinal,mode:invocation.mode},new Date().toISOString());
       }
     }
   }
@@ -193,7 +194,7 @@ export class BranchStore {
     if(invocation.mode==='exit'&&(invocation.interruptionId||lastHold&&lastHold.kind!=='checkpoint_interrupt_resumed')&&!this.checkpointHoldIdentitySupported(executionId,invocation))return false;
     const ticket=this.unitSaver.status(executionId);
     if(ticket?(ticket.invocationId!==invocation.id||ticket.state!=='saved'):!this.unitSaver.currentSavedMatches(executionId,invocation.id,invocation.saved_snapshot_id))return false;
-    if(this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",executionId))return false;
+    if(this.row("SELECT g.id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",executionId))return false;
     this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({id:randomUUID(),ordinal:invocation.ordinal+1,mode:invocation.mode,state:'active',durability:'pending'}),executionId);
     this.selectedWrite(executionId);return true;
   }
@@ -238,7 +239,7 @@ export class BranchStore {
         ||!(['running','waiting'].includes(owner.state)||owner.state==='queued'&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",owner.id))||!this.checkpointDefinitionSupported(execution.id)
         ||Object.keys(execution.configuration?.secretBindings??{}).length||this.restricted(owner.branch_id,CAPABILITY_IDS.scripts)||this.restricted(owner.branch_id,CAPABILITY_IDS.branchCalls)||this.row('SELECT 1 FROM branch_resources WHERE execution_id=?',owner.id)&&this.restricted(owner.branch_id,CAPABILITY_IDS.managedAgentCreate)
         ||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration)
-        ||this.unitSaver.failed(owner.id)||this.row("SELECT 1 FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",owner.id))return false;
+        ||this.unitSaver.failed(owner.id)||this.row("SELECT g.id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'",owner.id))return false;
       if(branch.chatId)this.chat(branch.chatId);
       if(!owner.parent_execution_id)return index===chain.length-1&&owner.admission_source==='manual';
       const parent=chain[index+1],attempt=this.row('SELECT * FROM branch_attempts WHERE id=?',owner.parent_attempt_id);
@@ -697,18 +698,22 @@ export class BranchStore {
         ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit,c.checkpoint,c.provenance))throw Error('Historical continuation dependency or integrity unsupported');
       if(!['completed','failed','canceled'].includes(source.state)||source.parentExecutionId||this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND a.state IN ('leased','running','outcome_unknown')",executionId))throw Error('Historical rewind requires a settled standalone source');
       if(branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Historical rewind pins changed; current authority must be reconciled');
-      if(this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');
+      if(definition.steps.some(step=>step.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');
       // Fresh acceptance, admission and leases own authority; no old lease/process/secret is restored.
       const next=this.accept(branchId,`historical-rewind:${randomUUID()}`,e.input_text,now),ids=new Map<string,string>();
-      for(const key of ['paths','steps','attempts','sealedResults'])for(const old of selected[key]!)ids.set(old.id,randomUUID());
+      for(const key of ['paths','steps','attempts','sealedResults','gates'])for(const old of selected[key]!)ids.set(old.id,randomUUID());
       const mapped=(id:string|null)=>id===null?null:ids.get(id)??(()=>{throw Error('Incomplete continuation ID map');})();
       const path=selected.paths![0]!;
       this.run(`INSERT INTO branch_paths(id,execution_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id)
-        VALUES(?,?,'active',?,?,?,?,?,0,?)`,mapped(path.id),next.id,path.node_id,mapped(path.step_execution_id),path.input_text,path.result_json,path.traversals,mapped(path.last_result_id));
+        VALUES(?,?,?,?,?,?,?,?,0,?)`,mapped(path.id),next.id,path.state,path.node_id,mapped(path.step_execution_id),path.input_text,path.result_json,path.traversals,mapped(path.last_result_id));
       for(const step of selected.steps!)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),next.id,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
       for(const a of selected.attempts!)this.run(`INSERT INTO branch_attempts(id,step_execution_id,number,state,fence,input_hash,result_json,error,created_at,updated_at,available_at,purpose)
         VALUES(?,?,?,?,0,?,?,?,?,?,?,'step')`,mapped(a.id),mapped(a.step_execution_id),a.number,a.state,a.input_hash,a.result_json,a.error,now,now,a.available_at);
       for(const r of selected.sealedResults!)this.run('INSERT INTO branch_sealed_results(id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash,created_at) VALUES(?,?,?,?,?,?,?,?)',mapped(r.id),next.id,mapped(r.path_id),mapped(r.step_execution_id),mapped(r.terminal_attempt_id),r.result_json,r.content_hash,now);
+      for(const g of selected.gates!){
+        this.run('INSERT INTO branch_gates(id,step_execution_id,state,proposal_text,choices_json,revision,response_json,purpose,attempt_id,prompt_text) VALUES(?,?,?,?,?,?,?,?,?,?)',mapped(g.id),mapped(g.step_execution_id),g.state,g.proposal_text,g.choices_json,g.revision,g.response_json,g.purpose,mapped(g.attempt_id),g.prompt_text);
+        if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",mapped(g.id),g.revision,next.id,g.prompt_text,g.purpose,now,now);
+      }
       for(const r of selected.loops!)this.run('INSERT INTO branch_loop_counts(execution_id,path_id,edge_id,iterations) VALUES(?,?,?,?)',next.id,mapped(r.path_id),r.edge_id,r.iterations);
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',e.traversals,e.loop_iterations,e.depth_ceiling,next.id);
       const lineage={schema:'ponderosa.branch.rewind-lineage.v1',sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,executionId:next.id,compatibility:c.compatibility,...(c.checkpoint?{sourceCheckpointInvocation:c.checkpoint.invocation}:{}),idMap:Object.fromEntries(ids)};
@@ -716,6 +721,13 @@ export class BranchStore {
       this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,receiptKey,commandHash,stableJson({executionId:next.id,lineageId:Number(receipt.lastInsertRowid)}),now);
       this.checkpoint(next.id,'restored-prefix','restored_prefix',{sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,lineageId:Number(receipt.lastInsertRowid)},now);
       this.checkpoint(next.id,'rewind-origin','historical_rewind',{sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,lineageId:Number(receipt.lastInsertRowid)},now);
+      if(selected.gates!.some(g=>g.state==='waiting')){
+        // A restored review has no released effect or capacity reservation. Record
+        // ordinary manual admission before exposing its fresh human decision.
+        if(!this.executionBudgets.admit(next.id,now))throw Error('Restored review admission unavailable');
+        this.checkpoint(next.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',next.id)!.admission_json)},now);
+        this.state(next.id,'waiting',now,'Waiting for approval');
+      }
       this.selectedWrite(next.id);
       return this.execution(next.id)!;
     }).immediate();

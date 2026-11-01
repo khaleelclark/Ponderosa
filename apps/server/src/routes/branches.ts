@@ -68,7 +68,20 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
     const trigger=validateLocal(input,configuration);
     return branches.deploy(input,new Date().toISOString(),trigger,configuration);
   },()=>sources.refresh());
+  // Provision metadata on first server start, even before the Assistant page is opened.
+  // Provider/session work still belongs to the ordinary scheduler after its first due time.
+  app.addHook('onReady',async()=>{
+    try{await context.outputApps.initialize();}
+    catch(error){app.log.error({err:error},'Assistant setup failed; see Assistant settings');}
+  });
   app.get('/api/branches/assistant',async()=>context.outputApps.status());
+  app.post<{Body:{agentId:string;expectedSpeakerId:string|null}}>('/api/branches/assistant/speaker',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Ponderosa speaker');exactObjectFields(body,['agentId','expectedSpeakerId'],'Ponderosa speaker');
+      if(typeof body.agentId!=='string'||!body.agentId||(body.expectedSpeakerId!==null&&typeof body.expectedSpeakerId!=='string'))throw Error('Agent and reviewed current speaker are required');
+      const result=context.outputApps.moveSpeaker(body.agentId,body.expectedSpeakerId);await sources.refresh();notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.post<{Body?:{enabled?:boolean;initialize?:boolean}}>('/api/branches/assistant',async(request,reply)=>{
     try{
       const body=validatedObject(request.body??{},'Assistant settings');exactObjectFields(body,['enabled','initialize'],'Assistant settings');
@@ -87,14 +100,15 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
       const app=context.outputApps.designate(request.params.id,body.enabled,body.speaker===true);await sources.refresh();notify();return {app:app??null};
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
-  app.put<{Params:{id:string};Body:{expectedVersionId:string;automatic:boolean;everyMs:number}}>('/api/branches/output-apps/:id/schedule',async(request,reply)=>{
+  app.put<{Params:{id:string};Body:{expectedVersionId:string;expectedSettingsRevision:string;automatic:boolean;everyMs:number}}>('/api/branches/output-apps/:id/schedule',async(request,reply)=>{
     try{
-      const body=validatedObject(request.body,'output settings');exactObjectFields(body,['expectedVersionId','automatic','everyMs'],'schedule settings');
-      if(typeof body.expectedVersionId!=='string'||typeof body.automatic!=='boolean'||(typeof body.everyMs!=='number'||!Number.isInteger(body.everyMs)))throw new Error('Invalid schedule settings');
+      const body=validatedObject(request.body,'output settings');exactObjectFields(body,['expectedVersionId','expectedSettingsRevision','automatic','everyMs'],'schedule settings');
+      if(typeof body.expectedVersionId!=='string'||typeof body.expectedSettingsRevision!=='string'||typeof body.automatic!=='boolean'||(typeof body.everyMs!=='number'||!Number.isInteger(body.everyMs)))throw new Error('Invalid schedule settings');
       const output=context.outputApps.get(request.params.id),branch=branches.getBranch(output.branchId)!;assertEditable(branch.id);
-      if(body.expectedVersionId!==branch.versionId)throw new Error('Workflow changed. Reload settings.');
+      if(body.expectedVersionId!==branch.versionId||body.expectedSettingsRevision!==output.settingsRevision)throw new Error('Workflow changed. Reload settings.');
       const version=branches.version(branch.id,branch.versionId);if(!version)throw new Error('Publish this workflow before changing its schedule');
       if(version.definition.trigger.kind!=='manual'&&version.definition.trigger.kind!=='schedule')throw new Error('Open More options to change an event-triggered workflow');
+      if(body.automatic&&!branch.enabled)throw new Error('Workflow is disabled. Enable it in More options before turning on automatic runs.');
       const priorConfig=branches.trigger(branch.id)?.sourceConfig;
       const schedule=priorConfig&&'scheduleKind'in priorConfig?priorConfig:undefined;
       const config={scheduleKind:'interval' as const,everyMs:body.everyMs,startsAt:schedule?.scheduleKind==='interval'&&schedule.everyMs===body.everyMs?schedule.startsAt:new Date(Date.now()+body.everyMs).toISOString(),...(schedule&&'whenRunning'in schedule&&schedule.whenRunning?{whenRunning:schedule.whenRunning}:{})};

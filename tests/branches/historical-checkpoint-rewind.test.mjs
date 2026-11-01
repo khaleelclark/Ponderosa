@@ -1112,3 +1112,32 @@ for(const kind of ['duplicateIds','emptyId','nonArrayIds','rootOutsideSet'])test
  const event=db.prepare("SELECT id FROM branch_checkpoints WHERE execution_id=? AND kind='resource_operation' AND substr(transition_key,1,?)=? ORDER BY id DESC LIMIT 1").get(f.source.id,key.length+1,key+':');assert.ok(event);db.prepare('UPDATE branch_checkpoints SET evidence_json=? WHERE id=?').run(bytes,event.id);
  const before=allocationCounts(f),invocation=f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(f.source.id).checkpoint_invocation_json;await f.reopen();assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'malformed-owned-import'),/custody/);assert.deepEqual(allocationCounts(f),before);assert.equal(f.store.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(f.source.id).checkpoint_invocation_json,invocation);assert.equal(f.branches.claimScript('must-not-dispatch'),undefined);
 });
+
+// Written for the consolidated implementation run; not executed in this source slice.
+for(const mode of ['async','sync','exit'])test(`standalone human gate ${mode}: immutable review frontier recreates fresh gates and resumes with edited state`,async t=>{
+ const dir=mkdtempSync(join(tmpdir(),'human-rewind-'));const store=new AgentStore(dir),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+ t.after(async()=>{await branches.unitSaver.drain();store.close();rmSync(dir,{recursive:true,force:true});});
+ const branch=branches.create('Review frontier',randomUUID());
+ const definition={schema:'ponderosa.branch.v1',name:'Review frontier',trigger:{kind:'manual'},entry:'review',steps:[{id:'review',kind:'human_gate',prompt:'Review the supplied state',editable:true},{id:'next',kind:'human_gate',prompt:'Review again',editable:true}],controls:[],edges:[{id:'approved',from:'review',to:'next',on:'approved'}],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+ branches.deploy({chatId:'',branchId:branch.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition,bindings:{agents:{},directories:{}}});
+ if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
+ const source=branches.accept(branch.id,randomUUID(),'original state');
+ for(let i=0;i<12&&!branches.detail(source.id).gates.length;i++){branches.advance();await branches.unitSaver.drain();}
+ if(mode==='exit')await branches.unitSaver.completeExits();
+ const originalGate=branches.detail(source.id).gates[0];assert.equal(originalGate.state,'waiting');
+ const cp=branches.historicalCheckpoints(branch.id,source.id).find(c=>c.restoreSupported);assert.ok(cp,'Gate frontier is executable');
+ assert.throws(()=>branches.rewindHistorical(branch.id,source.id,cp.id,cp.contentHash,'live-source'),/settled/);
+ branches.cancel(source.id);for(let i=0;i<8&&branches.execution(source.id).state!=='canceled';i++){branches.advance();await branches.unitSaver.drain();}
+ const next=branches.rewindHistorical(branch.id,source.id,cp.id,cp.contentHash,'review-again');
+ assert.equal(branches.rewindHistorical(branch.id,source.id,cp.id,cp.contentHash,'review-again').id,next.id);
+ const restored=branches.detail(next.id).gates[0];assert.notEqual(restored.id,originalGate.id);assert.equal(restored.state,'waiting');assert.equal(restored.proposal,'original state');
+ assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM branch_gate_notifications WHERE gate_id=? AND state=\'pending\'').get(restored.id).n,1);
+ assert.ok(branches.detail(next.id).attempts.every(a=>!a.requestId&&a.fence===0));
+ for(let i=0;i<8&&branches.execution(next.id).state==='queued';i++){branches.advance();await branches.unitSaver.drain();}
+ branches.resolveGate(restored.id,{commandKey:'edited',expectedRevision:0,decision:'approve',output:'edited state'});
+ for(let i=0;i<12&&branches.detail(next.id).gates.length<2;i++){branches.advance();await branches.unitSaver.drain();}
+ const second=branches.detail(next.id).gates.find(g=>g.id!==restored.id);assert.equal(second.proposal,'edited state');
+ if(mode==='exit')await branches.unitSaver.completeExits();
+ assert.ok(branches.historicalCheckpoints(branch.id,next.id).some(c=>c.restoreSupported),'A restored/resolved prefix remains checkpointable');
+ assert.equal(branches.detail(source.id).gates[0].state,'canceled');
+});

@@ -284,12 +284,12 @@ export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTea
 /** A stable output URL projects the existing Agent and workflow, without a second chat log. */
 export interface OutputAgentAppDto {
   agentId: string; branchId: string; projectId: string; chatId: string; title: string;
-  url: string; speaker: boolean; versionId: string; model?: string; engine: string;
+  url: string; speaker: boolean; versionId: string; bindingRevisionId:string; settingsRevision:string; model?: string; engine: string;
   automatic: boolean; everyMs?: number;
 }
-export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto }
+export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto; setupError?:{message:string;at:string} }
 
-/** INITIAL-only executable checkpoint slice; runtime checkpoints use a future continuation schema. */
+/** Before-entry checkpoint; saved historical frontiers use the separate continuation contract. */
 export interface BranchInitialCheckpointDto {
   id:number; executionId:string; branchId:string; contentHash:string; createdAt:string;
   frontier:'before_entry'; restoreSupported:boolean;

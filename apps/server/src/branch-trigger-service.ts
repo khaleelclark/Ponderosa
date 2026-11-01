@@ -399,8 +399,9 @@ export class BranchTriggerSourceService {
       }
       if (!due.length) this.scheduleCycleCutoff = undefined;
       this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule_polling"));
-    } catch {
-      this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: "Schedule polling is temporarily unavailable (schedule_poll_failed). No scheduled work was accepted by this check; polling will retry." }));
+    } catch (error) {
+      const cause=error instanceof Error?error.message:String(error);
+      this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: `Schedule polling failed: ${cause}. No scheduled work was accepted by this check; polling will retry.` }));
       return;
     }
     for (const trigger of due) {
@@ -409,9 +410,10 @@ export class BranchTriggerSourceService {
       try {
         if (!this.destinationAvailable(trigger)) continue;
         this.fireSchedule(trigger, now);
-      } catch {
+      } catch (error) {
+        const cause=error instanceof Error?error.message:String(error);
         this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ trigger, kind: "schedule", episode,
-          error: "Scheduled check could not be accepted (schedule_accept_failed). Check current Trigger Events; unchanged due checks retry automatically." }));
+          error: `Scheduled check could not be accepted: ${cause}. Check current Trigger Events; unchanged due checks retry automatically.` }));
         continue;
       }
       // Diagnostic persistence is not admission: a notification-write failure
@@ -528,8 +530,9 @@ export class BranchTriggerSourceService {
 
   private ensureSchedulePolling(): void {
     if (this.scheduleTimer||!this.sourceAvailable()) return;
-    this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => {
-      this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: "Schedule polling is temporarily unavailable (schedule_poll_failed). Polling will retry." }));
+    this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(error => {
+      const cause=error instanceof Error?error.message:String(error);
+      this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: `Schedule polling failed: ${cause}. Polling will retry.` }));
     }); }, 1_000);
     this.scheduleTimer.unref();
   }

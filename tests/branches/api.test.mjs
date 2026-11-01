@@ -258,10 +258,10 @@ test('Assistant bootstrap is single-flight, persistent, editable and disabled un
   assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,app.agentId);
   assert.deepEqual(f.ok(await f.api('GET',`/api/branches/engine/agents/${app.agentId}`)).messages,history);
   await f.reopen();assert.equal(f.ok(await enable()).app.agentId,app.agentId);
-  const schedule=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,automatic:false,everyMs:1200000}));
+  const schedule=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:false,everyMs:1200000}));
   assert.equal(schedule.automatic,false);assert.equal(schedule.everyMs,1200000);
   assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).sourceConfig.whenRunning,'run_latest','everyday schedule settings preserve the existing busy policy');
-  assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,automatic:true,everyMs:60000})).status,409);
+  assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:true,everyMs:60000})).status,409);
   f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}`,{enabled:false}));
   assert.equal(f.ok(await enable()).enabled,false,'ordinary initialization never restores a removed speaker');
   assert.equal((await f.api('GET',`/api/branches/output-apps/${app.agentId}`)).status,404);
@@ -314,7 +314,7 @@ test('deleting the speaker disables Assistant without automatic recreation and m
  await withFixture(t,async f=>{
   const status=f.ok(await f.api('POST','/api/branches/assistant',{enabled:true})),app=status.app;
   for(const body of [{enabled:'yes'},{enabled:true,speaker:'yes'},{enabled:true,extra:'scope'}])assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}`,body)).status,409);
-  for(const everyMs of [0,1000,60000.5])assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,automatic:true,everyMs})).status,409);
+  for(const everyMs of [0,1000,60000.5])assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:true,everyMs})).status,409);
   assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,app.agentId);
   const preview=f.ok(await f.api('POST',`/api/branches/engine/projects/${app.projectId}/agent-deletions/preview`,{rootAgentIds:[app.agentId]}));
   f.ok(await f.api('POST',`/api/branches/engine/projects/${app.projectId}/agent-deletions/commit`,{rootAgentIds:[app.agentId],previewHash:preview.previewHash}));
@@ -335,3 +335,30 @@ test('a retry pins the original Assistant import payload even if workspace model
  await assert.rejects(create().initialize(true),/Controlled interrupted/);
  assert.deepEqual(attempts[1],attempts[0],'retry must not change the tracked import hash/key or silently adopt new defaults');
 });
+
+// Public-client regressions are authored for the later consolidated run.
+test('public Branches client uses only encoded HTTP routes, stable mutation keys and visible errors',async()=>{
+ const {BranchesClient,BranchesHttpError}=await import('../../packages/core/dist/branches-client.js');const calls=[];
+ const client=new BranchesClient('http://fixture.invalid',async(url,init)=>{calls.push({url:String(url),init});return new Response(JSON.stringify({error:'Exact conflict'}),{status:409,headers:{'content-type':'application/json'}});});
+ await assert.rejects(client.invoke('workflow/one','state','stable-key'),error=>error instanceof BranchesHttpError&&error.status===409&&error.message==='Exact conflict');
+ assert.equal(calls.length,1,'Mutations are never automatically retried');assert.equal(calls[0].url,'http://fixture.invalid/api/branches/workflow%2Fone/executions');assert.deepEqual(JSON.parse(calls[0].init.body),{input:'state',occurrenceKey:'stable-key'});
+});
+
+test('public Branches SSE client preserves chunked UTF-8, CR/LF boundaries, reset and exact cursor while closing on return',async()=>{
+ const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');const bytes=new TextEncoder().encode(': heartbeat\r\nevent: agent_status\r\nid: 7\r\ndata: {"reset":true,"label":"é"}\r\n\r\nevent: event\nid: 8\ndata: {"event":{"executionId":"exact-run","text":"chunk"}}\n\n');
+ let canceled=false,request;
+ const client=new BranchesClient('http://fixture.invalid',async(_url,init)=>{request=init;return new Response(new ReadableStream({start(controller){for(const byte of bytes)controller.enqueue(Uint8Array.of(byte));},cancel(){canceled=true;}}),{headers:{'content-type':'text/event-stream'}});});
+ const stream=client.streamAgent('agent',{lastEventId:'6'}),first=(await stream.next()).value,second=(await stream.next()).value;
+ assert.equal(request.headers['last-event-id'],'6');assert.deepEqual(first,{event:'agent_status',id:'7',data:{reset:true,label:'é'}});assert.equal(second.id,'8');assert.equal(second.data.event.executionId,'exact-run');await stream.return();assert.equal(canceled,true);
+});
+
+test('output settings reject same-version trigger drift and a fresh snapshot can save the intended schedule',async t=>withFixture(t,async f=>{
+ const app=f.ok(await f.api('GET','/api/branches/assistant')).app;assert.ok(app);
+ const trigger=f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`));
+ f.ok(await f.api('PATCH',`/api/branches/${app.branchId}/trigger`,{enabled:false,reviewedTrigger:trigger}));
+ const current=f.ok(await f.api('GET',`/api/branches/output-apps/${app.agentId}`));assert.equal(current.versionId,app.versionId);assert.notEqual(current.settingsRevision,app.settingsRevision);
+ const request={expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:true,everyMs:600000};
+ assert.equal((await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,request)).status,409);
+ assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).enabled,false);
+ const saved=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{...request,expectedSettingsRevision:current.settingsRevision}));assert.equal(saved.automatic,true);
+}));

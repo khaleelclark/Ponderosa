@@ -53,6 +53,7 @@ export interface WorkspacePreferencesDto {
   speech?: SpeechPreferencesDto;
   /** Output designations are local installation roles, never imported Agent authority. */
   outputApps?: { agentIds: string[]; speakerAgentId: string | null; initialized: boolean;
+    setupError?: {message:string;at:string};
     roleEpoch?: number;
     agentEpochs?: Record<string,number>;
     importReviews?: Record<string, { binding: string; state: string; targetEpochs: Record<string,number>; eligible: boolean; createdAt: string; operationId?: string; applied?: boolean; review: import("./agents.js").OutputRoleImportReviewDto }>;

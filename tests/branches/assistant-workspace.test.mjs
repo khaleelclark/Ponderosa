@@ -137,7 +137,7 @@ test('default ten-minute automation invokes the check, stays quiet without chang
   await until(()=>checked,'actual automatic Assistant check',20000);
   await until(()=>store.sqlite.prepare("SELECT 1 FROM branch_executions WHERE branch_id=? AND state='completed'").get(app.branchId),'quiet automatic execution completes',20000);
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM runtime_communications WHERE json_extract(payload_json,'$.assistantSources') IS NOT NULL").get().n,0);
-  const changed=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,automatic:true,everyMs:1200000}));assert.equal(changed.everyMs,1200000);assert.equal(branches.trigger(app.branchId).sourceConfig.everyMs,1200000);
+  const changed=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:true,everyMs:1200000}));assert.equal(changed.everyMs,1200000);assert.equal(branches.trigger(app.branchId).sourceConfig.everyMs,1200000);
   assert.equal((await f.api('POST','/api/agent-workspace',{operation:'projects'})).status,401);
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
@@ -180,3 +180,18 @@ test('bundled MCP forwards every workspace tool through the dedicated Run-capabi
   child.stdin.end();await exited;child=undefined;
  }finally{if(child){child.kill();await exited;}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+
+test('Assistant exists before page initialization; explicit speaker move is compare-and-set and survives restart',options,t=>withFixture(t,async f=>{
+ const initial=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(initial.enabled,true);assert.equal(initial.app.speaker,true);
+ const original=initial.app,identity={agentId:original.agentId,branchId:original.branchId};
+ assert.deepEqual((await assistant(f)).agentId,identity.agentId,'Opening Assistant does not provision another workflow');
+ const branch=f.ok(await f.api('POST','/api/branches',{name:'Moved speaker workflow',idempotencyKey:randomUUID()}));
+ const chat=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{label:'Moved speaker',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+ const agent=f.ok(await f.api('POST',`/api/branches/engine/projects/${chat.projectId}/agents`,{title:'New speaker',engine:'codex',conversationId:chat.id}));
+ assert.equal((await f.api('POST','/api/branches/assistant/speaker',{agentId:agent.id,expectedSpeakerId:null})).status,409);
+ const moved=f.ok(await f.api('POST','/api/branches/assistant/speaker',{agentId:agent.id,expectedSpeakerId:original.agentId}));assert.equal(moved.app.agentId,agent.id);
+ assert.equal(f.ok(await f.api('GET',`/api/branches/output-apps/${original.agentId}`)).speaker,false);
+ assert.equal(f.ok(await f.api('GET',`/api/branches/${original.branchId}/trigger`)).enabled,false);
+ await f.reopen();assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,agent.id);
+ f.ok(await f.api('PATCH',`/api/branches/engine/agents/${agent.id}`,{model:null}));assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,agent.id);
+}));

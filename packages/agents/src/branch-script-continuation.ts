@@ -10,7 +10,7 @@ export type Selected=Record<string,Row[]>;
 export const SCRIPT_CONTINUATION_COMPATIBILITY={format:'script-control-frontier.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false):boolean {
-  return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
+  return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||!calls&&!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
@@ -20,26 +20,28 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     const tables=['execution','paths','steps','attempts','forks','joins','loops','maps','items','sealedResults','bundles','gates','actions','resources'];
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
     const e=selected.execution![0],p=selected.paths![0],terminal=context?.terminal===true;
-    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?'completed':context?.waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':'manual')
+    const waitingGate=!context&&selected.gates!.some(g=>g.state==='waiting');
+    const waiting=context?.waiting||waitingGate;
+    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?'completed':waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':'manual')
       ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
-      ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?'completed':context?.waiting?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
+      ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?'completed':waiting?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
     if(!scriptDefinitionSupported(definition,!!context,context?.resourceFrontier))return false;
-    if(['forks','joins','maps','items','bundles','gates','actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
+    if(['forks','joins','maps','items','bundles',...(context?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
     if(context?.resourceFrontier&&!resourceReservationSupported(selected,definition))return false;
     if(!definition.steps.some(s=>s.id===p.node_id)&&!definition.controls.some(c=>c.id===p.node_id))return false;
     const ids=new Set<string>();
-    for(const row of [p,...selected.steps!,...selected.attempts!,...selected.sealedResults!]){if(typeof row.id!=='string'||ids.has(row.id))return false;ids.add(row.id);}
+    for(const row of [p,...selected.steps!,...selected.attempts!,...selected.sealedResults!,...selected.gates!]){if(typeof row.id!=='string'||ids.has(row.id))return false;ids.add(row.id);}
     const prepared=selected.steps!.filter(s=>s.state==='prepared'||s.state==='waiting');
     if(prepared.length!==(!terminal&&p.step_execution_id?1:0)||!terminal&&p.step_execution_id&&prepared[0]?.id!==p.step_execution_id)return false;
     if(selected.attempts!.length!==selected.steps!.length)return false;
     for(const s of selected.steps!){
-      if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed',...(context?.waiting?['waiting']:[])].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
+      if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed',...(waiting?['waiting']:[])].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
       const attempts=selected.attempts!.filter(a=>a.step_execution_id===s.id),a=attempts[0];
       if(attempts.length!==1||!a||a.error||a.number!==1||a.state!==s.state||a.purpose!=='step'||a.request_id||a.recovery_of_request_id||a.cancel_requested||a.runtime_outcome_json||a.input_hash!==hash(s.input_text))return false;
       const sealed=selected.sealedResults!.filter(r=>r.step_execution_id===s.id);
       if(s.state==='prepared'||s.state==='waiting'){
-        if(s.state==='waiting'&&(!context?.waiting||!context.children[a.id]||context.children[a.id]!.completed||definition.steps.find(step=>step.id===s.step_id)?.kind!=='branch_call'))return false;
+        if(s.state==='waiting'&&!(waitingGate&&selected.gates!.some(g=>g.step_execution_id===s.id&&g.state==='waiting')||context?.waiting&&context.children[a.id]&&!context.children[a.id]!.completed&&definition.steps.find(step=>step.id===s.step_id)?.kind==='branch_call'))return false;
         if(s.id!==p.step_execution_id||s.step_id!==p.node_id||s.input_text!==p.input_text||a.fence!==0||s.result_json!==null||a.result_json!==null||sealed.length)return false;
       }else{
         const r=sealed[0],result=JSON.parse(s.result_json);
@@ -48,6 +50,15 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
           ||stableJson(result)!==s.result_json||a.result_json!==s.result_json||r.result_json!==s.result_json||r.content_hash!==hash(s.result_json))return false;
       }
     }
+    for(const gate of selected.gates!){
+      const step=selected.steps!.find(s=>s.id===gate.step_execution_id),node=definition.steps.find(s=>s.id===step?.step_id),attempt=selected.attempts!.find(a=>a.id===gate.attempt_id);
+      if(context||!step||node?.kind!=='human_gate'||!attempt||attempt.step_execution_id!==step.id||gate.purpose!=='approval'||gate.revision!==(gate.state==='resolved'?1:0)
+        ||gate.proposal_text!==step.input_text
+        ||gate.choices_json!==(node.choices?stableJson(node.choices):null)||!['waiting','resolved'].includes(gate.state)
+        ||gate.state==='waiting'&&(step.state!=='waiting'||gate.response_json!==null)
+        ||gate.state==='resolved'&&(step.state!=='completed'||!gate.response_json))return false;
+    }
+    if(selected.gates!.length!==selected.steps!.filter(s=>definition.steps.find(node=>node.id===s.step_id)?.kind==='human_gate'&&s.state!=='prepared').length)return false;
     if(selected.sealedResults!.length!==selected.steps!.filter(s=>s.state==='completed').length||p.last_result_id&&!selected.sealedResults!.some(r=>r.id===p.last_result_id))return false;
     for(const r of selected.loops!){if(r.execution_id!==e.id||r.path_id!==p.id||!definition.edges.some(edge=>edge.id===r.edge_id&&edge.loop)||!Number.isSafeInteger(r.iterations)||r.iterations<1)return false;}
     if(e.traversals!==p.traversals+(context?.descendantTraversals??0)||e.loop_iterations!==selected.loops!.reduce((total,r)=>total+r.iterations,0)+(context?.descendantLoops??0))return false;
@@ -144,7 +155,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
       const binding=db.prepare('SELECT content_hash,bindings_json FROM branch_bindings WHERE id=? AND branch_id=?').get(c.bindingRevisionId,se.branch_id) as Row|undefined;
       if(!version||!binding||version.content_hash!==c.versionHash||payloadHash(JSON.parse(version.definition_json))!==c.versionHash||payloadHash(definition)!==c.versionHash
         ||binding.content_hash!==c.bindingHash||payloadHash(JSON.parse(binding.bindings_json))!==c.bindingHash)return;
-      const keys=['paths','steps','attempts','sealedResults'].flatMap(key=>snapshot.selected[key].map((row:Row)=>row.id));
+      const keys=['paths','steps','attempts','sealedResults','gates'].flatMap(key=>snapshot.selected[key].map((row:Row)=>row.id));
       const ids=line.idMap;
       if(!ids||Array.isArray(ids)||stableJson(Object.keys(ids).sort())!==stableJson([...keys].sort())
         ||Object.values(ids).some(id=>typeof id!=='string'||!id||keys.includes(id))||new Set(Object.values(ids)).size!==keys.length)return;
@@ -171,12 +182,13 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   try {
     if(!scriptFrontierSupported(selected,definition,context)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
+    const waitingGate=!context&&selected.gates!.some(g=>g.state==='waiting');
     const closing=checkpoint?.invocation;
     if(configuration.checkpointMode==='exit'&&!context?.terminal){
       if(!closing||stableJson(Object.keys(checkpoint!).sort())!==stableJson(['closing','invocation','invocationId','mode'])
-        ||stableJson(Object.keys(closing).sort())!==stableJson(['id','interruptionId','mode','ordinal','primaryOutcome','state'])
+        ||stableJson(Object.keys(closing).sort())!==stableJson(['id',...(waitingGate&&!Object.hasOwn(closing,'interruptionId')?[]:['interruptionId']),'mode','ordinal','primaryOutcome','state'])
         ||checkpoint!.mode!=='exit'||checkpoint!.closing!==true||checkpoint!.invocationId!==closing.id||closing.mode!=='exit'
-        ||closing.state!=='interrupted'||closing.primaryOutcome!=='interrupted'||typeof closing.id!=='string'||typeof closing.interruptionId!=='string'
+        ||closing.state!=='interrupted'||closing.primaryOutcome!=='interrupted'||typeof closing.id!=='string'||!waitingGate&&typeof closing.interruptionId!=='string'
         ||!Number.isSafeInteger(closing.ordinal)||closing.ordinal<1)return false;
     }else if(checkpoint&&!context?.terminal)return false;
     const owner=db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
@@ -188,8 +200,8 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     if(stableJson(owned)!==stableJson(events))return false;
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let finished:Row|undefined,terminalObserved=false;
-    const admitted=new Set<string>(),completedChildren=new Set<string>();
-    let resourceReserved=!!seed?.selected.resources?.length;
+    const admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();
+    let resourceReserved=!!seed?.selected.resources?.length,gateClosing:Row|undefined;
     let started=false,accepted=false,pendingLoop:string|undefined,interruption:Row|undefined,activeInvocation:Row|undefined;
     const authorized=new Map<string,number>(),exited=new Set<string>(),seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
     if(seed){
@@ -206,6 +218,14 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         if(!attempt||attempt.step_execution_id!==ids[oldAttempt.step_execution_id]||['number','input_hash','purpose'].some(key=>attempt[key]!==oldAttempt[key])
           ||oldAttempt.state==='completed'&&(attempt.state!=='completed'||attempt.fence!==0||attempt.result_json!==oldAttempt.result_json))return false;
         fences.set(attempt.id,0);
+      }
+      for(const oldGate of old.gates!){
+        const gate=selected.gates!.find(g=>g.id===ids[oldGate.id]);
+        if(!gate||gate.step_execution_id!==ids[oldGate.step_execution_id]||gate.attempt_id!==ids[oldGate.attempt_id]
+          ||['proposal_text','choices_json','purpose','prompt_text'].some(k=>gate[k]!==oldGate[k])
+          ||oldGate.state==='resolved'&&(gate.state!=='resolved'||gate.response_json!==oldGate.response_json))return false;
+        openedGates.add(gate.id);
+        if(oldGate.state==='resolved')resolvedGates.set(gate.id,JSON.parse(oldGate.response_json).decision);
       }
       for(const oldResult of old.sealedResults!){
         const result=selected.sealedResults!.find(row=>row.id===ids[oldResult.id]);
@@ -264,6 +284,32 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           }
           break;
         }
+        case 'gate_opened':{
+          const gate=selected.gates!.find(g=>g.id===v.gateId),step=definition.steps.find(s=>s.id===current?.step_id);
+          if(context||!current||!gate||step?.kind!=='human_gate'||gate.step_execution_id!==current.id||openedGates.has(gate.id)
+            ||v.revision!==0||v.purpose!=='approval'||v.prompt!==text(step.prompt)||v.prompt!==gate.prompt_text
+            ||v.proposal!==current.input_text||event.transition_key!==`gate:${gate.id}:0`)return false;
+          openedGates.add(gate.id);break;
+        }
+        case 'gate_checkpoint_closed':{
+          const gate=selected.gates!.find(g=>g.id===v.gateId);
+          if(context||!gate||!openedGates.has(gate.id)||resolvedGates.has(gate.id)||typeof v.invocationId!=='string'||!Number.isSafeInteger(v.ordinal)||v.ordinal<1
+            ||v.mode!==(configuration.checkpointMode??'async')||event.transition_key!==`gate-invocation:${v.invocationId}`)return false;
+          gateClosing=v;break;
+        }
+        case 'gate_resolved':{
+          const gate=selected.gates!.find(g=>g.id===v.gateId),step=definition.steps.find(s=>s.id===current?.step_id);
+          if(context||!current||!gate||step?.kind!=='human_gate'||gate.step_execution_id!==current.id||!openedGates.has(gate.id)||resolvedGates.has(gate.id)
+            ||gate.state!=='resolved'||v.revision!==0||event.transition_key!==`gate-resolved:${gate.id}:0`)return false;
+          const response=JSON.parse(gate.response_json);
+          if(response.decision!==v.decision||!['approve','reject'].includes(response.decision)||response.expectedRevision!==0||typeof response.commandKey!=='string')return false;
+          let output=gate.proposal_text;
+          if(response.choice!==undefined){if(!step.choices?.includes(response.choice)||response.output!==undefined)return false;output=response.choice;}
+          else if(step.choices?.length&&response.decision==='approve')return false;
+          if(response.output!==undefined){if(!step.editable)return false;output=branchText(response.output);}
+          if(v.output!==output)return false;
+          resolvedGates.set(gate.id,response.decision);break;
+        }
         case 'resource_reserved':{
           const r=selected.resources![0];
           if(!context?.resourceFrontier||resourceReserved||interruption||!started||!current||!r||r.step_execution_id!==current.id
@@ -283,12 +329,20 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           const a=selected.attempts!.find(a=>a.id===v.attemptId);
           if(!current||settled||!a||a.step_execution_id!==current.id||stableJson(v.result)!==current.result_json)return false;
           if(definition.steps.find(row=>row.id===current!.step_id)?.kind==='branch_call'&&(!completedChildren.has(a.id)||stableJson(v.result)!==stableJson({failed:false,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})})))return false;
+          const node=definition.steps.find(row=>row.id===current!.step_id);
+          if(node?.kind==='human_gate'){
+            const gate=selected.gates!.find(g=>g.step_execution_id===current!.id),decision=gate&&resolvedGates.get(gate.id);
+            if(!gate||!decision)return false;
+            const response=JSON.parse(gate.response_json),output=response.output??response.choice??gate.proposal_text;
+            const routed=decision==='approve'||definition.edges.some(edge=>edge.from===node.id&&edge.on==='rejected');
+            if(stableJson(v.result)!==stableJson({failed:false,output:routed?output:`Approval rejected at ${node.label||node.id}.`}))return false;
+          }
           settled=true;break;
         }
         case 'result_sealed':{
           const r=selected.sealedResults!.find(r=>r.id===v.resultId);
           if(!current||!settled||!r||r.step_execution_id!==current.id||v.stepExecutionId!==current.id||v.terminalAttemptId!==r.terminal_attempt_id||v.contentHash!==r.content_hash)return false;
-          last=r.id;const result=JSON.parse(current.result_json),edge=definition.edges.find(edge=>edge.from===node&&edge.on==='success');
+          last=r.id;const result=JSON.parse(current.result_json),gate=selected.gates!.find(g=>g.step_execution_id===current!.id),on=gate?(resolvedGates.get(gate.id)==='approve'?'approved':'rejected'):'success',edge=definition.edges.find(edge=>edge.from===node&&edge.on===on);
           if(!edge)finished={node,input,stepId:current.id,result};
           follow(edge,result.output??'');current=undefined;break;
         }
@@ -329,11 +383,14 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         default:return false;
       }
     }
-    if(configuration.checkpointMode==='exit'&&!context?.terminal&&(!interruption||interruption.interruptionId!==closing.interruptionId
+    if(configuration.checkpointMode==='exit'&&waitingGate&&(!gateClosing||gateClosing.invocationId!==closing.id||gateClosing.ordinal!==closing.ordinal
+      ||!selected.gates!.some(g=>g.id===gateClosing!.gateId&&g.state==='waiting')))return false;
+    if(configuration.checkpointMode==='exit'&&!context?.terminal&&(!waitingGate||closing?.interruptionId!==undefined)&&(!interruption||interruption.interruptionId!==closing.interruptionId
       ||interruption.invocationId!==closing.id||interruption.ordinal!==closing.ordinal||[...authorized.keys()].some(id=>!exited.has(id))))return false;
-    if(context&&[...authorized.keys()].some(id=>!exited.has(id)))return false;
+    if((context||waitingGate)&&[...authorized.keys()].some(id=>!exited.has(id)))return false;
     if(context?.resourceFrontier&&!resourceReserved)return false;
-    if(!started||pendingLoop||current&&!['prepared',...(context?.waiting?['waiting']:[])].includes(current.state)||seen.size!==selected.steps!.length)return false;
+    if(openedGates.size!==selected.gates!.length||selected.gates!.some(g=>resolvedGates.has(g.id)!==(g.state==='resolved')))return false;
+    if(!started||pendingLoop||current&&!['prepared',...(context?.waiting||waitingGate?['waiting']:[])].includes(current.state)||seen.size!==selected.steps!.length)return false;
     if(context?.terminal){
       if(!finished||!terminalObserved||p.node_id!==finished.node||p.input_text!==finished.input||p.step_execution_id!==finished.stepId||p.result_json!==stableJson(finished.result)||e.output_text!==(finished.result.output??null))return false;
     }else if(p.node_id!==node||p.input_text!==input||p.step_execution_id!==(current?.id??null))return false;

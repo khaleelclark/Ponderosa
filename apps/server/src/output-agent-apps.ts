@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {stableJson} from '@ponderosa/agents';
 import type {PortableOutputRoleDto,OutputRoleImportReviewDto} from '@ponderosa/core';
 import type {AgentStore,BranchStore,WorkspaceStore} from '@ponderosa/agents';
@@ -87,8 +87,11 @@ export class OutputAgentApps {
     if(!this.roles().agentIds.includes(id))throw new OutputAppUnavailableError('Output Agent is not designated');
     const {agent,chat}=this.owner(id),branch=this.branches.getBranch(chat.branchId!)!,trigger=this.branches.trigger(branch.id);
     const config=trigger?.sourceConfig;
+    const revision=this.store.sqlite.prepare('SELECT configuration_revision revision FROM branches WHERE id=?').get(branch.id) as {revision:number};
+    const settingsRevision=createHash('sha256').update(stableJson({versionId:branch.versionId,bindingRevisionId:branch.bindingRevisionId,configurationRevision:revision.revision,enabled:branch.enabled,
+      trigger:trigger?{id:trigger.id,enabled:trigger.enabled,sourceKind:trigger.sourceKind,sourceConfig:trigger.sourceConfig}:null})).digest('hex');
     return {agentId:id,branchId:branch.id,projectId:chat.projectId,chatId:chat.id,title:agent.title,url:`/apps/${encodeURIComponent(id)}`,
-      speaker:this.roles().speakerAgentId===id,versionId:branch.versionId,model:agent.model??undefined,engine:agent.activeEngine,
+      speaker:this.roles().speakerAgentId===id,versionId:branch.versionId,bindingRevisionId:branch.bindingRevisionId,settingsRevision,model:agent.model??undefined,engine:agent.activeEngine,
       automatic:Boolean(trigger?.enabled&&branch.enabled),...(config&&'scheduleKind'in config&&config.scheduleKind==='interval'?{everyMs:config.everyMs}:{})};
   }
   private pause(app:OutputAgentAppDto){
@@ -106,25 +109,47 @@ export class OutputAgentApps {
     }
     if(roles.speakerAgentId===id&&!speaker)this.pause(this.get(id));
     this.write({agentEpochs:{...roles.agentEpochs,[id]:(roles.agentEpochs?.[id]??0)+1},agentIds:enabled?[...new Set([...roles.agentIds,id])]:roles.agentIds.filter(value=>value!==id),
-      speakerAgentId:speaker?id:roles.speakerAgentId===id?null:roles.speakerAgentId,initialized:speaker||roles.initialized});
+      speakerAgentId:speaker?id:roles.speakerAgentId===id?null:roles.speakerAgentId,initialized:speaker||roles.initialized,...(speaker?{setupError:undefined}:{})});
     if(speaker)this.initializeReportScan(id);
     return enabled?this.get(id):undefined;
   }
   status():AssistantStatusDto{
     const roles=this.roles();let app:OutputAgentAppDto|undefined;
     if(roles.speakerAgentId)try{app=this.get(roles.speakerAgentId);}catch(error){if(!(error instanceof OutputAppUnavailableError))throw error;}
-    return {enabled:Boolean(app),initialized:roles.initialized,...(app?{app}:{})};
+    return {enabled:Boolean(app),initialized:roles.initialized,...(app?{app}:{}),...(roles.setupError?{setupError:roles.setupError}:{})};
   }
   disable(){
     const roles=this.roles();let app:OutputAgentAppDto|undefined;
     if(roles.speakerAgentId)try{app=this.get(roles.speakerAgentId);}catch(error){if(!(error instanceof OutputAppUnavailableError))throw error;}
     if(app)this.pause(app);
-    this.write({agentEpochs:{...roles.agentEpochs,...(roles.speakerAgentId?{[roles.speakerAgentId]:(roles.agentEpochs?.[roles.speakerAgentId]??0)+1}:{})},speakerAgentId:null,initialized:true,setup:undefined});return this.status();
+    this.write({agentEpochs:{...roles.agentEpochs,...(roles.speakerAgentId?{[roles.speakerAgentId]:(roles.agentEpochs?.[roles.speakerAgentId]??0)+1}:{})},speakerAgentId:null,initialized:true,setup:undefined,setupError:undefined});return this.status();
+  }
+  /** Human-confirmed role move; one workspace append prevents an observable two-speaker state. */
+  moveSpeaker(id:string,expectedSpeakerId:string|null):AssistantStatusDto {
+    this.owner(id);
+    if(this.pending)throw new Error('Assistant setup is still finishing. Try moving the speaker after setup settles.');
+    const roles=this.roles(),current=this.status().app;
+    if((current?.agentId??null)!==expectedSpeakerId)throw Object.assign(new Error('Ponderosa speaker changed. Reload settings.'),{statusCode:409});
+    if(current?.agentId===id)return this.status();
+    const prior=current?this.branches.trigger(current.branchId):undefined;
+    if(current)this.pause(current);
+    try{
+      this.initializeReportScan(id);
+      this.write({agentIds:[...new Set([...roles.agentIds,id])],speakerAgentId:id,initialized:true,setup:undefined,setupError:undefined,
+        agentEpochs:{...roles.agentEpochs,[id]:(roles.agentEpochs?.[id]??0)+1,...(current?{[current.agentId]:(roles.agentEpochs?.[current.agentId]??0)+1}:{})}});
+    }catch(error){
+      if(prior)try{this.branches.triggers.updateTriggerDefinition(prior.id,{enabled:prior.enabled});}catch(cleanup){throw new AggregateError([error,cleanup],'Speaker move failed and prior schedule restoration failed');}
+      throw error;
+    }
+    return this.status();
   }
   initialize(force=false):Promise<AssistantStatusDto>{
-    if(this.pending)return this.pending;
+    if(this.pending)return this.pending.then(status=>force&&!status.enabled?this.initialize(true):status);
     if(this.status().enabled||(!force&&this.roles().initialized))return Promise.resolve(this.status());
-    const operation=this.createDefault();this.pending=operation;
+    const operation=this.createDefault().then(status=>{if(this.roles().setupError)this.write({setupError:undefined});return {...status,setupError:undefined};},error=>{
+      try{this.write({setupError:{message:error instanceof Error?error.message:String(error),at:new Date().toISOString()}});}catch(reportError){throw new AggregateError([error,reportError],'Assistant setup and failure recording failed');}throw error;
+    });
+    this.pending=operation;
     return operation.finally(()=>{if(this.pending===operation)this.pending=undefined;});
   }
   private async createDefault():Promise<AssistantStatusDto>{
