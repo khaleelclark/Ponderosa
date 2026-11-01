@@ -1,3 +1,4 @@
+import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import {CoordinationV3DestinationAdmissionAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
 import type {HostArtifactGrant} from './branch-host-adoption.js';
@@ -767,6 +768,22 @@ export class CoordinationV3Store {
       .get(activation.id, agentId) as { id: string; created_at: string; started_at: string | null; status: string } | undefined;
     return row ? { runId: row.id, leasedAt: row.created_at,
       ...(row.started_at ? { runStartedAt: row.started_at } : {}), runStatus: row.status } : undefined;
+  }
+
+  /** Same canonical activation lineage as Request update authorization. */
+  requestReplyRunTiming(requestId: string, agentId: string): {
+    runId: string; leasedAt: string; runStartedAt?: string; runStatus: string;
+  } | undefined {
+    const request=this.getRequest(requestId);
+    if(!request || request.recipientAgentId!==agentId)return undefined;
+    const row=this.sqlite.prepare(`${REQUEST_SOURCE_LINEAGE_CTE}
+      SELECT r.id,r.created_at,r.started_at,r.status FROM scheduler_runs r
+      JOIN scheduler_run_activations a ON a.run_id=r.id
+      JOIN request_source_lineage lineage ON lineage.activation_id=a.activation_id
+      WHERE lineage.request_id=? AND r.agent_id=? AND r.project_id=?
+      ORDER BY r.created_at DESC,r.id DESC LIMIT 1`).get(requestId,agentId,request.projectId) as
+      {id:string;created_at:string;started_at:string|null;status:string}|undefined;
+    return row?{runId:row.id,leasedAt:row.created_at,...(row.started_at?{runStartedAt:row.started_at}:{}),runStatus:row.status}:undefined;
   }
 
   activeAgentRun(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto["activeRun"] {

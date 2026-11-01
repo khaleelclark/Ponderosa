@@ -10,25 +10,42 @@ export class VoiceReplyStream {
   private broken = false;
   private acknowledged = false;
   private rawText = "";
-  constructor(initial: VoiceReplySnapshot, private readonly steeringIds: readonly string[] = [], private readonly authorizingOperationId?: string) { this.snapshot = initial; }
+  constructor(initial: VoiceReplySnapshot, private readonly steeringIds: readonly string[] = [], private readonly authorizingOperationId?: string, private readonly acknowledgementText?: string) { this.snapshot = initial; }
+  receiptAccepted(): boolean { return this.acknowledged && !this.broken; }
+  matchesAuthorization(operationId: string | undefined, acknowledgement: string | undefined): boolean {
+    return this.authorizingOperationId === operationId && this.acknowledgementText === acknowledgement;
+  }
   authorizationResult(): { authorized: true; streamId: string; operationId?: string; instruction: string } | { authorized: false; error: string } {
     if (this.broken) return { authorized: false, error: "reply stream authority invalidated; use ordinary ponderosa_message" };
     return { authorized: true, streamId: this.snapshot.streamId,
       ...(this.authorizingOperationId ? { operationId: this.authorizingOperationId } : {}),
-      instruction: "Write one final answer now. Its explicitly authorized bytes will stream to the exact authorized Communication route. Successful completion publishes one canonical reply through ponderosa_message authority. Do not publish a duplicate or call any other tool. Missing phase/deltas use completed-text fallback." };
+      instruction: this.snapshot.purpose === "acknowledgement"
+        ? "The host will expose only the exact acknowledgement text after this native tool receipt is observed. Continue the actual workflow now. This is provisional speech, not a final Communication or Request result. Finish work, then authorize a separate final voice answer or publish through the ordinary canonical route. Do not repeat the acknowledgement."
+        : "Write one final answer now. Its explicitly authorized bytes will stream only to the selected destination. Successful completion invokes the selected canonical message or Request-update publication API. Do not publish a duplicate or call any other tool. Missing phase/deltas use completed-text fallback." };
   }
-  observeWork(event: AgentEvent): boolean {
+  observeWork(event: AgentEvent, now = new Date().toISOString()): boolean {
+    if (this.broken) return false;
     // Only the exact operation that armed this stream and its successful acknowledgement
     // are exempt. Tool names/suffixes and arbitrary result prose confer no exemption.
     if (event.type === "tool_call" && event.id === this.authorizingOperationId && event.name === (this.snapshot.presentation === "text" ? "ponderosa_reply_stream" : "ponderosa_voice_reply")) return false;
     if (event.type === "tool_result" && this.authorizingOperationId !== undefined &&
         (event.id === this.authorizingOperationId || event.voiceReplyOperationId === this.authorizingOperationId) && event.isError === false &&
-        event.voiceReplyStreamId === this.snapshot.streamId) { this.acknowledged = true; return false; }
+        event.voiceReplyStreamId === this.snapshot.streamId) {
+      if(this.acknowledged)return false;
+      this.acknowledged = true;
+      if(this.snapshot.purpose === "acknowledgement" && this.acknowledgementText){
+        Object.assign(this.snapshot,{text:this.acknowledgementText,state:"streaming",firstTextAt:now,
+          itemId:this.authorizingOperationId,providerTurnId:this.snapshot.runId});
+        this.snapshot.sequence++;return true;
+      }
+      return false;
+    }
+    if(this.snapshot.purpose === "acknowledgement")return event.type === "error" && this.invalidate();
     return ["work_start", "command", "file_change", "tool_call", "tool_result", "error"].includes(event.type) && this.invalidate();
   }
   accept(event: Extract<AgentEvent, { type: "response_text" }>, now: string): boolean {
     const s = this.snapshot;
-    if (event.phase === "commentary" || this.broken) return false;
+    if (this.snapshot.purpose === "acknowledgement" || event.phase === "commentary" || this.broken) return false;
     if (!this.acknowledged) return this.invalidate();
     if (event.kind === "start") {
       if (++this.items !== 1) { this.invalidate(); return true; }

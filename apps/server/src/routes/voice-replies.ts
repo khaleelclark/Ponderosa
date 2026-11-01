@@ -1,12 +1,12 @@
 import {localMemoryFor} from "../local-memory.js";
 import {resourceInProduct,requestProduct} from "../product-scope.js";
 import { randomUUID } from "node:crypto";
-import type { CommunicationEvent, VoiceReplyStatus } from "@ponderosa/core";
+import type { CommunicationEvent, VoiceReplyStatus, ReplyStreamArguments } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store, StoredLogEvent } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
 import { VoiceReplyStream } from "../voice-reply-stream.js";
-import { canonicalVoiceReplyInput } from "../voice-reply-input.js";
+import { parseReplyStreamArguments, replyStreamSource } from "../reply-stream-publication.js";
 
 import { voiceMemoryExposure } from "../voice-memory-exposure.js";
 import type { VoiceExposurePorts } from "../voice-memory-exposure.js";
@@ -21,47 +21,46 @@ interface Context {
   publish(agentId: string, stored: StoredLogEvent): void;
 }
 export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void {
-  for (const presentation of ["voice", "text"] as const) app.post<{ Body: { steeringInjectionId?: string } }>(presentation === "voice" ? "/api/agent-voice-reply" : "/api/agent-reply-stream", async (request, reply) => {
+  for (const presentation of ["voice", "text"] as const) app.post<{ Body: ReplyStreamArguments }>(presentation === "voice" ? "/api/agent-voice-reply" : "/api/agent-reply-stream", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/iu, "");
     const cap = token ? c.agentMessageCapabilities.get(token) : undefined;
     const run = cap ? c.activeRuns.get(cap.agentId) : undefined;
     if (!cap || !run || run.messageCapability !== token || !c.capabilityOwnsAuthoritativeRun(cap, run)) {
       return reply.code(401).send({ error: "invalid or expired reply capability" });
     }
-    if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
-        Object.keys(request.body).some(k => k !== "steeringInjectionId") ||
-        (request.body.steeringInjectionId !== undefined && typeof request.body.steeringInjectionId !== "string")) {
-      return reply.code(400).send({ error: "invalid reply arguments" });
-    }
+    let args:ReplyStreamArguments;
+    try { args=parseReplyStreamArguments(request.body,presentation,c.coordinationV3.steeringInjectionIds(cap.runId)); }
+    catch(error){return reply.code(400).send({error:(error as Error).message});}
     const injection = c.coordinationV3.latestAcknowledgedSteeringInjection(cap.runId);
-    if (injection && request.body.steeringInjectionId !== injection) return reply.code(409).send({ error: "reply steering fence changed" });
-    if (!cap.availableToolNames.includes(presentation === "voice" ? "ponderosa_voice_reply" : "ponderosa_reply_stream") || !run.voiceReplyStreamSupported || (presentation === "voice" ? cap.defaultReply?.intent !== "direct_to_user" : !cap.defaultReply) ||
-        cap.inferredReplyCommunicationEventId || c.coordinationV3.requestIdsAttachedToRun(cap.runId, cap.agentId).length) {
-      return reply.code(409).send({ error: "reply stream unavailable; use ordinary ponderosa_message" });
+    if (injection && args.steeringInjectionId !== injection) return reply.code(409).send({ error: "reply steering fence changed" });
+    const publicationTool=args.publication?.kind==="request_update"?"ponderosa_update_request":"ponderosa_message";
+    if (!cap.availableToolNames.includes(presentation === "voice" ? "ponderosa_voice_reply" : "ponderosa_reply_stream") ||
+        !cap.availableToolNames.includes(publicationTool) || !run.voiceReplyStreamSupported ||
+        (presentation === "voice" && cap.defaultReply?.intent !== "direct_to_user")) {
+      return reply.code(409).send({ error: "reply stream unavailable; use ordinary explicit publication" });
     }
-    const voiceInput = canonicalVoiceReplyInput(c.store, c.coordinationV3, cap, presentation);
-    if (!voiceInput) {
-      return reply.code(409).send({ error: "no accepted inline Communication on this reply route" });
-    }
-    const { input } = voiceInput;
+    const source = replyStreamSource(c.store,c.coordinationV3,cap,presentation,args.publication);
+    if (!source) return reply.code(409).send({ error: "no accepted source on this exact publication route" });
     const operationId = request.headers["x-ponderosa-voice-operation-id"];
     if (operationId !== undefined && (typeof operationId !== "string" || !operationId.trim() || operationId.length > 512)) {
       return reply.code(400).send({ error: "invalid voice operation identity" });
     }
     try{localMemoryFor(app)?.beginSpeech(token!);}catch{return reply.code(409).send({error:'Memory changed before voice authorization; start a fresh turn'});}
-    if (run.voiceReply && run.voiceReply.snapshot.presentation !== presentation &&
-        !(presentation === "voice" && run.voiceReply.snapshot.presentation === undefined)) {
-      return reply.code(409).send({ error: "A different reply presentation already owns this Run" });
-    }
+    const purpose=args.acknowledgement?"acknowledgement":"answer";
+    // A received acknowledgement can hand off to a separately authorized final answer.
+    if(run.voiceReply?.snapshot.purpose==="acknowledgement" && purpose==="answer" && run.voiceReply.receiptAccepted())run.voiceReply=undefined;
+    if(run.voiceReply && (run.voiceReply.snapshot.presentation!==presentation || run.voiceReply.snapshot.purpose!==purpose ||
+      JSON.stringify(run.voiceReply.snapshot.publication)!==JSON.stringify(source.publication) || !run.voiceReply.matchesAuthorization(typeof operationId==="string"?operationId:undefined,args.acknowledgement)))
+      return reply.code(409).send({error:"A different publication already owns this Run"});
     if (!run.voiceReply) {
-      const t = c.coordinationV3.voiceReplyRunTiming(input.eventId, cap.agentId);
-      if (t?.runId !== cap.runId) return reply.code(409).send({ error: "reply input does not own this Run" });
-      run.voiceReply = new VoiceReplyStream({ presentation, replyIntent: cap.defaultReply!.intent,
-        ...(cap.defaultReply?.recipientAgentIds ? { recipientAgentIds: [...cap.defaultReply.recipientAgentIds] } : {}), projectId: input.projectId, conversationId: cap.conversationId!,
-        agentId: cap.agentId, messageId: input.eventId, runId: cap.runId, fence: cap.v3FencingToken,
-        steeringInjectionId: injection, streamId: randomUUID(), sequence: 0, text: "", state: "open", acceptedAt: input.createdAt,
-        leasedAt: t.leasedAt, runStartedAt: t.runStartedAt, ...run.voiceReplyTiming }, c.coordinationV3.steeringInjectionIds(cap.runId), typeof operationId === "string" ? operationId : undefined);
-      c.publish(cap.agentId, c.store.appendEvent(cap.agentId, { type: "voice_reply", reply: { ...run.voiceReply.snapshot } }));
+      const t=c.store.sqlite.prepare("SELECT created_at,started_at FROM scheduler_runs WHERE id=? AND agent_id=?").get(cap.runId,cap.agentId) as {created_at:string;started_at:string|null}|undefined;
+      if(!t)return reply.code(409).send({error:"reply Run unavailable"});
+      run.voiceReply = new VoiceReplyStream({ presentation,purpose,publication:source.publication,
+        ...(source.publication.kind==="message"?{replyIntent:source.publication.intent,recipientAgentIds:source.publication.recipientAgentIds}:{}),
+        projectId:source.projectId,conversationId:source.conversationId,agentId:cap.agentId,messageId:source.messageId,
+        runId:cap.runId,fence:cap.v3FencingToken,steeringInjectionId:injection,streamId:randomUUID(),sequence:0,text:"",state:"open",acceptedAt:source.acceptedAt,
+        leasedAt:t.created_at,...(t.started_at?{runStartedAt:t.started_at}:{}),...run.voiceReplyTiming },c.coordinationV3.steeringInjectionIds(cap.runId),typeof operationId==="string"?operationId:undefined,args.acknowledgement);
+      c.publish(cap.agentId,c.store.appendEvent(cap.agentId,{type:"voice_reply",reply:{...run.voiceReply.snapshot}}));
     }
     const result = run.voiceReply.authorizationResult();
     return result.authorized ? result : reply.code(409).send(result);
@@ -72,14 +71,17 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
       const chat = c.store.getConversation(id); const agent = c.store.getAgent(agentId);
       const runtime = c.coordinationV3.runtimeCommunication(messageId);
       const input = (runtime?.payload as { communication?: CommunicationEvent } | undefined)?.communication;
+      const report=presentation==="text"?c.coordinationV3.getRequest(messageId):undefined;
+      const reportSource=report?.recipientAgentId===agentId && report.projectId===chat?.projectId && report.conversationId===id
+        ?c.store.sqlite.prepare("SELECT created_at FROM coordination_requests WHERE id=?").get(messageId) as {created_at:string}|undefined:undefined;
       if (!chat || !resourceInProduct(c.store,"conversation",id,requestProduct(request)) || !resourceInProduct(c.store,"agent",agentId,requestProduct(request)) || !activeChatResourceOwner(c.store,"conversation",id) || !agent || !activeChatResourceOwner(c.store,"agent",agentId) || agent.conversationId !== id ||
-          agent.projectId !== chat.projectId || input?.conversationId !== id || input.projectId !== chat.projectId ||
-          (presentation === "voice" && (input.intent !== "user_dm" || input.sender.kind !== "user" || input.sender.userId !== "local-operator" ||
+          agent.projectId !== chat.projectId || (!reportSource && (input?.conversationId !== id || input.projectId !== chat.projectId)) ||
+          (presentation === "voice" && (input?.intent !== "user_dm" || input.sender.kind !== "user" || input.sender.userId !== "local-operator" ||
           input.audience.kind !== "user_agents" || input.audience.userId !== "local-operator" ||
           input.audience.agentIds.length !== 1 || input.audience.agentIds[0] !== agentId))) {
         return reply.code(404).send({ error: "voice turn not found" });
       }
-      const t = c.coordinationV3.voiceReplyRunTiming(messageId, agentId);
+      const t = reportSource?c.coordinationV3.requestReplyRunTiming(messageId,agentId):c.coordinationV3.voiceReplyRunTiming(messageId, agentId);
       const active = c.activeRuns.get(agentId)?.voiceReply?.snapshot;
       let s = active?.messageId === messageId && active.runId === t?.runId ? active
         : t?.runId ? c.store.latestVoiceReply(agentId, messageId, t.runId) : undefined;
@@ -90,8 +92,8 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
         s = { ...s, state: "failed", sequence: s.sequence + 1 };
         // The durable Run outcome owns this projection; reading status adds no event.
       }
-      return { messageId, acceptedAt: input.createdAt, ...t,
-        memoryExposure: await voiceMemoryExposure({...c.memoryPorts,validateMemory:async runId=>localMemoryFor(app)?.speechStatus(runId)??false}, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId }),
+      return { messageId, acceptedAt: reportSource?.created_at??input!.createdAt, ...t,
+        ...(reportSource?{}:{memoryExposure:await voiceMemoryExposure({...c.memoryPorts,validateMemory:async runId=>localMemoryFor(app)?.speechStatus(runId)??false}, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId })}),
         ...(s?.messageId === messageId && s.runId === t?.runId ? { reply: { ...s } } : {}) } satisfies VoiceReplyStatus;
     });
 }

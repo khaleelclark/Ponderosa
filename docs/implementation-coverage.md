@@ -23,7 +23,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 4 | Native harness adapters/recovery source assembled; Claude structured compaction and lost native outcome reconciliation remain gaps. | Runtime; provider parity trials deferred. |
 | 5 | Configurable native/memory/browser integrations; limits remain explicit. No new infrastructure dependency added. | Runtime; dependency/limit justification review deferred. |
 | 6 | Human access/settings reviews plus explicit historical disclosure choice; live policy revisions rechecked at admission. Access review alone grants no disclosure. | Runtime/UI; authority invariant trials deferred. |
-| 7 | Operator origin boundary remains; current removal of dedicated authentication needs an owner disposition, not an inferred defect from file names. | Runtime; boundary qualification deferred. |
+| 7 | Runtime source disposition: dedicated operator authentication is already absent; origin/cross-site checks remain. See runtime-publication-and-voice.md for live gate references. | Runtime; boundary qualification deferred. |
 | 8 | Shared full package composer, independent reporting forests, working files/roots, authored history, memory, roles/settings and retained custody source assembled. Existing-Agent regrouping and broad workflow restoration families remain gaps. | Reliability/Features; fresh-instance equivalence deferred. |
 | 9 | Shared DTOs/composer/dialogs and canonical graph writer retained; no broad dead-code verdict. | All; dead-code/duplication analysis deferred. |
 | 10 | Public Branch routes/SDK and standalone examples/branches-client/client.ts present. | Features/Integration; external-client execution deferred. |
@@ -36,7 +36,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 17 | Exact additive predecessor fixtures and migrations0035/0036/0037 retained once each. | Runtime/Reliability; upgrade/reliability runs deferred. |
 | 18 | Inbox/notification journal and Assistant cadence source assembled. | UI/Features; quiet-default/deduplication trials deferred. |
 | 19 | Authored communication, activity and execution evidence stay distinct; known secret-field redaction source retained. | Runtime/UI; redaction/diagnostic trials deferred. |
-| 20 | Existing host/origin operator authority used; local-operator is a server constant, never request-supplied identity. General token-gate removal needs Runtime disposition. | Runtime; secure-environment boundary trials deferred. |
+| 20 | Host/origin operator authority has no general token gate; local-operator is server-owned. Native account login, scoped Run/internal/browser capabilities and human access remain domain authority. No further dedicated-auth deletion warranted by inspected source. | Runtime; secure-environment boundary trials deferred. |
 | 21 | Streaming/virtualized projections source assembled. Historical LCP failure is unresolved evidence, not a measured improvement. | UI; INP/LCP/performance qualification deferred. |
 | 22 | Setup/user guides and standalone client guidance updated. | Integration/Runtime/UI; installation/platform timing deferred. |
 | 23 | Current source docs and historical integration record separated. | All/Integration; whole public-guide audit deferred. |
@@ -47,7 +47,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 28 | Branches remains subject to all32; partial source slices confer no acceptance. | All; whole-product qualification deferred. |
 | 29 | Shared Chat/output/Assistant/folder/navigation source assembled. | UI; blind panel/mobile/flicker judging deferred. |
 | 30 | Unified local-memory search/settings and portable memory source assembled. Failed/unknown remote mutation holds have no automatic reconciliation/reclamation. | Runtime/Reliability/Features; backend permission/search trials deferred. |
-| 31 | Shared streaming and voice/call controls assembled; mixed-route document/correlated generation and early qualified voice remain Runtime gaps. | Runtime/UI; latency/recordings deferred. |
+| 31 | Runtime adds explicit document/mixed-route/attached-Request final generation through canonical publication, and native-receipt-qualified early voice acknowledgement. Additive DTO/consumer contract in runtime-publication-and-voice.md; UI acknowledgement-buffer/Request-draft integration remains required. | Runtime/UI; source only, native/UI execution and latency/recordings deferred. |
 | 32 | Parallel/control, persistent issued graph/tree/recapture, pre-opening resource rewind, bounded fresh issued-resource destination and review UI assembled. See exact scope and missing-code list below. | Features/Runtime/UI; framework equivalence and all execution deferred. |
 
 ## Current bounded issued-resource source
@@ -90,21 +90,25 @@ and web-feature-completion.md for ordering and limits.
   support in the new issued destination consumer; its current narrower refusal is explicit.
   Old metadata-only cuts cannot reconstruct purged private bytes.
 - Runtime: native lost-outcome result-query/idempotency, Claude structured compaction,
-  mixed-route document/correlated report generation and early qualified voice.
+  source-turn reconciliation remain external-contract gaps. Explicit selected
+  document/mixed-route/Request generation and early native voice receipt source
+  now exist; UI consumer integration and execution remain open.
 - Reliability + UI: existing-Agent regrouping; broader external-writer/remote-memory
   failed-hold reconciliation. Arbitrary shell/native/user-folder writers are outside the
   participating source-boundary guarantee.
 - Features: pinned framework checklist, representative examples and explicit capability
   equivalence dispositions. No broad LangGraph/LangChain parity inferred from nine labels.
-- Runtime/UI/Features: provide concrete source dispositions for unresolved auth/Build/native
-  parity questions before labelling them either missing code or completed behavior.
+- Runtime/UI/Features: the Runtime auth disposition is recorded in
+  runtime-publication-and-voice.md; remaining Build/native parity questions need
+  concrete source dispositions before a missing-code or completion claim.
 
 ## Every Build-list subrequirement — current source navigation
 
 These existing source anchors remain current. Required behavior text is a scope/owner
 responsibility, not an assertion of absent code. No new Build-specific defect was
-established by this bounded integration. Shared mixed-route/voice missing implementation
-above applies equally to Output and Assistant. UI/iOS/mobile/call/schedule/model/setup,
+established by this bounded integration. Shared publication/voice source and the
+remaining consumer requirements above apply equally to Output and Assistant.
+UI/iOS/mobile/call/schedule/model/setup,
 role lifecycle/notifications and cross-project behavior all await executed qualification.
 
 | Feature | Existing source anchor | Required coverage / owner |

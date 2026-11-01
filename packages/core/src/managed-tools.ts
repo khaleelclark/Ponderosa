@@ -206,18 +206,30 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_VOICE_REPLY_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_voice_reply",
-  description: "Explicitly authorize one final response item as the reply to this Run's sole accepted voice Direct Message. Call before writing the answer, after all other work. The host streams qualified final-answer text and publishes exactly one canonical Direct Message only after successful completion. Do not also call ponderosa_message for the same reply. If unavailable or rejected, use ordinary ponderosa_message. Never use for work logs, commentary, reasoning, peers, or unrelated turns.",
+  description: "Explicitly authorize one final response item as the reply to this Run's sole accepted voice Direct Message. For a short early acknowledgement, pass acknowledgement with your exact 1–500 character text before continuing real workflow work; only the matched native receipt authorizes that provisional speech and it never satisfies final delivery. For the final answer omit acknowledgement, call after all work. The host streams qualified final-answer text and publishes exactly one canonical Direct Message only after successful completion. Do not also call ponderosa_message for the same reply. If unavailable or rejected, use ordinary ponderosa_message. Never use for work logs, commentary, reasoning, peers, or unrelated turns.",
   inputSchema: { type: "object", additionalProperties: false, required: [], properties: {
     steeringInjectionId: { type: "string" },
+    acknowledgement: { type: "string", minLength: 1, maxLength: 500 },
   } },
 };
 
 /** Same publication authority as voice, with text-only presentation. */
 export const PONDEROSA_REPLY_STREAM_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_reply_stream",
-  description: "Authorize one streamed final reply on this Run's sole canonical default Communication route (shared Chat, user DM or passive peer message). Correlated Request results still use ponderosa_update_request. Call after all work, before writing the answer. Successful completion publishes one canonical message; do not also call ponderosa_message. Rejection leaves ordinary publication available. Never use for commentary, reasoning or correlated Request results.",
+  description: "Authorize one streamed final reply before writing its answer, after work. Omit publication only for the sole canonical default Communication route. On mixed-route turns explicitly select publication.kind=message and exact intent/return recipient. Select documentTitle to publish the generated body as a managed Markdown document. Correlated reports select publication.kind=request_update, exact attached requestId and updateKind; completion invokes ordinary update_request authority. Finish other required routes through their explicit tools first. One final response item owns only this selected destination. Successful completion publishes once; never duplicate. Rejection leaves ordinary publication available. Never use for commentary or reasoning.",
   inputSchema: { type: "object", additionalProperties: false, required: [], properties: {
     steeringInjectionId: { type: "string" },
+    publication: { oneOf: [
+      { type: "object", additionalProperties: false, required: ["kind","intent"], properties: {
+        kind: { const: "message" }, intent: { type: "string", enum: ["broadcast","direct_to_user","collaboration"] },
+        recipientAgentIds: { type: "array", minItems: 1, maxItems: 1, items: { type: "string", minLength: 1, maxLength: 200 } },
+        documentTitle: { type: "string", minLength: 1, maxLength: 160 }, taskDelivery: { type: "string", enum: ["final","blocked"] },
+      } },
+      { type: "object", additionalProperties: false, required: ["kind","requestId","updateKind"], properties: {
+        kind: { const: "request_update" }, requestId: { type: "string", minLength: 1, maxLength: 200 },
+        updateKind: { type: "string", enum: ["completed","blocked","failed"] },
+      } },
+    ] },
   } },
 };
 

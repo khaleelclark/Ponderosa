@@ -1,5 +1,5 @@
 import {activeChatResourceOwner} from "./branch-resource-owner.js";
-import type { CommunicationEvent } from "@ponderosa/core";
+import type { CommunicationEvent, ReplyStreamPublication } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import { canonicalDefaultReplyRoute } from "./required-reply-route.js";
 
@@ -11,8 +11,9 @@ export function canonicalVoiceReplyInput(
   coordination: CoordinationV3Store,
   scope: { runId: string; agentId: string; conversationId?: string },
   presentation: "voice" | "text" = "voice",
+  publication?: Extract<ReplyStreamPublication, {kind: "message"}>,
 ): { input: CommunicationEvent; activationId: string } | undefined {
-  if (presentation === "text") return canonicalTextReplyInput(store, coordination, scope);
+  if (presentation === "text") return canonicalTextReplyInput(store, coordination, scope, publication);
   const { runId, agentId, conversationId } = scope;
   if (!conversationId || coordination.requestIdsAttachedToRun(runId, agentId).length ||
       canonicalDefaultReplyRoute(coordination, runId, agentId)?.intent !== "direct_to_user" ||
@@ -51,27 +52,29 @@ export function canonicalVoiceReplyInput(
 }
 
 /** Text publication uses the canonical default route, including shared Chat and
- * passive peer messages. Correlated results remain on update_request. */
-function canonicalTextReplyInput(store: AgentStore, coordination: CoordinationV3Store,
+ * passive peer messages. Explicit mixed-route selection is checked against the
+ * accepted source; correlated results use the separate Request selection. */
+export function canonicalTextReplyInput(store: AgentStore, coordination: CoordinationV3Store,
   scope: { runId: string; agentId: string; conversationId?: string },
+  publication?: Extract<ReplyStreamPublication, {kind: "message"}>,
 ): { input: CommunicationEvent; activationId: string } | undefined {
   const {runId,agentId,conversationId}=scope;
-  const route=canonicalDefaultReplyRoute(coordination,runId,agentId);
+  const route=publication??canonicalDefaultReplyRoute(coordination,runId,agentId);
   const agent=store.getAgent(agentId),chat=conversationId?store.getConversation(conversationId):undefined;
   if(!route || !agent || !chat || agent.conversationId!==chat.id || agent.projectId!==chat.projectId ||
       !activeChatResourceOwner(store,"agent",agentId) || !activeChatResourceOwner(store,"conversation",chat.id) ||
-      coordination.requestIdsAttachedToRun(runId,agentId).length ||
-      coordination.requiredReplyObligationsForRun(runId).some(o=>o.state==='satisfied'))return undefined;
+      (!publication && coordination.requestIdsAttachedToRun(runId,agentId).length))return undefined;
   const ids=coordination.activationIdsAttachedToRun(runId,agentId);
   const sources=coordination.activationPayloads(agentId,ids,runId);
   let selected: {input:CommunicationEvent;activationId:string}|undefined;
   for(const source of sources){
+    if(!["human_message","urgent_message","ordinary_message"].includes(source.kind))continue;
     const payload=source.payload as {communication?:CommunicationEvent;dispatch?:{voiceReply?:boolean}}|undefined;
     const id=payload?.communication?.eventId;
     if(!id || payload?.dispatch?.voiceReply===true)continue;
     const canonical=coordination.runtimeCommunication(id);
     const input=(canonical?.payload as {communication?:CommunicationEvent}|undefined)?.communication;
-    if(!input || input.document || input.projectId!==chat.projectId || input.conversationId!==chat.id ||
+    if(!input || input.projectId!==chat.projectId || input.conversationId!==chat.id ||
         !canonical?.activations?.some(a=>a.id===source.id&&a.agentId===agentId))continue;
     const direct=route.intent==='direct_to_user' && input.intent==='user_dm' && input.sender.kind==='user' &&
       input.sender.userId==='local-operator' && (input.audience.kind==='user_agent' ? input.audience.agentId===agentId
@@ -79,7 +82,9 @@ function canonicalTextReplyInput(store: AgentStore, coordination: CoordinationV3
     const shared=route.intent==='broadcast' && input.intent==='broadcast' && input.sender.kind==='user';
     const peer=route.intent==='collaboration' && input.intent==='collaboration' && input.sender.kind==='agent' &&
       input.audience.agentIds.includes(agentId) && route.recipientAgentIds?.length===1 && route.recipientAgentIds[0]===input.sender.agentId;
-    if(direct||shared||peer)selected={input,activationId:source.id};
+    const obligations=coordination.requiredReplyObligationsForRun(runId).filter(o=>o.sourceActivationId===source.id);
+    if((direct||shared||peer) && (!obligations.length || obligations.some(o=>o.state==='pending')))
+      selected={input,activationId:source.id};
   }
   return selected;
 }

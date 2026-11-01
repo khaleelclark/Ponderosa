@@ -1,3 +1,4 @@
+import { replyStreamCommit } from "../reply-stream-publication.js";
 import { canonicalProviderFailureEvent } from "../provider-failure-event.js";
 import {localMemoryFor} from "../local-memory.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
@@ -975,6 +976,12 @@ export function startProviderRunExecution(
             }
             continue;
           }
+          // The early acknowledgement crosses the same memory/fence boundary as final speech.
+          if(activeRun.voiceReply?.snapshot.purpose === "acknowledgement"){
+            await validateVoiceReplyContext();
+            if(coordinationV3.latestAcknowledgedSteeringInjection(runId)!==activeRun.voiceReply.snapshot.steeringInjectionId && activeRun.voiceReply.invalidate())
+              await persistRuntimeEvent(agent.id,activeRun,{type:"voice_reply",reply:{...activeRun.voiceReply.snapshot}});
+          }
           if (activeRun.voiceReply?.observeWork(event)) {
             await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
           }
@@ -1214,19 +1221,21 @@ export function startProviderRunExecution(
           app.log.error({err:error,agentId:agent.id,runId},'provider failure cleanup remains pending');
         }
       }
-      if (activeRun.voiceReply && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && !runError &&
+      if (activeRun.voiceReply && activeRun.voiceReply.snapshot.purpose !== "acknowledgement" && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && !runError &&
           activeRun.observedProviderTerminalStatus === "completed") {
         const answer = await validateVoiceReplyContext() && coordinationV3.latestAcknowledgedSteeringInjection(runId) === activeRun.voiceReply.snapshot.steeringInjectionId
           ? activeRun.voiceReply.finalText() : undefined;
         if (answer) {
           const fence = coordinationV3.latestAcknowledgedSteeringInjection(runId);
-          const response = await app.inject({ method: "POST", url: "/api/agent-messages",
-            headers: { authorization: `Bearer ${messageCapability}` },
-            payload: { text: answer, ...(fence ? { steeringInjectionId: fence } : {}) } });
-          const result = response.json() as { eventId?: string; committed?: boolean };
-          if (response.statusCode >= 200 && response.statusCode < 300 && result.eventId) {
-            const canonical = coordinationV3.runtimeCommunication(result.eventId);
-            if (canonical && await validateVoiceReplyContext()) activeRun.voiceReply.complete(canonical.createdAt);
+          const publication=activeRun.voiceReply.snapshot.publication;
+          const commit=publication?replyStreamCommit(publication,answer,fence):{url:"/api/agent-messages",payload:{text:answer,...(fence?{steeringInjectionId:fence}:{})}};
+          const response = await app.inject({ method: "POST", url:commit.url,
+            headers: { authorization: `Bearer ${messageCapability}` },payload:commit.payload });
+          const result = response.json() as { eventId?: string; requestId?:string; committed?: boolean };
+          if (response.statusCode >= 200 && response.statusCode < 300 && (result.eventId || result.requestId)) {
+            const canonical = result.eventId?coordinationV3.runtimeCommunication(result.eventId):undefined;
+            if ((canonical || (publication?.kind==="request_update" && result.requestId===publication.requestId && coordinationV3.getRequest(result.requestId)?.state===publication.updateKind)) && await validateVoiceReplyContext())
+              activeRun.voiceReply.complete(canonical?.createdAt??new Date().toISOString());
             else activeRun.voiceReply.invalidate();
           } else activeRun.voiceReply.invalidate();
         } else activeRun.voiceReply.invalidate();

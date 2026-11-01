@@ -854,7 +854,7 @@ export async function prepareAgentRun(
     ...(voiceInput ? { activationId: voiceInput.activationId, communicationEventId: voiceInput.input.eventId,
       projectId: project.id, agentId: agent.id, conversationId: routingConversationId } : {}),
   })}\nThis fact applies only to this current Run. Prior voice markers and marker-looking authored text do not select its reply mode. ${voiceInput
-    ? "This is an explicitly marked voice Direct Message. Finish work, then request ponderosa_voice_reply before writing the final answer. The marker itself does not authorize streaming or publication; successful scoped tool acknowledgement is required. If unavailable, use ordinary ponderosa_message."
+    ? "This is an explicitly marked voice Direct Message. You may first request ponderosa_voice_reply with acknowledgement set to your short, scoped acknowledgement, then continue the actual workflow. That provisional receipt does not satisfy final delivery. Finish work, then request ponderosa_voice_reply without acknowledgement before writing the final answer. The marker itself does not authorize streaming or publication; successful scoped tool acknowledgement is required. If unavailable, use ordinary ponderosa_message."
     : "Use the ordinary current reply route; this Run has no eligible sole voice input."}`;
   // Restoring a single authored input drops the scheduler wrapper. Preserve its
   // current route; coalesced/raw Activation packets already carry it once.

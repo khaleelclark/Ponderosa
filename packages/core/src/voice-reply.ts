@@ -1,7 +1,20 @@
+/** Exact publication selected by an explicit native tool, never by generated prose. */
+export type ReplyStreamPublication =
+  | { kind: "message"; intent: "broadcast" | "direct_to_user" | "collaboration";
+      recipientAgentIds?: string[]; documentTitle?: string; taskDelivery?: "final" | "blocked" }
+  | { kind: "request_update"; requestId: string; updateKind: "completed" | "blocked" | "failed" };
+export interface ReplyStreamArguments {
+  steeringInjectionId?: string;
+  publication?: ReplyStreamPublication;
+  /** A short provider-authored acknowledgement; only eligible voice inputs accept it. */
+  acknowledgement?: string;
+}
 /** Provisional, explicitly authorized call reply. Never a Communication or context source. */
 export interface VoiceReplySnapshot {
   /** Missing means voice for existing persisted snapshots. */
   presentation?: "text" | "voice";
+  purpose?: "answer" | "acknowledgement";
+  publication?: ReplyStreamPublication;
   /** Canonical route selected by the host; never infer a Chat scope from text. */
   replyIntent?: "broadcast" | "direct_to_user" | "collaboration";
   recipientAgentIds?: string[];

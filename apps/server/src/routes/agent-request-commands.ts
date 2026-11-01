@@ -291,6 +291,12 @@ export function registerAgentRequestCommandRoutes(
         : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
     }
     try {
+      if(!durableResult && active?.voiceReply &&
+        (await active.validateVoiceReplyContext?.() === false || active.validateVoiceReplyCommit?.() === false ||
+         coordinationV3.latestAcknowledgedSteeringInjection(capability.runId)!==active.voiceReply.snapshot.steeringInjectionId)){
+        cleanupArtifact();
+        return reply.code(409).send({error:"Reply context or steering changed before Request publication"});
+      }
       const result = durableResult ?? coordinationV3.updateRequest(updateInput);
       durableResult = result;
       const changedRequest = coordinationV3.getRequest(requestId);
