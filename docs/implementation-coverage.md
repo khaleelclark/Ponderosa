@@ -963,3 +963,35 @@ or external contract probe was performed.
 Deferred fixtures cover per-owner evidence and exact durable completion readback;
 full testing remains after implementation. No tests/checks/build/types/Node/native/
 browser/preparation/execution/migrations/push/deploy/new workers were performed.
+
+
+Integration: Runtime chain2f8893bd7→8700860c9 is assembled asc86f3fbe1→f11ed8f5b
+on64d950ad4. Actual direct ancestry verified; frozen5a76 helper compared exact and
+not separately replayed. Ten required paths physically inventoried/source-read and
+owner-byte-equal before this coverage note; no conflicts or reference copies. Writer
+Integration on phase2-implementation-integration. Existing Branch history/UI, ff40
+real-ID source(row,'audit'), admitted missing-slot handling and bounded private-byte
+historical projection remain. Actual conversations.branch_execution_id is used;
+surviving owner Chat/execution Branch identities are checked per original owner.
+The owner-tree Runtime contract is now assembled, superseding earlier pending-Runtime
+code statements; atomic Branch tree admission consumer remains separate owner work.
+
+Recorded-completion reconciliation grants no new source authority: only exact-key idle
+POST replay, native_started phase, unchanged Agent/session/contract/Project/source
+Run/scope/fence and no provider authority can accept exactly ONE existing context_usage
+event matching compact invocation/execution/fence and both session fields. Existing
+acceptance validates exact nonnegative occupancy/window/event sequence. No native
+invocation, activation, source settlement or effect replay occurs; sourceWork remains
+held_unknown. Missing event stays held; ambiguity/changed source/invalid usage refuse.
+GET unchanged. Durable event writer and prior completion/drain chain source inspected.
+
+Deferred owner-tree evidence and recovery reopen/idempotency/fence/no-native fixtures
+read only. Claude structured retained-session compact and native unrecorded-outcome
+query/idempotency integrations remain missing in current interfaces; host recorded-
+event correction does not implement either. No universal vendor capability claim.
+Other tree consumer/history/payload/recovery limits and real provider/package/native/
+custody/runtime/end-to-end/accessibility/mobile/full Phase2 qualification remain open.
+All0035–0040 files physically present, registered once in order, unchanged/unexecuted.
+Final task delta exactly ten paths. ZERO tests/checks/build/types/Node/native/browser/
+runner preparation or execution, migrations, push/deploy/newworkers. Hooks disabled;
+source/files/Git inspection only.
