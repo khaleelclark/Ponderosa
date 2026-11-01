@@ -132,3 +132,9 @@ canonical commit targets, exact native acknowledgement receipts with continued
 work, and argument authority boundaries. It has not run. Existing native fixture
 coverage, live cancellation/revocation, long artifacts, reconnect, UI speech and
 real provider behavior remain to be executed only when authorized.
+
+## Request draft memory status successor
+
+The text status route now always returns `memoryExposure`, including Request IDs. Request mode uses the same verified canonical provider-input packet/hash, turn-injection receipt, Run/Agent/Project/Chat ownership, session-reset sequence, source memory exclusions and live local-memory validation as Communication mode. Instead of pretending the Request is a Communication ID, it requires an activation in the packet's exact `activationIds` AND attached to this Run whose shared canonical Request/update/Join-continuation lineage names this Request and its exact recipient/Project/Chat. Missing packet/injection is pending; missing lineage, changed memory/reset or unavailable ownership is invalid. The UI must continue requiring valid/disabled exposure for that same Run and invalidation generation. No draft may bypass exposure because it is a correlated report.
+
+Acknowledgement sequence remains: open sequence 0 with empty text; exact successful native receipt emits streaming sequence 1 with the whole bounded acknowledgement and host receipt time. Duplicate receipt does not advance sequence. Continued normal work leaves it streaming; errors or an invalid matching receipt fence it failed. It does not emit completed on speech drain. A separately authorized answer replaces it with a fresh streamId/sequence 0 in the same current Run/fence/steering scope; final prefix/settlement belongs only to that answer. If no answer replaces it before Run end, status projects interrupted failure. `tests/speech/request-memory-exposure.test.mjs` is a deferred focused authority fixture, not executed integration proof.

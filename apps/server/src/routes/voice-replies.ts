@@ -93,7 +93,7 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
         // The durable Run outcome owns this projection; reading status adds no event.
       }
       return { messageId, acceptedAt: reportSource?.created_at??input!.createdAt, ...t,
-        ...(reportSource?{}:{memoryExposure:await voiceMemoryExposure({...c.memoryPorts,validateMemory:async runId=>localMemoryFor(app)?.speechStatus(runId)??false}, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId })}),
+        memoryExposure:await voiceMemoryExposure({...c.memoryPorts,validateMemory:async runId=>localMemoryFor(app)?.speechStatus(runId)??false}, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId,sourceKind:reportSource?'request':'communication' }),
         ...(s?.messageId === messageId && s.runId === t?.runId ? { reply: { ...s } } : {}) } satisfies VoiceReplyStatus;
     });
 }

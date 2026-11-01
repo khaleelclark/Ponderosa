@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import type {AgentStore} from '@ponderosa/agents';
+import {REQUEST_SOURCE_LINEAGE_CTE,type AgentStore} from '@ponderosa/agents';
 import type {VoiceReplyStatus} from '@ponderosa/core';
 import type {CreateServerOptions} from './app-contracts.js';
 import {activeChatResourceOwner} from './branch-resource-owner.js';
@@ -10,7 +10,7 @@ export function memorySessionResetSeq(store:AgentStore,agentId:string):number{
 }
 /** Verify the canonical input packet and revalidate explicitly read private.6 sources.
  * Exposure state is ephemeral; unknown completed Runs fail closed after restart. */
-export async function voiceMemoryExposure(ports:VoiceExposurePorts,input:{agentId:string;projectId:string;conversationId:string;messageId:string;runId?:string}):Promise<Exposure>{
+export async function voiceMemoryExposure(ports:VoiceExposurePorts,input:{agentId:string;projectId:string;conversationId:string;messageId:string;runId?:string;sourceKind?:'communication'|'request'}):Promise<Exposure>{
  if(!input.runId)return {state:'pending'};
  const invalid:Exposure={state:'invalid',runId:input.runId};
  try{
@@ -22,7 +22,15 @@ export async function voiceMemoryExposure(ports:VoiceExposurePorts,input:{agentI
   if(!packet||!db.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND kind='turn' AND state IN ('submitted','acknowledged') AND submitted_at IS NOT NULL").get(input.runId))return {state:'pending',runId:input.runId};
   if(packet.scheduler_run_id!==input.runId||packet.agent_id!==input.agentId||packet.project_id!==input.projectId||createHash('sha256').update(packet.provider_prompt).digest('hex')!==packet.prompt_hash)return invalid;
   const m=JSON.parse(packet.source_manifest_json),seq=memorySessionResetSeq(ports.store,input.agentId);
-  if(m?.schemaVersion!==3||m.conversationId!==input.conversationId||m.memorySessionResetSeq!==seq||!Array.isArray(m.memoryScopes)||m.memoryScopes.length||!Array.isArray(m.sources)||m.sources.some((s:{kind?:string})=>s.kind==='memory')||!Array.isArray(m.communicationEventIds)||!m.communicationEventIds.includes(input.messageId))return invalid;
+  if(m?.schemaVersion!==3||m.conversationId!==input.conversationId||m.memorySessionResetSeq!==seq||!Array.isArray(m.memoryScopes)||m.memoryScopes.length||!Array.isArray(m.sources)||m.sources.some((s:{kind?:string})=>s.kind==='memory'))return invalid;
+  if(input.sourceKind==='request'){
+   if(!Array.isArray(m.activationIds)||m.activationIds.some((id:unknown)=>typeof id!=='string')||!db.prepare(`${REQUEST_SOURCE_LINEAGE_CTE}
+    SELECT 1 FROM request_source_lineage lineage JOIN scheduler_run_activations attached ON attached.activation_id=lineage.activation_id
+    JOIN coordination_requests request ON request.id=lineage.request_id
+    WHERE attached.run_id=? AND lineage.request_id=? AND request.recipient_agent_id=? AND request.project_id=? AND request.conversation_id=?
+    AND lineage.activation_id IN (SELECT value FROM json_each(?)) LIMIT 1`)
+    .get(input.runId,input.messageId,input.agentId,input.projectId,input.conversationId,JSON.stringify(m.activationIds)))return invalid;
+  }else if(!Array.isArray(m.communicationEventIds)||!m.communicationEventIds.includes(input.messageId))return invalid;
   if(ports.opts.localMemory){if(!ports.validateMemory)return invalid;const valid=await ports.validateMemory(input.runId);if(valid===undefined)return {state:'pending',runId:input.runId};if(!valid)return invalid;return {state:'valid',runId:input.runId,sessionResetSeq:seq};}
   return {state:'disabled',runId:input.runId,sessionResetSeq:seq};
  }catch{return invalid}
