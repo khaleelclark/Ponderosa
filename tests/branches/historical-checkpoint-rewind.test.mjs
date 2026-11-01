@@ -948,7 +948,24 @@ for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutab
 });
 
 // Resource replay stops before any external Chat/import release; suffix work uses fresh custody.
-async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false){
+// Deferred real Branch/call/resource/import/Request source; custody and Script authority remain inert.
+async function openCalledTreeResource(store,branches,dir,executionId,branchId){
+ let r;for(let n=0;n<40;n++){branches.advance();await branches.unitSaver.drain();r=store.sqlite.prepare("SELECT * FROM branch_resources WHERE execution_id=? AND state='reserved'").get(executionId);if(r)break;}assert.ok(r);
+ for(let n=0;n<6&&branches.resourceRelease(r.step_execution_id)!=='ready';n++){await branches.unitSaver.drain();branches.advance();}
+ const chatToken=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');await branches.unitSaver.drain();assert.equal(branches.releaseResourceChat(r.step_execution_id,r.creation_key,chatToken),true);
+ const p=store.createProject({label:'Called issued source',hostPath:dir,defaultEngine:'codex',chatOwned:true,branchId,executionId}),chat=store.getConversation(p.lastConversationId);
+ branches.completeResourceOperation(r.step_execution_id,'chat',chatToken,{chatId:chat.id});await branches.unitSaver.drain();
+ const token=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'import');await branches.unitSaver.drain();
+ const op=store.beginAgentCreationOperation({projectId:p.id,conversationId:chat.id,actorScope:'inert-called-source',kind:'import',idempotencyKey:r.creation_key,payloadHash:'inert'}).operation,id=randomUUID();
+ store.addAgentCreationOperationMember(op.id,id,0);branches.observeResourceImportPlan(r.step_execution_id,token,op.id);await branches.unitSaver.drain();branches.planResource(r.step_execution_id,[id],token);
+ store.createAgent(p.id,{title:'Called source',engine:'codex',conversationId:chat.id},undefined,id);
+ const result={rootAgentId:id,agentIds:[id],agentRefs:{worker:id}};
+ branches.unitTransaction(()=>{store.updateAgentCreationOperation(op.id,{status:'completed',result});branches.completeResourceOperation(r.step_execution_id,'import',token,result);})();await branches.unitSaver.drain();
+ const source=branches.reserveResourceCapture(r.step_execution_id),receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-called-opening',sha256:hash('opening'),byteLength:1};
+ branches.finishResourceCapture(source,receipt);await branches.unitSaver.drain();branches.bindResource(r.step_execution_id,result);await branches.unitSaver.drain();
+ return {requestId:store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id,agentId:id,chatId:chat.id,stepId:r.step_execution_id};
+}
+async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false,calledResources=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
  const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
@@ -965,8 +982,10 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  let parent,root,source;
  if(childOwner){
-  parent=branches.deploy({chatId:chat.id,idempotencyKey:'resource-parent',definition:{schema:'ponderosa.branch.v1',name:'Resource parent',trigger:{kind:'manual'},entry:'call',steps:[{id:'call',kind:'branch_call',branchRef:'resource'}],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir},branches:{resource:branch.id}}});
+  parent=branches.deploy({chatId:chat.id,idempotencyKey:'resource-parent',definition:{schema:'ponderosa.branch.v1',name:'Resource parent',trigger:{kind:'manual'},entry:calledResources?'team':'call',...(calledResources?{templates:{team:template}}:{}),steps:[...(calledResources?[resourceSteps[0]]:[]),{id:'call',kind:'branch_call',branchRef:'resource'}],controls:[],edges:calledResources?[{id:'team-call',from:'team',to:'call',on:'success'}]:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,...(calledResources?{workspace:dir}:{})},...(calledResources?{engines:{codex:'codex'}}:{}),branches:{resource:branch.id}}});
+  if(calledResources&&mode!=='async')branches.configure(parent.id,{...branches.configuration(parent.id),checkpointMode:mode},0);
   root=branches.accept(parent.id,'resource-root','input');
+  if(calledResources){const issued=await openCalledTreeResource(store,branches,dir,root.id,parent.id);coordination.updateRequest({requestId:issued.requestId,updateId:'called-root-result',kind:'completed',actor:{kind:'agent',id:issued.agentId},payload:{text:'known'}});}
   for(let n=0;n<30&&!source;n++){branches.advance();await branches.unitSaver.drain();const child=store.sqlite.prepare('SELECT id FROM branch_executions WHERE parent_execution_id=?').get(root.id);if(child)source=branches.execution(child.id);}
   assert.ok(source,'canonical Branch call admits the resource owner');
  }else source=branches.accept(branch.id,'resource-source','input');
@@ -2088,4 +2107,37 @@ test('operator group journal readback survives source owner loss without current
  db.exec('DROP TRIGGER coordination_destination_identity_immutable');
  receipt.requestMap[Object.keys(receipt.requestMap)[0]]='wrong-mapped-request';db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(stableJson(receipt),prepared.admissionId);
  assert.throws(()=>audit.read(selection),/map differs/);db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(original,prepared.admissionId);
+});
+
+for(const mode of ['async','sync'])test(`called issued owner tree ${mode} captures exact parent/child custody and refuses admission`,async t=>{
+ const f=await reservationHistoryFixture(t,mode,true,false,false,false,true),prefix=await f.claim();f.settle(prefix);
+ const child=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
+ const db=f.store.sqlite,preview=f.branches.previewIssuedTreeCapture(f.root.id);
+ assert.equal(preview.resources.length,2);assert.deepEqual(new Set(preview.resources.map(r=>r.executionId)),new Set([f.root.id,f.source.id]));
+ const owners=preview.snapshot.continuation.owners;
+ assert.equal(owners.find(o=>o.executionId===f.source.id).selected.execution[0].parent_execution_id,f.root.id);
+ const expected={reviewHash:preview.reviewHash,versionId:preview.versionId};
+ assert.throws(()=>f.branches.reserveIssuedTreeCapture(f.root.id,'called-tree',{...expected,reviewHash:'f'.repeat(64)}),/preview changed/);
+ const v=f.branches.reserveIssuedTreeCapture(f.root.id,'called-tree',expected);
+ for(const source of v.sources){const owner=owners.find(o=>o.executionId===source.intent.executionId);assert.ok(owner);assert.equal(source.intent.bindingSha256,owner.bindingHash);assert.equal(source.sourceChatId,owner.selected.resources[0].chat_id);assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),true);}
+ const receipts=v.sources.map(source=>({...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-called-issued',sha256:hash(stableJson(source)),byteLength:1}));
+ db.transaction(()=>f.branches.sealIssuedTreeMember(f.root.id,'called-tree',receipts[0]))();
+ assert.equal(f.branches.issuedTreeCapture(f.root.id,'called-tree').state,'capturing');
+ const request=db.prepare('SELECT updated_at FROM coordination_requests WHERE id=?').get(child.requestId);
+ db.prepare('UPDATE coordination_requests SET updated_at=? WHERE id=?').run('changed-child-cut',child.requestId);
+ assert.throws(()=>db.transaction(()=>f.branches.sealIssuedTreeMember(f.root.id,'called-tree',receipts[1]))(),/frontier changed/);
+ db.prepare('UPDATE coordination_requests SET updated_at=? WHERE id=?').run(request.updated_at,child.requestId);
+ db.transaction(()=>f.branches.sealIssuedTreeMember(f.root.id,'called-tree',receipts[1]))();
+ const retained=f.branches.issuedTreeCapture(f.root.id,'called-tree');assert.equal(retained.state,'retained');
+ const saved=captureBytes(f,retained.checkpointId);assert.equal(saved.restore_supported,false);assert.deepEqual(saved.issuedGroupCustody,receipts);
+ const counts=allocationCounts(f),maps=f.branches.issuedTreeFreshOwnerMap(f.root.id,'called-tree');assert.deepEqual(allocationCounts(f),counts);
+ const mappedChild=maps.owners.find(o=>o.sourceExecutionId===f.source.id),mappedRoot=maps.owners.find(o=>o.sourceExecutionId===f.root.id);
+ assert.equal(mappedChild.parentExecutionId,mappedRoot.executionId);assert.notEqual(mappedChild.conversationId,mappedRoot.conversationId);
+ assert.equal(maps.actionEligible,false);assert.throws(()=>f.branches.beginDeletion(f.parent.id),/custody holds/);assert.throws(()=>f.branches.deleteBranch(f.branch.id),/custody holds/);
+ assert.throws(()=>f.branches.rewindHistorical(f.parent.id,f.root.id,retained.checkpointId,retained.checkpointHash,'called-no-admission'),/unsupported|continuation|settled/);
+ const row=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(retained.checkpointId);
+ db.prepare('UPDATE branch_unit_snapshots SET content_hash=? WHERE id=?').run('f'.repeat(64),retained.checkpointId);
+ assert.throws(()=>f.branches.issuedTreeCapture(f.root.id,'called-tree'),/sealed checkpoint/);
+ db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,row.content_hash,retained.checkpointId);
+ await f.reopen();assert.equal(f.branches.issuedTreeCapture(f.root.id,'called-tree').checkpointHash,retained.checkpointHash);
 });

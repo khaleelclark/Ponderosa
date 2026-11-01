@@ -21,3 +21,56 @@ Runtime intake/lease integration and exact deletion guard029fade1ee8b3307429add2
 Owner-deletion deferred fixtures cover missing/pending/forged seals with removed/reparented original Chats, and real producer sealed cleanup plus rollback of final Branch deletion. Existing Runtime proof verification is reused, not duplicated. Complete source is assembled; all execution and qualification remain deferred.
 
 The additive Runtime destination reservation now supports an explicit evidence-only historical partition from these exact sealed generation receipts; see [historical-evidence-partition.md](historical-evidence-partition.md). This does not remove the later-generation Branch retained-host/retry consumer hold described above. Current executable roots and old nondispatchable evidence must be composed explicitly; no preupgrade proof or restoration is inferred.
+
+### Called-owner issued-resource producer (source only)
+
+An explicit `issuedResources:true` context extends the existing Script-tree/serial
+codec. It retains the actual call ancestry, per-owner selected frontier, complete
+host cut, audit, version/binding/configuration pins and resource import/release
+receipts. The initial bound is exactly a manual parent and one called child,
+one generation-zero issued resource per owner, serial ASYNC/SYNC owners waiting
+at a supported frontier. Parallel controls, EXIT, secrets, artifacts, forwarded
+or unknown effects and incomplete host evidence refuse. The ordinary tree
+checkpoint/rewind reader explicitly excludes this context.
+
+`branch-issued-tree-capture.ts` supplies preview, reserve, per-member seal and
+exact retained readback. A root-owned `issued-tree-capture:<command hash>` journal
+retains two distinct `CheckpointPackageSource`s: each intent names its ORIGINAL
+execution and hashes THAT owner's frontier, host, binding and configuration.
+Every preview/seal checks current enabled owner pins, original Chat ownership,
+live participants and provider/runtime drain. Full snapshot hash is the tree CAS;
+any child frontier, audit or host change invalidates the preview. Existing real
+package capture runs outside SQL; its synchronous callback seals inside SQL.
+Only the second exact receipt writes the complete checkpoint and retained journal
+in that owner transaction. Partial custody keeps automatic resource cleanup held;
+owner deletion conservatively holds even after sealing, because this source has
+no tree admission/retirement consumer. No new pin-release or abandonment path is
+provided. Direct original scope loss remains a readback refusal, never proof.
+
+The existing group service exposes `/destination-groups/tree-capture-preview`,
+`/tree-capture` GET/POST and bounded current-owner `/tree-captures` discovery.
+The SDK supplies `previewTreeGroupCapture`, `captureTreeGroup`,
+`treeGroupCaptureStatus`, and `discoverTreeGroupCaptures`. Preview/status return
+`currentAuthority:false,actionEligible:false`. Discovery is limited to 100 exact
+commands per current root; overflow refuses. It does not replace the retained
+owner-independent canonical group audit. The existing package engine reads both
+actual captured receipts before returning success, followed by SQL proof readback.
+
+`issuedTreeFreshOwnerMap` generates prospective fresh execution/frontier/Chat/Agent/Request
+maps and preserves parent execution/attempt ancestry. It creates no acceptance,
+budget, import, Request, Step, graph receipt, checkpoint or runnable authority.
+Maps are ephemeral planning data, not reusable admission authority.
+
+The deferred parent/child fixture uses actual Branch calls, resource reservations,
+import-operation ledgers, Agent/Chat creation and canonical Requests, with inert
+Script/custody evidence. It covers child-source identity, preview conflict,
+partial cleanup hold, changed child host facts before seal, exact two-receipt
+checkpoint readback, fresh ancestry maps without SQL allocation, owner deletion
+hold, ordinary rewind refusal, corruption and reopen. It has NOT been executed.
+
+Remaining: consume Runtime's owner-tree audit/read/retirement contract, then one
+outer transaction/one canonical group admit composing fresh accepted/budgeted
+owners, human disclosure, owner/Chat/Agent/Request/Step/import/resource maps,
+all owner command receipts and post-admit checkpoints. No usable destination
+consumer, historical partition/admission, later-generation replay, native/provider
+qualification or complete feature claim is made by this producer slice.

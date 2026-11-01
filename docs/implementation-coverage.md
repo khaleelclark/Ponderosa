@@ -590,3 +590,24 @@ Runtime historical evidence partition: canonical destination reservations can re
 
 
 Integration: canonical evidence partition source is assembled; earlier blanket partition-missing notes are superseded only for this canonical API. Branch later-generation current-cut/retained-host/retry consumer and historical selection UI remain pending. Existing issued-consumer restrictions remain held. Old envelopes are historical and nondispatchable, never old Agent imports or provider/native capture. Audit compatibility for future partition-bearing admissions still requires separate source reconciliation: the existing audit inspector clears the admission identity before source validation, and full partition-bearing receipts include private original envelopes. No current issued consumer supplies these selections; do not claim integrated historical audit/UI support for them.
+
+Called-owner issued-resource continuation: independent producer SOURCE now extends
+shared tree/serial replay for exactly parent+called-child, one gen0 issued resource
+each, ASYNC/SYNC serial waiting frontiers. Perowner custody/hash seals, exact tree
+preview CAS, existing package-engine capture/readback, bounded discovery and SDK,
+prospective fresh ancestry maps and deferred real Branch/import/Request fixture
+are present. Ordinary restore/admission remains refused. Tree canonical Runtime
+audit/read/retirement contract and atomic budgeted/human-reviewed multiowner group
+consumer are still missing; no tests/build/types/native/provider qualification ran.
+
+Integration scope: called-tree producer348d05c5 is assembled alongside canonical
+historical partition312a95fb and audit UI19bb4f26 equivalents. Producer-only tree
+scope is a manual parent plus one called child, each with one generation-zero
+resource, serial ASYNC/SYNC. Preview/status/planning maps have currentAuthority:false
+and actionEligible:false; ordinary tree restore and destination admission remain
+refused. Runtime owner-tree contract dependency23446 and its Branch-owned Join
+remain separate/unassembled here. Canonical historical partition remains delivered
+for its explicit API; no called-tree historical admission or later-generation
+consumer is implied. Parallel/EXIT/larger/later-generation trees remain unsupported.
+No tests/checks/build/types/Node/native/browser/preparation/execution/migrations/
+push/deploy/newworkers; no end-to-end qualification or acceptance claim.

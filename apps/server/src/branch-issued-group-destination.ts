@@ -36,6 +36,38 @@ export class BranchIssuedGroupDestinationService {
    ||a.accessSettings?.restrictedCapabilityIds.length||a.managementPermissions.allowAutomaticDescendantDeletion||a.managementPermissions.allowAutomaticDescendantReorganization)
    ||stableJson(pkg.agents.map(a=>a.ref))!==stableJson(receipt.agentIds))throw Error('Group supports only artifact-free private organizations without memory, working roots, restrictions or elevated grants');
  }
+ previewTreeCapture(branchId:string,executionId:string):import('@ponderosa/core').BranchTreeGroupCapturePreview {
+  if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Tree capture owner unavailable');
+  const p=this.branches.previewIssuedTreeCapture(executionId);
+  return {reviewHash:p.reviewHash,versionId:p.versionId,currentAuthority:false,actionEligible:false,owners:p.resources};
+ }
+ discoverTreeCaptures(branchId:string,executionId:string){
+  if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Tree capture owner unavailable');
+  const rows=this.db.prepare("SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-tree-capture:%' ORDER BY command_key LIMIT 101").all(executionId) as Row[];
+  if(rows.length>100)throw Error('Tree capture discovery exceeds bounded inventory');
+  return {items:rows.map(row=>{const v=JSON.parse(row.result_json);return {commandKey:v.commandKey,...this.treeCaptureStatus(branchId,executionId,v.commandKey)};})};
+ }
+ treeCaptureStatus(branchId:string,executionId:string,commandKey:string){
+  if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Tree capture owner unavailable');
+  const v=this.branches.issuedTreeCapture(executionId,commandKey);if(!v)throw Error('Tree capture unavailable');
+  return {state:v.state,reviewHash:v.reviewHash,versionId:v.versionId,currentAuthority:false,actionEligible:false,
+   checkpointId:v.checkpointId,checkpointHash:v.checkpointHash,sources:v.sources.map((source:Row)=>({executionId:source.intent.executionId,resourceStepId:source.intent.resourceStepId,sourceChatId:source.sourceChatId,sealed:v.receipts.some((r:Row)=>r.checkpointId===source.checkpointId)}))};
+ }
+ async captureTree(branchId:string,executionId:string,commandKey:string,expected:{reviewHash:string;versionId:string}){
+  if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Tree capture owner unavailable');
+  let v=this.branches.reserveIssuedTreeCapture(executionId,commandKey,expected);
+  for(const source of v.sources)if(!v.receipts.some((r:Row)=>r.checkpointId===source.checkpointId)){
+   const preview=this.previewTreeCapture(branchId,executionId);
+   if(preview.reviewHash!==expected.reviewHash||preview.versionId!==expected.versionId)throw Error('Tree capture preview changed before package effect');
+   await this.packages().captureCheckpoint(source,receipt=>this.branches.sealIssuedTreeMember(executionId,commandKey,receipt));
+   v=this.branches.reserveIssuedTreeCapture(executionId,commandKey,expected);
+  }
+  if(v.state!=='retained')throw Error('Tree capture incomplete');
+  for(const receipt of v.receipts)await this.packages().readCheckpoint(receipt);
+  const retained=this.branches.issuedTreeCapture(executionId,commandKey);
+  if(!retained||stableJson(retained)!==stableJson(v))throw Error('Tree capture changed during package readback');
+  return {state:'retained' as const,checkpointId:v.checkpointId as number,checkpointHash:v.checkpointHash as string,receipts:v.receipts as import('@ponderosa/core').CheckpointPackageReceipt[]};
+ }
  previewCapture(branchId:string,executionId:string){
   if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Group capture owner unavailable');
   const p=this.branches.previewIssuedGroupCapture(executionId);

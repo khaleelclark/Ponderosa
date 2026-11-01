@@ -404,3 +404,14 @@ export interface BranchGroupCapturePreview {
 }
 export interface BranchGroupCaptureInput {commandKey:string;reviewHash:string;versionId:string}
 export interface BranchGroupCaptureResult {state:'retained';checkpointId:number;checkpointHash:string;receipts:CheckpointPackageReceipt[]}
+
+/** Evidence-only parent/child producer; destination admission remains refused. */
+export interface BranchTreeGroupCapturePreview {
+ reviewHash:string;versionId:string;currentAuthority:false;actionEligible:false;
+ owners:{executionId:string;branchId:string;resourceStepId:string;sourceChatId:string;agentIds:string[]}[];
+}
+export interface BranchTreeGroupCaptureStatus {
+ state:'capturing'|'retained';reviewHash:string;versionId:string;currentAuthority:false;actionEligible:false;
+ checkpointId?:number;checkpointHash?:string;
+ sources:{executionId:string;resourceStepId:string;sourceChatId:string;sealed:boolean}[];
+}

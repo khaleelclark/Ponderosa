@@ -22,11 +22,11 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
-export type ScriptOwnerContext={resourceFrontier?:boolean;issuedResource?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
+export type ScriptOwnerContext={resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
   try {
     if(hasParallelControls(definition))return parallelFrontierSupported(selected,definition,context,hostCut);
-    if(!issuedRequestFrontierSupported(selected,definition,hostCut,context?.issuedResource,context?.issuedGroup))return false;
+    if(!issuedRequestFrontierSupported(selected,definition,hostCut,context?.issuedResource,context?.issuedGroup,context?.issuedOwnerTree))return false;
     const issued=selected.attempts!.filter(a=>a.request_id);
     const tables=['execution','paths','steps','attempts','forks','joins','loops','maps','items','sealedResults','bundles','gates','actions','resources'];
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
@@ -41,7 +41,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
       ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting&&!context?.issuedGroup?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
     if(!scriptDefinitionSupported(definition,!!context,context?.resourceFrontier))return false;
     if(['forks','joins','maps','items','bundles',...(context?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
-    if(context?.resourceFrontier&&!(context.issuedResource?issuedResourceFrontierSupported(selected,definition,hostCut,context?.issuedGroup):resourceReservationSupported(selected,definition)))return false;
+    if(context?.resourceFrontier&&!(context.issuedResource?issuedResourceFrontierSupported(selected,definition,hostCut,context?.issuedGroup,context?.issuedOwnerTree):resourceReservationSupported(selected,definition)))return false;
     if(!definition.steps.some(s=>s.id===p.node_id)&&!definition.controls.some(c=>c.id===p.node_id))return false;
     const ids=new Set<string>();
     for(const row of [p,...selected.steps!,...selected.attempts!,...selected.sealedResults!,...selected.gates!]){if(typeof row.id!=='string'||ids.has(row.id))return false;ids.add(row.id);}

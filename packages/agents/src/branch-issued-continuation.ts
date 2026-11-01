@@ -7,7 +7,7 @@ import {branchText} from './branch-definition.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 
 /** Evidence-only opt-in for the dedicated issued-resource codec, never ordinary rewind. */
-export function issuedResourceFrontierSupported(selected:Selected,definition:BranchDefinition,cut?:BranchHostCut,group=false):boolean {
+export function issuedResourceFrontierSupported(selected:Selected,definition:BranchDefinition,cut?:BranchHostCut,group=false,ownerTree=false):boolean {
  try{
   if(group){
    const resources=selected.resources!,count=resources.length,chats=new Set(resources.map(r=>r.chat_id));
@@ -28,8 +28,8 @@ export function issuedResourceFrontierSupported(selected:Selected,definition:Bra
   const e=selected.execution?.[0],r=selected.resources?.[0],s=selected.steps?.find(s=>s.id===r?.step_execution_id),node=definition.steps.find(n=>n.id===s?.step_id);
   if(!e||!r||!s||!cut||!verifyBranchHostCut(cut,e.id)||!cut.coverage.complete||cut.bindingPin.requiredSecretRefs.length
    ||selected.resources?.length!==1||cut.resources.length!==1||stableJson(cut.resources[0]!.row)!==stableJson(r)
-   ||e.parent_execution_id||e.parent_attempt_id||e.call_depth||node?.kind!=='agent'||node.target.kind!=='ephemeral_organization'
-   ||definition.steps.filter(n=>n.kind==='agent').length!==1||definition.steps.some(n=>n.kind==='branch_call')
+   ||!ownerTree&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth)||node?.kind!=='agent'||node.target.kind!=='ephemeral_organization'
+   ||definition.steps.filter(n=>n.kind==='agent').length!==1||!ownerTree&&definition.steps.some(n=>n.kind==='branch_call')
    ||r.execution_id!==e.id||r.template_ref!==node.target.templateRef||!['active','draining'].includes(r.state)||r.retry_draining||r.error
    ||!Number.isSafeInteger(r.generation)||r.generation!==0||r.creation_key!==`branch-resource:${s.id}`
    ||!['waiting','completed'].includes(s.state)||!r.chat_id||!r.root_agent_id
@@ -57,13 +57,13 @@ export function issuedResourceFrontierSupported(selected:Selected,definition:Bra
 }
 
 /** Shared ownership boundary; graph replay must separately prove each binding and audit event. */
-export function issuedRequestFrontierSupported(selected:Selected,definition:BranchDefinition,hostCut?:BranchHostCut,issuedResource=false,group=false):boolean {
+export function issuedRequestFrontierSupported(selected:Selected,definition:BranchDefinition,hostCut?:BranchHostCut,issuedResource=false,group=false,ownerTree=false):boolean {
  try {
   const issued=selected.attempts?.filter(a=>a.request_id)??[];
   if(issued.length){
     if(!hostCut||!verifyBranchHostCut(hostCut,selected.execution![0]!.id)||!hostCut.coverage.complete
       ||hostCut.roots.length!==issued.length||new Set(hostCut.roots.map(root=>root.attemptId)).size!==issued.length
-      ||new Set(issued.map(a=>a.request_id)).size!==issued.length||(issuedResource?!issuedResourceFrontierSupported(selected,definition,hostCut,group):hostCut.resources.length))return false;
+      ||new Set(issued.map(a=>a.request_id)).size!==issued.length||(issuedResource?!issuedResourceFrontierSupported(selected,definition,hostCut,group,ownerTree):hostCut.resources.length))return false;
     verifyHostProvenance(hostCut);
     for(const a of issued){
       const s=selected.steps!.find(s=>s.id===a.step_execution_id),node=definition.steps.find(n=>n.id===s?.step_id),r=hostCut.requests.find(({row})=>row.id===a.request_id)?.row;

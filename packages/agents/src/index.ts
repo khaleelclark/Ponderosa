@@ -211,3 +211,5 @@ export {fenceBranchGenerationExit,generationExitHeld,requireGenerationExitOpen,t
 export {generationExitKey,readGenerationExitCapture,type BranchPriorGenerationEnvelope} from './branch-generation-exit-capture.js';
 
 export {readDestinationHistoricalPartition,destinationHistoricalFacts} from './coordination-v3-historical-partition.js';
+
+export {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';

@@ -1,3 +1,4 @@
+import {issuedResourceFrontierSupported} from './branch-issued-continuation.js';
 import {retainedResourceCapture} from './branch-resource-capture.js';
 import {coordinationLineageSupported} from './branch-host-provenance.js';
 import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
@@ -46,15 +47,15 @@ function checkpoint(o:Row):Row|undefined {
   const v=o.invocation;return {invocationId:v.id,mode:v.mode,closing:true,invocation:{id:v.id,ordinal:v.ordinal,mode:v.mode,state:v.state,primaryOutcome:v.primaryOutcome,interruptionId:v.interruptionId}};
 }
 /** Quiescent Script/control owners only; unfinished calls retain their waiting frontier. */
-export function encodeScriptTreeContinuation(db:Database.Database,id:string,selected:Selected):Row|undefined {
+export function encodeScriptTreeContinuation(db:Database.Database,id:string,selected:Selected,issuedResources=false):Row|undefined {
     if(selected.execution![0]?.parent_execution_id)return;
     const ids=db.prepare(`WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT id FROM tree ORDER BY id`).all(id) as Row[];
     if(ids.length<2&&!selected.resources?.length)return;
     // An unstarted reservation owns no released Chat/import effect or external identity.
-    if(selected.resources?.length&&!retainedResourceCapture(selected)&&db.prepare('SELECT 1 FROM branch_resource_members WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) UNION ALL SELECT 1 FROM branch_ephemeral_contexts WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) LIMIT 1').get(id,id))return;
+    if(!issuedResources&&selected.resources?.length&&!retainedResourceCapture(selected)&&db.prepare('SELECT 1 FROM branch_resource_members WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) UNION ALL SELECT 1 FROM branch_ephemeral_contexts WHERE step_execution_id IN (SELECT id FROM branch_step_executions WHERE execution_id=?) LIMIT 1').get(id,id))return;
     const owners=ids.map(row=>owner(db,row.id,row.id===id?selected:selectBranchUnit(db,row.id)));
     if(owners.some(row=>!row))return;
-    const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[]};
+    const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[],...(issuedResources?{issuedResources:true}:{})};
     const provenance=compose(db,c,true);return provenance?{...c,provenance}:undefined;
 }
 function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>,encoding=false):boolean {
@@ -63,7 +64,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
   const root=owners.find(o=>o.executionId===c.rootExecutionId);if(!root)return false;
   const allIds=treeIds(owners);if(new Set(allIds).size!==allIds.length)return false;
   const boundary=owners.reduce((last,o)=>Math.max(last,o.audit.at(-1)?.id??NaN),0);if(!Number.isSafeInteger(boundary))return false;
-  if(owners.some(o=>o.selected.attempts.some((a:Row)=>a.request_id)))retainedBranchHostGraph({selected:root.selected,hostDependencies:root.hostDependencies,continuation:c},c.rootExecutionId);
+  if(owners.some(o=>o.selected.attempts.some((a:Row)=>a.request_id)))retainedBranchHostGraph({selected:root.selected,hostDependencies:root.hostDependencies,continuation:c},c.rootExecutionId,true,c.issuedResources===true);
   for(const o of owners){
     const e=o.selected.execution[0],inv=o.invocation;
     const prefix=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(o.executionId,boundary);
@@ -77,7 +78,10 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       ||Object.hasOwn(o.configuration,'secretBindings')||Object.keys(JSON.parse(actual.configuration_json).secretBindings??{}).length)return false;
     const {secretBindings,...safe}=JSON.parse(actual.configuration_json);if(stableJson(safe)!==stableJson(o.configuration))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
-    const resourceFrontier=resourceReservationSupported(o.selected,definition);
+    const issuedResource=c.issuedResources===true;
+    if(issuedResource&&(hasParallelControls(definition)||o.selected.resources.length!==1||o.configuration.checkpointMode==='exit'))return false;
+    const resourceFrontier=issuedResource?issuedResourceFrontierSupported(o.selected,definition,o.hostDependencies,false,true):resourceReservationSupported(o.selected,definition);
+    if(issuedResource&&!resourceFrontier)return false;
     const capture=retainedResourceCapture(o.selected);
     if(capture&&(capture.source.intent.bindingSha256!==o.bindingHash||capture.source.intent.configurationSha256!==payloadHash(o.configuration)))return false;
     if(capture){
@@ -130,7 +134,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
     const waiting=resourceFrontier||Object.values(children).some(child=>!child.completed);
     if(!terminal&&!hasParallelControls(definition)&&(e.state!==(waiting?'waiting':'running')))return false;
-    const context:ScriptOwnerContext={resourceFrontier,terminal,terminalState:terminal?e.state:undefined,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state===e.state};
+    const context:ScriptOwnerContext={resourceFrontier,...(issuedResource?{issuedResource:true,issuedOwnerTree:true}:{}),terminal,terminalState:terminal?e.state:undefined,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state===e.state};
     if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context,o.hostDependencies))return false;
   }
   return true;
@@ -187,5 +191,10 @@ function treeSnapshotMetadata(snapshot:Row,c:Row):boolean {
   return stableJson(snapshot.selected)===stableJson(root.selected)&&snapshot.invocationId===root.invocation.id&&snapshot.mode===root.invocation.mode&&snapshot.closing===(root.invocation.state==='interrupted'||root.invocation.state==='terminal');
 }
 export function scriptTreeSnapshotSupported(db:Database.Database,id:string,snapshot:Row):boolean {
-  try {const c=snapshot.continuation;return snapshot.schema==='branch-unit-selected.v2'&&snapshot.restore_supported===true&&c?.schema===TREE_SCHEMA&&c.rootExecutionId===id&&treeSnapshotMetadata(snapshot,c)&&compose(db,c)!==undefined;}catch{return false;}
+  try {const c=snapshot.continuation;return snapshot.schema==='branch-unit-selected.v2'&&snapshot.restore_supported===true&&c?.issuedResources!==true&&c?.schema===TREE_SCHEMA&&c.rootExecutionId===id&&treeSnapshotMetadata(snapshot,c)&&compose(db,c)!==undefined;}catch{return false;}
+}
+
+/** Evidence-only replay of issued owner cuts; ordinary tree restore never opts in. */
+export function issuedScriptTreeSupported(db:Database.Database,c:Row):boolean {
+  return c?.issuedResources===true&&compose(db,c)!==undefined;
 }

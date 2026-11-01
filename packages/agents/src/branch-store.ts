@@ -1,3 +1,4 @@
+import {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';
 import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import {generationExitKey,requireGenerationExitIntakeFence,readGenerationExitCapture,fenceGenerationExitCapture,reserveGenerationExitCapture,sealGenerationExitCapture} from './branch-generation-exit-capture.js';
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
@@ -1299,6 +1300,21 @@ export class BranchStore {
     const execution=this.execution(executionId);if(!execution||this.restricted(execution.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current issued capture authority restricted');
     sealIssuedResourceCapture(this.sqlite,executionId,stepId,commandKey,receipt);
   }
+  private requireIssuedTreeAuthority(executionId:string):void {
+    const ids=this.rows(`WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT id FROM tree`,executionId);
+    for(const row of ids){const e=this.execution(row.id);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Current tree capture authority restricted');}
+  }
+  previewIssuedTreeCapture(executionId:string){
+    return this.sqlite.transaction(()=>{this.requireIssuedTreeAuthority(executionId);return previewIssuedTreeCapture(this.sqlite,executionId);})();
+  }
+  reserveIssuedTreeCapture(executionId:string,commandKey:string,expected:{reviewHash:string;versionId:string}){
+    return this.unitTransaction(()=>{this.requireIssuedTreeAuthority(executionId);return reserveIssuedTreeCapture(this.sqlite,executionId,commandKey,expected);}).immediate();
+  }
+  sealIssuedTreeMember(executionId:string,commandKey:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt){
+    this.requireIssuedTreeAuthority(executionId);sealIssuedTreeMember(this.sqlite,executionId,commandKey,receipt);
+  }
+  issuedTreeCapture(executionId:string,commandKey:string){return this.sqlite.transaction(()=>readIssuedTreeCapture(this.sqlite,executionId,commandKey))();}
+  issuedTreeFreshOwnerMap(executionId:string,commandKey:string){return this.sqlite.transaction(()=>issuedTreeFreshOwnerMap(this.sqlite,executionId,commandKey))();}
   issuedGroupCaptureStatus(executionId:string,commandKey:string):import('@ponderosa/core').BranchIssuedGroupCaptureStatus {
     const v=readIssuedGroupCapture(this.sqlite,executionId,commandKey);
     if(!v)throw Error('Group capture command unavailable');
@@ -1318,6 +1334,8 @@ export class BranchStore {
     sealIssuedGroupMember(this.sqlite,executionId,commandKey,receipt);
   }
   issuedResourceCapturePending(stepId:string):boolean {
+    if(this.row(`SELECT 1 FROM branch_commands c,json_each(c.result_json,'$.sources') source WHERE c.command_key LIKE 'issued-tree-capture:%'
+      AND json_extract(c.result_json,'$.state')='capturing' AND json_extract(source.value,'$.intent.resourceStepId')=? LIMIT 1`,stepId))return true;
     if(this.rows(`SELECT c.execution_id,c.command_key,c.result_json FROM branch_commands c,json_each(c.result_json,'$.sources') source WHERE c.command_key LIKE 'issued-group-capture:%'
       AND json_extract(c.result_json,'$.state')='capturing' AND json_extract(source.value,'$.intent.resourceStepId')=?`,stepId)
       .some(row=>!readGroupCaptureDisposition(this.sqlite,row.execution_id,row.command_key,row.result_json)))return true;
@@ -2909,7 +2927,12 @@ export class BranchStore {
       this.aggregate(r.execution_id, now);
     })();
   }
-  requireDeletionReady(id:string):void {requireGenerationExitDeletionReady(this.sqlite,{branchId:id});}
+  requireDeletionReady(id:string):void {
+    requireGenerationExitDeletionReady(this.sqlite,{branchId:id});
+    // Tree custody has no admitted/retired consumer yet; preserve every source owner and checkpoint.
+    if(this.row(`SELECT 1 FROM branch_commands c,json_each(c.result_json,'$.snapshot.continuation.owners') o
+      WHERE c.command_key LIKE 'issued-tree-capture:%' AND json_extract(o.value,'$.selected.execution[0].branch_id')=? LIMIT 1`,id))throw Error('Issued tree custody holds owner deletion');
+  }
   beginDeletion(id:string):void {
     this.unitTransaction(()=>{
       this.requireDeletionReady(id);

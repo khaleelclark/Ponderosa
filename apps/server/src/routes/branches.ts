@@ -35,6 +35,21 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
     try{return groups.discover({kind:request.query.kind,limit:request.query.limit===undefined?undefined:Number(request.query.limit),cursor:request.query.cursor});}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  app.get<{Params:GroupParams}>(groupPath+'/tree-captures',(request,reply)=>{
+    try{const p=request.params;return groups.discoverTreeCaptures(p.id,p.executionId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:GroupParams}>(groupPath+'/tree-capture-preview',(request,reply)=>{
+    try{const p=request.params;return groups.previewTreeCapture(p.id,p.executionId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:GroupParams;Querystring:{commandKey:string}}>(groupPath+'/tree-capture',(request,reply)=>{
+    try{const p=request.params;return groups.treeCaptureStatus(p.id,p.executionId,request.query.commandKey);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:GroupParams;Body:unknown}>(groupPath+'/tree-capture',async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Issued tree capture');exactObjectFields(body,['commandKey','reviewHash','versionId'],'Issued tree capture');
+      if(typeof body.commandKey!=='string'||typeof body.reviewHash!=='string'||typeof body.versionId!=='string')throw Error('Exact tree command and preview required');
+      const result=await groups.captureTree(p.id,p.executionId,body.commandKey,{reviewHash:body.reviewHash,versionId:body.versionId});notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:GroupParams}>(groupPath+'/capture-preview',(request,reply)=>{
     try{return groups.previewCapture(request.params.id,request.params.executionId);}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
