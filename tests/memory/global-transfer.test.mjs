@@ -71,7 +71,9 @@ test('unknown local global rows refuse inventory and known credential metadata i
 test('deterministic collision preserves changed local fact and reviewed retry adds no replacement',async t=>{
  const source=await instance(t),destination=await instance(t),ids=await globalSeed(source),snapshot=selectGlobalMemory((await inventory(source)).snapshot,ids.selection);
  const first=await commit(destination,await prepare(destination,snapshot));assert.equal(first.status,200,first.raw);
- const raw=destination.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('global').memory});await c.update({ids:[first.body.chunkIds[0]],documents:['Explicit destination edit']});const before=await inventory(destination);
+ const original=(await inventory(destination)).snapshot.chunks.find(r=>r.id===first.body.chunkIds[0]);assert.ok(original);
+ const raw=destination.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('global').memory});await c.update({ids:[original.id],documents:['Explicit destination edit'],embeddings:[vector]});const before=await inventory(destination);
+ assert.deepEqual(before.snapshot.chunks.find(r=>r.id===original.id),{...original,text:'Explicit destination edit',embedding:vector},'fixture edit persists with its vector, metadata and provenance before collision refusal');
  const retry=await commit(destination,await prepare(destination,snapshot));assert.equal(retry.status,409,retry.raw);assert.match(retry.body.error,/collision/);assert.deepEqual(await inventory(destination),before);noWork(destination);
 });
 test('selection order and JSON key order do not change exact reviewed global packet identity',async t=>{
