@@ -1054,3 +1054,39 @@ adapter unsupported. See runtime-native-recovery-contract.md for pinned official
 protocol sources, exact limits and minimal upstream requirements. No tests/checks/
 build/types/Node/native/browser/preparation/execution/push/deploy were performed;
 whole implementation and qualification remain incomplete.
+
+Integration: official-native-contract successor0dc8e232d assembled asd1571b5db on
+d0bf77caf, retaining Runtime870 and prospective selectable-journal retention. Actual
+parent8700860c was already assembled/equivalent on all three non-coverage paths;
+no ancestor replay. All FOUR required files physically inventoried/source-read;
+engine, recovery contract and deferred fixture owner-byte-equal. Only additive
+coverage conflict merged both prior integration notes and successor. Final delta
+exactly four paths; writer Integration on phase2-implementation-integration.
+
+Actual source requires accepted compact acknowledgement plus observed exact native
+turn/item identities. Five seconds are reserved within the existing45-second
+invokeCommand budget for thread/read session binding then thread/turns/list full
+items, at most four100-turn pages. One matching completed/error-free full turn and
+one exact contextCompaction item confirm completion. Foreign session, substitutions,
+duplicates in selected turn/item evidence, missing IDs, bad/repeated cursors,
+unsupported protocol and timeout remain unknown. No latest/newest guessed identity,
+mutating RPC retry, occupancy synthesis or source-effect settlement is introduced.
+The read helper does not mutate the operation; its caller only records confirmed
+completion. Existing fresh telemetry, recovery acceptance/fence and observed drain
+requirements remain. Deferred exact identity/session/pagination/refusal fixture
+source inspected only; no live protocol or installed-version qualification.
+
+This narrows earlier missing native-result-query statements: a lost completion
+notification with BOTH original IDs still present can now use stored completion
+proof. Lost acknowledgement/no IDs, durable operation-key/idempotency lookup across
+crashes and original source-effect queries remain unimplemented. Claude documented
+native command transport is distinct from current no-prompt recovery scope; structured
+compact remains unsupported under that constraint. No universal vendor absence claim.
+All current Branch history/UI, audit privacy, owner-tree/runtime event recovery,
+retention/deletion/tree guards and lifecycle source preserved; no server/core/SDK/
+db/schema changes.0035–0040 physically present, registered once in order, unchanged
+and unexecuted. Existing tree consumer/history/offset/payload/erased-proof limits
+remain; real package/custody/provider/native/crash/runtime/end-to-end/accessibility/
+mobile/full Phase2/Bible qualification is open. ZERO tests/checks/build/types/Node/
+native/browser/runner preparation or execution, migrations, push/deploy/newworkers.
+Hooks disabled; source/files/Git inspection only.
