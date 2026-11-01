@@ -1,15 +1,40 @@
-// Inject before navigation. Preserve all entries and interaction IDs; no automation elapsed time enters the score.
+// Inject before navigation. Raw entries remain evidence, including zero-ID noninteractions.
 export function installTimingObserver(){
- const state=window.__uiTiming={events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[]};
- try{new PerformanceObserver(list=>{for(const e of list.getEntries())state.events.push({name:e.name,startTime:e.startTime,duration:e.duration,processingStart:e.processingStart,processingEnd:e.processingEnd,interactionId:e.interactionId,target:e.target?.getAttribute('aria-label')??e.target?.tagName});}).observe({type:'event',buffered:true,durationThreshold:16});}catch(error){state.errors.push(String(error));}
- try{new PerformanceObserver(list=>{for(const e of list.getEntries())state.lcp.push({startTime:e.startTime,size:e.size,id:e.id});}).observe({type:'largest-contentful-paint',buffered:true});}catch(error){state.errors.push(String(error));}
+ const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable'};
+ const events=entries=>{for(const e of entries)state.events.push({name:e.name,startTime:e.startTime,duration:e.duration,processingStart:e.processingStart,processingEnd:e.processingEnd,interactionId:e.interactionId,target:e.target?.getAttribute('aria-label')??e.target?.tagName});};
+ const paints=entries=>{for(const e of entries)state.lcp.push({startTime:e.startTime,renderTime:e.renderTime,loadTime:e.loadTime,size:e.size,id:e.id,element:e.element?.tagName});};
+ let eventObserver,lcpObserver;
+ try{eventObserver=new PerformanceObserver(list=>events(list.getEntries()));eventObserver.observe({type:'event',buffered:true,durationThreshold:16});}catch(error){state.errors.push(String(error));}
+ try{lcpObserver=new PerformanceObserver(list=>paints(list.getEntries()));lcpObserver.observe({type:'largest-contentful-paint',buffered:true});}catch(error){state.errors.push(String(error));}
+ const flush=()=>{events(eventObserver?.takeRecords()??[]);paints(lcpObserver?.takeRecords()??[]);};
+ const cutoff=reason=>{if(state.cutoff)return;flush();state.cutoff={reason,time:performance.now()};};
+ for(const type of ['pointerdown','keydown'])addEventListener(type,e=>{if(e.isTrusted)cutoff('first-trusted-input');},{capture:true});
+ addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')cutoff('hidden');});addEventListener('pagehide',()=>cutoff('pagehide'));
+ window.__finalizeUiTiming=async()=>{
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve,0))));flush();
+  if(!state.cutoff)cutoff('explicit-finalize');
+  // Only an independently supplied browser count can establish subfloor groups; never infer them from key presses.
+  if(Number.isInteger(performance.interactionCount)&&performance.interactionCount>=0){state.totalInteractions=performance.interactionCount;state.countSupport='performance.interactionCount';}
+  state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
+ };
 }
 export function summarizeTimings(sessions){
- const durations=[];const sessionResults=sessions.map(session=>{
+ if(!sessions.length)throw Error('No sessions');
+ const durations=[],namespaces=new Set();let total=0,censored=0,complete=true;
+ const sessionResults=sessions.map((session,index)=>{
   if(session.errors.length||!session.supported.includes('event')||!session.supported.includes('largest-contentful-paint'))throw Error('Unsupported or failed timing observer');
+  const namespace=session.namespace??`session-${index}/${session.documentId??'legacy'}`;if(namespaces.has(namespace))throw Error('Duplicate document namespace');namespaces.add(namespace);
   const grouped=new Map();for(const entry of session.events)if(entry.interactionId)grouped.set(entry.interactionId,Math.max(grouped.get(entry.interactionId)??0,entry.duration));
-  if(!grouped.size||!session.lcp.length)throw Error('Missing interactions or LCP, never substitute zero');
-  const values=[...grouped.values()];durations.push(...values);return {interactionCount:values.length,lcp:session.lcp.at(-1).startTime};
+  const eligible=session.lcp.filter(e=>!session.cutoff||e.startTime<=session.cutoff.time);
+  if(!grouped.size||!eligible.length)throw Error('Missing interactions or eligible LCP, never substitute zero');
+  const values=[...grouped.values()];durations.push(...values);
+  const supported=session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length;
+  complete&&=supported;if(supported){total+=session.totalInteractions;censored+=session.totalInteractions-values.length;}
+  return {namespace,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
  });
- durations.sort((a,b)=>a-b);if(!durations.length)throw Error('No sessions');return {nSessions:sessions.length,nInteractions:durations.length,method:'nearest-rank pooled interaction-group maximum EventTiming duration',p75:durations[Math.ceil(.75*durations.length)-1],sessions:sessionResults};
+ durations.sort((a,b)=>a-b);const observedP75=durations[Math.ceil(.75*durations.length)-1],rank=Math.ceil(.75*total);
+ // Mixed thresholds cannot establish one subfloor population.
+ complete&&=sessions.every(s=>s.threshold===16);
+ const p75=complete?(rank<=censored?null:durations[rank-censored-1]):null;
+ return {nSessions:sessions.length,nInteractions:durations.length,totalInteractions:complete?total:null,censored:complete?censored:null,qualifiedPopulation:complete,method:'per-document maxima; nearest-rank pooling; duration quantized by browser',observedP75,p75,p75BelowFloor:complete&&rank<=censored,reportingFloor:16,populationReason:complete?'browser count with finalized visible documents':'observed-only diagnostic; total/censoring or collection health unsupported',sessions:sessionResults};
 }

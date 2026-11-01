@@ -80,3 +80,60 @@ threshold/missing-fast-interaction completeness before acceptance. Tooling smoke
 observed p75=328ms with zero active Agents: it is retained red performance evidence
 under that diagnostic cadence, not waived by successful capture. A profile/trace
 follow-up must explain it before any performance True verdict.
+
+
+## Independent METHOD corrections (successor of 2dca)
+
+Full independent review was read at
+`/home/phoenix/.p-prod-tmp/ponderosa-output-independent-20261101/report.md`.
+Its UI42e ACCEPT is separate from METHOD REQUEST_CHANGES. No heavy session is
+authorized by implementing these corrections.
+
+The observer now drains pending records after two presentation frames, retains
+all LCP candidates with render/load/size/element, and freezes the final eligible
+candidate at first trusted pointer/key input, hidden/pagehide, or explicit end.
+Raw zero-ID entries remain but never become interactions. Every session uses
+its planned cell/session plus random document identity. A duplicate namespace
+is refused. Per-document groups are pooled without merging IDs across sessions.
+
+Observed-only `observedP75` is diagnostic. It is no longer an exact all-interaction
+p75 or an automatic failure. Only a finalized visible collector with an independent
+native `performance.interactionCount` can establish total N and censored M below
+16ms. Rank k=ceil(.75N) yields below-floor if k<=M, otherwise observed rank k-M;
+no zero samples are invented. Unsupported count/health means `p75:null` and
+`qualifiedPopulation:false`; full qualification refuses. This property is not
+assumed available in installed Chrome and has not been exercised here. An accepted
+alternative independent total-count implementation remains a method gate if absent.
+The browser's raw duration quantization remains in evidence; no submillisecond
+precision is implied by JavaScript numbers.
+
+Owned active-load sampling now records canonical API Run objects, session IDs,
+per-Agent progress age and actual resource samples every second. A changed
+Run/session identity, missing live running Run or >10s progress gap is retained
+and fails continuity; provider work cadence remains2s. Pending sampler promises
+are awaited before provider shutdown. This code is assembled/syntax-checked,
+not live20work proof: the previous real capacity refusal remains in force, with
+no retry here. API DTO fields are retained as returned; missing canonical lease
+or fence fields require an explicit store-level receipt before qualification.
+
+Full mode additionally requires a retained primary Lighthouse profile receipt
+with version, local source file, SHA256 and config (width/height/dpr/cpu/mobile/
+touch). Source hash and proposed literal profile equality are checked before
+fixture construction. This does not authenticate a caller's copied config:
+independent source review must bind primary provenance, UA/screen/network and
+reconcile mismatches before GO. No matching retained Lighthouse source was
+found in bounded existing /opt and user cache/share searches; no network/install
+was attempted. Current360x640 proposal therefore remains unqualified as a
+Lighthouse-standard profile. Browser actual viewport/DPR/UA/visibility receipts,
+cache-disabled fresh contexts, exact navigation route, canonical seed and editor
+readiness marks are retained. Editor-ready is not proof all10k history is loaded;
+actual loaded-history readiness and cutoff relationship need a reviewed gate.
+
+All32planned rows are retained before fixture creation. Four primary pooled
+populations remain fixed. Full LCP threshold now uses predeclared rank6of8,
+retaining every individual value/exceedance, rather than silently requiring all8.
+Frozen zero-delay task cadence and the historical328ms observed diagnostic are
+unchanged. Workload seed/tool/work branches, admission/lease telemetry, readiness,
+primary-profile and installed-browser collector feasibility still need small
+reviewed proof under adequate actual headroom before GO32. No reader/nativeIME
+installation, mounted UI replay, broad acceptance or performance score is claimed.
