@@ -137,3 +137,15 @@ performed. Package/custody/provider/native/crash/upgrade/runtime/end-to-end, com
 performance, accessibility/mobile, streaming/call and all Bible/Build qualification remain
 open. See the remaining inventory for the full separate verification list. Source presence
 is not a whole-commandment True verdict or full Phase2 acceptance.
+
+### U1 G1/G4 native callback/control source successor
+
+`native-approvals-and-live-controls.md` records callable Codex command/file/turn
+permission responses and Claude can_use_tool responses bound to the human Decision
+broker and current Run/session/fence. Claude retained interrupt, set_model,
+set_permission_mode and get_context_usage use correlated native controls;
+Agent Settings and shared DTOs expose explicit human model/permission control.
+Existing human permission defaults and deny-only policy remain; no generic
+question, control ack or process exit is an effect receipt. G1/G4 source is
+implemented with deferred fixtures, not execution-qualified parity. M2/M3 and the
+other U1 capability lanes remain distinct and unqualified.

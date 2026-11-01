@@ -722,6 +722,7 @@ export type RuntimeElicitationActionDto =
     }
   | {
       decisionId: string;
+      nativeApproval?: import("../adapter.js").RuntimeNativeApprovalIdentity;
       mode: "form" | "openai/form";
       serverName: string;
       message: string;

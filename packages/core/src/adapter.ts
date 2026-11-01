@@ -217,6 +217,21 @@ export type RuntimeDynamicToolHandler = (
  * Engine adapters normalize their native protocol before this crosses into
  * server/runtime code.
  */
+export interface RuntimeNativeApprovalIdentity {
+  requestId: string;
+  sessionId: string;
+  turnId: string;
+  kind: "command" | "file" | "permissions" | "tool";
+}
+
+export interface NativeRuntimeControlRequest {
+  sessionId: string;
+  runId: string;
+  fencingToken: number;
+  operation: "model" | "permission-mode";
+  value: string;
+}
+
 export type RuntimeElicitationRequest =
   | {
       mode: "url";
@@ -226,6 +241,8 @@ export type RuntimeElicitationRequest =
       url: string;
     }
   | {
+      /** Exact live native callback; never eligible for remembered grants. */
+      nativeApproval?: RuntimeNativeApprovalIdentity;
       mode: "form" | "openai/form";
       serverName: string;
       message: string;
@@ -239,6 +256,7 @@ export interface RuntimeElicitationResponse {
 
 export type RuntimeElicitationHandler = (
   request: RuntimeElicitationRequest,
+  signal?: AbortSignal,
 ) => Promise<RuntimeElicitationResponse>;
 
 export type RuntimeSteerResult =
@@ -628,4 +646,11 @@ export interface EngineRegistration {
   authStatus?: (options?: EngineProbeOptions) => Promise<EngineAuthStatus>;
   /** Explicit provider entitlement check; never run during polling. */
   availabilityProbe?: (options?: EngineProbeOptions) => Promise<EngineAvailabilityStatus>;
+}
+
+export interface NativeRuntimeControlBoundary {
+  sessionId: string;
+  runId: string;
+  fencingToken: number;
+  operations: Array<"model" | "permission-mode">;
 }

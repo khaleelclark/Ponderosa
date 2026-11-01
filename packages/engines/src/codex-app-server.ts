@@ -1,4 +1,5 @@
 import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
+import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
 import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
 import {
@@ -536,13 +537,16 @@ export class CodexAppServerSession implements RuntimeSession {
     let session: CodexAppServerSession | undefined;
     const {sandboxMode:effectiveSandboxMode,config:sessionConfig}=codexCapabilityRuntimeOptions(opts.sandboxMode,opts.capabilityRestrictions);
     const restrictedConnectors=new Set(opts.capabilityRestrictions?.restrictedConnectorNames??[]);
+    const nativeApprovalRequests = new Set<string>();
+    const pendingNativeApprovals = new Map<string, { turnId: string; controller: AbortController }>();
+    const approvalPolicy = opts.handleElicitation ? "on-request" : "never";
     const rpc = new JsonRpcProcess({
       bin: opts.bin,
       args: [
         "app-server",
         "--stdio",
         "-c", `sandbox_mode=${JSON.stringify(effectiveSandboxMode)}`,
-        "-c", 'approval_policy="never"',
+        "-c", `approval_policy=${JSON.stringify(approvalPolicy)}`,
         ...(opts.enableFastMode ? ["-c", "features.fast_mode=true"] : []),
       ],
       cwd: opts.cwd,
@@ -551,11 +555,33 @@ export class CodexAppServerSession implements RuntimeSession {
       killGraceMs: opts.killGraceMs,
       onRuntimeSpawned: opts.onRuntimeSpawned,
       onRuntimeRootExit: detail => {
+        for (const pending of pendingNativeApprovals.values()) pending.controller.abort();
+        pendingNativeApprovals.clear();
         session?.stopCompactObservation();
         opts.onRuntimeRootExit(detail);
       },
-      onNotification: (notification) => session?.observeNotification(notification),
+      onNotification: (notification) => {
+        const params = object(notification.params);
+        const turn = object(params?.turn);
+        if (session && params?.threadId === session.engineAgentId && notification.method === "turn/completed") {
+          for (const pending of pendingNativeApprovals.values()) if (pending.turnId === turn?.id) pending.controller.abort();
+        }
+        if (session && params?.threadId === session.engineAgentId && notification.method === "serverRequest/resolved" &&
+            (typeof params.requestId === "string" || typeof params.requestId === "number")) pendingNativeApprovals.get(String(params.requestId))?.controller.abort();
+        session?.observeNotification(notification);
+      },
       handleServerRequest: async (requestId, method, params) => {
+        if (CODEX_NATIVE_APPROVAL_METHODS.has(method)) {
+          if (!session || nativeApprovalRequests.has(String(requestId)) || nativeApprovalRequests.size >= 10_000) throw new Error("Native approval has no fresh owned identity");
+          nativeApprovalRequests.add(String(requestId));
+          const controller = new AbortController();
+          const turnId = object(params)?.turnId;
+          if (typeof turnId !== "string") throw new Error("Native approval has no exact turn");
+          pendingNativeApprovals.set(String(requestId), { turnId, controller });
+          try {
+            return await answerCodexNativeApproval({ ...opts, signal: AbortSignal.any([opts.signal, controller.signal]) }, session.engineAgentId, () => session?.activeTurnId, String(requestId), method, params);
+          } finally { pendingNativeApprovals.delete(String(requestId)); }
+        }
         if (method === "mcpServer/elicitation/request") {
           if (!opts.handleElicitation) throw new Error("MCP elicitation is unavailable");
           return opts.handleElicitation(normalizeElicitationRequest(params));
@@ -591,7 +617,7 @@ export class CodexAppServerSession implements RuntimeSession {
           cwd: opts.cwd,
           model: opts.model || null,
           serviceTier: serviceTierForSpeed(opts.speed),
-          approvalPolicy: "never",
+          approvalPolicy,
           sandbox: effectiveSandboxMode,
           ...(sessionConfig?{config:sessionConfig}:{}),
           developerInstructions: opts.systemPrompt ?? null,
@@ -600,7 +626,7 @@ export class CodexAppServerSession implements RuntimeSession {
           cwd: opts.cwd,
           model: opts.model || null,
           serviceTier: serviceTierForSpeed(opts.speed),
-          approvalPolicy: "never",
+          approvalPolicy,
           sandbox: effectiveSandboxMode,
           ...(sessionConfig?{config:sessionConfig}:{}),
           developerInstructions: opts.systemPrompt ?? null,
@@ -831,6 +857,11 @@ export class CodexAppServerSession implements RuntimeSession {
     if (notification.method === "account/updated") this.accountGeneration++;
     const compact = this.compactOperation;
     const params = object(notification.params);
+    if (params?.threadId === this.engineAgentId && (!compact || compact.closed)) {
+      const turn = object(params.turn);
+      if (notification.method === "turn/started" && typeof turn?.id === "string") this.activeTurnId = turn.id;
+      if (notification.method === "turn/completed" && turn?.id === this.activeTurnId) this.activeTurnId = undefined;
+    }
     if (compact && !compact.closed && params?.threadId === this.engineAgentId) {
       const turn = object(params.turn);
       if (notification.method === "turn/started" && !compact.turnId &&
