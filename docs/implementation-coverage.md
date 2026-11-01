@@ -342,3 +342,17 @@ authoritative backend filesystem checks. The former Agent root-bundle controls
 gap is closed in source. Live-root population/new Project, Branches bundles,
 mapped Settings actions and shared Chat/peer stream consumers remain missing.
 No execution or completion claim; tests remain deferred.
+
+## Workflow folder forwarding
+
+Reliability `54abf5bb` and Features `f13b1c6a` integrated conflict-free. Shared
+engine forwards folder options and complete import results. Workflow export
+accepts owned per-Agent file selections; install preview validates target-keyed
+new nonnested destinations and refuses retained-Agent folder choices. Durable
+importResults preserve content locations and grant suggestions through recovery
+and terminal compaction under existing retention policy.
+
+Backend Branches folder-forwarding gap is now implemented; UI selection/destination
+controls and separate human Settings actions remain missing. Suggestions never
+adopt grants/profile identity. Live root binding and in-progress checkpoint codecs
+remain open. Regression source unexecuted; no completion or acceptance claim.
