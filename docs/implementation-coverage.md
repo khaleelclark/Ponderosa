@@ -1000,3 +1000,41 @@ source/files/Git inspection only.
 ### Prospective group audit journal retention (source only)
 
 Final canonical Branch owner deletion now publishes exact original selectable group capture/destination journals and abandonment dispositions into existing immutable host lifecycle receipts in the same transaction before command removal. Operator discovery/audit reads current or validated retained originals without reconstructing IDs/commands/owners or granting authority. Original key, input hash, private bytes and timestamp survive; conflicts, corruption, unknown evidence and bounds refuse. Live mutation/disclosure/admission and deletion readiness checks remain unchanged. Existing historical-partition audit projection stays metadata-only. Deferred source covers canonical deletion/rollback/reopen plus capture/destination readback, held imports and immutable conflicts; none ran. Earlier erased-selectable-journal statements remain true for pre-retention deletions, but prospective preservation is now implemented. No migration, package/sourcebytes/history reclamation, external-writer reconciliation or native/provider qualification is supplied.
+
+Integration: selectable-journal retention e68dedeed is assembled as fdd227157 on
+f7d30f17b, preserving assembled Runtime owner-tree and recorded-completion fixes.
+Actual parent64d950ad4 already assembled; only the requested delta was applied.
+All eleven required paths physically inventoried/source-read; ten owner-byte-equal,
+with the sole coverage conflict resolved by preserving both additive sections.
+Writer Integration on phase2-implementation-integration; final task delta eleven paths.
+
+Source inspection confirms retention within final deleteBranch unitTransaction,
+after existing readiness checks and before deletion mutations. Exact original key,
+input hash, private result_json bytes and created_at are retained per execution in
+immutable host lifecycle receipts; retention or later deletion failure rolls back
+both. Audit-only lookup/discovery verify receipt scope/hash/canonical bytes and live
+agreement, deduplicate execution/key and bind cursors to inventory revision. Existing
+capture/admission/custody readers validate original evidence; ordinary action paths
+keep live-owner reads. No command reinsertion, authority fallback, owner restoration
+or private historical seal projection is added. Unknown states remain held.
+
+Prospective erased-selectable-journal gap is resolved in source only for these new
+canonical deletions. Already erased records without receipts remain unsupported.
+Bounds refuse, never truncate: 16 MiB per command, 4096 commands per execution and
+4096 owners per deletion, 64 MiB deletion/receipt and combined discovery evidence;
+discovery also caps selected journals and retained manifests at 4096 each. Existing
+Branch deletion guards, tree custody journals and precleanup remain. No SDK/UI,
+Runtime, db/schema or migration delta;0035–0040 physically present, registered once
+in order and unchanged/unexecuted. Deferred deletion/rollback/reopen, exact bytes,
+conflict/corruption, held imports and privacy fixtures read only.
+
+Remaining: old erased/missing/preupgrade proofs, atomic called-tree admission
+consumer, multi-resource/multi-item/active or unknown sibling history, EXIT, offset
+restoration/manual recovery and broader payload/secret/artifact/native/provider/
+external-effect families. Existing bounded serial/local-parallel history eligibility
+is unchanged. Claude structured retained-session compact and native unrecorded-result
+query/idempotency remain unimplemented in current integrated interfaces. Real package/
+custody/provider/native/crash/runtime/end-to-end/accessibility/mobile and full Phase2/
+Bible qualification remain open. No reclamation writer or external reconciliation.
+ZERO tests/checks/build/types/Node/native/browser/runner preparation or execution,
+migrations, push/deploy/newworkers. Hooks disabled; source/files/Git inspection only.
