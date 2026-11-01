@@ -1,3 +1,4 @@
+import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import { touchSourceMutation } from "./source-capture-boundary.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
@@ -141,6 +142,7 @@ export class AgentDeletionAuthority {
       const agent = byId.get(id)!;
       return { id: agent.id, title: agent.title, ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}) };
     });
+    for (const agent of affectedAgents) requireGenerationExitDeletionReady(this.client,{agentId:agent.id});
     const previewHash = createHash("sha256").update(JSON.stringify({
       projectId,
       rootAgentIds: normalizedRoots,
@@ -206,6 +208,7 @@ export class AgentDeletionAuthority {
     // subsequent point therefore restores only exact marker/token matches.
     this.client.transaction(() => {
       for (const row of stagedDirectories.values()) {
+        requireGenerationExitDeletionReady(this.client,{agentId:row.agentId});
         this.db.insert(agentDeletionPending).values({
           agentId: row.agentId,
           projectId: row.projectId,

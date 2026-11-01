@@ -65,3 +65,25 @@ test('fence permanently survives journal phases, owner removal and exact receipt
  assert.throws(()=>f.db.transaction(()=>fenceBranchGenerationExit(f.db,{...f.input,conversationId:'replacement'}))(),/replay differs/);
  assert.throws(()=>f.db.prepare("DELETE FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence'").run(),/immutable/);
 });
+
+test('canonical subtree, Chat and Project deletion refuse missing, pending and forged sealed generation evidence',async t=>{
+ const f=await fixture(t),{store,db,input,agent,chat,project}=f;
+ db.transaction(()=>fenceBranchGenerationExit(db,input))();
+ const refuses=()=>{
+  assert.throws(()=>store.previewAgentDeletion([agent.id]),/sealed capture/);
+  assert.throws(()=>store.deleteAgent(agent.id),/sealed capture/);
+  assert.throws(()=>store.markConversationDeletionPending(chat.id),/sealed capture/);
+  assert.throws(()=>store.commitConversationDeletion(chat.id),/sealed capture/);
+  assert.throws(()=>store.markProjectDeletionPending(project.id),/sealed capture/);
+  assert.throws(()=>store.commitProjectDeletion(project.id),/sealed capture/);
+  assert.ok(store.getAgent(agent.id));assert.ok(store.getConversation(chat.id));assert.ok(store.getProject(project.id));
+  assert.equal(db.prepare('SELECT count(*) n FROM agent_deletion_pending').get().n,0);
+  assert.equal(db.prepare('SELECT count(*) n FROM project_deletion_pending').get().n,0);
+  assert.equal(db.prepare('SELECT count(*) n FROM conversation_deletion_receipts').get().n,0);
+ };
+ refuses();
+ for(const state of ['fencing','capturing','sealed']){
+  db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?) ON CONFLICT(execution_id,command_key) DO UPDATE SET result_json=excluded.result_json').run(input.executionId,`resource-generation-exit:${input.stepExecutionId}:0`,'forged',JSON.stringify({state}),new Date().toISOString());
+  refuses();
+ }
+});

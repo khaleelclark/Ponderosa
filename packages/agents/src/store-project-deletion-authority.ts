@@ -1,3 +1,4 @@
+import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import { touchSourceMutation } from "./source-capture-boundary.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
@@ -82,6 +83,7 @@ export class AgentProjectDeletionAuthority {
   }
 
   markProjectDeletionPending(projectId: string, now = new Date().toISOString()): string[] {
+    requireGenerationExitDeletionReady(this.client,{projectId});
     if (!this.getProject(projectId)) throw new Error("project not found");
     const draftSurfaceIds = this.draftSurfaceIds(projectId);
     this.db.insert(projectDeletionPending).values({
@@ -258,6 +260,7 @@ export class AgentProjectDeletionAuthority {
     const now = new Date().toISOString();
     try {
       this.db.transaction(() => {
+        requireGenerationExitDeletionReady(this.client,{projectId:id});
         const pendingConversationDeletion = this.client.prepare(`
           SELECT 1 FROM conversation_deletion_receipts
           WHERE project_id = ? AND (

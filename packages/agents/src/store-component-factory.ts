@@ -191,6 +191,7 @@ export function createAgentStoreComponents(
   const workspaceCatalog = new AgentWorkspaceCatalogAuthority(
     dataDir,
     db,
+    client,
     ports.listAgents,
     ports.getConversationMessages,
     projectId => chatFeed.refreshInboxFeedProject(projectId),

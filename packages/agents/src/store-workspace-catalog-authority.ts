@@ -1,3 +1,4 @@
+import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
@@ -103,6 +104,7 @@ export class AgentWorkspaceCatalogAuthority {
   constructor(
     private readonly dataDir: string,
     private readonly db: Db,
+    private readonly client: import("better-sqlite3").Database,
     private readonly listAgents: (projectId: string) => AgentDto[],
     private readonly getConversationMessages: (
       conversationId: string,
@@ -197,6 +199,7 @@ export class AgentWorkspaceCatalogAuthority {
   private stageConversationDeletionStorage(
     receipt: ConversationDeletionReceipt,
   ): ConversationDeletionReceipt {
+    requireGenerationExitDeletionReady(this.client,{conversationId:receipt.conversationId});
     const current = receipt;
     const identity = this.conversationDeletionIdentity(current);
     const parent = conversationsDir(this.dataDir, current.projectId);
@@ -1100,6 +1103,7 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   markConversationDeletionPending(id: string): ConversationDeletionReceipt {
+    requireGenerationExitDeletionReady(this.client,{conversationId:id});
     const prior = this.getConversationDeletionReceipt(id);
     if (prior) return prior;
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
@@ -1262,6 +1266,7 @@ export class AgentWorkspaceCatalogAuthority {
     const now = new Date().toISOString();
     try {
       this.db.transaction((tx) => {
+        requireGenerationExitDeletionReady(this.client,{conversationId:id});
         // Communication cleanup shares this SQLite connection, so
         // no new work can target the Chat after its projection disappears.
         beforeProjectionDelete?.(id);
