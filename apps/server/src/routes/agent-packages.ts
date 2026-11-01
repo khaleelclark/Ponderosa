@@ -17,6 +17,7 @@ import {
 } from "@ponderosa/core";
 import path from "node:path";
 import type {
+  AgentAccessImportReviewDto,
   AgentImportOperationDto,
   AgentImportPhase,
   AgentDto,
@@ -67,9 +68,27 @@ import {
 } from "../agent-package-codec.js";
 
 import {validatePortableAgentPackage} from "../portable-agent-package-validation.js";
-import type {BranchInstallationService} from "../branch-installation-service.js";
-
-export type BranchPackageEngine = Parameters<BranchInstallationService["setEngine"]>[0];
+export interface BranchPackageImportOptions {
+  signal?:AbortSignal;
+  branchHooks?:BranchImportHooks;
+  accessSettingsResolution?:ImportAgentPackageRequest['accessSettingsResolution'];
+}
+/** Shared packaging boundary; callers own durable human review and destination selection. */
+export interface BranchPackageEngine {
+  setOutputApps(owner:OutputAgentApps):void;
+  validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
+  exportMemory(chatId:string,agentIds:string[]):Promise<import('@ponderosa/core').PortableChatMemorySnapshotDto>;
+  verifyStagedMemory(operationId:string,pkg:AgentPortablePackageDto):Promise<void>;
+  rollbackStagedMemory(operationId:string):Promise<void>;
+  exportAgent(id:string,mode:'template'|'full'):Promise<AgentPortablePackageDto>;
+  reviewAccess(pkg:AgentPortablePackageDto,chatId:string):Promise<AgentAccessImportReviewDto>;
+  importAgent(projectId:string,chatId:string,pkg:AgentPortablePackageDto,engines:Record<string,string>,key:string,options?:BranchPackageImportOptions):Promise<ImportAgentPackageResponse>;
+}
+export interface BranchPackageImportError extends Error {
+  statusCode:number;
+  provisionRejected:boolean;
+  accessSettingsReview?:AgentAccessImportReviewDto;
+}
 export interface BranchImportHooks {
   plan(agentIds: string[], creationOperationId?: string): void | Promise<void>;
   transaction?(operation:()=>void):void;
@@ -127,6 +146,14 @@ export function registerAgentPackageRoutes(
     agentMessages,
     createOperationalNotification,
   } = context;
+  const reviewAccess = async(pkg:AgentPortablePackageDto,chatId:string):Promise<AgentAccessImportReviewDto>=>{
+    const portable=validatePortableAgentPackage(pkg).package;
+    const chat=store.getConversation(chatId);
+    if(!chat||deletingConversationIds.has(chat.id)||deletingProjectIds.has(chat.projectId))throw Object.assign(new Error('Import destination unavailable'),{statusCode:404});
+    const destination=new CapabilityPolicyStore(store.sqlite).resolveForChat(chat.id);
+    const reviewSha256=await portableImportPayloadHash({package:portable,destination:chat.id,destinationPolicy:destination});
+    return {reviewSha256,source:portable.agents.map(node=>({ref:node.ref,settings:node.accessSettings})),destination};
+  };
   let outputApps:OutputAgentApps|undefined;
   const blobImportContentType = "application/vnd.ponderosa.agent-import";
   const importOperationDirectory = path.join(context.dataDir, "agent-import-operations");
@@ -1156,12 +1183,12 @@ export function registerAgentPackageRoutes(
         const sourceChatRefs=new Set(portablePackage.agents.flatMap(node=>node.sourceChat?[node.sourceChat.ref]:[]));
         if(sourceChatRefs.size>1)throw new Error('Multiple source Chat bindings require separate organization packages; one export is one within-Chat reporting subtree');
         if(body.accessSettingsResolution||portablePackage.agents.some(node=>node.accessSettings?.restrictedCapabilityIds.length)){
-          const destinationPolicy=new CapabilityPolicyStore(store.sqlite).resolveForChat(conversation.id);
-          reviewedDestinationPolicy=stableJson(destinationPolicy);
-          const reviewSha256=await portableImportPayloadHash({package:portablePackage,destination:conversation.id,destinationPolicy});
+          const accessReview=await reviewAccess(portablePackage,conversation.id);
+          reviewedDestinationPolicy=stableJson(accessReview.destination);
+          const {reviewSha256}=accessReview;
           if(body.accessSettingsResolution?.reviewSha256!==reviewSha256){
             abandonMutationFreeOperation('Nonsecret access settings require human review');
-            return reply.code(409).send({error:'Review source restrictions and destination access before importing',reviewSha256,source:portablePackage.agents.map(node=>({ref:node.ref,settings:node.accessSettings})),destination:destinationPolicy});
+            return reply.code(409).send({error:'Review source restrictions and destination access before importing',...accessReview});
           }
         }
         if(portablePackage.agents.some(node=>node.workingFiles?.length||node.workingFolder)&&!body.workingFilesDestination)throw new Error('Choose a new destination folder for selected working files');
@@ -2029,9 +2056,7 @@ export function registerAgentPackageRoutes(
       validatePortableAgentPackage(portable);
       const chat=store.getConversation(metadata.conversationId);
       if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chat.id,requestProduct(request)))return reply.code(404).send({error:'Import destination unavailable'});
-      const destination=new CapabilityPolicyStore(store.sqlite).resolveForChat(chat.id);
-      const reviewSha256=await portableImportPayloadHash({package:portable,destination:chat.id,destinationPolicy:destination});
-      return {reviewSha256,source:portable.agents.map(node=>({ref:node.ref,settings:node.accessSettings})),destination};
+      return await reviewAccess(portable,chat.id);
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
     finally{await cleanupUpload(request.body);}
   });
@@ -2386,6 +2411,7 @@ export function registerAgentPackageRoutes(
     }
   });
   return {packageEngine:{
+    reviewAccess,
     setOutputApps(owner:OutputAgentApps){outputApps=owner;},
     validateAgent(pkg,mapping) {
       if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Package contains memory; configure destination local memory before importing');for(const entry of pkg.memory)validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}
@@ -2403,8 +2429,12 @@ export function registerAgentPackageRoutes(
     importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
       let status=200,body:unknown;
       const response={code(value:number){status=value;return this;},send(value:unknown){body=value;return value;}} as unknown as FastifyReply;
-      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
-      if(status>=400)throw Object.assign(new Error(typeof body==='object'&&body&&'error' in body?String(body.error):'Agent import failed'),{statusCode:status,provisionRejected:status===400||status===404});
+      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
+      if(status>=400){
+        const accessSettingsReview=status===409&&typeof body==='object'&&body&&'reviewSha256' in body
+          ? {reviewSha256:(body as AgentAccessImportReviewDto).reviewSha256,source:(body as AgentAccessImportReviewDto).source,destination:(body as AgentAccessImportReviewDto).destination}:undefined;
+        throw Object.assign(new Error(typeof body==='object'&&body&&'error' in body?String(body.error):'Agent import failed'),{statusCode:status,provisionRejected:status===400||status===404,...(accessSettingsReview?{accessSettingsReview}:{})});
+      }
       return body as ImportAgentPackageResponse;
     }),
   }};

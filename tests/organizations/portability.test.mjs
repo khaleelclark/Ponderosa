@@ -15,17 +15,17 @@ import { registerAgentPackageRoutes } from '../../apps/server/dist/routes/agent-
 // managed bytes, with no listener, scheduler, provider session or user profile.
 async function withPortability(t, run) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'ponderosa-portability-'));
-  let store, assets, app, passed = false;
+  let store, assets, app, packageEngine, passed = false;
   const open = () => {
     store = new AgentStore(dataDir); assets = new AssetStore(dataDir); app = Fastify();
-    registerAgentPackageRoutes(app, {
+    ({packageEngine}=registerAgentPackageRoutes(app, {
       dataDir, store, assets,
       coordination: { runtimeArtifact: () => undefined, handleAgentDeletion() {} },
       engines: new Map([['codex', { adapter: { id: 'codex', listModels: () => [], listEfforts: () => [] } }]]),
       deletingProjectIds: new Set(), deletingConversationIds: new Set(), deletingAgentIds: new Set(),
       agentCreationConversationLeases: new Map(), cachedModelOptions: () => [], appendWorkspace() {},
       agentMessages: id => store.getProjectedAgentMessages(id), createOperationalNotification() {},
-    });
+    }));
   };
   const close = async () => { await app?.close(); assets?.close(); store?.close(); };
   try {
@@ -77,7 +77,7 @@ async function withPortability(t, run) {
       headers: { 'idempotency-key': key }, payload: { package: pkg, conversationId: destination.id, engineMapping: { codex: 'codex' }, ...extra } });
     const projection = id => store.sqlite.prepare('SELECT role, text, source_kind AS sourceKind, created_at AS createdAt FROM imported_history_messages WHERE agent_id = ? ORDER BY sequence').all(id);
     await run({ dataDir, project, chat, destination, a, b, outside, artifactId, guidance, bytes, collaboration, request, ok,
-      exportAgent, copy, copyRequest, importRequest, projection, get assets() { return assets; }, get store() { return store; },
+      exportAgent, copy, copyRequest, importRequest, projection, get packageEngine() { return packageEngine; }, get assets() { return assets; }, get store() { return store; },
       async restart() { await close(); open(); await app.ready(); } });
     passed = true;
   } finally {
@@ -468,4 +468,26 @@ test('staged access preview is mutation-free and imported provenance exposes onl
   await f.restart();
   const reloaded=await f.assets.content(f.project.id,f.a.id,asset.id,false);
   assert.equal(reloaded.asset.mediaType,'audio/ogg');assert.deepEqual(reloaded.body,body);
+}));
+
+
+test('shared engine preserves access review refusal and forwards an explicit human choice',options,t=>withPortability(t,async f=>{
+  const pkg=await f.exportAgent(f.a.id);
+  pkg.agents[0].accessSettings.restrictedCapabilityIds=[CAPABILITY_IDS.memoryRead];
+  const before=f.store.listAgents(f.project.id).map(agent=>agent.id).sort();
+  const review=await f.packageEngine.reviewAccess(pkg,f.destination.id);
+  assert.match(review.reviewSha256,/^[a-f0-9]{64}$/);
+  assert.deepEqual(f.store.listAgents(f.project.id).map(agent=>agent.id).sort(),before);
+  await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID()),error=>{
+    assert.equal(error.statusCode,409);
+    assert.deepEqual(error.accessSettingsReview,review);
+    return true;
+  });
+  assert.deepEqual(f.store.listAgents(f.project.id).map(agent=>agent.id).sort(),before);
+  const result=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{accessSettingsResolution:{action:'use_source',reviewSha256:review.reviewSha256}});
+  assert.ok(new CapabilityPolicyStore(f.store.sqlite).resolveForAgent(result.rootAgentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead));
+  const changed=structuredClone(pkg);changed.sourceLabel+=' changed';
+  await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,changed,{codex:'codex'},randomUUID(),{accessSettingsResolution:{action:'keep_destination',reviewSha256:review.reviewSha256}}),error=>{
+    assert.equal(error.statusCode,409);assert.notEqual(error.accessSettingsReview.reviewSha256,review.reviewSha256);return true;
+  });
 }));

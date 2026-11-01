@@ -39,3 +39,11 @@ Remaining #8 implementation boundaries:
 Selected global memory stays in the separate operator-chosen transfer model. Branches owns workflow execution/checkpoint preservation and warning; UI owns warning presentation. Full #8 remains incomplete across these concrete boundaries and all execution remains deferred.
 
 Installer recipes and user-folder deletion paths otherwise retain accepted baseline behavior. No arbitrary dead-code claim, installer qualification, whole-suite pass, upgrade acceptance or production readiness is made.
+
+Shared-engine follow-up: `routes/agent-packages.ts` now owns and exports the
+`BranchPackageEngine`/`BranchPackageImportOptions`/`BranchPackageImportError`
+contract. Its `reviewAccess` and HTTP preview/import share one helper; import
+forwards explicit reviewed choices and preserves structured review on 409.
+Organization regression source covers refusal payload, explicit forwarding and
+stale package hash. Branches-owned caller routes/service remain unchanged and must
+adopt the exported contract and persist human review. No tests/checks executed.

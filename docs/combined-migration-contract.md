@@ -147,3 +147,22 @@ video codec markers. This is container admission, not a full codec decoder or an
 audio-quality verdict. Existing size budgets, immutable hashes, ownership, staging,
 reload and export paths remain shared. Previously admitted opaque recording originals remain downloadable with their stored octet-stream media type; new audio admission does not orphan their bytes. No transcriber, provider HTTP client,
 auto-play or implicit execution is introduced.
+
+### Shared package-engine access review
+
+`BranchPackageEngine` is exported by `routes/agent-packages.ts` as the shared
+packaging contract. `reviewAccess(pkg, chatId)` returns
+`Promise<AgentAccessImportReviewDto>` without canonical writes. It validates the
+package and actual destination Chat, including deletion admission, and uses the
+same hash/policy helper as HTTP access preview and import. A newly created Chat
+must exist before its policy can be reviewed; callers must not fabricate a hash
+from a pre-creation Chat reference.
+
+`importAgent(..., options)` accepts `BranchPackageImportOptions`, retaining
+`signal` and `branchHooks` and adding `accessSettingsResolution`. The wrapper
+forwards that explicit choice to the normal validated importer. Review-required
+or stale-review 409 errors preserve `accessSettingsReview` on the thrown
+`BranchPackageImportError`, alongside `statusCode` and `provisionRejected`.
+Non-access errors do not acquire a fabricated review. No choice or permission is
+automatically adopted. Branch installation owns durable human review, per-target
+mapping, status/routes and retry decisions; those caller files are unchanged here.
