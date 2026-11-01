@@ -1,6 +1,6 @@
 import {createServer} from 'node:http';import {readFile} from 'node:fs/promises';import {Readable} from 'node:stream';import path from 'node:path';import {fileURLToPath} from 'node:url';
 export async function serveFixture(f){
- const api=await f.listen(),web=fileURLToPath(new URL('../../apps/web/dist/',import.meta.url));
+ const api=await f.listen(),web=path.resolve(fileURLToPath(new URL('../../apps/web/dist/',import.meta.url)));
  const server=createServer(async(req,res)=>{try{
   const url=new URL(req.url,'http://localhost');
   if(url.pathname.startsWith('/api/')){
