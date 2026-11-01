@@ -79,6 +79,7 @@ export function contextRolloverHandoffValidationError(
 }
 
 export interface ProviderRunExecutionInput {
+  nativeAction?: import("@ponderosa/core").NativeTurnAction;
   activeRun: ActiveRun;
   availableRuntimeTools: RuntimeDynamicToolSpec[];
   capabilityRestrictions:RuntimeCapabilityRestrictions;
@@ -667,6 +668,10 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
+                      nativeAction: input.nativeAction,
+                      assertCurrent: () => {
+                        if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                      },
                     });
                   } catch (error) {
                     providerStreamBoundaryFailure = {
@@ -733,6 +738,10 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
+                      nativeAction: input.nativeAction,
+                      assertCurrent: () => {
+                        if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                      },
                     });
                   } catch (error) {
                     providerStreamBoundaryFailure = {
@@ -910,7 +919,7 @@ export function startProviderRunExecution(
           if (event.type === "turn_done") activeRun.observedProviderTerminalStatus = "completed";
           if (event.type === "error" && event.terminalStatus !== undefined) activeRun.observedProviderTerminalStatus = event.terminalStatus;
           if(event.type==='error')activeRun.observedProviderFailure=event;
-          if (event.type === "error" && sessionId && !frozenHandoffSessionId &&
+          if (event.type === "error" && !input.nativeAction && sessionId && !frozenHandoffSessionId &&
               !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event)) {
             const fallbackBudget = freshProviderInputManifest.schemaVersion === 3
               ? freshProviderInputManifest.contextBudget : undefined;

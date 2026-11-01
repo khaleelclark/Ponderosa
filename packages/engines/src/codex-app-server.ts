@@ -1,3 +1,4 @@
+import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
 import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
 import {
@@ -679,6 +680,11 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   async invokeCommand(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void> {
+    if (name.startsWith("goal")) {
+      await this.validateBillingMode();
+      if (this.activeTurnId) throw new Error("Native goal commands require an idle retained session");
+      return invokeCodexGoal(this.rpc, this.engineAgentId, name, argumentsText);
+    }
     if (argumentsText?.trim()) throw new Error(`/${name} does not accept arguments`);
     const command = (await this.capabilities()).commands.find((candidate) => candidate.name === name);
     if (!command || command.status !== "available" || command.invocation !== "runtime") {
@@ -917,10 +923,24 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
+    input.assertCurrent?.();
     await this.validateBillingMode();
+    input.assertCurrent?.();
     if (this.compactOperation && !this.compactOperation.closed && !this.compactOperation.terminalStatus) {
       throw new Error("Native compaction is still in progress; its completion is unconfirmed.");
     }
+    if (input.nativeAction?.kind === "review") {
+      if (this.activeTurnId) throw new Error("Native review requires an idle session");
+      const turnId = await startCodexReview(this.rpc, this.engineAgentId, input.nativeAction);
+      this.activeTurnId = turnId;
+      return { turnId };
+    }
+    if (input.nativeAction?.kind === "plan") {
+      const model = input.model || this.activeModel;
+      if (!model) throw new Error("Native plan mode requires the selected provider model");
+      await setCodexPlanMode(this.rpc, this.engineAgentId, input.nativeAction, model, input.effort);
+    }
+    input.assertCurrent?.();
     const prompt = this.seedHistory.length > 0
       ? renderSeedPrompt(this.seedHistory.splice(0), input.prompt)
       : input.prompt;
@@ -932,6 +952,7 @@ export class CodexAppServerSession implements RuntimeSession {
       ...(input.model ? { model: input.model } : {}),
       serviceTier: serviceTierForSpeed(input.speed),
       ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.nativeAction?.kind === "structured" ? { outputSchema: input.nativeAction.outputSchema } : {}),
     });
     this.activeTurnId = response.turn.id;
     const acceptedModel = input.model?.trim() || this.activeModel;
@@ -946,6 +967,7 @@ export class CodexAppServerSession implements RuntimeSession {
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
     await this.validateBillingMode();
+    if (input.nativeAction) return { status: "not_steerable", reason: "Native actions require a new scheduler-owned turn" };
     if (!this.activeTurnId) return { status: "not_active" };
     try {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
@@ -994,6 +1016,7 @@ export class CodexAppServerSession implements RuntimeSession {
     const responseText = new CodexResponseText(this.engineAgentId);
     for await (const notification of this.rpc.notifications) {
       if (this.nativeCommandNotifications.has(notification)) continue;
+      yield* codexNativeObservation(notification.method, notification.params, this.engineAgentId, this.activeTurnId);
       yield* responseText.map(notification.method, notification.params);
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { threadId?: unknown; turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;

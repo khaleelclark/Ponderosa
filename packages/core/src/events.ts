@@ -89,6 +89,9 @@ export type AgentEvent =
       replacementProviderSessionId: string;
       startingOccupancy: number;
     }
+  | { type: "native_plan"; providerTurnId: string; explanation?: string; steps: Array<{ step: string; status: "pending" | "inProgress" | "completed" }> }
+  | { type: "native_diff"; providerTurnId: string; diff: string }
+  | { type: "native_review"; providerTurnId: string; phase: "started" | "completed"; text: string }
   | { type: "work_start"; kind: "command" | "file_change" | "native_tool"; callId?: string } // internal work evidence (start or completion), never reply text or public telemetry
   | { type: "response_text"; providerTurnId: string; itemId: string;
       phase: "final_answer" | "commentary" | "unknown";

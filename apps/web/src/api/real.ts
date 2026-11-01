@@ -1026,7 +1026,7 @@ export const realApi = {
   compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },
-  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; usage?: ProviderUsageStateDto }> {
+  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; goal?: import("@ponderosa/core").NativeGoalSnapshot | null; goalCleared?: boolean; usage?: ProviderUsageStateDto }> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/provider-commands`, {
       method: "POST",
       body: JSON.stringify(request),

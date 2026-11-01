@@ -60,7 +60,7 @@ export interface ContextRolloverTriggeredEvent {
 }
 
 export type AgentActivityEvent = Extract<AgentEvent, {
-  type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
+  type: "native_plan" | "native_diff" | "native_review" | "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
     "browser_session" | "browser_action" | "browser_console" | "browser_screenshot" |
     "context_rollover_seed_overflow" | "context_rollover_completed";
 }> | ContextRolloverTriggeredEvent;

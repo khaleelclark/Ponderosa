@@ -1,3 +1,4 @@
+import { codexNativeCommands } from "./codex-native-actions.js";
 import { execFile as nodeExecFile } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
@@ -318,6 +319,7 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     ...(compactUnavailable ? { unavailableReason: compactUnavailable } : {}),
     invocation: "runtime",
   });
+  for (const command of codexNativeCommands(Boolean(input.sessionId))) commands.set(command.name, command);
   commands.set("status", {
     name: "status",
     description: "Show Codex session configuration, context usage, and subscription limits",

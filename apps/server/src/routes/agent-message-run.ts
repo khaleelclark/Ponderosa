@@ -1,3 +1,4 @@
+import { parseNativeTurnCommand } from "@ponderosa/core";
 import { AgentEventPersistenceError } from "@ponderosa/agents";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -610,7 +611,7 @@ export function registerAgentMessageRunRoute(
           });
         }
       }
-      const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+      let activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
@@ -695,6 +696,15 @@ export function registerAgentMessageRunRoute(
         if (command.invocation !== "prompt") {
           return reply.code(409).send({ error: `/${command.name} must be invoked through its structured provider action` });
         }
+      }
+      if (!internalV3Dispatch) {
+        try {
+          const action = parseNativeTurnCommand(text);
+          if (action && !engine.adapter.nativeTurnActions?.includes(action.kind)) return reply.code(409).send({ error: "This provider does not implement the selected native action" });
+          // Native work must remain next-Run work even if another Run starts
+          // between human intake and scheduler delivery.
+          if (action) activeRunDelivery = "queue";
+        } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid native action" }); }
       }
       const promotedDraftAssets: AssetDto[] = [];
       try {
@@ -1019,6 +1029,17 @@ export function registerAgentMessageRunRoute(
         runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
 
+      const nativeSource = communicationEventId ? store.getCommunicationEvent(project.id, communicationEventId) : undefined;
+      const nativeAction = nativeSource?.sender.kind === "user" && !nativeSource.document
+        ? parseNativeTurnCommand(nativeSource.text) : undefined;
+      if (nativeAction) {
+        if (!engine.adapter.nativeTurnActions?.includes(nativeAction.kind)) throw new Error("Native action is unsupported by the selected provider");
+        if (nativeAction.kind === "review" && !resumeSessionId) throw new Error("Native review requires this Agent’s accepted retained session");
+        if (providerInputManifest.schemaVersion !== 3 || freshProviderInputManifest.schemaVersion !== 3) throw new Error("Native action requires an exact structured input manifest");
+        providerInputManifest.nativeAction = nativeAction;
+        freshProviderInputManifest.nativeAction = nativeAction;
+      }
+
       // Check deletion before attachment promotion as well as at the final
       // synchronous claim boundary below.
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
@@ -1076,7 +1097,9 @@ export function registerAgentMessageRunRoute(
           fencingToken: v3FencingToken!,
           agentId: agent.id,
           projectId: project.id,
-          prompt: exactProviderInput,
+          prompt: nativeAction?.kind === "review" ? JSON.stringify({ method: "review/start", params: {
+            threadId: resumeSessionId, target: nativeAction.target, delivery: "inline",
+          } }) : exactProviderInput,
           systemPrompt,
           sourceManifest: providerInputManifest,
         });
@@ -1191,6 +1214,7 @@ export function registerAgentMessageRunRoute(
       // deletion guards before provider execution continues in background.
       releaseAgentDelivery();
       startProviderRunExecution(app, runContext, {
+        nativeAction,
         activeRun,
         agent,
         agentMessageUrl,

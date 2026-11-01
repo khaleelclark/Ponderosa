@@ -275,15 +275,35 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "output", "voiceReplyStreamId", "voiceReplyOperationId", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
-    "providerTurnId", "itemId", "phase", "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
+    "explanation", "steps", "providerTurnId", "itemId", "phase", "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
-    "work_start", "response_text", "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
+    "native_plan", "native_diff", "native_review", "work_start", "response_text", "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
     "tool_call", "tool_result", "command", "file_change", "test_result", "browser_session", "browser_action",
     "browser_console", "browser_screenshot", "work_item_update", "turn_done", "error",
   ] as const, budget, 1);
 
   switch (type) {
+    case "native_plan": {
+      const row = exact(value, ["providerTurnId", "explanation", "steps"], budget);
+      const explanation = optionalString(row, "explanation", budget, 2, 32_000);
+      return { type, providerTurnId: identifier(row, "providerTurnId", budget, 2),
+        ...(explanation === undefined ? {} : { explanation }),
+        steps: array(row.get("steps"), budget, 2, (entry, depth) => {
+          const step = record(entry, ["step", "status"], budget, depth);
+          return { step: string(step, "step", budget, depth + 1, 32_000),
+            status: enumeration(step, "status", ["pending", "inProgress", "completed"] as const, budget, depth + 1) };
+        }, 1_000) };
+    }
+    case "native_diff": {
+      const row = exact(value, ["providerTurnId", "diff"], budget);
+      return { type, providerTurnId: identifier(row, "providerTurnId", budget, 2), diff: string(row, "diff", budget, 2) };
+    }
+    case "native_review": {
+      const row = exact(value, ["providerTurnId", "phase", "text"], budget);
+      return { type, providerTurnId: identifier(row, "providerTurnId", budget, 2),
+        phase: enumeration(row, "phase", ["started", "completed"] as const, budget, 2), text: string(row, "text", budget, 2) };
+    }
     case "work_start": {
       const row = exact(value, ["kind", "callId"], budget);
       const callId = optionalIdentifier(row, "callId", budget, 2);

@@ -180,6 +180,10 @@ export interface RuntimeTurnInput {
   /** "standard" clears any provider tier override; other values are provider IDs. */
   speed?: string;
   clientMessageId?: string;
+  /** Exact human-selected action, admitted and recorded by the scheduler. */
+  nativeAction?: import("./native-turn.js").NativeTurnAction;
+  /** Host callback rechecks the exact current Run after asynchronous admission. */
+  assertCurrent?: () => void;
 }
 
 /** A host-owned tool exposed inside an engine runtime. */
@@ -257,6 +261,8 @@ export interface RuntimeCommandResult {
   message?: string;
   /** Present only when the command verified a NEW post-command observation. */
   contextUsage?: RuntimeContextUsage;
+  goal?: import("./native-turn.js").NativeGoalSnapshot | null;
+  goalCleared?: boolean;
 }
 
 /**
@@ -522,6 +528,7 @@ export interface ProviderUsageSnapshot {
  * Both methods return a live stream of normalized {@link AgentEvent}s.
  */
 export interface Adapter {
+  readonly nativeTurnActions?: ReadonlyArray<import("./native-turn.js").NativeTurnAction["kind"]>;
   /** Static support only; reading it must not launch a provider or run a probe. */
   readonly contextRecoverySupport?: Readonly<ProviderContextRecoverySupport>;
   /** Item-scoped response candidates; explicit host reply authorization remains required. */

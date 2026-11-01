@@ -527,11 +527,27 @@ export function projectProviderModelIdentifier(value: unknown): string | undefin
   return requiredString(record, "value", MAX_IDENTIFIER_CHARACTERS, "models", budget, 0);
 }
 
+function projectNativeGoal(value: unknown): NonNullable<RuntimeCommandResult["goal"]> | null {
+  if (value === null) return null;
+  const budget = new ProjectionBudget("command");
+  const row = dataRecord(value, ["threadId", "objective", "status", "tokenBudget", "tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"], "command", budget, 0);
+  const count = (key: string): number => {
+    const n = finiteNumber(row, key, 0, Number.MAX_SAFE_INTEGER, "command", budget, 1);
+    if (!Number.isSafeInteger(n)) reject("command");
+    return n;
+  };
+  return { threadId: identifierString(row, "threadId", "command", budget, 1),
+    objective: requiredString(row, "objective", 32_000, "command", budget, 1),
+    status: enumString(row, "status", ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"] as const, "command", budget, 1),
+    tokenBudget: row.get("tokenBudget") === null ? null : count("tokenBudget"),
+    tokensUsed: count("tokensUsed"), timeUsedSeconds: count("timeUsedSeconds"), createdAt: count("createdAt"), updatedAt: count("updatedAt") };
+}
+
 /** Copy a runtime command result before HTTP/event/persistence use. */
 export function projectProviderCommandResult(value: unknown): RuntimeCommandResult {
   if (value === undefined) return {};
   const budget = new ProjectionBudget("command");
-  const record = dataRecord(value, ["message", "contextUsage", "outcome"], "command", budget, 0);
+  const record = dataRecord(value, ["message", "contextUsage", "outcome", "goal", "goalCleared"], "command", budget, 0);
   const outcome = record.has("outcome") ? enumString(record, "outcome", ["completed", "failed", "outcome_unknown"] as const, "command", budget, 1) : undefined;
   let message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
   let contextUsage: ReturnType<typeof projectProviderContextUsage>;
@@ -541,7 +557,10 @@ export function projectProviderCommandResult(value: unknown): RuntimeCommandResu
     // invite replay of that operation or become trusted usage evidence.
     message = "Command was invoked; updated context telemetry is invalid. Do not repeat the command solely to refresh telemetry.";
   }
-  return { ...(message === undefined ? {} : { message }), ...(outcome ? { outcome } : {}), ...(contextUsage ? { contextUsage } : {}) };
+  const goal = record.has("goal") ? projectNativeGoal(record.get("goal")) : undefined;
+  const goalCleared = optionalBoolean(record, "goalCleared", "command", budget, 1);
+  return { ...(message === undefined ? {} : { message }), ...(outcome ? { outcome } : {}), ...(contextUsage ? { contextUsage } : {}),
+    ...(goal === undefined ? {} : { goal }), ...(goalCleared === undefined ? {} : { goalCleared }) };
 }
 
 /** Copy authentication probe output before it enters the shared auth cache. */

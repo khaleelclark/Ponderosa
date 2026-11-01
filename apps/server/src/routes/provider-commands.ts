@@ -421,6 +421,7 @@ app.post<{
       return reply.code(409).send(publicProviderCommandFailure(error));
     }
   }
+  if (name.startsWith("goal")) return reply.code(409).send({ error: "Native goal operations require an individual Agent’s live accepted session" });
   if (!engine.adapter.openSession) {
     return reply.code(409).send({ error: "this provider cannot open a command-only session" });
   }
@@ -548,7 +549,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         return reply.code(409).send(publicProviderCommandFailure(error));
       }
     }
-    const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string; outcome?: "completed" | "failed" | "outcome_unknown" }> => {
+    const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; goal?: import("@ponderosa/core").NativeGoalSnapshot | null; goalCleared?: boolean }> => {
       const catalog = session.capabilities
         ? projectProviderCapabilities(await session.capabilities())
         : {
@@ -584,6 +585,15 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           throw new NativeContextUnavailableError("A previous native operation or unfinished work has unconfirmed context. Do not repeat Compact; use Context Refresh after resolving any pending work.");
         }
       }
+      if (name.startsWith("goal")) {
+        const accepted = store.acceptedProviderSessionInput(agent.id);
+        const contract = accepted?.sourceManifest.schemaVersion === 3 ? accepted.sourceManifest.normalRuntimeContract : undefined;
+        const saved = store.resumeSessionState(agent.id);
+        if (!saved || !contract || contract.engineId !== agent.activeEngine || saved.toolContractHash !== contract.contractHash ||
+            saved.sessionId !== readProviderSessionIdentifier(session) || !retainedPermissionsMatch(agent.id, agent.activeEngine, contract) ||
+            contract.expectedBillingMode !== workspace.getPreferences().providerBillingModes?.[agent.activeEngine] ||
+            isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id)) throw new Error("Native goal operation requires the current accepted session and human limits");
+      }
       const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
       if (name === "compact") {
         result.outcome ??= "outcome_unknown";
@@ -611,7 +621,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           result.message ??= "Compaction was invoked; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry. Context Refresh is required before more work.";
         }
       }
-      return { catalog, ...(result.message ? { message: result.message } : {}), ...(result.outcome ? { outcome: result.outcome } : {}) };
+      return { catalog, ...(result.message ? { message: result.message } : {}), ...(result.outcome ? { outcome: result.outcome } : {}),
+        ...(result.goal === undefined ? {} : { goal: result.goal }), ...(result.goalCleared === undefined ? {} : { goalCleared: result.goalCleared }) };
     };
     let releaseWorkingCopyUse: () => void;
     try {
@@ -652,11 +663,13 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
             catalogVersion: result.catalog.catalogVersion,
             ...(result.outcome ? { outcome: result.outcome } : {}),
             ...(result.message ? { message: result.message } : {}),
+            ...(result.goal === undefined ? {} : { goal: result.goal }), ...(result.goalCleared === undefined ? {} : { goalCleared: result.goalCleared }),
           };
         } catch (error) {
           return reply.code(409).send(publicProviderCommandFailure(error));
         }
       }
+      if (name.startsWith("goal")) return reply.code(409).send({ error: "Native goal operations require a live accepted session. Resuming an active native goal can start unscheduled work, so this command does not open a session." });
       if (!engine.adapter.openSession) {
         return reply.code(409).send({ error: "this provider cannot open a command-only session" });
       }

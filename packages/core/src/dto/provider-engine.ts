@@ -63,6 +63,8 @@ export interface RetainedNormalRuntimeContract {
 }
 
 export interface ProviderInputSourceManifestV3 {
+  /** Exact additional structured input submitted alongside this accepted packet. */
+  nativeAction?: import("../native-turn.js").NativeTurnAction;
   normalRuntimeContract?: RetainedNormalRuntimeContract;
   /** Frozen authorization and selection evidence for this exact accepted packet. */
   historyContext?: {
