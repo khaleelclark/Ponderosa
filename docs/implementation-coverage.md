@@ -818,3 +818,58 @@ files and Git inspection only.
 
 
 Local-parallel history source extension: the current bounded contract in [branch-local-parallel-history.md](branch-local-parallel-history.md) supersedes the earlier serial-only limit for exactly one resource invocation with settled local siblings. It reuses the same generation-history producer, parallel replay, current-only cut and canonical single-owner admission; it does not enable arbitrary parallel or called-owner consumers. Source fixtures are deferred and unexecuted.
+
+
+### Minimal local-parallel history integration — source only
+
+Branchbc524ed30 is assembled ase5e677551 on12b74a079 with its exact ten
+required paths, no conflicts or ancestor replay. All ten owner-byte-equal before
+this coverage addition: server resource service; generation-one/prior-generation
+and new local-parallel docs; coverage; parallel continuation, generation proof,
+BranchStore; core branches DTO; historical checkpoint deferred fixture. Current
+writer Integration, phase2-implementation-integration.
+
+The SAME parallel frontier/replay codec consumes the existing complete historical
+proof through validation-only host union while current selected frontier/host
+contain only the actual current resource root. For each old generation, resource
+operations/opening bind that generation's original resource, latest exact attempt,
+Request/Chat/import result and host root. Failed result uses independently verified
+history proof; retry checks original configured policy/delay/timestamps/consumed
+attempt budget; resource generation advances only at exact retained retirement audit
+prefix. End requires every generation consumed, no pending retry and exhaustive
+path/step/attempt/fork/map/join closure. Existing serial paths remain supported.
+
+Eligibility is one standalone manual owner, ONE resource Step invocation, ASYNC/SYNC,
+generations1–32, pinned maxAttempts<=33 with32-selection/32MiB limits. Local fork/join
+and map are allowed only with settled local siblings without Request roots, no other
+active/waiting paths, and actual map item_count exactly1. Multiple resource invocations,
+multi-item maps, active sibling effects and called owners remain refused. All earlier
+seal/retirement/provider/native/custody/audit/full-envelope/identity-disjointness proof
+requirements remain; old/current union never supplies graph/import authority. Existing
+all-facts/package review, fresh accepted/budgeted owner and ONE canonical admission,
+immutable nondispatchable receipt, rollback and restart readback are reused unchanged.
+
+Server preview and verified saved-budget status/discovery expose historyKind serial
+or local_parallel from exact current cut. Existing SDK methods receive shared DTO;
+unavailable legacy proof supplies no shape eligibility. Web remains unchanged and
+still describes serial-only eligibility, does not validate/display/persist historyKind;
+parallel-history UI adoption and updated UI fixture/DTO compatibility verification
+remain separate owner work. Do not claim current UI is qualified for parallel cuts.
+
+Deferred actual producer-to-destination source now includes ASYNC/SYNC fork and
+one-item map generations1/2/32 alongside serial2/3/32. Source includes original provider
+exit/seal/cleanup/retirement per generation, current capture, full human review, rollback,
+current-only maps, consumed budget exhaustion and restart readback. Missing proof,
+stale CAS, omitted/reordered/aliased chain, cross-path resource, prepared sibling,
+active ancestor and unknown attempts are refusal cases. Inert provider/native/package
+adapters remain; none executed. All current UI, saved-budget adoption, historical/audit
+privacy, tree producer, owner fences/group/lifecycle preserved.0035–0040 physically
+present and registered once in order, untouched/unexecuted. Final delta ten paths.
+
+Remaining: multi-resource/multi-item/active-host-effects/tree consumer/EXIT/offset
+restoration/manual recovery, missing/preupgrade/erased proof/selectable journal and
+unknown/broader payload/secret/artifact/native/provider/external-effect families;
+Runtime owner-tree dependency/Branch Join separate. Real package/custody/provider/
+native/runtime/end-to-end/accessibility/mobile and full Phase2/Bible qualification
+remain open. ZERO tests/checks/build/types/Node/native/browser/runner preparation or
+execution, migrations, push/deploy/newworkers. Hooks disabled; source/files/Git only.
