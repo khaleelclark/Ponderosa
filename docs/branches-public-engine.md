@@ -1047,3 +1047,52 @@ refuses audit mutation at sealing and a rehashed dropped event, reconstructs exp
 fresh Branch/Request/Agent identities, refuses incomplete maps and old missing-envelope
 snapshots, then reads the same selected prefix after source progress/cleanup/reopen.
 These fixtures have not been executed. No end-to-end destination admission is claimed.
+
+
+### Destination composer authority integration boundary
+
+The issued continuation codec is not a destination admission composer. No Branch
+consumer invokes Runtime reserve/stage/review/admit/readback yet, and issued
+restoration remains disabled. The available Runtime API and approved source base
+are not blockers.
+
+The current host services have these distinct authority contracts:
+
+- `server-request-hooks.ts` admits local operator traffic using host/origin
+  checks and excludes Agent capabilities from operator routes. Its rate-limit
+  `operatorId` is a per-process logging pseudonym, not a disclosure receipt.
+- `store-artifact-catalog.ts` explicitly recognizes the single local operator's
+  right to read Project audit artifacts. `agentCanReadProjectArtifact` checks
+  an existing same-Chat audience. Neither method grants new recipients access
+  to historical Request, update, Communication or Join facts.
+- `routes/branches.ts` combines those two artifact predicates for existing
+  original-scope graph/request review. That predicate does not authorize
+  cross-Chat disclosure to fresh imported participants.
+- `operator-auth-proxy.ts` strips the operator identity header. The profile
+  handle and an incoming identity header cannot supply a trusted human identity.
+- Import access-settings review resolves capability restrictions. It is not
+  explicit human approval of the historical private-fact inventory.
+
+Runtime's `authorizeDisclosure` needs a synchronously recheckable current human
+approval for each fact hash, original actor/audience and complete mapped recipient
+set. There is currently no persisted human disclosure review/approval service to
+adapt. A constant revision, a hash of the input, a successful import or the
+original artifact grant predicate would not implement this contract. The single
+local operator's audit-read right above must not be mistaken for missing read
+permission; the missing operation is explicit reviewed disclosure to new
+participants, including its current revision and invalidation/readback semantics.
+
+Before connecting destination effects, define and implement that narrow durable
+operator approval operation on the existing operator route boundary. Its approval
+must bind the exact retained checkpoint and host digest, explicit staged recipient
+map, complete private-fact inventory and final destination policy, and be rechecked
+at admission and receipt readback. Changing any of these requires fresh review.
+No new account system or provider authorizer is implied. Reservation/Chat creation,
+current custody proof, Branch budget/acceptance/staging, actual import/resource
+owner receipts and atomic Runtime composition remain implementation work as well.
+
+Deferred composer regressions must reject origin-only or profile/header-derived
+approval; an artifact-read grant used as a private-fact disclosure grant; approval
+for a different recipient map, fact hash or final policy; revoked/stale approval at
+admit or readback; and duplicate effects after a lost response. These are regression
+requirements only, not executable fixtures or evidence of a completed composer.
