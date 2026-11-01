@@ -10,7 +10,7 @@ export function restoredScopeValue(map:Row,key:string,value:unknown):unknown {
  const destination=map.destination;
  if(!destination)return value;
  if(key==='project_id')return destination.projectId;
- if(key==='conversation_id')return destination.conversationId;
+ if(key==='conversation_id'){if(!destination.conversationMap)return destination.conversationId;const mapped=destination.conversationMap[String(value)];if(typeof mapped!=='string'||!mapped)throw Error('Historical destination Chat mapping unavailable');return mapped;}
  if(['requester_agent_id','recipient_agent_id','owner_agent_id'].includes(key)){
   if(value===null)return null;
   const id=destination.agentMap?.[String(value)];if(typeof id!=='string'||!id)throw Error('Historical destination participant mapping unavailable');return id;
@@ -80,7 +80,10 @@ class HostFacts {
    if(!admission||admission.id!==map.destination.admissionId||admission.state!=='admitted'||!final||final.restorationId!==id
     ||final.reservationHash!==admission.reservation_hash||payloadHash(reservation)!==admission.reservation_hash
     ||final.stageHash!==payloadHash(stage)||final.checkpointHash!==receipt.cut_hash
+    ||(reservation.resources&&stableJson(final.resources)!==stableJson(reservation.resources))
     ||stableJson(final.destination)!==stableJson(reservation.destination)
+    ||(reservation.resources&&stableJson(map.destination.conversationMap)!==stableJson(Object.fromEntries(reservation.resources.map((r:Row)=>[r.custody.sourceChatId,r.destination.conversationId]))))
+    ||(!reservation.resources&&map.destination.conversationMap)
     ||map.destination.projectId!==final.destination.projectId||map.destination.conversationId!==final.destination.conversationId
     ||stableJson(map.destination.agentMap)!==stableJson(stage.agentMap)||stableJson(map.destination.artifactMap)!==stableJson(stage.artifactMap)
     ||['requestMap','updateMap','joinMap'].some(k=>stableJson(map[k])!==stableJson(final[k])))throw Error('Historical destination admission proof differs');

@@ -169,6 +169,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
           AND NOT EXISTS(SELECT 1 FROM coordination_destination_admissions d LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (d.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||d.conversation_id OR EXISTS(SELECT 1 FROM coordination_destination_members m WHERE m.admission_id=d.id AND m.agent_id=a.agent_id)))
+          AND NOT EXISTS(SELECT 1 FROM coordination_destination_group_chats g JOIN coordination_destination_admissions d ON d.id=g.admission_id LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (g.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||g.conversation_id))
+          AND NOT EXISTS(SELECT 1 FROM coordination_destination_retirements d LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||d.conversation_id OR EXISTS(SELECT 1 FROM json_each(d.members_json) m WHERE json_extract(m.value,'$.agent_id')=a.agent_id))
           AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')
           AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
             AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'

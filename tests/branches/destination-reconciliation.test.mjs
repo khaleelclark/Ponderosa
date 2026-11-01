@@ -13,7 +13,7 @@ function fixture(t){
  CREATE TABLE agents(id TEXT,conversation_id TEXT); CREATE TABLE scheduler_runs(agent_id TEXT,status TEXT);
  CREATE TABLE agent_activations(agent_id TEXT,state TEXT);
  CREATE TABLE agent_creation_operations(id TEXT,conversation_id TEXT,status TEXT);`);
- for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql'])
+ for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql','0039_coordination_destination_group_chats.sql'])
   db.exec(readFileSync(new URL('../../packages/agents/src/schema/'+name,import.meta.url),'utf8'));
  db.exec("INSERT INTO branches VALUES('b'); INSERT INTO branch_executions VALUES('source'); INSERT INTO branch_unit_snapshots VALUES(1)");
  const reservation={destination:{conversationId:'fresh'},branchId:'b'};

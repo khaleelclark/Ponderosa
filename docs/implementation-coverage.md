@@ -1,7 +1,7 @@
 # Current implementation coverage and backlog
 
 Source-only inventory includes Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
-retirement9edf00516 and memory exposure13bf72442, sole UI-owner2c7db556e,
+retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner2c7db556e,
 and lifecycle source through c1d831646. Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
@@ -34,7 +34,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 14 | Provider errors, explicit unconfirmed outcomes and recovery surfaces assembled. | Runtime/UI; backoff/failure delivery trials deferred. |
 | 15 | Marker-only unlink and nonrecursive tombstone cleanup preserve unexpected user content; private custody is independent. | Reliability; racing-file/deletion trials deferred. |
 | 16 | Trigger schedules/conditions/occurrence identity source assembled. | Features; timing/clock-change trials deferred. |
-| 17 | Exact additive predecessor fixtures and migrations0035/0036/0037/0038 retained once each. | Runtime/Reliability; upgrade/reliability runs deferred. |
+| 17 | Exact additive predecessor fixtures and migrations0035/0036/0037/0038/0039 retained once each. | Runtime/Reliability; upgrade/reliability runs deferred. |
 | 18 | Inbox/notification journal and Assistant cadence source assembled. | UI/Features; quiet-default/deduplication trials deferred. |
 | 19 | Authored communication, activity and execution evidence stay distinct; known secret-field redaction source retained. | Runtime/UI; redaction/diagnostic trials deferred. |
 | 20 | Host/origin operator authority has no general token gate; local-operator is server-owned. Native account login, scoped Run/internal/browser capabilities and human access remain domain authority. No further dedicated-auth deletion warranted by inspected source. | Runtime; secure-environment boundary trials deferred. |
@@ -57,7 +57,7 @@ Seven actual Branch commits integrated in ancestry order: d1e79d107,ea3d6fa37,
 e5a6fee0f,778a001d3,fd8a55e63,d39f40f80,6b7f18a4a. UI00c62faa1 is the sole
 UI-owner successor to already integrateda1da73c5. No old dependency merge replay.
 Branch8ccf446bb extends local parallel replay; UI2c7db556e adds publication/voice consumers.
-Runtime staging/authority, retirement and migrations0035–0038/custody retained.
+Runtime staging/authority, retirement and migrations0035–0039/custody retained.
 
 Actual source now seals independently retained package bytes, selected frontier,
 host digest and executable audit envelope; verifies issued custody; reserves exact
@@ -108,6 +108,16 @@ whole admission releases this fence. Two deferred ASYNC/SYNC synthetic-row fixtu
 cover non-first/repeated destinations and reserved/staged holds versus admitted
 release. This is not group intake/composer implementation or executed group proof.
 
+Runtime31bf3636 delivers the host-only atomic group API: 2–32 distinct source/fresh
+resource Chats in one destination Project, exhaustive custody/import/participant maps,
+per-import held staging or all-at-once staging, distinct whole-group custody/disclosure
+authority, one canonical writer/composer/savepoint, verified owner/Step/resource/import
+receipts, final-policy recheck and final-only wakes/readback. Migration0039 pins every
+source resource-owner execution and holds every group Chat. The existing Branch
+any-resource readiness fence remains integrated. See coordination-destination-groups.md.
+Three deferred synthetic Runtime boundary fixtures are present, unexecuted; no actual
+owner-tree/provider or Branch group consumer qualification is implied.
+
 ## Actual missing implementation / owner requirements
 
 Lifecycle successor source adds operator package/import evidence reconciliation and
@@ -120,11 +130,16 @@ unsupported. Runtime staged-destination retirement is integrated with immutable
 tombstones, review CAS and independent identity/import refusals. Branch owner lifecycle review and explicit checkpoint-retirement endpoints are wired;
 package custody composes canonical references and cleanup/drain proof. Destination
 retirement still needs a destination-specific authority/approval adapter and operator
-route. Combined abandoned-intent/package retirement remains unimplemented. Existing
+route. Group retirement is explicitly refused by the singular hook; all group pins/holds
+remain until exhaustive group lifecycle authority and reconciliation are implemented. Combined abandoned-intent/package retirement remains unimplemented. Existing
 admission pins remain enforced; no operator assertion substitutes for observed drain.
 
 - Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
-  consumers and atomic Runtime group destination API (no independent-loop substitute); changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
+  consumers. Atomic Runtime group API is delivered; Branch still needs exhaustive
+  multi-resource capture, real current custody/per-fact disclosure/human review adapters,
+  held importer orchestration and one synchronous whole-group owner composer. Owner
+  checkpoints must follow Runtime admit within the same outer transaction; no loop of
+  independent singular admissions. Changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
   cancellation and cross-owner forwarded bundles. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
   approval/evidence recheck, immutable receipt/tombstone and optional proven-safe source-pin

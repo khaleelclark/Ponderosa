@@ -23,6 +23,7 @@ export class CoordinationV3DestinationReconciliation {
   const row=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(id) as Row|undefined;
   if(!row||row.state==='admitted'||row.receipt_json)throw Error('Only unadmitted destinations may retire');
   const reservation=JSON.parse(row.reservation_json),stage=row.stage_json?JSON.parse(row.stage_json):null;
+  if(reservation.resources)throw Error('Group retirement requires exhaustive group lifecycle reconciliation');
   if(payloadHash(reservation)!==row.reservation_hash)throw Error('Reservation evidence differs');
   // No surviving identity may be made dispatchable or stripped of its retention witnesses.
   if(this.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(row.conversation_id)

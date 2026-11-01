@@ -155,13 +155,13 @@ export class CoordinationV3CutRestorationAuthority {
 }
 
 export interface RetainedGraphDestination {
- admissionId:string;projectId:string;conversationId:string;agentMap:Record<string,string>;artifactMap:Record<string,string>;
+ admissionId:string;projectId:string;conversationId:string;conversationMap?:Record<string,string>;agentMap:Record<string,string>;artifactMap:Record<string,string>;
 }
 /** Shared final-projection writer; callers must validate cut, disclosure and destination first. */
 export function writeRetainedCoordinationGraph(db:Database.Database,deliver:(input:CreateActivationV3Input)=>string,branchId:string,executionId:string,input:BranchHostGraphRestoreInput,cut:BranchHostCut,now:string,destination?:RetainedGraphDestination):BranchHostGraphRestoreDto {
  if(!db.inTransaction)throw Error('Historical graph requires one owner transaction');
  const requests=cut.requests.map(e=>e.row),updates=cut.updates.map(e=>e.row),joins=cut.joins.map(e=>e.row);
- const project=(id:string)=>destination?.projectId??id,chat=(id:string)=>destination?.conversationId??id;
+ const project=(id:string)=>destination?.projectId??id,chat=(id:string)=>{if(!destination)return id;if(!destination.conversationMap)return destination.conversationId;const mapped=destination.conversationMap[id];if(!mapped)throw Error('Historical Chat map is incomplete');return mapped;};
  const agent=(id:string|null):string|null=>{if(!id)return null;if(!destination)return id;const mapped=destination.agentMap[id];if(!mapped)throw Error('Historical participant map is incomplete');return mapped;};
   const restorationId=randomUUID(),requestMap=Object.fromEntries(requests.map(r=>[r.id,randomUUID()])),updateMap=Object.fromEntries(updates.map(u=>[u.id,randomUUID()])),joinMap=Object.fromEntries(joins.map(j=>[j.id,randomUUID()]));
   const receipt:BranchHostGraphRestoreDto={restorationId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,requestMap,updateMap,joinMap,replayed:false,...(destination?{destination}: {})};

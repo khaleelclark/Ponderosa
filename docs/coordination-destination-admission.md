@@ -107,3 +107,8 @@ no preapproval activation or executable rows, current custody failure, policy
 revision drift/revocation, final readiness and exact replay without package access.
 They use inert package/folder adapters and have not been executed. They do not
 constitute runtime qualification.
+
+Atomic multi-resource destination admission is a separate host-only API. See
+[coordination-destination-groups.md](coordination-destination-groups.md) for the
+whole-cut reservation, per-import held staging, disclosure and one-composer
+contract. Singular entrypoints remain strict and cannot admit a group.

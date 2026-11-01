@@ -1,6 +1,7 @@
+import {payloadHash} from './coordination-v3-canonical-json.js';
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import {CoordinationV3DestinationReconciliation,type CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
-import {CoordinationV3DestinationAdmissionAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
+import {CoordinationV3DestinationAdmissionAuthority,groupDestinationAuthority,type CoordinationDestinationGroupAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
 import type {HostArtifactGrant} from './branch-host-adoption.js';
 import { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
@@ -170,6 +171,34 @@ export class CoordinationV3Store {
   }
   readCoordinationDestination(id:string,reservationHash:string,authority:CoordinationDestinationAuthority) {
     return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).read(id,reservationHash,authority);
+  }
+  /** One whole-cut group admission. Never composes independent singular admits. */
+  reserveCoordinationDestinationGroup(input:import('@ponderosa/core').CoordinationDestinationGroupReservation,authority:CoordinationDestinationGroupAuthority,now=new Date().toISOString()) {
+    const first=input.resources?.[0];if(!first)throw Error('Group resources required');
+    const normalized={...input,custody:first.custody,destination:first.destination};
+    const result=new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).reserve(normalized,groupDestinationAuthority(authority),now);
+    return {...result,reservationHash:payloadHash(normalized)};
+  }
+  stageCoordinationDestinationGroup(id:string,input:import('@ponderosa/core').CoordinationDestinationGroupStage,now=new Date().toISOString()):void {
+    const row=this.sqlite.prepare('SELECT reservation_json FROM coordination_destination_admissions WHERE id=?').get(id) as {reservation_json:string}|undefined;
+    if(!row)throw Error('Group reservation missing');const reservation=JSON.parse(row.reservation_json);
+    const plan=input.imports?.[reservation.custody.sourceChatId];if(!plan)throw Error('Group import plans required');
+    new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).stage(id,{...input,importPlan:plan},now);
+  }
+  stageCoordinationDestinationGroupResource(id:string,sourceChatId:string,input:import('@ponderosa/core').CoordinationDestinationStage,now=new Date().toISOString()):void {
+    new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).stageGroupResource(id,sourceChatId,input,now);
+  }
+  inspectCoordinationDestinationGroupDisclosure(id:string,authority:CoordinationDestinationGroupAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).inspectDisclosure(id,groupDestinationAuthority(authority).requireCustodyAndOwner,now);
+  }
+  reviewCoordinationDestinationGroup(id:string,authority:CoordinationDestinationGroupAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).review(id,groupDestinationAuthority(authority),now);
+  }
+  admitCoordinationDestinationGroup(id:string,reviewHash:string,authority:CoordinationDestinationGroupAuthority,compose:(graph:import('@ponderosa/core').BranchHostGraphRestoreDto)=>import('@ponderosa/core').CoordinationDestinationOwnerReceipt[],now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).admit(id,reviewHash,groupDestinationAuthority(authority),compose,now) as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
+  }
+  readCoordinationDestinationGroup(id:string,reservationHash:string,authority:CoordinationDestinationGroupAuthority):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).read(id,reservationHash,groupDestinationAuthority(authority)) as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
   }
   reviewCoordinationDestinationReconciliation(id:string,operatorId:string,authority:CoordinationDestinationReconciliationAuthority) {
     return new CoordinationV3DestinationReconciliation(this.sqlite).review(id,operatorId,authority);

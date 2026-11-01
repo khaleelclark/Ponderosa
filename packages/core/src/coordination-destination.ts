@@ -5,6 +5,8 @@ export interface CoordinationDestinationReservation {
   branchId:string; sourceExecutionId:string; checkpointId:number; checkpointHash:string;
   commandKey:string; operatorId:string; reconcileEffects:true;
   custody:CheckpointPackageReceipt;
+  /** Internal normalized group envelope; ordinary singular entrypoints reject it. */
+  resources?:CoordinationDestinationGroupResource[];
   destination:{projectId:string;conversationId:string;executionId:string;resourceStepId:string;resourceGeneration:number};
 }
 export interface CoordinationDestinationImportPlan {
@@ -14,6 +16,7 @@ export interface CoordinationDestinationImportPlan {
 }
 export interface CoordinationDestinationStage {
   importPlan:CoordinationDestinationImportPlan;
+  imports?:Record<string,CoordinationDestinationImportPlan>;
   /** Complete explicit original canonical participant -> fresh participant map. */
   agentMap:Record<string,string>;
   /** Complete original runtime artifact -> independently admitted artifact map. */
@@ -36,6 +39,7 @@ export interface CoordinationDestinationReceipt extends BranchHostGraphRestoreDt
   destination:CoordinationDestinationReservation['destination'];
   agentMap:Record<string,string>; artifactMap:Record<string,string>;
   activationIds:string[]; owner:CoordinationDestinationOwnerReceipt;
+  owners?:CoordinationDestinationOwnerReceipt[];
 }
 
 /** Explicit action by the single host-local operator, never an imported grant. */
@@ -81,4 +85,22 @@ export interface CoordinationDestinationReconciliationReview {
 export interface CoordinationDestinationReconciliationReceipt {
  admissionId:string; commandKey:string; operatorId:string; reviewHash:string;
  releasedSourcePins:boolean; retiredAt:string;
+}
+
+/** Atomic whole-cut group: one resource organization per distinct source/fresh Chat. */
+export interface CoordinationDestinationGroupResource {
+ custody:CheckpointPackageReceipt;
+ destination:CoordinationDestinationReservation['destination'];
+}
+export type CoordinationDestinationGroupReservation=Omit<CoordinationDestinationReservation,'custody'|'destination'|'resources'>&{
+ resources:CoordinationDestinationGroupResource[];
+};
+export interface CoordinationDestinationGroupStage {
+ /** Exact source Chat -> actual importer reservation, never inferred Agent identity. */
+ imports:Record<string,CoordinationDestinationImportPlan>;
+ agentMap:Record<string,string>; artifactMap:Record<string,string>;
+}
+export interface CoordinationDestinationGroupReceipt extends CoordinationDestinationReceipt {
+ resources:CoordinationDestinationGroupResource[];
+ owners:CoordinationDestinationOwnerReceipt[];
 }
