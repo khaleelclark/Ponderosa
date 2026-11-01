@@ -463,3 +463,17 @@ export interface BranchGenerationHistoryPreview {
  reviewHash:string;historicalReviewHash:string;generation:number;consumedAttempts:number;maxAttempts:number;
  historicalPartition:import('./coordination-destination.js').CoordinationHistoricalGenerationSelection[];
 }
+
+/** Human-only continuation of a private imported Script cut; never import authority. */
+export interface BranchForeignContinuationSelection {planId:string;sourceExecutionId:string;checkpointKey:string;checkpointSha256:string}
+export interface BranchForeignContinuationReview {
+ schema:'ponderosa.branch-foreign-review.v1';selection:BranchForeignContinuationSelection;branchId:string;importedExecutionId:string;
+ manifestSha256:string;ownerSha256:string;checkpoint:unknown;nativeMaps:BranchRuntimeDataReceipt;
+ versionId:string;bindingRevisionId:string;configurationRevision:number;definitionSha256:string;bindings:BranchBindings;configuration:BranchConfiguration;
+ directoryChoices:Record<string,{path:string;realpath:string;device:number;inode:number}>;capabilityPolicy:unknown;budget:BranchExecutionBudgetDto;custody:'not_applicable';engine:'node';secretChoice:'none';accessChoice:'current_destination';reviewSha256:string;
+}
+export interface BranchForeignContinuationInput extends BranchForeignContinuationSelection {commandKey:string;reviewSha256:string;acceptCurrentAuthority:true}
+export interface BranchForeignContinuationReceipt {
+ schema:'ponderosa.branch-foreign-continuation.v1';branchId:string;importedExecutionId:string;executionId:string;
+ commandKey:string;inputSha256:string;review:BranchForeignContinuationReview;idMap:Record<string,string>;admission:unknown;createdAt:string;
+}

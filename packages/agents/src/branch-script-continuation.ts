@@ -197,8 +197,10 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
 }
 
 /** The audit and inventory must describe the same committed single-path cut. */
-export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
+export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[]}):boolean {
   try {
+    // Foreign evidence can validate an effect-free first-generation cut, never supply authority.
+    if(foreign&&(seed||context||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script')||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','tree_historical_rewind','restored_prefix','tree_restored_prefix'].includes(e.kind))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(!context||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');
@@ -210,7 +212,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         ||closing.state!=='interrupted'||closing.primaryOutcome!=='interrupted'||typeof closing.id!=='string'||!waitingGate&&typeof closing.interruptionId!=='string'
         ||!Number.isSafeInteger(closing.ordinal)||closing.ordinal<1)return false;
     }else if(checkpoint&&!context?.terminal)return false;
-    const owner=db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
+    const owner=foreign?.owner??db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
     if(!owner||e.id!==executionId||['branch_id','version_id','binding_revision_id','input_hash'].some(key=>e[key]!==owner[key])
       ||e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'}))
       ||stableJson(configuration)!==stableJson(context?.issuedResource?Object.fromEntries(Object.entries(JSON.parse(owner.configuration_json)).filter(([key])=>key!=='secretBindings')):JSON.parse(owner.configuration_json)))return false;
@@ -236,7 +238,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       }
     }
     // A prefix must include every owned event through its boundary, not just its last ID.
-    const owned=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
+    const owned=foreign?foreign.audit.filter(row=>row.id<=events.at(-1)!.id):db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
     if(stableJson(owned)!==stableJson(events))return false;
     if(hasParallelControls(definition))return replayParallelCut(selected,definition,configuration,events,checkpoint,seed,context,hostCut);
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;

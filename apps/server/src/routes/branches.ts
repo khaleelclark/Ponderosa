@@ -595,6 +595,19 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   app.delete<{Params:{id:string;executionId:string;stepId:string};Body:import('@ponderosa/core').BranchResourceCustodyReleaseInput}>('/api/branches/:id/executions/:executionId/resources/:stepId/checkpoint-custody',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);const body=validatedObject(request.body,'Resource custody release');exactObjectFields(body,['commandKey','expectedGeneration','expectedCustodyId','expectedReceiptSha256'],'Resource custody release');return await context.resources.releaseCapture(p.stepId,body as unknown as import('@ponderosa/core').BranchResourceCustodyReleaseInput);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  const foreignPath='/api/branches/:id/executions/:executionId/foreign-continuation';
+  app.post<{Params:{id:string;executionId:string};Body:import('@ponderosa/core').BranchForeignContinuationSelection}>(foreignPath+'/review',(request,reply)=>{
+    try{const body=validatedObject(request.body,'Foreign checkpoint selection');exactObjectFields(body,['planId','sourceExecutionId','checkpointKey','checkpointSha256'],'Foreign checkpoint selection');const review=branches.reviewForeignContinuation(request.params.id,body as unknown as import('@ponderosa/core').BranchForeignContinuationSelection);if(review.importedExecutionId!==request.params.executionId)throw Error('Imported owner selection differs');return review;}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:import('@ponderosa/core').BranchForeignContinuationInput}>(foreignPath,(request,reply)=>{
+    try{const body=validatedObject(request.body,'Fresh foreign continuation');exactObjectFields(body,['planId','sourceExecutionId','checkpointKey','checkpointSha256','commandKey','reviewSha256','acceptCurrentAuthority'],'Fresh foreign continuation');const result=branches.continueForeignCheckpoint(request.params.id,request.params.executionId,body as unknown as import('@ponderosa/core').BranchForeignContinuationInput);notify();return result;}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:{id:string;executionId:string};Querystring:{commandKey:string}}>(foreignPath,(request,reply)=>{
+    try{if(typeof request.query.commandKey!=='string')throw Error('Original command key required');return branches.foreignContinuationReceipt(request.params.id,request.params.executionId,request.query.commandKey)??reply.code(404).send({error:'Foreign continuation command not found'});}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.post<{Params:{id:string;executionId:string};Body:import('@ponderosa/core').BranchHistoricalRewindInput}>('/api/branches/:id/executions/:executionId/rewind-historical',async(request,reply)=>{
     try{
       const body=validatedObject(request.body,'Historical rewind');exactObjectFields(body,['checkpointId','expectedHash','commandKey','graphReview'],'Historical rewind');

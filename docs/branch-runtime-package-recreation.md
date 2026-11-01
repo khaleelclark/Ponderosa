@@ -139,3 +139,5 @@ Supported execution-bearing multi-Branch DATA publication now extends the existi
 composer; see [held execution-tree publication](branch-execution-tree-publication.md).
 This is source-only supported-family implementation, not runnable foreign continuation
 or a full portability/runtime qualification claim.
+
+The separate [fresh-reviewed foreign Script continuation consumer](branch-foreign-checkpoint-continuation.md) is an unqualified source tranche. Its independent human review and canonical fresh manual acceptance/admission are required; a held import receipt alone cannot run data. Tree and other unsupported continuation families remain refused.
