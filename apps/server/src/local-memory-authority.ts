@@ -90,7 +90,10 @@ export class AuthorityStorage implements MemoryStorage{
  }
  /** Operator-only inventory. Foreign/unclassified rows fail closed, never become portable data. */
  async exportGlobalMemory(guard:()=>Promise<void>):Promise<PortableGlobalMemorySnapshotDto>{
-  return this.raw.exclusive(async()=>{
+  return this.raw.exclusive(()=>this.globalMemoryInventory(guard));
+ }
+ /** Caller holds raw.exclusive for the entire inventory/review/effect boundary; the queue is not reentrant. */
+ private async globalMemoryInventory(guard:()=>Promise<void>):Promise<PortableGlobalMemorySnapshotDto>{
    const snapshot:PortableGlobalMemorySnapshotDto={schema:'ponderosa.selected-global-memory.v1',signature:this.raw.signature,sourcePrincipal:this.principal,chunks:[],conflicts:[]};let bytes=0;
    for(const log of [false,true]){
     const c=await checkedCollection(this.raw,'global',log,guard);
@@ -109,13 +112,12 @@ export class AuthorityStorage implements MemoryStorage{
    }
    snapshot.chunks.sort((a,b)=>a.id.localeCompare(b.id));snapshot.conflicts.sort((a,b)=>a.id.localeCompare(b.id));
    return validateGlobalMemory(snapshot,this.raw.signature);
-  });
  }
  /** Add parallel facts/conflicts only: no reconciliation, overwrites, grants or source authority. */
  async importGlobalMemory(value:unknown,reviewHash:string,guard:()=>Promise<void>){
   const snapshot=validateGlobalMemory(value,this.raw.signature);
   return this.raw.exclusive(async()=>{
-   const destination=await this.exportGlobalMemory(guard);
+   const destination=await this.globalMemoryInventory(guard);
    if(globalMemoryHash({snapshot,destination})!==reviewHash)throw Error('Global memory transfer: destination or selection changed; review again');
    const namespace=globalMemoryHash(snapshot),id=(kind:string,sourceId:string)=>globalMemoryHash([this.principal,'global-transfer',namespace,kind,sourceId]);
    const prepared=[snapshot.chunks,snapshot.conflicts].map((rows,index)=>rows.map(row=>{
