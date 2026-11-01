@@ -16,7 +16,7 @@ export function fenceBranchGenerationExit(db:Database.Database,input:BranchGener
   if(prior.input_json!==stableJson(normalized)||stableJson(retained)!==prior.receipt_json||payloadHash(retained)!==prior.receipt_sha256||stableJson(retained.input)!==prior.input_json)throw Error('Generation-exit fence replay differs');
   return {identity,sha256:prior.receipt_sha256};
  }
- const resource=db.prepare(`SELECT r.* FROM branch_resources r JOIN branch_step_executions s ON s.id=r.step_execution_id AND s.execution_id=r.execution_id
+ const resource=db.prepare(`SELECT r.*,e.branch_id AS original_branch_id FROM branch_resources r JOIN branch_step_executions s ON s.id=r.step_execution_id AND s.execution_id=r.execution_id
   JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id
   JOIN conversations c ON c.id=r.chat_id AND c.project_id=b.project_id AND c.branch_id=e.branch_id AND c.branch_execution_id=e.id
   WHERE r.execution_id=? AND r.step_execution_id=? AND r.generation=? AND r.chat_id=? AND b.project_id=? AND r.retry_draining=1 AND r.state!='retired'`).get(input.executionId,input.stepExecutionId,input.generation,input.conversationId,input.projectId);

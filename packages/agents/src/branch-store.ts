@@ -1,3 +1,5 @@
+import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
+import {generationExitKey,requireGenerationExitIntakeFence,readGenerationExitCapture,fenceGenerationExitCapture,reserveGenerationExitCapture,sealGenerationExitCapture} from './branch-generation-exit-capture.js';
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import {readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
@@ -292,6 +294,7 @@ export class BranchStore {
   }
   private functionalReady(executionId: string): boolean {
     return this.ancestors(executionId).every(owner => {
+      if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key LIKE 'resource-generation-exit:%' AND json_extract(result_json,'$.state') IN ('fencing','capturing') LIMIT 1",owner.id))return false;
       if(this.row(`SELECT 1 FROM coordination_destination_admissions admission WHERE admission.state!='admitted'
         AND (json_extract(admission.reservation_json,'$.destination.executionId')=? OR EXISTS(
           SELECT 1 FROM json_each(admission.reservation_json,'$.resources') resource
@@ -1567,9 +1570,22 @@ export class BranchStore {
     if(rows.length)this.cleanupCursor=rows.at(-1)!.position;
     return rows.map(r=>({stepExecutionId:r.step_execution_id,chatId:r.chat_id??undefined,branchId:this.execution(r.execution_id)!.branchId,executionId:r.execution_id,agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",r.step_execution_id).map(m=>m.agent_id)}));
   }
+  generationExitCapture(executionId:string,stepId:string,generation:number){return readGenerationExitCapture(this.sqlite,executionId,stepId,generation);}
+  fenceGenerationExit(stepId:string){return this.unitTransaction(()=>fenceGenerationExitCapture(this.sqlite,stepId)).immediate();}
+  reserveGenerationExit(executionId:string,stepId:string,generation:number){return this.unitTransaction(()=>reserveGenerationExitCapture(this.sqlite,executionId,stepId,generation)).immediate();}
+  sealGenerationExit(executionId:string,stepId:string,generation:number,receipt:import('@ponderosa/core').CheckpointPackageReceipt){
+    if(!this.sqlite.inTransaction)throw Error('Generation seal requires same package owner transaction');
+    sealGenerationExitCapture(this.sqlite,executionId,stepId,generation,receipt);
+  }
+  requireGenerationExitFence(executionId:string,stepId:string,generation:number){
+    const journal=readGenerationExitCapture(this.sqlite,executionId,stepId,generation);if(!journal)throw Error('Generation fence journal missing');
+    requireGenerationExitIntakeFence(this.sqlite,journal.identity);
+  }
+  resourceRetryGeneration(stepId:string):number|undefined {const r=this.row('SELECT generation,retry_draining FROM branch_resources WHERE step_execution_id=?',stepId);return r?.retry_draining===1?r.generation:undefined;}
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
     const capture=this.resourceCaptureJournal(stepExecutionId);if((capture&&capture.state==='capturing'&&!this.resourceCaptureAbandoned(stepExecutionId))||this.issuedResourceCapturePending(stepExecutionId))return false;
     const resource=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+    if(resource?.retry_draining===1&&readGenerationExitCapture(this.sqlite,resource.execution_id,stepExecutionId,resource.generation)?.state!=='sealed')return false;
     if(resource&&['chat','import'].some(phase=>{const operation=this.resourceOperation(stepExecutionId,phase as 'chat'|'import');
       return operation&&['running','unknown'].includes(operation.state)&&this.resourceOperationReleased(resource,operation);}))return false;
     if(!this.row(`SELECT 1 ${this.resourceCleanupQuery} AND r.step_execution_id=?`,stepExecutionId)
@@ -1617,7 +1633,9 @@ export class BranchStore {
         // Preserve the exact drained generation before replacing its current pointers.
         // Replay still refuses later generations until it validates this full retry history.
         const generationKey=`resource-generation-retired:${stepExecutionId}:${r.generation}`;
-        const generationEvidence={schema:'branch-resource-generation-retired.v1',resource:r,
+        const exitCapture=readGenerationExitCapture(this.sqlite,r.execution_id,stepExecutionId,r.generation);
+        if(exitCapture?.state!=='sealed')throw Error('Sealed precleanup generation evidence required');
+        const generationEvidence={schema:'branch-resource-generation-retired.v1',resource:r,priorGeneration:{captureKey:generationExitKey(stepExecutionId,r.generation),checkpointId:exitCapture.checkpointId,checkpointHash:exitCapture.checkpointHash,envelopeSha256:exitCapture.envelopeSha256},
           members:this.rows('SELECT * FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id',stepExecutionId),
           context:this.row('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=? AND generation=?',stepExecutionId,r.generation)??null,
           operations:['chat','import'].map(phase=>this.row('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,`resource-operation:${r.creation_key}:${phase}`)??null),
@@ -2891,8 +2909,10 @@ export class BranchStore {
       this.aggregate(r.execution_id, now);
     })();
   }
+  requireDeletionReady(id:string):void {requireGenerationExitDeletionReady(this.sqlite,{branchId:id});}
   beginDeletion(id:string):void {
     this.unitTransaction(()=>{
+      this.requireDeletionReady(id);
       if(!this.getBranch(id) || this.row('SELECT deleting FROM branches WHERE id=?',id)?.deleting)return;
       if(this.row('SELECT 1 FROM branch_dependencies WHERE target_branch_id=? AND branch_id!=?',id,id))throw new Error('Other Branches depend on this Branch');
       if(this.row(`SELECT 1 FROM branch_executions e JOIN branch_bindings b ON b.id=e.binding_revision_id JOIN json_each(b.bindings_json,'$.branches') binding WHERE binding.value=? AND e.branch_id!=? AND e.state IN ('queued','running','waiting')`,id,id))throw new Error('An active execution still depends on this Branch');
@@ -2903,6 +2923,7 @@ export class BranchStore {
   }
   deleteBranch(id: string): void {
     this.unitTransaction(() => {
+      this.requireDeletionReady(id);
       if (this.row("SELECT 1 FROM branch_dependencies WHERE target_branch_id=? AND branch_id!=?",id,id))throw new Error("Other Branches depend on this Branch");
       if(this.row("SELECT 1 FROM conversations WHERE branch_id=?",id))throw new Error("Cancel/drain and delete Branch-owned Chats before finalizing deletion");
       if (this.row("SELECT 1 FROM branch_executions WHERE branch_id = ? AND state IN ('queued','running','waiting')", id)) throw new Error("Cancel and drain Branch executions before deletion");

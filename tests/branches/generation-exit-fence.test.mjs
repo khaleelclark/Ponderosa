@@ -87,3 +87,24 @@ test('canonical subtree, Chat and Project deletion refuse missing, pending and f
   refuses();
  }
 });
+
+// Removed/reparented original Chats cannot hide the independent owner fence.
+for(const chatDisposition of ['reparented','removed'])test(`Branch owner deletion holds ${chatDisposition} original Chat without a seal`,async t=>{
+ const f=await fixture(t),{db,input,branches,chat}=f;
+ const receipt=db.transaction(()=>fenceBranchGenerationExit(db,input))();
+ const branchId=db.prepare('SELECT branch_id FROM branch_executions WHERE id=?').get(input.executionId).branch_id;
+ const retained=JSON.parse(db.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(receipt.identity).receipt_json);
+ assert.equal(retained.resource.original_branch_id,branchId);
+ if(chatDisposition==='reparented')db.prepare('UPDATE conversations SET branch_id=NULL,branch_execution_id=NULL WHERE id=?').run(chat.id);
+ else {db.pragma('foreign_keys=OFF');db.prepare('DELETE FROM conversations WHERE id=?').run(chat.id);}
+ const key=`resource-generation-exit:${input.stepExecutionId}:0`;
+ for(const state of [undefined,'fencing','capturing','sealed']){
+  if(state)db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?) ON CONFLICT(execution_id,command_key) DO UPDATE SET result_json=excluded.result_json').run(input.executionId,key,'forged',JSON.stringify({state}),new Date().toISOString());
+  const before=db.prepare('SELECT * FROM branches WHERE id=?').get(branchId);
+  assert.throws(()=>branches.beginDeletion(branchId),/sealed capture/);
+  assert.throws(()=>branches.deleteBranch(branchId),/sealed capture/);
+  assert.deepEqual(db.prepare('SELECT * FROM branches WHERE id=?').get(branchId),before);
+  assert.ok(db.prepare('SELECT 1 FROM branch_executions WHERE id=?').get(input.executionId));
+  assert.equal(generationExitHeld(db,f.agent.id),true);
+ }
+});

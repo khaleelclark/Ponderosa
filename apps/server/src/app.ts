@@ -1368,6 +1368,20 @@ app.server.on("upgrade", linkPreviewUpgrade);
     catch(error){if((error as {statusCode?:number}).statusCode!==404)throw error;}
   };
   const branchResources=new BranchResourceService(branches,store,deleteBranchAgents,application.createChat,id=>deleteBranchChat(id,[]));
+  branchResources.setGenerationExitDrain(async agentIds=>{
+    const selected=new Set(agentIds),reason='Branch precleanup generation evidence capture';
+    await drainProviderRuntimeAuthority(reason,selected);
+    await providerProcessAuthority.terminateAgents(selected,reason);
+    for(const agentId of agentIds){
+      const authority=runtimeAuthorities.get(agentId);
+      if(activeRuns.has(agentId)||providerProcessAuthority.count({agentId})||authority&&(pendingRuntimeAuthorityCount(authority)>0||authority.retryTimer||authority.retryInProgress||authority.retryAttempt!==0))throw Error('Original generation runtime exit remains unconfirmed');
+      const agent=store.getAgent(agentId);if(!agent?.conversationId)throw Error('Original generation identity unavailable before cleanup');
+    }
+    const first=store.getAgent(agentIds[0]!);if(!first?.conversationId)throw Error('Original generation Chat unavailable');
+    const participants=agentIds.map(agentId=>({agentId,runIds:(store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=? ORDER BY id').all(agentId) as {id:string}[]).map(r=>r.id)}));
+    providerProcessAuthority.readExitEvidence({projectId:first.projectId,conversationId:first.conversationId,participants});
+  });
+
   const branchInstallations=new BranchInstallationService(store,branches,deleteBranchChat,id=>deleteBranchAgents([id]),application.createChat,branchId=>{
     const cursor=workspace.cursor();workspace.forEachNotification(notification=>{
       if(notification.branchId===branchId&&(notification.status??'open')==='open')workspace.setNotificationStatus(notification.id,'resolved');

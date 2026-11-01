@@ -207,3 +207,5 @@ export {readProviderExitEvidence,verifyRetainedProviderExitEvidence} from './pro
 export {readGroupCaptureDisposition,type BranchGroupCaptureAbandonInput,type BranchGroupPackageRetirementProof,type BranchGroupPackageInventory} from './branch-group-custody-disposition.js';
 
 export {fenceBranchGenerationExit,generationExitHeld,requireGenerationExitOpen,type BranchGenerationExitFenceInput} from './branch-generation-exit-fence.js';
+
+export {generationExitKey,readGenerationExitCapture,type BranchPriorGenerationEnvelope} from './branch-generation-exit-capture.js';

@@ -43,3 +43,12 @@ Deletion independently requires a real sealed generation capture. Missing journa
 Agent subtree preview checks every affected member before filesystem staging, with repeated checks in the deletion-pending and canonical commit transactions. Chat pending intent and storage staging check before filesystem work and canonical commit checks again. Project pending intent checks all retained Project fences before storage staging and commit checks again before cascade. A valid seal permits ordinary proven deletion; it never releases intake or lease holds. Missing evidence after Branch owner/journal removal conservatively holds later deletion; no cleanup authority is reconstructed from absence.
 
 Source-only deferred refusal fixtures cover missing/pending/forged sealed evidence through public subtree, Chat and Project deletion APIs. They do not qualify successful producer sealing or actual filesystem/provider cleanup; no checks were executed.
+
+Branch-owner deletion uses this same canonical deletion proof reader with Branch/execution
+scope, including descendant executions, independently of current Chat lineage. It runs
+before beginDeletion changes and within final deletion SQL; installation cleanup rechecks
+before storage effects. New fence resource snapshots include original_branch_id. Older
+immutable receipts without that field conservatively require valid seals on every Branch
+deletion rather than allowing unknown original ownership to bypass the pin. No migration,
+ledger rewrite or fence release is provided. Sealed Branch deletion may remove its mutable
+journal; subsequent attempts requiring that missing evidence hold conservatively.
