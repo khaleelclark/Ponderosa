@@ -319,3 +319,27 @@ predicate. The finite rank is below16ms reporting floor, numeric p75=null. This
 does not retroactively validate historical zero-observed captures or establish
 universal completeness. LCP4604ms remains red; canonical-tail readiness6633.6ms.
 No causal performance improvement, live20/32 or METHOD acceptance follows.
+
+### Exact mapped-build render attribution
+
+A diagnostic-source-map build at8b872 (same product inputs as this documentation
+successor) and ONE pinned-profile/10k/75ms zero-active invocation each returned0.
+Several ordinary bundles differ from the map build, so no old frame positions
+were mapped using new files. The new actual bundle maps verify349 application
+TS/TSX source contents and resolve8155of8395generated frames;240 remain explicit.
+LCP4948ms is red,100article mutation4820.8ms, tail readiness7278.7ms. The latest
+initial history response ends1329.2ms, leaving3491.6ms before article mutation.
+These source-map/Profiler/trace measurements are not a causal comparison with the
+previous ordinary production capture.
+
+Trace main-frame DOMContentLoaded and load milestones crosscheck document-clock
+alignment within0.02ms; this is diagnostic alignment, not an accuracy guarantee.
+Response-to-article sampled self-time includes scrollToBottom128.906ms, React
+render work116.642ms at its largest location, MUI sx74.177ms and Emotion69.08ms.
+Inclusive ancestors overlap. Native/program/idle and unmapped frames are retained.
+The scroll helper must read current scrollHeight to reveal latest messages; this
+evidence does not establish a redundant removable call. Distributed styling and
+render cost does not isolate a safe product repair; no further product change
+or repeated browser invocation was made. Exact raw/trace/profile/maps and analysis
+are retained in the render-attribution packet. METHOD acceptance, contemporary
+capacity, actual20worker custody and explicitGO remain separate gates.
