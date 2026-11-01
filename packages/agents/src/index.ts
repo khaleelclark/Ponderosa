@@ -221,3 +221,5 @@ export {issuedCaptureRetryBudget} from './branch-issued-resource-capture.js';
 export {readGroupAuditJournal,listGroupAuditJournals} from './branch-group-journal-retention.js';
 
 export {issuedGroupOwners,issuedGroupResources,issuedGroupHost} from './branch-issued-group-capture.js';
+
+export { CoordinationV3SourceEffectsAuthority, SourceEffectConflictError } from "./coordination-v3-source-effects-authority.js";

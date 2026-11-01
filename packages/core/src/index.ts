@@ -35,3 +35,5 @@ export * from "./context-recovery.js";
 export * from "./coordination-destination.js";
 export * from "./branch-group-client.js";
 export * from './provider-exit-receipt.js';
+
+export * from "./source-effects.js";

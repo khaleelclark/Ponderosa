@@ -1,3 +1,4 @@
+import { registerSourceEffectRoutes } from "./source-effects.js";
 import { registerContextRecoveryRoutes } from "./context-recovery.js";
 import { randomUUID } from "node:crypto";
 import type {
@@ -162,6 +163,8 @@ export function registerProviderCommandRoutes(
     providerProcessAuthority,
     workingCopies,
   } = context;
+
+  registerSourceEffectRoutes(app, { store });
 
 const activeAgentProviderCommands = new Set<string>();
 const activeContextRecoveries = new Map<string,{id:string;controller:AbortController;stopped?:boolean}>();
