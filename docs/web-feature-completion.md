@@ -322,7 +322,7 @@ wrong-receipt/corrupt-storage holds and honest Codex capability display.
 
 SOURCE ONLY: fixtures unexecuted. No tests/checks/build/types/Node/native/provider/
 browser or runner preparation/execution, installs, backend writes, push/merge/
-deploy or new workers. Remaining: backend/core/Runtime composition; actual provider/
+deploy or new workers. Backend/core/Runtime composition is now source integrated. Remaining: actual provider/
 filesystem/HTTP/native-ACK/goal/permission/lifecycle qualification; browser WebCrypto,
 rendered accessibility/mobile/keyboard/screen-reader validation. Current policy
 is not exposed as a read decision in this backend DTO; native lost-ACK and

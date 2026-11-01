@@ -152,3 +152,14 @@ Labels come from the Agent directory. Listing is advisory and creates nothing;
 POST revalidates. An empty list means no eligible existing target. Do not manufacture
 Agents, infer eligibility from directory metadata, or infer operation success from
 HTTP failure. Exact original key readback and unknown holds remain unchanged.
+
+## Current integration scope
+
+Backend successor `3d97ba4d2381c56b7395ec0d047c8753ddc4033d` and Settings UI
+`f46b61d3511b9e502799c679d086885ddc694a3d` are composed in source with current
+Claude task lifetime/stop, replay framing, approvals and runtime controls retained.
+The UI preserves complete original commands before one POST, exact-key readback,
+60-second physical previews, separate restore/delete versus fork consent and
+unstarted-only cancellation. Current permission is not a catalog decision; server
+policy gates remain authoritative. No execution, native acknowledgement, rendered
+acceptance or whole capability parity is established.
