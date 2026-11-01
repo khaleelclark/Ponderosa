@@ -327,6 +327,11 @@ export interface BranchHostGraphReviewDto {
 export interface BranchHostGraphRestoreInput {
  checkpointId:number;expectedHash:string;reviewHash:string;commandKey:string;reconcileEffects:true;
 }
+export interface BranchHistoricalRewindInput {
+ checkpointId:number;expectedHash:string;commandKey:string;
+ /** Required together for an issued-Request prefix, after host-graph-review. */
+ graphReview?:{reviewHash:string;reconcileEffects:true};
+}
 export interface BranchHostGraphRestoreDto {
  restorationId:string;checkpointId:number;checkpointHash:string;
  requestMap:Record<string,string>;updateMap:Record<string,string>;joinMap:Record<string,string>;replayed:boolean;

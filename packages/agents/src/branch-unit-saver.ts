@@ -39,8 +39,8 @@ export class BranchUnitSaver {
       try {
         const selected=selectBranchUnit(this.sqlite,executionId);
         // Fixed SQL/column inventory excludes secretBindings and operational authority.
-        const continuation=encodeScriptContinuation(this.sqlite,executionId,selected as Selected)??encodeScriptTreeContinuation(this.sqlite,executionId,selected as Selected);
         const hostDependencies=captureBranchHostCut(this.sqlite,executionId,selected);
+        const continuation=encodeScriptContinuation(this.sqlite,executionId,selected as Selected,hostDependencies)??encodeScriptTreeContinuation(this.sqlite,executionId,selected as Selected);
         const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:!!continuation,...metadata,selected,...(continuation?{continuation}:{}),...(hostDependencies?{hostDependencies}:{})});
         return {executionId,...metadata,content,hash:createHash('sha256').update(content).digest('hex')};
       } catch(error) { return {executionId,...metadata,error}; }

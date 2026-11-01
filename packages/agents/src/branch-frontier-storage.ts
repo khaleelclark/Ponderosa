@@ -7,7 +7,7 @@ import {stableJson} from './coordination-v3-canonical-json.js';
 const tables=[
  ['paths','branch_paths','id,execution_id,parent_path_id,fork_invocation_id,edge_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id'],
  ['steps','branch_step_executions','id,execution_id,step_id,path_id,invocation,state,input_text,result_json'],
- ['attempts','branch_attempts','id,step_execution_id,number,state,fence,input_hash,result_json,error,available_at,purpose'],
+ ['attempts','branch_attempts','id,step_execution_id,number,state,fence,input_hash,result_json,error,available_at,purpose,request_id'],
  ['sealedResults','branch_sealed_results','id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash'],
  ['forks','branch_forks','id,execution_id,parent_path_id,fork_id,join_id,state,selected_paths_json,result_json'],
  ['joins','branch_join_arrivals','execution_id,fork_invocation_id,join_id,path_id,outcome,output_text'],
@@ -19,14 +19,14 @@ const tables=[
 ] as const;
 
 /** Caller must own the acceptance/lineage transaction; no admission or lease is copied. */
-export function insertBranchFrontier(db:Database.Database,executionId:string,restored:Selected,now:string):void {
+export function insertBranchFrontier(db:Database.Database,executionId:string,restored:Selected,now:string,requestIds?:ReadonlySet<string>):void {
  if(!db.inTransaction)throw Error('Continuation insertion requires the owner transaction');
  for(const [key,table,fields] of tables){
   const columns=fields.split(','),timestamps=key==='attempts'?['created_at','updated_at']:['sealedResults','maps','bundles'].includes(key)?['created_at']:[];
   const all=[...columns,...timestamps],insert=db.prepare(`INSERT INTO ${table}(${all.join(',')}) VALUES(${all.map(()=>'?').join(',')})`);
   for(const row of restored[key]??[]){
    if(columns.includes('execution_id')&&row.execution_id!==executionId)throw Error('Restored row escapes its execution');
-   if(key==='attempts'&&(row.fence!==0||row.request_id||row.recovery_of_request_id||row.runtime_outcome_json||row.cancel_requested))throw Error('Restored attempt retains runtime authority');
+   if(key==='attempts'&&(row.fence!==0||row.request_id&&!requestIds?.has(row.request_id)||row.recovery_of_request_id||row.runtime_outcome_json||row.cancel_requested))throw Error('Restored attempt retains runtime authority');
    insert.run(...columns.map(column=>row[column]),...timestamps.map(()=>now));
   }
  }

@@ -658,15 +658,43 @@ graph pins and inconsistent frozen Join outcomes are not admitted. Explicit
 `reconcileEffects:true` is required. This never authorizes replay of an unknown
 native effect.
 
-**Remaining Branch execution seam:** the new caller restores canonical coordination
-and returns the complete typed maps from the retained Branch cut. It does not yet
-attach those maps to fresh Branch Step/attempt/path identities or relax the
-existing `rewindHistorical` prefix verification. Issued-Request Branch frontier
-rewind therefore remains refused. This operation is beyond independent evidence
-adoption, but is not by itself complete Branch graph rewind. Released resource
+**Issued-Request Branch rewind:** supported single-path, nonsecret async/sync
+persistent-Agent cuts now attach canonical restoration maps to fresh Branch
+Step/attempt/path identities in the historical-rewind owner transaction. The
+operator first calls `reviewHostGraph`, then supplies
+`graphReview:{reviewHash,reconcileEffects:true}` to the existing historical rewind
+route/client. The server supplies current artifact grants; no grant is accepted
+from JSON. Ordinary before-effect rewind keeps its existing input.
+
+Capture and replay verify the original binding, original `branch:<attempt>`
+Request identity, exact authored task/input, original audience, complete update
+prefix and reducer projection, one owned `request_bound` event per issued
+attempt, and version-matching completed output for settled Agent prefixes.
+Historical payload hashes are verified. Supported cuts may contain an unresolved
+question/answer/Join graph or a completed Request awaiting Branch reduction.
+A selected completed Agent prefix requiring user Communication remains refused;
+a live restored suffix still requires fresh Communication proof. This proof uses
+canonical Request/update/Join source lineage and exact submitted Run/Agent IDs.
+Concurrency accounting uses the same source lineage for restored update-based
+deliveries. Historical rewind now participates in the server work-admission fence
+because it can commit canonical runnable deliveries.
+
+Fresh Branch budget admission, canonical graph identities/final-only deliveries,
+mapped frontier rows and lineage/command receipts commit together. The lineage
+retains complete canonical maps and the graph review hash. Lost-response retries
+revalidate current original grants and both canonical and Branch ownership
+without publishing another delivery; insertion failures roll back both graphs.
+An independently restored graph cannot be adopted as a rewind suffix. Retained
+terminal facts are consumed as data; waiting attempts observe only the mapped
+fresh Request. No old Run, reply, lease, session or effect is relaunched.
+
+Issued-Request parallel/Map/tree/exit frontiers, resources, human gates mixed
+with issued prefixes, failed/cancelled/uncertain or recovery attempts, changed or
+secret pins and restored-history recapture remain refused. Released resource
 custody, graph binding/secret remapping, Agent/child cancellation, forwarded-bundle
-pointer/hash transfer, human/Agent/operator recovery and exhausted-budget codecs,
-and broader crash reconciliation also remain internal unfinished work.
+pointer/hash transfer, recovery/exhausted-budget codecs and broader crash
+reconciliation remain outside this increment. This is a supported internal path,
+not full #32 acceptance.
 
 Deferred regression source in `tests/branches/host-cut.test.mjs` covers imported
 terminal facts without effect relaunch, fresh identity/provenance/receipt replay,
@@ -688,6 +716,16 @@ authored fields cannot opt into import authority. Required user Communication
 still needs the existing fresh Request/Run proof and is not satisfied by old
 historical evidence. Deferred source regressions cover retained output, altered
 mapping/version/payload, missing provenance and a missing final update version.
-This result-reader prerequisite does not enable issued-Request rewind: canonical
-map attachment, issued-Request frontier/audit replay and restored-prefix lineage
-still need to be connected together in the historical rewind owner transaction.
+The issued-Request rewind path above uses this reader for retained terminal
+facts and normal canonical reduction for future fresh outcomes.
+
+Deferred issued-prefix integration regressions cover live and retained terminal
+results in fresh Branch suffixes, mapped historical question/live answer/member
+completion/Join continuation, receipt replay before and after completion,
+canonical-plus-frontier rollback, refusal without review, and refusal to borrow
+an independently restored graph. No regression or execution check has run.
+Additional deferred cases reject mismatched Request links, removed owned audit
+events and terminal versions, and retain capacity accounting for update-sourced
+restored delivery.
+A mapped suffix requiring user Communication also refuses completion without
+fresh canonical publication proof; a historical or missing event ID is insufficient.

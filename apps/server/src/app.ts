@@ -358,7 +358,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     // Agent asset authority or scheduling state until a separately fenced send.
     return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
       pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
-      /^\/api\/branches\/[^/]+\/executions\/[^/]+\/(?:adopt-host-request|restore-host-graph)$/u.test(pathname) ||
+      /^\/api\/branches\/[^/]+\/executions\/[^/]+\/(?:adopt-host-request|restore-host-graph|rewind-historical)$/u.test(pathname) ||
       /^\/api\/agents\/[^/]+\/(?:messages|attachments)$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|collaboration\/messages)$/u.test(pathname) ||
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||

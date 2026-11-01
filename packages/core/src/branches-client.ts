@@ -1,7 +1,7 @@
 import type {
  BranchBindings, BranchConfiguration, BranchDeploymentPreviewDto, BranchDto, BranchExecutionActionsDto,
  BranchExecutionDetailDto, BranchExecutionDto, BranchGateResolution, BranchHistoricalCheckpointDto,
- BranchInitialCheckpointDto, BranchInstallationPreviewDto, BranchIntervention, BranchMemoryUpdateSelectionDto,
+ BranchInitialCheckpointDto, BranchInstallationPreviewDto, BranchIntervention, BranchMemoryUpdateSelectionDto, BranchHistoricalRewindInput,
  BranchOperationalSummaryDto, BranchStepEvidenceDto, BranchVersionDto, DeployBranchRequest,
  InstalledBranchPackage, OutputAgentAppDto, AssistantStatusDto,
 } from './branches.js';
@@ -67,7 +67,7 @@ export class BranchesClient {
  restoreHostGraph(branchId:string,executionId:string,input:import('./branches.js').BranchHostGraphRestoreInput,options?:BranchesRequestOptions){return this.json<import('./branches.js').BranchHostGraphRestoreDto>(`/api/branches/${part(branchId)}/executions/${part(executionId)}/restore-host-graph`,'POST',input,options);}
  reviewHostRequest(branchId:string,executionId:string,selection:import('./branches.js').BranchHostRequestSelection,options?:BranchesRequestOptions){return this.json<import('./branches.js').BranchHostRequestReviewDto>(`/api/branches/${part(branchId)}/executions/${part(executionId)}/host-request-review`,'POST',selection,options);}
  adoptHostRequest(branchId:string,executionId:string,input:import('./branches.js').BranchHostRequestAdoption,options?:BranchesRequestOptions){return this.json<import('./branches.js').BranchHostRequestAdoptionDto>(`/api/branches/${part(branchId)}/executions/${part(executionId)}/adopt-host-request`,'POST',input,options);}
- rewind(branchId:string,executionId:string,kind:'initial'|'historical',checkpoint:{checkpointId:number;expectedHash:string;commandKey:string},options?:BranchesRequestOptions){return this.json<BranchExecutionDto>(`/api/branches/${part(branchId)}/executions/${part(executionId)}/rewind-${kind}`,'POST',checkpoint,options);}
+ rewind(branchId:string,executionId:string,kind:'initial'|'historical',checkpoint:BranchHistoricalRewindInput,options?:BranchesRequestOptions){return this.json<BranchExecutionDto>(`/api/branches/${part(branchId)}/executions/${part(executionId)}/rewind-${kind}`,'POST',checkpoint,options);}
  trigger(branchId:string,options?:BranchesRequestOptions){return this.json<TriggerDefinitionDto>(`/api/branches/${part(branchId)}/trigger`,'GET',undefined,options);}
  occurrences(branchId:string,before?:string,options?:BranchesRequestOptions){return this.json<TriggerOccurrenceDto[]>(`/api/branches/${part(branchId)}/trigger/occurrences`+query({before}),'GET',undefined,options);}
  webhook(triggerId:string,eventId:string,payload:unknown,options:BranchesRequestOptions={}){return this.response(`/api/trigger-webhooks/${part(triggerId)}`,'POST',payload,options,{'x-ponderosa-event-id':eventId}).then(response=>response.json());}

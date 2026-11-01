@@ -6,11 +6,11 @@ import {join} from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
 import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
 import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
-function fixture(t,{secret=false,mode}={}){
+function fixture(t,{secret=false,mode,maxConcurrent=8,requireCommunication=false}={}){
  const dir=mkdtempSync(join(tmpdir(),'host-cut-')),store=new AgentStore(dir),coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Host cut',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Host cut'}),agent=store.createAgent(project.id,{title:'Worker',engine:'codex',conversationId:chat.id}),peer=store.createAgent(project.id,{title:'Peer',engine:'codex',conversationId:chat.id});
- const definition={schema:'ponderosa.branch.v1',name:'Host cut',trigger:{kind:'manual'},...(secret?{parameters:{token:{type:'secret'}}}:{}),entry:'agent',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Do the retained task'}],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}};
+ const definition={schema:'ponderosa.branch.v1',name:'Host cut',trigger:{kind:'manual'},...(secret?{parameters:{token:{type:'secret'}}}:{}),entry:'agent',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Do the retained task',...(requireCommunication?{requireUserCommunication:true}:{})}],controls:[],edges:[],policy:{maxConcurrentExecutions:maxConcurrent,failure:{action:'stop'}}};
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{}}});
  if(mode)branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  const source=branches.accept(branch.id,'source','input');
@@ -33,11 +33,11 @@ test('host Request/question/answer/Join history freezes original scope and order
  const selected=selectBranchUnit(f.store.sqlite,f.source.id);assert.throws(()=>captureBranchHostCut(f.store.sqlite,f.source.id,selected),/owner transaction/);
 });
 
-test('checkpoint saver captures issued Request evidence without enabling effect replay',async t=>{
+test('checkpoint saver admits the reviewed persistent issued-Request subset without launching work',async t=>{
  const f=fixture(t);for(let n=0;n<20&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}
  const row=f.store.sqlite.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_type(snapshot_json,'$.hostDependencies')='object' ORDER BY id DESC LIMIT 1").get(f.source.id);assert.ok(row);
- const snapshot=JSON.parse(row.snapshot_json);assert.equal(snapshot.restore_supported,false);assert.ok(verifyBranchHostCut(snapshot.hostDependencies,f.source.id));
- const owners=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n;for(const cp of f.branches.historicalCheckpoints(f.branch.id,f.source.id)){const saved=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);if(saved.selected.attempts.some(a=>a.request_id))assert.equal(cp.restoreSupported,false);}assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,owners);
+ const snapshot=JSON.parse(row.snapshot_json);assert.equal(snapshot.restore_supported,true);assert.ok(verifyBranchHostCut(snapshot.hostDependencies,f.source.id));
+ const owners=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n;for(const cp of f.branches.historicalCheckpoints(f.branch.id,f.source.id)){const saved=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);if(saved.selected.attempts.some(a=>a.request_id))assert.equal(cp.restoreSupported,true);}assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,owners);
 });
 
 // Deferred: manager/roster visibility never grants private dependency capture.
@@ -222,4 +222,94 @@ test('mapped historical question accepts a live answer and completes its fresh J
  const wake=f.store.sqlite.prepare("SELECT payload_json FROM agent_activations WHERE kind='coordination_join_satisfied' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='join' AND source_id=?)").get(joinId);
  assert.ok(wake);const payload=JSON.parse(wake.payload_json);assert.equal(payload.outcomes[0].requestId,childId);assert.equal(payload.continuations[0].requestId,rootId);assert.equal(payload.outcomes[0].update.id,'fresh-completion');
  assert.equal(f.coordination.getRequest(root).state,'completed');assert.equal(f.coordination.getRequest(rootId).state,'waiting_dependency');
+});
+
+// Deferred: source-only issued-Request Branch rewind integration.
+async function issuedRewindFixture(t,{terminal=false,questionJoin=false,progress=false,maxConcurrent=8,requireCommunication=false}={}){
+ const f=fixture(t,{maxConcurrent,requireCommunication}),db=f.store.sqlite;
+ for(let n=0;n<30&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ const oldAttempt=f.branches.detail(f.source.id).attempts[0],root=oldAttempt.requestId;assert.ok(root);
+ let child;
+ if(progress)f.coordination.updateRequest({requestId:root,updateId:'rewind-root-progress',kind:'progress',actor:{kind:'agent',id:f.agent.id},payload:{text:'Observed progress only'}});
+ if(questionJoin){
+  child=f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,requesterAgentId:f.agent.id,actorScope:'issued-rewind-fixture',idempotencyKey:'child',requests:[{recipientAgentId:f.peer.id,lifetime:{kind:'indefinite'},payload:{text:'Reconcile retained child'}}],join:{mode:'all',continuationRequestIds:[root]}});
+  f.coordination.updateRequest({requestId:child.requestIds[0],updateId:'rewind-child-question',kind:'question',actor:{kind:'agent',id:f.peer.id},payload:{text:'Which retained source?'}});
+ }
+ if(terminal)f.coordination.updateRequest({requestId:root,updateId:'rewind-retained-terminal',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Retained terminal output'}});
+ const candidate=f.branches.unitSaver.freeze({written:new Set([f.source.id])})[0];assert.ok(candidate.content);assert.equal(JSON.parse(candidate.content).restore_supported,true);
+ const checkpointId=Number(db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,candidate.content,candidate.hash).lastInsertRowid),selection={checkpointId,expectedHash:candidate.hash};
+ if(child)f.coordination.updateRequest({requestId:child.requestIds[0],updateId:'settle-original-child',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Original child settled'}});
+ if(!terminal)f.coordination.updateRequest({requestId:root,updateId:'settle-original-root',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Original root settled'}});
+ for(let n=0;n<30&&!['completed','failed'].includes(f.branches.execution(f.source.id).state);n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(f.source.id).state,requireCommunication?'failed':'completed');
+ db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const grant=()=>true,review=f.branches.reviewHostGraph(f.branch.id,f.source.id,selection,grant),graph={reviewHash:review.reviewHash,reconcileEffects:true,grant};
+ const rewind=(key='issued-prefix',reviewed=graph)=>f.branches.rewindHistorical(f.branch.id,f.source.id,checkpointId,candidate.hash,key,undefined,reviewed);
+ return {...f,db,root,child,oldAttempt,selection,graph,rewind};
+}
+for(const terminal of [false,true])test(`issued Request Branch rewind maps its ${terminal?'retained terminal':'live'} result into a fresh suffix`,async t=>{
+ const f=await issuedRewindFixture(t,{terminal});
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,f.selection.checkpointId,f.selection.expectedHash,'unreviewed'),/Reviewed historical graph authority/);
+ const before=f.db.prepare('SELECT COUNT(*) n FROM agent_activations').get().n,next=f.rewind(),attempt=f.branches.detail(next.id).attempts[0];
+ assert.notEqual(attempt.id,f.oldAttempt.id);assert.notEqual(attempt.stepExecutionId,f.oldAttempt.stepExecutionId);assert.notEqual(attempt.requestId,f.root);assert.equal(attempt.fence,0);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM agent_activations').get().n,before+(terminal?0:1));
+ assert.equal(f.rewind().id,next.id,'lost-response retry reuses both Branch and canonical maps');
+ if(!terminal)f.coordination.updateRequest({requestId:attempt.requestId,updateId:'mapped-root-completion',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Fresh suffix output'}});
+ for(let n=0;n<30&&f.branches.execution(next.id).state!=='completed';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(next.id).state,'completed');assert.equal(f.branches.execution(next.id).output,terminal?'Retained terminal output':'Fresh suffix output');
+ assert.equal(f.coordination.getRequest(f.root).state,'completed');assert.equal(f.rewind().id,next.id);
+});
+test('issued Request rewind atomically restores question, answer and Join continuation into its Branch suffix',async t=>{
+ const f=await issuedRewindFixture(t,{questionJoin:true}),next=f.rewind(),attempt=f.branches.detail(next.id).attempts[0];
+ const line=JSON.parse(f.db.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.rewind-lineage.v1'").get(next.id).snapshot_json),map=line.coordination;
+ assert.equal(attempt.requestId,map.requestMap[f.root]);
+ const child=map.requestMap[f.child.requestIds[0]],question=map.updateMap['rewind-child-question'];
+ f.coordination.updateRequest({requestId:child,updateId:'mapped-live-answer',kind:'answer',actor:{kind:'user'},inReplyToUpdateId:question,payload:{text:'Use the retained source'}});
+ f.coordination.updateRequest({requestId:child,updateId:'mapped-child-complete',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Child reconciled'}});
+ assert.ok(f.db.prepare("SELECT 1 FROM activation_sources WHERE source_kind='join' AND source_id=?").get(map.joinMap[f.child.joinId]));
+ f.coordination.updateRequest({requestId:attempt.requestId,updateId:'mapped-join-root-complete',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Join reconciled into Branch'}});
+ for(let n=0;n<30&&f.branches.execution(next.id).state!=='completed';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(next.id).output,'Join reconciled into Branch');
+});
+test('issued Request rewind rolls back canonical deliveries and Branch ownership on frontier insertion failure',async t=>{
+ const f=await issuedRewindFixture(t),tables=['branch_executions','branch_commands','branch_attempts','coordination_requests','coordination_request_updates','coordination_cut_restorations','agent_activations','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
+ f.db.exec("CREATE TEMP TRIGGER reject_mapped_attempt BEFORE INSERT ON branch_attempts WHEN NEW.request_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'controlled mapped attempt failure'); END");
+ assert.throws(()=>f.rewind(),/controlled mapped attempt failure/);assert.deepEqual(counts(),before);
+ f.db.exec('DROP TRIGGER reject_mapped_attempt');assert.ok(f.rewind().id);
+});
+test('issued Request review cannot reuse an independently restored graph as a Branch suffix',async t=>{
+ const f=await issuedRewindFixture(t),{payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ f.branches.restoreHostGraph(f.branch.id,f.source.id,{...f.selection,commandKey:`branch-rewind:${payloadHash('issued-prefix')}`,reviewHash:f.graph.reviewHash,reconcileEffects:true},f.graph.grant);
+ assert.throws(()=>f.rewind(),/separate restoration/);
+});
+
+for(const tamper of ['request-link','request-bound-audit','terminal-version'])test(`issued Request rewind refuses ${tamper} mismatch before admission`,async t=>{
+ const f=await issuedRewindFixture(t,{terminal:true}),{stableJson,payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const saved=JSON.parse(f.db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(f.selection.checkpointId).snapshot_json);
+ if(tamper==='request-link')saved.selected.attempts[0].request_id='unowned-request';
+ if(tamper==='request-bound-audit')saved.continuation.audit=saved.continuation.audit.filter(event=>event.kind!=='request_bound');
+ if(tamper==='terminal-version'){
+  const update=saved.hostDependencies.updates.find(({row})=>row.id==='rewind-retained-terminal');update.row.resulting_version++;update.sha256=payloadHash(update.row);
+ }
+ const hash=payloadHash(saved),id=Number(f.db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,stableJson(saved),hash).lastInsertRowid),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n;
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash,'mismatched-cut',undefined,f.graph),/integrity|unsupported/);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);
+});
+test('restored update-sourced Request delivery retains ordinary Branch concurrency accounting',async t=>{
+ const f=await issuedRewindFixture(t,{progress:true,maxConcurrent:1}),next=f.rewind(),attempt=f.branches.detail(next.id).attempts[0];
+ const source=f.db.prepare("SELECT source.source_kind FROM activation_sources source JOIN agent_activations a ON a.id=source.activation_id WHERE a.state='pending' AND source.source_kind='request_update'").get();assert.ok(source);
+ const other=f.branches.accept(f.branch.id,'capacity-after-restore','other');
+ for(let n=0;n<10;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.detail(other.id).attempts.some(a=>a.requestId),false);
+ f.coordination.updateRequest({requestId:attempt.requestId,updateId:'release-restored-capacity',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Reconciled'}});
+ for(let n=0;n<30&&!f.branches.detail(other.id).attempts.some(a=>a.requestId);n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.ok(f.branches.detail(other.id).attempts.some(a=>a.requestId));
+});
+
+test('mapped suffix still refuses completion without fresh required user Communication proof',async t=>{
+ const f=await issuedRewindFixture(t,{requireCommunication:true}),next=f.rewind(),attempt=f.branches.detail(next.id).attempts[0];
+ f.coordination.updateRequest({requestId:attempt.requestId,updateId:'unproven-mapped-publication',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Claimed publication',communicationEventId:'historical-or-missing-publication'}});
+ for(let n=0;n<30&&!['completed','failed'].includes(f.branches.execution(next.id).state);n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(next.id).state,'failed');assert.match(f.branches.detail(next.id).attempts[0].error,/Required user Communication/);
+ assert.equal(f.branches.execution(next.id).output,undefined);
 });

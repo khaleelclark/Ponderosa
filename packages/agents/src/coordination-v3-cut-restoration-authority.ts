@@ -37,6 +37,7 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
 export function validateHistoricalRequest(row:Row,updates:Row[]):void {
  let state:CoordinationRequestSnapshot={state:'open',version:0};
  for(const update of updates){
+  if(stableJson(JSON.parse(update.payload_json))!==update.payload_json||payloadHash(JSON.parse(update.payload_json))!==update.payload_hash)throw Error('Historical update payload hash differs');
   if(!Object.hasOwn(REQUEST_UPDATE_AUTHORIZATION,update.kind))throw Error('Unsupported historical update kind');
   if(update.request_id!==row.id||update.resulting_version!==state.version+1)throw Error('Historical update prefix is not contiguous');
   const transition={kind:update.kind as CoordinationRequestUpdateKind,updateId:update.id,...(update.in_reply_to_update_id?{inReplyToUpdateId:update.in_reply_to_update_id}:{})};

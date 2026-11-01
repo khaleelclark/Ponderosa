@@ -440,11 +440,17 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
       const result=branches.adoptHostRequest(request.params.id,request.params.executionId,body as unknown as import('@ponderosa/core').BranchHostRequestAdoption,hostArtifactGrant);notify();return result;
     }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Host Request adoption refused'});}
   });
-  app.post<{Params:{id:string;executionId:string};Body:{checkpointId:number;expectedHash:string;commandKey:string}}>('/api/branches/:id/executions/:executionId/rewind-historical',async(request,reply)=>{
+  app.post<{Params:{id:string;executionId:string};Body:import('@ponderosa/core').BranchHistoricalRewindInput}>('/api/branches/:id/executions/:executionId/rewind-historical',async(request,reply)=>{
     try{
-      const body=validatedObject(request.body,'Historical rewind');exactObjectFields(body,['checkpointId','expectedHash','commandKey'],'Historical rewind');
+      const body=validatedObject(request.body,'Historical rewind');exactObjectFields(body,['checkpointId','expectedHash','commandKey','graphReview'],'Historical rewind');
       if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.commandKey!=='string')throw Error('Invalid historical rewind command');
-      const result=branches.rewindHistorical(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey);notify();return result;
+      let graph: {reviewHash:string;reconcileEffects:true;grant:typeof hostArtifactGrant}|undefined;
+      if(body.graphReview!==undefined){
+        const review=validatedObject(body.graphReview,'Historical graph review');exactObjectFields(review,['reviewHash','reconcileEffects'],'Historical graph review');
+        if(typeof review.reviewHash!=='string'||review.reconcileEffects!==true)throw Error('Invalid historical graph review');
+        graph={reviewHash:review.reviewHash,reconcileEffects:true,grant:hostArtifactGrant};
+      }
+      const result=branches.rewindHistorical(request.params.id,request.params.executionId,body.checkpointId,body.expectedHash,body.commandKey,undefined,graph);notify();return result;
     }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical rewind failed'});}
   });
   app.post<{ Params: { id: string }; Body: BranchGateResolution }>('/api/branch-gates/:id/resolve', async (request, reply) => {
