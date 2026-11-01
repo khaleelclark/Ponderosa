@@ -7,7 +7,7 @@ import {assertPortableSecretsAbsent} from './portable-secrets.js';
 
 export function portableWorkingPath(value:unknown):string {
   if(typeof value!=='string'||!value||value.includes('\\')||value.includes('\0')||value.includes(':')||value.startsWith('/')||value.split('/').some(p=>!p||p==='.'||p==='..'))throw new Error('Select relative regular-file paths inside the working folder');
-  if(value.split('/').some(p=>['.git','.ssh','.aws','.gnupg','.codex','.claude','browser-profiles'].includes(p)||/^\.env(?:\.|$)/i.test(p)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(p)))throw new Error(`Known credential/native ownership path cannot be exported: ${value}`);
+  if(value.split('/').some(p=>['.git','.ponderosa-import-backups','.ssh','.aws','.gnupg','.codex','.claude','browser-profiles'].includes(p)||/^\.env(?:\.|$)/i.test(p)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(p)))throw new Error(`Known credential/native ownership path cannot be exported: ${value}`);
   return value;
 }
 
@@ -54,16 +54,21 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
 }
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
-export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string}):Promise<void>{
+export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string}):Promise<void>{
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination)throw new Error('Choose an absolute new working-files destination');
   const parent=await fs.realpath(path.dirname(destination));
   if(parent!==path.dirname(destination))throw new Error('Working-files destination parent must be canonical');
-  await fs.mkdir(destination,{mode:0o700});
+  if(freshRoot){
+    if(await fs.realpath(destination)!==destination)throw new Error('Fresh working root must be canonical');
+    if(freshRoot.backupRoot!==path.join(destination,'.ponderosa-import-backups'))throw new Error('Invalid fresh-root recovery folder');
+    await fs.mkdir(freshRoot.backupRoot,{mode:0o700});
+    if(await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot)throw new Error('Recovery folder changed');
+  }else await fs.mkdir(destination,{mode:0o700});
   try{
     for(const folder of [...directories].sort((a,b)=>a.path.split('/').length-b.path.split('/').length)){
       const relative=portableWorkingPath(folder.path);
       const target=path.join(destination,relative);
-      await fs.mkdir(target,{mode:0o700});
+      try{await fs.mkdir(target,{mode:0o700});}catch(error){if(!freshRoot||(error as NodeJS.ErrnoException).code!=='EEXIST'||!(await fs.lstat(target)).isDirectory())throw error;}
       if(await fs.realpath(target)!==target)throw new Error('Destination directory changed');
     }
     for(const file of files){
@@ -74,6 +79,17 @@ export async function importWorkingFiles(destination:string,files:readonly {path
         const stat=await fs.lstat(dir);if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(dir)!==dir)throw new Error('Working-files destination changed');
       }
       if(createHash('sha256').update(file.data).digest('hex')!==file.sha256)throw new Error('Staged working-file identity changed');
+      if(freshRoot){
+        const target=path.join(destination,relative);
+        let stat;try{stat=await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+        if(stat){
+          if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Fresh baseline path is not a regular original');
+          // Preserve even racing local bytes; never unlink a displaced baseline.
+          const backup=path.join(freshRoot.backupRoot,randomUUID());
+          await fs.writeFile(backup+'.path.json',JSON.stringify({path:relative}),{flag:'wx',mode:0o600});
+          await fs.rename(target,backup);
+        }
+      }
       const handle=await fs.open(path.join(destination,relative),'wx',0o600);
       try{await handle.writeFile(file.data);if(file.mode!==undefined)await handle.chmod(file.mode&0o777);if(file.mtime)await handle.utimes(new Date(file.mtime),new Date(file.mtime));await handle.sync();}finally{await handle.close();}
     }

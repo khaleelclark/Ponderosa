@@ -210,6 +210,8 @@ export interface ImportAgentPackageRequest {
   outputRoleReviewId?: string;
   workingFilesDestination?: string;
   workingRootDestinations?: Record<string,string>;
+  /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
+  workingFilesActivation?: {sharedRoot?:string};
   accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string};
   /** Human-selected destination folder mode; omitted retains source mode. */
   workingCopyMode?: AgentWorkingCopyMode;
@@ -227,6 +229,8 @@ export interface CopyAgentPackageRequest {
   workingCopyMode?: AgentWorkingCopyMode;
   workingFilesDestination?: string;
   workingRootDestinations?: Record<string,string>;
+  /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
+  workingFilesActivation?: {sharedRoot?:string};
   /** Optional new name for the copied organization root; descendants retain their names. */
   rootTitle?: string;
   /** Template copies omit history and files. Defaults to full. */
@@ -237,6 +241,7 @@ export interface CopyAgentPackageRequest {
   acknowledgeElevatedManagementPermissions?: boolean;
 }
 export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; workingFilesDestination?:string;
+  liveWorkingRoots?:Array<{ref:string;path:string;agentIds:string[]}>;
   workingRoots?:Array<{ref:string;destination:string;agentIds:string[]}>;
   accessSettingsToReview?:Array<{agentId:string;source:NonNullable<PortableAgentNodeDto["accessSettings"]>;conversationId:string}>;
 }

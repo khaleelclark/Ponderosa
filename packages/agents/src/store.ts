@@ -1198,6 +1198,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.getProjectCreation(identity);
   }
 
+  isManagedProjectImportDestination(id:string):boolean {
+    return this.workspaceCatalog.isManagedProjectImportDestination(id);
+  }
+
   getManagedCreationHostPath(key: string, name: string): string | undefined {
     return this.workspaceCatalog.getManagedCreationHostPath(key, name);
   }

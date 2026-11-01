@@ -211,3 +211,40 @@ and `accessSettingsToReview`; the wrapper does not project those mappings away.
 Folder-retention errors retain their importer error text with destination locations.
 Callers must persist explicit human destinations/review and disclose that these are
 retained-content locations, not automatic live working-root assignments.
+
+### Explicit live working-root activation (supersedes the content-only limit above)
+
+Import and `BranchPackageImportOptions` accept optional
+`workingFilesActivation: {sharedRoot?:string}`. Omission retains content-only
+behavior. Recovery destinations (`workingFilesDestination` or the complete
+`workingRootDestinations`) are still required, and must be NEW folders separate
+from the actual live Shared folder. Source originals are restored there first.
+
+For Shared Agents, the operator first creates a NEW managed Chat using existing
+`POST /api/chats` / `createChat` with `createFolderName`, then explicitly confirms
+that Chat Project's exact `hostPath` in `sharedRoot`. Import requires its canonical
+managed creation identity, no existing Agents and an empty canonical directory.
+It initializes a local empty Git baseline with hooks/signing disabled; existing
+repositories or user roots cannot pass this admission. This permits mixed Shared
+and Separate Git imports into a fresh Chat without adopting source Git history.
+Separate-only activation can use an existing destination Git Project: the service
+creates fresh managed worktrees using its normal locally minted receipts first.
+
+Only after canonical Agent/worktree creation does the existing mode-change fence
+populate each live root. `liveWorkingRoots: [{ref,path,agentIds}]` in the response
+and durable operation identifies actual ordinary Agent working directories. Shared
+members see the same populated Project root; Separate Git identities remain distinct.
+Mode choices that split a shared bundle or merge distinct populated roots refuse.
+The importer preserves any displaced destination-baseline regular file in that live
+root's exclusively created `.ponderosa-import-backups`, with a `.path.json` sidecar
+mapping its random recovery filename to the original relative path. This native
+recovery folder is excluded from future package export. Files are installed with
+exclusive creation after displacement; a racing writer cannot be overwritten by
+that installation. Failure retains recovery copies, displaced bytes and live roots,
+with locations in the durable receipt/error; no recursive user-file cleanup is added.
+Git history, symlink topology, credentials and source native receipts remain excluded.
+UI/Branches callers must explicitly select activation and fresh Shared Chat creation;
+there is no silent activation or modification of an existing Shared root.
+An all-Separate-Git import into a NEW empty managed Chat may likewise confirm
+`sharedRoot` to initialize its fresh repository; omitting that confirmation for
+Separate-only activation expects an already initialized destination Git Project.

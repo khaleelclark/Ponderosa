@@ -724,6 +724,13 @@ export class AgentWorkspaceCatalogAuthority {
 
   /** Retain the original input hash even when a managed folder is rebound after
    * restart/relocation. Different requested folder names must still conflict. */
+  isManagedProjectImportDestination(id:string):boolean {
+    const file=projectJsonPath(this.dataDir,id);
+    if(!existsSync(file))return false;
+    const record=readJson<ProjectJson>(file);
+    return record.id===id&&Boolean(record.managedWorkspaceName&&record.creationIdempotencyKey)&&record.hostPath===record.creationHostPath;
+  }
+
   getManagedCreationHostPath(key: string, name: string): string | undefined {
     const id = creationId("project", "workspace", key);
     const file = projectJsonPath(this.dataDir, id);

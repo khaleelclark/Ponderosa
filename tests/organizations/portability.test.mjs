@@ -9,6 +9,7 @@ import Fastify from 'fastify';
 import { CapabilityPolicyStore, AgentStore, publishManagedArtifactContentAsync, readManagedArtifactContent, importedAgentHistoryPath } from '@ponderosa/agents';
 import { CAPABILITY_IDS, deriveCommunicationBehavior } from '@ponderosa/core';
 import { AssetStore } from '../../apps/server/dist/assets.js';
+import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 import { registerAgentPackageRoutes } from '../../apps/server/dist/routes/agent-packages.js';
 
 // Reconciled from the October 16 17-assertion review. Actual routes/SQLite and
@@ -19,7 +20,7 @@ async function withPortability(t, run) {
   const open = () => {
     store = new AgentStore(dataDir); assets = new AssetStore(dataDir); app = Fastify();
     ({packageEngine}=registerAgentPackageRoutes(app, {
-      dataDir, store, assets,
+      dataDir, store, assets, workingCopies:new AgentWorkingCopyService(dataDir,store),
       coordination: { runtimeArtifact: () => undefined, handleAgentDeletion() {} },
       engines: new Map([['codex', { adapter: { id: 'codex', listModels: () => [], listEfforts: () => [] } }]]),
       deletingProjectIds: new Set(), deletingConversationIds: new Set(), deletingAgentIds: new Set(),
@@ -512,4 +513,27 @@ test('shared engine forwards selected folder intent, result mappings and retaine
   const roots=Object.fromEntries(refs.map((ref,index)=>[ref,path.join(f.dataDir,`branch-root-${index}`)]));
   const imported=await f.packageEngine.importAgent(f.project.id,f.destination.id,bundle,{codex:'codex'},randomUUID(),{workingRootDestinations:roots});
   assert.deepEqual(imported.workingRoots,[{ref:refs[0],destination:roots[refs[0]],agentIds:imported.agentIds}]);
+}));
+
+test('explicit live Shared activation uses a NEW managed Chat root and refuses existing Shared roots',options,t=>withPortability(t,async f=>{
+  const {mkdir}=await import('node:fs/promises');
+  const pkg=await f.packageEngine.exportAgent(f.a.id,'full',{selectedWorkingFiles:['unmanaged-working-file.txt']});
+  const root=path.join(f.dataDir,'fresh-live-chat');await mkdir(root);
+  const project=f.store.createProject({label:'Fresh live destination',hostPath:root,creationHostPath:root,managedWorkspaceName:'fresh-live-chat',chatOwned:true,defaultEngine:'codex'},{idempotencyKey:randomUUID(),payloadHash:'a'.repeat(64)});
+  const result=await f.packageEngine.importAgent(project.id,project.lastConversationId,pkg,{codex:'codex'},randomUUID(),{
+    workingFilesDestination:path.join(f.dataDir,'fresh-live-recovery'),workingFilesActivation:{sharedRoot:root},
+  });
+  const agent=f.store.getAgent(result.rootAgentId);
+  assert.equal(agent.workingCopy.rootPath,root);
+  assert.equal(await readFile(path.join(agent.workingCopy.rootPath,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
+  assert.equal(result.liveWorkingRoots[0].path,root);
+  const separate=await f.packageEngine.importAgent(project.id,project.lastConversationId,pkg,{codex:'codex'},randomUUID(),{workingCopyMode:'separate_git',workingFilesDestination:path.join(f.dataDir,'separate-live-recovery'),workingFilesActivation:{}});
+  const separateAgent=f.store.getAgent(separate.rootAgentId);
+  assert.notEqual(separateAgent.workingCopy.rootPath,root);
+  assert.equal(separateAgent.workingCopy.branchOwned,true);
+  assert.equal(await readFile(path.join(separateAgent.workingCopy.rootPath,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
+  assert.equal(separate.liveWorkingRoots[0].path,separateAgent.workingCopy.rootPath);
+  await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{
+    workingFilesDestination:path.join(f.dataDir,'must-not-create'),workingFilesActivation:{sharedRoot:f.project.hostPath},
+  }),/unused NEW managed Chat/);
 }));

@@ -78,3 +78,35 @@ choices and returns the full existing retained-root/access-review result DTO.
 Retained-location error text is preserved. No Branch installation/routes or core
 Branches files were changed. Regression source extends organizations/portability;
 no execution. Live destination-root assignment remains unimplemented as above.
+
+### Live working-root continuation (source only)
+
+The former content-only backend gap now has an opt-in implementation:
+`workingFilesActivation` forwards through JSON/staged/copy/Branch wrappers and
+canonical hashing. Shared activation requires explicit exact `sharedRoot` for an
+unused managed NEW Chat created through existing Chat creation. New store catalog
+admission checks managed creation identity; service checks canonical empty folder,
+then initializes local empty Git. Separate Git imports create their normal fresh
+owned worktrees. The importer populates actual resolved roots only after creation,
+under the existing mode-change fence, preserving shared membership and refusing
+incompatible root-mode collapse/split. Durable `liveWorkingRoots` records actual
+Agent paths before writes. Baseline displacement retains bytes plus original-path
+sidecars in excluded native recovery folders; existing Shared roots never qualify.
+Original recovery destinations continue to retain all package bytes on failures.
+
+Files: core dto/agents.ts; agents store-workspace-catalog-authority.ts and store.ts;
+server agent-working-copy-service.ts, portable-working-files.ts, package route and
+codec worker. Contract above supersedes earlier content-only backend limitation.
+Regression source portable-working-files.test.mjs covers preserved displaced bytes,
+path sidecars, restored ordinary paths and native recovery exclusion. Caller UI and
+Branches explicit activation/new-Chat selection remain owner work. No tests/checks,
+Node/build/types/browser/runner preparation or execution; no passing or full #8 claim.
+
+Additional deferred regression in organizations/portability.test.mjs constructs a
+managed new Chat destination through the store creation contract and asserts that
+normal Agent workingCopy.rootPath reads restored bytes, reports liveWorkingRoots,
+and refuses activation on existing Shared roots. The fixture now supplies the real
+working-copy service. Still no execution or passing claim.
+The deferred live regression also imports a Separate Git Agent into that fresh
+repository and asserts locally owned branch receipt, distinct normal working path
+and restored bytes there. No source runtime was invoked.

@@ -1,6 +1,7 @@
+import {importWorkingFiles} from './portable-working-files.js';
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath, rmdir } from "@ponderosa/native-host/fs/promises";
+import { lstat, mkdir, realpath, rmdir, readdir } from "@ponderosa/native-host/fs/promises";
 import { realpathSync } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -275,6 +276,20 @@ export class AgentWorkingCopyService {
         safeFailure(error),
       );
     }
+  }
+
+  /** Only called after the importer validates a freshly created, unused managed Project. */
+  async initializeImportProject(project:ProjectDto):Promise<void> {
+    if(await realpath(project.hostPath)!==project.hostPath||(await readdir(project.hostPath)).length)throw new Error('Live Shared import requires the empty NEW managed Chat folder');
+    await runGit(project.hostPath,['init','--template=','--initial-branch=main']);
+    await runGit(project.hostPath,['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit','--allow-empty','--no-gpg-sign','-m','Initialize imported working roots']);
+  }
+
+  /** Fresh local ownership is checked before any imported file enters a live root. */
+  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string):Promise<void> {
+    if(!this.modeChanges.has(agent.id))throw new Error('Live import was not fenced');
+    const resolved=await this.resolve(agent,project);
+    await importWorkingFiles(resolved.rootPath,files,directories,metadata,{backupRoot});
   }
 
   async setMode(

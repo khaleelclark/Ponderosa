@@ -41,3 +41,20 @@ test('whole-folder selection retains empty directories, regular-file modes and s
     assert.equal(await readFile(path.join(root,'run.sh'),'utf8'),'echo safe');
   }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('fresh locally owned population preserves displaced baseline bytes with recovery paths',async()=>{
+  const {readdir,mkdir}=await import('node:fs/promises');
+  const root=await mkdtemp(path.join(tmpdir(),'portable-fresh-owned-'));
+  try{
+    await mkdir(path.join(root,'dir'));
+    await writeFile(path.join(root,'dir','same.txt'),'destination baseline');
+    const data=Buffer.from('source original');
+    const backupRoot=path.join(root,'.ponderosa-import-backups');
+    await importWorkingFiles(root,[{path:'dir/same.txt',data,sha256:createHash('sha256').update(data).digest('hex')}],[{path:'dir',mode:0o700,mtime:new Date().toISOString()}],undefined,{backupRoot});
+    assert.equal(await readFile(path.join(root,'dir','same.txt'),'utf8'),'source original');
+    const names=await readdir(backupRoot),mapping=names.find(name=>name.endsWith('.path.json'));
+    assert.deepEqual(JSON.parse(await readFile(path.join(backupRoot,mapping),'utf8')),{path:'dir/same.txt'});
+    assert.equal(await readFile(path.join(backupRoot,mapping.replace('.path.json','')),'utf8'),'destination baseline');
+    assert.throws(()=>portableWorkingPath('.ponderosa-import-backups/original'));
+  }finally{await rm(root,{recursive:true,force:true});}
+});

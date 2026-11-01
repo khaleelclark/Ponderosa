@@ -80,6 +80,7 @@ export interface BranchPackageImportOptions {
   accessSettingsResolution?:ImportAgentPackageRequest['accessSettingsResolution'];
   workingFilesDestination?:ImportAgentPackageRequest['workingFilesDestination'];
   workingRootDestinations?:ImportAgentPackageRequest['workingRootDestinations'];
+  workingFilesActivation?:ImportAgentPackageRequest['workingFilesActivation'];
 }
 /** Shared packaging boundary; callers own durable human review and destination selection. */
 export interface BranchPackageEngine {
@@ -499,7 +500,7 @@ export function registerAgentPackageRoutes(
               headerParts.push(Buffer.from(bytes.subarray(0,separator<0?bytes.length:separator)));
               if(separator>=0){
                 const value=validatedObject(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(headerParts))),'Agent upload metadata');
-                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId','accessSettingsResolution','workingCopyMode','workingFilesDestination','workingRootDestinations'],'Agent upload metadata');
+                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId','accessSettingsResolution','workingCopyMode','workingFilesDestination','workingRootDestinations','workingFilesActivation'],'Agent upload metadata');
                 const projectId=(request.params as {id:string}).id,destination=typeof value.conversationId==='string'?store.getConversation(value.conversationId):undefined;
                 if(!destination||destination.projectId!==projectId||!resourceInProduct(store,'conversation',destination.id,requestProduct(request)))throw Object.assign(new Error('The destination Chat is unavailable in this product'),{statusCode:404});
                 metadata=value as unknown as StagedImportUpload['metadata'];
@@ -1028,11 +1029,12 @@ export function registerAgentPackageRoutes(
         importBody = validatedObject(body, "Agent import request");
         exactObjectFields(
           importBody,
-          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations"],
+          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation"],
           "Agent import request",
         );
         if(importBody.workingFilesDestination!==undefined&&(typeof importBody.workingFilesDestination!=='string'||!path.isAbsolute(importBody.workingFilesDestination)))throw new Error('Choose an absolute new working-files destination');
         if (importBody.workingCopyMode!==undefined&&!['shared','separate_git'].includes(String(importBody.workingCopyMode)))throw new Error('Invalid destination working-copy mode');
+        if(importBody.workingFilesActivation!==undefined){const activation=validatedObject(importBody.workingFilesActivation,'Live working-root activation');exactObjectFields(activation,['sharedRoot'],'Live working-root activation');if(activation.sharedRoot!==undefined&&typeof activation.sharedRoot!=='string')throw new Error('Invalid new Shared root confirmation');}
         if(importBody.accessSettingsResolution!==undefined){const resolution=validatedObject(importBody.accessSettingsResolution,'Access review');exactObjectFields(resolution,['action','reviewSha256'],'Access review');if(!['keep_destination','use_source'].includes(String(resolution.action))||typeof resolution.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(resolution.reviewSha256))throw new Error('Invalid access review');}
         if (!validChatInstructionsResolution(importBody.chatInstructionsResolution) ||
             typeof importBody.conversationId !== "string" ||
@@ -1067,7 +1069,8 @@ export function registerAgentPackageRoutes(
             conversationId: importBody.conversationId,
             engineMapping: normalizedEngineMapping,
             ...(importBody.accessSettingsResolution?{accessSettingsResolution:importBody.accessSettingsResolution}:{}),
-            ...(importBody.workingRootDestinations?{workingRootDestinations:importBody.workingRootDestinations}:{}),
+            ...(importBody.workingFilesActivation?{workingFilesActivation:importBody.workingFilesActivation}:{}),
+        ...(importBody.workingRootDestinations?{workingRootDestinations:importBody.workingRootDestinations}:{}),
             ...(importBody.workingFilesDestination?{workingFilesDestination:importBody.workingFilesDestination}:{}),
             ...(importBody.workingCopyMode?{workingCopyMode:importBody.workingCopyMode}:{}),
             ...(importBody.outputRoleReviewId ? {outputRoleReviewId:importBody.outputRoleReviewId} : {}),
@@ -1186,6 +1189,7 @@ export function registerAgentPackageRoutes(
       let roleIntent:RoleResult["outputRoleFinalization"];
       let reviewedDestinationPolicy:string|undefined;
       let retainedWorkingFiles=false;
+      const liveWorkingRoots:NonNullable<ImportAgentPackageResponse['liveWorkingRoots']>=[];
       try {
       await onPhase?.("creating_records");
       signal?.throwIfAborted();
@@ -1220,6 +1224,16 @@ export function registerAgentPackageRoutes(
           if(body.workingRootDestinations)throw new Error('Package has no organization working roots');
           if(portablePackage.agents.some(node=>node.workingFiles?.length||node.workingFolder)&&!body.workingFilesDestination)throw new Error('Choose a new destination folder for selected working files');
           if(body.workingFilesDestination&&portablePackage.agents.filter(node=>node.workingFiles?.length||node.workingFolder).length!==1)throw new Error('One selected working folder is required for this destination');
+        }
+        if(body.workingFilesActivation){
+          if(portablePackage.mode!=='full'||!portablePackage.agents.some(node=>node.workingFolder||node.workingFiles?.length))throw new Error('Live activation requires a full package with selected folder originals');
+          if(!context.workingCopies)throw new Error('Live working-copy import service is unavailable');
+          const shared=portablePackage.agents.filter(node=>(body.workingCopyMode??node.workingCopyMode??'shared')==='shared');
+          if(shared.length||body.workingFilesActivation.sharedRoot!==undefined){
+            if(body.workingFilesActivation.sharedRoot!==project.hostPath||!store.isManagedProjectImportDestination(project.id)||store.listAgents(project.id).length)throw new Error('Choose an unused NEW managed Chat and explicitly confirm its Shared root');
+            if(new Set(shared.map(node=>node.workingRootRef??node.ref)).size>1&&shared.filter(node=>node.workingFolder||node.workingFiles?.length).length>1)throw new Error('Distinct source roots cannot be collapsed into one Shared folder');
+          }
+          for(const ref of rootRefs){const members=portablePackage.agents.filter(node=>node.workingRootRef===ref);const modes=new Set(members.map(node=>body.workingCopyMode??node.workingCopyMode??'shared'));if(modes.size!==1||modes.has('separate_git')&&members.length!==1)throw new Error('Live import must preserve source root membership');}
         }
         if(portablePackage.agents.some(node=>(body.workingCopyMode??node.workingCopyMode)==='separate_git')&&!context.workingCopies)throw new Error('Separate Git copy import service is unavailable');
         if(portablePackage.outputRoles?.length&&!branchHooks){
@@ -1609,6 +1623,10 @@ export function registerAgentPackageRoutes(
         await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined);
       }
       signal?.throwIfAborted();
+      if(body.workingFilesActivation?.sharedRoot!==undefined){
+        store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingProjectRoot:project.hostPath}});
+        await context.workingCopies!.initializeImportProject(project);
+      }
       const created = new Map<string, AgentDto>();
       await onPhase?.("importing_agents");
       signal?.throwIfAborted();
@@ -1633,6 +1651,22 @@ export function registerAgentPackageRoutes(
         }
         deletingAgentIds.add(agent.id);
         await yieldToLoop();
+      }
+
+      if(body.workingFilesActivation){
+        const owners=importNodes.filter(node=>node.workingFolder||node.workingFiles?.length);
+        for(const node of owners){
+          const agent=created.get(node.ref)!;
+          const members=importNodes.filter(member=>created.get(member.ref)!.workingCopy.rootPath===agent.workingCopy.rootPath);
+          const ref=node.workingRootRef??node.ref;
+          const root={ref,path:agent.workingCopy.rootPath,agentIds:members.map(member=>created.get(member.ref)!.id)};
+          liveWorkingRoots.push(root);
+          const backupRoot=path.join(root.path,'.ponderosa-import-backups');
+          store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingRoots}});
+          const files=(node.workingFiles??[]).map(file=>{const artifact=node.artifacts.find(a=>a.destinationId===file.artifactRef)!;return {path:file.path,data:artifact.data,sha256:artifact.sha256,mode:file.mode,mtime:file.mtime};});
+          const release=context.workingCopies!.beginModeChange(agent.id);
+          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot);}finally{release();}
+        }
       }
 
       const catalogArtifacts: Array<{
@@ -1716,6 +1750,7 @@ export function registerAgentPackageRoutes(
         );
       }
       const response: RoleResult = {
+        ...(body.workingFilesActivation?{liveWorkingRoots}:{}),
         ...(body.workingFilesDestination?{workingFilesDestination:body.workingFilesDestination}:{}),
         ...(roleIntent?{outputRoleFinalization:{...roleIntent,mapping:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id]))}}:{}),
         accessSettingsToReview:importNodes.filter(node=>node.accessSettings&&(node.accessSettings.readGlobalMemory!==undefined||node.accessSettings.savedBrowserAllowed!==undefined||node.accessSettings.browserMode!==undefined)).map(node=>({agentId:created.get(node.ref)!.id,source:node.accessSettings!,conversationId:conversation.id})),
@@ -1772,6 +1807,7 @@ export function registerAgentPackageRoutes(
       }
       return reply.code(201).send(response);
       } catch (error) {
+        if(liveWorkingRoots.length)error=new Error(`${error instanceof Error?error.message:String(error)}; live working roots and displaced baselines retained at ${JSON.stringify(liveWorkingRoots)}`,{cause:error});
         if(retainedWorkingFiles)error=new Error(`${error instanceof Error?error.message:String(error)}; user working files retained at ${JSON.stringify(body.workingRootDestinations??body.workingFilesDestination)}`,{cause:error});
         if(creationOperationId&&store.getAgentCreationOperation(creationOperationId)?.status==='completed'){
           return reply.code(409).send({error:'Imported resources committed; output role finalization needs recovery/review: '+(error as Error).message,operationId:creationOperationId});
@@ -2250,7 +2286,7 @@ export function registerAgentPackageRoutes(
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
           Object.keys(request.body).some((key) => ![
             "sourceAgentId", "conversationId", "rootTitle", "mode", "organization",
-            "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations",
+            "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation",
           ].includes(key)) ||
           !validChatInstructionsResolution(request.body.chatInstructionsResolution) ||
           typeof request.body.sourceAgentId !== "string" ||
@@ -2297,6 +2333,7 @@ export function registerAgentPackageRoutes(
         conversationId,
         ...(request.body.accessSettingsResolution?{accessSettingsResolution:request.body.accessSettingsResolution}:{}),
         ...(request.body.workingCopyMode?{workingCopyMode:request.body.workingCopyMode}:{}),
+        ...(request.body.workingFilesActivation?{workingFilesActivation:request.body.workingFilesActivation}:{}),
         ...(request.body.workingRootDestinations?{workingRootDestinations:request.body.workingRootDestinations}:{}),
         ...(request.body.workingFilesDestination?{workingFilesDestination:request.body.workingFilesDestination}:{}),
         ...(request.body.chatInstructionsResolution ? { chatInstructionsResolution: request.body.chatInstructionsResolution } : {}),
@@ -2421,7 +2458,8 @@ export function registerAgentPackageRoutes(
           engineMapping,
           ...(request.body.accessSettingsResolution?{accessSettingsResolution:request.body.accessSettingsResolution}:{}),
           ...(request.body.workingCopyMode?{workingCopyMode:request.body.workingCopyMode}:{}),
-          ...(request.body.workingRootDestinations?{workingRootDestinations:request.body.workingRootDestinations}:{}),
+          ...(request.body.workingFilesActivation?{workingFilesActivation:request.body.workingFilesActivation}:{}),
+        ...(request.body.workingRootDestinations?{workingRootDestinations:request.body.workingRootDestinations}:{}),
         ...(request.body.workingFilesDestination?{workingFilesDestination:request.body.workingFilesDestination}:{}),
           ...(request.body.chatInstructionsResolution ? { chatInstructionsResolution: request.body.chatInstructionsResolution } : {}),
           ...(request.body.acknowledgeElevatedManagementPermissions === true
@@ -2463,7 +2501,7 @@ export function registerAgentPackageRoutes(
     importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
       let status=200,body:unknown;
       const response={code(value:number){status=value;return this;},send(value:unknown){body=value;return value;}} as unknown as FastifyReply;
-      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.workingFilesDestination?{workingFilesDestination:options.workingFilesDestination}:{}),...(options?.workingRootDestinations?{workingRootDestinations:options.workingRootDestinations}:{}),...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
+      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.workingFilesDestination?{workingFilesDestination:options.workingFilesDestination}:{}),...(options?.workingFilesActivation?{workingFilesActivation:options.workingFilesActivation}:{}),...(options?.workingRootDestinations?{workingRootDestinations:options.workingRootDestinations}:{}),...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
       if(status>=400){
         const accessSettingsReview=status===409&&typeof body==='object'&&body&&'reviewSha256' in body
           ? {reviewSha256:(body as AgentAccessImportReviewDto).reviewSha256,source:(body as AgentAccessImportReviewDto).source,destination:(body as AgentAccessImportReviewDto).destination}:undefined;
