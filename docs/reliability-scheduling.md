@@ -56,8 +56,9 @@ nested path owners, for their existing settlement or cleanup. Ordinary failures,
 successful/partial joins and all existing `cancel` behavior keep their policy.
 No traversal count is raised and no completed result is reclassified.
 
-Resource work is awaited before Script or notification admission in a workflow
-pass; stop is checked again at that await boundary. The outer scheduler tracks
-the pass separately so unrelated Run admission and exact cancellation can still
-proceed while resource provisioning waits. Cleanup-only passes also await their
-resource maintenance before returning or reporting errors.
+Resource and cleanup-only passes start tracked nonblocking work, so provisioning
+and maintenance do not hold unrelated dispatch or tick completion. A microtask
+yield at resource start lets stop fence fresh Script and notification claims;
+claim and dispatch boundaries also check stop. Outstanding resource jobs drain
+at stop alongside installation/resource shutdown and active process cleanup.
+Resource failures remain retained and surface through later ticks and stop.
