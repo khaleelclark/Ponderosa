@@ -44,6 +44,7 @@ export class BranchIssuedDestinationService {
  inspect(branchId:string,executionId:string,commandKey:string,includeReceipt=true):BranchIssuedDestinationDto {
   const plan=this.branches.issuedDestinationPlan(branchId,executionId,commandKey),r=plan.reservation;
   const row=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(plan.admissionId) as Row;
+  const disclosure=row.stage_json?this.disclosures.readChoice(branchId,executionId,plan.admissionId):{revision:0,state:'unreviewed' as const};
   let state:BranchIssuedDestinationDto['state']='reserved';
   if(row.state==='admitted'&&includeReceipt){
    const receipt=this.coordination.readCoordinationDestination(plan.admissionId,hash(r),this.authority());
@@ -63,14 +64,14 @@ export class BranchIssuedDestinationService {
    const readiness=ownerResult.readiness;
    const checkpoint=readiness&&this.db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(receipt.owner.executionId,readiness.checkpointId) as Row|undefined;
    if(!checkpoint||checkpoint.content_hash!==readiness.checkpointHash||hash(JSON.parse(checkpoint.snapshot_json))!==checkpoint.content_hash)throw Error('Destination final checkpoint receipt unavailable');
-   return {commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,state:'admitted',restoreSupported:true,receipt};
+   return {commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,disclosure,state:'admitted',restoreSupported:true,receipt};
   }
   if(row.state==='admitted')state='admitted';
   else if(row.stage_json){
    const stage=JSON.parse(row.stage_json),op=this.store.getAgentCreationOperation(stage.importPlan.creationOperationId);
    state=op?.status==='canonical_committed'&&(op.result as Row)?.branchDestinationPrepared===true?'awaiting_disclosure':'import_unknown';
   }
-  return {commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,state,restoreSupported:state==='admitted'};
+  return {commandKey,admissionId:plan.admissionId,checkpointId:r.checkpointId,checkpointHash:r.checkpointHash,destination:r.destination,disclosure,state,restoreSupported:state==='admitted'};
  }
  list(branchId:string,executionId:string):BranchIssuedDestinationDto[] {
   if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Branch execution unavailable');

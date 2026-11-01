@@ -1551,10 +1551,16 @@ test('issued composer final policy drift and explicit revocation hold all owner 
  const x=await issuedDestinationFixture(t),{composer,disclosure}=x.services(),f=x.f,p=await composer.prepare(f.branch.id,f.source.id,x.input);
  const review=await disclosure.prepare(f.branch.id,f.source.id,p.admissionId),choice={commandKey:'human-approve',action:'approve',reviewHash:review.reviewHash,expectedRevision:0};
  await disclosure.choose(f.branch.id,f.source.id,p.admissionId,choice);
+ x.setBytes(false);
+ assert.deepEqual(composer.list(f.branch.id,f.source.id)[0].disclosure,{revision:1,state:'approved',reviewHash:review.reviewHash});
+ x.setBytes(true);
  const policies=new CapabilityPolicyStore(f.store.sqlite);policies.put({scopeKind:'chat',scopeId:p.destination.conversationId,expectedRevision:0,restrictedCapabilityIds:[]});
  await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash),/approval/);
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(p.destination.executionId).n,0);
+ x.setBytes(false);
  await disclosure.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'human-revoke',action:'revoke',reviewHash:review.reviewHash,expectedRevision:1});
+ assert.deepEqual(composer.list(f.branch.id,f.source.id)[0].disclosure,{revision:2,state:'revoked',reviewHash:review.reviewHash});
+ x.setBytes(true);
  await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash),/approval/);
  assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'awaiting_disclosure');
 });

@@ -69,6 +69,10 @@ export class BranchDisclosureReviewService {
   if(stableJson(value)!==current.result_json||hash(value)!==current.input_hash||value.admissionId!==row.id||!Number.isSafeInteger(value.revision)||value.revision<1||!['approved','revoked'].includes(value.state))throw Error('Disclosure choice integrity failure');
   return value;
  }
+ readChoice(branchId:string,executionId:string,id:string):{revision:number;state:'unreviewed'|'approved'|'revoked';reviewHash?:string} {
+  const current=this.state(this.admission(branchId,executionId,id));
+  return {revision:current.revision,state:current.state,reviewHash:current.reviewHash};
+ }
  private candidate(row:Row):BranchDisclosureReviewDto {
   const {review,policy}=this.coordination.inspectCoordinationDestinationDisclosure(row.id,r=>this.requireCurrentOwner(r));
   const host=JSON.parse(row.snapshot_json).hostDependencies,policyRevision=hash(policy),hostCutSha256=hash(host);

@@ -63,6 +63,7 @@ export interface BranchIssuedDestinationInput {
 export interface BranchIssuedDestinationDto {
  commandKey:string; admissionId:string; checkpointId:number; checkpointHash:string;
  destination:CoordinationDestinationReservation['destination'];
+ disclosure:{revision:number;state:'unreviewed'|'approved'|'revoked';reviewHash?:string};
  state:'reserved'|'import_unknown'|'awaiting_disclosure'|'admitted';
  restoreSupported:boolean; receipt?:CoordinationDestinationReceipt;
 }

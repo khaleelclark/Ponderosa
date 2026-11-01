@@ -1162,3 +1162,5 @@ and broader restoration families remain unsupported. The existing original
 Project audit-read requirement still applies. See
 `coordination-destination-admission.md` for the complete command and retention
 contract and deferred fixture scope.
+
+Destination discovery includes the durable `disclosure` choice (`state`, CAS `revision`, and chosen `reviewHash`) independently of package bytes or current policy preview availability. This is persisted human choice, not a claim of current admission eligibility. It supplies the exact revoke inputs after preview becomes unavailable. Deferred regression covers discovery before and after revocation with package bytes unavailable.
