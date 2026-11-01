@@ -1,0 +1,119 @@
+# Implementation inventory — implementation-first successor
+
+Baseline: `f64f631b490dbfc8125f0f7a2f8c649b6c54d19f`. Integration writer owns
+`phase2-implementation-integration` in its separate worktree. The baseline,
+other owners' worktrees, frozen execution roots and Bible are unchanged.
+Patrick's current direction defers all test execution, builds, type checks,
+benchmarks, browser checks and runner preparation until implementation is complete.
+This inventory is source navigation and an implementation backlog, not a True
+verdict, a claim that every path has been audited, or a passing-test report.
+
+Owners: **Runtime** = Phase 2 Runtime and access fixes; **Reliability** = Phase 2
+Reliability and portability fixes; **Features** = Phase 2 Branches and feature
+builds; **UI** = Phase 2 UI and accessibility fixes; **Integration** = Phase 2
+Integration and release verification. Cliff resolves scope and assigns omissions.
+Owner handoffs must distinguish an absent behavior from deferred qualification.
+
+## All 32 commandments
+
+| # | Source implementation anchors | Owner / remaining implementation decision |
+| --- | --- | --- |
+| 1 | `packages/agents/src/coordination-v3-context-recovery-authority.ts`, `packages/engines/src/seed-history.ts`, `docs/context-recovery.md` | Runtime: preserve persistent history across assignments; report any actual truncation path separately from unexecuted history trials. |
+| 2 | `AGENTS.md`, `docs/PERMISSION_HISTORY_AND_PROTOCOL.md`, `docs/CONTEXT_ROLLOVER_STEERING.md` | Runtime + Integration: document every changed authority/context mechanism; no second authority store. |
+| 3 | `apps/web/src/components`, shared chat and output shell | UI: complete usable desktop/mobile flows; comparative judging deferred, not missing backend code. |
+| 4 | `packages/core/src/adapter.ts`, `packages/engines/src`, server browser tools | Runtime: name any missing native-harness capability and replacement; parity cannot be inferred from an adapter interface. |
+| 5 | `apps/server/src/local-memory-config.ts`, `deploy/README.md`, configurable adapters | Runtime: classify required infrastructure versus optional integrations; no new outside dependency in this slice. |
+| 6 | `apps/server/src/runtime-authority.ts`, `local-memory-authority.ts`, capability-policy history | Runtime: human-origin access mutations and live rechecks; UI exposes human settings. |
+| 7 | `apps/server/src/operator-auth-proxy.ts`, server origin boundary | Runtime: finish removal of dedicated authentication while retaining browser-origin checks; file name alone does not establish a live token gate. |
+| 8 | `portable-agent-package-validation.ts`, `portable-execution-archive.ts`, `portable-memory-snapshot.ts`, `portable-output-roles.ts`, `docs/combined-migration-contract.md` | Reliability + Features: docs explicitly identify excluded machine/session/execution state. Decide which exclusions contradict full recreation and implement required state, rather than labeling all remaining portability work testing. Known secret fields stay excluded. |
+| 9 | Shared core DTOs, Adapter interface, shared composer/dialogs | All owners: remove abandoned paths and avoid duplicated authority; broad dead-code analysis deferred. |
+| 10 | `apps/server/src/routes/branches.ts`, **new `examples/branches-client/client.ts`** | Integration: standalone outside-app start/status/result client, public HTTP only; not executed. No private fixture dependencies. |
+| 11 | Communication catalogs/prompts and canonical tool routing; `docs/PERMISSION_HISTORY_AND_PROTOCOL.md` | Runtime: concise asks/results and artifact references; message-log judging deferred. |
+| 12 | SQLite coordination/outbox, event journal, `runtime-event-authority.ts`, imported history retrieval | Reliability: preserve recoverable writes and disclose truncation; crash evidence deferred. |
+| 13 | `coordination-v3-steering-authority.ts`, scheduler fences, pause/resume UI | Runtime + UI: retain unfinished work, human priority/newest-sender order, noninterrupting FYI handling; state-specific behavior requires owner handoff. |
+| 14 | `packages/engines/src/auth.ts`, provider diagnostics, operational notifications | Runtime + UI: exact failures visible, bounded backoff disclosed, no silent abandonment. |
+| 15 | `agent-deletion-authority.ts`, `conversation-deletion-authority.ts`, managed workspaces | Reliability: delete owned state only; user working folders preserved; destruction intent explicit. |
+| 16 | `branch-trigger-service.ts`, `packages/agents/src/branch-trigger-store.ts` | Reliability + Features: schedules/conditions/reasons, clock changes, occurrence identity; timing trials deferred. |
+| 17 | Scheduler/request recovery authorities, source regression tests | Reliability + Integration: integrate fixes without discarding accepted behavior; actual upgrade and 20-run evidence deferred, not implemented as a status flag. |
+| 18 | `notification-routing.ts`, notification journal, Inbox projection, `docs/notification-defaults.md` | UI + Features: quiet default unread state, human-selected mentions/alerts; Assistant uses same notification path. |
+| 19 | Activity/Run/Work log projections, provider diagnostics, `portable-secrets.ts` | Runtime + UI: trace real causes and redact known secrets without obscuring failures; no new competing log. |
+| 20 | Server origin boundary, operator-auth paths | Runtime: remove live operator/network token gates; preserve origin checks and human-owned grants. |
+| 21 | Virtualized chat/stream projections and UI layout | UI: identify actual rendering/retention problems; numerical INP/LCP qualification deferred. No invented performance figures. |
+| 22 | README, `docs/user-guide.md`, launcher/provider setup | Integration + Runtime/UI: correct stale setup guidance; install timing and platform trials deferred. |
+| 23 | User guide and behavior-specific docs beside owner changes | All owners + Integration: update source-facing docs while preserving public-beta/version distinctions. |
+| 24 | Exact token usage and `budgetPresentation.ts`, `BranchExecutionBudget.tsx` | UI + Features: exact source-backed counts, no subscription cost estimates or fabricated percent completion. |
+| 25 | `adapter.ts` billingMode, `packages/engines/src/auth.ts`, engines routes/settings | Features + Runtime/UI: source already has native-harness billing selection; finish real caller/settings gaps, not a direct HTTP provider client or credential store. Both-mode real usage evidence deferred. |
+| 26 | Shared composer, rename/settings dialogs, output shell | UI: common actions share behavior; comparative consistency judging deferred. |
+| 27 | Shared semantic controls, personalization settings, keyboard handlers | UI: complete keyboard/screen reader/font/theme behavior; automated scans deferred. |
+| 28 | All Branches rows and shared components/services above | All owners: whole-Bible requirement applies to Branches, not just its graph engine. No aggregate True verdict from partial features. |
+| 29 | Core, Branches, OutputAgentApp, AssistantEntry, folder navigation | UI: retain folders; remove explanatory UI blocks, overlaps/flicker causes. Blind panels/recordings deferred. |
+| 30 | `local-memory-catalog.ts`, `local-memory.ts`, dynamic-tool handler | Features + Runtime: combined chat/global search and global-write human settings; named external model/runtime prerequisites do not prove memory correctness. |
+| 31 | `routes/streams.ts`, Agent/Workspace hooks, `BranchLiveOutput.tsx`, `voice-reply-stream.ts` | UI + Runtime/Features: enumerate all output surfaces, use shared stream events and incremental call audio; inspect actual missing callers. Latency thresholds/recordings deferred. |
+| 32 | `packages/core/src/branches.ts`, `branch-store.ts`, routes/engine/checkpoint authorities | Features: named capability checklist below; framework examples and any incomplete restoration are implementation work where absent, not automatically a verification gap. |
+
+## Every Build-list subrequirement
+
+| Feature | Existing source anchor | Required coverage / owner |
+| --- | --- | --- |
+| Output designation, one or more Agents, stable independent URLs | `output-agent-apps.ts`, `OutputAgentDesignation.tsx`, `/apps/<agent-id>` | Features: persistent designation and URL lifecycle; UI: standalone navigation. |
+| Output direct user conversation with workflow behind it | `OutputAgentApp.tsx`, shared Agent chat/runtime | Features + UI: canonical direct routing, no duplicate history. |
+| Output attachments | Shared chat/working-file authority | UI + Runtime: same upload/read/result flows as core. |
+| Output voice messages | Shared voice input/reply components | UI + Runtime: recording/playback and readable failure/recovery. |
+| Output phone calls | Shared voice reply stream/call surfaces | UI + Runtime: real call flow, incremental speech; do not substitute a supported flag. |
+| Output iOS Messages/phone polish | Shared output shell | UI: finish layout/interaction code; blind panel deferred. |
+| Output simple automatic on/off and frequency | Output settings and real Branch trigger routes | Features + UI: settings update workflow, preserve event-trigger semantics and errors. |
+| Output model switch | Native Agent settings route and output settings | Features + UI: real bound Agent model change, identity/history unchanged. |
+| Output More options | Output app workflow link | UI: owning workflow destination, usable without technical setup. |
+| Output #29 and #31 | Shared stream/layout paths | UI + Runtime: same surface completeness as core, not independent acceptance waiver. |
+| Assistant auto-created workflow/default preferred model | `output-agent-apps.ts`, `AssistantEntry.tsx` | Features: idempotent fresh setup, saved provider/model defaults. |
+| Assistant create Chat/start cross-project work | Workspace tools and `docs/assistant-workspace.md` | Features + Runtime: destination/source human access, durable action receipts, real scheduler work. |
+| Assistant proactive default 10min/configurable interval | Assistant workflow trigger and digest cursor | Features: completion/issue sources, no successful-Run-as-task-completion inference. |
+| Assistant reports follow settings/no flood | Notification journal and assistant digest | Features + UI: quiet default, deduplication/cadence, canonical reports. |
+| Assistant same output UI attachments/voice/calls in app | `/assistant`, shared OutputAgentApp | UI + Runtime: all same capabilities, no special stripped shell. |
+| Exactly one app-wide Ponderosa speaker; move designation | Output-role preferences and dedicated role routes | Features: singleton across workflows, human-controlled relocation. |
+| Edit workflow/model/prompt without breaking role | Branch editor and Agent runtime settings | Features + UI: keep designation through ordinary edits. |
+| Delete/remove role disables; settings shows disabled | Role/deletion lifecycle and Assistant settings | Features + UI: disabled means no speaker, no silent recreation. |
+| Explicit re-enable fresh defaults only if absent | Resumable Assistant setup | Features: no duplicate creation if speaker exists; preserve old workflow/user data. |
+| Import speaker collision dialog disables imported speaker | `portable-output-roles.ts`, import UI | Features + Reliability/UI: collision warning/consent path and inactive imported role. |
+| Preferred model unavailable: ordinary settings switch | Output model controls | Features + UI: no special recovery-only replacement or identity reset. |
+| Inbox everywhere: UI/docs/code | Inbox component/routes/DTOs and shared composer | Integration: stale All Messages composer comment removed; historical stable storage IDs/`/messages` are intentional compatibility identities, not user-facing product labels. |
+
+## Concrete backlog and integration status
+
+1. Integration added the previously absent standalone public HTTP example and
+   corrected source billing/setup documentation plus remaining Inbox comment.
+2. Features, Reliability, Runtime and UI have tracked commit handoffs open. No
+   owner commit has been integrated yet; no conflict outcome is invented.
+3. Portability documentation names excluded provider sessions/exact provider
+   inputs/historical execution Chats and incomplete full-machine recreation.
+   Reliability/Features must report which required exported state still lacks
+   code. Pinned runtime/harness transfer secrets are a separate explicit exclusion.
+4. Historical Branches feature-map still describes an earlier implementation
+   plan; current owner source inventory supersedes it for backlog decisions.
+   Checkpoint/refused frontier restoration and all named framework capabilities
+   need concrete owner dispositions, not a broad parity label.
+5. Merge owner commits only into this integration worktree after their handoff;
+   retain their source trees and accepted fixes. Record conflict resolutions by
+   file and requirement. No production push, merge or deployment authorized.
+
+All test results are deferred. The final whole-implementation test phase starts
+only after implementation is complete under Patrick's current direction.
+
+## #32 named capability disposition
+
+| Named capability | Source anchor | Owner disposition still needed |
+| --- | --- | --- |
+| Graphs | BranchDefinition steps/controls/edges; WorkflowCanvas | Features: graph authoring and runtime routing share canonical definition. |
+| State | Branch parameters, execution input/results and configuration | Features: describe state semantics and missing general state operations explicitly. |
+| Checkpoints and rewind | Initial/historical checkpoint routes, branch-unit-saver, checkpoint invocations | Features + Reliability: identify unsupported resource-frontier restoration versus required capability. |
+| Human-in-the-loop | human_gate, BranchGateResolution, execution actions | Features + UI: interruption/edit/resume and exact Decision state. |
+| Streaming | BranchLiveOutput and shared Agent stream | UI + Features: every agent-output surface, reconnect without duplicate authored results. |
+| Tools | Agent native harness tools and Script/action steps | Runtime + Features: optional tool integrations and actual harness access parity. |
+| Memory | Unified local-memory catalog/search, Branch resource bindings | Runtime + Features: single chat/global search and human-only limits. |
+| Subgraphs | branch_call, bound Branch refs and child execution lineage | Features: nesting, cancellation and declared limit behavior. |
+| Multi-agent | persistent/ephemeral Agent and organization targets; fork/join/map | Features + Runtime: real managed identities, no shadow worker subsystem. |
+
+Pinned LangGraph/LangChain versions and runnable representative application
+coverage must remain explicit in the feature owner's handoff; this table does
+not invent external-framework parity. Capabilities outside these nine stay
+recorded gaps. Existing Python/native prerequisites are not new feature claims.

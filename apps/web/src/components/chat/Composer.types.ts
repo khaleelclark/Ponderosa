@@ -55,7 +55,7 @@ export interface ComposerProps extends ChatComposerContract {
   onCommandTargetHandleChange?(handle?: string): void;
   /** Reports the stable identity of a structurally selected Agent destination. */
   onCommandTargetAgentIdChange?(agentId?: string): void;
-  /** One shared visible destination used by Project, Agent, and All Messages composers. */
+  /** One shared visible destination used by Project, Agent, and Inbox composers. */
   defaultDestination?: {
     handle: string;
     /** Stable recipient identity; visible handle text is presentation only. */

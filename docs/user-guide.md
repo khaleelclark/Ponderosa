@@ -23,7 +23,10 @@ effort settings or tool behavior.
 You need your own computer or server, a modern web browser, and Codex CLI or Claude
 Code installed and signed in on your machine with your subscription under the same 
 account that runs Ponderosa Engine. If you access Ponderosa from another device, provider setup
-belongs on the Engine host. Ponderosa does not accept provider API keys at this time.
+belongs on the Engine host. The public beta guide below describes subscription setup. Current source also
+supports subscription or API-key mode through the same native harness; configure
+credentials with that harness on the Engine host, then select its billing mode
+in Provider Settings. Ponderosa does not store provider credentials.
 
 Ponderosa packages include Node. Node and pnpm are needed only to build or develop
 Ponderosa from source; a provider's installation method can have its own runtime
@@ -86,16 +89,18 @@ asks for a reboot, save your other work, restart Windows, then open Engine again
 Ponderosa preserves its data and uses the new kernel boot identity to verify that
 the old Job ended before allowing a replacement service.
 
-If a manually typed address has an authentication problem, open the app through
-Engine. Keep its bootstrap address private. Access from another device requires
+Open the app through Engine to use its current service address. Ponderosa has
+no separate login. Access from another device requires
 separate [host and network setup](../deploy/README.md).
 
 ## Provider setup
 
 Install and sign in to at least one provider on the Engine host, under the same
 OS account that runs Engine. This happens in the provider CLI, not an in-app
-Ponderosa sign-in form. Follow the subscription route; API keys and provider
-Console billing are not Ponderosa authentication methods.
+Ponderosa sign-in form. The subscription instructions below apply to the linked public beta. In current
+source, API-key billing uses the same native harness and preserves Agent identity,
+history and settings. Provider credentials belong in the harness configuration,
+not a Ponderosa login form.
 
 The commands below follow the official [Codex CLI guide](https://learn.chatgpt.com/docs/codex/cli),
 [Codex installer reference](https://learn.chatgpt.com/docs/config-file/environment-variables)
@@ -330,7 +335,7 @@ Deleting Chats or clearing data/browser storage is not a routine recovery step.
 | Problem | First action |
 | --- | --- |
 | Engine cannot start | Check **Server** and **Errors**, record the version/revision and data path. Do not delete locks or database files to force startup. |
-| Web app will not open or authenticate | Check Engine is running and choose **Open Ponderosa** again. Keep its bootstrap address private. |
+| Web app will not open | Check Engine is running and choose **Open Ponderosa** again. |
 | Provider not found or access rejected | Read **Provider Settings** and **AI provider status** in the web app. Use **Recheck sign-in** where offered. Confirm the chosen CLI is installed and signed in for the Engine account; read account/limit details. **Test Access** makes a live request. |
 | New Chat creation is unconfirmed | Use **Retry** on that attempt or **Recover earlier Chat** if offered. Keep browser storage available for recovery. |
 | Send unconfirmed or a draft reappears | Check Chat for the accepted message, then use that submission's recovery controls. Review **Restore**, **Discard** and attachment notices before resending. |
@@ -462,7 +467,7 @@ Its reporting route must be enabled and verified at launch; it does not claim
 reporting is already enabled or provide an approved fallback contact.
 
 Engine's **Live logs** offers **Server**, **Errors**, **Refresh** and **Copy**.
-Review copied text before sharing. Never post credentials, bootstrap addresses,
+Review copied text before sharing. Never post credentials,
 provider login directories, browser profiles, complete data folders or private
 task/file content publicly. Beta feedback and documentation corrections are
 welcome; external implementation/test-code contributions are not accepted.

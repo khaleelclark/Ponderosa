@@ -89,8 +89,7 @@ keys, source/reply helpers and projection methods. `/messages` remains the stabl
 browser entry point, and `messages:composer:*` saved-draft keys retain existing
 user selections. Persisted SQL `all_chat_feed_projection` and its index names
 remain intentionally stable storage identities, not product terminology. Reviewer-found banner, return-navigation, cursor-error and timeline accessibility
-labels now use Inbox. One historical All Messages comment in
-`Composer.types.ts` remains pending the composer owner; it is not rendered UI. Generic **All Chats** and
+labels now use Inbox. Generic **All Chats** and
 **All Agents** workspace nouns describe separate directory views and are unchanged.
 
 ## Output settings feedback
