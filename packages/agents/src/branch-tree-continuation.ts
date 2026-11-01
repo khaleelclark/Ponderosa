@@ -1,3 +1,4 @@
+import {branchContinuationIds} from './branch-continuation-remap.js';
 import type Database from 'better-sqlite3';
 import type {BranchDefinition} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
@@ -6,7 +7,7 @@ import {replayScriptCut,scriptDefinitionSupported,resourceReservationSupported,t
 type Row=Record<string,any>;
 export const TREE_SCHEMA='ponderosa.branch.script-tree-continuation.v1';
 export const TREE_COMPATIBILITY={format:'completed-child-script-tree.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
-export const treeIds=(owners:Row[])=>owners.flatMap(o=>[o.executionId,...['paths','steps','attempts','sealedResults'].flatMap(key=>o.selected[key].map((r:Row)=>r.id))]) as string[];
+export const treeIds=(owners:Row[])=>owners.flatMap(o=>[o.executionId,...branchContinuationIds(o.selected)]) as string[];
 export function treeIdMapSupported(owners:Row[],map:Row,sourceRoot:string,targetRoot:string):boolean {
   const ids=treeIds(owners);
   return !!map&&typeof map==='object'&&!Array.isArray(map)&&new Set(ids).size===ids.length

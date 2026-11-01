@@ -277,3 +277,31 @@ Deferred regression source covers composition/reference invariants, conflicting
 Shared exports, staged actual-root confirmation, mixed per-Agent review choices,
 one receipt and two Agents sharing their actual fresh cwd. All execution deferred.
 In-progress checkpoint fork/map/provider/resource families remain incomplete.
+
+### Parallel checkpoint remapping groundwork (source only)
+
+`branch-continuation-remap.ts` now supplies the typed data remapping used by
+historical single-path and child-tree path restoration. It inventories Fork IDs,
+Map/Fork shared identity, indexed Map items, bundles and existing Step/result/gate
+IDs. Nested paths are ordered by captured ancestry rather than UUID sort. It
+preserves graph node/edge keys, Join selection order, item indices, sealed item
+bytes and original bundle content, and remaps captured ownership links. Exact
+owned result-bundle pointers update together with input/result hashes. Missing
+links, aliasing, cycles, foreign Join membership, changed item inventories or
+bundle bytes, Requests and live/unknown attempt states refuse. Attempts reset to
+zero fences; execution admission, resource custody and provider state are excluded.
+
+This is an incremental data-layer change, not parallel restore eligibility.
+`scriptDefinitionSupported`, `scriptFrontierSupported` and audit replay still
+reject Fork/Map frontiers; the new parallel rows are not admitted or installed by
+historical rewind yet. The next owner work is an audit-to-selected replay codec
+for Fork/Map start, per-path traversal, item dispatch, ordered Join resolution and
+nested completion, followed by transactional control-row insertion and restored
+prefix verification. Request/answer/Join immutable cuts with fresh admission,
+created-resource ownership, reviewed bindings and crash reconciliation also
+remain incomplete. Native historical provider snapshots remain unavailable;
+unknown effects are not replayed. No rollback or full #32 claim follows.
+
+Deferred `tests/branches/continuation-remap.test.mjs` covers the remapping and
+refusal cases. No tests, checks, types, build, native/browser/runner preparation
+or execution were performed.

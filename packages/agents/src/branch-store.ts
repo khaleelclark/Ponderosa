@@ -1,3 +1,4 @@
+import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
@@ -699,11 +700,12 @@ export class BranchStore {
       if(definition.steps.some(step=>step.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');
       // Fresh acceptance, admission and leases own authority; no old lease/process/secret is restored.
       const next=this.accept(branchId,`historical-rewind:${randomUUID()}`,e.input_text,now),ids=new Map<string,string>();
-      for(const key of ['paths','steps','attempts','sealedResults','gates'])for(const old of selected[key]!)ids.set(old.id,randomUUID());
+      for(const id of branchContinuationIds(selected))ids.set(id,randomUUID());
+      for(const item of selected.items!)ids.set(item.id,`${ids.get(item.map_invocation_id)}:${item.item_index}`);
       const mapped=(id:string|null)=>id===null?null:ids.get(id)??(()=>{throw Error('Incomplete continuation ID map');})();
-      const path=selected.paths![0]!;
+      const restored=remapBranchFrontier(selected,Object.fromEntries(ids),executionId,next.id),path=restored.paths![0]!;
       this.run(`INSERT INTO branch_paths(id,execution_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id)
-        VALUES(?,?,?,?,?,?,?,?,0,?)`,mapped(path.id),next.id,path.state,path.node_id,mapped(path.step_execution_id),path.input_text,path.result_json,path.traversals,mapped(path.last_result_id));
+        VALUES(?,?,?,?,?,?,?,?,0,?)`,path.id,next.id,path.state,path.node_id,path.step_execution_id,path.input_text,path.result_json,path.traversals,path.last_result_id);
       for(const step of selected.steps!)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),next.id,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
       for(const a of selected.attempts!)this.run(`INSERT INTO branch_attempts(id,step_execution_id,number,state,fence,input_hash,result_json,error,created_at,updated_at,available_at,purpose)
         VALUES(?,?,?,?,0,?,?,?,?,?,?,'step')`,mapped(a.id),mapped(a.step_execution_id),a.number,a.state,a.input_hash,a.result_json,a.error,now,now,a.available_at);
@@ -833,6 +835,7 @@ export class BranchStore {
       if(this.restricted(branch.id,CAPABILITY_IDS.scripts)||this.restricted(branch.id,CAPABILITY_IDS.branchCalls)||o.selected.resources.length&&this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate))throw Error('Tree current authority is restricted');
     }
     const ids=new Map<string,string>(treeIds(c.owners).map(id=>[id,randomUUID()]));
+    for(const o of c.owners)for(const item of o.selected.items)ids.set(item.id,`${ids.get(item.map_invocation_id)}:${item.item_index}`);
     const next=this.accept(branchId,`tree-rewind:${randomUUID()}`,root.selected.execution[0].input_text,now);ids.set(executionId,next.id);
     const mapped=(id:string|null):string|null=>id===null?null:ids.get(id)??(()=>{throw Error('Incomplete tree ID map');})();
     const pending=c.owners.filter((o:Row)=>o.executionId!==executionId),ordered:Row[]=[root];
@@ -846,7 +849,8 @@ export class BranchStore {
         ids.set(e.id,child.id);target=child.id;
         this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,e.state==='completed'?'completed':'queued',e.output_text,target);
       }
-      for(const p of o.selected.paths)this.run('INSERT INTO branch_paths(id,execution_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id) VALUES(?,?,?,?,?,?,?,?,?,?)',mapped(p.id),target,p.state,p.node_id,mapped(p.step_execution_id),p.input_text,p.result_json,p.traversals,p.handling_limit,mapped(p.last_result_id));
+      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target);
+      for(const p of restored.paths!)this.run('INSERT INTO branch_paths(id,execution_id,parent_path_id,fork_invocation_id,edge_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',p.id,target,p.parent_path_id,p.fork_invocation_id,p.edge_id,p.state,p.node_id,p.step_execution_id,p.input_text,p.result_json,p.traversals,p.handling_limit,p.last_result_id);
       for(const step of o.selected.steps)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),target,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
       for(const a of o.selected.attempts)this.run(`INSERT INTO branch_attempts(id,step_execution_id,number,state,fence,input_hash,result_json,error,created_at,updated_at,available_at,purpose) VALUES(?,?,?,?,0,?,?,?,?,?,?,'step')`,mapped(a.id),mapped(a.step_execution_id),a.number,a.state,a.input_hash,a.result_json,a.error,now,now,a.available_at);
       for(const result of o.selected.sealedResults)this.run('INSERT INTO branch_sealed_results(id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash,created_at) VALUES(?,?,?,?,?,?,?,?)',mapped(result.id),target,mapped(result.path_id),mapped(result.step_execution_id),mapped(result.terminal_attempt_id),result.result_json,result.content_hash,now);
