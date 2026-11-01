@@ -1,4 +1,4 @@
-import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js';
+import {fenceBranchGenerationExit,generationExitHeld} from './branch-generation-exit-fence.js';
 import type Database from 'better-sqlite3';
 import {randomUUID} from 'node:crypto';
 import type {CheckpointPackageSource,CheckpointPackageReceipt} from '@ponderosa/core';
@@ -10,7 +10,16 @@ import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 type Row=Record<string,any>;
 export const generationExitKey=(stepId:string,generation:number)=>`resource-generation-exit:${stepId}:${generation}`;
 export function requireGenerationExitIntakeFence(db:Database.Database,scope:{agentIds:string[];chatId:string}){
- if(!scope.agentIds.length||!scope.agentIds.every(id=>destinationAdmissionHeld(db,id,scope.chatId)))throw Error('Canonical generation intake fence unavailable; capture held');
+ if(!scope.agentIds.length||!scope.agentIds.every(id=>generationExitHeld(db,id,scope.chatId)))throw Error('Canonical generation intake fence unavailable; capture held');
+}
+function fenceInput(scope:Row){return {executionId:scope.executionId,stepExecutionId:scope.stepId,generation:scope.generation,projectId:scope.projectId,conversationId:scope.chatId,agentIds:[...scope.agentIds].sort()};}
+function verifyIntakeFence(db:Database.Database,journal:Row){
+ const input=fenceInput(journal.identity),key=payloadHash({executionId:input.executionId,stepExecutionId:input.stepExecutionId,generation:input.generation});
+ const row=db.prepare("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(key) as Row|undefined;
+ if(!row)throw Error('Canonical generation intake fence missing');
+ const receipt=JSON.parse(row.receipt_json);
+ if(stableJson(input)!==row.input_json||stableJson(receipt)!==row.receipt_json||stableJson(receipt.input)!==row.input_json||payloadHash(receipt)!==row.receipt_sha256||stableJson(journal.intakeFence)!==stableJson({identity:key,sha256:row.receipt_sha256}))throw Error('Canonical generation intake fence receipt differs');
+ requireGenerationExitIntakeFence(db,journal.identity);
 }
 function identity(db:Database.Database,stepId:string){
  const r=db.prepare('SELECT r.*,e.branch_id,e.parent_execution_id,e.version_id,e.binding_revision_id,e.configuration_json FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepId) as Row|undefined;
@@ -26,9 +35,10 @@ export function readGenerationExitCapture(db:Database.Database,executionId:strin
  if(!row)return;
  const v=JSON.parse(row.result_json);
  if(stableJson(v)!==row.result_json||v.schema!=='branch-resource-generation-exit.v1'||v.identity.executionId!==executionId||v.identity.stepId!==stepId||v.identity.generation!==generation||row.input_hash!==payloadHash(v.identity)||!['fencing','capturing','sealed'].includes(v.state))throw Error('Generation exit journal integrity differs');
+ verifyIntakeFence(db,v);
  if(v.state!=='fencing'){
   const e=v.envelope;
-  if(e.schema!=='branch-prior-generation.v1'||v.source.intent.executionId!==executionId||v.source.intent.resourceStepId!==stepId||v.source.intent.resourceGeneration!==generation||v.source.intent.bindingSha256!==e.hostDependencies?.bindingPin?.sha256||v.source.intent.configurationSha256!==v.identity.configurationSha256||v.source.sourceChatId!==v.identity.chatId||stableJson(v.source.agentIds)!==stableJson(v.identity.agentIds)||e.providerExitEvidence.conversationId!==v.identity.chatId||e.providerExitEvidence.projectId!==v.identity.projectId||stableJson(e.providerExitEvidence.participants.map((p:Row)=>p.agentId).sort())!==stableJson([...v.identity.agentIds].sort()))throw Error('Generation custody/exit identity differs');
+  if(stableJson(e.intakeFence)!==stableJson(v.intakeFence)||e.schema!=='branch-prior-generation.v1'||v.source.intent.executionId!==executionId||v.source.intent.resourceStepId!==stepId||v.source.intent.resourceGeneration!==generation||v.source.intent.bindingSha256!==e.hostDependencies?.bindingPin?.sha256||v.source.intent.configurationSha256!==v.identity.configurationSha256||v.source.sourceChatId!==v.identity.chatId||stableJson(v.source.agentIds)!==stableJson(v.identity.agentIds)||e.providerExitEvidence.conversationId!==v.identity.chatId||e.providerExitEvidence.projectId!==v.identity.projectId||stableJson(e.providerExitEvidence.participants.map((p:Row)=>p.agentId).sort())!==stableJson([...v.identity.agentIds].sort()))throw Error('Generation custody/exit identity differs');
   for(const native of e.nativeScriptExits)if(payloadHash(native.proof)!==native.sha256||native.proof.kind!=='script_process_exit'||native.proof.transition_key!==`process-exit:${native.attemptId}:${native.fence}`)throw Error('Retained native exit evidence differs');
   if(payloadHash(e)!==v.envelopeSha256||!verifyBranchHostCut(e.hostDependencies,executionId)||resourceCaptureFrontierHash(e.selected)!==v.source.intent.frontierSha256||payloadHash(e.hostDependencies)!==v.source.intent.hostCutSha256||stableJson(e.identity)!==stableJson(v.identity))throw Error('Generation exit envelope differs');
   verifyRetainedProviderExitEvidence(db,e.providerExitEvidence);
@@ -44,14 +54,15 @@ export function fenceGenerationExitCapture(db:Database.Database,stepId:string):R
  if(!db.inTransaction)throw Error('Generation exit fence requires owner transaction');
  const scope=identity(db,stepId),old=readGenerationExitCapture(db,scope.executionId,stepId,scope.generation);
  if(old){if(stableJson(old.identity)!==stableJson(scope))throw Error('Generation exit identity changed');return old;}
- const value={schema:'branch-resource-generation-exit.v1',identity:scope,state:'fencing'};
+ const intakeFence=fenceBranchGenerationExit(db,fenceInput(scope));
+ const value={schema:'branch-resource-generation-exit.v1',identity:scope,intakeFence,state:'fencing'};
  db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(scope.executionId,generationExitKey(stepId,scope.generation),payloadHash(scope),stableJson(value),new Date().toISOString());return value;
 }
 /** Capture only after live runtime drain, while every original identity still exists. */
 function envelope(db:Database.Database,journal:Row,expectedRevision?:string){
  const scope=identity(db,journal.identity.stepId);
  if(stableJson(scope)!==stableJson(journal.identity))throw Error('Generation exit owner/generation changed');
- requireGenerationExitIntakeFence(db,scope);
+ verifyIntakeFence(db,journal);
  const branch=db.prepare('SELECT * FROM branches WHERE id=?').get(scope.branchId) as Row|undefined;
  if(!branch?.enabled||branch.deleting||branch.active_version_id!==scope.versionId||branch.binding_revision_id!==scope.bindingRevisionId||payloadHash(JSON.parse(branch.configuration_json))!==scope.configurationSha256||Object.keys(JSON.parse(branch.configuration_json).secretBindings??{}).length)throw Error('Generation exit current owner pins changed');
  const selected=selectBranchUnit(db,scope.executionId);
@@ -79,7 +90,7 @@ function envelope(db:Database.Database,journal:Row,expectedRevision?:string){
  const participants=scope.agentIds.map(agentId=>({agentId,runIds:(db.prepare('SELECT id FROM scheduler_runs WHERE agent_id=? ORDER BY id').all(agentId) as Row[]).map(r=>r.id)}));
  const providerExitEvidence=readProviderExitEvidence(db,{projectId:scope.projectId,conversationId:scope.chatId,participants,expectedRevision});
  if(Buffer.byteLength(stableJson(effectClosure))>16*1024*1024)throw Error('Generation effect closure exceeds bound');
- const result={schema:'branch-prior-generation.v1' as const,identity:scope,selected,hostDependencies,nativeScriptExits,effectClosure,providerExitEvidence,nativeState:'not_captured' as const,restore_supported:false as const};
+ const result={schema:'branch-prior-generation.v1' as const,identity:scope,intakeFence:journal.intakeFence as {identity:string;sha256:string},selected,hostDependencies,nativeScriptExits,effectClosure,providerExitEvidence,nativeState:'not_captured' as const,restore_supported:false as const};
  if(Buffer.byteLength(stableJson(result))>32*1024*1024)throw Error('Generation envelope exceeds bound');return result;
 }
 export function reserveGenerationExitCapture(db:Database.Database,executionId:string,stepId:string,generation:number):Row {
@@ -107,22 +118,3 @@ export function sealGenerationExitCapture(db:Database.Database,executionId:strin
 
 export type BranchPriorGenerationEnvelope=ReturnType<typeof envelope>;
 
-/** Internal custody export exception only; never grants intake, public reads or dispatch. */
-export function generationExitPackageCaptureAuthorized(db:Database.Database,source:CheckpointPackageSource):boolean {
- return db.transaction(()=>{
-  const journal=readGenerationExitCapture(db,source.intent.executionId,source.intent.resourceStepId,source.intent.resourceGeneration);
-  if(!journal||journal.state!=='capturing'||stableJson(journal.source)!==stableJson(source))return false;
-  if(payloadHash(envelope(db,journal,journal.envelope.providerExitEvidence.revision))!==journal.envelopeSha256)throw Error('Generation export boundary changed');
-  if(db.prepare(`SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?
-   UNION ALL SELECT 1 FROM project_deletion_pending WHERE project_id=?
-   UNION ALL SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state!='active'
-   UNION ALL SELECT 1 FROM coordination_destination_admissions WHERE conversation_id=? AND state!='admitted'
-   UNION ALL SELECT 1 FROM coordination_destination_group_chats g JOIN coordination_destination_admissions a ON a.id=g.admission_id WHERE g.conversation_id=? AND a.state!='admitted'
-   UNION ALL SELECT 1 FROM coordination_destination_retirements r WHERE r.conversation_id=? OR EXISTS(SELECT 1 FROM json_each(r.receipt_json,'$.resources') resource WHERE json_extract(resource.value,'$.destination.conversationId')=?) LIMIT 1`).get(source.sourceChatId,journal.identity.projectId,source.sourceChatId,source.sourceChatId,source.sourceChatId,source.sourceChatId,source.sourceChatId))throw Error('Unrelated generation export owner hold');
-  for(const id of source.agentIds)if(db.prepare(`SELECT 1 FROM agent_deletion_pending WHERE agent_id=?
-   UNION ALL SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state!='active'
-   UNION ALL SELECT 1 FROM coordination_destination_members m JOIN coordination_destination_admissions a ON a.id=m.admission_id WHERE m.agent_id=? AND a.state!='admitted'
-   UNION ALL SELECT 1 FROM coordination_destination_retirements r,json_each(r.members_json) m WHERE json_extract(m.value,'$.agent_id')=? LIMIT 1`).get(id,id,id,id))throw Error('Unrelated generation export participant hold');
-  return true;
- })();
-}

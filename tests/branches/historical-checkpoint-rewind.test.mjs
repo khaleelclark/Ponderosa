@@ -1680,6 +1680,13 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
   assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_attempts WHERE step_execution_id=?').get(stepId).n,2);
   const ids=members.map(m=>m.agent_id);
   const fenced=f.branches.fenceGenerationExit(stepId);assert.equal(fenced.state,'fencing');
+  const fenceRow=db.prepare("SELECT * FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(fenced.intakeFence.identity);
+  assert.equal(fenceRow.receipt_sha256,fenced.intakeFence.sha256);
+  assert.deepEqual(f.branches.fenceGenerationExit(stepId),fenced);
+  const fenceKey=`resource-generation-exit:${stepId}:0`,fenceJournal=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,fenceKey);
+  db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson({...fenced,intakeFence:{...fenced.intakeFence,sha256:'tampered'}}),f.source.id,fenceKey);
+  assert.throws(()=>f.branches.generationExitCapture(f.source.id,stepId,0),/fence receipt differs/);
+  db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(fenceJournal.result_json,f.source.id,fenceKey);
   assert.equal(f.branches.resourceCanRetire(stepId,ids),false);
   assert.throws(()=>f.branches.reserveGenerationExit(f.source.id,stepId,0),/coverage|Run inventory|fence unavailable/);
   const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
@@ -1693,7 +1700,7 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
    authority.register(handle,{purpose:'provider Run',projectId:agent.projectId,agentId,runId,runFence:1});
   }
   await authority.terminateAgents(new Set(ids),'inert precleanup fixture');
-  const journal=f.branches.reserveGenerationExit(f.source.id,stepId,0);assert.equal(journal.state,'capturing');
+  const journal=f.branches.reserveGenerationExit(f.source.id,stepId,0);assert.equal(journal.state,'capturing');assert.deepEqual(journal.envelope.intakeFence,fenced.intakeFence);
   const custody={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'inert-generation-exit',sha256:hash('private generation bytes'),byteLength:1};
   const originalWait=db.prepare('SELECT wait_reason FROM branch_executions WHERE id=?').get(f.source.id).wait_reason;
   db.prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run('changed cut',f.source.id);
