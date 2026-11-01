@@ -8,7 +8,7 @@ execution Agents cannot be output agents.
 
 The output app's top **Settings** opens schedule and provider/model controls.
 **Save schedule** publishes an interval schedule behind the app, with a workflow
-version check, preserving its busy policy. An unchanged interval keeps its cadence. **Run automatically** controls that trigger. Cadence is at least
+version and output-settings revision checks, preserving its busy policy. An unchanged interval keeps its cadence. **Run automatically** controls that trigger. Cadence is at least
 one minute; event-triggered workflows require **More options** rather than
 silently replacing their event source. **Save model** uses the existing Agent
 runtime settings endpoint and validation; it changes the bound Agent without

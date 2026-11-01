@@ -21,7 +21,7 @@ Regression source is written for the later combined verification.
 | Inbox | Existing Inbox UI/code naming retained; no legacy user-facing label introduced. |
 | Imports | `ImportAgentDialog` role warning moved outside action row; role review invalidates on package/destination/provider-mapping changes. Branch package preview retains server-owned collision warning/confirmation. |
 
-Residual implementation dependencies: server/core validated audio formats and model-to-workflow binding need the respective owner handoff. A genuine early qualified Agent voice acknowledgement must originate in runtime/workflow, not canned browser text. Broader source audit and combined verification remain required; this document is coverage, not a True verdict or release claim.
+The Branches owner confirmed that output model saves use the existing `realApi.updateAgent(agentId, {activeEngine, model})` contract: output workflows target that same persistent Agent, so no duplicate graph model or new endpoint is needed. Schedule saves send both `expectedVersionId` and the observed `expectedSettingsRevision`. Server/core validated audio formats still need the respective owner handoff. A genuine early qualified Agent voice acknowledgement must originate in runtime/workflow, not canned browser text. Broader source audit and combined verification remain required; this document is coverage, not a True verdict or release claim.
 
 ## Portability and authorized DM text continuation
 
