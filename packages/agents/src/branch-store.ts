@@ -1304,7 +1304,7 @@ export class BranchStore {
   }
   previewIssuedGroupCapture(executionId:string){
     const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Group capture restricted');
-    return previewIssuedGroupCapture(this.sqlite,executionId);
+    return this.sqlite.transaction(()=>previewIssuedGroupCapture(this.sqlite,executionId))();
   }
   reserveIssuedGroupCapture(executionId:string,commandKey:string,expectedReview?:{reviewHash:string;versionId:string}){
     const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Group capture restricted');
