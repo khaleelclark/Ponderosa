@@ -58,3 +58,17 @@ test('manager-tree inverse restores independent entries before retrying a tempor
  await f.service.tick();assert.equal(f.store.getAgent(a.id).managerAgentId,undefined);assert.equal(f.service.status('tree-inverse').state,'canceling');
  f.reopen();await f.service.tick();assert.equal(f.store.getAgent(b.id).managerAgentId,a.id);assert.equal(f.service.status('tree-inverse').state,'canceled');
 });
+
+// Deferred: terminal compaction must retain destination receipts without extending their TTL.
+test('retained workflow file destinations and nonsecret suggestions survive compaction and reopen',async t=>{
+ const f=compensationFixture(t);f.journal('content-receipt',{chats:[],agents:[]});
+ const result={rootAgentId:'historical',agentIds:['historical'],workingFilesDestination:'/retained/content',workingRoots:[{ref:'source-root',destination:'/retained/root',agentIds:['historical']}],accessSettingsToReview:[{agentId:'historical',conversationId:f.chat.id,source:{restrictedCapabilityIds:[],readGlobalMemory:true}}]};
+ f.service.retainImportResult('content-receipt',JSON.stringify(['chat','agent']),result);
+ f.service.compactPlan('content-receipt','completed');
+ const before=f.store.sqlite.prepare('SELECT updated_at FROM branch_installation_plans WHERE id=?').get('content-receipt').updated_at;
+ f.reopen();await f.service.tick();
+ const retained=f.service.status('content-receipt').importResults[JSON.stringify(['chat','agent'])];
+ assert.equal(retained.workingFilesDestination,result.workingFilesDestination);assert.deepEqual(retained.workingRoots,result.workingRoots);assert.deepEqual(retained.accessSettingsToReview,result.accessSettingsToReview);
+ assert.equal(f.store.sqlite.prepare('SELECT updated_at FROM branch_installation_plans WHERE id=?').get('content-receipt').updated_at,before);
+ assert.equal(f.store.listAgents(f.project.id).length,0);
+});

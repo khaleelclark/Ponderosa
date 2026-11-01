@@ -19,6 +19,8 @@ test('Branch package atomically activates staged Chat and Agent before validatin
   definition:{schema:'ponderosa.branch.v1',name:'Installation fixture',trigger:{kind:'manual'},entry:'agent',controls:[],steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'Synthetic only'}],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},
   chats:[{ref:'chat',title:'Installed Chat',agents:[{ref:'speaker',definition:{schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt,sourceLabel:'Synthetic',rootRef:'speaker',agents:[{ref:'speaker',title:'Speaker',engine:'codex',model:'fixture',effort:'medium',initialInstructions:'Keep initial guidance distinct from portable history.',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]}}]}],
   agentBindings:{speaker:{chatRef:'chat',agentRef:'speaker'}}};
+ const badDestinations=await app.inject({method:'POST',url:'/api/branches/install-preview',payload:{package:pkg,bindings:{directories:{workspace:root},agents:{},engines:{codex:'codex'}},fileSelections:{[JSON.stringify(['chat','speaker'])]:{workingRootDestinations:{a:path.join(root,'new'),b:path.join(root,'new','child')}}}}});
+ assert.equal(badDestinations.statusCode,400);assert.match(badDestinations.json().error,/distinct|nest/);
  const preview=await api('POST','/api/branches/install-preview',{package:pkg,bindings:{directories:{workspace:root},agents:{},engines:{codex:'codex'}}});
  const result=await api('POST','/api/branches/installations/'+preview.id+'/confirm',{});
  assert.equal(result.state,'completed',result.error);

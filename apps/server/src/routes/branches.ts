@@ -120,8 +120,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
       await sources.applyDefinitionChange(previous,branches.trigger(branch.id));notify();return context.outputApps.get(request.params.id);
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
-  app.post<{Body:{package:unknown;bindings:import('@ponderosa/core').BranchBindings;branchId?:string;memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto}}>('/api/branches/install-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
-    try{return await context.installations.preview(request.body.package,request.body.bindings,request.body.branchId,request.body.memorySelection)}catch(error){return reply.code(400).send({error:(error as Error).message})}
+  app.post<{Body:{package:unknown;bindings:import('@ponderosa/core').BranchBindings;branchId?:string;memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto;fileSelections?:import('@ponderosa/core').BranchImportFileSelections}}>('/api/branches/install-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
+    try{return await context.installations.preview(request.body.package,request.body.bindings,request.body.branchId,request.body.memorySelection,request.body.fileSelections)}catch(error){return reply.code(400).send({error:(error as Error).message})}
   });
   app.post<{Params:{id:string}}>('/api/branches/installations/:id/role-review',async(request,reply)=>{try{return context.installations.reviewPublishedRoles(request.params.id);}catch(error){return reply.code(409).send({error:(error as Error).message});}});
   app.post<{Params:{id:string};Body?:{acknowledgeFullImport?:boolean;acknowledgeMemoryUpdate?:boolean;outputRoleReviewId?:string}}>('/api/branches/installations/:id/confirm',async(request,reply)=>{
@@ -134,8 +134,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
   app.post<{Params:{id:string}}>('/api/branches/installations/:id/cancel',async(request,reply)=>{
     try{const result=await context.installations.cancel(request.params.id);await sources.refresh();notify();return result}catch(error){return reply.code(409).send({error:(error as Error).message})}
   });
-  app.get<{Params:{id:string};Querystring:{mode?:'template'|'full';includeValues?:string}}>('/api/branches/:id/package',async(request,reply)=>{
-    try{const result=await context.installations.export(request.params.id,request.query.mode==='full'?'full':'template',request.query.includeValues==='true');if(request.query.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);return result}catch(error){return reply.code(400).send({error:(error as Error).message})}
+  app.get<{Params:{id:string};Querystring:{mode?:'template'|'full';includeValues?:string;fileSelections?:string}}>('/api/branches/:id/package',async(request,reply)=>{
+    try{const result=await context.installations.export(request.params.id,request.query.mode==='full'?'full':'template',request.query.includeValues==='true',request.query.fileSelections?JSON.parse(request.query.fileSelections):undefined);if(request.query.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);return result}catch(error){return reply.code(400).send({error:(error as Error).message})}
   });
   app.post<{Body:{name:string;idempotencyKey:string}}>('/api/branches',async(request,reply)=>{
     try{return branches.create(request.body.name,request.body.idempotencyKey)}catch(error){return reply.code(400).send({error:(error as Error).message})}

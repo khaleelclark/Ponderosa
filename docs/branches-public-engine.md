@@ -174,3 +174,36 @@ parallel/map/provider/resource cuts still require separate full continuation cod
 and cannot be inferred from this before-entry case. Deferred regressions cover
 parallel/map/human-gate initial rewind, reopen/idempotency and empty runtime rows.
 No consolidated execution has run.
+
+## Workflow folder and nonsecret suggestion forwarding
+
+Requires shared engine `54abf5bbdce4` and ancestors. Workflow package GET accepts
+`fileSelections` as JSON keyed by local output/organization Agent IDs, with
+`{selectedWorkingFiles?: string[], wholeWorkingFolder?: boolean}`. Each workflow
+Agent is exported once using the shared folder builder; unknown/non-owned Agent
+selections refuse. The existing byte, credential, path and link admission stays
+in the shared builder. No organization subtree duplication is requested.
+
+`POST /api/branches/install-preview` accepts `fileSelections` keyed by
+`JSON.stringify([chatRef,agentRef])`. Values contain `workingFilesDestination` or
+`workingRootDestinations` from the shared import contract. Each path is an
+explicit NEW absolute retained-content location; destinations across targets
+must be distinct and cannot nest. Existing Agent replacements refuse these
+choices rather than silently ignoring them. The preview lists the chosen paths
+and the retained-content limitation. The shared importer owns exclusive creation,
+manifest validation and partial-file retention. Stop never deletes these user bytes.
+
+Installation GET returns `importResults` keyed by the same target identity. It
+retains `workingFilesDestination`, `workingRoots` and `accessSettingsToReview`
+from canonical creation receipts, including after restart recovery and terminal
+plan compaction. Receipt retention uses the existing time/count policy; it is not
+an unlimited history service. Destination grants are suggestions: UI must show
+Chat-wide memory effects/current revisions and separately call human Settings
+APIs for memory, saved-browser access and destination profile choices. No grant,
+profile, credential, old native ownership or session is automatically adopted.
+
+Restored files are retained content. Live Project/managed-worktree binding remains
+portability-owner implementation work; this caller cannot grant it by changing
+paths. In-progress checkpoint resource/provider/parallel/map codecs and general
+external-writer reconciliation likewise remain incomplete. No test execution or
+full portability/parity verdict accompanies these forwarding changes.

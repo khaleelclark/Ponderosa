@@ -1,3 +1,4 @@
+import {isAbsolute,resolve,sep} from 'node:path';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
 import {selectBranchMemory} from './branch-memory-update.js';
 import {validateOutputRoles} from './portable-output-roles.js';
@@ -35,7 +36,7 @@ export class BranchInstallationService {
  private outputApps?:OutputAgentApps;
  setOutputApps(owner:OutputAgentApps){this.outputApps=owner;}
  private roleBinding(pkg:InstalledBranchPackage,bindings:BranchBindings,branchId?:string){return createHash('sha256').update(stableJson({package:pkg,bindings,destination:branchId??'new'})).digest('hex');}
- private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
+ private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'>>;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
  private finishRoles(plan:Row){
   const state=this.rolePlan(plan);if(state.review){if(!this.outputApps)throw new Error('Output role service unavailable');this.outputApps.finalizeImport(state.review.id,state.binding!,plan.id,state.mapping!);}
   this.compactPlan(plan.id,'completed');
@@ -52,7 +53,7 @@ export class BranchInstallationService {
  private refreshRuntime?:()=>Promise<void>;
  private runtimeRefreshPending=false;
  setPublisher(publish:(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration)=>BranchDto,refreshRuntime?:()=>Promise<void>):void{this.publish=publish;this.refreshRuntime=refreshRuntime;}
- status(id:string):{branchId?:string;state:string;error?:string;accessSettingsReview?:PendingAccess}|undefined{const p=this.row("SELECT * FROM branch_installation_plans WHERE id=?",id);return p?{branchId:p.branch_id??undefined,state:p.state,error:p.error??undefined,...(this.rolePlan(p).pendingAccess?{accessSettingsReview:this.rolePlan(p).pendingAccess}:{})}:undefined;}
+ status(id:string):{branchId?:string;state:string;error?:string;accessSettingsReview?:PendingAccess;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'>>}|undefined{const p=this.row("SELECT * FROM branch_installation_plans WHERE id=?",id);return p?{branchId:p.branch_id??undefined,state:p.state,error:p.error??undefined,importResults:this.rolePlan(p).importResults,...(this.rolePlan(p).pendingAccess?{accessSettingsReview:this.rolePlan(p).pendingAccess}:{})}:undefined;}
  constructor(private store:AgentStore,private branches:BranchStore,private deleteChat:(id:string)=>Promise<void>,private deleteAgent:(id:string)=>Promise<void>,private createChat:ChatCreator,private settleNotifications?:(branchId:string)=>void){}
  setEngine(engine:BranchPackageEngine):void{this.engine=engine;}
  private rows(sql:string,...args:unknown[]):Row[]{return this.store.sqlite.prepare(sql).all(...args) as Row[];}
@@ -61,12 +62,13 @@ export class BranchInstallationService {
  private planState(id:string):string|undefined{return this.row('SELECT state FROM branch_installation_plans WHERE id=?',id)?.state;}
  private compactPlan(id:string,state:string,error?:string):void{
   if(state!=='completed'&&this.journal(id))throw new Error('Installation compensation remains unresolved; its journal must be retained');
-  this.run("UPDATE branch_installation_plans SET state=?,error=?,package_json='{}',bindings_json='{}',preview_json='[]',journal_json='{}',owned_resources_json='[]',expected_version_id=NULL,expected_configuration_revision=NULL,expected_resources_hash=NULL,next_attempt_at=NULL,updated_at=? WHERE id=?",state,error??null,new Date().toISOString(),id);
+  const results=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',id)!).importResults;
+  this.run("UPDATE branch_installation_plans SET state=?,error=?,package_json='{}',bindings_json='{}',preview_json=?,journal_json='{}',owned_resources_json='[]',expected_version_id=NULL,expected_configuration_revision=NULL,expected_resources_hash=NULL,next_attempt_at=NULL,updated_at=? WHERE id=?",state,error??null,results?stableJson({importResults:results}):'[]',new Date().toISOString(),id);
  }
  private maintainPlans(now=new Date()):void{
   const cutoff=new Date(now.getTime()-PREVIEW_TTL_MS).toISOString();
   for(const plan of this.rows("SELECT id FROM branch_installation_plans WHERE state='preview' AND created_at<?",cutoff))this.compactPlan(plan.id,'expired','Installation preview expired; review the package again');
-  for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND (package_json!='{}' OR bindings_json!='{}' OR preview_json!='[]')"))this.compactPlan(plan.id,plan.state,plan.error??undefined);
+  for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND (package_json!='{}' OR bindings_json!='{}' OR (preview_json!='[]' AND json_extract(preview_json,'$.importResults') IS NULL))"))this.compactPlan(plan.id,plan.state,plan.error??undefined);
   const receiptCutoff=new Date(now.getTime()-TERMINAL_RECEIPT_TTL_MS).toISOString();
   this.run("DELETE FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND updated_at<?",receiptCutoff);
   this.run("DELETE FROM branch_installation_plans WHERE id IN (SELECT id FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' ORDER BY updated_at DESC,id DESC LIMIT -1 OFFSET ?)",MAX_TERMINAL_RECEIPTS);
@@ -94,8 +96,18 @@ export class BranchInstallationService {
   if(agentId&&!a){a={agent_ref:randomUUID()};this.run("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,?,?,?,'active')",branchId,b.package_id,c.chat_ref,a.agent_ref,agentId);}
   return {packageId:b.package_id,chatRef:c.chat_ref,...(a?{agentRef:a.agent_ref}:{})};
  }
- async export(branchId:string,mode:'template'|'full',includeValues=false):Promise<InstalledBranchPackage>{
+ private retainImportResult(planId:string,key:string,result:ImportAgentPackageResponse){
+  const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',planId)!;
+  const state=this.rolePlan(current);
+  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,importResults:{...state.importResults,[key]:{workingFilesDestination:result.workingFilesDestination,workingRoots:result.workingRoots,accessSettingsToReview:result.accessSettingsToReview}}}),planId);
+ }
+ async export(branchId:string,mode:'template'|'full',includeValues=false,fileSelections:import('@ponderosa/core').BranchExportFileSelections={}):Promise<InstalledBranchPackage>{
   if(!this.engine)throw new Error('Package Engine unavailable');
+  if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid export file selections');
+  const requested=new Set(Object.keys(fileSelections));
+  for(const selection of Object.values(fileSelections)){
+   if(!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['selectedWorkingFiles','wholeWorkingFolder'].includes(k))||selection.wholeWorkingFolder!==undefined&&typeof selection.wholeWorkingFolder!=='boolean'||selection.selectedWorkingFiles!==undefined&&(!Array.isArray(selection.selectedWorkingFiles)||selection.selectedWorkingFiles.some(p=>typeof p!=='string')))throw new Error('Invalid export file selection');
+  }
   const branch=this.branches.getBranch(branchId),definition=branch&&this.branches.version(branchId,branch.versionId)?.definition;
   if(!branch||!definition)throw new Error('Publish a Branch before exporting');
   const chats:BranchPackageChat[]=[],refs=new Map<string,{chatRef:string;agentRef:string}>();
@@ -103,7 +115,7 @@ export class BranchInstallationService {
    const c=this.store.getConversation(row.id)!;const identity=this.identity(branchId,c.id),agents=this.store.listAgents(c.projectId).filter(a=>a.conversationId===c.id&&!this.row("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state!='active'",a.id));
    for(const a of agents){const id=this.identity(branchId,c.id,a.id);refs.set(a.id,{chatRef:id.chatRef,agentRef:id.agentRef!});}
    const nodes:BranchPackageChat['agents']=[];let exportedTeamMemory=false;
-   for(const a of agents){const portable=await this.engine.exportAgent(a.id,mode),ref=refs.get(a.id)!.agentRef;
+   for(const a of agents){requested.delete(a.id);const portable=await this.engine.exportAgent(a.id,mode,fileSelections[a.id]),ref=refs.get(a.id)!.agentRef;
     if(portable.memory){
       for(const entry of portable.memory){
         entry.agentRefs=Object.fromEntries(Object.keys(entry.agentRefs).map(id=>[id,ref]));
@@ -116,6 +128,7 @@ export class BranchInstallationService {
    }
    chats.push({ref:identity.chatRef,title:c.title,instructions:c.instructions,agents:nodes});
   }
+  if(requested.size)throw new Error('Export selection Agent is not owned by this workflow');
   const configuration=this.branches.configuration(branchId),bindings=this.branches.localConfiguration(branchId)!,agentBindings:InstalledBranchPackage['agentBindings']={};
   for(const [ref,id] of Object.entries(bindings.agents)){const target=refs.get(id);if(!target)throw new Error(`Cannot export unavailable Agent binding: ${ref}`);agentBindings[ref]=target;}
   let packageId=this.row('SELECT package_id FROM branches WHERE id=?',branchId)!.package_id;
@@ -228,9 +241,21 @@ export class BranchInstallationService {
   return snapshots;
  }
  private async checkMemory(plan:Row){const update=this.rolePlan(plan).memoryUpdate;if(update&&createHash('sha256').update(stableJson(await this.memoryInventory(plan.branch_id))).digest('hex')!==update.hash)throw new InstallationConflictError('Destination memory changed; review a new additive preview');}
- async preview(value:unknown,bindings:BranchBindings,branchId?:string,memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto):Promise<BranchInstallationPreviewDto>{
+ async preview(value:unknown,bindings:BranchBindings,branchId?:string,memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto,fileSelections:import('@ponderosa/core').BranchImportFileSelections={}):Promise<BranchInstallationPreviewDto>{
   this.maintainPlans();
-  const pkg=this.validate(value),branch=branchId?this.branches.getBranch(branchId):undefined;
+  const pkg=this.validate(value);
+  if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid working folder destinations');
+  const targetKeys=new Set(pkg.chats.flatMap(c=>c.agents.map(a=>JSON.stringify([c.ref,a.ref])))),paths:string[]=[];
+  for(const [key,selection] of Object.entries(fileSelections)){
+   if(!targetKeys.has(key)||!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['workingFilesDestination','workingRootDestinations'].includes(k)))throw new Error('Invalid working folder destination target');
+   if(selection.workingFilesDestination&&selection.workingRootDestinations)throw new Error('Choose one folder destination format');
+   if(selection.workingRootDestinations&&(typeof selection.workingRootDestinations!=='object'||Array.isArray(selection.workingRootDestinations)))throw new Error('Invalid working roots');
+   for(const path of [selection.workingFilesDestination,...Object.values(selection.workingRootDestinations??{})].filter(p=>p!==undefined)){
+    if(typeof path!=='string'||!isAbsolute(path))throw new Error('Choose NEW absolute working folder destinations');const canonical=resolve(path);
+    if(paths.some(p=>p===canonical||p.startsWith(canonical+sep)||canonical.startsWith(p+sep)))throw new Error('Working folder destinations must be distinct and cannot nest');paths.push(canonical);
+   }
+  }
+  const branch=branchId?this.branches.getBranch(branchId):undefined;
   if(branchId&&this.row('SELECT 1 FROM branches WHERE id=? AND deleting=1',branchId))throw new Error('Branch deletion is pending');
   if(branchId&&!branch)throw new Error('Branch unavailable');
   if(branchId&&memorySelection===undefined&&pkg.chats.some(c=>c.agents.some(a=>a.definition.memory?.some(m=>m.snapshot.chunks.length||m.snapshot.conflicts.length))))throw new Error('Memory-bearing workflow packages require fresh installation or explicit additive memory selections');
@@ -250,6 +275,11 @@ export class BranchInstallationService {
    for(const c of pkg.chats)for(const a of c.agents){const old=existing.find(r=>r.chat_ref===c.ref&&r.agent_ref===a.ref);if(old)a.definition.agents[0]!.managementPermissions=this.store.getAgent(old.local_id)!.managementPermissions;}
   }
   const keys=new Set<string>(),operations:BranchInstallationOperationDto[]=[];
+  for(const [key,selection] of Object.entries(fileSelections)){
+   const [chatRef,agentRef]=JSON.parse(key) as string[];
+   if(existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef&&r.agent_ref===agentRef))throw new Error('Existing Agents retain their working roots; choose a new Agent for imported folder content');
+   operations.push({kind:'retain-content',resource:'Working folder',label:'New retained content only; live working-root binding requires a separate reviewed operation',after:{target:key,...selection}});
+  }
   const compare=(resource:string,label:string,before:unknown,after:unknown)=>{if(stableJson(before??null)!==stableJson(after??null))operations.push({kind:'change',resource,label,before:before??null,after:after??null});};
   for(const c of pkg.chats){for(const a of [{ref:'',title:c.title},...c.agents.map(a=>({ref:a.ref,title:a.definition.agents[0]!.title}))]){
     const key=stableJson([pkg.packageId,c.ref,a.ref]);keys.add(key);const old=existing.find(r=>r.package_id===pkg.packageId&&r.chat_ref===c.ref&&r.agent_ref===a.ref);
@@ -284,7 +314,7 @@ export class BranchInstallationService {
   const outputRoleReview=targets?.length?this.outputApps?.reviewImport(targets,roleBinding,true,mapping):undefined;
   if(targets?.length&&!outputRoleReview)throw new Error('Output role service unavailable');
   if(targets)for(const target of targets)operations.push({kind:'change',resource:'Output role',label:target.ref,before:this.outputApps?.portableRoles(mapping[target.ref]?[mapping[target.ref]]:[]),after:target});
-  const packageJson=stableJson(pkg),bindingsJson=stableJson(bindings),previewJson=stableJson(outputRoleReview||memoryUpdate?{...(outputRoleReview?{review:outputRoleReview,binding:roleBinding}:{}),...(memoryUpdate?{memoryUpdate}:{}),operations}:operations);this.assertPlanCapacity(branchId,Buffer.byteLength(packageJson)+Buffer.byteLength(bindingsJson)+Buffer.byteLength(previewJson));
+  const packageJson=stableJson(pkg),bindingsJson=stableJson(bindings),previewJson=stableJson(outputRoleReview||memoryUpdate||Object.keys(fileSelections).length?{...(Object.keys(fileSelections).length?{fileSelections}:{}),...(outputRoleReview?{review:outputRoleReview,binding:roleBinding}:{}),...(memoryUpdate?{memoryUpdate}:{}),operations}:operations);this.assertPlanCapacity(branchId,Buffer.byteLength(packageJson)+Buffer.byteLength(bindingsJson)+Buffer.byteLength(previewJson));
   const id=randomUUID(),createdAt=new Date().toISOString();this.run("INSERT INTO branch_installation_plans(id,branch_id,expected_version_id,expected_configuration_revision,package_json,bindings_json,preview_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",id,branchId??null,branch?.versionId??null,branchId?this.row('SELECT configuration_revision FROM branches WHERE id=?',branchId)!.configuration_revision:null,packageJson,bindingsJson,previewJson,createdAt,createdAt);
   if(branchId)this.run('UPDATE branch_installation_plans SET expected_resources_hash=? WHERE id=?',this.resourceRevision(branchId),id);
   return {id,operations,...(memoryUpdate?{memoryUpdateReview:memoryUpdate.review}:{}),...(outputRoleReview?{outputRoleReview}:{}),...(fullImportReview?{fullImportReview}:{})};
@@ -474,9 +504,10 @@ export class BranchInstallationService {
       if(receipt.status!=='completed')throw new Error('The staged Agent import is still being recovered');
       const result=receipt.result_json?JSON.parse(receipt.result_json) as ImportAgentPackageResponse:undefined;
       if(!result||result.rootAgentId!==id||result.agentIds.length!==1||result.agentIds[0]!==id)throw new InstallationConflictError('A staged Agent does not match its completed import receipt; review the package again');
+      this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);
       await this.engine!.verifyStagedMemory(resource.creation_operation_id,a.definition);
      }
-     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
+     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,...this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!).fileSelections?.[JSON.stringify([c.ref,a.ref])],branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});this.ensureApplying(plan.id,branchId);this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
      const node=a.definition.agents[0]!;
      if(resource?.state!=='active')this.store.updateAgent(id,{title:node.title,activeEngine:bindings.engines?.[node.engine]??pkg.engines?.[node.engine]??node.engine,model:node.model??null,effort:node.effort??null,managementPermissions:node.managementPermissions});
     }
@@ -517,7 +548,7 @@ export class BranchInstallationService {
      const branch=this.branches.getBranch(branchId)!;
      if(!this.publish)throw new Error('Package publisher unavailable');
      if(branch.versionId!==(plan.expected_version_id??''))throw new InstallationConflictError('Branch changed while the update was applying; review the package again');
-     const keys=new Set(pkg.chats.flatMap(c=>['',...c.agents.map(a=>a.ref)].map(a=>stableJson([pkg.packageId,c.ref,a]))));
+     const targetKeys=new Set(pkg.chats.flatMap(c=>['',...c.agents.map(a=>a.ref)].map(a=>stableJson([pkg.packageId,c.ref,a]))));
      for(const r of this.rows("SELECT * FROM branch_installation_resources WHERE branch_id=? AND state IN ('active','staging')",branchId)){
       const state=keys.has(stableJson([r.package_id,r.chat_ref,r.agent_ref]))?'active':'retiring';
       if(state==='retiring'&&r.agent_ref){const chat=this.row("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=''",branchId,r.package_id,r.chat_ref);this.run("INSERT OR IGNORE INTO branch_retirement_references SELECT ?,ref.execution_id FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=? AND e.state IN ('queued','running','waiting')",r.local_id,chat?.local_id??'');}

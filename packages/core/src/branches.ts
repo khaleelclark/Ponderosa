@@ -301,3 +301,8 @@ export interface BranchHistoricalCheckpointDto {
   id:number; executionId:string; branchId:string; contentHash:string; restoreSupported:boolean;
   eligibility:'script_control_frontier'|'unsupported_dependency';
 }
+
+/** Explicit new content destinations per JSON.stringify([chatRef,agentRef]); no live root authority. */
+export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>}
+export type BranchImportFileSelections=Record<string,BranchImportFileSelection>;
+export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:string[];wholeWorkingFolder?:boolean}>;
