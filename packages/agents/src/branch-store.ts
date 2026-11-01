@@ -1,4 +1,4 @@
-import {captureGenerationOneHost,generationOneEvidence,type GenerationOneProof} from './branch-resource-generation-one.js';
+import {captureGenerationOneHost,generationOneEvidence,generationHistoricalSelections,type GenerationOneProof} from './branch-resource-generation-one.js';
 import {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';
 import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import {generationExitKey,requireGenerationExitIntakeFence,readGenerationExitCapture,fenceGenerationExitCapture,reserveGenerationExitCapture,sealGenerationExitCapture} from './branch-generation-exit-capture.js';
@@ -864,7 +864,7 @@ export class BranchStore {
       const saved=readIssuedResourceContinuation(this.sqlite,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.continuation;
       if(!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
         ||!branch||branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Current issued destination pins/owner unavailable');
-      if(c.generationRetry?input.historicalReviewHash!==payloadHash([c.generationRetry.selection]):input.historicalReviewHash!==undefined)throw Error('Exact server historical selection review required');
+      if(c.generationRetry?input.historicalReviewHash!==payloadHash(generationHistoricalSelections(c.generationRetry)):input.historicalReviewHash!==undefined)throw Error('Exact server historical selection review required');
       const definition=this.version(branchId,c.versionId)!.definition;
       if(this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||definition.steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Branch destination capabilities restricted');
       if(saved.custody.agentIds.length>(definition.policy.maxEphemeralAgents??100))throw Error('Destination ephemeral Agent budget unavailable');
@@ -873,7 +873,7 @@ export class BranchStore {
       const idMap=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
       const reservation:import('@ponderosa/core').CoordinationDestinationReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,
         commandKey:input.commandKey,operatorId:chat.operatorId,reconcileEffects:true,custody:saved.custody,
-        ...(c.generationRetry?{historicalPartition:[c.generationRetry.selection]}:{}),
+        ...(c.generationRetry?{historicalPartition:generationHistoricalSelections(c.generationRetry)}:{}),
         destination:{projectId:chat.projectId,conversationId:chat.conversationId,executionId:next.id,resourceStepId:idMap[saved.selected.resources![0]!.step_execution_id]!,resourceGeneration:0}};
       const reserved=this.coordination.reserveCoordinationDestination(reservation,authority,now);
       const plan={schema:'ponderosa.branch.issued-destination.v1',input,reservation,admissionId:reserved.admissionId,idMap,chatCreationKey:chat.creationKey};
@@ -963,10 +963,10 @@ export class BranchStore {
       if(!this.resourceOperationAuditMatches(r,'chat',chat)||!this.resourceOperationAuditMatches(r,'import',imported)||chat&&!this.resourceOperationReleased(r,chat))return false;
       // Retained mutable lists cannot erase identities from the owned completed import audit.
       let contexts=this.rows('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=?',r.step_execution_id);
-      if(generationOne&&r.generation===1){
-        const proof=generationOneEvidence(this.sqlite,generationOne.originalSelected),old=contexts.filter(c=>c.generation===0);
-        if(proof.selected.execution![0]!.id!==executionId||proof.selected.resources![0]!.step_execution_id!==r.step_execution_id||old.length!==1||stableJson(old[0])!==stableJson(proof.retired.context))return false;
-        contexts=contexts.filter(c=>c.generation!==0);
+      if(generationOne&&r.generation>0){
+        const proof=generationOneEvidence(this.sqlite,generationOne.originalSelected),old=contexts.filter(c=>c.generation!==r.generation);
+        if(proof.selected.execution![0]!.id!==executionId||proof.selected.resources![0]!.step_execution_id!==r.step_execution_id||proof.generation!==r.generation||old.length!==proof.generations.length||proof.generations.some(g=>old.filter(c=>stableJson(c)===stableJson(g.retired.context)).length!==1))return false;
+        contexts=contexts.filter(c=>c.generation===r.generation);
       }
       const context=contexts[0],ids=imported?.state==='completed'?imported.result?.agentIds:[];
       if(this.row("SELECT 1 FROM branch_resource_members WHERE step_execution_id=? AND origin!='template'",r.step_execution_id))return false;
@@ -1298,11 +1298,17 @@ export class BranchStore {
   }
   issuedResourceCapture(executionId:string,stepId:string,commandKey:string) {return issuedResourceCapture(this.sqlite,executionId,stepId,commandKey);}
   previewGenerationOneCapture(executionId:string){
+    const preview=this.previewGenerationHistoryCapture(executionId);if(preview.generation!==1)throw Error('Generation-one preview requires current generation one');return {...preview,generation:1 as const};
+  }
+  previewGenerationHistoryCapture(executionId:string){
     return this.sqlite.transaction(()=>{
       const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current generation capture restricted');
       const value=captureGenerationOneHost(this.sqlite,selectBranchUnit(this.sqlite,executionId));
       const issuedContinuation=encodeIssuedResourceContinuation(this.sqlite,executionId,value.selected,value.host,false,value.generationRetry);
-      return {reviewHash:payloadHash({...value,issuedContinuation}),historicalReviewHash:payloadHash([value.generationRetry.selection]),historicalPartition:[value.generationRetry.selection],generation:1 as const};
+      const resource=value.selected.resources![0]!,step=value.selected.steps!.find(s=>s.id===resource.step_execution_id)!,policy=this.definition(e).steps.find(s=>s.id===step.step_id)!.failure;
+      if(policy?.action!=='retry')throw Error('Configured retry budget required');
+      const historicalPartition=generationHistoricalSelections(value.generationRetry);
+      return {reviewHash:payloadHash({...value,issuedContinuation}),historicalReviewHash:payloadHash(historicalPartition),historicalPartition,generation:resource.generation as number,consumedAttempts:resource.generation+1 as number,maxAttempts:policy.maxAttempts};
     })();
   }
   reserveIssuedResourceCapture(executionId:string,stepId:string,generation:number,commandKey:string,expectedReviewHash?:string) {
@@ -1665,7 +1671,7 @@ export class BranchStore {
       if(!this.resourceCanRetire(stepExecutionId,ids) || this.row("SELECT 1 FROM branch_resource_members m JOIN agents a ON a.id=m.agent_id WHERE m.step_execution_id=? AND a.deleted_at IS NULL",stepExecutionId))throw new Error("Resource retirement is no longer eligible");
       if(r.retry_draining===1){
         // Preserve the exact drained generation before replacing its current pointers.
-        // Replay still refuses later generations until it validates this full retry history.
+        // Only the dedicated retry codec may partition this retained history.
         const generationKey=`resource-generation-retired:${stepExecutionId}:${r.generation}`;
         const exitCapture=readGenerationExitCapture(this.sqlite,r.execution_id,stepExecutionId,r.generation);
         if(exitCapture?.state!=='sealed')throw Error('Sealed precleanup generation evidence required');

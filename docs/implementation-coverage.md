@@ -655,3 +655,18 @@ Deferred helper/transport/mounted sources are present but unexecuted; runtime,
 package/provider/native/accessibility/mobile and end-to-end qualification remain
 open. No tests/checks/build/types/Node/native/browser/preparation/execution/
 migrations/push/deploy/newworkers.
+
+### Serial resource generation history source extension
+
+The one-resource serial ASYNC/SYNC source path now covers generations 1–32 with
+configured fresh-context maxAttempts <=33, exhaustive EVERY prior sealed capture,
+retirement audit/failed Request/attempt/provider/native/custody chain, current-only
+executable roots, server-owned preview/discovery/SDK selection lists, current human
+all-facts review/policy, existing one-owner Runtime admission/receipt/readback and
+preserved consumed attempt numbers. Later exit capture explicitly partitions older
+roots after prior original Chat deletion. Deferred actual producer->retry->capture
+->review->admit fixture SOURCE includes generations 2, 3 and 32 plus no-reset-budget
+behavior. No execution, qualification or passing assertion is claimed. The already
+joined Runtime529 source-scope/fence correction omitted by the assembled base is
+included. See docs/branch-generation-one-destination.md for exact bounds and
+remaining parallel/called-tree/EXIT/unknown/secret/artifact/web limitations.

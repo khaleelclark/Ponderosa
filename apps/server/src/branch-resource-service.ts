@@ -1,3 +1,4 @@
+import {generationHistoricalSelections} from '@ponderosa/agents';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
 import type {ChatCreator} from "./routes/projects.js";
 import {createHash} from 'node:crypto';
@@ -77,20 +78,21 @@ export class BranchResourceService {
     const current=this.store.sqlite.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(executionId,checkpointId) as typeof row;
     if(!current||current.snapshot_json!==row.snapshot_json||current.content_hash!==row.content_hash)throw Error('Historical resource checkpoint changed during custody verification');
   }
-  listGenerationOneCaptures(executionId:string,stepId:string):import('@ponderosa/core').BranchIssuedResourceCaptureDto[] {
+  listGenerationOneCaptures(executionId:string,stepId:string):import('@ponderosa/core').BranchIssuedResourceCaptureDto[] {return this.listGenerationHistoryCaptures(executionId,stepId,1);}
+  listGenerationHistoryCaptures(executionId:string,stepId:string,generation?:number):import('@ponderosa/core').BranchIssuedResourceCaptureDto[] {
     const rows=this.store.sqlite.prepare(`SELECT command_key FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-resource-capture:%'
-      AND json_extract(result_json,'$.source.intent.resourceStepId')=? AND json_extract(result_json,'$.source.intent.resourceGeneration')=1 ORDER BY command_key LIMIT 101`).all(executionId,stepId) as {command_key:string}[];
-    if(rows.length>100)throw Error('Generation-one discovery exceeds bounded inventory');
+      AND json_extract(result_json,'$.source.intent.resourceStepId')=? AND json_extract(result_json,'$.source.intent.resourceGeneration')>0 AND (? IS NULL OR json_extract(result_json,'$.source.intent.resourceGeneration')=?) ORDER BY command_key LIMIT 101`).all(executionId,stepId,generation??null,generation??null) as {command_key:string}[];
+    if(rows.length>100)throw Error('Generation-history discovery exceeds bounded inventory');
     return rows.map(row=>this.issuedResourceCaptureStatus(executionId,stepId,row.command_key.slice('issued-resource-capture:'.length)));
   }
   issuedResourceCaptureStatus(executionId:string,stepId:string,commandKey:string):import('@ponderosa/core').BranchIssuedResourceCaptureDto {
     const journal=this.branches.issuedResourceCapture(executionId,stepId,commandKey);
-    const selection=journal?.snapshot.issuedContinuation?.generationRetry?.selection;
-    return journal?{commandKey,state:journal.state,...(journal.reviewHash?{reviewHash:journal.reviewHash}:{}),...(selection?{historicalPartition:[selection],historicalReviewHash:createHash('sha256').update(stableJson([selection])).digest('hex')}:{}),...(journal.state==='retained'?{checkpointId:journal.checkpointId,checkpointHash:journal.checkpointHash,receipt:journal.receipt}:{}),restoreSupported:false}:{commandKey,state:'not_found',restoreSupported:false};
+    const retry=journal?.snapshot.issuedContinuation?.generationRetry,selection=retry?generationHistoricalSelections(retry):undefined;
+    return journal?{commandKey,generation:journal.source.intent.resourceGeneration,state:journal.state,...(journal.reviewHash?{reviewHash:journal.reviewHash}:{}),...(selection?{historicalPartition:selection,historicalReviewHash:createHash('sha256').update(stableJson(selection)).digest('hex')}:{}),...(journal.state==='retained'?{checkpointId:journal.checkpointId,checkpointHash:journal.checkpointHash,receipt:journal.receipt}:{}),restoreSupported:false}:{commandKey,state:'not_found',restoreSupported:false};
   }
   async captureIssuedResource(executionId:string,stepId:string,generation:number,commandKey:string,expectedReviewHash?:string):Promise<import('@ponderosa/core').BranchIssuedResourceCaptureDto> {
     const previous=this.branches.issuedResourceCapture(executionId,stepId,commandKey);
-    if(previous&&generation===1&&expectedReviewHash!==previous.reviewHash)throw Error('Issued capture preview conflict');
+    if(previous&&generation>0&&expectedReviewHash!==previous.reviewHash)throw Error('Issued capture preview conflict');
     if(previous&&previous.source.intent.resourceGeneration!==generation)throw Error('Issued capture command conflict');
     if(previous?.state==='retained')return this.issuedResourceCaptureStatus(executionId,stepId,commandKey);
     if(!this.packages)throw Error('Checkpoint package service unavailable');

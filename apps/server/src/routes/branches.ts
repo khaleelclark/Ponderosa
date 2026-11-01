@@ -553,6 +553,12 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   const ownedResource=(branchId:string,executionId:string,stepId:string)=>{
     if(!store.sqlite.prepare('SELECT 1 FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=? AND e.id=? AND e.branch_id=?').get(stepId,executionId,branchId))throw Error('Resource owner unavailable');
   };
+  app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/generation-history-captures',(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return context.resources.listGenerationHistoryCaptures(p.executionId,p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/generation-history-preview',(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return branches.previewGenerationHistoryCapture(p.executionId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/generation-one-captures',(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return context.resources.listGenerationOneCaptures(p.executionId,p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });

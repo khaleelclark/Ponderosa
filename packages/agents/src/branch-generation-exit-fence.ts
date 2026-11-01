@@ -18,8 +18,8 @@ export function fenceBranchGenerationExit(db:Database.Database,input:BranchGener
  }
  const resource=db.prepare(`SELECT r.*,e.branch_id AS original_branch_id FROM branch_resources r JOIN branch_step_executions s ON s.id=r.step_execution_id AND s.execution_id=r.execution_id
   JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id
-  JOIN conversations c ON c.id=r.chat_id AND c.project_id=b.project_id AND c.branch_id=e.branch_id AND c.branch_execution_id=e.id
-  WHERE r.execution_id=? AND r.step_execution_id=? AND r.generation=? AND r.chat_id=? AND b.project_id=? AND r.retry_draining=1 AND r.state!='retired'`).get(input.executionId,input.stepExecutionId,input.generation,input.conversationId,input.projectId);
+  JOIN conversations c ON c.id=r.chat_id AND c.branch_id=e.branch_id AND c.branch_execution_id=e.id
+  WHERE r.execution_id=? AND r.step_execution_id=? AND r.generation=? AND r.chat_id=? AND c.project_id=? AND r.retry_draining=1 AND r.state!='retired'`).get(input.executionId,input.stepExecutionId,input.generation,input.conversationId,input.projectId);
  if(!resource)throw Error('Original retry-draining resource generation required');
  const members=db.prepare('SELECT * FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(input.stepExecutionId) as Array<{agent_id:string}>;
  const actual=db.prepare('SELECT id FROM agents WHERE conversation_id=? AND project_id=? AND deleted_at IS NULL ORDER BY id').all(input.conversationId,input.projectId) as Array<{id:string}>;

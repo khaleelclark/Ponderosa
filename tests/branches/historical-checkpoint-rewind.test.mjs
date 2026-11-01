@@ -964,7 +964,7 @@ async function openCalledTreeResource(store,branches,dir,executionId,branchId){
  branches.unitTransaction(()=>{store.updateAgentCreationOperation(op.id,{status:'completed',result});branches.completeResourceOperation(r.step_execution_id,'import',token,result);})();await branches.unitSaver.drain();
  if(branches.resourceCaptureEligible(r.step_execution_id)){const source=branches.reserveResourceCapture(r.step_execution_id),receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-called-opening',sha256:hash('opening'),byteLength:1};branches.finishResourceCapture(source,receipt);await branches.unitSaver.drain();}
  branches.bindResource(r.step_execution_id,result);await branches.unitSaver.drain();
- return {requestId:store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id,agentId:id,chatId:chat.id,stepId:r.step_execution_id};
+ return {requestId:store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=? ORDER BY number DESC LIMIT 1').get(r.step_execution_id).request_id,agentId:id,chatId:chat.id,stepId:r.step_execution_id};
 }
 async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false,calledResources=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
@@ -975,7 +975,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
  const count=typeof twoResources==='number'?twoResources:twoResources?2:1;
  const teams=Array.from({length:count},(_,i)=>i?`team${i+1}`:'team');
- const resourceSteps=teams.map((id,i)=>({id,kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:i?'Additional inert local result':'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:2,delayMs:0,freshContext:true}}:{})}));
+ const resourceSteps=teams.map((id,i)=>({id,kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:i?'Additional inert local result':'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:typeof freshRetry==='number'?freshRetry:2,delayMs:0,freshContext:true}}:{})}));
  const arms=teams.map(id=>`${id}-arm`);
  const controls=parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[...arms,'side-arm']}]:[];
  const edges=parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},...teams.flatMap((id,i)=>[{id:arms[i],from:'fork',to:id,on:'selected'},{id:`${id}-join`,from:id,to:'join',on:'success'}]),{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...teams.map((id,i)=>({id:`${id}-next`,from:id,to:teams[i+1]??'suffix',on:'success'}))];
@@ -1515,8 +1515,8 @@ async function issuedDestinationFixture(t,mode='async',parallel=false,existing){
  const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
  const {BranchDisclosureReviewService}=await import('../../apps/server/dist/branch-disclosure-review.js');
  const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
- const historical=saved.snapshot.issuedContinuation?.generationRetry?.selection;
- const allowedReceipts=[saved.receipt,...(historical?[f.branches.generationExitCapture(f.source.id,historical.stepId,0).receipt]:[])];
+ const retry=saved.snapshot.issuedContinuation?.generationRetry,historical=retry?(retry.history?.map(v=>v.selection)??[retry.selection]):undefined;
+ const allowedReceipts=[saved.receipt,...(historical??[]).map(selection=>f.branches.generationExitCapture(f.source.id,selection.stepId,selection.generation).receipt)];
  let bytes=true,creates=0,imports=0,reads=0,verifications=0;
  const packageFor=receipt=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date(0).toISOString(),sourceLabel:'Inert captured organization',rootRef:receipt.agentIds[0],
   agents:receipt.agentIds.map(ref=>({ref,title:'Retained worker',engine:'codex',sourceChat:{ref:receipt.sourceChatId,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))});
@@ -1550,7 +1550,7 @@ async function issuedDestinationFixture(t,mode='async',parallel=false,existing){
    const project=f.store.createProject({...input,hostPath:f.branches.localConfiguration(f.branch.id).directories.root,chatOwned:true,...owner},{idempotencyKey:key,payloadHash:hash(stableJson({input,owner}))});return f.store.getConversation(project.lastConversationId);};
   return {disclosure,composer:new BranchIssuedDestinationService(f.store,f.branches,coordination,disclosure,()=>engine,createChat)};
  };
- const input={commandKey:'restore-issued-cut',checkpointId:saved.checkpointId,expectedHash:saved.checkpointHash,reconcileEffects:true,...(historical?{historicalReviewHash:hash(stableJson([historical]))}:{})};
+ const input={commandKey:'restore-issued-cut',checkpointId:saved.checkpointId,expectedHash:saved.checkpointHash,reconcileEffects:true,...(historical?{historicalReviewHash:hash(stableJson(historical))}:{})};
  return {f,saved,input,services,setBytes:value=>{bytes=value;},get counts(){return {creates,imports,reads,verifications};}};
 }
 for(const mode of ['async','sync'])test(`issued ${mode} composer reserves -> stages -> human approves -> atomically admits -> exact restart readback`,async t=>{
@@ -2208,4 +2208,79 @@ for(const mode of ['async','sync'])test(`called issued owner tree ${mode} captur
  assert.throws(()=>f.branches.issuedTreeCapture(f.root.id,'called-tree'),/sealed checkpoint/);
  db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,row.content_hash,retained.checkpointId);
  await f.reopen();assert.equal(f.branches.issuedTreeCapture(f.root.id,'called-tree').checkpointHash,retained.checkpointHash);
+});
+
+// Deferred real serial chain source. No execution/qualification claim; provider/package handles remain inert.
+for(const mode of ['async','sync'])for(const generation of [2,3,32])test(`serial generation ${generation} ${mode} discloses every prior generation and preserves budget`,async t=>{
+ const f=await reservationHistoryFixture(t,mode,false,false,generation+1),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ const db=f.store.sqlite,coordination=new CoordinationV3Store(db),dir=f.branches.localConfiguration(f.branch.id).directories.root;
+ const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
+ const seals=[],requests=[],agents=[],chats=[];
+ for(let g=0;g<generation;g++){
+  const opened=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id);requests.push(opened.requestId);agents.push(opened.agentId);chats.push(opened.chatId);
+  assert.equal(db.prepare('SELECT generation FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).generation,g);
+  coordination.updateRequest({requestId:opened.requestId,updateId:`failed-chain-${g}`,kind:'failed',actor:{kind:'agent',id:opened.agentId},payload:{text:`known failed generation ${g}`}});
+  for(let n=0;n<20&&!db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).retry_draining;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+  assert.equal(db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).retry_draining,1);
+  const fence=f.branches.fenceGenerationExit(opened.stepId);assert.equal(fence.identity.generation,g);
+  const agent=f.store.getAgent(opened.agentId),runId=randomUUID(),now=new Date().toISOString();
+  db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,terminal_at) VALUES(?,?,?,'completed','fixture',?,1,'injected',?,?,?,?)").run(runId,agent.projectId,agent.id,now,now,now,now,now);
+  for(const activation of db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(agent.id))coordination.cancelPendingActivation({activationId:activation.id,projectId:agent.projectId,idempotencyKey:`chain-exit:${activation.id}`});
+  let alive=true;const handle={processIdentity:{pid:525252+g,pgid:525252+g,birthMarker:`inert-chain-${g}`},isAlive:()=>alive,close:async()=>{alive=false;}};
+  const authority=new ProviderProcessAuthority(db,`inert-chain-provider-${g}`);authority.recover=()=>handle;authority.register(handle,{purpose:'provider Run',projectId:agent.projectId,agentId:agent.id,runId,runFence:1});await authority.terminateAgents(new Set([agent.id]),'inert complete chain');
+  const journal=f.branches.reserveGenerationExit(f.source.id,opened.stepId,g);
+  assert.deepEqual(journal.envelope.hostDependencies.roots.map(r=>r.requestId),[opened.requestId]);
+  assert.equal(journal.envelope.selected.attempts.filter(a=>a.step_execution_id===opened.stepId).length,g+2);
+  const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:`inert-chain-seal-${g}`,sha256:hash(`private generation ${g}`),byteLength:1};
+  db.transaction(()=>f.branches.sealGenerationExit(f.source.id,opened.stepId,g,receipt))();seals.push(f.branches.generationExitCapture(f.source.id,opened.stepId,g));
+  const deletion=f.store.previewAgentDeletion([agent.id]);f.store.deleteAgentSubtrees([agent.id],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
+  const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);f.branches.resourceRetired(opened.stepId);await f.branches.unitSaver.drain();
+ }
+ const current=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id),preview=f.branches.previewGenerationHistoryCapture(f.source.id);
+ assert.equal(preview.generation,generation);assert.equal(preview.consumedAttempts,generation+1);assert.equal(preview.maxAttempts,generation+1);
+ assert.deepEqual(preview.historicalPartition.map(v=>v.generation),Array.from({length:generation},(_,i)=>i));
+ assert.ok(preview.historicalPartition.every(v=>stableJson(v.discloseTo)===stableJson([current.agentId])));
+ assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/requires current generation one/);
+ // Every missing prior journal is refused independently, including the oldest retained generation.
+ for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/retirement linkage/);throw Error('restore chain');})(),/restore chain/);
+ for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-exit:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/prior-generation seal/);throw Error('restore seal');})(),/restore seal/);
+ assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut','0'.repeat(64)),/preview/);
+ const journal=f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut',preview.reviewHash);
+ assert.deepEqual(journal.snapshot.hostDependencies.roots.map(r=>r.requestId),[current.requestId]);assert.equal(journal.snapshot.selected.attempts.find(a=>a.step_execution_id===current.stepId).number,generation+1);
+ assert.equal(journal.snapshot.issuedContinuation.generationRetry.history.length,generation);
+ for(const tamper of [v=>v.history.pop(),v=>v.history.reverse(),v=>{v.history[1].selection={...v.history[0].selection};},v=>{v.history[0].retirementSha256='0'.repeat(64);},v=>{v.originalSelected.attempts=v.originalSelected.attempts.filter(a=>a.step_execution_id!==current.stepId||a.number!==1);}]){
+  const changed=structuredClone(journal.snapshot.issuedContinuation);tamper(changed.generationRetry);
+  assert.equal(issuedResourceContinuationSupported(db,f.source.id,journal.snapshot.selected,journal.snapshot.hostDependencies,changed),false,'omitted/reordered/aliased/rehashed attempt history refuses');
+ }
+
+ const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'inert-current-chain',sha256:hash('current chain package'),byteLength:1};
+ assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run('changed chain during package capture',f.source.id);assert.throws(()=>f.branches.sealIssuedResourceCapture(f.source.id,current.stepId,'chain-cut',receipt),/frontier changed/);throw Error('restore current cut');})(),/restore current cut/);
+ db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,current.stepId,'chain-cut',receipt))();
+ const saved=f.branches.issuedResourceCapture(f.source.id,current.stepId,'chain-cut');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');const resourceService=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));
+ assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].historicalPartition,preview.historicalPartition);
+ coordination.updateRequest({requestId:current.requestId,updateId:'current-chain-completed',kind:'completed',actor:{kind:'agent',id:current.agentId},payload:{text:'current chain result'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const deletion=f.store.previewAgentDeletion([current.agentId]);f.store.deleteAgentSubtrees([current.agentId],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
+ const chat=f.store.commitConversationDeletion(current.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(current.chatId);f.branches.resourceRetired(current.stepId);await f.branches.unitSaver.drain();
+ const x=await issuedDestinationFixture(t,mode,false,{f,saved}),{composer,disclosure}=x.services();
+ const prepared=await composer.prepare(f.branch.id,f.source.id,x.input),review=await disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ assert.equal(review.facts.filter(v=>v.kind==='historical_generation').length,generation);
+ await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'all-chain-human-approval',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
+ const originalCompose=f.branches.composeIssuedDestination;f.branches.composeIssuedDestination=function(...args){originalCompose.apply(this,args);throw Error('chain owner rollback');};
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash),/chain owner rollback/);f.branches.composeIssuedDestination=originalCompose;
+ assert.equal(db.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' AND identity=?").get(prepared.admissionId),undefined);
+ const admitted=await composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash);
+ assert.deepEqual(admitted.receipt.historicalPartition.map(v=>v.selection),preview.historicalPartition);assert.ok(admitted.receipt.historicalPartition.every(v=>v.historical&&v.dispatchable===false));
+ assert.deepEqual(Object.keys(admitted.receipt.requestMap),[current.requestId]);assert.deepEqual(Object.keys(admitted.receipt.agentMap),[current.agentId]);
+ const destinationAttempts=db.prepare('SELECT a.* FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND s.id=?').all(prepared.destination.executionId,admitted.receipt.owner.resourceStepId);
+ assert.deepEqual(destinationAttempts.map(a=>a.number),[generation+1]);
+ assert.ok(requests.every(id=>!Object.hasOwn(admitted.receipt.requestMap,id)));assert.ok(agents.every(id=>!Object.hasOwn(admitted.receipt.agentMap,id)));
+ await f.reopen();const read=await x.services().composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash);assert.deepEqual(read.receipt,admitted.receipt);
+ // The accepted owner cannot spend the original budget again after its current Request fails.
+ new CoordinationV3Store(f.store.sqlite).updateRequest({requestId:read.receipt.requestMap[current.requestId],updateId:'consumed-budget-failure',kind:'failed',actor:{kind:'agent',id:read.receipt.agentMap[current.agentId]},payload:{text:'remaining retry budget is zero'}});
+ for(let n=0;n<8;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ const remaining=f.store.sqlite.prepare('SELECT a.number FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND s.id=?').all(prepared.destination.executionId,read.receipt.owner.resourceStepId);
+ assert.deepEqual(remaining.map(a=>a.number),[generation+1]);
+ assert.equal(f.store.sqlite.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(read.receipt.owner.resourceStepId).retry_draining,0);
 });

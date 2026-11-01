@@ -19,7 +19,7 @@ export function issuedResourceCapture(db:Database.Database,executionId:string,st
  if(value.schema!=='branch-issued-resource-capture.v1'||stableJson(value)!==row.result_json||value.source.intent.resourceStepId!==stepId
   ||row.input_hash!==payloadHash({stepId,generation:value.source.intent.resourceGeneration,commandKey})||payloadHash(value.snapshot.hostDependencies)!==value.source.intent.hostCutSha256
   ||resourceCaptureFrontierHash(value.snapshot.selected)!==value.source.intent.frontierSha256)throw Error('Issued resource capture journal differs');
- if(value.source.intent.resourceGeneration===1&&value.reviewHash!==payloadHash({selected:value.snapshot.selected,host:value.snapshot.hostDependencies,generationRetry:value.snapshot.issuedContinuation?.generationRetry,issuedContinuation:value.snapshot.issuedContinuation}))throw Error('Issued capture preview differs');
+ if(value.source.intent.resourceGeneration>0&&value.reviewHash!==payloadHash({selected:value.snapshot.selected,host:value.snapshot.hostDependencies,generationRetry:value.snapshot.issuedContinuation?.generationRetry,issuedContinuation:value.snapshot.issuedContinuation}))throw Error('Issued capture preview differs');
  if(value.state==='retained'){
   const sealed=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(value.checkpointId,executionId) as Row|undefined;
   if(!sealed||sealed.content_hash!==value.checkpointHash||payloadHash(JSON.parse(sealed.snapshot_json))!==value.checkpointHash||stableJson(JSON.parse(sealed.snapshot_json))!==stableJson({...value.snapshot,issuedResourceCustody:value.receipt})||!receiptMatchesSource(value.receipt,value.source))throw Error('Issued resource checkpoint seal differs');
@@ -31,9 +31,9 @@ export function reserveIssuedResourceCapture(db:Database.Database,executionId:st
  if(typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200||!Number.isSafeInteger(generation)||generation<0)throw Error('Exact issued resource capture intent required');
  if(db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-abandoned:${payloadHash(key(commandKey))}`))throw Error('Issued capture was explicitly abandoned');
  const previous=issuedResourceCapture(db,executionId,stepId,commandKey);
- if(previous){if(generation===1&&expectedReviewHash!==previous.reviewHash)throw Error('Issued capture preview conflict');if(previous.source.intent.resourceGeneration!==generation)throw Error('Issued resource capture command conflict');return previous;}
+ if(previous){if(generation>0&&expectedReviewHash!==previous.reviewHash)throw Error('Issued capture preview conflict');if(previous.source.intent.resourceGeneration!==generation)throw Error('Issued resource capture command conflict');return previous;}
  const originalSelected=selectBranchUnit(db,executionId),e=originalSelected.execution?.[0],r=originalSelected.resources?.[0];
- const retry=generation===1?captureGenerationOneHost(db,originalSelected):undefined,selected=retry?.selected??originalSelected;
+ const retry=generation>0?captureGenerationOneHost(db,originalSelected):undefined,selected=retry?.selected??originalSelected;
  const pins=db.prepare(`SELECT b.deleting,b.enabled,b.active_version_id version_id,b.binding_revision_id,b.configuration_json,
   v.content_hash version_hash,x.content_hash binding_hash FROM branches b JOIN branch_versions v ON v.id=b.active_version_id JOIN branch_bindings x ON x.id=b.binding_revision_id WHERE b.id=?`).get(e?.branch_id) as Row|undefined;
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
@@ -52,7 +52,7 @@ export function reserveIssuedResourceCapture(db:Database.Database,executionId:st
  for(const id of agentIds)if(!db.prepare('SELECT 1 FROM agents WHERE id=? AND conversation_id=? AND deleted_at IS NULL').get(id,r.chat_id)
   ||db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM agent_deletion_pending WHERE agent_id=? LIMIT 1").get(id,id,id))throw Error('Issued resource participants must survive and drain before capture');
  const issuedContinuation=encodeIssuedResourceContinuation(db,executionId,selected,hostDependencies,false,retry?.generationRetry);
- if(retry&&(!expectedReviewHash||expectedReviewHash!==payloadHash({...retry,issuedContinuation})))throw Error('Exact generation-one preview changed or missing');
+ if(retry&&(!expectedReviewHash||expectedReviewHash!==payloadHash({...retry,issuedContinuation})))throw Error('Exact later-generation preview changed or missing');
  const source:CheckpointPackageSource={checkpointId:randomUUID(),sourceChatId:r.chat_id,agentIds:[...agentIds],intent:{executionId,resourceStepId:stepId,resourceGeneration:generation,frontierSha256:resourceCaptureFrontierHash(selected),bindingSha256:pins.binding_hash,configurationSha256:payloadHash(Object.fromEntries(Object.entries(JSON.parse(configuration.configuration_json)).filter(([k])=>k!=='secretBindings'))),hostCutSha256:payloadHash(hostDependencies)}};
  // Refused by ordinary rewind. Only the dedicated reviewed destination consumer may admit it.
  const snapshot={schema:'branch-unit-selected.v2',captureKind:'issued_resource',restore_supported:false,selected,hostDependencies,issuedContinuation};
@@ -65,7 +65,7 @@ export function sealIssuedResourceCapture(db:Database.Database,executionId:strin
  const journal=issuedResourceCapture(db,executionId,stepId,commandKey);
  if(!journal||!receiptMatchesSource(receipt,journal.source))throw Error('Issued receipt does not bind its exact host cut');
  if(journal.state==='retained'){if(stableJson(journal.receipt)!==stableJson(receipt))throw Error('Issued retained receipt differs');return;}
- const originalSelected=selectBranchUnit(db,executionId),retry=journal.source.intent.resourceGeneration===1?captureGenerationOneHost(db,originalSelected):undefined,selected=retry?.selected??originalSelected,host=retry?.host??captureBranchHostCut(db,executionId,selected);
+ const originalSelected=selectBranchUnit(db,executionId),retry=journal.source.intent.resourceGeneration>0?captureGenerationOneHost(db,originalSelected):undefined,selected=retry?.selected??originalSelected,host=retry?.host??captureBranchHostCut(db,executionId,selected);
  const e=selected.execution?.[0],branch=db.prepare('SELECT * FROM branches WHERE id=?').get(e?.branch_id) as Row|undefined;
  if(!branch||branch.deleting||!branch.enabled||branch.active_version_id!==e?.version_id||branch.binding_revision_id!==e?.binding_revision_id
   ||payloadHash(Object.fromEntries(Object.entries(JSON.parse(branch.configuration_json)).filter(([k])=>k!=='secretBindings')))!==journal.source.intent.configurationSha256

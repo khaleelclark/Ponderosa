@@ -1,3 +1,4 @@
+import {captureGenerationOneHost} from './branch-resource-generation-one.js';
 import {fenceBranchGenerationExit,generationExitHeld} from './branch-generation-exit-fence.js';
 import type Database from 'better-sqlite3';
 import {randomUUID} from 'node:crypto';
@@ -68,7 +69,8 @@ function envelope(db:Database.Database,journal:Row,expectedRevision?:string){
  if(!branch?.enabled||branch.deleting||branch.active_version_id!==scope.versionId||branch.binding_revision_id!==scope.bindingRevisionId||payloadHash(JSON.parse(branch.configuration_json))!==scope.configurationSha256||Object.keys(JSON.parse(branch.configuration_json).secretBindings??{}).length)throw Error('Generation exit current owner pins changed');
  const selected=selectBranchUnit(db,scope.executionId);
  if(selected.resources.length<1||selected.resources.length>32)throw Error('Bounded local resource owner required');
- const hostDependencies=captureBranchHostCut(db,scope.executionId,selected);
+ const retry=scope.generation>0?captureGenerationOneHost(db,selected,true):undefined;
+ const hostDependencies=retry?.host??captureBranchHostCut(db,scope.executionId,selected);
  if(!hostDependencies?.coverage.complete||hostDependencies.artifactRefs.length||hostDependencies.bindingPin.requiredSecretRefs.length||hostDependencies.requests.some(({row})=>!['completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded'].includes(row.state))||hostDependencies.joins.some(({row})=>row.state==='open')||hostDependencies.suspensions.some(({row})=>row.state==='open'||row.dependency_kind!=='join'))throw Error('Complete settled historical Request/Join/effect closure required');
  if(db.prepare("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND (a.state IN ('leased','running','outcome_unknown') OR a.request_id IS NULL AND a.state='waiting') LIMIT 1").get(scope.executionId))throw Error('Owner native/attempt effects remain unsettled');
  if(db.prepare('SELECT 1 FROM branch_executions WHERE parent_execution_id=? LIMIT 1').get(scope.executionId))throw Error('Called owner history remains unsupported');
@@ -91,7 +93,7 @@ function envelope(db:Database.Database,journal:Row,expectedRevision?:string){
  const participants=scope.agentIds.map(agentId=>({agentId,runIds:(db.prepare('SELECT id FROM scheduler_runs WHERE agent_id=? ORDER BY id').all(agentId) as Row[]).map(r=>r.id)}));
  const providerExitEvidence=readProviderExitEvidence(db,{projectId:scope.projectId,conversationId:scope.chatId,participants,expectedRevision});
  if(Buffer.byteLength(stableJson(effectClosure))>16*1024*1024)throw Error('Generation effect closure exceeds bound');
- const result={schema:'branch-prior-generation.v1' as const,identity:scope,intakeFence:journal.intakeFence as {identity:string;sha256:string},selected,hostDependencies,nativeScriptExits,effectClosure,providerExitEvidence,nativeState:'not_captured' as const,restore_supported:false as const};
+ const result={schema:'branch-prior-generation.v1' as const,identity:scope,intakeFence:journal.intakeFence as {identity:string;sha256:string},selected,hostDependencies,...(retry?{generationRetry:retry.generationRetry}:{}),nativeScriptExits,effectClosure,providerExitEvidence,nativeState:'not_captured' as const,restore_supported:false as const};
  if(Buffer.byteLength(stableJson(result))>32*1024*1024)throw Error('Generation envelope exceeds bound');return result;
 }
 export function reserveGenerationExitCapture(db:Database.Database,executionId:string,stepId:string,generation:number):Row {

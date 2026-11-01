@@ -214,4 +214,4 @@ export {readDestinationHistoricalPartition,destinationHistoricalFacts} from './c
 
 export {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';
 
-export {captureGenerationOneHost,generationOneEvidence,type GenerationOneProof} from './branch-resource-generation-one.js';
+export {captureGenerationOneHost,generationOneEvidence,generationHistoricalSelections,MAX_RETAINED_RESOURCE_GENERATIONS,type GenerationOneProof} from './branch-resource-generation-one.js';

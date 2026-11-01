@@ -33,8 +33,10 @@ export function readDestinationHistoricalPartition(db:Database.Database,r:Coordi
   if(seen.has(key))throw Error('Historical generation selections alias');seen.add(key);
   if(selection.executionId!==r.sourceExecutionId||!Number.isSafeInteger(selection.generation)||selection.generation<0||!Array.isArray(selection.discloseTo)||!selection.discloseTo.length||new Set(selection.discloseTo).size!==selection.discloseTo.length||selection.discloseTo.some(id=>typeof id!=='string'||!id))throw Error('Exact historical source/current recipients required');
   const seal=readGenerationExitCapture(db,selection.executionId,selection.stepId,selection.generation);
-  // Original Project is bound by its immutable seal; fresh destination Project has separate current policy.
   if(!seal||seal.state!=='sealed'||seal.identity.branchId!==r.branchId||seal.checkpointId!==selection.checkpointId||seal.checkpointHash!==selection.checkpointHash||seal.envelopeSha256!==selection.envelopeSha256||stableJson(seal.intakeFence)!==stableJson(selection.intakeFence))throw Error('Exact prospective sealed historical generation required');
+  // Original Project/Chat ownership is sealed by the intake fence, independently of the fresh destination.
+  const originalChat=db.prepare('SELECT project_id,branch_id,branch_execution_id FROM conversations WHERE id=?').get(seal.identity.chatId) as {project_id:string;branch_id:string;branch_execution_id:string}|undefined;
+  if(originalChat&&(originalChat.project_id!==seal.identity.projectId||originalChat.branch_id!==seal.identity.branchId||originalChat.branch_execution_id!==selection.executionId))throw Error('Historical original Chat/Branch/Project scope differs');
   const resources=r.resources??[{custody:r.custody,destination:r.destination}];
   if(resources.some(v=>v.custody.sourceChatId===seal.identity.chatId)||resources.some(v=>v.custody.agentIds.some(id=>seal.identity.agentIds.includes(id))))throw Error('Historical and executable identities must be disjoint');
   if(!resources.some(v=>v.custody.intent.executionId===selection.executionId&&v.custody.intent.resourceStepId===selection.stepId&&v.custody.intent.resourceGeneration>selection.generation))throw Error('Historical generation must precede the selected current resource');

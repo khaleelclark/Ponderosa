@@ -12,7 +12,7 @@ The existing canonical singular and whole-group reserve APIs accept optional `Co
 }
 ```
 
-Copy exact producer `readGenerationExitCapture` seal references. `discloseTo` contains explicit keys from the CURRENT `stage.agentMap`, selected by the human for the complete envelope. It does not map historical identities. One selection discloses every retained fact in that full generation envelope to that explicit current audience; there is no selective omission or actor/audience rewriting. At most 32 selections and 32 MiB total evidence are accepted. Duplicate selections, unmapped recipients, cross-Branch/Project/execution sources, missing or changed seals/retirement links and aliased current/historical Chat/Agent/Request identities refuse. Historical generations must precede the selected current generation of the same resource Step.
+Copy exact producer `readGenerationExitCapture` seal references. `discloseTo` contains explicit keys from the CURRENT `stage.agentMap`, selected by the human for the complete envelope. It does not map historical identities. One selection discloses every retained fact in that full generation envelope to that explicit current audience; there is no selective omission or actor/audience rewriting. At most 32 selections and 32 MiB total evidence are accepted. Duplicate selections, unmapped recipients, sources outside the sealed original Branch/Project/execution scope, missing or changed seals/retirement links and aliased current/historical Chat/Agent/Request identities refuse. Historical generations must precede the selected current generation of the same resource Step.
 
 Source admission reads the real sealed journal with `readGenerationExitCapture` and its canonical generation-retirement link. Full original envelope, selected frontier, host graph/provenance/update prefixes, original actors/audiences, actual package source/receipt, provider registration/observed-exit ledger, native exit proof and permanent intake fence remain intact. Historical graph validation reuses the canonical reducer/Join/outcome/suspension validators in terminal evidence-only mode. Expired deadlines on settled historical facts remain historical facts; they never become fresh lifetimes or schedulable work. Open/unknown/incomplete facts and runtime artifacts remain held.
 
@@ -36,3 +36,12 @@ checks original historical Project audit-read/deletion-pending status separately
 from current destination policy in candidate, prepare and final authorization.
 No old actor/audience/dispatch map is changed. Broader retry families and all
 executable qualification remain separate.
+
+The bounded serial Branch consumer now supplies the complete ordered generation
+history through generation 32, with configured maxAttempts <=33, canonical server
+preview selection and current-only executable roots. Runtime selection/evidence
+byte bounds and explicit current-recipient human disclosure remain unchanged.
+The original surviving Chat must match its sealed Project/Branch/execution, while
+the destination may have a fresh Project. Exit fencing binds Project via the actual
+resource Chat. See branch-generation-one-destination.md for the source-only bound
+and deferred actual producer/consumer fixtures; no execution is claimed.

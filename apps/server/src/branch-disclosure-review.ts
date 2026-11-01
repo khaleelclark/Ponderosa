@@ -1,3 +1,4 @@
+import {generationHistoricalSelections} from '@ponderosa/agents';
 import {createHash} from 'node:crypto';
 import {
  readDestinationHistoricalPartition,destinationHistoricalFacts,destinationDisclosurePolicy,readIssuedResourceContinuation,readIssuedGroup,stableJson,
@@ -42,9 +43,9 @@ export class BranchDisclosureReviewService {
   for(const projectId of projects)if(!this.store.getProject(projectId)||this.db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw Error('Original Project operator audit-read unavailable');
  }
  private historicalAuditRead(entries:ReturnType<typeof readDestinationHistoricalPartition>):void {
-  for(const p of entries){const projectId=(p.seal as Row).identity.projectId;
-   if(!this.store.getProject(projectId)||this.db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw Error('Original historical Project operator audit-read unavailable');
-  }
+  const projects=new Set<string>();
+  for(const p of entries){projects.add((p.seal as Row).identity.projectId);for(const e of (p.seal as Row).envelope.hostDependencies.requests)projects.add(e.row.project_id);}
+  for(const projectId of projects)if(!this.store.getProject(projectId)||this.db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw Error('Original historical Project operator audit-read unavailable');
  }
  requireCurrentGroupOwner(reservation:CoordinationDestinationReservation):string {
   if(!this.db.inTransaction||!reservation.resources||reservation.resources.length<2||reservation.resources.length>32)throw Error('Bounded group owner transaction required');
@@ -79,7 +80,7 @@ export class BranchDisclosureReviewService {
   if(!e||e.deleting||!e.enabled||!['completed','failed','canceled'].includes(e.state)||e.active_version_id!==saved.continuation.versionId
    ||e.current_binding!==saved.continuation.bindingRevisionId||Object.keys(JSON.parse(e.current_configuration).secretBindings??{}).length
    ||hash(Object.fromEntries(Object.entries(JSON.parse(e.current_configuration)).filter(([k])=>k!=='secretBindings')))!==saved.custody.intent.configurationSha256
-   ||!r||r.generation!==0&&!(r.generation===1&&saved.continuation.generationRetry&&stableJson(reservation.historicalPartition)===stableJson([saved.continuation.generationRetry.selection]))||r.generation!==saved.custody.intent.resourceGeneration||r.chat_id!==saved.custody.sourceChatId
+   ||!r||r.generation!==0&&!(r.generation>0&&saved.continuation.generationRetry&&stableJson(reservation.historicalPartition)===stableJson(generationHistoricalSelections(saved.continuation.generationRetry)))||r.generation!==saved.custody.intent.resourceGeneration||r.chat_id!==saved.custody.sourceChatId
    ||r.state!=='retired'||!this.branches.resourceHistoryCustodySettled(reservation.sourceExecutionId,saved.continuation.generationRetry)||openingCapture&&openingCapture.state!=='retained')throw Error('Current disclosure custody/owner unavailable');
   const ids=(this.db.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(r.step_execution_id) as {agent_id:string}[]).map(m=>m.agent_id);
   if(stableJson(ids)!==stableJson([...saved.custody.agentIds].sort()))throw Error('Disclosure current resource membership changed');

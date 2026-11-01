@@ -81,3 +81,17 @@ existing singular capture/disclosure/admit/readback path. See
 [branch-generation-one-destination.md](branch-generation-one-destination.md).
 This supersedes only that narrow source hold, not parallel/later-generation,
 called-tree admission, missing-old-proof or executable qualification limits.
+
+## Bounded serial generation history
+
+The existing later-generation serial module and shared serial replay now cover
+current generations 1–32, configured maxAttempts up to 33, exhaustive prior seals/
+retirement/failed-Request/attempt/provider/native/custody evidence, and current-only
+host capture. Later precleanup seals retain the full original selected cut but
+capture only that generation's failed root; their prior chain prefix is bound in
+the envelope. Existing singular human-reviewed admission consumes ALL exact
+server-derived selections and preserves consumed attempt numbers/maxAttempts.
+The generation-history preview/discovery and SDK are source-connected. See
+[the complete bound and deferred qualification](branch-generation-one-destination.md).
+This supersedes earlier generation-one-only serial limits in this document;
+parallel retry and called-tree atomic consumption remain refused. Nothing was run.
