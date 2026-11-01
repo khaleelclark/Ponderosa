@@ -15,6 +15,7 @@ export class VoicePhraseBuffer {
   discardQueued(): void { this.queuedOffsets.length = 0; this.consumed = this.startedOffset; }
   get spokenPrefix(): string { return this.text.slice(0, this.consumed); }
   accept(reply: VoiceReplySnapshot, now = performance.now()): string[] {
+    if (reply.presentation === "text") return [];
     if (this.closed || reply.sequence <= this.sequence) return [];
     const identity = JSON.stringify([reply.messageId, reply.agentId, reply.runId, reply.fence, reply.streamId, reply.itemId, reply.providerTurnId]);
     if (this.identity && this.identity !== identity) throw new Error("The response stream changed. Continue in Chat.");

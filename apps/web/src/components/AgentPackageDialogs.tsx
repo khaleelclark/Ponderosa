@@ -104,14 +104,17 @@ export function AgentPackageExportDialog({
   agents: AgentDto[];
   initialOrganization?: boolean;
   onClose(): void;
-  onCopy(mode: PackageMode, organization: boolean): Promise<void>;
-  onDownload(mode: PackageMode, organization: boolean): void;
+  onCopy(mode: PackageMode, organization: boolean, workingFiles?: string[]): Promise<void>;
+  onDownload(mode: PackageMode, organization: boolean, workingFiles?: string[]): void;
 }): JSX.Element {
   const [organization, setOrganization] = useState(initialOrganization);
   const [mode, setMode] = useState<PackageMode>("template");
   const [copying, setCopying] = useState(false);
+  const [workingFiles,setWorkingFiles]=useState('');
+  const selectedPaths=mode==='full'?workingFiles.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
+  const invalidPaths=selectedPaths.some(path=>path.startsWith('/')||path.split(/[\\/]/).includes('..'));
   useEffect(() => {
-    if (open) { setOrganization(initialOrganization); setMode("template"); }
+    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles(''); }
   }, [open, source.id, initialOrganization]);
   const agentCount = selectedAgents(source, agents, organization).length;
   return <Dialog open={open} onClose={copying ? undefined : onClose} fullWidth maxWidth="sm" aria-busy={copying || undefined}>
@@ -120,15 +123,16 @@ export function AgentPackageExportDialog({
       <Typography variant="body2" color="text.secondary">Choose what to export from {source.title}.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={agentCount}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
+      {mode==='full'&&<TextField fullWidth multiline minRows={2} label="Working files to include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path relative to the Agent working folder per line. Selected files may contain sensitive information." sx={{mt:2}}/>}
     </DialogContent>
     <DialogActions sx={{ flexWrap: "wrap", p: 2 }}>
       <Button onClick={onClose} disabled={copying}>Close</Button>
-      <Button startIcon={<ContentCopyOutlinedIcon />} disabled={copying} onClick={async () => {
+      <Button startIcon={<ContentCopyOutlinedIcon />} disabled={copying||invalidPaths} onClick={async () => {
         setCopying(true);
-        try { await onCopy(mode, organization); } finally { setCopying(false); }
+        try { await onCopy(mode, organization, selectedPaths); } finally { setCopying(false); }
       }}>{copying ? "Copying…" : "Copy JSON"}</Button>
-      <Button variant="contained" startIcon={<DownloadOutlinedIcon />} disabled={copying}
-        onClick={() => onDownload(mode, organization)}>Download JSON</Button>
+      <Button variant="contained" startIcon={<DownloadOutlinedIcon />} disabled={copying||invalidPaths}
+        onClick={() => onDownload(mode, organization, selectedPaths)}>Download JSON</Button>
     </DialogActions>
   </Dialog>;
 }

@@ -327,6 +327,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       }
     };
     const accept = (reply: import("@ponderosa/core").VoiceReplySnapshot) => {
+      if (reply.presentation === "text") return;
       if (!valid() || reply.projectId !== projectId || reply.conversationId !== conversationId ||
           reply.agentId !== agentId || reply.messageId !== messageId) return;
       if (observedRun.current && observedRun.current !== reply.runId) { fail("This turn moved to another Run. Continue in Chat."); return; }

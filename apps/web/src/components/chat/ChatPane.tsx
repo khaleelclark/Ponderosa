@@ -19,6 +19,7 @@ import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
 import { hasVisibleReceiptActivity } from "./receiptActivityEntries";
 import { ChatMessageFrame } from "./ChatMessageFrame";
+import {DirectReplyPreview} from "./DirectReplyPreview";
 import { LiveAgentProgress } from "./LiveAgentProgress";
 import { ChatSurface } from "./ChatSurface";
 import {
@@ -168,6 +169,7 @@ function ChatPaneComponent({
     [messages, runs],
   );
   const chatMessages = agentChat.messages;
+  const latestDirectInput=[...chatMessages].reverse().find(message=>message.role==='user'&&message.communicationIntent==='user_dm');
   const visibleRunIds = useMemo(
     () => new Set(agentChat.runs.map(run => run.id)),
     [agentChat.runs],
@@ -520,7 +522,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
-              belowBody: message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : undefined,
+              belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{message===latestDirectInput&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={`${message.id}:${agentId}`} sent={message} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
               attachmentDensity: "compact",
               status:
                 (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (

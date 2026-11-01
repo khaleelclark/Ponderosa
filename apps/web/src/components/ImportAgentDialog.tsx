@@ -79,6 +79,8 @@ export function ImportAgentForm({
   const [fileName, setFileName] = useState<string>();
   const [jsonText, setJsonText] = useState("");
   const [conversationId, setConversationId] = useState("");
+  const [workingFilesDestination,setWorkingFilesDestination]=useState('');
+  const [workingCopyMode,setWorkingCopyMode]=useState<''|'shared'|'separate_git'>('');
 
   const [engineMapping, setEngineMapping] = useState<Record<string, string>>({});
   useEffect(()=>{setRoleReview(undefined);},[packageBlob,conversationId,engineMapping]);
@@ -126,6 +128,7 @@ export function ImportAgentForm({
     setInspectionPhase(undefined);
     setFileName(undefined);
     setJsonText("");
+    setWorkingFilesDestination('');setWorkingCopyMode('');
     setEngineMapping({});
     setAcknowledgeElevatedPermissions(false);
     setError(undefined);
@@ -176,6 +179,8 @@ export function ImportAgentForm({
       packageBlob!,
       {
         conversationId, engineMapping,
+        ...(workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),
+        ...(workingCopyMode?{workingCopyMode}:{}),
         ...(roleReview?{outputRoleReviewId:roleReview.id}:{}),
         chatInstructionsResolution: await chatInstructionsResolution(instructionsAction, destinationInstructions),
         ...(elevatedAgents.length > 0 ? { acknowledgeElevatedManagementPermissions: acknowledgeElevatedPermissions } : {}),
@@ -389,6 +394,8 @@ export function ImportAgentForm({
           {conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}
         </Select>
       </FormControl>}
+      <TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="If the package contains working files, choose a new absolute host folder. Existing folders are never overwritten."/>
+      <TextField select label="Working folder mode" value={workingCopyMode} onChange={event=>{setWorkingCopyMode(event.target.value as typeof workingCopyMode);importRequestId.current=createClientId();}}><MenuItem value="">Keep source mode</MenuItem><MenuItem value="shared">Shared folder</MenuItem><MenuItem value="separate_git">Separate Git copy</MenuItem></TextField>
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
         value={instructionsAction} onChange={value => { setInstructionsAction(value); importRequestId.current = createClientId(); }} />
       {packagePreview && repeatedTitles.length ? <Alert severity="warning">

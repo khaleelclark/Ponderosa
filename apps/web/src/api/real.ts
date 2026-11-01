@@ -807,14 +807,14 @@ export const realApi = {
       body: JSON.stringify(input),
     });
   },
-  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<AgentPortablePackageDto> {
-    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
+  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = []): Promise<AgentPortablePackageDto> {
+    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: workingFiles.length ? JSON.stringify(workingFiles) : undefined })}`);
   },
-  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<string> {
-    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
+  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = []): Promise<string> {
+    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: workingFiles.length ? JSON.stringify(workingFiles) : undefined })}`);
   },
-  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
-    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`);
+  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = []): string {
+    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: workingFiles.length ? JSON.stringify(workingFiles) : undefined, download: 1 })}`);
   },
   importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {

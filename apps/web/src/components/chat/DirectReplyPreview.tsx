@@ -1,0 +1,53 @@
+import {Alert,Box} from '@mui/material';
+import type {MessageDto,VoiceReplySnapshot,VoiceReplyStatus} from '@ponderosa/core';
+import {useEffect,useState} from 'react';
+import {api} from '../../api';
+
+/** Provisional host-authorized DM text; never authored Communication or audio. */
+export function DirectReplyPreview({sent,agentId,messages,projectId}:{sent:MessageDto;agentId:string;messages:MessageDto[];projectId:string}):JSX.Element|null {
+ const [reply,setReply]=useState<VoiceReplySnapshot>();
+ const [error,setError]=useState('');
+ const messageId=sent.communicationEventId??sent.id;
+ const conversationId=sent.conversationId;
+ const receipt=sent.deliveryReceipts?.find(item=>item.targetAgentId===agentId);
+ const executionId=receipt?.state==='recovered'?receipt.recoveryExecutionId:receipt?.executionId;
+ const canonical=messages.some(item=>item.role==='assistant'&&item.communicationIntent==='user_dm'&&item.authorAgentId===agentId&&item.executionId===(reply?.runId??executionId));
+ useEffect(()=>{
+  setReply(undefined);setError('');
+  if(!conversationId||canonical||!receipt||['failed','cancelled','undelivered','retry_exhausted','unconfirmed'].includes(receipt.state))return;
+  let disposed=false,busy=false,version=0,blocked=false;
+  let exposure:VoiceReplyStatus['memoryExposure'];
+  let observed:VoiceReplySnapshot|undefined;
+  const clear=()=>{version++;observed=undefined;setReply(undefined);};
+  const refresh=async()=>{
+   if(disposed||busy||blocked)return;
+   busy=true;const current=version;
+   try{
+    const status=await api.getVoiceReplyStatus(conversationId,messageId,agentId);
+    if(disposed||current!==version)return;
+    const next=status.reply,context=status.memoryExposure;
+    if(status.messageId!==messageId||!context||!['valid','disabled'].includes(context.state)||['failed','cancelled','outcome_unknown'].includes(status.runStatus??'')) {if(observed)blocked=true;clear();return;}
+    if(exposure&&(exposure.state!==context.state||exposure.sessionResetSeq!==context.sessionResetSeq||exposure.projectGeneration!==context.projectGeneration||exposure.globalGeneration!==context.globalGeneration)){blocked=true;clear();setError('Reply context changed. Read the completed reply in Chat.');return;}
+    exposure=context;
+    if(!next||next.presentation!=='text'||next.projectId!==projectId||next.conversationId!==conversationId||next.messageId!==messageId||next.agentId!==agentId||next.runId!==status.runId||(context.runId&&context.runId!==next.runId)||(executionId&&executionId!==next.runId)){clear();return;}
+    if(next.state==='failed'||next.failureReason==='context_changed'){blocked=true;clear();setError('Streaming stopped. Waiting for the completed reply.');return;}
+    if(observed&&(observed.runId!==next.runId||observed.fence!==next.fence||observed.streamId!==next.streamId)){blocked=true;clear();return;}
+    if(observed&&next.sequence<observed.sequence)return;
+    observed=next;setError('');setReply(next);
+   }catch(cause){if(!disposed&&current===version){clear();setError(cause instanceof Error?cause.message:'Reply unavailable');}}
+   finally{busy=false;}
+  };
+  const stream=api.subscribeAgent(agentId,undefined,{
+   onEvent:envelope=>{
+    if(envelope.agentId!==agentId)return;
+    const event=envelope.event;
+    if((event.type==='memory_changed'&&event.projectId===projectId)||event.type==='session_reset'){if(observed){blocked=true;setError('Reply context changed. Read the completed reply in Chat.');}clear();exposure=undefined;}
+    if(event.type==='voice_reply'||event.type==='agent_lifecycle'||event.type==='memory_changed'||event.type==='session_reset')void refresh();
+   },onOpen:()=>void refresh(),onStatus:()=>void refresh(),
+  });
+  void refresh();const timer=setInterval(()=>void refresh(),500);
+  return()=>{disposed=true;version++;clearInterval(timer);stream.close();};
+ },[projectId,conversationId,messageId,agentId,executionId,canonical,receipt?.state]);
+ if(canonical)return null;
+ return <>{error&&<Alert severity="warning">{error}</Alert>}{reply?.text&&<Box aria-label="Reply in progress" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',py:1}}>{reply.text}</Box>}</>;
+}
