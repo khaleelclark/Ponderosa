@@ -1,7 +1,8 @@
 # Phase 2 remaining implementation inventory
 
-Source snapshot: `8fba10951`, integration worktree.
-Includes bounded called-owner-tree UI and correlated Claude native command recovery;
+Source snapshot: `38985ae19`, integration worktree.
+Includes bounded called-owner-tree UI, correlated Claude native command recovery,
+original host-effect reconciliation and bounded in-root link/preserve-unknown transport;
 M1, M5 and M6 are resolved in source, with runtime qualification deferred.
 Basis: full `/tmp/ponderosa-phase2-upgrade-c8ace/published/bible-2.md`, all 32
 commandments, verification/Phase 2 instructions and all Build-list text. Source/document reconciliation; current guides and coverage are maintained together.
