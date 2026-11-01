@@ -1092,3 +1092,50 @@ native/browser/runner preparation or execution, migrations, push/deploy/newworke
 Hooks disabled; source/files/Git inspection only.
 
 The [issued owner-tree destination contract](branch-issued-owner-tree-destination.md) now connects the preserved bounded parent/called-child producer to one canonical group destination admission and per-owner checkpoints. It also adds exact mapped item identities for 2–32 generation-zero map resources. This supersedes the earlier blanket called-consumer refusal for this precise source bound. Broader called/multi-resource historical families remain refused; no tests or execution were performed.
+
+Integration: bounded owner-tree consumer47ec3a1e8 assembled as73b15bf1a on
+bb3b8dda1. Actual parent760bba9 Runtime per-owner contract is already assembled
+through870; its two branch_execution_id SQL aliases already match this successor.
+ONLY requested own delta applied, no ancestor replay or broad reference copies.
+Sixteen own and nineteen cumulative paths physically inventoried/source-read;
+twelve cumulative paths owner-byte-equal. Seven composed paths retain existing
+journal retention/discovery/fixtures and coverage notes. Final task delta fifteen
+paths because Runtime alias changes were already present. Writer Integration on
+phase2-implementation-integration. Core group client adds only optional scope and
+ownerMap fields; current UI/SDK methods and existing additive contracts preserved.
+
+Actual source bound: manual parent plus ONE called child, each ONE gen0 resource,
+serial ASYNC/SYNC frontiers. Original owner-specific selected/binding/configuration/
+host/member/package proofs remain mandatory. Both sources settle/retire before
+preparation; every original Project participates in human audit-read checks. Fresh
+accepted parent/manual and child/call owners have individual capability/capacity/
+budget checks, own engine bindings and own Chats. Child input/provenance binds mapped
+parent attempt; actual parent_attempt_id FK attaches only after parent frontier
+insertion inside final admission. N import finish wrappers enclose ONE canonical
+group admit, current-only per-owner frontier/resource/Request composition and final
+per-owner checkpoints; receipt readback checks exact owner maps/checkpoints/ancestry.
+Deferred rollback/restart/child-policy/all-facts fixtures read only. Standalone
+2–32 resource gen0 map items now use mappedMapId:itemIndex, preserving original
+indices/path/join closure; deferred ASYNC/SYNC2/3/32 source inspected only.
+
+Preserved e68 prospective journal retention/current discovery, ff40 real audit
+identity and metadata-only historical private projection, Runtime owner-tree/event
+recovery and known-ID Codex stored completion, current history/budget UI, conservative
+tree deletion guard and lifecycle.0035–0040 physically present, registered once in
+order, unchanged/unexecuted. Merge-resolution trailing-content mistake was caught
+in Git review and corrected from exact three-way inputs before final handoff.
+
+Specific remaining source fixture debt: tests/organizations/group-journal-audit.test.mjs
+admission mocks provide no coordination_destination_admissions/retirements snapshot
+scope, now read directly by the stronger owner-scope audit validator. Those deferred
+mock fixtures need owner reconciliation before execution; no production scope check
+was weakened and no test outcome is claimed. Web tree adoption, broader called trees,
+parallel/EXIT called frontiers, per-called-owner multiple resources/retry history,
+standalone multi-resource/multi-item retry history, offset restoration/manual recovery,
+missing/preupgrade/already erased proofs and broader payload/secret/artifact/native/
+provider/external-effect families remain unsupported. Native lost-ack/no-ID/durable
+operation-key/source-effect query and Claude no-prompt structured compact gaps remain.
+Real package/custody/provider/native/crash/runtime/end-to-end/accessibility/mobile/full
+Phase2/Bible qualification is open. ZERO tests/checks/build/types/Node/native/browser/
+runner preparation or execution, migrations, push/deploy/newworkers. Hooks disabled;
+source/files/Git inspection only.
