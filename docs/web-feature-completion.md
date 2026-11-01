@@ -77,3 +77,16 @@ and Settings remain available; source grants/profile IDs are never applied. Genu
 early qualified voice acknowledgement remains runtime-owned. Full portability,
 performance, Bible and Phase 2 completion are not claimed. All tests, types, builds,
 browser runs and consolidated qualification remain deferred by direction.
+
+## Workflow installation access review
+
+`BranchPackageDialog` consumes Branches `7b655b210e674ced1680276413b362b903de0012`
+(with reliability `ec80fdea58` and ancestors). During applying, it shows the exact
+pending Chat/Agent's source restrictions and current destination restrictions,
+requires an explicit keep/apply choice and posts the server digest and opaque
+references to `/api/branches/installations/:id/access-review`. A changed pending
+review clears the choice. Success or failure refreshes canonical status; a mutation
+response never replaces a later Stop/terminal state. Stop and background progress
+remain available. This applies no memory/browser grant. No tests, checks, builds,
+types or browser execution accompanied this caller increment. Folder bundles and
+additional import Settings actions remain separate implementation work.
