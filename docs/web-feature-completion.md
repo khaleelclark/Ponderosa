@@ -228,3 +228,103 @@ actual HTTP/download/native lifecycle qualification and separately authorized
 runtime/accessibility/mobile/keyboard/screen-reader validation. No whole #3/#19,
 native parity, whole UI or Phase2 acceptance claimed. Earlier UI/M4/lifecycle/
 history/copy changes remain preserved.
+
+## G5 native file history and transcript fork controls
+
+Source successor of browser UI `350d6fab18b0200b68eaa177afa2e022c06bde0a`.
+Required backend/core exact `3d97ba4d2381c56b7395ec0d047c8753ddc4033d`
+(`/tmp/ponderosa-native-file-checkpoint-fork`), direct successor of
+`b5c34a924437a497eca06440207050cfbc311ec8`. Both commits and their ordinary
+Runtime/Claude/scheduler/shared-adapter prerequisites must be composed. This UI
+uses exported shared REST/catalog/physical-fact types; no backend/core/engine/
+SDK implementation or reference-checkout writes. Actual routes, authority,
+physical collector, projection, future-preference startup handoff and updated
+`docs/native-file-checkpoint-fork.md` were source-read. Browser/history/group/
+M4/lifecycle/copy changes remain preserved.
+
+Agent Settings adds an explicit Native file history & transcript fork dialog.
+No provider/session operation runs on mount or dialog open. Claude preference
+inspection/save targets only `native-history/tracking` with exact `{enabled}`.
+UI distinguishes observed future preference, optional retained native session
+startup flag, absent/unconfirmed startup evidence and actual backup availability.
+Default-off preference comes from the backend. Saving opens/restarts no session,
+adds no retroactive backups and disabling does not erase existing backups. Input
+is stored before preference POST; a lost response holds further saves until an
+explicit GET observes the desired preference. That is current-setting evidence,
+not an invented keyed operation receipt. No automatic preference replay.
+
+Native catalog inspection verifies canonical Agent/Project/Chat/engine/root,
+source native session, completed Run/fence, tool-contract hash and exact boundary
+SHA-256. Only server-returned checkpoint/cut IDs are selectable. Only canonical
+`eligibleTargets` populate the empty same-Chat/project/engine/root target selector;
+IDs remain exact evidence, not guessed directory eligibility. POST still
+revalidates emptiness/current authority. No Agent or native ID is manufactured.
+Codex tracked-file rewind is explicitly unavailable; transcript fork follows the
+actual returned capability. Claude catalog tracking is startup configuration,
+not proof that particular files have backups.
+
+Preview tracked file rewind is a distinct native dry-run command. Display keeps
+native outcome/canRewind/error/optional changed files/counts/skippedLinks honest;
+missing counts remain unavailable. Saved physical preview displays complete file
+and ancestor facts, exact current byte hashes, boundary hash, original key and
+60-second creation/expiry window. Client freshness gates revalidate immediately
+before POST; backend rechecks unchanged physical facts, current write restrictions
+and other managed writers. Catalog has no current policy decision field: UI says
+that permission evidence is unavailable there and server-enforced, never infers
+permission from catalog support. Host/user writers are not locked by the snapshot.
+File and ancestor malformed/non-first hashes/stats/path/root proof fail closed.
+
+Rewind requires its original matching preview and separate restore/delete
+acknowledgement plus confirmation; file consent cannot authorize transcript fork.
+The full original boundary/body and exact preview body/receipt are stored before
+rewind POST. Native `completed` is displayed as a native receipt, never whole
+restoration proof. Refusal/partial/unconfirmed native outcomes remain explicit.
+Conversation, original Runs, Requests, publication, browsers, memory and external
+effects are not settled or replayed by any of these controls; Branch restore is
+labelled separately.
+
+Transcript fork has separate context-only acknowledgement and confirmation.
+Preparing targets the existing empty Agent, stores exact source/cut/target/key,
+holds the source and starts no work. Open target Agent only navigates. UI requires
+a separate new human message through normal Chat to start the real destination
+scheduler Run; it submits no message and opens no provider. Reserved native ID
+is labelled unobserved; observed fresh identity/target Run/fence are displayed
+only from exact canonical receipt. `opened` remains distinct from normal completed
+Run snapshot acceptance. Copied context grants no old tool/Request/browser/source
+authority. Cancel unstarted preparation persists cancellation intent first, uses
+the original fork key and remains enabled only for a verified `prepared` receipt;
+started/unknown/opened forks cannot be cancelled by that control.
+
+All native commands are saved before one POST. Original-key GET recovery remains
+available when the retained runtime/catalog changes; a fresh catalog never
+substitutes for the original body. Request hash, complete immutable source
+boundary, canonical input hash, operation/key, chosen checkpoint/cut/target,
+physical preview and result semantics must match. Storage corruption/conflict,
+missing/wrong receipts, HTTP409, native `started`/unknown and lost cancellation
+hold new commands. No automatic POST retry or native replay. A terminal verified
+receipt can start a separate review; held/missing proof cannot be dismissed as a
+failed operation. Original input stays saved across remount. Client SHA-256
+verification requires browser WebCrypto; unavailable verification holds actions.
+Labels/evidence rows/short consequential consent preserve #29; controls stack on
+narrow layouts and full evidence wraps/scrolls.
+
+Six deliverables physically inventoried/source-read:
+`apps/web/src/components/{AgentDetail.settings.tsx,NativeHistoryControls.tsx,
+nativeHistory.ts}`; `tests/chats/{native-history-ui.test.mjs,
+native-history-ui-mounted.tsx}`; this report. Deferred pure fixtures cover
+boundary/hash/catalog/target/physical-fact/optional-field validation, exact original
+request/input hashing, preview expiry, rewind-preview binding, reserved/observed
+fork identity and future/current tracking distinctions. Deferred mounted source
+covers explicit opt-in/save-before-effect, lost preference response, preview/
+rewind/fork/cancel lost response and remount GET, separate acknowledgements and
+confirmations, full physical evidence, target navigation without work, started/
+wrong-receipt/corrupt-storage holds and honest Codex capability display.
+
+SOURCE ONLY: fixtures unexecuted. No tests/checks/build/types/Node/native/provider/
+browser or runner preparation/execution, installs, backend writes, push/merge/
+deploy or new workers. Remaining: backend/core/Runtime composition; actual provider/
+filesystem/HTTP/native-ACK/goal/permission/lifecycle qualification; browser WebCrypto,
+rendered accessibility/mobile/keyboard/screen-reader validation. Current policy
+is not exposed as a read decision in this backend DTO; native lost-ACK and
+compatibility limits remain those of the frozen contract. No full native parity,
+#3/#19/#29, UI or Phase2 acceptance claimed.

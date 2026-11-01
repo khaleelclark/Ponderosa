@@ -1,4 +1,5 @@
 import { NativeRuntimeControls } from "./NativeRuntimeControls";
+import { NativeHistoryControls } from "./NativeHistoryControls";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
@@ -415,6 +416,7 @@ export function AgentSettingsPane({
       <Paper variant="outlined" sx={{ p: 2 }}><AgentRoleSettings key={agent.id} agent={agent} /></Paper>
       <NativeRuntimeControls key={agent.id} agentId={agent.id} savedModel={agent.model ?? agent.presetSnapshot?.model} />
       <AgentWorkingCopySettings agent={agent} />
+      <NativeHistoryControls agent={agent} onOpenAgent={onOpenAgent} />
       <Paper variant="outlined" sx={{ p: 2 }}><ResourceNotificationSettings kind="agent" id={agent.id} /></Paper>
       <AgentBrowserProfileSettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}>
