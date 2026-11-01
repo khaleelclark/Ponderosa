@@ -157,3 +157,46 @@ for (const trailing of [false, true]) test(`throwing notification observers fail
   } finally { await rpc.close(); }
   assert.equal(rpc.isAlive(), false);
 });
+
+for (const transport of ['cli', 'rpc']) for (const size of [8192, 8193, 20000]) {
+  test(`${transport} diagnostic loss is explicit at stderr length ${size}`, { timeout: 5_000 }, async () => {
+    const { streamProcess } = await import('../../packages/engines/dist/process.js');
+    const script = `process.stderr.write('x'.repeat(${size}-4)+'END!',()=>process.exit(7))`;
+    const handles = []; let rootDetail; let message;
+    if (transport === 'cli') {
+      const events = [];
+      for await (const event of streamProcess({ bin: process.execPath, args: ['-e', script],
+        cwd: process.cwd(), signal: new AbortController().signal, killGraceMs: 50,
+        label: 'fixture', map: () => [], onRuntimeSpawned: h => handles.push(h) })) events.push(event);
+      message = events.find(e => e.type === 'error').message;
+    } else {
+      const rpc = new JsonRpcProcess({ bin: process.execPath, args: ['-e', script],
+        cwd: process.cwd(), signal: new AbortController().signal, killGraceMs: 50,
+        onRuntimeSpawned: h => handles.push(h), onRuntimeRootExit: detail => { rootDetail = detail; } });
+      try {
+        const events = [];
+        for await (const event of rpc.notifications) events.push(event);
+        message = events.find(e => e.method === 'ponderosa/processError').params.message;
+        assert.ok(rootDetail.stderr.endsWith('END!'));
+        assert.equal(rootDetail.stderr.includes('stderr truncated'), size > 8192);
+      } finally { await rpc.close(); }
+    }
+    assert.match(message, /exited with code 7/);
+    assert.ok(message.endsWith('END!'));
+    assert.equal(message.includes('stderr truncated'), size > 8192);
+    if (size > 8192) assert.ok(message.includes(`${size - 8192} UTF-16 code units omitted`));
+    else assert.ok(message.endsWith('x'.repeat(size - 4) + 'END!'));
+    assert.ok(handles.length && handles.every(h => !h.isAlive()));
+  });
+}
+
+test('stderr tail counts incremental omissions and keeps Unicode boundaries intact', async () => {
+  const { StderrTail } = await import('../../packages/engines/dist/stderr-tail.js');
+  const tail = new StderrTail();
+  tail.append('x' + '😀' + 'y'.repeat(8191));
+  assert.equal(tail.text(), '[stderr truncated: 3 UTF-16 code units omitted; retained tail follows]\n' + 'y'.repeat(8191));
+  tail.append('END!');
+  assert.equal(tail.text(), '[stderr truncated: 6 UTF-16 code units omitted; retained tail follows]\n' + 'y'.repeat(8188) + 'END!');
+  const short = new StderrTail(); short.append('😀'); short.append(' ok');
+  assert.equal(short.text(), '😀 ok');
+});
