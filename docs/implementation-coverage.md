@@ -679,3 +679,29 @@ owner-deletion/orphan custody reclamation remain open. Multiowner/parallel resou
 behavior is not qualified. All other source gaps above remain explicit. No tests,
 checks, builds, types, Node/native/browser/runner preparation or execution,
 push/deploy or full #32/Bible/Phase2 acceptance claim.
+
+
+## Resource destination review and custody-release browser caller assembled
+
+Sole UI-owner successora1da73c5 integrated as185f5814d atop9f6904e7a,
+consuming the already integratedf482ecfc0 backend/core contract. All six owner
+deliverables are present. ExecutionPanel mounts resource review beside temporary
+resources. Pure inspection supplies exact owner/generation/destination/custody and
+current policy; explicit per-Agent choices and shared confirmation precede access
+submission. Stale or ambiguous access outcomes refresh pure canonical inspection
+without replay. This supersedes prior missing resource-review/release UI notes.
+
+Release requires local retained custody and the full returned receipt identity.
+The caller retains the entire original command before deletion, inspects the same
+key after ambiguity/remount, and allows only explicit confirmed retry of that
+original input across generation changes. Only matching released readback clears
+it. Restoration-source custody remains managed by its original owner; referenced
+refusals and unconfirmed outcomes remain visible. These are source behaviors,
+not observed browser results. Backend/core, Runtime and existing web provenance
+and graph callers remain preserved.
+
+Issued-resource restoration and broader resource families, deleted-owner/orphan
+reconciliation, accessibility/mobile/performance and integrated qualification
+remain open. Deferred regressions are source only. No tests/checks/types/build,
+Node/native/browser/runner preparation or execution, push/deploy or full
+UI/#32/Bible/Phase2 pass claim.
