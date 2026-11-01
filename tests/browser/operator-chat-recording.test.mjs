@@ -51,7 +51,8 @@ for (const saved of [false,true]) test(`operator ${saved?'saved':'Chat'} recordi
   assert.equal(store.getProjectArtifactPage(project.id,{limit:20,conversationId:other.id}).items.some(x=>x.id===artifact.id),false);
   assert.equal(store.getProjectArtifactPage(project.id,{limit:20,productScope:'branches'}).items.some(x=>x.id===artifact.id),false);
   assert.equal(store.getProjectContextArtifacts(project.id,20,chat.id).some(x=>x.id===artifact.id),false);
-  const bytes=readManagedArtifactContent(root,project.id,artifact.id,artifact.size,artifact.sha256);
+  const managed=readManagedArtifactContent(root,project.id,artifact.id,artifact.size,artifact.sha256);
+  assert.ok(managed);const bytes=managed.body;
   assert.equal(JSON.parse(bytes.toString()).format,'ponderosa.browser-recording.v1');
   const next=await manager.operatorRecordingStart(scope,context,'page');buffers.get(opened.id).frame('page','/9j/2Q==');
   store.markConversationDeletionPending(chat.id);
@@ -66,7 +67,7 @@ for (const saved of [false,true]) test(`operator ${saved?'saved':'Chat'} recordi
   assets.close();store.close();
   store=new AgentStore(root);assets=new AssetStore(root);
   const restored=store.getProjectArtifact(project.id,artifact.id);assert.deepEqual(restored.origin,artifact.origin);
-  assert.ok(readManagedArtifactContent(root,project.id,restored.id,restored.size,restored.sha256)?.equals(bytes));
+  assert.ok(readManagedArtifactContent(root,project.id,restored.id,restored.size,restored.sha256)?.body.equals(bytes));
   store.purgeOperatorChatArtifacts(project.id,chat.id);
   assert.equal(store.getProjectArtifact(project.id,artifact.id),undefined);
   assert.equal(readManagedArtifactContent(root,project.id,artifact.id,artifact.size,artifact.sha256),undefined);
