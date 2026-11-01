@@ -70,3 +70,11 @@ A reviewed service to create destination Projects or safely populate fresh nativ
 worktrees is still needed to make restored folders live while retaining shared-root
 relationships. This increment does not claim full #8 completion. No tests, checks,
 build, types, runner preparation or execution were performed.
+
+Branch wrapper continuation: `BranchPackageExportOptions` now forwards explicit
+selected/root/organization-folder and subtree intent to the same builder.
+`BranchPackageImportOptions` forwards selected-folder/per-root NEW destination
+choices and returns the full existing retained-root/access-review result DTO.
+Retained-location error text is preserved. No Branch installation/routes or core
+Branches files were changed. Regression source extends organizations/portability;
+no execution. Live destination-root assignment remains unimplemented as above.

@@ -68,10 +68,18 @@ import {
 } from "../agent-package-codec.js";
 
 import {validatePortableAgentPackage} from "../portable-agent-package-validation.js";
+export interface BranchPackageExportOptions {
+  organization?:boolean;
+  selectedWorkingFiles?:readonly string[];
+  wholeWorkingFolder?:boolean;
+  organizationWorkingFolders?:boolean;
+}
 export interface BranchPackageImportOptions {
   signal?:AbortSignal;
   branchHooks?:BranchImportHooks;
   accessSettingsResolution?:ImportAgentPackageRequest['accessSettingsResolution'];
+  workingFilesDestination?:ImportAgentPackageRequest['workingFilesDestination'];
+  workingRootDestinations?:ImportAgentPackageRequest['workingRootDestinations'];
 }
 /** Shared packaging boundary; callers own durable human review and destination selection. */
 export interface BranchPackageEngine {
@@ -80,7 +88,7 @@ export interface BranchPackageEngine {
   exportMemory(chatId:string,agentIds:string[]):Promise<import('@ponderosa/core').PortableChatMemorySnapshotDto>;
   verifyStagedMemory(operationId:string,pkg:AgentPortablePackageDto):Promise<void>;
   rollbackStagedMemory(operationId:string):Promise<void>;
-  exportAgent(id:string,mode:'template'|'full'):Promise<AgentPortablePackageDto>;
+  exportAgent(id:string,mode:'template'|'full',options?:BranchPackageExportOptions):Promise<AgentPortablePackageDto>;
   reviewAccess(pkg:AgentPortablePackageDto,chatId:string):Promise<AgentAccessImportReviewDto>;
   importAgent(projectId:string,chatId:string,pkg:AgentPortablePackageDto,engines:Record<string,string>,key:string,options?:BranchPackageImportOptions):Promise<ImportAgentPackageResponse>;
 }
@@ -2451,11 +2459,11 @@ export function registerAgentPackageRoutes(
     exportMemory:async(chatId,agentIds)=>{const memory=localMemoryFor(app);if(!memory)throw new Error('Configure destination local memory before reviewing memory updates');return memory.exportPackageMemory(chatId,agentIds);},
     verifyStagedMemory:async(id,pkg)=>{if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for staged import verification');await memory.verifyStagedMemory(id,pkg);}},
     rollbackStagedMemory:async id=>{const memory=localMemoryFor(app);const plan=(store.getAgentCreationOperation(id)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan;if(plan?.length){if(!memory)throw new Error('Local memory configuration required for staged import cleanup');await memory.rollbackImportMemory(id);}},
-    exportAgent:(id,mode)=>withAgentImportAdmission(()=>buildPortablePackage(id,mode,false)),
+    exportAgent:(id,mode,options)=>withAgentImportAdmission(()=>buildPortablePackage(id,mode,options?.organization??false,options?.selectedWorkingFiles??[],options?.wholeWorkingFolder??false,options?.organizationWorkingFolders??false)),
     importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
       let status=200,body:unknown;
       const response={code(value:number){status=value;return this;},send(value:unknown){body=value;return value;}} as unknown as FastifyReply;
-      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
+      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.workingFilesDestination?{workingFilesDestination:options.workingFilesDestination}:{}),...(options?.workingRootDestinations?{workingRootDestinations:options.workingRootDestinations}:{}),...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
       if(status>=400){
         const accessSettingsReview=status===409&&typeof body==='object'&&body&&'reviewSha256' in body
           ? {reviewSha256:(body as AgentAccessImportReviewDto).reviewSha256,source:(body as AgentAccessImportReviewDto).source,destination:(body as AgentAccessImportReviewDto).destination}:undefined;

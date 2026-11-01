@@ -199,3 +199,15 @@ is **not implemented**. It needs a destination Project/root creation or reviewed
 copy-into-fresh-worktree service that can preserve conflicting user content and
 mint native ownership locally. Credentials, Git/native/session ownership remain
 excluded; UI must disclose exclusions and the retained-content/live-root distinction.
+
+The Branch shared engine exposes optional `BranchPackageExportOptions`:
+`organization`, `selectedWorkingFiles` (readonly relative-path array),
+`wholeWorkingFolder`, `organizationWorkingFolders`. Omitted options preserve the
+single-Agent legacy export. `BranchPackageImportOptions` forwards
+`workingFilesDestination` and `workingRootDestinations` alongside the existing
+reviewed capability resolution, signal and hooks. Its result remains the complete
+`ImportAgentPackageResponse`, including `workingFilesDestination`, `workingRoots`
+and `accessSettingsToReview`; the wrapper does not project those mappings away.
+Folder-retention errors retain their importer error text with destination locations.
+Callers must persist explicit human destinations/review and disclose that these are
+retained-content locations, not automatic live working-root assignments.

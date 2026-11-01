@@ -491,3 +491,25 @@ test('shared engine preserves access review refusal and forwards an explicit hum
     assert.equal(error.statusCode,409);assert.notEqual(error.accessSettingsReview.reviewSha256,review.reviewSha256);return true;
   });
 }));
+
+test('shared engine forwards selected folder intent, result mappings and retained-location failures',options,t=>withPortability(t,async f=>{
+  const pkg=await f.packageEngine.exportAgent(f.a.id,'full',{selectedWorkingFiles:['unmanaged-working-file.txt']});
+  assert.equal(pkg.agents.length,1);
+  assert.equal(pkg.agents[0].workingFiles[0].path,'unmanaged-working-file.txt');
+  Object.assign(pkg.agents[0].accessSettings,{readGlobalMemory:true});
+  const destination=path.join(f.dataDir,'branch-retained-working-files');
+  const result=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{workingFilesDestination:destination});
+  assert.equal(result.workingFilesDestination,destination);
+  assert.equal(result.accessSettingsToReview[0].agentId,result.rootAgentId);
+  assert.equal(await readFile(path.join(destination,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
+  await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{workingFilesDestination:destination}),error=>{
+    assert.match(error.message,/retained at/);assert.ok(error.message.includes(destination));return true;
+  });
+  const bundle=await f.packageEngine.exportAgent(f.a.id,'full',{organization:true,organizationWorkingFolders:true});
+  assert.equal(bundle.agents.length,2);
+  const refs=[...new Set(bundle.agents.map(agent=>agent.workingRootRef))];
+  assert.equal(refs.length,1);
+  const roots=Object.fromEntries(refs.map((ref,index)=>[ref,path.join(f.dataDir,`branch-root-${index}`)]));
+  const imported=await f.packageEngine.importAgent(f.project.id,f.destination.id,bundle,{codex:'codex'},randomUUID(),{workingRootDestinations:roots});
+  assert.deepEqual(imported.workingRoots,[{ref:refs[0],destination:roots[refs[0]],agentIds:imported.agentIds}]);
+}));
