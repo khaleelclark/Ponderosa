@@ -15,6 +15,7 @@ const Database = require('better-sqlite3');
 const agents = path.dirname(require.resolve('@ponderosa/agents'));
 const { stateSchemaSignature } = await import(pathToFileURL(path.join(agents, 'state-schema-signature.js')));
 const { initializeCurrentDatabase } = await import(pathToFileURL(path.join(agents, 'db.js')));
+const { AgentStore } = await import(pathToFileURL(path.join(agents, 'index.js')));
 const { admitDataDirectory } = await import(pathToFileURL(path.join(agents, 'state-admission.js')));
 
 function signature(sql) {
@@ -25,9 +26,9 @@ function signature(sql) {
 test('schema inspection accepts the fixed object ceiling and refuses excess objects and oversized declarations',()=>{
   assert.throws(()=>signature(`CREATE TABLE oversized (value TEXT DEFAULT '${'a'.repeat(1_100_000)}')`),
     /bounded state read refused|unsupported bounded state schema metadata/);
-  // Pin the approved finite 536-object envelope independently of runtime constants.
-  const atLimit = Array.from({length:536},(_,i)=>`CREATE TABLE t${i} (value TEXT);`).join('\n');
-  assert.equal(JSON.parse(signature(atLimit)).objects.length, 536);
+  // Pin the approved finite 568-object envelope independently of runtime constants.
+  const atLimit = Array.from({length:568},(_,i)=>`CREATE TABLE t${i} (value TEXT);`).join('\n');
+  assert.equal(JSON.parse(signature(atLimit)).objects.length, 568);
   assert.throws(()=>signature(`${atLimit}\nCREATE TABLE excess (value TEXT);`),
     /unsupported bounded state schema metadata/);
 });
@@ -106,7 +107,7 @@ test('current-state admission accepts a CRLF-created real database without rewri
   };
   try {
     const before = read();
-    assert.equal(before.length, 532, 'the complete current schema, including generation and recovery receipts, fits the fixed 536-object ceiling');
+    assert.equal(before.length, 565, 'the complete current schema, including generation and all receipt extensions, fits the fixed 568-object ceiling');
     assert.ok(before.some(row => row.sql?.includes('\r\n')), 'fixture stores real CRLF declarations');
     assert.ok(before.every(row => !row.sql?.includes('\r\r\n')), 'fixture does not double existing CRLF');
     admission = admitDataDirectory(fixture.data);
@@ -130,4 +131,19 @@ test('CRLF current-state admission still refuses a changed real index contract',
     assert.throws(() => admitDataDirectory(fixture.data), /unsupported or incomplete current state/);
     passed = true;
   } finally { if (passed) rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+// Deferred bootstrap regression: execute only in the authorized validation pass.
+test('clean AgentStore bootstrap admits the complete canonical schema and reopens it', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ponderosa-schema-bootstrap-'));
+  let store, passed = false;
+  try {
+    store = new AgentStore(root);
+    const original = stateSchemaSignature(store.sqlite);
+    assert.equal(JSON.parse(original).objects.length, 565);
+    store.close(); store = undefined;
+    store = new AgentStore(root);
+    assert.equal(stateSchemaSignature(store.sqlite), original);
+    passed = true;
+  } finally { store?.close(); if (passed) rmSync(root, { recursive: true, force: true }); }
 });

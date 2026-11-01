@@ -2,9 +2,10 @@ import type Database from "better-sqlite3";
 
 // Shared ordinary/offline read accounting. No converter, native host, new
 // database, profile cache, or caller admission witness belongs in this module.
-// Context-recovery receipts bring initialization to 531 objects (532 with generation).
+// Canonical initialization has 564 objects (565 with generation), including
+// restoration/destination/lifecycle receipts and native task stops.
 // Retain a fixed schema envelope; ordinary row, byte and work limits are unchanged.
-export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 536,
+export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 568,
   columns: 256, metadataBytes: 1024 ** 2, rowBytes: 64 * 1024 ** 2 });
 const fail: (code: string) => never = code => { throw new Error(`bounded state read refused (${code})`); };
 export const stateQuote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
