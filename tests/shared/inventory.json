@@ -2055,6 +2055,13 @@
       "lane": "manual",
       "moduleBase": "apps/server/package.json",
       "requirements": "Existing Chrome; unloaded app, mobile4x CPU observer tooling proof only; not 10k/20-active acceptance"
+    },
+    {
+      "path": "tests/workspace-navigation/method-browser-proof.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Small owned loopback proof: existing outputs/Chrome, 10k seed, one actual controlled Run, two traced browser contexts; never heavy32"
     }
   ],
   "support": [

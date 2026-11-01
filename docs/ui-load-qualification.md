@@ -137,3 +137,45 @@ unchanged. Workload seed/tool/work branches, admission/lease telemetry, readines
 primary-profile and installed-browser collector feasibility still need small
 reviewed proof under adequate actual headroom before GO32. No reader/nativeIME
 installation, mounted UI replay, broad acceptance or performance score is claimed.
+
+
+## Public-source pinned profile and small proof (successor622415)
+
+Official GoogleChrome/lighthouse release13.6.0 tagv13.6.0 commit
+edc407d72179bbc4d4de8a40ef0311ca87dff89c is retained under
+`tests/workspace-navigation/lighthouse-13.6.0`. Constants/default-config and
+emulation/throttling docs are public HTTPS bytes, not installed/executed code.
+Profile now uses412x823 CSS screen/viewport,DPR1.75, mobile/touch, exact pinned
+Android11 moto g power Chrome136UA and CDP4xCPU. Official network simulation
+reference is150ms,1.6Mbps down/750Kbps up; this measurement deliberately keeps
+loopback unthrottled identically across cells. CDP emulation is not an actual
+Lighthouse audit/simulated score. Source receipt hashes bind each retained file.
+
+Discovered shared fixture scheduler override4 superseded human preferences20.
+Added explicit optional schedulerMaxConcurrentRuns (default4 preserved); only
+owned load/proof fixtures select20 through the existing server option. No guard,
+reservation or product default changes. Canonical `scheduler_runs` read-only SQL
+receipts bind live owner,expiry,fencing_token,provider_session_id to exact Agent/
+Run/session, alongside real progress/process identity. No Run rows are fabricated.
+
+`method-browser-proof.mjs` predeclares a small10kcanonical-seed Chat, one actual
+leased controlled provider doing three workspace-project tool/text checkpoints,
+canonical persisted output, then zero-active browser diagnostics. Two new fresh
+contexts: historical360x640/zero-delay diagnostic and primary412x823/75ms-per-key
+diagnostic, both4xCPU. Different profiles/cadences are not a causal experiment or
+replacement green scores. Real trusted DOM input/eventCounts are retained as
+count feasibility evidence, never assumed equal to native interaction groups.
+Raw latency split is input delay,handler,presentation remainder; CDP timeline/CPU
+traces include diagnostic overhead. Every phase/error/unsupported result remains.
+
+Readiness requires actual article ID matching the canonical10kseed tail, not just
+editor shell. Bounded initial rendered page IDs/text and readiness time precede
+first trusted input/LCP cutoff. Canonical10kbacking history is not a claim that
+10kDOM nodes are simultaneously rendered; app pagination remains normal. All20
+must be actually active before navigation in eventual load qualification.
+
+Exactly one new explicit resource preflight is made after the small browser proof
+and sampled browser+node RSS estimate (conservative sum includes shared pages;
+not a guaranteed peak). Older refusal remains. No auto20/full32 launch follows
+regardless of capacity outcome. New method/code needs independent review before
+load qualification; unsupported native count remains a specific open gate.

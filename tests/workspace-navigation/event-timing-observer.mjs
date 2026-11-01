@@ -1,6 +1,6 @@
 // Inject before navigation. Raw entries remain evidence, including zero-ID noninteractions.
 export function installTimingObserver(){
- const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable'};
+ const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable',trustedInputs:[],eventCounts:null};
  const events=entries=>{for(const e of entries)state.events.push({name:e.name,startTime:e.startTime,duration:e.duration,processingStart:e.processingStart,processingEnd:e.processingEnd,interactionId:e.interactionId,target:e.target?.getAttribute('aria-label')??e.target?.tagName});};
  const paints=entries=>{for(const e of entries)state.lcp.push({startTime:e.startTime,renderTime:e.renderTime,loadTime:e.loadTime,size:e.size,id:e.id,element:e.element?.tagName});};
  let eventObserver,lcpObserver;
@@ -8,6 +8,7 @@ export function installTimingObserver(){
  try{lcpObserver=new PerformanceObserver(list=>paints(list.getEntries()));lcpObserver.observe({type:'largest-contentful-paint',buffered:true});}catch(error){state.errors.push(String(error));}
  const flush=()=>{events(eventObserver?.takeRecords()??[]);paints(lcpObserver?.takeRecords()??[]);};
  const cutoff=reason=>{if(state.cutoff)return;flush();state.cutoff={reason,time:performance.now()};};
+ for(const type of ['pointerdown','pointerup','keydown','keyup','click'])addEventListener(type,e=>{if(e.isTrusted)state.trustedInputs.push({type,time:e.timeStamp,key:e.key,repeat:e.repeat,pointerId:e.pointerId});},{capture:true});
  for(const type of ['pointerdown','keydown'])addEventListener(type,e=>{if(e.isTrusted)cutoff('first-trusted-input');},{capture:true});
  addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')cutoff('hidden');});addEventListener('pagehide',()=>cutoff('pagehide'));
  window.__finalizeUiTiming=async()=>{
@@ -15,7 +16,7 @@ export function installTimingObserver(){
   if(!state.cutoff)cutoff('explicit-finalize');
   // Only an independently supplied browser count can establish subfloor groups; never infer them from key presses.
   if(Number.isInteger(performance.interactionCount)&&performance.interactionCount>=0){state.totalInteractions=performance.interactionCount;state.countSupport='performance.interactionCount';}
-  state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
+  state.eventCounts=performance.eventCounts?Object.fromEntries(performance.eventCounts):null;state.nativeCountProperty=('interactionCount' in performance);state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
  };
 }
 export function summarizeTimings(sessions){
@@ -37,4 +38,8 @@ export function summarizeTimings(sessions){
  complete&&=sessions.every(s=>s.threshold===16);
  const p75=complete?(rank<=censored?null:durations[rank-censored-1]):null;
  return {nSessions:sessions.length,nInteractions:durations.length,totalInteractions:complete?total:null,censored:complete?censored:null,qualifiedPopulation:complete,method:'per-document maxima; nearest-rank pooling; duration quantized by browser',observedP75,p75,p75BelowFloor:complete&&rank<=censored,reportingFloor:16,populationReason:complete?'browser count with finalized visible documents':'observed-only diagnostic; total/censoring or collection health unsupported',sessions:sessionResults};
+}
+
+export function latencyBreakdown(session){
+ return session.events.filter(e=>e.interactionId).map(e=>({...e,inputDelayMs:e.processingStart-e.startTime,handlerMs:e.processingEnd-e.processingStart,presentationRemainderMs:Math.max(0,e.duration-(e.processingEnd-e.startTime))})).sort((a,b)=>b.duration-a.duration);
 }
