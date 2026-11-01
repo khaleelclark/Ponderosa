@@ -17,3 +17,7 @@ test('namespaces, unfinished collectors and missing evidence fail closed',()=>{
 test('latency decomposition preserves raw timing and separates queuing, handler and presentation',()=>{
  const value=latencyBreakdown({events:[{interactionId:1,startTime:100,processingStart:120,processingEnd:130,duration:48},{interactionId:0,duration:999}]});assert.equal(value.length,1);assert.equal(value[0].inputDelayMs,20);assert.equal(value[0].handlerMs,10);assert.equal(value[0].presentationRemainderMs,18);assert.equal(value[0].duration,48);
 });
+
+test('native positive count with healthy finalized collector may consist entirely of subfloor interactions',()=>{
+ const value=summarizeTimings([session([],41)]);assert.equal(value.totalInteractions,41);assert.equal(value.censored,41);assert.equal(value.nInteractions,0);assert.equal(value.observedP75,null);assert.equal(value.p75,null);assert.equal(value.p75BelowFloor,true);assert.equal(value.qualifiedPopulation,true);
+});

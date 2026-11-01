@@ -7,7 +7,7 @@ import {fixture,until} from './fixture.mjs';
 import {AgentStore} from '../../packages/agents/dist/index.js';
 import {sampleLinuxResources,RESOURCE_ADMISSION_DEFAULTS} from '../../apps/server/dist/resource-admission.js';
 export async function createLoadFixture(out,{messages=10000}={}){
- let store,closing=false,monitor;const work=new Map(),progress=new Map(),lastProgress=new Map(),continuityFailures=[],pending=new Set(),identities=new Map();
+ let store,closing=false,monitor;const work=new Map(),progress=new Map(),lastProgress=new Map(),lastCanonicalProgress=new Map(),continuityFailures=[],pending=new Set(),identities=new Map();
  const record=value=>appendFileSync(out+'/lifecycle.jsonl',JSON.stringify({time:Date.now(),...value})+'\n');
  const sample=await sampleLinuxResources();record({event:'preflight',sample,admissionDefaults:RESOURCE_ADMISSION_DEFAULTS});
  assert.ok(sample.availableBytes>=RESOURCE_ADMISSION_DEFAULTS.reserveBytes+20*RESOURCE_ADMISSION_DEFAULTS.startupBytes,'Real effective headroom must admit twenty, without a guard override');
@@ -31,6 +31,9 @@ export async function createLoadFixture(out,{messages=10000}={}){
    const p=products[product],runs=[];
    for(const agent of p.agents){const d=f.ok(await f.api('GET',`${p.prefix}/agents/${agent.id}`));const run=d.runs.find(r=>r.status==='running');runs.push({agentId:agent.id,canonicalRun:run??null,sessionId:f.sessions.get(agent.id)?.engineAgentId??null,progressAgeMs:Date.now()-(lastProgress.get(agent.id)??0),runId:run?.id,status:run?.status,progress:progress.get(agent.id)??0,alive:f.sessions.get(agent.id)?.isAlive()??false});}
    for(const run of runs){
+    const persisted=readCanonicalProgress(store,run.agentId,run.runId);run.canonicalProgress=persisted;
+    const previous=lastCanonicalProgress.get(run.agentId);if(!previous||persisted.sequence>previous.sequence)lastCanonicalProgress.set(run.agentId,{sequence:persisted.sequence,at:Date.now()});
+    else if(Date.now()-previous.at>10000)continuityFailures.push({agentId:run.agentId,reason:'Canonical persisted progress gap exceeds 10s'});
     const key=`${product}/${run.agentId}`,identity=JSON.stringify([run.runId,run.sessionId]);
     if(identities.has(key)&&identities.get(key)!==identity)continuityFailures.push({agentId:run.agentId,reason:'Run/session identity changed'});
     identities.set(key,identity);
@@ -93,4 +96,10 @@ export async function sendQualificationTask(f,prefix,agentId,text,onAttempt=()=>
   await delay(100);
  }
  throw Error('Agent asset maintenance did not settle; no guard bypass');
+}
+
+export function readCanonicalProgress(store,agentId,runId){
+ const outputs=store.getRunOutputs(agentId).filter(row=>row.executionId===runId);
+ const checkpoints=outputs.flatMap(row=>[...row.text.matchAll(/(?:Working|Canonical method) checkpoint (\d+)\./g)].map(match=>Number(match[1])));
+ return {sequence:Math.max(0,...checkpoints),outputs:outputs.map(({id,executionId,seq,sourceSeqStart,sourceSeqEnd,completed})=>({id,executionId,seq,sourceSeqStart,sourceSeqEnd,completed}))};
 }

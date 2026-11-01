@@ -27,13 +27,14 @@ export function summarizeTimings(sessions){
   const namespace=session.namespace??`session-${index}/${session.documentId??'legacy'}`;if(namespaces.has(namespace))throw Error('Duplicate document namespace');namespaces.add(namespace);
   const grouped=new Map();for(const entry of session.events)if(entry.interactionId)grouped.set(entry.interactionId,Math.max(grouped.get(entry.interactionId)??0,entry.duration));
   const eligible=session.lcp.filter(e=>!session.cutoff||e.startTime<=session.cutoff.time);
-  if(!grouped.size||!eligible.length)throw Error('Missing interactions or eligible LCP, never substitute zero');
+  if(!eligible.length)throw Error('Missing eligible LCP, never substitute zero');
   const values=[...grouped.values()];durations.push(...values);
   const supported=session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length;
+  if(!grouped.size&&!(supported&&session.totalInteractions>0))throw Error('Missing qualified discrete interactions, never substitute zero');
   complete&&=supported;if(supported){total+=session.totalInteractions;censored+=session.totalInteractions-values.length;}
   return {namespace,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
  });
- durations.sort((a,b)=>a-b);const observedP75=durations[Math.ceil(.75*durations.length)-1],rank=Math.ceil(.75*total);
+ durations.sort((a,b)=>a-b);const observedP75=durations.length?durations[Math.ceil(.75*durations.length)-1]:null,rank=Math.ceil(.75*total);
  // Mixed thresholds cannot establish one subfloor population.
  complete&&=sessions.every(s=>s.threshold===16);
  const p75=complete?(rank<=censored?null:durations[rank-censored-1]):null;

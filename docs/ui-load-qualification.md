@@ -179,3 +179,54 @@ and sampled browser+node RSS estimate (conservative sum includes shared pages;
 not a guaranteed peak). Older refusal remains. No auto20/full32 launch follows
 regardless of capacity outcome. New method/code needs independent review before
 load qualification; unsupported native count remains a specific open gate.
+
+### Actual bounded outcome (2026-11-01)
+
+Installed Chrome155 exposes native performance.interactionCount:41 in both
+captured documents, with independently retained trusted ledger of one pointer
+click and40keydown/keyup pairs. Zero-delay historical-viewport diagnostic:
+41observed groups,p75184ms,LCP7568ms. Pinned412x823/75ms cadence:41native groups,
+zero observed entries (all below16ms reporting floor),LCP4344ms. Raw browser
+invocation exited1 because the collector wrongly rejected that legitimate
+all-subfloor case. Fixed rank logic; a focused regression and corrected offline
+evaluation of both unchanged raw captures pass. This is not a new successful
+end-to-end browser invocation or an accepted full performance result. The missing
+paced trace/screenshot after the exception is explicitly unavailable; first-cell
+7MBtrace, screenshot and both complete raw collector captures remain.
+
+Both documents rendered the canonical10kseed's actual tail within100bounded Chat
+articles before first trusted input (readiness10349.9ms/6712ms). One controlled
+Run had actual lease owner/expiry/fence/session, three workspace tool+text ticks,
+and canonical completed output with matching executionId. It is one Run, not20.
+Full monitoring now also binds persisted canonical checkpoint sequence/output
+source IDs to the exact execution, not just the adapter's in-memory counter.
+
+Retained original328ms interaction decomposes into3.1msinput delay,1.2mshandler,
+323.7mspresentation remainder. New diagnostic184ms rank entry similarly has0.7ms
+input delay,1.7mshandler,181.6mspresentation remainder. Inclusive React trace spans
+reach~2.15s during startup; no isolated source bottleneck/causal product fix follows
+from nested/minified spans with trace overhead. Both LCPvalues exceed2500ms and
+remain explicit red diagnostics. Changed UA/seed/profile/cadence/trace overhead
+preclude a causal comparison or replacement of historical328red. No product
+patch was made just to obtain a score; no performance acceptance is claimed.
+
+Attempt1verified10kseed then hit normal asset-maintenance409. The first cleanup
+mistakenly sampled resources before browser overhead existed:9437671424available,
+fullmemoryPSI0%,IO2.01%,zero browser estimate. Its raw sufficient:true is BASE-ONLY
+and not a valid browser-inclusive capacity verdict. Exactly one explicit sample
+was made; no second sample was taken. Attempts2/3 used a retained-receipt marker.
+Observed browser+node summed RSS max1583730688bytes gives a minimum scheduled
+slot9099923456bytes (2GiBreserve+20x256MiBstartup+sampled browser overhead), before
+additional uncertainty. Earlier6894927872refusal remains. A new contemporaneous
+admission/overhead binding needs explicit scheduling before eventual20proof.
+Attempt2proved the single Run then hit an incorrect article-ID selector; source
+inspection corrected master-message- prefix without changing product. Attempt3
+captured both cells but exposed the all-subfloor collector defect. No partial
+passes were stitched into a complete invocation. All roots/services/browser
+were awaited closed by fixture cleanup; synthetic stores remain for audit.
+
+Remaining before GO32: independent METHOD/source acceptance; normal contemporary
+capacity and actual20leased/per-Agent persisted-work continuity proof; full32
+predeclared ledger with current product/device population; resolve redLCP and
+isolate presentation costs before any performance True. Actual native reader/IME
+and broader#27 remain separately open; no additional UI matrix replay/install.
