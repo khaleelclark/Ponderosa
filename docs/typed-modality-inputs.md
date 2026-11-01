@@ -31,7 +31,7 @@ The established 160 MiB runtime attachment budget includes originals and selecte
 
 No new upload or permission UI is required. Existing send/queue/steer actions keep their canonical routing and Run fences. The inspector receives descriptor-only `sourceManifest.inputFiles`, including source Communication/Activation IDs, original media type, path, byte length and digest, plus any derived image's separate identity. These descriptors are audit data, not instructions or evidence that a model successfully understood the media. Raw base64 must stay inside provider stdin, never Ponderosa Communication, event summaries, source manifests or exports of execution logs.
 
-Provider owner integration is required: both `startTurn` and `steer` must call the relevant serializer; native command input stays text-only. Claude's `--replay-user-messages` needs particular care: replayed base64 media can exceed the existing 4 MiB stdout-record bound, even though the mapper does not publish image blocks. Session-owner work must resolve this without dropping tool-result frames or relaxing unrelated output limits. The serializer module alone is not live-provider proof.
+Provider session integration is now wired: both `startTurn` and `steer` call the relevant serializer; native command input stays text-only. Claude retains `--replay-user-messages` and rejects serialized user frames above 3 MiB before write, reserving 1 MiB under the existing 4 MiB receive-record bound. Larger native media is unsupported here; this is not a guarantee about arbitrary provider-added envelope size. See [session wiring](runtime-typed-session-wiring.md). Installed provider compatibility remains unqualified.
 
 ## Deferred verification
 
