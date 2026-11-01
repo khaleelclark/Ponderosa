@@ -43,7 +43,7 @@ if(full)await stage('accepted-inputs',async()=>{
     row.before=await f.snapshot(product);assert.ok(row.before.runs.every(r=>r.status==='running'&&r.alive));
     row.navigation={url:web.origin+f.products[product].route,startedAt:Date.now(),seed:f.products[product].seed,profile:row.profile,primaryProfile};await cdp.send('Network.setCacheDisabled',{cacheDisabled:true});await page.goto(row.navigation.url);const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();
     const seed=f.products[product].seed;await page.locator(`[id=${JSON.stringify(`master-message-${seed.lastId}`)}]`).waitFor({state:'visible'});
-    row.loadedHistory=await page.locator('article.chat-message').evaluateAll(nodes=>nodes.map(n=>({id:n.id,text:n.textContent})));assert(row.loadedHistory.some(n=>n.id===`master-message-${seed.lastId}`),'Canonical 10k seed tail must actually render, not just editor shell');
+    row.loadedHistory=await page.locator('article.chat-message').evaluateAll(nodes=>nodes.map(n=>({id:n.id,text:n.textContent})));assert(row.loadedHistory.some(n=>n.id===`master-message-${seed.lastId}`&&n.text.includes(seed.lastText.split(':')[0]+':')),'Canonical 10k seed tail must actually render, not just editor shell');
     row.historyPolicy='10k canonical backing history, bounded initial rendered page; no claim all10k DOM nodes loaded';await page.evaluate(()=>window.__uiTiming.marks.push({name:'editor-ready',time:performance.now()}));
     for(let repeat=0;repeat<2;repeat++){
      await editor.click();await page.keyboard.type('Forty input characters for timing proof!',{delay:75});await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
@@ -56,6 +56,7 @@ if(full)await stage('accepted-inputs',async()=>{
     // One frame and observer delivery task: observation flush only, never included as interaction latency.
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0))));
     row.raw=await page.evaluate(()=>window.__finalizeUiTiming());row.raw.namespace=`${id}/${row.raw.documentId}`;row.emulation=await page.evaluate(()=>({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,ua:navigator.userAgent,visibility:document.visibilityState}));
+    assert.deepEqual([row.emulation.width,row.emulation.height,row.emulation.dpr],[row.profile.width,row.profile.height,row.profile.dpr],'Effective viewport/DPR must match frozen cell');if(mobile)assert.equal(row.emulation.ua,row.profile.ua);assert.equal(row.raw.visibility,'visible');assert(row.raw.cutoff.time>=row.raw.marks.find(m=>m.name==='editor-ready').time,'First trusted input must follow actual canonical tail readiness');
     await f.drain();row.workWindow=f.assertWindow(product,row.raw.window.timeOrigin+row.raw.window.start,row.raw.window.timeOrigin+row.raw.window.end);
     f.assertContinuity();row.summary=summarizeTimings([row.raw]);assert.deepEqual(row.errors,[]);await page.screenshot({path:out+'/'+id+'.png'});row.status='complete';
    }catch(error){row.status='failed';row.error=error.stack;throw error;}
