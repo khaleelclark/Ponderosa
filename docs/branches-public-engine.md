@@ -538,3 +538,32 @@ an unresolved historical question/answer/Join closure.
 Deferred regression source covers standalone async/sync Agent cuts, fresh
 Request identities/results, lost-response rewind replay, and concurrency-limited
 Map Agent items feeding a restored Join. These regressions have not been run.
+
+
+Parallel Script frontiers now encode automatic per-Script retry generations
+under an otherwise stop policy. Every generation is contiguous, shares the
+original Step/input, and retains its own exact observed process-exit/result.
+A retry must follow a failed, observed generation without a failure edge, obey
+the configured maximum attempts and delay, and match the owned retry checkpoint
+and availability timestamp. A failed result cannot seal early while an automatic
+retry remains due. Delayed prepared paths retain their waiting state until the
+next lease. Restoration keeps prior failed generations as immutable data, maps
+every attempt identity, resets fences, preserves availability, and submits only
+the unlaunched suffix through fresh Script admission. Prior Script generations
+are not launched again. The existing transaction and lineage receipt cover
+reopen/lost-response replay. Human recovery, Agent recovery, operator retry,
+resource fresh-context rotation and exhausted traversal-budget restoration remain
+unsupported. Deferred source regressions exercise immediate/delayed Map retries,
+restoration/resumption/reselection and generation/time/audit/exit tampering.
+
+Runtime source consultation confirms the unresolved Request seam is an internal
+domain operation, not an unavailable provider feature. User updateRequest cannot
+author a question; forging the recipient actor would misattribute imported
+history. Enclosing live coordinate/update calls in a transaction still leaves
+intermediate wake deliveries runnable after commit. An implementation needs
+explicit historical provenance and fresh final deliveries without copied reply
+authority. The retry-specific resource transfer is similarly usable only with
+verified live generation, creation receipts, member/Chat ownership and no cleanup;
+its existence does not authorize arbitrary historical resource transfer. These
+seams remain refused rather than impersonating an original participant or
+reusing old activation/resource authority.

@@ -222,3 +222,33 @@ test('Map Agent frontier re-admits fresh Requests and routes their results throu
  const fresh=await finish(next.id);assert.equal(fresh.size,2);assert.ok([...fresh].every(id=>!old.has(id)));
  assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
 });
+
+// Deferred: host-controlled observations only; never starts a native process.
+for(const delayMs of [0,250])test(`Map Script retry generation and ${delayMs}ms availability survive rewind`,async t=>{
+ const f=fixture(t,{transform(d){d.steps[0].failure={action:'retry',maxAttempts:3,delayMs};}});let cut,failed=false;
+ const claim=()=>f.branches.claimScript('inert',new Date(Date.now()+10_000).toISOString());
+ for(let n=0;n<70&&!cut;n++){
+  await f.tick();const lease=claim();
+  if(lease&&!failed){
+   const stdout='retained failed attempt',output='Script exited with code 1. Inspect Step evidence for error output.';
+   f.branches.authorizeScript(lease,identity);f.branches.recordScriptEvidence(lease,identity,{stdout,outputHash:hash(stdout),code:1});f.branches.settleScript(lease,{failed:true,output});failed=true;
+  }else if(lease)f.settle(lease);
+  await f.branches.unitSaver.drain();cut=f.points(f.source.id).find(cp=>cp.snapshot.selected.attempts.some(a=>a.number===2&&a.state==='prepared'));
+ }
+ assert.ok(cut,'a failed generation and its unlaunched retry form an executable cut');
+ const original=cut.snapshot,attempt=original.selected.attempts.find(a=>a.number===2);assert.ok(attempt.available_at);
+ assert.equal(replayParallelCut(original.selected,f.definition,original.continuation.configuration,original.continuation.audit),true);
+ for(const change of [
+  s=>{s.selected.attempts.find(a=>a.number===2).number=3;},
+  s=>{s.selected.attempts.find(a=>a.number===2).available_at='2000-01-01T00:00:00.000Z';},
+  s=>{s.continuation.audit=s.continuation.audit.filter(a=>a.kind!=='retry_scheduled');},
+  s=>{s.continuation.audit=s.continuation.audit.filter(a=>a.kind!=='script_process_exit');},
+ ]){const bad=structuredClone(original);change(bad);assert.equal(replayParallelCut(bad.selected,f.definition,bad.continuation.configuration,bad.continuation.audit),false);}
+ const finish=async id=>{for(let n=0;n<150&&f.branches.execution(id).state!=='completed';n++){await f.tick();const lease=claim();if(lease)f.settle(lease);await f.branches.unitSaver.drain();}assert.equal(f.branches.execution(id).state,'completed');};
+ await finish(f.source.id);const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,`retry-${delayMs}`);
+ const restored=f.branches.detail(next.id).attempts;assert.equal(restored.length,original.selected.attempts.length);assert.ok(restored.every(a=>a.fence===0));
+ assert.equal(f.store.sqlite.prepare('SELECT available_at FROM branch_attempts WHERE id=?').get(restored.find(a=>a.number===2).id).available_at,attempt.available_at);
+ await f.reopen();assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,`retry-${delayMs}`).id,next.id);
+ await finish(next.id);assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
+ assert.ok(f.points(next.id).some(cp=>cp.snapshot.selected.attempts.some(a=>a.number===2)),'the restored generation prefix can be selected again');
+});
