@@ -21,7 +21,7 @@ for(const generation of [2,3,32])test(`generation ${generation} requires every o
  assert.equal(generationHistoryPreviewMatches({...preview,historyKind:'serial'},'source','step'),true);
  assert.equal(generationOnePreviewMatches(preview,'source','step'),false,'gen1 compatibility validator stays bounded');
  assert.equal(generationOneCaptureMatches(capture,preview,'original'),true);
- for(const change of [{consumedAttempts:1},{consumedAttempts:generation},{maxAttempts:generation},{maxAttempts:34},{generation:33},{historicalPartition:preview.historicalPartition.slice(0,-1)},{historicalPartition:[...preview.historicalPartition].reverse()}])assert.equal(generationHistoryPreviewMatches({...preview,historyKind:'serial',...change},'source','step'),false);
+ for(const change of [{consumedAttempts:1},{consumedAttempts:generation},{maxAttempts:generation},{maxAttempts:101},{generation:33},{historicalPartition:preview.historicalPartition.slice(0,-1)},{historicalPartition:[...preview.historicalPartition].reverse()}])assert.equal(generationHistoryPreviewMatches({...preview,historyKind:'serial',...change},'source','step'),false);
  const alias=copy(preview);alias.historicalPartition.at(-1).checkpointId=alias.historicalPartition[0].checkpointId;assert.equal(generationHistoryPreviewMatches({...alias,historyKind:'serial'},'source','step'),false);
  const changed=copy(preview);changed.historicalPartition.at(-1).discloseTo=['old-agent'];assert.equal(generationHistoryPreviewMatches({...changed,historyKind:'serial'},'source','step'),false);
  assert.equal(generationOneCaptureMatches({...capture,generation:generation-1},preview,'original'),false);
@@ -80,4 +80,18 @@ for(const shape of ['fork/join','one-item map'])for(const generation of [1,2,32]
  assert.equal(generationCaptureBudgetMatches({...capture,historyKind:'local_parallel'}),false,'unavailable budget does not prove parallel eligibility');
  assert.equal(generationOneCaptureMatches(v,preview,'original'),true,'original legacy selection may recover exact classified status without view inference');
  assert.equal(generationHistoryKindLabel(undefined).includes('unavailable'),true);
+});
+
+// Published retry policy ceiling is independent of the bounded history generation.
+for(const generation of [2,32])test(`published policy100 at generation ${generation} preserves exact budget evidence`,()=>{
+ const {preview,capture}=historyFixture(generation);
+ const p={...preview,historyKind:'serial',maxAttempts:100};
+ const v={...capture,historyKind:'serial',consumedAttempts:generation+1,maxAttempts:100,retryBudget:{state:'verified',consumedAttempts:generation+1,maxAttempts:100,evidenceHash:hash(901)}};
+ assert.equal(generationHistoryPreviewMatches(p,'source','step'),true);
+ assert.equal(generationCaptureBudgetMatches(v),true);
+ assert.equal(generationOneCaptureMatches(v,p,'original'),true);
+ assert.equal(generationCaptureEvidence(v).maxAttempts,100);
+ assert.equal(generationOneCaptureMatches({...v,maxAttempts:99,retryBudget:{...v.retryBudget,maxAttempts:99}},p,'original'),false,'saved published ceiling cannot be replaced');
+ assert.equal(generationCaptureBudgetMatches({...v,maxAttempts:101,retryBudget:{...v.retryBudget,maxAttempts:101}}),false);
+ assert.equal(generationHistoryPreviewMatches({...p,generation:33},'source','step'),false);
 });

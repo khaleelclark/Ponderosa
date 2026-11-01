@@ -1,3 +1,4 @@
+import {groupReviewEvidenceMatches} from './branchGroupReviewEvidence';
 import type {BranchTreeGroupCapturePreview,BranchTreeGroupCaptureStatus,BranchGroupCaptureInput,BranchGroupCapturePreview,BranchDisclosureChoice,BranchDisclosureReviewDto,BranchIssuedDestinationInput,BranchIssuedGroupCaptureStatus,BranchIssuedGroupDestinationDto} from '@ponderosa/core';
 import {sameLifecycleInput} from '../lifecycle/lifecycleCommand';
 export type GroupCaptureCut=BranchGroupCapturePreview|BranchTreeGroupCapturePreview;
@@ -44,7 +45,7 @@ export function groupCaptureMatches(status:GroupCaptureStatus,command:Extract<Gr
  return Boolean(command.resourceStepIds.length>=2&&command.resourceStepIds.length<=32&&status&&Array.isArray(status.sources)&&status.sources.length===command.resourceStepIds.length&&new Set(status.sources.map(s=>s.checkpointId)).size===command.resourceStepIds.length&&new Set(status.sources.map(s=>s.sourceChatId)).size===command.resourceStepIds.length&&sameLifecycleInput(status.sources.map(s=>s.resourceStepId).sort(),[...command.resourceStepIds].sort())&&status.sources.every(s=>key(s.checkpointId)&&key(s.sourceChatId)&&typeof s.sealed==='boolean')&&(!command.preview||sameLifecycleInput(status.sources.map(s=>({step:s.resourceStepId,chat:s.sourceChatId})).sort((a,b)=>a.step.localeCompare(b.step)),(command.preview as BranchGroupCapturePreview).resources.map(r=>({step:r.resourceStepId,chat:r.sourceChatId})).sort((a,b)=>a.step.localeCompare(b.step))))&&status.abandonment==='unsupported'&&((status.state==='capturing'&&status.cleanupHeld===true)||(status.state==='retained'&&status.cleanupHeld===false&&status.sources.every(s=>s.sealed)&&Number.isSafeInteger(status.checkpointId)&&Number(status.checkpointId)>0&&hash(status.checkpointHash))));
 }
 export function groupDestinationMatches(target:BranchIssuedGroupDestinationDto,input:BranchIssuedDestinationInput,executionId:string,resourceStepIds:string[],source?:Extract<GroupCommand,{kind:'capture'}>):boolean {
- if(!target||target.commandKey!==input.commandKey||target.checkpointId!==input.checkpointId||target.checkpointHash!==input.expectedHash||!key(target.admissionId)||!Array.isArray(target.resources)||target.resources.length!==resourceStepIds.length||resourceStepIds.length<2||resourceStepIds.length>32)return false;
+ if(!target||!groupReviewEvidenceMatches(target)||target.commandKey!==input.commandKey||target.checkpointId!==input.checkpointId||target.checkpointHash!==input.expectedHash||!key(target.admissionId)||!Array.isArray(target.resources)||target.resources.length!==resourceStepIds.length||resourceStepIds.length<2||resourceStepIds.length>32)return false;
  if(new Set(resourceStepIds).size!==resourceStepIds.length)return false;
  const rs=target.resources;
  if(source){
@@ -64,6 +65,7 @@ export function groupDestinationMatches(target:BranchIssuedGroupDestinationDto,i
  return new Set(rs.map(r=>r.custody.sourceChatId)).size===resourceStepIds.length&&new Set(rs.map(r=>r.destination.conversationId)).size===resourceStepIds.length&&new Set(rs.map(r=>r.custody.custodyId)).size===resourceStepIds.length&&new Set(rs.map(r=>r.destination.resourceStepId)).size===resourceStepIds.length&&new Set(rs.map(r=>r.destination.executionId)).size===1&&new Set(rs.map(r=>r.destination.projectId)).size===1&&rs.every(r=>r.custody.intent.executionId===executionId&&r.custody.intent.resourceGeneration===0&&r.destination.resourceGeneration===0&&hash(r.custody.sha256)&&['frontierSha256','hostCutSha256','bindingSha256','configurationSha256'].every(field=>{const k=field as keyof typeof r.custody.intent;return hash(r.custody.intent[k])&&r.custody.intent[k]===rs[0]!.custody.intent[k];}))&&sameLifecycleInput(rs.map(r=>r.custody.intent.resourceStepId).sort(),[...resourceStepIds].sort());
 }
 export function groupReviewMatches(review:BranchDisclosureReviewDto,target:BranchIssuedGroupDestinationDto,branchId:string,executionId:string):boolean {
+ if(!groupReviewEvidenceMatches(target)||target.reviewEvidence?.state==='verified'&&!target.reviewEvidence.owners.some(o=>o.sourceExecutionId===executionId&&o.branchId===branchId))return false;
  const r=review?.review?.reservation,policy=review?.policy;
  if(target.scope==='owner_tree'){
   const summaries=review?.review?.facts,facts=review?.facts;

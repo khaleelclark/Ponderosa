@@ -97,3 +97,63 @@ runner preparation or execution, installs, backend writes, push/merge/deploy or
 new workers. Backend/core source is assembled; external-effect evidence remains unavailable where
 not retained. Runtime/provider/native/filesystem/accessibility/mobile qualification remains open. No whole
 UI/lifecycle/Bible/Phase2 acceptance claimed.
+
+
+## M4 — saved owner review evidence and published retry ceiling
+
+Source successor of `557dfcd75333efab8c4377998d87ba149c199226` (retains the
+memory Preserve unknown work), on sole UI writer `phase2/web-feature-completion`
+at `/home/phoenix/ponderosa-worktrees/phase2-web-feature-completion`.
+Required backend/core exact `172fc335bc8efc327be27335a507f51710cdd35a` at
+`/tmp/ponderosa-branches-finite-contract`; earlier backend dependencies remain
+required or integration-verified equivalents. Actual group DTO, saved evidence
+projection/reader, admission receipt producer, published policy bounds and
+`docs/branch-finite-contract-dispositions.md` M4 contract were source-read.
+
+Group review now renders actual saved `reviewEvidence` per owner: original/fresh
+frontier `idMap` and execution `ownerMap`, both parent execution/Call attempt
+identities, global/path/loop/Step invocation counters, pinned limits/policy,
+resolved numeric concurrency/path/Step/Agent capacity, exact selected usage and
+fresh acceptance source/time/kind plus full numeric saved budget receipt.
+`policy:null` is labelled unlimited, never zero quota. No estimated remaining
+allowance or Request-derived counters appear. Reserved ancestry is explicitly
+prospective until server admitted readback verifies committed parent foreign keys.
+The existing all-facts acknowledgement includes saved owner evidence. Missing
+legacy evidence stays unavailable; no replacement from current mutable quota or
+workflow layout. Present malformed evidence refuses destination/disclosure
+validation, including wrong owner/parent maps, missing counters or numeric budget,
+policy shape and prospective/committed status mismatch. The prior blanket M4
+ancestry/budget-unavailable display limitation is resolved for verified new plans;
+legacy absence remains honest.
+
+Server validates immutable evidence hash against saved plan, exact selected source
+and actual acceptance admission snapshot; final owner receipt commands retain the
+existing complete plan hash binding. UI retains that boundary and unchanged
+whole-fact/current-policy/resource/choice/admission receipt validation. It does
+not invent a plan-hash field or independently grant ancestry/budget authority.
+Minimal additive UI-owned `branch-group-client.ts` adopts only the exact frozen
+shared evidence interfaces and optional DTO field; Branch owner notified.
+No backend service/producer/store/shared runtime implementation was changed.
+
+Generation-history preview and verified status now accept original published
+`maxAttempts` through100, independently of current generation1–32. Original
+consumed counts, proof hash, complete saved cut/ordered selections and matching
+preview/status budget remain required. No budget reset, new preview substitution,
+extra generations, old effect replay or eligibility inference.
+
+Ten deliverables: `packages/core/src/branch-group-client.ts`;
+`apps/web/src/components/branches/{BranchGroupReview.tsx,branchGroupReview.ts,
+branchGroupReviewEvidence.ts,branchGenerationOne.ts}`;
+`tests/chats/{branch-owner-tree-group.test.mjs,branch-group-review-mounted.tsx,
+branch-generation-history.test.mjs,branch-generation-history-mounted.tsx}`;
+this report. Deferred pure/mounted fixtures cover exhaustive two-owner saved
+maps/counters/ancestry/capacity/budget, legacy absence, malformed non-first owner
+refusal, prospective→committed labels through original-command GET recovery,
+whole-fact/policy consent and generation2/32 policy100 evidence. Policy101 and
+generation33 stay refused; changed saved maximum stays held.
+
+SOURCE ONLY: fixtures unexecuted. No tests/checks/types/build/Node/native/browser/
+runner preparation or execution, installs, backend writes, push/merge/deploy or
+new workers. Remaining: backend/core source assembly and separately authorized
+runtime/provider/native/filesystem/accessibility/mobile qualification. No whole
+UI/group/lifecycle/Bible/Phase2 acceptance claimed.
