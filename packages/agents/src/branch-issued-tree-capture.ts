@@ -111,3 +111,15 @@ export function issuedTreeFreshOwnerMap(db:Database.Database,executionId:string,
    sourceChatId:r.chat_id,conversationId:randomUUID(),resourceStepId:idMap[r.step_execution_id],agentMap:Object.fromEntries(JSON.parse(r.import_operation_json).result.agentIds.map((id:string)=>[id,randomUUID()]))};
  })};
 }
+
+/** Exact checkpoint reader shared by the existing group consumer. Ownership stays per owner. */
+export function readIssuedTreeCheckpoint(db:Database.Database,executionId:string,checkpointId:number,expectedHash:string):Row {
+ const row=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(executionId,checkpointId) as Row|undefined;
+ if(!row||row.content_hash!==expectedHash)throw Error('Issued tree checkpoint unavailable');
+ const s=JSON.parse(row.snapshot_json);
+ if(stableJson(s)!==row.snapshot_json||payloadHash(s)!==expectedHash||s.continuation?.rootExecutionId!==executionId||!issuedScriptTreeSupported(db,s.continuation))throw Error('Issued tree checkpoint integrity/replay differs');
+ const receipts=s.issuedGroupCustody as CheckpointPackageReceipt[];
+ if(!Array.isArray(receipts)||receipts.length!==2)throw Error('Complete issued tree custody required');
+ sourceMatches(s,receipts.map(({version,custodyId,boundaryId,sha256,byteLength,...source})=>source),receipts);
+ return s;
+}

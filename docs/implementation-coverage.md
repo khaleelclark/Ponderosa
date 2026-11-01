@@ -1090,3 +1090,5 @@ remain; real package/custody/provider/native/crash/runtime/end-to-end/accessibil
 mobile/full Phase2/Bible qualification is open. ZERO tests/checks/build/types/Node/
 native/browser/runner preparation or execution, migrations, push/deploy/newworkers.
 Hooks disabled; source/files/Git inspection only.
+
+The [issued owner-tree destination contract](branch-issued-owner-tree-destination.md) now connects the preserved bounded parent/called-child producer to one canonical group destination admission and per-owner checkpoints. It also adds exact mapped item identities for 2–32 generation-zero map resources. This supersedes the earlier blanket called-consumer refusal for this precise source bound. Broader called/multi-resource historical families remain refused; no tests or execution were performed.

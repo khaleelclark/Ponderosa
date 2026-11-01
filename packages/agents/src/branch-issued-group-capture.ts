@@ -1,4 +1,7 @@
 import {readGroupAuditJournal} from './branch-group-journal-retention.js';
+
+import {readIssuedTreeCheckpoint} from './branch-issued-tree-capture.js';
+import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import type Database from 'better-sqlite3';
@@ -15,6 +18,7 @@ export function readIssuedGroup(db:Database.Database,executionId:string,checkpoi
  const row=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(executionId,checkpointId) as Row|undefined;
  if(!row||row.content_hash!==expectedHash)throw Error('Issued group checkpoint unavailable');
  const s=JSON.parse(row.snapshot_json),e=s.selected?.execution?.[0];
+ if(s.captureKind==='issued_tree_group')return readIssuedTreeCheckpoint(db,executionId,checkpointId,expectedHash);
  if(stableJson(s)!==row.snapshot_json||payloadHash(s)!==expectedHash||s.schema!=='branch-unit-selected.v2'||s.captureKind!=='issued_group'||s.issuedContinuation?.group!==true
   ||s.selected.resources!.length<2||s.selected.resources!.length>32||e?.id!==executionId||!Array.isArray(s.issuedGroupCustody)||s.issuedGroupCustody.length!==s.selected.resources.length
   ||!issuedResourceContinuationSupported(db,executionId,s.selected,s.hostDependencies,s.issuedContinuation))throw Error('Issued group checkpoint integrity/replay unsupported');
@@ -136,3 +140,8 @@ export function sealIssuedGroupMember(db:Database.Database,executionId:string,co
  }
  db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(stableJson(v),executionId,key(commandKey));
 }
+
+/** Iteration views only; immutable snapshot and original owner cuts are never flattened. */
+export function issuedGroupOwners(s:Row):Row[]{return s.captureKind==='issued_tree_group'?s.continuation.owners:[{...s.issuedContinuation,executionId:s.selected.execution[0].id,selected:s.selected,hostDependencies:s.hostDependencies}];}
+export function issuedGroupResources(s:Row):Row[]{return issuedGroupOwners(s).flatMap(o=>o.selected.resources);}
+export function issuedGroupHost(s:Row){return retainedBranchHostGraph(s,s.selected.execution[0].id,true,true).cut;}

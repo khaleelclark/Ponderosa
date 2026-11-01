@@ -5,3 +5,5 @@ Canonical group reservation, ordinary receipt readback, audit inspection, and gr
 Live destination Chats must retain the Branch identity of their mapped original owner and the exact reserved destination execution. Audit absence remains historical absence, not current authorization. Existing custody/disclosure/policy callbacks and canonical graph writer remain required; this helper grants no authority. No historical partition or Branch consumer behavior changes.
 
 The deferred parent/called-child gen0 regression is source only. No tests, builds, typechecks, Node/native/browser execution or preparation were performed. Full Branch consumer, provider/process drain and actual custody qualification remain separate.
+
+The bounded Branch consumer is now connected as source in [branch-issued-owner-tree-destination.md](branch-issued-owner-tree-destination.md), preserving these retained validators. Its fixtures and execution qualification remain deferred.

@@ -4,7 +4,7 @@ import {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,r
 import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import {generationExitKey,requireGenerationExitIntakeFence,readGenerationExitCapture,fenceGenerationExitCapture,reserveGenerationExitCapture,sealGenerationExitCapture} from './branch-generation-exit-capture.js';
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
-import {readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
+import {issuedGroupOwners,issuedGroupResources,readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
 import {encodeIssuedResourceContinuation,readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
@@ -789,22 +789,46 @@ export class BranchStore {
     return this.unitTransaction(()=>{
       const key=`issued-group-destination:${payloadHash(input.commandKey)}`,old=this.row('SELECT input_hash FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
       if(old){if(old.input_hash!==payloadHash(input))throw Error('Group command conflict');return this.issuedGroupDestinationPlan(branchId,executionId,input.commandKey);}
-      const saved=readIssuedGroup(this.sqlite,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.issuedContinuation;
-      if(scope.conversationIds.length!==saved.selected.resources.length||new Set(scope.conversationIds).size!==scope.conversationIds.length||!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
-       ||!branch?.enabled||branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration)
-       ||this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(source).steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current group owner unavailable');
-      const next=this.accept(branchId,`issued-group-destination:${randomUUID()}`,saved.selected.execution[0].input_text,now);
-      if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Group execution budget unavailable');
-      if(saved.issuedGroupCustody.reduce((n:number,r:Row)=>n+r.agentIds.length,0)>(this.definition(source).policy.maxEphemeralAgents??100))throw Error('Group Agent budget unavailable');
-      const idMap=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
-      const resources=saved.selected.resources.map((resource:Row,index:number)=>({custody:saved.issuedGroupCustody.find((c:Row)=>c.intent.resourceStepId===resource.step_execution_id),destination:{projectId:scope.projectId,conversationId:scope.conversationIds[index],executionId:next.id,resourceStepId:idMap[resource.step_execution_id],resourceGeneration:0}}));
+      const saved=readIssuedGroup(this.sqlite,executionId,input.checkpointId,input.expectedHash),owners=issuedGroupOwners(saved),allResources=issuedGroupResources(saved);
+      const root=owners.find(o=>o.executionId===executionId)!;
+      if(scope.conversationIds.length!==allResources.length||new Set(scope.conversationIds).size!==scope.conversationIds.length||root?.selected.execution[0].branch_id!==branchId||root.selected.execution[0].parent_execution_id)throw Error('Exact group root and Chat inventory required');
+      for(const o of owners)this.requireIssuedGroupOwner(o,true);
+      const idMap:Record<string,string>=Object.fromEntries(owners.flatMap(o=>branchContinuationIds(o.selected)).map(id=>[id,randomUUID()]));
+      for(const o of owners)for(const item of o.selected.items)idMap[item.id]=`${idMap[item.map_invocation_id]}:${item.item_index}`;
+      const ownerMap:Record<string,string>={},pending=[...owners];
+      while(pending.length){
+       const index=pending.findIndex(o=>!o.selected.execution[0].parent_execution_id||ownerMap[o.selected.execution[0].parent_execution_id]);
+       if(index<0)throw Error('Group owner ancestry differs');
+       const o=pending.splice(index,1)[0]!,e=o.selected.execution[0],parentId=ownerMap[e.parent_execution_id],parentAttempt=idMap[e.parent_attempt_id];
+       const next=e.parent_execution_id?this.acceptInput(e.branch_id,`call:${parentAttempt}`,e.input_text,payloadHash({parentAttempt,input:e.input_text}),{source:'issued_tree_destination',parentExecutionId:parentId,parentAttemptId:parentAttempt},now,'call'):this.accept(e.branch_id,`issued-group-destination:${randomUUID()}`,e.input_text,now);
+       ownerMap[e.id]=next.id;
+       if(e.parent_execution_id)this.run('UPDATE branch_executions SET parent_execution_id=?,call_depth=?,depth_ceiling=? WHERE id=?',parentId,e.call_depth,e.depth_ceiling,next.id);
+       if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Group owner execution budget unavailable');
+       this.state(next.id,'waiting',now,'Waiting for whole-group disclosure review');this.selectedWrite(next.id);
+      }
+      if(saved.captureKind==='issued_tree_group'&&!treeIdMapSupported(owners,{...idMap,...ownerMap},executionId,ownerMap[executionId]!))throw Error('Exact fresh owner tree map required');
+      const resources=allResources.map((resource:Row,index:number)=>({custody:saved.issuedGroupCustody.find((c:Row)=>c.intent.resourceStepId===resource.step_execution_id),destination:{projectId:scope.projectId,conversationId:scope.conversationIds[index],executionId:ownerMap[resource.execution_id],resourceStepId:idMap[resource.step_execution_id],resourceGeneration:0}}));
       const inputReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,commandKey:input.commandKey,operatorId:scope.operatorId,reconcileEffects:true as const,resources};
       const reserved=this.coordination.reserveCoordinationDestinationGroup(inputReservation,authority,now);
       const reservation=JSON.parse(this.row('SELECT reservation_json FROM coordination_destination_admissions WHERE id=?',reserved.admissionId)!.reservation_json);
-      const plan={schema:'ponderosa.branch.issued-group-destination.v1',input,reservation,admissionId:reserved.admissionId,reservationHash:reserved.reservationHash,idMap,creationKey:scope.creationKey};
+      const plan={schema:'ponderosa.branch.issued-group-destination.v1',input,reservation,admissionId:reserved.admissionId,reservationHash:reserved.reservationHash,idMap,ownerMap,creationKey:scope.creationKey};
       this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,payloadHash(input),stableJson(plan),now);
-      this.state(next.id,'waiting',now,'Waiting for whole-group disclosure review');this.selectedWrite(next.id);return plan;
+      return plan;
     }).immediate();
+  }
+  /** Current Branch capability checks shared by source disclosure and reservation. */
+  assertIssuedGroupSourcesCurrent(snapshot:Row):void {
+    if(!this.sqlite.inTransaction)throw Error('Group source authority requires owner transaction');
+    for(const o of issuedGroupOwners(snapshot))this.requireIssuedGroupOwner(o,true);
+  }
+  private requireIssuedGroupOwner(o:Row,source=false,targetId?:string):void {
+    const original=o.selected.execution[0],e=this.execution(targetId??o.executionId),branch=this.getBranch(original.branch_id);
+    if(!e||e.branchId!==original.branch_id||!source&&this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested
+     ||!(source?['completed','failed','canceled']:['queued','waiting']).includes(e.state)||!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',branch.id)?.deleting
+     ||branch.versionId!==o.versionId||branch.bindingRevisionId!==o.bindingRevisionId||e.versionId!==o.versionId||e.bindingRevisionId!==o.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(o.configuration)||stableJson(e.configuration)!==stableJson(o.configuration)
+     ||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(branch.id,CAPABILITY_IDS.scripts)||this.definition(e).steps.some(s=>s.kind==='branch_call')&&this.restricted(branch.id,CAPABILITY_IDS.branchCalls))throw Error('Current exact group owner unavailable');
+    if(o.selected.resources.reduce((n:number,r:Row)=>n+r.requested_count,0)>(this.definition(e).policy.maxEphemeralAgents??100))throw Error('Group owner Agent budget unavailable');
+    if(!source&&(!this.hasRunnableCapacity(e.id)||!this.executionBudgets.admit(e.id,new Date().toISOString())))throw Error('Current group owner budget unavailable');
   }
   issuedGroupDestinationPlan(branchId:string,executionId:string,commandKey:string):Row {
     const row=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,`issued-group-destination:${payloadHash(commandKey)}`);
@@ -816,15 +840,21 @@ export class BranchStore {
   composeIssuedGroupDestination(plan:Row,graph:import('@ponderosa/core').BranchHostGraphRestoreDto,imports:{result:ImportAgentPackageResponse;complete:()=>void}[],now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationOwnerReceipt[] {
     if(!this.sqlite.inTransaction)throw Error('Group composer requires same owner transaction');const r=plan.reservation;
     if(stableJson(plan)!==stableJson(this.issuedGroupDestinationPlan(r.branchId,r.sourceExecutionId,plan.input.commandKey)))throw Error('Group plan changed');
-    const saved=readIssuedGroup(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash),stage=JSON.parse(this.row('SELECT stage_json FROM coordination_destination_admissions WHERE id=?',plan.admissionId)!.stage_json),e=this.execution(r.resources[0].destination.executionId),branch=this.getBranch(r.branchId);
-    if(!e||imports.length!==r.resources.length||r.resources.some((x:Row)=>x.destination.executionId!==e.id)||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested||e.state!=='waiting'
-     ||!branch?.enabled||branch.versionId!==e.versionId||branch.bindingRevisionId!==e.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(e.configuration)
-     ||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(branch.id,CAPABILITY_IDS.scripts)
-     ||!this.hasRunnableCapacity(e.id)||!this.executionBudgets.admit(e.id,now))throw Error('Current group acceptance unavailable');
-    const frontier=remapBranchFrontier(saved.selected,plan.idMap,r.sourceExecutionId,e.id,graph.requestMap);
-    insertBranchFrontier(this.sqlite,e.id,frontier,now,new Set(Object.values(graph.requestMap)));
+    const saved=readIssuedGroup(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash),sourceOwners=issuedGroupOwners(saved),stage=JSON.parse(this.row('SELECT stage_json FROM coordination_destination_admissions WHERE id=?',plan.admissionId)!.stage_json);
+    if(imports.length!==r.resources.length)throw Error('Exact group import inventory required');
+    for(const o of sourceOwners){
+     const target=plan.ownerMap?.[o.executionId]??r.resources[0].destination.executionId;this.requireIssuedGroupOwner(o,false,target);
+     const original=o.selected.execution[0],live=this.execution(target)!;
+     if((live.parentExecutionId??null)!==(original.parent_execution_id?plan.ownerMap[original.parent_execution_id]:null)||live.parentAttemptId!=null||original.parent_attempt_id&&live.inputHash!==payloadHash({parentAttempt:plan.idMap[original.parent_attempt_id],input:original.input_text}))throw Error('Group target call ancestry differs');
+     const localMap=Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,plan.idMap[id]]));
+     const frontier=remapBranchFrontier(o.selected,localMap,o.executionId,target,graph.requestMap);
+     insertBranchFrontier(this.sqlite,target,frontier,now,new Set(Object.values(graph.requestMap)));
+    }
+    // Parent attempts are real rows now; bind the held child only inside final admission.
+    for(const o of sourceOwners){const original=o.selected.execution[0];if(original.parent_attempt_id)this.run('UPDATE branch_executions SET parent_attempt_id=? WHERE id=?',plan.idMap[original.parent_attempt_id],plan.ownerMap[o.executionId]);}
     const owners=r.resources.map((item:Row,index:number)=>{
-      const d=item.destination,source=saved.selected.resources.find((x:Row)=>x.step_execution_id===item.custody.intent.resourceStepId),{result,complete}=imports[index]!,op=stage.imports[item.custody.sourceChatId];
+      const d=item.destination,o=sourceOwners.find(o=>o.executionId===item.custody.intent.executionId)!,source=o.selected.resources.find((x:Row)=>x.step_execution_id===item.custody.intent.resourceStepId),e=this.execution(d.executionId)!,{result,complete}=imports[index]!,op=stage.imports[item.custody.sourceChatId];
+      if(d.executionId!==(plan.ownerMap?.[o.executionId]??r.resources[0].destination.executionId))throw Error('Group mapped resource owner differs');
       const map=Object.fromEntries(item.custody.agentIds.map((id:string)=>[id,stage.agentMap[id]]));
       if(stableJson(result.agentRefs)!==stableJson(map)||stableJson([...result.agentIds].sort())!==stableJson(Object.values(map).sort())||result.rootAgentId!==map[source.root_agent_id]||d.resourceStepId!==plan.idMap[source.step_execution_id])throw Error('Actual group import receipt differs');
       const creationKey=`branch-resource:${d.resourceStepId}`;
@@ -836,24 +866,31 @@ export class BranchStore {
       this.writeResourceOperation(resource,'import',{schema:'branch-resource-operation.v1',phase:'import',token:`destination:${plan.admissionId}:${index}:import`,state:'completed',creationOperationId:op.creationOperationId,result});
       const receiptId=`issued-group-destination-owner:${plan.admissionId}:${index}`;
       this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',e.id,receiptId,payloadHash(plan),stableJson({coordinationDestination:graph,sourceCheckpoint:{executionId:r.sourceExecutionId,checkpointId:r.checkpointId,expectedHash:r.checkpointHash},idMap:plan.idMap}),now);
-      const requestBindings=saved.hostDependencies.roots.filter((root:Row)=>saved.selected.attempts.some((a:Row)=>a.id===root.attemptId&&a.step_execution_id===source.step_execution_id)).map((root:Row)=>({sourceRequestId:root.requestId,requestId:graph.requestMap[root.requestId],stepExecutionId:d.resourceStepId}));
+      const requestBindings=o.hostDependencies.roots.filter((root:Row)=>o.selected.attempts.some((a:Row)=>a.id===root.attemptId&&a.step_execution_id===source.step_execution_id)).map((root:Row)=>({sourceRequestId:root.requestId,requestId:graph.requestMap[root.requestId],stepExecutionId:d.resourceStepId}));
       complete();return {executionId:e.id,resourceStepId:d.resourceStepId,resourceGeneration:0,creationOperationId:op.creationOperationId,requestBindings,receiptId};
     });
-    const source=saved.selected.execution[0];this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',source.traversals,source.loop_iterations,source.depth_ceiling,e.id);
-    this.checkpoint(e.id,'issued-group-restored-prefix','issued_restored_prefix',{admissionId:plan.admissionId,idMap:plan.idMap},now);
-    this.checkpoint(e.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',e.id)!.admission_json)},now);
-    this.state(e.id,'running',now);this.selectedWrite(e.id);return owners;
+    for(const o of sourceOwners){
+     const source=o.selected.execution[0],id=plan.ownerMap?.[o.executionId]??r.resources[0].destination.executionId;
+     this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',source.traversals,source.loop_iterations,source.depth_ceiling,id);
+     this.checkpoint(id,'issued-group-restored-prefix','issued_restored_prefix',{admissionId:plan.admissionId,sourceExecutionId:o.executionId,idMap:plan.idMap,ownerMap:plan.ownerMap},now);
+     this.checkpoint(id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',id)!.admission_json)},now);
+     this.state(id,o.selected.paths.some((p:Row)=>p.state==='active')?'running':'waiting',now);this.selectedWrite(id);
+    }
+    return owners;
   }
   checkpointIssuedGroupDestination(plan:Row):void {
     if(!this.sqlite.inTransaction||this.row('SELECT state FROM coordination_destination_admissions WHERE id=?',plan.admissionId)?.state!=='admitted')throw Error('Group final checkpoint requires admitted graph in same transaction');
-    const id=plan.reservation.resources[0].destination.executionId,candidate=this.unitSaver.freeze({written:new Set([id])})[0];
-    if(!candidate?.content||!candidate.hash||Object.hasOwn(candidate,'error'))throw Error('Group final checkpoint coverage unavailable');
-    const cp=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,candidate.content,candidate.hash);
-    const readiness={checkpointId:Number(cp.lastInsertRowid),checkpointHash:candidate.hash};
-    this.run("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?) WHERE id=?",readiness.checkpointId,id);
-    for(let index=0;index<plan.reservation.resources.length;index++){
+    const ids=[...new Set<string>(plan.reservation.resources.map((r:Row)=>r.destination.executionId))],candidates=this.unitSaver.freeze({written:new Set(ids)});
+    for(const id of ids){
+     const candidate=candidates.find(c=>c.executionId===id);
+     if(!candidate?.content||!candidate.hash||Object.hasOwn(candidate,'error'))throw Error('Group final owner checkpoint coverage unavailable');
+     const cp=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,candidate.content,candidate.hash);
+     const readiness={checkpointId:Number(cp.lastInsertRowid),checkpointHash:candidate.hash};
+     this.run("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?) WHERE id=?",readiness.checkpointId,id);
+     for(let index=0;index<plan.reservation.resources.length;index++)if(plan.reservation.resources[index].destination.executionId===id){
       const key=`issued-group-destination-owner:${plan.admissionId}:${index}`,row=this.row('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?',id,key)!;
-      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...JSON.parse(row.result_json),readiness}),id,key);
+      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...JSON.parse(row.result_json),readiness,ownerMap:plan.ownerMap}),id,key);
+     }
     }
   }
   reserveIssuedDestination(branchId:string,executionId:string,input:import('@ponderosa/core').BranchIssuedDestinationInput,

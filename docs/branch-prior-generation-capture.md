@@ -98,3 +98,6 @@ parallel retry and called-tree atomic consumption remain refused. Nothing was ru
 
 
 Local-parallel history source extension: the current bounded contract in [branch-local-parallel-history.md](branch-local-parallel-history.md) supersedes the earlier serial-only limit for exactly one resource invocation with settled local siblings. It reuses the same generation-history producer, parallel replay, current-only cut and canonical single-owner admission; it does not enable arbitrary parallel or called-owner consumers. Source fixtures are deferred and unexecuted.
+
+
+The [issued owner-tree destination contract](branch-issued-owner-tree-destination.md) now connects the preserved bounded parent/called-child producer to one canonical group destination admission and per-owner checkpoints. It also adds exact mapped item identities for 2–32 generation-zero map resources. This supersedes the earlier blanket called-consumer refusal for this precise source bound. Broader called/multi-resource historical families remain refused; no tests or execution were performed.

@@ -406,7 +406,7 @@ export interface BranchGroupCapturePreview {
 export interface BranchGroupCaptureInput {commandKey:string;reviewHash:string;versionId:string}
 export interface BranchGroupCaptureResult {state:'retained';checkpointId:number;checkpointHash:string;receipts:CheckpointPackageReceipt[]}
 
-/** Evidence-only parent/child producer; destination admission remains refused. */
+/** Evidence-only parent/child producer; the dedicated reviewed group consumer owns admission. */
 export interface BranchTreeGroupCapturePreview {
  reviewHash:string;versionId:string;currentAuthority:false;actionEligible:false;
  owners:{executionId:string;branchId:string;resourceStepId:string;sourceChatId:string;agentIds:string[]}[];

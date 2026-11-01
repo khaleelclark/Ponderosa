@@ -974,10 +974,10 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
  const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:permissions}]};
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
  const count=typeof twoResources==='number'?twoResources:twoResources?2:1;
- const teams=Array.from({length:count},(_,i)=>i?`team${i+1}`:'team');
+ const teams=Array.from({length:parallel==='map'?1:count},(_,i)=>i?`team${i+1}`:'team');
  const resourceSteps=teams.map((id,i)=>({id,kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:i?'Additional inert local result':'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:typeof freshRetry==='number'?freshRetry:2,delayMs:0,freshContext:true}}:{})}));
  const arms=teams.map(id=>`${id}-arm`);
- const controls=parallel==='map'?[{id:'fork',kind:'map',joinId:'join',workerId:'team',source:'lines',maxItems:1,maxConcurrentItems:1},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[]}]:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[...arms,'side-arm']}]:[];
+ const controls=parallel==='map'?[{id:'fork',kind:'map',joinId:'join',workerId:'team',source:'lines',maxItems:count,maxConcurrentItems:count},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[]}]:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[...arms,'side-arm']}]:[];
  const edges=parallel==='map'?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},...teams.flatMap((id,i)=>[{id:arms[i],from:'fork',to:id,on:'selected'},{id:`${id}-join`,from:id,to:'join',on:'success'}]),{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...teams.map((id,i)=>({id:`${id}-next`,from:id,to:teams[i+1]??'suffix',on:'success'}))];
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),...resourceSteps,script('suffix')],controls,edges,policy:{maxConcurrentExecutions:8,maxEphemeralAgents:Math.max(2,count),failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
@@ -991,7 +991,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
   assert.ok(source,'canonical Branch call admits the resource owner');
  }else source=branches.accept(branch.id,'resource-source','input');
  const claim=async()=>{for(let n=0;n<60;n++){await branches.unitSaver.drain();branches.advance();const lease=branches.claimScript('resource-inert');if(lease){await branches.unitSaver.drain();assert.equal(branches.checkpointDispatch(lease),'ready');return lease;}}assert.fail('expected resource Script lease');};
- const settle=lease=>{branches.authorizeScript(lease,inertIdentity);branches.recordScriptEvidence(lease,inertIdentity,{stdout:'known',outputHash:hash('known'),code:0});branches.settleScript(lease,{failed:false,output:'known'});};
+ const settle=lease=>{const output=parallel==='map'&&lease.source.includes('prefix')?Array.from({length:count},()=> 'known').join('\n'):'known';branches.authorizeScript(lease,inertIdentity);branches.recordScriptEvidence(lease,inertIdentity,{stdout:output,outputHash:hash(output),code:0});branches.settleScript(lease,{failed:false,output});};
  const reservation=id=>store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(id);
  const advance=async id=>{for(let n=0;n<30;n++){await branches.unitSaver.drain();branches.advance();if(reservation(id)&&branches.execution(id).state==='waiting')break;}await branches.unitSaver.drain();assert.ok(reservation(id));};
  const capture=async id=>{if(mode==='exit'){const inv=branches.execution(id).checkpointInvocation;assert.doesNotThrow(()=>branches.checkpointInterruption(branch.id,id,'interrupt',inv.id,`close-${id}`),'actual resource EXIT interruption must be supported');await branches.unitSaver.completeExits();}return branches.historicalCheckpoints(branch.id,id).find(c=>c.restoreSupported&&captureBytes({store},c.id).selected.resources.length===1);};
@@ -2177,7 +2177,7 @@ test('operator group journal readback survives source owner loss without current
  assert.throws(()=>audit.read(selection),/map differs/);db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(original,prepared.admissionId);
 });
 
-for(const mode of ['async','sync'])test(`called issued owner tree ${mode} captures exact parent/child custody and refuses admission`,async t=>{
+for(const mode of ['async','sync'])test(`called issued owner tree ${mode} captures exact parent/child custody and refuses ordinary rewind`,async t=>{
  const f=await reservationHistoryFixture(t,mode,true,false,false,false,true),prefix=await f.claim();f.settle(prefix);
  const child=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
  const db=f.store.sqlite,preview=f.branches.previewIssuedTreeCapture(f.root.id);
@@ -2333,4 +2333,91 @@ test('canonical owner deletion preserves selectable group capture and dispositio
  assert.equal(db.prepare('SELECT total_changes() n').get().n,before);
  assert.throws(()=>x.service().captureStatus(f.branch.id,f.source.id,'two-resource-cut'),/owner unavailable/);
  await f.reopen();assert.equal(audit().read(selection).state,'abandoned');
+});
+
+// Deferred real multi-item generation-zero map consumer: one writer/transaction/admission.
+for(const mode of ['async','sync'])for(const count of [2,3,32])test(`map ${count} resources ${mode} exact fresh items and whole admission`,async t=>{
+ const x=await twoIssuedResources(t,mode,count,'map',[]),{f,input}=x,s=x.service(),p=await s.prepare(f.branch.id,f.source.id,input);
+ const review=await s.disclosures.prepare(f.branch.id,f.source.id,p.admissionId);
+ await s.disclosures.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'map-all-facts',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
+ x.setFailure(true);await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,review.reviewHash),/final completion/);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_resources WHERE execution_id=?').get(p.resources[0].destination.executionId).n,0);
+ x.setFailure(false);const admitted=await s.admit(f.branch.id,f.source.id,input.commandKey,review.reviewHash),id=p.resources[0].destination.executionId;
+ assert.equal(admitted.receipt.owners.length,count);assert.equal(Object.keys(admitted.receipt.requestMap).length,count);assert.equal(admitted.receipt.activationIds.length,count);
+ const items=f.store.sqlite.prepare('SELECT i.* FROM branch_map_items i JOIN branch_map_invocations m ON m.id=i.map_invocation_id WHERE m.execution_id=? ORDER BY i.item_index').all(id);
+ assert.equal(items.length,count);for(const item of items)assert.equal(item.id,`${item.map_invocation_id}:${item.item_index}`);
+ await f.reopen();x.setBytes(false);assert.deepEqual((await x.service().admit(f.branch.id,f.source.id,input.commandKey,review.reviewHash)).receipt,admitted.receipt);
+});
+
+// Deferred real called-owner producer -> settled source -> whole human review -> one group admit.
+async function calledTreeDestinationFixture(t,mode){
+ const f=await reservationHistoryFixture(t,mode,true,false,false,false,true),prefix=await f.claim();f.settle(prefix);
+ const child=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
+ const db=()=>f.store.sqlite,coord=()=>new CoordinationV3Store(db()),custody=new Map();let bytes=true,fail=false,imports=0;
+ const packageFor=receipt=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date(0).toISOString(),sourceLabel:'Tree custody',rootRef:receipt.agentIds[0],agents:receipt.agentIds.map(ref=>({ref,title:'Tree worker',engine:'codex',sourceChat:{ref:receipt.sourceChatId,title:'Original owner'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))});
+ const engine={
+  captureCheckpoint:async(source,seal)=>{const r={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-tree-package',sha256:hash(stableJson(source)),byteLength:1};custody.set(r.custodyId,r);db().transaction(()=>seal(r))();return r;},
+  readCheckpoint:async r=>{assert.deepEqual(r,custody.get(r.custodyId));if(!bytes)throw Error('missing tree bytes');return packageFor(r);},
+  verifyCheckpointNow:r=>{assert.deepEqual(r,custody.get(r.custodyId));if(!bytes)throw Error('missing tree bytes');return r.sha256;},validateAgent:()=>{},
+  importAgent:async(projectId,chatId,pkg,engines,key,{branchHooks:hooks})=>{
+   imports++;const op=f.store.beginAgentCreationOperation({projectId,conversationId:chatId,actorScope:'user:local-operator',kind:'import',idempotencyKey:key,payloadHash:hash(stableJson(pkg))}).operation,map=Object.fromEntries(pkg.agents.map(a=>[a.ref,randomUUID()]));
+   db().transaction(()=>{Object.values(map).forEach((id,index)=>f.store.addAgentCreationOperationMember(op.id,id,index));hooks.stage({creationOperationId:op.id,projectId,conversationId:chatId,agents:Object.entries(map).map(([sourceRef,agentId])=>({sourceRef,agentId})),artifacts:[]});})();await hooks.plan();
+   for(const id of Object.values(map))f.store.createAgent(projectId,{title:'Fresh called owner worker',engine:'codex',conversationId:chatId},undefined,id);
+   const result={rootAgentId:map[pkg.rootRef],agentIds:Object.values(map),agentRefs:map};hooks.transaction(()=>{f.store.updateAgentCreationOperation(op.id,{status:'canonical_committed',result:{...result,branchDestinationPrepared:true}});hooks.holdForDisclosure();});return result;
+  },
+  finishDestinationImport:(id,compose)=>{const op=f.store.getAgentCreationOperation(id);compose(op.result,()=>{if(fail)throw Error('called final owner rollback');f.store.updateAgentCreationOperation(id,{status:'completed'});});},
+ };
+ const {BranchIssuedGroupDestinationService}=await import('../../apps/server/dist/branch-issued-group-destination.js');
+ const service=()=>new BranchIssuedGroupDestinationService(f.store,f.branches,coord(),()=>engine),s=service(),preview=s.previewTreeCapture(f.parent.id,f.root.id);
+ const saved=await s.captureTree(f.parent.id,f.root.id,'tree-consumer-source',preview);
+ coord().updateRequest({requestId:child.requestId,updateId:'tree-child-completed',kind:'completed',actor:{kind:'agent',id:child.agentId},payload:{text:'known child result'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ // The child retires before the parent's call can settle; neither identity is reassigned to the root.
+ const receipts=[...saved.receipts].sort((a,b)=>Number(a.intent.executionId===f.root.id)-Number(b.intent.executionId===f.root.id));
+ for(const r of receipts){
+  for(let n=0;n<8;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+  const deletion=f.store.previewAgentDeletion(r.agentIds);f.store.deleteAgentSubtrees(r.agentIds,deletion.previewHash,id=>coord().handleAgentDeletion(id));
+  const chat=f.store.commitConversationDeletion(r.sourceChatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(chat);f.branches.resourceRetired(r.intent.resourceStepId);await f.branches.unitSaver.drain();
+ }
+ for(let n=0;n<8;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(f.root.id).state,'completed');assert.equal(f.branches.execution(f.source.id).state,'completed');
+ return {f,saved,service,input:{commandKey:'restore-called-tree',checkpointId:saved.checkpointId,expectedHash:saved.checkpointHash,reconcileEffects:true},setFailure:v=>{fail=v},setBytes:v=>{bytes=v},get imports(){return imports}};
+}
+for(const mode of ['async','sync'])test(`called owner tree ${mode} retains exact owner ancestry and atomically admits both resources`,async t=>{
+ const x=await calledTreeDestinationFixture(t,mode),{f,input}=x,s=x.service(),db=f.store.sqlite;
+ const cp=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(input.checkpointId),forged=JSON.parse(cp.snapshot_json);
+ const rootProof=forged.continuation.owners.find(o=>o.executionId===f.root.id),childProof=forged.continuation.owners.find(o=>o.executionId===f.source.id);
+ childProof.bindingHash=rootProof.bindingHash;const forgedHash=hash(stableJson(forged));
+ db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(stableJson(forged),forgedHash,input.checkpointId);
+ const {readIssuedGroup}=await import('../../packages/agents/dist/index.js');assert.throws(()=>readIssuedGroup(db,f.root.id,input.checkpointId,forgedHash),/integrity|replay|custody|differs/);
+ db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(cp.snapshot_json,cp.content_hash,input.checkpointId);
+ const accepted=db.prepare('SELECT count(*) n FROM branch_executions').get().n;
+ db.prepare('UPDATE branches SET enabled=0 WHERE id=?').run(f.branch.id);
+ await assert.rejects(s.prepare(f.parent.id,f.root.id,input),/owner unavailable/);assert.equal(db.prepare('SELECT count(*) n FROM branch_executions').get().n,accepted);
+ db.prepare('UPDATE branches SET enabled=1 WHERE id=?').run(f.branch.id);
+ const p=await s.prepare(f.parent.id,f.root.id,input);
+ assert.equal(p.scope,'owner_tree');assert.equal(new Set(p.resources.map(r=>r.destination.executionId)).size,2);
+ const savedSource=JSON.parse(cp.snapshot_json),childProject=savedSource.continuation.owners.find(o=>o.executionId===f.source.id).hostDependencies.requests[0].row.project_id,getProject=f.store.getProject.bind(f.store);
+ f.store.getProject=id=>id===childProject?undefined:getProject(id);await assert.rejects(s.disclosures.prepare(f.parent.id,f.root.id,p.admissionId),/Original Project operator audit-read/);f.store.getProject=getProject;
+ const review=await s.disclosures.prepare(f.parent.id,f.root.id,p.admissionId);
+ const rootSource=f.branches.issuedTreeCapture(f.root.id,'tree-consumer-source').sources;
+ for(const source of rootSource)assert.ok(review.facts.some(v=>v.kind==='request'&&v.content.conversation_id===source.sourceChatId),'human sees every original owner');
+ await s.disclosures.choose(f.parent.id,f.root.id,p.admissionId,{commandKey:'approve-both-owners',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
+ new CapabilityPolicyStore(db).put({scopeKind:'chat',scopeId:p.resources.find(r=>r.custody.intent.executionId===f.source.id).destination.conversationId,expectedRevision:0,restrictedCapabilityIds:[]});
+ await assert.rejects(s.admit(f.parent.id,f.root.id,input.commandKey,review.reviewHash),/approval/);
+ const fresh=await s.disclosures.prepare(f.parent.id,f.root.id,p.admissionId);
+ await s.disclosures.choose(f.parent.id,f.root.id,p.admissionId,{commandKey:'approve-final-child-policy',action:'approve',reviewHash:fresh.reviewHash,expectedRevision:1});
+ const finalReviewHash=fresh.reviewHash,childTarget=p.ownerMap[f.source.id],rootTarget=p.ownerMap[f.root.id];
+ assert.equal(f.branches.execution(childTarget).parentExecutionId,rootTarget);assert.equal(f.branches.execution(childTarget).admissionSource,'call');assert.ok(f.branches.execution(childTarget).admittedAt);
+ x.setFailure(true);await assert.rejects(s.admit(f.parent.id,f.root.id,input.commandKey,finalReviewHash),/called final owner rollback/);
+ for(const id of [rootTarget,childTarget])assert.equal(db.prepare('SELECT count(*) n FROM branch_resources WHERE execution_id=?').get(id).n,0);
+ assert.equal(db.prepare('SELECT receipt_json FROM coordination_destination_admissions WHERE id=?').get(p.admissionId).receipt_json,null);
+ x.setFailure(false);const admitted=await s.admit(f.parent.id,f.root.id,input.commandKey,finalReviewHash);
+ assert.equal(admitted.receipt.owners.length,2);assert.equal(Object.keys(admitted.receipt.requestMap).length,2);
+ for(const item of p.resources){const chat=f.store.getConversation(item.destination.conversationId),original=f.branches.execution(item.custody.intent.executionId);assert.equal(chat.branchId,original.branchId);assert.equal(chat.executionId,p.ownerMap[original.id]);}
+ const childOwner=f.branches.execution(childTarget),plan=f.branches.issuedGroupDestinationPlan(f.parent.id,f.root.id,input.commandKey);
+ const original=f.store.sqlite.prepare('SELECT parent_attempt_id FROM branch_executions WHERE id=?').get(f.source.id);
+ assert.equal(childOwner.parentAttemptId,plan.idMap[original.parent_attempt_id]);
+ const {groupJournalAudit}=await import('../../apps/server/dist/group-journal-audit.js');const selection=s.discover({kind:'admissions',limit:50}).items.find(v=>v.admissionId===p.admissionId).auditSelection;assert.deepEqual(groupJournalAudit(db,new CoordinationV3Store(db)).read(selection).receipt.requestMap,admitted.receipt.requestMap);
+ await f.reopen();x.setBytes(false);const before=x.imports;assert.deepEqual((await x.service().admit(f.parent.id,f.root.id,input.commandKey,finalReviewHash)).receipt,admitted.receipt);assert.equal(x.imports,before);
 });

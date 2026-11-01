@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import {stableJson,readGroupAuditJournal,readIssuedGroupCaptureAudit,readGroupCaptureDisposition,type CoordinationV3Store} from '@ponderosa/agents';
+import {issuedGroupOwners,stableJson,readGroupAuditJournal,readIssuedGroupCaptureAudit,readGroupCaptureDisposition,type CoordinationV3Store} from '@ponderosa/agents';
 import type {GroupJournalAuditSelection,GroupJournalAuditReadback} from '@ponderosa/core';
 import {lifecycleHash} from './lifecycle-journal.js';
 type Row=Record<string,any>;
@@ -34,15 +34,23 @@ export function groupJournalAudit(db:Database.Database,coordination:Pick<Coordin
   if(audit.reservationHash!==selection.reservationHash||stableJson(audit.reservation)!==stableJson(r))throw Error('Canonical group audit reservation differs');
   if(!value.idMap||stableJson(Object.keys(value.idMap).sort())!==stableJson([...audit.sourceIds].sort())||typeof value.idMap!=='object'||Array.isArray(value.idMap)||new Set(Object.values(value.idMap)).size!==Object.keys(value.idMap).length
    ||Object.values(value.idMap).some(id=>!text(id)||id===selection.executionId||r.resources.some((resource:Row)=>id===resource.destination.executionId)||audit.sourceIds.includes(id as string))||r.resources.some((resource:Row)=>value.idMap[resource.custody.intent.resourceStepId]!==resource.destination.resourceStepId))throw Error('Original group full owner map differs');
+  const retainedRow=db.prepare('SELECT snapshot_json FROM coordination_destination_admissions WHERE id=?').get(value.admissionId) as Row|undefined;
+  const tombstone=retainedRow?undefined:db.prepare('SELECT evidence_json FROM coordination_destination_retirements WHERE admission_id=?').get(value.admissionId) as Row|undefined;
+  const snapshot=JSON.parse(retainedRow?.snapshot_json??JSON.parse(tombstone?.evidence_json??'null')?.row?.snapshot_json??'null');
+  if(!snapshot||lifecycleHash(snapshot)!==r.checkpointHash)throw Error('Retained group owner scope unavailable');
+  const sourceOwners=issuedGroupOwners(snapshot);
+  if(value.ownerMap&&(stableJson(Object.keys(value.ownerMap).sort())!==stableJson(sourceOwners.map(o=>o.executionId).sort())||new Set(Object.values(value.ownerMap)).size!==sourceOwners.length||r.resources.some((item:Row)=>value.ownerMap[item.custody.intent.executionId]!==item.destination.executionId)))throw Error('Original group execution owner map differs');
   const owners=[];
   for(const resource of r.resources){
    const d=resource.destination,owner=audit.receipt?.owners.find(owner=>owner.resourceStepId===d.resourceStepId);
-   const liveOwner=db.prepare('SELECT branch_id FROM branch_executions WHERE id=?').get(d.executionId) as Row|undefined;
-   if(liveOwner&&liveOwner.branch_id!==selection.branchId)throw Error('Group destination owner identity differs');
+   const liveOwner=db.prepare('SELECT branch_id,parent_execution_id,parent_attempt_id FROM branch_executions WHERE id=?').get(d.executionId) as Row|undefined;
+   if(liveOwner&&liveOwner.branch_id!==sourceOwners.find(o=>o.executionId===resource.custody.intent.executionId)?.selected.execution[0].branch_id)throw Error('Group destination owner identity differs');
+   const originalOwner=sourceOwners.find(o=>o.executionId===resource.custody.intent.executionId)?.selected.execution[0];
+   if(liveOwner&&value.ownerMap&&((liveOwner.parent_execution_id??null)!==(originalOwner.parent_execution_id?value.ownerMap[originalOwner.parent_execution_id]:null)||(liveOwner.parent_attempt_id??null)!==(originalOwner.parent_attempt_id?value.idMap[originalOwner.parent_attempt_id]:null)))throw Error('Group retained call ancestry differs');
    const command=owner?db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(d.executionId,owner.receiptId) as Row|undefined:undefined;
    if(command){
     const original=JSON.parse(command.result_json),readiness=original.readiness;
-    if(stableJson(original)!==command.result_json||command.input_hash!==lifecycleHash(value)||stableJson(original.idMap)!==stableJson(value.idMap)
+    if(stableJson(original)!==command.result_json||command.input_hash!==lifecycleHash(value)||stableJson(original.idMap)!==stableJson(value.idMap)||stableJson(original.ownerMap)!==stableJson(value.ownerMap)
      ||stableJson(original.sourceCheckpoint)!==stableJson({executionId:selection.executionId,checkpointId:r.checkpointId,expectedHash:r.checkpointHash})||!readiness)throw Error('Retained group owner command map differs');
     const checkpoint=db.prepare('SELECT execution_id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(readiness.checkpointId) as Row|undefined;
     if(checkpoint&&(checkpoint.execution_id!==d.executionId||checkpoint.content_hash!==readiness.checkpointHash||lifecycleHash(JSON.parse(checkpoint.snapshot_json))!==checkpoint.content_hash||stableJson(JSON.parse(checkpoint.snapshot_json))!==checkpoint.snapshot_json))throw Error('Retained group owner checkpoint differs');

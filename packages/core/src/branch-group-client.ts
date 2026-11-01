@@ -3,7 +3,7 @@ import type {BranchGroupCaptureResult,BranchGroupCaptureInput,BranchGroupCapture
 import type {BranchDisclosureChoice,BranchDisclosureReceipt,BranchDisclosureReviewDto,BranchIssuedDestinationDto,BranchIssuedDestinationInput,CoordinationDestinationGroupResource,CoordinationDestinationGroupReceipt} from './coordination-destination.js';
 
 /** Group wire output differs from the singular destination output. */
-export type BranchIssuedGroupDestinationDto=Omit<BranchIssuedDestinationDto,'destination'|'receipt'>&{resources:CoordinationDestinationGroupResource[];receipt?:CoordinationDestinationGroupReceipt};
+export type BranchIssuedGroupDestinationDto=Omit<BranchIssuedDestinationDto,'destination'|'receipt'>&{scope?:'owner_tree'|'standalone';ownerMap?:Record<string,string>;resources:CoordinationDestinationGroupResource[];receipt?:CoordinationDestinationGroupReceipt};
 /** POST capture seals packages; GET capture returns status without these receipts. */
 export type BranchIssuedGroupCaptureReceipt=BranchGroupCaptureResult;
 /** Uses the caller's existing operator transport; never retries mutations. */

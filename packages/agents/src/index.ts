@@ -219,3 +219,5 @@ export {captureGenerationOneHost,generationOneEvidence,generationHistoricalSelec
 export {issuedCaptureRetryBudget} from './branch-issued-resource-capture.js';
 
 export {readGroupAuditJournal,listGroupAuditJournals} from './branch-group-journal-retention.js';
+
+export {issuedGroupOwners,issuedGroupResources,issuedGroupHost} from './branch-issued-group-capture.js';
