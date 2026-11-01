@@ -186,10 +186,12 @@ Installed Chrome155 exposes native performance.interactionCount:41 in both
 captured documents, with independently retained trusted ledger of one pointer
 click and40keydown/keyup pairs. Zero-delay historical-viewport diagnostic:
 41observed groups,p75184ms,LCP7568ms. Pinned412x823/75ms cadence:41native groups,
-zero observed entries (all below16ms reporting floor),LCP4344ms. Raw browser
-invocation exited1 because the collector wrongly rejected that legitimate
-all-subfloor case. Fixed rank logic; a focused regression and corrected offline
-evaluation of both unchanged raw captures pass. This is not a new successful
+zero observed entries,LCP4344ms. Interpreting missing groups as below16ms is
+conditional on independently validated collector completeness; this historical
+capture lacks the later required health receipts and remains diagnostic. Raw
+browser invocation exited1 when the collector rejected the zero-observed case.
+Fixed conditional rank arithmetic; a focused regression and corrected offline
+evaluation of both unchanged raw captures pass without establishing completeness. This is not a new successful
 end-to-end browser invocation or an accepted full performance result. The missing
 paced trace/screenshot after the exception is explicitly unavailable; first-cell
 7MBtrace, screenshot and both complete raw collector captures remain.
@@ -245,8 +247,10 @@ fixture finalization all completed even on this failing invocation.
 Observed: 100 articles at 7783.4ms; final eligible LCP 7892ms; canonical tail-readiness
 receipt 10777.5ms; first trusted-input cutoff 11140.8ms. The readiness receipt follows
 Playwright visibility and text extraction and is not the first article paint.
-Native interactionCount 41 with zero >=16ms EventTiming groups establishes a
-subfloor p75 for this finite unloaded capture, not invented zero-duration entries.
+Native interactionCount41 with zero >=16ms EventTiming groups supports a subfloor
+p75 only conditional on validated collector completeness. This historical capture
+lacks the later required health receipts, so its population remains diagnostic;
+no qualifying p75 or invented zero-duration entries follow.
 Cold API requests also spent about 3.4s before completing; browser timing alone
 cannot distinguish backend projection, transport scheduling and fixture overhead.
 Profiler and trace overhead are included; no causal comparison with earlier red
@@ -304,3 +308,14 @@ missing-profile negative setup. They do not repeat the credited official profile
 10k tail or one-lease browser proofs, launch any active load, establish callback
 health in installed Chrome, or supply METHOD acceptance. The missing-profile driver
 refuses before fixture/browser construction and writes32 terminal not-run rows.
+
+### Postrepair finite health diagnostic
+
+At8b8723a8d one zero-active pinned-profile/75ms browser invocation completed exit0
+with complete trace/profile/context and browser/web/fixture cleanup. Native41,
+one observed40ms group and40censored groups satisfied the current explicit
+namespace/window/visible-lifecycle/trusted ledger and supported zero-drop callback
+predicate. The finite rank is below16ms reporting floor, numeric p75=null. This
+does not retroactively validate historical zero-observed captures or establish
+universal completeness. LCP4604ms remains red; canonical-tail readiness6633.6ms.
+No causal performance improvement, live20/32 or METHOD acceptance follows.
