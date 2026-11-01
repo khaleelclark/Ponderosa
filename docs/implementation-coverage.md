@@ -713,8 +713,8 @@ proof/package validation, attempt budget and one atomic current-only admission.
 
 The fixed attempt2of2 label is removed. Preview uses real variable budget metadata;
 the subsequent saved-budget backend integration below resolves the status/discovery
-DTO gap. The unchanged UI still explicitly marks status-only budget unavailable;
-adopting the new verified/unavailable budget evidence remains UI owner work. Deferred2/3/32 helper
+DTO gap. The subsequent saved-budget UI integration below adopts verified/unavailable
+budget evidence; legacy missing proof remains honestly unavailable. Deferred2/3/32 helper
 and mounted sources cover ordered proof/facts, budget bounds, saved CAS, lost-response
 GET-only recovery, canonical discovery and whole-list preparation receipt checks.
 No fixture was executed. ff40 audit identity/privacy, called-tree producer, original
@@ -754,11 +754,9 @@ checkpoint seal/source receipt before status. Missing legacy retry proof returns
 numbers; present malformed proof refuses. No fresh preview, new mutation or budget
 reset is introduced.
 
-Backend status-budget contract gap is resolved in source. Current UI remains
-unchanged and still discards status budget fields when reconstructing selection,
-displays unavailable, and does not validate/display the new retryBudget evidenceHash.
-UI adoption of verified/unavailable evidence is pending; no claim that empty-browser
-UI budget presentation is complete. Saved-preview budget remains intact. Eligibility
+Backend status-budget contract gap is resolved in source. The subsequent UI successor below resolves verified/unavailable budget adoption
+and evidenceHash display in source; executed empty-browser UI qualification is
+still deferred. Saved-preview budget remains intact. Eligibility
 stays one standalone manual serial resource, ASYNC/SYNC generations1–32 with pinned
 maxAttempts<=33 and Runtime32-selection/32MiB bounds. No parallel/tree/EXIT/offset
 restoration or broader payload authority is added.
@@ -773,3 +771,47 @@ real package/custody/provider/native/runtime/end-to-end/accessibility/mobile/ful
 Phase2 qualification limits above remain. No tests/checks/build/types/Node/native/
 browser/runner preparation or execution, migrations, push/deploy/newworkers. Commit
 hooks disabled; source/files/Git inspection only.
+
+
+### Verified saved-budget UI adoption — source only
+
+UIcd92e8b06 is assembled as3eb6d8689 on40f4472be, with its five required
+deliverables plus this coverage update. BranchGenerationOne.tsx, branchGenerationOne.ts,
+branch-generation-history helper/mounted deferred fixtures are owner-byte-equal;
+web-feature-completion.md reconciles only additive integration notes and records
+already assembled df05c945 backend/core. No ancestor replay, SDK/backend writes or
+reference copies. Current writer is Integration on phase2-implementation-integration.
+
+Canonical discovery validates verified retryBudget state, exact matching top-level
+consumedAttempts/maxAttempts, generation+1, pinned limit<=33 and evidenceHash shape.
+Exact generation, ordered history, review hashes, checkpoint and proof copy into
+original-key status GET evidence. Changed cut/list/checkpoint/hash or conflicting
+saved-preview budget holds and clears stale discovery for explicit rediscovery.
+Verified discovery cannot downgrade to missing/unavailable evidence. Matching verified
+status upgrades recovered selection with real budget/proof, retains complete original
+preview and reaches existing saved preparation; no fresh preview, POST replay or
+retry budget reset. Legacy absent/unavailable proof supplies no inferred numbers;
+existing saved original preview numbers remain intact. UI validates proof structure
+and equality; backend alone verifies saved snapshot, pinned policy and checkpoint.
+Budget proof/hash is visible in discovery and successful capture readback; preparation
+retains it beside exact server historicalReviewHash/current cut. Existing full-list
+preparation receipt comparison and separate human approve/admit remain unchanged.
+
+Saved-budget backend and UI source gaps are resolved; no executed qualification is
+claimed. Deferred helper source covers verified/unavailable/malformed proof, exact
+top-level fields, proof/cut/checkpoint/preview-budget drift and downgrade refusal.
+Mounted source covers empty-client discovery, changed-proof hold, explicit rediscovery
+and exact GET selection for preparation, with no fresh-preview or mutation requests.
+Fixtures were read, not executed. Current historical/audit privacy/current maps, tree
+producer, owner fences, group/lifecycle/UI preserved.0035–0040 files physically present,
+each registered once in order, unchanged/unexecuted. Final task delta six paths.
+
+Eligibility remains one standalone manual serial resource ASYNC/SYNC generations1–32,
+maxAttempts<=33 and32-selection/32MiB bounds. Parallel/EXIT/tree admission consumer,
+offset restoration/manual recovery, missing/preupgrade/erased proofs/selectable journals
+and broader unknown/payload/secret/artifact/native/provider/external-effect families
+remain held. Runtime owner-tree dependency/Branch Join stays separate. Real package/
+custody/runtime/provider/native/end-to-end/accessibility/mobile and full Phase2/Bible
+qualification remain open. ZERO tests/checks/build/types/Node/native/browser/runner
+preparation or execution, migrations, push/deploy/newworkers. Hooks disabled; source,
+files and Git inspection only.
