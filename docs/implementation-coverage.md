@@ -585,3 +585,8 @@ Producer and independent Branch-owner guard remain assembled. Both helper/transp
 and mounted fixture sources are deferred, unexecuted. No tests/checks/build/types/
 Node/native/browser/preparation/execution/migrations/push/deploy/newworkers; no
 qualification or acceptance claim.
+
+Runtime historical evidence partition: canonical destination reservations can retain exact prospective sealed prior generations separately from current executable roots, using existing human disclosure/policy and current graph writer, immutable same-owner receipts/readback and custody pins. Source only; Branch later-generation retained-host/retry consumer and full integration/provider/native/package qualification remain separate. See historical-evidence-partition.md.
+
+
+Integration: canonical evidence partition source is assembled; earlier blanket partition-missing notes are superseded only for this canonical API. Branch later-generation current-cut/retained-host/retry consumer and historical selection UI remain pending. Existing issued-consumer restrictions remain held. Old envelopes are historical and nondispatchable, never old Agent imports or provider/native capture. Audit compatibility for future partition-bearing admissions still requires separate source reconciliation: the existing audit inspector clears the admission identity before source validation, and full partition-bearing receipts include private original envelopes. No current issued consumer supplies these selections; do not claim integrated historical audit/UI support for them.

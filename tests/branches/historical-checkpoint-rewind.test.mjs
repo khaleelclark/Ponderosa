@@ -1,3 +1,4 @@
+import {commitDestinationHistoricalPartition,verifyDestinationHistoricalPartition} from '../../packages/agents/dist/coordination-v3-historical-partition.js';
 import {generationExitHeld} from '../../packages/agents/dist/index.js';
 import {encodeScriptContinuation} from '../../packages/agents/dist/branch-script-continuation.js';
 import assert from 'node:assert/strict';
@@ -7,7 +8,7 @@ import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore,stableJson,readIssuedResourceContinuation,reconstructIssuedResourceContinuation,issuedResourceContinuationSupported} from '../../packages/agents/dist/index.js';
+import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore,stableJson,readIssuedResourceContinuation,reconstructIssuedResourceContinuation,issuedResourceContinuationSupported,readDestinationHistoricalPartition,destinationHistoricalFacts} from '../../packages/agents/dist/index.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainHistory=false){
  const dir=mkdtempSync(join(tmpdir(),'historical-rewind-'));let store,branches;
@@ -1728,6 +1729,33 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
   assert.equal(value.schema,'branch-resource-generation-retired.v1');
   assert.equal(value.priorGeneration.checkpointHash,sealed.checkpointHash);
   assert.deepEqual(f.branches.generationExitCapture(f.source.id,stepId,0),sealed);
+  // Historical disclosure retains ALL original bytes; no old actor is remapped or dispatched.
+  const selection={executionId:f.source.id,stepId,generation:0,checkpointId:sealed.checkpointId,checkpointHash:sealed.checkpointHash,envelopeSha256:sealed.envelopeSha256,intakeFence:sealed.intakeFence,discloseTo:['current-source-ref']};
+  const historicalReservation={branchId:sealed.identity.branchId,sourceExecutionId:f.source.id,historicalPartition:[selection],custody:{...sealed.receipt,sourceChatId:'current-generation-chat',agentIds:['current-source-ref'],intent:{...sealed.receipt.intent,resourceGeneration:1}},destination:{projectId:sealed.identity.projectId}};
+  const historicalStage={agentMap:{'current-source-ref':'fresh-current-destination'}};
+  const readHistory=()=>db.transaction(()=>readDestinationHistoricalPartition(db,historicalReservation,historicalStage))();
+  const beforeHistory=db.prepare('SELECT (SELECT count(*) FROM coordination_requests) requests,(SELECT count(*) FROM agent_activations) activations,(SELECT count(*) FROM agents) agents').get();
+  const partition=readHistory();assert.equal(partition.length,1);assert.equal(partition[0].dispatchable,false);assert.deepEqual(partition[0].seal,sealed);
+  assert.deepEqual(destinationHistoricalFacts(partition)[0].destinationAgentIds,['fresh-current-destination']);
+  assert.deepEqual(partition[0].seal.envelope.hostDependencies,sealed.envelope.hostDependencies);
+  assert.deepEqual(db.prepare('SELECT (SELECT count(*) FROM coordination_requests) requests,(SELECT count(*) FROM agent_activations) activations,(SELECT count(*) FROM agents) agents').get(),beforeHistory);
+  selection.envelopeSha256='0'.repeat(64);assert.throws(readHistory,/sealed historical/);selection.envelopeSha256=sealed.envelopeSha256;
+  selection.discloseTo=['unmapped-old-ref'];assert.throws(readHistory,/current import refs/);selection.discloseTo=['current-source-ref'];
+  historicalReservation.historicalPartition.push(selection);assert.throws(readHistory,/alias/);historicalReservation.historicalPartition.pop();
+  assert.throws(()=>db.transaction(()=>readDestinationHistoricalPartition(db,historicalReservation,historicalStage,{requests:[sealed.envelope.hostDependencies.requests[0]]}))(),/executable root/);
+  assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-exit:${stepId}:0`);assert.throws(readHistory,/sealed historical/);throw Error('restore journal');})(),/restore journal/);
+  assert.throws(()=>db.transaction(()=>{
+   const entries=commitDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},'review-hash');
+   const evidenceReceipt={reviewHash:'review-hash',historicalPartition:entries};
+   verifyDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},evidenceReceipt);
+   evidenceReceipt.reviewHash='changed';assert.throws(()=>verifyDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},evidenceReceipt),/receipt differs/);evidenceReceipt.reviewHash='review-hash';
+   db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key IN (?,?)').run(f.source.id,`resource-generation-exit:${stepId}:0`,`resource-generation-retired:${stepId}:0`);
+   db.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(sealed.checkpointId);
+   assert.throws(readHistory,/sealed historical/);
+   verifyDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},evidenceReceipt);
+   throw Error('partition owner rollback');
+  })(),/partition owner rollback/);
+  assert.equal(db.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").get(),undefined);
   // Exact sealed evidence survives original cleanup; owner deletion is atomic.
   const branchId=sealed.identity.branchId;
   const beforeOwner=db.prepare('SELECT * FROM branches WHERE id=?').get(branchId);

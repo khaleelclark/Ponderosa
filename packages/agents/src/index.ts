@@ -209,3 +209,5 @@ export {readGroupCaptureDisposition,type BranchGroupCaptureAbandonInput,type Bra
 export {fenceBranchGenerationExit,generationExitHeld,requireGenerationExitOpen,type BranchGenerationExitFenceInput} from './branch-generation-exit-fence.js';
 
 export {generationExitKey,readGenerationExitCapture,type BranchPriorGenerationEnvelope} from './branch-generation-exit-capture.js';
+
+export {readDestinationHistoricalPartition,destinationHistoricalFacts} from './coordination-v3-historical-partition.js';

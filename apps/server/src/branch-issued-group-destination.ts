@@ -17,7 +17,7 @@ export class BranchIssuedGroupDestinationService {
    const saved=readIssuedGroup(this.db,executionId,checkpointId,expectedHash);
    for(const receipt of saved.issuedGroupCustody)await this.packages().readCheckpoint(receipt);
    readIssuedGroup(this.db,executionId,checkpointId,expectedHash);
-  },true);
+  },true,receipt=>this.packages().readCheckpoint(receipt));
  }
  private get db(){return this.store.sqlite;}
  private authority():CoordinationDestinationGroupAuthority {

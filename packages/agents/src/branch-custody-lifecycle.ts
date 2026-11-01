@@ -72,6 +72,12 @@ export class BranchCustodyLifecycle {
   for(const row of this.db.prepare('SELECT id,source_execution_id,reservation_json,snapshot_json FROM coordination_destination_admissions ORDER BY id').all() as Row[]){
    if(matches(this.json(row.reservation_json))||matches(this.json(row.snapshot_json)))refs.push({kind:'admission',ownerId:row.source_execution_id,key:row.id,sha256:payloadHash({reservation:row.reservation_json,snapshot:row.snapshot_json})});
   }
+  // Admitted historical evidence retains original package custody permanently.
+  for(const row of this.db.prepare("SELECT identity,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' ORDER BY identity").all() as Row[]){
+   const value=this.json(row.receipt_json);
+   if(payloadHash(value)!==row.receipt_sha256)throw Error('Historical partition custody receipt differs');
+   if(matches(value))refs.push({kind:'admission',ownerId:source.intent.executionId,key:`historical:${row.identity}`,sha256:row.receipt_sha256});
+  }
   return refs;
  }
  private drain(source:CheckpointPackageSource,requireDeletion=true):string[] {

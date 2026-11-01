@@ -26,7 +26,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   // These routes inherit the existing operator-only request hook. Agent capability
   // tokens cannot turn Branch read access into private historical Request access.
   const hostArtifactGrant=(projectId:string,artifactId:string,recipientAgentId:string)=>store.operatorCanReadProjectArtifact(projectId,artifactId)&&store.agentCanReadProjectArtifact(projectId,artifactId,recipientAgentId);
-  const disclosures=new BranchDisclosureReviewService(store,branches,context.coordination,(executionId,checkpointId,expectedHash)=>context.resources.verifyHistoricalCustody(executionId,checkpointId,expectedHash));
+  const disclosures=new BranchDisclosureReviewService(store,branches,context.coordination,(executionId,checkpointId,expectedHash)=>context.resources.verifyHistoricalCustody(executionId,checkpointId,expectedHash),false,receipt=>context.resources.destinationPackageEngine().readCheckpoint(receipt));
   const destinations=new BranchIssuedDestinationService(store,branches,context.coordination,disclosures,()=>context.resources.destinationPackageEngine(),context.createChat);
   const groups=new BranchIssuedGroupDestinationService(store,branches,context.coordination,()=>context.resources.destinationPackageEngine());
   const groupPath='/api/branches/:id/executions/:executionId/destination-groups';

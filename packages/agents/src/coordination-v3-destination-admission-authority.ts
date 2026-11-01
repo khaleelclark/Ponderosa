@@ -1,5 +1,6 @@
 import {branchContinuationIds} from './branch-continuation-remap.js';
 import {CoordinationV3DestinationReconciliation} from './coordination-v3-destination-reconciliation.js';
+import {readDestinationHistoricalPartition,destinationHistoricalFacts,commitDestinationHistoricalPartition,verifyDestinationHistoricalPartition} from './coordination-v3-historical-partition.js';
 import {randomUUID} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {
@@ -94,7 +95,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
    const expected=resourcesOf(reservation).map(r=>({source_chat_id:r.custody.sourceChatId,source_execution_id:r.custody.intent.executionId,conversation_id:r.destination.conversationId})).sort((a,b)=>a.source_chat_id<b.source_chat_id?-1:a.source_chat_id>b.source_chat_id?1:0);
    if(stableJson(chats)!==stableJson(expected))throw Error('Group Chat reservation map differs');
   }
-  verifyHostProvenance(cut);return {reservation,cut};
+  verifyHostProvenance(cut);readDestinationHistoricalPartition(this.db,reservation,undefined,cut,row.state==='admitted'?row.id:undefined);return {reservation,cut};
  }
  reserve(input:CoordinationDestinationReservation,authority:CoordinationDestinationAuthority,now:string):{admissionId:string;state:string} {
   this.transaction();return this.db.transaction(()=>this.reserveInTransaction(input,authority,now))();
@@ -314,7 +315,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   validateRetainedCoordinationGraph(cut,now);
   if(cut.artifactRefs.length||(stage.imports?Object.values(stage.imports).some(p=>p.artifacts.length):stage.importPlan.artifacts.length)||Object.keys(stage.artifactMap).length)throw Error('Disclosure preview supports no runtime artifacts');
   const policy=this.checkDestination(reservation,stage);
-  return {review:{admissionId,reservation,stage,facts:this.facts(cut,stage)},policy};
+  return {review:{admissionId,reservation,stage,facts:[...this.facts(cut,stage),...destinationHistoricalFacts(readDestinationHistoricalPartition(this.db,reservation,stage,cut))]},policy};
  }
  private reviewed(row:Row,authority:CoordinationDestinationAuthority,now:string):CoordinationDestinationReview {
   if(row.state!=='staged'||!row.stage_json)throw Error('Destination explicit import map is not staged');
@@ -322,7 +323,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const ownerRevision=synchronous(authority.requireCustodyAndOwner(reservation));
   if(!nonempty(ownerRevision))throw Error('Current custody/owner authority revision required');
   validateRetainedCoordinationGraph(cut,now);
-  const policy=this.checkDestination(reservation,stage),facts=this.facts(cut,stage);
+  const policy=this.checkDestination(reservation,stage),facts=[...this.facts(cut,stage),...destinationHistoricalFacts(readDestinationHistoricalPartition(this.db,reservation,stage,cut))];
   const review={admissionId:row.id,reservation,stage,facts};
   const disclosureRevision=synchronous(authority.authorizeDisclosure(review));
   if(!nonempty(disclosureRevision))throw Error('Current human disclosure authority revision required');
@@ -369,8 +370,10 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(Array.isArray(composed)!==this.group||owners.length!==resources.length||unique(owners.map(o=>o.resourceStepId)).length!==resources.length)throw Error('Exhaustive group owner receipts required');
   this.verifyOwners(owners,reservation,stage,cut,graph);
   if(payloadHash(policySnapshot())!==beforePolicy||synchronous(authority.authorizeDisclosure({admissionId,reservation,stage,facts:review.facts}))!==review.disclosureRevision)throw Error('Composer changed reviewed policy or disclosure authority');
+  if(stableJson(destinationHistoricalFacts(readDestinationHistoricalPartition(this.db,reservation,stage,cut)))!==stableJson(review.facts.filter(f=>f.kind==='historical_generation')))throw Error('Composer changed reviewed historical evidence');
+  const historicalPartition=commitDestinationHistoricalPartition(this.db,admissionId,reservation,stage,cut,reviewHash);
   const owner=owners.find(o=>o.resourceStepId===reservation.destination.resourceStepId)!,d=reservation.destination;
-  const receipt:CoordinationDestinationReceipt={...graph,admissionId,reservationHash:row.reservation_hash,stageHash:payloadHash(stage),reviewHash,destination:d,agentMap:stage.agentMap,artifactMap:stage.artifactMap,activationIds:[],owner,...(this.group?{owners,resources:reservation.resources}: {})};
+  const receipt:CoordinationDestinationReceipt={...graph,admissionId,reservationHash:row.reservation_hash,stageHash:payloadHash(stage),reviewHash,destination:d,agentMap:stage.agentMap,artifactMap:stage.artifactMap,activationIds:[],owner,...(historicalPartition.length?{historicalPartition}:{}),...(this.group?{owners,resources:reservation.resources}: {})};
   this.db.prepare("UPDATE coordination_destination_admissions SET state='admitted',updated_at=? WHERE id=?").run(now,admissionId);
   for(const input of pending){if(Buffer.byteLength(stableJson(input.payload))>256_000)throw Error('Destination delivery exceeds bounded context');receipt.activationIds.push(this.deliver(input));}
   this.db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(stableJson(receipt),admissionId);
@@ -475,7 +478,8 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(audit&&(stableJson(receipt)!==row.receipt_json||stableJson(stage)!==row.stage_json))throw Error('Noncanonical retained group receipt/stage');
   if(expectedReviewHash&&expectedReviewHash!==receipt.reviewHash)throw Error('Destination admission replay review conflict');
   // Readback needs current disclosure permission, not surviving original objects or retained package bytes.
-  const facts=this.facts(cut,stage);
+  verifyDestinationHistoricalPartition(this.db,admissionId,reservation,stage,cut,receipt);
+  const facts=[...this.facts(cut,stage),...destinationHistoricalFacts(readDestinationHistoricalPartition(this.db,reservation,stage,cut,admissionId))];
   if(!audit&&(!authority||!nonempty(synchronous(authority.authorizeDisclosure({admissionId,reservation,stage,facts})))))throw Error('Current receipt disclosure authority required');
   if(receipt.admissionId!==admissionId||receipt.checkpointHash!==reservation.checkpointHash||receipt.checkpointId!==reservation.checkpointId||stableJson(receipt.destination)!==stableJson(reservation.destination)||receipt.reservationHash!==reservationHash||receipt.stageHash!==payloadHash(stage)||stableJson(receipt.agentMap)!==stableJson(stage.agentMap)||stableJson(receipt.artifactMap)!==stableJson(stage.artifactMap))throw Error('Destination receipt map differs');
   const canonical=this.db.prepare('SELECT receipt_json FROM coordination_cut_restorations WHERE id=?').get(receipt.restorationId) as Row|undefined;

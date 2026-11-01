@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {
- destinationDisclosurePolicy,readIssuedResourceContinuation,readIssuedGroup,stableJson,
+ readDestinationHistoricalPartition,destinationHistoricalFacts,destinationDisclosurePolicy,readIssuedResourceContinuation,readIssuedGroup,stableJson,
  type AgentStore,type BranchStore,type CoordinationV3Store,
 } from '@ponderosa/agents';
 import type {
@@ -21,7 +21,7 @@ const keyValid=(key:unknown):key is string=>typeof key==='string'&&!!key.trim()&
 /** Explicit human choice only. This grants no artifact access and admits no work. */
 export class BranchDisclosureReviewService {
  constructor(private readonly store:AgentStore,private readonly branches:BranchStore,private readonly coordination:CoordinationV3Store,
-  private readonly verifyCustody:(executionId:string,checkpointId:number,expectedHash:string)=>Promise<void>,private readonly group=false) {}
+  private readonly verifyCustody:(executionId:string,checkpointId:number,expectedHash:string)=>Promise<void>,private readonly group=false,private readonly verifyHistoricalPackage?:(receipt:import('@ponderosa/core').CheckpointPackageReceipt)=>Promise<unknown>) {}
  private get db(){return this.store.sqlite;}
  private admission(branchId:string,executionId:string,id:string):Row {
   const row=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=? AND branch_id=? AND source_execution_id=?').get(id,branchId,executionId) as Row|undefined;
@@ -103,7 +103,13 @@ export class BranchDisclosureReviewService {
   }):this.coordination.inspectCoordinationDestinationDisclosure(row.id,r=>this.requireCurrentOwner(r));
   const host=JSON.parse(row.snapshot_json).hostDependencies,policyRevision=hash(policy),hostCutSha256=hash(host);
   const groups:Record<string,Row[]>={request:host.requests,update:host.updates,communication:host.communications,join:host.joins};
+  const historical=readDestinationHistoricalPartition(this.db,review.reservation,review.stage);
   const facts=review.facts.map(f=>{
+   if(f.kind==='historical_generation'){
+    const p=historical.find(p=>hash(p.selection)===f.id);
+    if(!p||hash({seal:p.seal,retirement:p.retirement})!==f.sha256)throw Error('Historical disclosure seal differs');
+    return {...f,content:{seal:p.seal,retirement:p.retirement}};
+   }
    const evidence=groups[f.kind]?.find(e=>e.row.id===f.id);
    if(!evidence||evidence.sha256!==f.sha256||hash(evidence.row)!==f.sha256)throw Error('Disclosure fact content integrity failure');
    return {...f,content:evidence.row};
@@ -114,6 +120,13 @@ export class BranchDisclosureReviewService {
  async prepare(branchId:string,executionId:string,id:string):Promise<BranchDisclosureReviewDto> {
   const row=this.admission(branchId,executionId,id),r=JSON.parse(row.reservation_json);
   await this.verifyCustody(executionId,r.checkpointId,r.checkpointHash);
+  const historical=this.db.transaction(()=>readDestinationHistoricalPartition(this.db,r,JSON.parse(row.stage_json)))();
+  for(const p of historical){
+   if(!this.verifyHistoricalPackage)throw Error('Historical package verifier unavailable');
+   await this.verifyHistoricalPackage((p.seal as Row).receipt);
+  }
+  const after=this.db.transaction(()=>readDestinationHistoricalPartition(this.db,r,JSON.parse(row.stage_json)))();
+  if(hash(after)!==hash(historical))throw Error('Historical custody changed during review');
   return this.db.transaction(()=>this.candidate(this.admission(branchId,executionId,id)))();
  }
  private active(row:Row,current:Row):boolean {
@@ -169,6 +182,9 @@ export class BranchDisclosureReviewService {
  readonly authorizeDisclosure=(review:Review):string=>{
   if(!this.db.inTransaction)return this.db.transaction(()=>this.authorizeDisclosure(review))();
   const r=review.reservation,row=this.admission(r.branchId,r.sourceExecutionId,review.admissionId),current=this.state(row);
+  const historicalFacts=destinationHistoricalFacts(readDestinationHistoricalPartition(this.db,r,review.stage,undefined,row.state==='admitted'?row.id:undefined));
+  if(stableJson(review.facts.filter(f=>f.kind==='historical_generation'))!==stableJson(historicalFacts))throw Error('Historical human disclosure facts changed');
+
   if(current.state!=='approved'||stableJson(review)!==stableJson(current.review)||stableJson(review.reservation)!==row.reservation_json||stableJson(review.stage)!==row.stage_json
    ||current.hostCutSha256!==hash(JSON.parse(row.snapshot_json).hostDependencies)
    ||current.policyRevision!==hash(current.policy)||current.policyRevision!==hash(this.policy(r,review.stage))

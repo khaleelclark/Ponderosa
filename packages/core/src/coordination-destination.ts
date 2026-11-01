@@ -5,6 +5,8 @@ export interface CoordinationDestinationReservation {
   branchId:string; sourceExecutionId:string; checkpointId:number; checkpointHash:string;
   commandKey:string; operatorId:string; reconcileEffects:true;
   custody:CheckpointPackageReceipt;
+  /** Retired evidence only; never included in executable participant maps. */
+  historicalPartition?:CoordinationHistoricalGenerationSelection[];
   /** Internal normalized group envelope; ordinary singular entrypoints reject it. */
   resources?:CoordinationDestinationGroupResource[];
   destination:{projectId:string;conversationId:string;executionId:string;resourceStepId:string;resourceGeneration:number};
@@ -25,7 +27,7 @@ export interface CoordinationDestinationStage {
 export interface CoordinationDestinationReview {
   admissionId:string; reviewHash:string; disclosureRevision:string;
   reservation:CoordinationDestinationReservation; stage:CoordinationDestinationStage;
-  facts:{kind:'request'|'update'|'communication'|'join';id:string;sha256:string;originalAgentIds:string[];destinationAgentIds:string[];originalAudience:unknown;originalActor?:unknown}[];
+  facts:{kind:'request'|'update'|'communication'|'join'|'historical_generation';id:string;sha256:string;originalAgentIds:string[];destinationAgentIds:string[];originalAudience:unknown;originalActor?:unknown}[];
 }
 export interface CoordinationDestinationOwnerReceipt {
   executionId:string; resourceStepId:string; resourceGeneration:number; creationOperationId:string;
@@ -38,6 +40,7 @@ export interface CoordinationDestinationReceipt extends BranchHostGraphRestoreDt
   admissionId:string; reservationHash:string; stageHash:string; reviewHash:string;
   destination:CoordinationDestinationReservation['destination'];
   agentMap:Record<string,string>; artifactMap:Record<string,string>;
+  historicalPartition?:{sha256:string;selection:CoordinationHistoricalGenerationSelection;seal:Record<string,unknown>;retirement:{inputHash:string;resultJson:string};destinationAgentIds:string[];historical:true;dispatchable:false}[];
   activationIds:string[]; owner:CoordinationDestinationOwnerReceipt;
   owners?:CoordinationDestinationOwnerReceipt[];
 }
@@ -117,4 +120,12 @@ export interface CoordinationDestinationGroupReconciliationReceipt extends Coord
  resources:CoordinationDestinationGroupResource[];
  groupChats:CoordinationDestinationGroupReconciliationSlot[];
  evidenceSha256:string;
+}
+
+/** Exact prospective producer seal plus explicit current source-ref recipients for ALL retained facts. */
+export interface CoordinationHistoricalGenerationSelection {
+ executionId:string;stepId:string;generation:number;checkpointId:number;checkpointHash:string;envelopeSha256:string;
+ intakeFence:{identity:string;sha256:string};
+ /** Keys of the CURRENT destination stage.agentMap; old Agent identities are never remapped. */
+ discloseTo:string[];
 }

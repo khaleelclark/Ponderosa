@@ -200,19 +200,20 @@ export function writeRetainedCoordinationGraph(db:Database.Database,deliver:(inp
   return receipt;
 }
 
-export function validateRetainedCoordinationGraph(cut:BranchHostCut,now:string):void {
+export function validateRetainedCoordinationGraph(cut:BranchHostCut,now:string,evidenceOnly=false):void {
+ if(evidenceOnly&&(cut.requests.some(e=>!TERMINAL_REQUEST_STATES.has(e.row.state))||cut.joins.some(e=>e.row.state==='open')))throw Error('Evidence-only graph must be terminal');
  const requests=cut.requests.map(e=>e.row),updates=cut.updates.map(e=>e.row),joins=cut.joins.map(e=>e.row);
- if(!cut.coverage.complete||requests.some(r=>r.state==='outcome_unknown'||r.superseded_by_request_id))throw Error('Incomplete graph, unknown effect or recovery chain requires reconciliation');
+ if(!cut.coverage.complete||requests.some(r=>r.state==='outcome_unknown'||r.superseded_by_request_id&&(!evidenceOnly||!requests.some(q=>q.id===r.superseded_by_request_id))))throw Error('Incomplete graph, unknown effect or recovery chain requires reconciliation');
   for(const request of requests){
    validateHistoricalRequest(request,updates.filter(u=>u.request_id===request.id).sort((a,b)=>a.resulting_version-b.resulting_version),cut);
-   if(request.deadline_at&&request.deadline_at<=now)throw Error('Expired historical lifetime needs an explicit fresh lifetime policy');
+   if(!evidenceOnly&&request.deadline_at&&request.deadline_at<=now)throw Error('Expired historical lifetime needs an explicit fresh lifetime policy');
    if(request.state==='waiting_dependency'&&!joins.some(j=>JSON.parse(j.continuation_request_ids_json).includes(request.id)))throw Error('Waiting historical Request lacks a captured Join continuation');
   }
   for(const join of joins){
    const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),continuations=JSON.parse(join.continuation_request_ids_json) as string[];
    if(!members.length||members.some((m,i)=>m.position!==i||!requests.some(r=>r.id===m.request_id))||continuations.some(id=>!requests.some(r=>r.id===id)))throw Error('Historical Join closure is incomplete');
    for(const id of continuations){const request=requests.find(r=>r.id===id)!;if(request.project_id!==join.project_id||request.conversation_id!==join.conversation_id||request.recipient_agent_id!==join.owner_agent_id&&!(request.requester_agent_id===join.owner_agent_id&&request.state==='awaiting_answer'))throw Error('Historical continuation owner differs');}
-   if(join.deadline_at&&join.deadline_at<=now)throw Error('Expired Join lifetime needs an explicit fresh lifetime policy');
+   if(!evidenceOnly&&join.deadline_at&&join.deadline_at<=now)throw Error('Expired Join lifetime needs an explicit fresh lifetime policy');
    const computed=evaluateCoordinationJoin({state:'open',mode:join.mode,quorum:join.quorum,requestIds:members.map(m=>m.request_id),satisfyingOutcomes:JSON.parse(join.satisfying_outcomes_json)},new Map(requests.map(r=>[r.id,r.state])));
    if(!['open','satisfied','impossible'].includes(join.state)||computed!==join.state)throw Error('Historical Join final outcome needs a separate disposition');
    if(join.state!=='open'){
