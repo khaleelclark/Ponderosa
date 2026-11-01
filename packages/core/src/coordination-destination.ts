@@ -67,3 +67,18 @@ export interface BranchIssuedDestinationDto {
  state:'reserved'|'import_unknown'|'awaiting_disclosure'|'admitted';
  restoreSupported:boolean; receipt?:CoordinationDestinationReceipt;
 }
+
+/** Host-only retirement: no provider or imported package can supply authority callbacks. */
+export interface CoordinationDestinationReconciliationInput {
+ admissionId:string; commandKey:string; operatorId:string;
+ expectedReviewHash:string; releaseSourcePins:boolean;
+}
+export interface CoordinationDestinationReconciliationReview {
+ admissionId:string; reviewHash:string; reservation:CoordinationDestinationReservation;
+ state:string; stage:CoordinationDestinationStage|null; evidenceRevision:string;
+ references:string[];
+}
+export interface CoordinationDestinationReconciliationReceipt {
+ admissionId:string; commandKey:string; operatorId:string; reviewHash:string;
+ releasedSourcePins:boolean; retiredAt:string;
+}

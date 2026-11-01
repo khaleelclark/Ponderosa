@@ -74,6 +74,7 @@ const schemaExtensions = [
   "0035_provider_context_recovery_progress.sql",
   "0036_coordination_cut_restorations.sql",
   "0037_coordination_destination_admissions.sql",
+  "0038_coordination_destination_retirements.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

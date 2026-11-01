@@ -194,3 +194,5 @@ export {creationId as workspaceCreationId} from './store-workspace-catalog-autho
 export {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 
 export {destinationDisclosurePolicy} from './coordination-v3-destination-admission-authority.js';
+
+export type {CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';

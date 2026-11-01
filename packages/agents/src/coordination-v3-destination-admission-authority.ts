@@ -56,6 +56,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
  constructor(private readonly db:Database.Database,private readonly deliver:(input:CreateActivationV3Input)=>string){}
  private transaction():void {if(!this.db.inTransaction)throw Error('Destination admission requires the same Branch owner transaction');}
  private row(id:string):Row {
+  if(this.db.prepare('SELECT 1 FROM coordination_destination_retirements WHERE admission_id=?').get(id))throw Error('Destination retired');
   const row=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(id) as Row|undefined;
   if(!row)throw Error('Destination admission unavailable');return row;
  }
@@ -80,6 +81,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
    ||!Array.isArray(input.custody.agentIds)||input.custody.agentIds.length<1||input.custody.agentIds.length>128
    ||input.custody.agentIds.some(id=>!nonempty(id))||unique(input.custody.agentIds).length!==input.custody.agentIds.length
    ||!nonempty(input.custody.intent.executionId))throw Error('Invalid destination reservation');
+  if(this.db.prepare('SELECT 1 FROM coordination_destination_retirements WHERE branch_id=? AND command_key=? OR conversation_id=?').get(input.branchId,input.commandKey,input.destination.conversationId))throw Error('Destination retired; identity and command cannot be reused');
   const prior=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE branch_id=? AND command_key=?').get(input.branchId,input.commandKey) as Row|undefined;
   if(prior){if(prior.reservation_hash!==payloadHash(input)||prior.reservation_json!==stableJson(input))throw Error('Destination command input conflict');return {admissionId:prior.id,state:prior.state};}
   if(!nonempty(synchronous(authority.requireCustodyAndOwner(input))))throw Error('Current custody/owner authority revision required');

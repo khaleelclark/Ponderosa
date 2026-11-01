@@ -1,4 +1,5 @@
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
+import {CoordinationV3DestinationReconciliation,type CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
 import {CoordinationV3DestinationAdmissionAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
 import type {HostArtifactGrant} from './branch-host-adoption.js';
@@ -169,6 +170,15 @@ export class CoordinationV3Store {
   }
   readCoordinationDestination(id:string,reservationHash:string,authority:CoordinationDestinationAuthority) {
     return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).read(id,reservationHash,authority);
+  }
+  reviewCoordinationDestinationReconciliation(id:string,operatorId:string,authority:CoordinationDestinationReconciliationAuthority) {
+    return new CoordinationV3DestinationReconciliation(this.sqlite).review(id,operatorId,authority);
+  }
+  retireCoordinationDestination(input:import('@ponderosa/core').CoordinationDestinationReconciliationInput,authority:CoordinationDestinationReconciliationAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationReconciliation(this.sqlite).retire(input,authority,now);
+  }
+  readCoordinationDestinationRetirement(id:string) {
+    return new CoordinationV3DestinationReconciliation(this.sqlite).read(id);
   }
   private readonly sqlite: Database.Database;
   private readonly activationReadModel: CoordinationV3ActivationReadModel;
