@@ -1,7 +1,7 @@
 # Current implementation coverage and backlog
 
 Source-only inventory includes Branch1aa09968 (2–32 serial/local-parallel resources; c462d403 predecessor), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
-retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner through12e744222 (eba8fa646 predecessor) (91e8f8ad2/6ddf47dfa predecessors),
+retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner through6b1f7a398 (12e744222/eba8fa646 predecessors) (91e8f8ad2/6ddf47dfa predecessors),
 and lifecycle source throughf73a1e5a discovery atop393a02f5 (including Runtime713af3ad equivalent1e4d9e2). Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
@@ -144,31 +144,14 @@ Called trees, later-generation evidence-only participants/resource retry/recover
 parallel cleanup-held frontiers, broader package payloads and atomic multi-package
 group capture abandonment remain incomplete/refused. The fresh ordinary Project reuses
 the owner Project directory and its usual default Chat plus N separately reserved
-owned resource Chats. UI is limited to exactly two serial resources as described below;
-2–32/parallel UI and separate filesystem workspace/imported native working roots remain absent. No qualification or acceptance claim.
+owned resource Chats. UI source now consumes authoritative 2–32 serial/local-parallel preview/discovery as described below;
+separate filesystem workspace/imported native working roots remain absent. No qualification or acceptance claim.
 
-### Bounded two-resource serial UI
+### Resource group UI source
 
-UI eba8fa646 adds BranchGroupReview beside the singular execution review, an additive
-BranchGroupClient with distinct group outputs, and two deferred regression sources.
-The existing BranchesClient/coordination exports and backend capture-status DTO remain.
-Only a complete standalone exactly-two serial generation-zero presentation is offered;
-backend2–32/local-parallel support is not broader UI support. Real eligibility remains
-host-validated. Capture accepts only commandKey, with no count/cut CAS; a concurrent
-broader result is rejected and held, never prepared. Both exact retained source seals
-are required before preparation, plus terminal source and external-effects acknowledgement.
-Full original commands persist before POST; browser-local capture/prepare keys survive
-success for pure GET status/destination/choice recovery. Unknown outcomes lock new
-mutations; corrupt/unwritable storage blocks them. Choice CAS409 invalidates review;
-staging/admission409 retains input. Human whole-fact approval and admission are separate;
-current persisted approval hash/revision and fresh acknowledgement are required.
-Independent destination/choice readback permits revocation without source/preview proof.
-This UI has no group collection/original capture-key discovery or cross-device recovery;
-backend lifecycle discovery below does not reconstruct hashed GROUP capture keys. There is no
-automatic mutation replay or partial-capture abandonment. Separate lifecycle discovery/whole-group
-retirement UI is now assembled below; it does not update this capture caller.
-Preparation discloses directory reuse/default Chat plus two owned resource Chats.
-Both deferred command and mounted fixtures are source only; none executed.
+UI6b1f7a398 supersedes eba8's two-serial/browser-only capture presentation. See the
+current authoritative preview/discovery section below. Both SDKs and core exports
+remain; original commands persist before POST and recovery does not replay mutations.
 
 ## Actual missing implementation / owner requirements
 
@@ -210,13 +193,13 @@ collections with independent pagination/revision validation and explicit restart
 provides separate whole-group retirement controls. Branch checkpoint retirement still
 depends on retained owner/source identity; no owner-independent journal. These are
 source deliveries, not executed qualification; separate group capture preview/CAS UI
-and broader group capture/disclosure UI remain pending.
+is now assembled by6b1f7a398 below, with a separate backend preview-transaction blocker.
 
 - Features + Runtime: called resource trees, later-generation historical participants,
   retry/recovery, parallel cleanup-held frontiers and broader package payloads remain
   refused beyond the delivered 2–32 standalone generation-zero serial/local-parallel
-  consumer. Capture/disclosure UI beyond two serial resources and atomic multi-package
-  group capture abandonment remain absent. Separate group retirement UI is integrated.
+  consumer. UI source for2–32 serial/local-parallel capture/disclosure is assembled; atomic
+  multi-package group capture abandonment remains absent. Separate group retirement UI is integrated.
   Changed/secret bindings, exhausted-budget frontiers, Agent/child cancellation and
   cross-owner forwarded bundles remain open. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
@@ -397,13 +380,11 @@ transaction before allocation; each remaining package effect rechecks preview an
 retain existing transaction validation. Existing intent cannot be reallocated against a
 changed cut. Exact retained commands read saved seals without recapture.
 
-INTERIM UI GAP: capture POST now requires exactly commandKey/reviewHash/versionId.
-The currently assembled two-serial BranchGroupReview still persists/sends commandKey only
-and is incompatible for new capture until the pending UI successor adopts preview/CAS.
-No web files were edited here. BranchesClient supplies discovery, preview, capture and
-status helpers; the additive BranchGroupClient capture method uses the shared exact input
-and result DTOs, while preserving all prior methods/exports. GET status is unchanged.
-Branch group command discovery/preview UI, broader 2–32/local-parallel capture UI and executable qualification remain pending.
+UI6b1f7a398 now supplies the required commandKey/reviewHash/versionId and full persisted
+preview. The earlier commandKey-only input mismatch is resolved. Both BranchesClient
+and additive BranchGroupClient retain shared DTOs and all prior exports/methods. GET
+status remains unchanged. The separate backend preview-transaction blocker below
+still prevents claiming new-capture usability or executed qualification.
 Partial multi-package abandonment remains unsupported with all pins held. Existing
 historical participant, precleanup sealed evidence and broader payload limits remain.
 Deferred source covers preview purity/stale cut, serial/parallel exact and legacy keys,
@@ -433,11 +414,49 @@ slot-array and evidence-hash shape; the UI does not independently re-prove host 
 or compare every receipt slot byte to the original review. Canonical backend proof
 remains authoritative. No polling, automatic mutation/retry or singular-action loop.
 
-This closes lifecycle discovery callers and group retirement UI source, not the separate
-Branch group capture/prepare discovery or e7 preview/CAS caller update. The existing
-eba8 capture UI still sends commandKey alone and remains incompatible for new POST;
-its shared input mismatch remains pending. Legacy lost GROUP keys cannot be recovered.
+This closes lifecycle discovery callers and group retirement UI source. Separate Branch
+capture/prepare discovery and e7 preview/CAS UI are now assembled by6b1f7a398; legacy
+lost GROUP keys cannot be reconstructed. The backend transaction blocker below remains.
 Atomic multi-package abandonment remains unsupported/all pins held; existing eligibility,
 bounds, quiescence, references, historical partition and Branch precleanup-seal gaps
 remain. Two new deferred discovery fixture files plus command receipt additions were
 read, not executed; no native/browser/mobile/accessibility or release qualification.
+
+
+### Authoritative 2–32-resource preview and group command UI (source only)
+
+UI6b1f7a398 uses the server's exact generation-zero standalone serial/local-parallel
+preview, displaying every resource/participant and review/version/binding/frontier/host
+hash. It rejects malformed, duplicate, later-generation or outside2–32 inventories.
+Inventory/effect acknowledgements plus final confirmation precede capture; full original
+preview and exact commandKey/reviewHash/versionId persist before POST. Independent GET
+status must bind all Steps/Chats/seals before preparation. Every package/map/current
+policy and whole private fact/actor/audience/recipient inventory participates in review;
+approval, revocation and admission remain separate with current revision/hash checks.
+
+Canonical capture/admission discovery follows opaque50-entry pages until no cursor;
+invalid/409 pages clear stale selections and confirmation, requiring explicit restart.
+Legacy missing keys are unsupported. Exact discovered capture key/review/version can
+restore local GET recovery without browser history; admission GET can recover without
+a capture key. Discovered preparation lacks optional original import settings and is
+never replayed as POST. Other source Runs are audit-only in this component; actions
+require their original source Run. Retained journal input survives ambiguous outcomes;
+no capture/prepare/admit/choice replay is offered. Unknown slots remain held.
+
+CURRENT BACKEND BLOCKER (source-read, not an executed result): BranchStore's
+previewIssuedGroupCapture calls its helper without opening a transaction; that helper
+calls captureBranchHostCut, which explicitly requires db.inTransaction. The GET route
+supplies no transaction. Thus the new UI caller contract is correct but authoritative
+preview/new-capture usability remains held until the Branch-owned read-transaction
+correction is assembled. This UI-only integration does not apply an unnamed backend
+successor or silently patch that owner code.
+
+Owner-independent group command readback remains missing: discovery can show retained
+owners while exact scoped GET still refuses missing source owners. Partial multi-package
+abandonment remains unsupported/all pins held. Called trees, later generations,
+historical-only participant partition, Branch precleanup seals/retry/replay, broader
+payload/native roots and unknown external effects remain gaps. Directory reuse/default
+Chat plus one Chat per resource warning remains. Deferred helper/transport/mounted
+sources cover2/3/32 inventory and last-policy binding, stale cut, exact CAS persistence,
+response loss/remount/pure GET, canonical discovery/51st row/legacy/409 and independent
+revocation; none executed. No native/browser/mobile/accessibility or acceptance claim.
