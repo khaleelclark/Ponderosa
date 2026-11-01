@@ -176,3 +176,22 @@ test('unfinished parallel child owner inside a Map restores as a fresh owned tre
  assert.ok(fresh.length>1);assert.ok(fresh.every(row=>!oldIds.has(row.id)));assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
  assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'parallel-child').id,next.id);
 });
+test('a settled failed child remains historical data while a parallel Map suffix is restored',async t=>{
+ const f=fixture(t,{transform:(d,{branches,chat,dir})=>{
+  const leaf=branches.deploy({chatId:chat.id,idempotencyKey:'failed-leaf',definition:{schema:'ponderosa.branch.v1',name:'Failed leaf',trigger:{kind:'manual'},entry:'leaf',steps:[script('leaf')],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir}}});
+  d.steps[0]={id:'worker',kind:'branch_call',branchRef:'leaf'};d.controls.find(c=>c.id==='mapped').onUnmet='continue';return {branches:{leaf:leaf.id}};
+ }});
+ let failed=false,cut;
+ for(let n=0;n<150&&!cut;n++){
+  await f.tick();const lease=f.branches.claimScript('inert');
+  if(lease&&!failed){const stdout='Private raw failure output',output='Script exited with code 1. Inspect Step evidence for error output.';f.branches.authorizeScript(lease,identity);f.branches.recordScriptEvidence(lease,identity,{stdout,outputHash:hash(stdout),code:1});f.branches.settleScript(lease,{failed:true,output});failed=true;}
+  else if(lease)f.settle(lease);
+  await f.branches.unitSaver.drain();cut=f.points(f.source.id).find(cp=>cp.snapshot.continuation.schema==='ponderosa.branch.script-tree-continuation.v1'&&cp.snapshot.selected.steps.some(s=>s.state==='failed')&&cp.snapshot.continuation.owners.some(o=>o.executionId!==f.source.id&&o.selected.execution[0].state==='failed'));
+ }
+ assert.ok(cut,'the failed child and exact parent failure are retained in a restorable cut');await f.finish(f.source.id);
+ const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'failed-child'),line=JSON.parse(f.store.sqlite.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").get(next.id).snapshot_json),old=cut.snapshot.continuation.owners.find(o=>o.selected.execution[0].state==='failed'),freshId=line.idMap[old.executionId];
+ assert.equal(f.branches.execution(freshId).state,'failed');assert.equal(f.branches.execution(freshId).output,old.selected.execution[0].output_text);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='script_authorized'").get(freshId).n,0);
+ await f.finish(next.id);assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
+ assert.ok(f.points(next.id).some(cp=>cp.snapshot.continuation.schema==='ponderosa.branch.script-tree-continuation.v1'&&cp.snapshot.continuation.owners.some(o=>o.selected.execution[0].state==='failed')),'restored failed prefix is verified on a later selection');
+});

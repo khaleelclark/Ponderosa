@@ -19,6 +19,9 @@ import {workspaceNotificationPage} from './notifications.js';
 
 export function registerBranchRoutes(app: FastifyInstance, context: { outputApps:OutputAgentApps; branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
   const { branches, store, sources, notify } = context;
+  // These routes inherit the existing operator-only request hook. Agent capability
+  // tokens cannot turn Branch read access into private historical Request access.
+  const hostArtifactGrant=(projectId:string,artifactId:string,recipientAgentId:string)=>store.operatorCanReadProjectArtifact(projectId,artifactId)&&store.agentCanReadProjectArtifact(projectId,artifactId,recipientAgentId);
   const assertEditable=(id:string)=>{
     if(store.sqlite.prepare("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')").get(id))throw new Error('An installation update is applying; wait for it to finish');
   };
@@ -407,6 +410,21 @@ export function registerBranchRoutes(app: FastifyInstance, context: { outputApps
   app.get<{Params:{id:string;executionId:string};Querystring:{before?:string}}>('/api/branches/:id/executions/:executionId/historical-checkpoints',async(request,reply)=>{
     try{return branches.historicalCheckpoints(request.params.id,request.params.executionId,request.query.before===undefined?undefined:Number(request.query.before));}
     catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Historical checkpoints unavailable'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/host-request-review',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Host Request review');exactObjectFields(body,['checkpointId','expectedHash','requestId'],'Host Request review');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.requestId!=='string')throw Error('Invalid host Request selection');
+      return branches.reviewHostRequest(request.params.id,request.params.executionId,{checkpointId:body.checkpointId,expectedHash:body.expectedHash,requestId:body.requestId},hostArtifactGrant);
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Host Request review unavailable'});}
+  });
+  app.post<{Params:{id:string;executionId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/adopt-host-request',async(request,reply)=>{
+    try{
+      const body=validatedObject(request.body,'Host Request adoption');exactObjectFields(body,['checkpointId','expectedHash','requestId','reviewHash','commandKey','instruction','mode','acknowledgeChangedBindings','acknowledgeSecretBindings'],'Host Request adoption');
+      if(typeof body.checkpointId!=='number'||typeof body.expectedHash!=='string'||typeof body.requestId!=='string'||typeof body.reviewHash!=='string'||typeof body.commandKey!=='string'||typeof body.instruction!=='string'||!['reconcile','independent'].includes(String(body.mode)))throw Error('Invalid host Request adoption');
+      for(const key of ['acknowledgeChangedBindings','acknowledgeSecretBindings'])if(body[key]!==undefined&&typeof body[key]!=='boolean')throw Error('Invalid authority acknowledgement');
+      const result=branches.adoptHostRequest(request.params.id,request.params.executionId,body as unknown as import('@ponderosa/core').BranchHostRequestAdoption,hostArtifactGrant);notify();return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Host Request adoption refused'});}
   });
   app.post<{Params:{id:string;executionId:string};Body:{checkpointId:number;expectedHash:string;commandKey:string}}>('/api/branches/:id/executions/:executionId/rewind-historical',async(request,reply)=>{
     try{

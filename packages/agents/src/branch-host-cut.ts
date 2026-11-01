@@ -20,16 +20,22 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
  if(!roots.length&&!selected.resources!.length)return;
  for(const root of roots){const owner=db.prepare('SELECT a.request_id,a.recovery_of_request_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE a.id=? AND s.execution_id=?').get(root.attemptId,id) as Row|undefined;if(!owner||owner.request_id!==root.requestId||owner.recovery_of_request_id!==root.recoveryOfRequestId)throw Error('Host Request root differs from its owned attempt');}
  const missingReferences:{kind:string;id:string}[]=[],requestVersions:{requestId:string;version:number;updatePrefixComplete:boolean}[]=[];
- const pin=db.prepare(`SELECT e.binding_revision_id,e.configuration_json,b.bindings_json,b.content_hash,c.project_id,c.id AS chat_id
-  FROM branch_executions e JOIN branch_bindings b ON b.id=e.binding_revision_id JOIN branches w ON w.id=e.branch_id JOIN conversations c ON c.id=w.chat_id WHERE e.id=?`).get(id) as Row|undefined;
+ const pin=db.prepare(`SELECT e.binding_revision_id,e.configuration_json,b.bindings_json,b.content_hash,w.id AS branch_id,c.project_id,c.id AS chat_id
+  FROM branch_executions e JOIN branch_bindings b ON b.id=e.binding_revision_id JOIN branches w ON w.id=e.branch_id LEFT JOIN conversations c ON c.id=w.chat_id WHERE e.id=?`).get(id) as Row|undefined;
  if(!pin||payloadHash(JSON.parse(pin.bindings_json))!==pin.content_hash)throw Error('Host cut owner pins unavailable');
  // A dependency edge cannot grant access to another participant's private Requests.
- const participants=new Set<string>();
- for(const root of roots)for(const ref of [root.requestId,root.recoveryOfRequestId])if(ref){const row=db.prepare('SELECT requester_agent_id,recipient_agent_id FROM coordination_requests WHERE id=?').get(ref) as Row|undefined;if(row)for(const agent of [row.requester_agent_id,row.recipient_agent_id])if(agent)participants.add(agent);}
+ const participants=new Set<string>(),scopes=new Set<string>();
+ for(const root of roots)for(const ref of [root.requestId,root.recoveryOfRequestId])if(ref){
+  const row=db.prepare('SELECT requester_agent_id,recipient_agent_id,project_id,conversation_id FROM coordination_requests WHERE id=?').get(ref) as Row|undefined;
+  if(row){const chat=db.prepare('SELECT project_id,branch_id FROM conversations WHERE id=?').get(row.conversation_id) as Row|undefined;
+   if(!chat||chat.project_id!==row.project_id||chat.branch_id!==pin.branch_id&&row.conversation_id!==pin.chat_id)throw Error('Host root lacks its owned Chat scope');
+   scopes.add(stableJson([row.project_id,row.conversation_id]));for(const agent of [row.requester_agent_id,row.recipient_agent_id])if(agent)participants.add(agent);
+  }
+ }
  const requests=new Map<string,Row>(),joins=new Map<string,Row>(),members=new Map<string,Row>(),updates=new Map<string,Row>(),lateResults=new Map<string,Row>(),suspensions=new Map<string,Row>(),communications=new Map<string,Row>(),joinOutcomes=new Map<string,Row>(),artifactRefs=new Map<string,Row>();
  const pendingRequests=new Set<string>(roots.flatMap(root=>[...(root.requestId?[root.requestId]:[]),...(root.recoveryOfRequestId?[root.recoveryOfRequestId]:[])])),pendingJoins=new Set<string>();
  const parse=(bytes:string)=>{const value=JSON.parse(bytes);if(stableJson(value)!==bytes)throw Error('Noncanonical host dependency bytes');return value;};
- const scoped=(row:Row)=>{if(row.project_id!==pin.project_id||row.conversation_id!==pin.chat_id)throw Error('Host dependency escapes its Project or lacks explicit Chat scope');};
+ const scoped=(row:Row)=>{if(!scopes.has(stableJson([row.project_id,row.conversation_id])))throw Error('Host dependency escapes its Project or lacks explicit Chat scope');};
  while(pendingRequests.size||pendingJoins.size){
   if(updates.size+lateResults.size+members.size+suspensions.size+communications.size>512)throw Error('Host evidence capture exceeds 512 records');
   if(requests.size+joins.size+pendingRequests.size+pendingJoins.size>512)throw Error('Host dependency closure exceeds 512 records');
@@ -77,7 +83,7 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
  for(const join of joins.values())for(const ref of JSON.parse(join.continuation_request_ids_json)){const request=requests.get(ref);if(request&&request.conversation_id!==join.conversation_id)throw Error('Join continuation escapes its Chat');}
  for(const member of members.values()){const join=joins.get(member.join_id)!,request=requests.get(member.request_id)!;if(request&&(join.conversation_id!==request.conversation_id||![request.requester_agent_id,request.recipient_agent_id].includes(join.owner_agent_id)))throw Error('Join member escapes its Chat or owner participant scope');}
  for(const [kind,owners] of [['request_update',updates],['communication',communications]] as const)for(const owner of owners.values()){
-  for(const artifact of db.prepare('SELECT id,owner_kind,owner_id,project_id,role,title,media_type,blob_hash,byte_length,origin_agent_id,execution_id,created_at FROM runtime_artifacts WHERE owner_kind=? AND owner_id=? ORDER BY id').all(kind,owner.id) as Row[]){if(artifact.project_id!==pin.project_id)throw Error('Artifact original escapes its Project');artifactRefs.set(artifact.id,artifact);}
+  for(const artifact of db.prepare('SELECT id,owner_kind,owner_id,project_id,role,title,media_type,blob_hash,byte_length,origin_agent_id,execution_id,created_at FROM runtime_artifacts WHERE owner_kind=? AND owner_id=? ORDER BY id').all(kind,owner.id) as Row[]){if(artifact.project_id!==(kind==='communication'?owner.project_id:requests.get(owner.request_id)?.project_id))throw Error('Artifact original escapes its Project');artifactRefs.set(artifact.id,artifact);}
  }
  const resources=selected.resources!.map(envelope),resourceMembers:Evidence[]=[],resourceContexts:Evidence[]=[],resourceReceipts:Evidence[]=[];
  for(const resource of selected.resources!){

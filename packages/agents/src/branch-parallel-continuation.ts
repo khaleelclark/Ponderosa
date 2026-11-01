@@ -23,7 +23,7 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
   const expected=['execution',...keys,'actions','resources'];
   if(!parallelDefinitionSupported(d,!!context)||stableJson(Object.keys(s).sort())!==stableJson(expected.sort())||expected.some(k=>!Array.isArray(s[k])))return false;
   const e=s.execution![0],terminal=context?.terminal===true;
-  if(s.execution!.length!==1||!e||!(terminal?e.state==='completed':['running','waiting'].includes(e.state))||e.admission_source!==(context?.parent?'call':'manual')||!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth)||e.cancel_requested||e.budget_exhausted||e.recovery_traversals||!terminal&&e.output_text!==null||e.merged_into!==null||e.requested_outcome!=='canceled')return false;
+  if(s.execution!.length!==1||!e||!(terminal?e.state===(context?.terminalState??'completed'):['running','waiting'].includes(e.state))||e.admission_source!==(context?.parent?'call':'manual')||!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth)||e.cancel_requested||e.budget_exhausted||e.recovery_traversals||!terminal&&e.output_text!==null||e.merged_into!==null||e.requested_outcome!=='canceled')return false;
   if(['actions','resources'].some(k=>s[k]!.length))return false;
   branchContinuationIds(s);
   if(s.paths!.filter(p=>p.parent_path_id===null).length!==1||!s.paths!.length)return false;
@@ -127,7 +127,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      const node=d.steps.find(row=>row.id===step.step_id);
      require(key===`settled:${a.id}`&&stableJson(v.result)===final('steps',step.id).result_json);
      if(node?.kind==='script')require(a.state==='running'&&authorized.has(a.id)&&exited.has(a.id));
-     else if(node?.kind==='branch_call')require(a.state==='waiting'&&completedChildren.has(a.id)&&stableJson(v.result)===stableJson({failed:false,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})}));
+     else if(node?.kind==='branch_call')require(a.state==='waiting'&&completedChildren.has(a.id)&&stableJson(v.result)===stableJson({failed:context!.children[a.id]!.failed===true,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})}));
      else {require(a.state==='waiting'&&node?.kind==='human_gate');const gate=m.gates!.find(row=>row.step_execution_id===step.id);require(gate&&gateDecisions.has(gate.id));const response=JSON.parse(gate.response_json),output=response.output??response.choice??gate.proposal_text,routed=gateDecisions.get(gate.id)==='approve'||d.edges.some(edge=>edge.from===node.id&&edge.on==='rejected');require(stableJson(v.result)===stableJson({failed:false,output:routed?output:`Approval rejected at ${node.label||node.id}.`}));}
      a.state=step.state=v.result.failed?'failed':'completed';a.result_json=step.result_json=stableJson(v.result);break;
     }
@@ -240,10 +240,10 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      const a=find('attempts',v.attemptId),step=find('steps',a.step_execution_id),p=find('paths',step.path_id),child=context?.children[a.id],node=d.steps.find(row=>row.id===step.step_id);
      require(child&&node?.kind==='branch_call'&&p.step_execution_id===step.id&&child.executionId===v.childExecutionId);
      if(event.kind==='child_admitted'){require(!admitted.has(a.id)&&a.state==='prepared'&&v.definitionId===child.versionId&&key===`call:${a.id}`);admitted.add(a.id);a.state=step.state=p.state='waiting';}
-     else {require(admitted.has(a.id)&&!completedChildren.has(a.id)&&child.completed&&v.versionId===child.versionId&&v.state==='completed');completedChildren.add(a.id);}
+     else {require(admitted.has(a.id)&&!completedChildren.has(a.id)&&child.completed&&v.versionId===child.versionId&&v.state===(child.failed?'failed':'completed'));completedChildren.add(a.id);}
      break;
     }
-    case 'completed':require(context?.terminal&&!terminalObserved&&m.paths!.every(p=>!['active','waiting','joining'].includes(p.state))&&JSON.parse(find('paths',root.id).result_json).output===v.output&&(v.output??null)===e.output_text);terminalObserved=true;break;
+    case 'completed':case 'failed':require(event.kind===(context?.terminalState??'completed')&&context?.terminal&&!terminalObserved&&m.paths!.every(p=>!['active','waiting','joining'].includes(p.state))&&JSON.parse(find('paths',root.id).result_json).output===v.output&&(v.output??null)===e.output_text);terminalObserved=true;break;
     case 'checkpoint_restore_held':require(context?.parent&&seed&&accepted&&!started&&!interruption&&c.checkpointMode==='exit'&&typeof v.interruptionId==='string'&&typeof v.invocationId==='string'&&v.ordinal===1);interruption=v;break;
     case 'checkpoint_interrupt_requested':require(started&&!interruption&&c.checkpointMode==='exit'&&typeof v.interruptionId==='string'&&typeof v.invocationId==='string'&&v.commandKey&&Number.isSafeInteger(v.ordinal)&&v.ordinal>0&&(!invocation?v.ordinal===1:invocation.id===v.invocationId&&invocation.ordinal===v.ordinal));interruption=v;break;
     case 'checkpoint_interrupt_resumed':require(interruption&&v.interruptionId===interruption.interruptionId&&v.invocationId===interruption.invocationId&&v.nextOrdinal===interruption.ordinal+1&&typeof v.nextInvocationId==='string'&&v.nextInvocationId!==v.invocationId);invocation={id:v.nextInvocationId,ordinal:v.nextOrdinal};interruption=undefined;break;

@@ -1,4 +1,5 @@
 import {insertBranchFrontier} from './branch-frontier-storage.js';
+import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,childTreeLineage} from './branch-tree-continuation.js';
@@ -644,6 +645,13 @@ export class BranchStore {
       return next;
     }).immediate();
   }
+  /** Operator-only retained evidence; the service supplies current artifact grants. */
+  reviewHostRequest(branchId:string,executionId:string,selection:import('@ponderosa/core').BranchHostRequestSelection,grant:HostArtifactGrant):import('@ponderosa/core').BranchHostRequestReviewDto {
+    return this.sqlite.transaction(()=>reviewBranchHostRequest(this.sqlite,branchId,executionId,selection,grant)).deferred();
+  }
+  adoptHostRequest(branchId:string,executionId:string,input:import('@ponderosa/core').BranchHostRequestAdoption,grant:HostArtifactGrant,now=new Date().toISOString()):import('@ponderosa/core').BranchHostRequestAdoptionDto {
+    return this.unitTransaction(()=>adoptBranchHostRequest(this.sqlite,this.coordination,branchId,executionId,input,grant,now)).immediate();
+  }
   /** Saved rows only; pagination never manufactures a capture or saver acknowledgement. */
   historicalCheckpoints(branchId:string,executionId:string,before=Number.MAX_SAFE_INTEGER):import('@ponderosa/core').BranchHistoricalCheckpointDto[] {
     if(!Number.isSafeInteger(before)||before<1)throw Error('Invalid checkpoint cursor');
@@ -838,7 +846,7 @@ export class BranchStore {
         const child=this.acceptInput(e.branch_id,`call:${attemptId}`,e.input_text,payloadHash({parentAttempt:attemptId,input:e.input_text}),{source:'historical_child',parentExecutionId:parentId,parentAttemptId:attemptId},now,'call');
         // Acceptance owns the execution ID; all dependent references use this final mapping.
         ids.set(e.id,child.id);target=child.id;
-        this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,e.state==='completed'?'completed':'queued',e.output_text,target);
+        this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,['completed','failed'].includes(e.state)?e.state:'queued',e.output_text,target);
       }
       const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target);
       insertBranchFrontier(this.sqlite,target,restored,now);
@@ -853,7 +861,7 @@ export class BranchStore {
       if(o!==root){const childLine=childTreeLineage(line,lineageId,o.executionId,target);childLineageId=Number(this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(target,stableJson(childLine),payloadHash(childLine)).lastInsertRowid);}
       const evidence={sourceRootId:executionId,sourceExecutionId:o.executionId,checkpointId,checkpointHash:expectedHash,commandKey,lineageId,...(childLineageId?{childLineageId}:{})};
       this.checkpoint(target,'tree-restored-prefix','tree_restored_prefix',evidence,now);this.checkpoint(target,'tree-rewind-origin','tree_historical_rewind',evidence,now);
-      if(o!==root&&o.selected.execution[0].state!=='completed'&&o.invocation.mode==='exit'){
+      if(o!==root&&!['completed','failed'].includes(o.selected.execution[0].state)&&o.invocation.mode==='exit'){
         // Rewind restores data, while an explicit resume owns the fresh child invocation.
         const invocation=this.checkpointInvocationRow(target)!,interruptionId=randomUUID();
         this.run('UPDATE branch_executions SET checkpoint_invocation_json=? WHERE id=?',stableJson({...invocation,state:'interrupting',interruptionId}),target);

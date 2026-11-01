@@ -1,3 +1,4 @@
+import {branchScriptFailureSummary} from '@ponderosa/core';
 import {branchContinuationIds} from './branch-continuation-remap.js';
 import {hasParallelControls,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
 import {createHash} from 'node:crypto';
@@ -17,7 +18,7 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
-export type ScriptOwnerContext={resourceFrontier?:boolean;terminal:boolean;waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean}>};
+export type ScriptOwnerContext={resourceFrontier?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext):boolean {
   try {
     if(hasParallelControls(definition))return parallelFrontierSupported(selected,definition,context);
@@ -26,10 +27,10 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     const e=selected.execution![0],p=selected.paths![0],terminal=context?.terminal===true;
     const waitingGate=!context&&selected.gates!.some(g=>g.state==='waiting');
     const waiting=context?.waiting||waitingGate;
-    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?'completed':waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':'manual')
+    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':'manual')
       ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
-      ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?'completed':waiting?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
+      ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
     if(!scriptDefinitionSupported(definition,!!context,context?.resourceFrontier))return false;
     if(['forks','joins','maps','items','bundles',...(context?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
     if(context?.resourceFrontier&&!resourceReservationSupported(selected,definition))return false;
@@ -40,7 +41,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     if(prepared.length!==(!terminal&&p.step_execution_id?1:0)||!terminal&&p.step_execution_id&&prepared[0]?.id!==p.step_execution_id)return false;
     if(selected.attempts!.length!==selected.steps!.length)return false;
     for(const s of selected.steps!){
-      if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed',...(waiting?['waiting']:[])].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
+      if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed',...(context?['failed']:[]),...(waiting?['waiting']:[])].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
       const attempts=selected.attempts!.filter(a=>a.step_execution_id===s.id),a=attempts[0];
       if(attempts.length!==1||!a||a.error||a.number!==1||a.state!==s.state||a.purpose!=='step'||a.request_id||a.recovery_of_request_id||a.cancel_requested||a.runtime_outcome_json||a.input_hash!==hash(s.input_text))return false;
       const sealed=selected.sealedResults!.filter(r=>r.step_execution_id===s.id);
@@ -50,7 +51,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
       }else{
         const r=sealed[0],result=JSON.parse(s.result_json);
         if(Object.keys(result).some(key=>!['failed','output'].includes(key))||result.output!==undefined&&branchText(result.output)!==result.output)return false;
-        if(sealed.length!==1||!r||r.execution_id!==e.id||r.path_id!==p.id||r.terminal_attempt_id!==a.id||result.failed!==false
+        if(sealed.length!==1||!r||r.execution_id!==e.id||r.path_id!==p.id||r.terminal_attempt_id!==a.id||result.failed!==(s.state==='failed')
           ||stableJson(result)!==s.result_json||a.result_json!==s.result_json||r.result_json!==s.result_json||r.content_hash!==hash(s.result_json))return false;
       }
     }
@@ -63,7 +64,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
         ||gate.state==='resolved'&&(step.state!=='completed'||!gate.response_json))return false;
     }
     if(selected.gates!.length!==selected.steps!.filter(s=>definition.steps.find(node=>node.id===s.step_id)?.kind==='human_gate'&&s.state!=='prepared').length)return false;
-    if(selected.sealedResults!.length!==selected.steps!.filter(s=>s.state==='completed').length||p.last_result_id&&!selected.sealedResults!.some(r=>r.id===p.last_result_id))return false;
+    if(selected.sealedResults!.length!==selected.steps!.filter(s=>s.state==='completed'||s.state==='failed').length||p.last_result_id&&!selected.sealedResults!.some(r=>r.id===p.last_result_id))return false;
     for(const r of selected.loops!){if(r.execution_id!==e.id||r.path_id!==p.id||!definition.edges.some(edge=>edge.id===r.edge_id&&edge.loop)||!Number.isSafeInteger(r.iterations)||r.iterations<1)return false;}
     if(e.traversals!==p.traversals+(context?.descendantTraversals??0)||e.loop_iterations!==selected.loops!.reduce((total,r)=>total+r.iterations,0)+(context?.descendantLoops??0))return false;
     return [e.traversals,e.loop_iterations,e.recovery_traversals,p.traversals].every(n=>Number.isSafeInteger(n)&&n>=0);
@@ -215,13 +216,13 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       for(const oldStep of old.steps!){
         const step=selected.steps!.find(row=>row.id===ids[oldStep.id]);
         if(!step||step.path_id!==ids[oldStep.path_id]||['step_id','invocation','input_text'].some(key=>step[key]!==oldStep[key])
-          ||oldStep.state==='completed'&&(step.state!=='completed'||step.result_json!==oldStep.result_json))return false;
+          ||['completed','failed'].includes(oldStep.state)&&(step.state!==oldStep.state||step.result_json!==oldStep.result_json))return false;
         seen.add(step.id);invocations.set(step.step_id,Math.max(invocations.get(step.step_id)??0,step.invocation));
       }
       for(const oldAttempt of old.attempts!){
         const attempt=selected.attempts!.find(row=>row.id===ids[oldAttempt.id]);
         if(!attempt||attempt.step_execution_id!==ids[oldAttempt.step_execution_id]||['number','input_hash','purpose'].some(key=>attempt[key]!==oldAttempt[key])
-          ||oldAttempt.state==='completed'&&(attempt.state!=='completed'||attempt.fence!==0||attempt.result_json!==oldAttempt.result_json))return false;
+          ||['completed','failed'].includes(oldAttempt.state)&&(attempt.state!==oldAttempt.state||attempt.fence!==0||attempt.result_json!==oldAttempt.result_json))return false;
         fences.set(attempt.id,0);
       }
       for(const oldGate of old.gates!){
@@ -238,9 +239,9 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           ||result.terminal_attempt_id!==ids[oldResult.terminal_attempt_id]||result.result_json!==oldResult.result_json||result.content_hash!==oldResult.content_hash)return false;
       }
       node=sp.node_id;input=sp.input_text;traversals=sp.traversals;last=sp.last_result_id?ids[sp.last_result_id]!:null;
-      current=old.execution![0]!.state!=='completed'&&sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
+      current=!['completed','failed'].includes(old.execution![0]!.state)&&sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
       if(context?.restoredTerminal){finished={node:sp.node_id,input:sp.input_text,stepId:ids[sp.step_execution_id],result:JSON.parse(sp.result_json)};terminalObserved=true;}
-      for(const attempt of old.attempts!){if(context?.children[ids[attempt.id]!]){admitted.add(ids[attempt.id]!);if(attempt.state==='completed')completedChildren.add(ids[attempt.id]!);}}
+      for(const attempt of old.attempts!){if(context?.children[ids[attempt.id]!]){admitted.add(ids[attempt.id]!);if(['completed','failed'].includes(attempt.state))completedChildren.add(ids[attempt.id]!);}}
       for(const loop of old.loops!)loops.set(loop.edge_id,loop.iterations);
     }
     const text=(value:string)=>interpolateBranchText(value,definition,configuration);
@@ -268,7 +269,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           const attemptId=event.kind==='script_process_exit'?event.transition_key.slice('process-exit:'.length).replace(/:[0-9]+$/u,''):v.attemptId;
           const a=selected.attempts!.find(a=>a.id===attemptId);
           const step=selected.steps!.find(s=>s.id===a?.step_execution_id);
-          if(!a||!step||!seen.has(step.id)||step.state!=='completed')return false;
+          if(!a||!step||!seen.has(step.id)||!['completed',...(context?['failed']:[])].includes(step.state))return false;
           if(!['script_cleanup_observed','script_process_exit'].includes(event.kind)&&current?.id!==step.id)return false;
           if(interruption&&['script_leased','script_authorized'].includes(event.kind))return false;
           if(event.kind==='script_authorized'){
@@ -279,7 +280,8 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(event.kind==='script_process_exit'){
             // Other-generation observations remain evidence, never proof of this cut's exit.
             if(event.transition_key===`process-exit:${a.id}:${a.fence}`&&authorized.get(a.id)===a.fence&&fences.get(a.id)===a.fence){
-              if((configuration.checkpointMode==='exit'||context)&&(v.code!==0||v.error||v.stdout!==JSON.parse(step.result_json).output||v.outputHash!==hash(v.stdout)))return false;
+              const result=JSON.parse(step.result_json),failure=branchScriptFailureSummary(v.code,v.error);
+              if((configuration.checkpointMode==='exit'||context)&&((!Number.isInteger(v.code)&&v.code!==null)||typeof v.stdout!=='string'||v.error!==undefined&&typeof v.error!=='string'||result.failed!==(failure!==undefined)||result.output!==(failure??v.stdout)||v.outputHash!==hash(v.stdout)))return false;
               exited.add(a.id);
             }
           }
@@ -325,15 +327,15 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           const child=context?.children[v.attemptId],a=selected.attempts!.find(row=>row.id===v.attemptId),step=selected.steps!.find(row=>row.id===a?.step_execution_id);
           if(!child||!current||step?.id!==current.id||!definition.steps.some(row=>row.id===step!.step_id&&row.kind==='branch_call')||child.executionId!==v.childExecutionId)return false;
           if(event.kind==='child_admitted'){if(admitted.has(a!.id)||v.definitionId!==child.versionId)return false;admitted.add(a!.id);}
-          else {if(!child.completed||!admitted.has(a!.id)||completedChildren.has(a!.id)||v.versionId!==child.versionId||v.state!=='completed')return false;completedChildren.add(a!.id);}
+          else {if(!child.completed||!admitted.has(a!.id)||completedChildren.has(a!.id)||v.versionId!==child.versionId||v.state!==(child.failed?'failed':'completed'))return false;completedChildren.add(a!.id);}
           break;
         }
-        case 'completed':
-          if(!context?.terminal||!finished||terminalObserved||v.output!==e.output_text)return false;terminalObserved=true;break;
+        case 'completed':case 'failed':
+          if(event.kind!==(context?.terminalState??'completed')||!context?.terminal||!finished||terminalObserved||v.output!==e.output_text)return false;terminalObserved=true;break;
         case 'step_settled':{
           const a=selected.attempts!.find(a=>a.id===v.attemptId);
           if(!current||settled||!a||a.step_execution_id!==current.id||stableJson(v.result)!==current.result_json)return false;
-          if(definition.steps.find(row=>row.id===current!.step_id)?.kind==='branch_call'&&(!completedChildren.has(a.id)||stableJson(v.result)!==stableJson({failed:false,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})})))return false;
+          if(definition.steps.find(row=>row.id===current!.step_id)?.kind==='branch_call'&&(!completedChildren.has(a.id)||stableJson(v.result)!==stableJson({failed:context!.children[a.id]!.failed===true,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})})))return false;
           const node=definition.steps.find(row=>row.id===current!.step_id);
           if(node?.kind==='human_gate'){
             const gate=selected.gates!.find(g=>g.step_execution_id===current!.id),decision=gate&&resolvedGates.get(gate.id);
@@ -347,7 +349,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         case 'result_sealed':{
           const r=selected.sealedResults!.find(r=>r.id===v.resultId);
           if(!current||!settled||!r||r.step_execution_id!==current.id||v.stepExecutionId!==current.id||v.terminalAttemptId!==r.terminal_attempt_id||v.contentHash!==r.content_hash)return false;
-          last=r.id;const result=JSON.parse(current.result_json),gate=selected.gates!.find(g=>g.step_execution_id===current!.id),on=gate?(resolvedGates.get(gate.id)==='approve'?'approved':'rejected'):'success',edge=definition.edges.find(edge=>edge.from===node&&edge.on===on);
+          last=r.id;const result=JSON.parse(current.result_json),gate=selected.gates!.find(g=>g.step_execution_id===current!.id),on=gate?(resolvedGates.get(gate.id)==='approve'?'approved':'rejected'):result.failed?'failure':'success',edge=definition.edges.find(edge=>edge.from===node&&edge.on===on);
           if(!edge)finished={node,input,stepId:current.id,result};
           follow(edge,result.output??'');current=undefined;break;
         }

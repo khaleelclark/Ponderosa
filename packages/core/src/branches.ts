@@ -302,6 +302,26 @@ export interface BranchHistoricalCheckpointDto {
   eligibility:'script_control_frontier'|'unsupported_dependency';
 }
 
+/** Operator-only historical evidence; never a runnable provider checkpoint. */
+export interface BranchHostRequestSelection {
+  checkpointId:number; expectedHash:string; requestId:string;
+}
+export interface BranchHostRequestReviewDto {
+  source:BranchHostRequestSelection & {branchId:string;executionId:string};
+  reviewHash:string;
+  request:{projectId:string;conversationId:string;recipientAgentId:string;requesterAgentId?:string;state:string;version:number;payload:unknown};
+  updates:{id:string;kind:string;inReplyToUpdateId?:string;version:number;state:string;payload:unknown}[];
+  artifacts:{id:string;sha256:string;byteLength:number}[];
+  current:{requestState:string;requestVersion:number;versionId:string;versionChanged:boolean;bindingRevisionId:string;bindingSha256:string;bindingsChanged:boolean;configurationChanged:boolean;configuration:Omit<BranchConfiguration,'secretBindings'>;recipientRestrictions:string[];requiredSecretRefs:string[]};
+}
+export interface BranchHostRequestAdoption extends BranchHostRequestSelection {
+  reviewHash:string;commandKey:string;instruction:string;mode:'reconcile'|'independent';
+  acknowledgeChangedBindings?:boolean;acknowledgeSecretBindings?:boolean;
+}
+export interface BranchHostRequestAdoptionDto {
+  requestId:string;sourceRequestId:string;checkpointId:number;checkpointHash:string;reviewHash:string;replayed:boolean;
+}
+
 /** Explicit reviewed recovery destinations and optional live activation per JSON.stringify([chatRef,agentRef]). */
 export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>;workingFilesActivation?:{sharedRoot?:string};newManagedChatFolderName?:string}
 export type BranchImportFileSelections=Record<string,BranchImportFileSelection>;

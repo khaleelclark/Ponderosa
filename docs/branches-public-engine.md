@@ -422,14 +422,101 @@ historical state and general crash reconciliation. Existing strict current-pin
 checks and retired-resource ownership checks are retained. Atomic SQLite restore
 rollback does not roll back external effects. No full #32 claim follows.
 
-Runtime contract review further constrains host capture to the Branch Chat and
-root Request participant scope. A related Join owned outside that scope or a
+Runtime contract review further constrains host capture to exact owned root
+Request Chats and participant scope. A related Join owned outside that scope or a
 member unavailable to its Join owner refuses capture; manager/roster visibility
 is not authorization. The saved bundle is private evidence, not a grant to
 Branch readers: capture/read/adoption services must recheck current grants and
 original Communication/artifact audiences before disclosure. Those service
-paths and fresh Request admission remain unfinished. This serializer freezes
+paths are implemented below for bounded independent adoption; graph Request
+admission remains unfinished. This serializer freezes
 the current transaction boundary; arbitrary older Join state cannot be rebuilt
 from mutable Join rows, which have no complete transition journal. An older cut
 requires its already saved immutable bundle. Deferred privacy regression source
 is included; no tests or execution were performed.
+
+### Operator read and fresh host Request adoption
+
+`POST /api/branches/:id/executions/:executionId/host-request-review` takes
+`{checkpointId,expectedHash,requestId}`. It reads an already retained immutable
+cut, verifies complete retained coverage, snapshot/row hashes and the selected
+update prefix, and returns
+only the selected Request's payload, versioned updates and artifact hash/length
+references. It never returns the whole dependency closure, unrelated Join member
+payloads, blob paths, secret handles, or runnable authority. Operator-only HTTP
+request hooks reject Agent capability tokens; this is not a Branch-reader or
+provider tool. Both original participants must still exist in their original
+Project/Chat. The exact Chat must remain owned by this Branch (or be its explicit
+legacy Chat), with no deletion or installation retirement in progress. Original
+Communication audience/payload identity and artifact ownership/hash are checked
+against canonical retained rows. The server additionally requires current managed
+artifact grants for both the operator and the original recipient. Missing grants
+refuse even if the old cut is intact. Blob availability is not asserted by a
+metadata reference. Temporary-Agent recipients refuse until custody is resolved.
+
+The review includes a digest bound to the saved cut, current Request version,
+current Branch version/binding/configuration revisions, policy and enabled state.
+It displays current safe configuration, binding/version identities, restrictions
+and logical secret names, without handles/values. It does not revive old grants.
+Branches with no legacy Chat now capture exact owned root Request Chat scopes;
+multiple Branch-owned Chats are not conflated into a synthetic shared scope.
+
+`POST .../adopt-host-request` takes the same selection plus
+`{reviewHash,commandKey,instruction,mode}` (`mode` is `reconcile` or `independent`),
+and optional `acknowledgeChangedBindings` / `acknowledgeSecretBindings`. The
+client exposes `reviewHostRequest` and `adoptHostRequest`. A changed review returns
+409 and requires another explicit review; the client does not silently retry it.
+Changed version/bindings/configuration and secret-dependent current authority
+require their explicit acknowledgements. These acknowledgements apply only to
+this independent work, not to graph-prefix rebinding or granting secret access.
+
+Adoption rechecks original scope and current grants inside the same immediate
+owner transaction as ordinary canonical `coordinate` intake and a Branch command
+receipt. The new Request has fresh identity and the exact original recipient and
+Chat, no requester impersonation, inherited reply authority, recovery edge,
+activation identity, lease, or synthetic old completion. It requires a settled
+source/Request and a drained recipient runtime. An unknown original outcome
+requires `reconcile`; automatic effect replay is not offered. The operator must
+supply a fresh instruction. Evidence is explicitly untrusted, carries the saved
+cut reference, original Request and latest selected update, and is capped at
+256 KB rather than injecting an entire update journal. Larger cuts remain
+readable separately and refuse automatic adoption intake.
+
+A crash before COMMIT rolls back Request intake, activation, idempotency and
+receipt together. A committed command whose HTTP response was lost returns the
+same fresh Request after scope/grant and receipt validation, without creating a
+second activation. Changed command bytes conflict. A revoked grant still refuses
+an idempotent retry. This is a local transactional reconciliation mechanism; it
+makes no claim about rolling back provider or external effects.
+
+Settled failed child owners are now part of supported Script/control trees.
+Their terminal invocation/outcome, failed root path and sanitized Script failure
+must match canonical audit replay and the parent `child_completed` state/result.
+Failure edges are followed explicitly. Fresh restoration retains failed child
+state as historical data and never schedules those terminal children again;
+restored-prefix verification handles the preserved failure as well as success.
+This does not authorize cancellation of live or child-owned work.
+
+Remaining exact seams: graph restoration still lacks a reviewed identity mapping
+from an old Agent Request to a newly admitted obligation and its unresolved
+answer/Join dependencies. Independent adoption deliberately does not wire its
+result into an old Step. Resource restoration lacks a reviewed old-to-new
+Chat/Agent/creation-operation custody mapping, complete retained private managed
+content and a service-owned adoption transaction; existing resource provisioning
+and cleanup tokens belong to the original execution/generation and cannot be
+transplanted. A deleted original participant therefore remains unreadable and
+unadoptable. Changed/secret graph-prefix rebinding needs its own reviewed pin
+mapping through restored-prefix and suffix verification; the operator adoption
+acknowledgements cannot substitute. Live/child-owned cancellation needs observed
+child/process drain plus exact canceled-outcome/gate replay. Forwarded bundles
+need a captured cross-owner transfer graph and global typed pointer/hash mapping;
+local bundle ownership checks remain strict. Retry/recovery/limit frontiers need
+explicit attempt-generation and exhausted-budget replay codecs. None of these
+missing internal mechanisms is represented as an unavailable provider API.
+Historical native provider state remains a separate absent external contract.
+
+Source-only deferred regressions cover fresh Request/receipt replay, rollback
+between intake and receipt, stale and secret-dependent review, changed Chat or
+participant custody, artifact revocation/hash change and settled failed-child
+restoration/reselection. No tests, typechecks, builds, Node, native process,
+browser or runner execution/preparation occurred. No full #32 acceptance follows.

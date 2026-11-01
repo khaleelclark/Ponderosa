@@ -72,8 +72,8 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const resourceFrontier=owners.length===1&&resourceReservationSupported(o.selected,definition);
     if(owners.length===1&&!resourceFrontier)return false;
     if(!scriptDefinitionSupported(definition,true,resourceFrontier)||inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1)return false;
-    const descendant=o.executionId!==c.rootExecutionId,terminal=e.state==='completed';
-    if(terminal?(!descendant||inv.state!=='terminal'||inv.primaryOutcome!=='completed'):!['running','waiting'].includes(e.state))return false;
+    const descendant=o.executionId!==c.rootExecutionId,terminal=['completed','failed'].includes(e.state);
+    if(terminal?(!descendant||inv.state!=='terminal'||inv.primaryOutcome!==e.state):!['running','waiting'].includes(e.state))return false;
     if(!descendant&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
     if(!terminal&&(inv.mode==='exit'?inv.state!=='interrupted'||!inv.interruptionId&&!o.selected.gates.some((g:Row)=>g.state==='waiting'):inv.state!=='active'))return false;
     if(descendant&&!terminal&&inv.mode==='exit'&&!encoding){
@@ -87,12 +87,12 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const children:ScriptOwnerContext['children']={};
     for(const child of direct){
       const ce=child.selected.execution[0],step=o.selected.steps.find((s:Row)=>s.id===o.selected.attempts.find((a:Row)=>a.id===ce.parent_attempt_id)?.step_execution_id),call=definition.steps.find(s=>s.id===step?.step_id);
-      const completed=ce.state==='completed';
-      if(!step||step.state!==(completed?'completed':'waiting')||call?.kind!=='branch_call'||JSON.parse(b.bindings_json).branches?.[call.branchRef]!==ce.branch_id
+      const completed=['completed','failed'].includes(ce.state),failed=ce.state==='failed';
+      if(!step||step.state!==(completed?ce.state:'waiting')||call?.kind!=='branch_call'||JSON.parse(b.bindings_json).branches?.[call.branchRef]!==ce.branch_id
         ||ce.call_depth!==e.call_depth+1||ce.depth_ceiling!==Math.min(e.depth_ceiling,ce.call_depth+child.configuration.limits.maxCallDepth)||ce.input_text!==step.input_text
         ||ce.occurrence_key!==`call:${ce.parent_attempt_id}`||children[ce.parent_attempt_id]
-        ||(completed?(JSON.parse(step.result_json).failed!==false||JSON.parse(step.result_json).output!==(ce.output_text??undefined)):(step.result_json!==null||ce.output_text!==null)))return false;
-      children[ce.parent_attempt_id]={executionId:child.executionId,versionId:child.versionId,output:ce.output_text,completed};
+        ||(completed?(JSON.parse(step.result_json).failed!==failed||JSON.parse(step.result_json).output!==(ce.output_text??undefined)):(step.result_json!==null||ce.output_text!==null)))return false;
+      children[ce.parent_attempt_id]={executionId:child.executionId,versionId:child.versionId,output:ce.output_text,completed,failed};
     }
     if(o.selected.steps.some((s:Row)=>definition.steps.find(step=>step.id===s.step_id)?.kind==='branch_call'&&!children[o.selected.attempts.find((a:Row)=>a.step_execution_id===s.id)?.id]))return false;
     let parent:ScriptOwnerContext['parent'];
@@ -104,7 +104,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
     const waiting=resourceFrontier||Object.values(children).some(child=>!child.completed);
     if(!terminal&&!hasParallelControls(definition)&&(e.state!==(waiting?'waiting':'running')))return false;
-    const context:ScriptOwnerContext={resourceFrontier,terminal,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state==='completed'};
+    const context:ScriptOwnerContext={resourceFrontier,terminal,terminalState:terminal?e.state:undefined,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state===e.state};
     if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context))return false;
   }
   return true;
