@@ -34,6 +34,23 @@ const unique=(ids:string[])=>[...new Set(ids)].sort();
 const exactKeys=(map:Record<string,string>,ids:string[])=>stableJson(Object.keys(map).sort())===stableJson(unique(ids));
 const nonempty=(s:unknown):s is string=>typeof s==='string'&&s.length>0&&s.length<=512;
 
+/** Shared final-policy projection, also rechecked by the explicit human disclosure adapter.
+ * Does not authorize disclosure or assert fresh admission eligibility. */
+export function destinationDisclosurePolicy(db:Database.Database,reservation:CoordinationDestinationReservation,stage:CoordinationDestinationStage):unknown {
+ const d=reservation.destination,policies=new CapabilityPolicyStore(db);
+ if(!db.prepare(`SELECT 1 FROM conversations c WHERE c.id=? AND c.project_id=?
+  AND NOT EXISTS(SELECT 1 FROM project_deletion_pending p WHERE p.project_id=c.project_id)
+  AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts r WHERE r.conversation_id=c.id)`).get(d.conversationId,d.projectId))throw Error('Destination policy scope unavailable');
+ for(const id of Object.values(stage.agentMap))if(!db.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.conversation_id=? AND a.deleted_at IS NULL
+  AND NOT EXISTS(SELECT 1 FROM agent_deletion_pending p WHERE p.agent_id=a.id)`).get(id,d.projectId,d.conversationId))throw Error('Destination policy participant unavailable');
+ const op=db.prepare('SELECT artifact_ids_json FROM agent_creation_operations WHERE id=? AND project_id=?').get(stage.importPlan.creationOperationId,d.projectId) as Row|undefined;
+ if(!op)throw Error('Destination policy import unavailable');
+ const chat=policies.resolveForChat(d.conversationId),agents=Object.values(stage.agentMap).map(agentId=>({agentId,policy:policies.resolveForAgent(agentId)}));
+ const layers=[...chat.layers,...agents.flatMap(a=>a.policy.layers)];
+ const revisions=[...new Map(layers.map(l=>[`${l.scopeKind}:${l.scopeId}`,{scopeKind:l.scopeKind,scopeId:l.scopeId,revision:policies.get(l.scopeKind,l.scopeId)?.revision??0}] as const)).values()];
+ return {chat,agents,revisions,importArtifacts:JSON.parse(op.artifact_ids_json)};
+}
+
 /** Server-owned staged admission. Ordinary coordinate/updateRequest actor rules are unchanged. */
 export class CoordinationV3DestinationAdmissionAuthority {
  constructor(private readonly db:Database.Database,private readonly deliver:(input:CreateActivationV3Input)=>string){}
@@ -134,7 +151,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const liveIds=this.db.prepare('SELECT id FROM agents WHERE conversation_id=? AND deleted_at IS NULL ORDER BY id').all(d.conversationId) as {id:string}[];
   const chatMembers=this.db.prepare('SELECT agent_id FROM agent_conversation_memberships WHERE conversation_id=? ORDER BY agent_id').all(d.conversationId) as {agent_id:string}[];
   if(stableJson(liveIds.map(a=>a.id))!==stableJson(unique(Object.values(stage.agentMap)))||stableJson(chatMembers.map(a=>a.agent_id))!==stableJson(unique(Object.values(stage.agentMap))))throw Error('Destination organization membership is not closed');
-  const policies=new CapabilityPolicyStore(this.db),agentPolicies:unknown[]=[];
+  
   for(const id of Object.values(stage.agentMap)){
    const agent=this.db.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.conversation_id=? AND a.deleted_at IS NULL
     AND NOT EXISTS(SELECT 1 FROM agent_deletion_pending p WHERE p.agent_id=a.id)
@@ -142,11 +159,11 @@ export class CoordinationV3DestinationAdmissionAuthority {
    if(!agent||this.db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1").get(id,id)
     ||this.db.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending','attached')").get(id)
     ||this.db.prepare('SELECT 1 FROM coordination_requests WHERE requester_agent_id=? OR recipient_agent_id=?').get(id,id))throw Error('Destination participant must be fresh, idle and staged');
-   agentPolicies.push({agentId:id,policy:policies.resolveForAgent(id)});
+
   }
   const op=this.db.prepare('SELECT project_id,kind,status,artifact_ids_json FROM agent_creation_operations WHERE id=?').get(stage.importPlan.creationOperationId) as Row|undefined;
   if(!op||op.project_id!==d.projectId||op.kind!=='import'||!['preparing','canonical_committed'].includes(op.status))throw Error('Destination import has not reached its final admission transaction');
-  return {chat:policies.resolveForChat(d.conversationId),agents:agentPolicies,importArtifacts:JSON.parse(op.artifact_ids_json)};
+  return destinationDisclosurePolicy(this.db,reservation,stage);
  }
  private facts(cut:BranchHostCut,stage:CoordinationDestinationStage):CoordinationDestinationReview['facts'] {
   const facts:CoordinationDestinationReview['facts']=[];
@@ -162,6 +179,18 @@ export class CoordinationV3DestinationAdmissionAuthority {
   }
   for(const j of cut.joins)add('join',j.row.id,j.sha256,[j.row.owner_agent_id]);
   return facts;
+ }
+ /** Host-only human preview. No approval callback is bypassed to obtain this inventory;
+  * this method cannot admit or grant anything. Caller must establish operator audit-read. */
+ inspectDisclosure(admissionId:string,requireCustodyAndOwner:CoordinationDestinationAuthority['requireCustodyAndOwner'],now:string) {
+  this.transaction();const row=this.row(admissionId);
+  if(row.state!=='staged'||!row.stage_json)throw Error('Disclosure preview requires a staged destination');
+  const {reservation,cut}=this.source(row),stage=JSON.parse(row.stage_json) as CoordinationDestinationStage;
+  if(!nonempty(synchronous(requireCustodyAndOwner(reservation))))throw Error('Current custody/owner authority required');
+  validateRetainedCoordinationGraph(cut,now);
+  if(cut.artifactRefs.length||stage.importPlan.artifacts.length||Object.keys(stage.artifactMap).length)throw Error('Disclosure preview supports no runtime artifacts');
+  const policy=this.checkDestination(reservation,stage);
+  return {review:{admissionId,reservation,stage,facts:this.facts(cut,stage)},policy};
  }
  private reviewed(row:Row,authority:CoordinationDestinationAuthority,now:string):CoordinationDestinationReview {
   if(row.state!=='staged'||!row.stage_json)throw Error('Destination explicit import map is not staged');

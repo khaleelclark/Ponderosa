@@ -192,3 +192,5 @@ export {destinationAdmissionHeld,requireDestinationAdmitted} from './coordinatio
 export {creationId as workspaceCreationId} from './store-workspace-catalog-authority.js';
 
 export {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+
+export {destinationDisclosurePolicy} from './coordination-v3-destination-admission-authority.js';

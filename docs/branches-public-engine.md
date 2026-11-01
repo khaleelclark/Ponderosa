@@ -1049,50 +1049,69 @@ snapshots, then reads the same selected prefix after source progress/cleanup/reo
 These fixtures have not been executed. No end-to-end destination admission is claimed.
 
 
-### Destination composer authority integration boundary
+### Durable local-operator disclosure choice
 
-The issued continuation codec is not a destination admission composer. No Branch
-consumer invokes Runtime reserve/stage/review/admit/readback yet, and issued
-restoration remains disabled. The available Runtime API and approved source base
-are not blockers.
+The operator-only API is
+`/api/branches/:id/executions/:executionId/destinations/:admissionId/disclosure`.
+It requires a destination already reserved and staged through the host Runtime API;
+it does not create a destination or perform an import. The separate destination
+composer remains incomplete and public restoration stays disabled.
 
-The current host services have these distinct authority contracts:
+- GET returns a preview containing the exact original Request/update/Communication/
+  Join content, original actors/audiences, fact hashes, exhaustive fresh recipient
+  mapping, independent issued custody receipt, checkpoint/host digest and final
+  destination policy with actual policy-layer revisions. GET does not approve.
+- POST `{commandKey,action:"approve",reviewHash,expectedRevision}` is the explicit
+  human choice. The server rechecks exact current custody bytes and original
+  Branch ownership/retirement receipts, refreshes the Runtime-generated inventory,
+  and commits the exact choice in the existing canonical Branch command journal.
+  It grants no artifacts, changes no restrictions and creates no activation.
+- POST with `action:"revoke"` names the current choice/hash and revision. It remains
+  available after package bytes or destination policy become unavailable; it does
+  not repeat package access. A missing original operator audit scope still refuses.
+- GET with `?commandKey=...` reads the durable command receipt after response loss.
+  Exact POST replay reads that receipt before package access. Changed key inputs
+  conflict. Replaying an earlier approval after revocation returns `active:false`
+  and never restores approval. Receipt `state` describes that command's result;
+  `active` additionally checks the current choice and policy.
 
-- `server-request-hooks.ts` admits local operator traffic using host/origin
-  checks and excludes Agent capabilities from operator routes. Its rate-limit
-  `operatorId` is a per-process logging pseudonym, not a disclosure receipt.
-- `store-artifact-catalog.ts` explicitly recognizes the single local operator's
-  right to read Project audit artifacts. `agentCanReadProjectArtifact` checks
-  an existing same-Chat audience. Neither method grants new recipients access
-  to historical Request, update, Communication or Join facts.
-- `routes/branches.ts` combines those two artifact predicates for existing
-  original-scope graph/request review. That predicate does not authorize
-  cross-Chat disclosure to fresh imported participants.
-- `operator-auth-proxy.ts` strips the operator identity header. The profile
-  handle and an incoming identity header cannot supply a trusted human identity.
-- Import access-settings review resolves capability restrictions. It is not
-  explicit human approval of the historical private-fact inventory.
+`BranchesClient.reviewDestinationDisclosure`, `chooseDestinationDisclosure` and
+`destinationDisclosureReceipt` expose these operations without automatic retries.
+The web confirmation surface is not part of this backend slice.
 
-Runtime's `authorizeDisclosure` needs a synchronously recheckable current human
-approval for each fact hash, original actor/audience and complete mapped recipient
-set. There is currently no persisted human disclosure review/approval service to
-adapt. A constant revision, a hash of the input, a successful import or the
-original artifact grant predicate would not implement this contract. The single
-local operator's audit-read right above must not be mistaken for missing read
-permission; the missing operation is explicit reviewed disclosure to new
-participants, including its current revision and invalidation/readback semantics.
+The server uses the existing single local operator host/origin boundary and the
+existing Project audit-read rule. `local-operator` is a host-defined constant,
+consistent with existing Branch operator actions; it is not supplied by a header,
+profile or rate-limit logging pseudonym. Future reservations using this adapter
+must use `BRANCH_DISCLOSURE_OPERATOR`. Incoming identity/grant/map/fact overrides
+are rejected. This adds no account system or general authorization service.
 
-Before connecting destination effects, define and implement that narrow durable
-operator approval operation on the existing operator route boundary. Its approval
-must bind the exact retained checkpoint and host digest, explicit staged recipient
-map, complete private-fact inventory and final destination policy, and be rechecked
-at admission and receipt readback. Changing any of these requires fresh review.
-No new account system or provider authorizer is implied. Reservation/Chat creation,
-current custody proof, Branch budget/acceptance/staging, actual import/resource
-owner receipts and atomic Runtime composition remain implementation work as well.
+`BranchDisclosureReviewService.authorizeDisclosure` is the synchronous bound host
+callback for Runtime's existing `CoordinationDestinationAuthority`. It returns a
+revision only for an approved exact reservation/stage/fact inventory/host digest
+and current final policy revision. Stale facts, changed recipients/policy, revoked
+choices and unavailable current operator audit scope refuse. It opens a short
+transaction for standalone receipt readback and reuses the existing transaction
+at admission. Runtime still independently requires its real custody/owner adapter
+at admission; this callback does not replace that proof. Readback does not read
+source package bytes or require the original Agents/Chat to survive.
 
-Deferred composer regressions must reject origin-only or profile/header-derived
-approval; an artifact-read grant used as a private-fact disclosure grant; approval
-for a different recipient map, fact hash or final policy; revoked/stale approval at
-admit or readback; and duplicate effects after a lost response. These are regression
-requirements only, not executable fixtures or evidence of a completed composer.
+The preview calls the same Runtime inventory builder and destination checks;
+there is no permissive approval callback to obtain an inventory. Source custody
+preparation uses the existing package byte verifier, executable sealed codec and
+Branch retirement predicate. The supported source is settled, nonsecret serial
+ASYNC/SYNC generation zero, with retired original resource membership and complete
+cleanup receipts; runtime artifacts and old envelope-less captures refuse.
+Current original Project audit availability is required in this bounded slice.
+Shared final-policy projection includes actual layer revisions, so even an
+identical-content restriction update requires fresh review.
+
+Deferred regression source covers preview-without-approval, explicit choice,
+response loss/new service readback, changed-key conflict, no activation effects,
+revocation without bytes, old approval replay after revoke, changed fact/recipient
+map/policy revision, stale choice revisions, missing bytes and route override
+rejection. Fixtures use inert package receipts, have not been executed and are
+not destination-composer qualification. Remaining composer work includes actual
+reservation/Chat/import staging, Branch budget/acceptance, current admission custody
+proof, mapped Step/attempt/resource/import owner receipt composition, final-only
+Runtime admission/wakes and exact owner receipt/lifecycle reconciliation.

@@ -1379,3 +1379,93 @@ test('issued resource executable envelope replays original prefix and reconstruc
  assert.deepEqual(reconstructIssuedResourceContinuation(f.store.sqlite,f.source.id,saved.checkpointId,saved.checkpointHash,destination,maps),reconstructed,'source progress and cleanup cannot substitute later audit or identities');
  assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,saved.checkpointId,saved.checkpointHash,'still-needs-destination-admission'),/unsupported|continuation/);
 });
+
+// Deferred: durable human review slice only. Package bytes are inert fixture receipts;
+// no destination composition or runtime execution is claimed by these tests.
+async function issuedDisclosureFixture(t){
+ const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let saved;
+ await f.finish(f.source.id,undefined,async({stepId,generation})=>{
+  const intent=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'disclosure-cut');
+  const receipt={...intent.source,version:1,custodyId:hash(intent.source.checkpointId),boundaryId:'inert-disclosure-boundary',sha256:hash('inert-issued-bytes'),byteLength:1};
+  f.store.sqlite.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'disclosure-cut',receipt))();
+  saved=f.branches.issuedResourceCapture(f.source.id,stepId,'disclosure-cut');
+ });
+ const {BranchDisclosureReviewService,BRANCH_DISCLOSURE_OPERATOR}=await import('../../apps/server/dist/branch-disclosure-review.js');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ const {workspaceCreationId}=await import('../../packages/agents/dist/index.js');
+ const db=f.store.sqlite,coordination=new CoordinationV3Store(db),project=f.store.createProject({label:'Disclosure destination',hostPath:f.branches.localConfiguration(f.branch.id).directories.root,defaultEngine:'codex'});
+ const creationKey='disclosure-fresh-chat',chatId=workspaceCreationId('conversation',project.id,creationKey);
+ const reservation={branchId:f.branch.id,sourceExecutionId:f.source.id,checkpointId:saved.checkpointId,checkpointHash:saved.checkpointHash,commandKey:'disclosure-destination',operatorId:BRANCH_DISCLOSURE_OPERATOR,reconcileEffects:true,custody:saved.receipt,
+  destination:{projectId:project.id,conversationId:chatId,executionId:randomUUID(),resourceStepId:randomUUID(),resourceGeneration:0}};
+ const reserved=db.transaction(()=>coordination.reserveCoordinationDestination(reservation,{requireCustodyAndOwner:()=> 'inert-reservation-only-proof',authorizeDisclosure:()=>assert.fail('reserve grants no disclosure'),resolveArtifact:()=>assert.fail('artifact')}))();
+ f.store.createConversation(project.id,{title:'Review held'},{idempotencyKey:creationKey,payloadHash:hash('disclosure-chat')});
+ const op=f.store.beginAgentCreationOperation({projectId:project.id,conversationId:chatId,actorScope:'disclosure-fixture',kind:'import',idempotencyKey:'disclosure-import',payloadHash:hash('disclosure-import')}).operation;
+ const agentMap=Object.fromEntries(saved.receipt.agentIds.map(id=>[id,randomUUID()]));
+ Object.values(agentMap).forEach((id,index)=>f.store.addAgentCreationOperationMember(op.id,id,index));
+ const stage={importPlan:{creationOperationId:op.id,projectId:project.id,conversationId:chatId,agents:Object.entries(agentMap).map(([sourceRef,agentId])=>({sourceRef,agentId})),artifacts:[]},agentMap,artifactMap:{}};
+ db.transaction(()=>coordination.stageCoordinationDestination(reserved.admissionId,stage))();
+ for(const id of Object.values(agentMap))f.store.createAgent(project.id,{title:'Fresh recipient',engine:'codex',conversationId:chatId},undefined,id);
+ let reads=0,missing=false;
+ const resources=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));
+ resources.setPackageEngine({readCheckpoint:async receipt=>{reads++;assert.deepEqual(receipt,saved.receipt);if(missing)throw Error('missing issued bytes');return {};}});
+ const service=new BranchDisclosureReviewService(f.store,f.branches,coordination,(...args)=>resources.verifyHistoricalCustody(...args));
+ const prepare=()=>service.prepare(f.branch.id,f.source.id,reserved.admissionId),choose=input=>service.choose(f.branch.id,f.source.id,reserved.admissionId,input);
+ return {f,db,saved,reservation,stage,service,resources,coordination,id:reserved.admissionId,prepare,choose,get reads(){return reads},setMissing(value){missing=value}};
+}
+test('human disclosure preview never approves; exact choice survives response loss and a new service instance',async t=>{
+ const x=await issuedDisclosureFixture(t),before=x.db.prepare('SELECT COUNT(*) n FROM branch_commands').get().n,preview=await x.prepare();
+ assert.equal(preview.state,'unreviewed');assert.equal(preview.revision,0);assert.ok(preview.facts.length);
+ assert.equal(x.db.prepare('SELECT COUNT(*) n FROM branch_commands').get().n,before);
+ assert.throws(()=>x.db.transaction(()=>x.service.authorizeDisclosure(preview.review))(),/approval required/);
+ const input={commandKey:'explicit-human-approve',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0};
+ const receipt=await x.choose(input);assert.equal(receipt.active,true);assert.equal(receipt.revision,1);
+ const reads=x.reads;
+ assert.deepEqual(await x.choose(input),receipt);assert.equal(x.reads,reads,'exact replay reads command before package access');
+ const {BranchDisclosureReviewService}=await import('../../apps/server/dist/branch-disclosure-review.js');
+ const reopened=new BranchDisclosureReviewService(x.f.store,x.f.branches,new CoordinationV3Store(x.db),async()=>assert.fail('readback must not read package'));
+ assert.deepEqual(reopened.readCommand(x.f.branch.id,x.f.source.id,x.id,input.commandKey),receipt);
+ assert.match(x.db.transaction(()=>reopened.authorizeDisclosure(preview.review))(),/^branch-disclosure:/);
+ await assert.rejects(x.choose({...input,reviewHash:'0'.repeat(64)}),/conflict/);
+ assert.equal(x.db.prepare("SELECT COUNT(*) n FROM agent_activations WHERE agent_id=?").get(Object.values(x.stage.agentMap)[0]).n,0);
+ await x.f.reopen();
+ const restarted=new BranchDisclosureReviewService(x.f.store,x.f.branches,new CoordinationV3Store(x.f.store.sqlite),async()=>assert.fail('restart readback must not read package'));
+ assert.deepEqual(restarted.readCommand(x.f.branch.id,x.f.source.id,x.id,input.commandKey),receipt);
+ assert.match(restarted.authorizeDisclosure(preview.review),/^branch-disclosure:/);
+});
+test('human revocation invalidates old approval and old command replay cannot revive it',async t=>{
+ const x=await issuedDisclosureFixture(t),p=await x.prepare(),approve={commandKey:'approve',action:'approve',reviewHash:p.reviewHash,expectedRevision:0};
+ await x.choose(approve);x.setMissing(true);
+ const revoked=await x.choose({commandKey:'revoke',action:'revoke',reviewHash:p.reviewHash,expectedRevision:1});
+ assert.equal(revoked.state,'revoked');assert.equal(revoked.revision,2);assert.equal(revoked.active,false);
+ assert.equal((await x.choose(approve)).active,false);
+ assert.throws(()=>x.db.transaction(()=>x.service.authorizeDisclosure(p.review))(),/approval required/);
+ await assert.rejects(x.choose({...approve,commandKey:'new-approve-without-bytes',expectedRevision:2}),/missing issued bytes/);
+});
+test('human approval refuses changed facts, recipients, custody and policy revisions including equal-content updates',async t=>{
+ const x=await issuedDisclosureFixture(t),p=await x.prepare();
+ await x.choose({commandKey:'approve',action:'approve',reviewHash:p.reviewHash,expectedRevision:0});
+ const mutated=structuredClone(p.review);mutated.facts[0].sha256='f'.repeat(64);
+ assert.throws(()=>x.db.transaction(()=>x.service.authorizeDisclosure(mutated))(),/approval required/);
+ const mapped=structuredClone(p.review);mapped.stage.agentMap[Object.keys(mapped.stage.agentMap)[0]]=randomUUID();
+ assert.throws(()=>x.db.transaction(()=>x.service.authorizeDisclosure(mapped))(),/approval required/);
+ const policy=new CapabilityPolicyStore(x.db);
+ policy.put({scopeKind:'chat',scopeId:x.reservation.destination.conversationId,expectedRevision:0,restrictedCapabilityIds:[]});
+ assert.throws(()=>x.db.transaction(()=>x.service.authorizeDisclosure(p.review))(),/approval required/);
+ await assert.rejects(x.choose({commandKey:'old-policy',action:'approve',reviewHash:p.reviewHash,expectedRevision:1}),/changed/);
+ const next=await x.prepare();assert.notEqual(next.reviewHash,p.reviewHash);
+ await assert.rejects(x.choose({commandKey:'stale-revision',action:'approve',reviewHash:next.reviewHash,expectedRevision:0}),/revision changed/);
+ x.setMissing(true);await assert.rejects(x.prepare(),/missing issued bytes/);
+});
+test('disclosure API exposes exact human confirmation and rejects fabricated identity fields',async t=>{
+ const x=await issuedDisclosureFixture(t),{registerBranchRoutes}=await import('../../apps/server/dist/routes/branches.js');
+ const {createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
+ const app=require('fastify')();t.after(()=>app.close());
+ registerBranchRoutes(app,{coordination:x.coordination,store:x.f.store,branches:x.f.branches,resources:x.resources,installations:{setPublisher(){}},notify(){assert.fail('choice cannot wake work')}});
+ const url=`/api/branches/${x.f.branch.id}/executions/${x.f.source.id}/destinations/${x.id}/disclosure`;
+ const preview=await app.inject({method:'GET',url});assert.equal(preview.statusCode,200);const p=preview.json();
+ const choice={commandKey:'route-choice',action:'approve',reviewHash:p.reviewHash,expectedRevision:p.revision};
+ for(const extra of [{operatorId:'invented'},{identityHeader:'invented'},{facts:[]},{agentMap:{}}])assert.equal((await app.inject({method:'POST',url,payload:{...choice,...extra}})).statusCode,409);
+ const approved=await app.inject({method:'POST',url,payload:choice});assert.equal(approved.statusCode,200);assert.equal(approved.json().active,true);
+ assert.deepEqual((await app.inject({method:'GET',url:url+'?commandKey=route-choice'})).json(),approved.json());
+});

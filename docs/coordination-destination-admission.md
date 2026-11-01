@@ -34,3 +34,19 @@ This operation admits one exact resource organization generation in one original
 No automatic staging retry, failed-import revival, unknown-effect replay or abandoned reservation reclamation is supplied. Import compensation may clean its own partial bytes/Agents, while the durable reservation remains held for owner reconciliation. Branch must supply its final consumer, capture-intent journaling, actual custody/disclosure authorization adapters, correct initial Chat reservation, human review flow, whole owner-tree receipts, independent cleanup and retained checkpoint policy. General tree/multi-resource execution is not qualified. Deferred regression source is in `tests/branches/destination-admission.test.mjs`.
 
 Lifecycle integration must explicitly reconcile/remove admission/member rows only after its historical canonical references and any staged destination runtime/bytes are safely retired. Until that consumer exists, retained source deletion can fail closed on the new pins; do not bypass them or directly delete admission rows to make deletion succeed.
+
+
+## Branch human disclosure adapter (source integration)
+
+The server now provides `BranchDisclosureReviewService` and operator-only
+preview/approve/revoke/command-readback endpoints documented in
+`branches-public-engine.md`. Its bound `authorizeDisclosure` function implements
+the existing host callback using an exact durable human choice; it does not admit
+or grant anything itself. `inspectCoordinationDestinationDisclosure` is a host-only
+staged preview using the same retained inventory builder and destination checks,
+without a permissive approval callback. `destinationDisclosurePolicy` shares the
+policy projection with admission and includes actual policy-layer revisions.
+The composer must reserve with host constant `BRANCH_DISCLOSURE_OPERATOR`, complete
+actual staging, obtain the explicit human choice, and supply this callback alongside
+its real current custody/owner adapter. No destination composer is connected yet.
+Tests/builds/types/runtime execution remain deferred; this is source coverage only.

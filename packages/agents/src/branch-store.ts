@@ -791,7 +791,8 @@ export class BranchStore {
     }
     return true;
   }
-  private resourceHistoryCustodySettled(executionId:string):boolean {
+  /** Host-only current retirement/custody predicate; does not grant destination authority. */
+  resourceHistoryCustodySettled(executionId:string):boolean {
     for(const r of this.rows('SELECT * FROM branch_resources WHERE execution_id=?',executionId)){
       const members=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?',r.step_execution_id).map(m=>m.agent_id);
       const chat=this.resourceOperation(r.step_execution_id,'chat'),imported=this.resourceOperation(r.step_execution_id,'import');

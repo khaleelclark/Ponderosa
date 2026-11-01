@@ -37,3 +37,20 @@ export interface CoordinationDestinationReceipt extends BranchHostGraphRestoreDt
   agentMap:Record<string,string>; artifactMap:Record<string,string>;
   activationIds:string[]; owner:CoordinationDestinationOwnerReceipt;
 }
+
+/** Explicit action by the single host-local operator, never an imported grant. */
+export interface BranchDisclosureChoice {
+ commandKey:string; action:'approve'|'revoke'; reviewHash:string; expectedRevision:number;
+}
+export interface BranchDisclosureReceipt {
+ admissionId:string; commandKey:string; action:'approve'|'revoke'; reviewHash:string;
+ revision:number; state:'approved'|'revoked'; active:boolean;
+}
+export interface BranchDisclosureReviewDto {
+ admissionId:string; reviewHash:string; revision:number; state:'unreviewed'|'approved'|'revoked'; active:boolean;
+ policyRevision:string; hostCutSha256:string;
+ review:Omit<CoordinationDestinationReview,'reviewHash'|'disclosureRevision'>;
+ /** Exact original fact content for the human review surface; retains original actors/audiences. */
+ facts:(CoordinationDestinationReview['facts'][number]&{content:unknown})[];
+ policy:unknown;
+}

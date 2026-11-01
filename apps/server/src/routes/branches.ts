@@ -1,3 +1,4 @@
+import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
 import type {BranchResourceService} from '../branch-resource-service.js';
 import type {OutputAgentApps} from '../output-agent-apps.js';
 import type {BranchInstallationService} from '../branch-installation-service.js';
@@ -8,7 +9,7 @@ import { realpathSync, statSync } from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
-import { readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
+import { readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type CoordinationV3Store, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
 import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
@@ -18,11 +19,27 @@ import {sqliteCollectionGeneration,StaleCollectionCursorError,sqliteCollectionPa
 import {parseTokenUsageRange} from '../token-usage.js';
 import {workspaceNotificationPage} from './notifications.js';
 
-export function registerBranchRoutes(app: FastifyInstance, context: { resources:BranchResourceService;outputApps:OutputAgentApps; branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
+export function registerBranchRoutes(app: FastifyInstance, context: { coordination:CoordinationV3Store;resources:BranchResourceService;outputApps:OutputAgentApps; branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
   const { branches, store, sources, notify } = context;
   // These routes inherit the existing operator-only request hook. Agent capability
   // tokens cannot turn Branch read access into private historical Request access.
   const hostArtifactGrant=(projectId:string,artifactId:string,recipientAgentId:string)=>store.operatorCanReadProjectArtifact(projectId,artifactId)&&store.agentCanReadProjectArtifact(projectId,artifactId,recipientAgentId);
+  const disclosures=new BranchDisclosureReviewService(store,branches,context.coordination,(executionId,checkpointId,expectedHash)=>context.resources.verifyHistoricalCustody(executionId,checkpointId,expectedHash));
+  const disclosurePath='/api/branches/:id/executions/:executionId/destinations/:admissionId/disclosure';
+  type DisclosureParams={id:string;executionId:string;admissionId:string};
+  app.get<{Params:DisclosureParams;Querystring:{commandKey?:string}}>(disclosurePath,async(request,reply)=>{
+    try{const p=request.params;
+      return request.query.commandKey!==undefined?disclosures.readCommand(p.id,p.executionId,p.admissionId,request.query.commandKey)
+        :await disclosures.prepare(p.id,p.executionId,p.admissionId);
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Disclosure review unavailable'});}
+  });
+  app.post<{Params:DisclosureParams;Body:unknown}>(disclosurePath,async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Human disclosure choice');
+      exactObjectFields(body,['commandKey','action','reviewHash','expectedRevision'],'Human disclosure choice');
+      const result=await disclosures.choose(p.id,p.executionId,p.admissionId,body as unknown as import('@ponderosa/core').BranchDisclosureChoice);
+      return result;
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'Human disclosure choice refused'});}
+  });
   const assertEditable=(id:string)=>{
     if(store.sqlite.prepare("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')").get(id))throw new Error('An installation update is applying; wait for it to finish');
   };

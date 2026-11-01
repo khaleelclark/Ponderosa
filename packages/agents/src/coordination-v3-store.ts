@@ -157,6 +157,9 @@ export class CoordinationV3Store {
   stageCoordinationDestination(id:string,input:import('@ponderosa/core').CoordinationDestinationStage,now=new Date().toISOString()):void {
     new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).stage(id,input,now);
   }
+  inspectCoordinationDestinationDisclosure(id:string,requireCustodyAndOwner:CoordinationDestinationAuthority['requireCustodyAndOwner'],now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).inspectDisclosure(id,requireCustodyAndOwner,now);
+  }
   reviewCoordinationDestination(id:string,authority:CoordinationDestinationAuthority,now=new Date().toISOString()) {
     return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).review(id,authority,now);
   }
