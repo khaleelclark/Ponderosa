@@ -375,6 +375,7 @@ export function startProviderRunExecution(
           agentId: agent.id,
           cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,
+          fileCheckpointTracking: nativeHistory.tracking(agent.id).enabled,
           ...(nativeSeed ? {transcriptFork:nativeSeed.seed,assertHistoryCurrent:nativeSeed.assertCurrent,onTranscriptForkObserved:nativeSeed.observed} : {}),
           history: sessionResumeId ? [] : seedHistory,
           systemPrompt,

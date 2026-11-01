@@ -7,7 +7,7 @@ const boundary={agentId:'a',projectId:'p',conversationId:'c',engine:'claude',ses
 function fixture(t){
   const sqlite=new Database(':memory:');t.after(()=>sqlite.close());
   sqlite.exec(`CREATE TABLE coordination_idempotency(project_id TEXT,actor_scope TEXT,operation TEXT,idempotency_key TEXT,payload_hash TEXT,result_json TEXT,created_at TEXT,PRIMARY KEY(actor_scope,operation,idempotency_key))`);
-  return new NativeHistoryAuthority({sqlite});
+  return new NativeHistoryAuthority({sqlite,getAgent:id=>({id,projectId:"p",activeEngine:"claude"})});
 }
 test('native mutation reservation persists exact key replay and blocks another key',t=>{
   const a=fixture(t),input={checkpointId:'cp'};
@@ -29,4 +29,16 @@ test('only unstarted fork can release preparation; opened result cannot replay f
   const opened=a.save(next,'opened',{nativeSessionId:'fresh'},{newSessionId:'fresh'});
   assert.equal(opened.newSessionId,'fresh');assert.throws(()=>a.cancel('a','other-fork'));
   assert.equal(a.read('a','other-fork').state,'opened');
+});
+
+test('tracking preference is future-only, defaults off and persists independently of held work',t=>{
+  const a=fixture(t);
+  assert.deepEqual(a.tracking('a'),{enabled:false,appliesTo:'next_native_session'});
+  a.reserve(boundary,'held','rewind',{});
+  const enabled=a.setTracking('a',true);
+  assert.equal(enabled.appliesTo,'next_native_session');
+  assert.deepEqual(a.tracking('a'),enabled);
+  assert.equal(a.held('a'),true);
+  assert.equal(a.setTracking('a',false).enabled,false);
+  assert.equal(a.read('a','held').state,'started');
 });

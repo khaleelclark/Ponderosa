@@ -28,10 +28,11 @@ function array<T>(v: unknown, project:(v:unknown)=>T): T[] {
   return out;
 }
 export function projectNativeHistory(value: unknown): NativeHistoryCatalog {
-  const r=record(value,["sessionId","checkpoints","forkPoints","fileRewindSupported","transcriptForkSupported"]);
+  const r=record(value,["sessionId","checkpoints","forkPoints","fileRewindSupported","transcriptForkSupported","trackingEnabled"]);
   if(typeof r.fileRewindSupported!=="boolean" || typeof r.transcriptForkSupported!=="boolean") throw new Error("Invalid history support");
+  if(r.trackingEnabled!==undefined && typeof r.trackingEnabled!=="boolean")throw new Error("Invalid tracking flag");
   const sessionId=text(r.sessionId);
-  return {sessionId,fileRewindSupported:r.fileRewindSupported,transcriptForkSupported:r.transcriptForkSupported,
+  return {...(typeof r.trackingEnabled==="boolean"?{trackingEnabled:r.trackingEnabled}:{}),sessionId,fileRewindSupported:r.fileRewindSupported,transcriptForkSupported:r.transcriptForkSupported,
     forkPoints:array(r.forkPoints,v=>text(v)),checkpoints:array(r.checkpoints,v=>{
       const c=record(v,["sessionId","messageId"]);
       if(c.sessionId!==sessionId) throw new Error("Checkpoint owner changed");

@@ -6,7 +6,7 @@ const session='11111111-1111-4111-8111-111111111111';
 const user='22222222-2222-4222-8222-222222222222';
 const assistant='33333333-3333-4333-8333-333333333333';
 function observed(write) {
-  const h=new ClaudeFileHistory(session,write);
+  const h=new ClaudeFileHistory(session,write,true);
   h.observe({type:'system',subtype:'init',session_id:session,claude_code_version:'2.1.301'});
   h.beginTurn();
   h.observe({type:'user',session_id:session,uuid:user,isReplay:true,message:{role:'user'}});
@@ -36,7 +36,15 @@ test('wrong-session response remains unknown and cannot be retried',async()=>{
   await assert.rejects(h.rewind(user,false));assert.equal(writes,1);
 });
 test('old unsafe native generation cannot expose rewind',()=>{
-  const h=new ClaudeFileHistory(session,async()=>{});
+  const h=new ClaudeFileHistory(session,async()=>{},true);
   h.observe({type:'system',subtype:'init',session_id:session,claude_code_version:'2.1.215'});
   assert.equal(h.catalog().fileRewindSupported,false);
+});
+
+test('tracking disabled never advertises or collects file checkpoints',()=>{
+  const h=new ClaudeFileHistory(session,async()=>{});
+  h.ready=true;
+  assert.equal(h.catalog().trackingEnabled,false);
+  assert.equal(h.catalog().fileRewindSupported,false);
+  assert.deepEqual(h.catalog().checkpoints,[]);
 });

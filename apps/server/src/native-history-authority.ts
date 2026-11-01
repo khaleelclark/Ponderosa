@@ -2,19 +2,24 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AgentStore } from "@ponderosa/agents";
 import type { NativeTranscriptSeed } from "@ponderosa/core";
 export const historyHash = (v: unknown): string => createHash("sha256").update(JSON.stringify(v)).digest("hex");
-export interface HistoryBoundary {
-  agentId:string;projectId:string;conversationId:string;engine:string;sessionId:string;
-  runId:string;fence:number;toolContractHash:string;rootPath:string;
-}
-export interface HistoryReceipt {
-  id:string; key:string; kind:"preview"|"rewind"|"fork"; boundary:HistoryBoundary;
-  state:"prepared"|"started"|"completed"|"opened"|"cancelled";
-  requestHash?:string;inputHash:string; createdAt:string; targetAgentId?:string; throughId?:string;
-  newSessionId?:string; targetRunId?:string; targetFence?:number; result?:unknown;
-}
+import type { HistoryBoundary, HistoryReceipt, NativeHistoryTrackingPreference } from "@ponderosa/core";
+export type { HistoryBoundary, HistoryReceipt } from "@ponderosa/core";
 /** Durable once-only host reservation; never a native idempotency guarantee. */
 export class NativeHistoryAuthority {
   constructor(private readonly store:AgentStore) {}
+  tracking(agentId:string):NativeHistoryTrackingPreference {
+    const row=this.store.sqlite.prepare("SELECT result_json FROM coordination_idempotency WHERE actor_scope=? AND operation='native_history_tracking' AND idempotency_key='preference'").get(`operator:native-history:${agentId}`) as {result_json:string}|undefined;
+    return row?JSON.parse(row.result_json):{enabled:false,appliesTo:"next_native_session"};
+  }
+  setTracking(agentId:string,enabled:boolean):NativeHistoryTrackingPreference {
+    const agent=this.store.getAgent(agentId);
+    if(!agent||agent.activeEngine!=='claude')throw new Error("Claude tracking preference unavailable");
+    const preference:NativeHistoryTrackingPreference={enabled,appliesTo:"next_native_session",updatedAt:new Date().toISOString()};
+    this.store.sqlite.prepare(`INSERT INTO coordination_idempotency(project_id,actor_scope,operation,idempotency_key,payload_hash,result_json,created_at)
+      VALUES (?,?,'native_history_tracking','preference',?,?,?) ON CONFLICT(actor_scope,operation,idempotency_key) DO UPDATE SET payload_hash=excluded.payload_hash,result_json=excluded.result_json,created_at=excluded.created_at`)
+      .run(agent.projectId,`operator:native-history:${agentId}`,historyHash(preference),JSON.stringify(preference),preference.updatedAt!);
+    return preference;
+  }
   read(agentId:string,key:string):HistoryReceipt|undefined {
     const row=this.store.sqlite.prepare("SELECT result_json FROM coordination_idempotency WHERE actor_scope=? AND operation='native_history' AND idempotency_key=?")
       .get(`operator:native-history:${agentId}`,key) as {result_json:string}|undefined;
@@ -37,7 +42,7 @@ export class NativeHistoryAuthority {
       return {receipt,replayed:false};
     })();
   }
-  save(receipt:HistoryReceipt,state:HistoryReceipt['state'],result?:unknown,patch:Partial<HistoryReceipt>={}):HistoryReceipt {
+  save(receipt:HistoryReceipt,state:HistoryReceipt['state'],result?:import("@ponderosa/core").NativeHistoryResult,patch:Partial<HistoryReceipt>={}):HistoryReceipt {
     const next={...receipt,...patch,state,...(result!==undefined?{result}:{})};
     const changed=this.store.sqlite.prepare(`UPDATE coordination_idempotency SET result_json=? WHERE actor_scope=? AND operation='native_history'
       AND idempotency_key=? AND result_json=?`).run(JSON.stringify(next),`operator:native-history:${receipt.boundary.agentId}`,receipt.key,JSON.stringify(receipt));

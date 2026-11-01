@@ -126,3 +126,29 @@ contains boundary, exact-ID, wrong-session, goal refusal, unknown-result,
 reservation/key and closed-projection cases. They were written, not executed.
 Source/diff review only: no tests/checks/builds/typechecks, Node/native/SDK/provider
 or browser execution, dependency installation, push, merge or deployment.
+
+## Additive UI REST contract
+
+All REST DTOs are exported from `@ponderosa/core` in `native-history.ts`:
+`HistoryBoundary`, `HistoryReceipt`, `NativeHistoryResult`, `NativeRewindFileFact`,
+`NativeRewindAncestor`, `NativeHistoryInventory`, `NativeHistoryOperationRequest`,
+`NativeHistoryOperationResponse`, cancel request/response, tracking request/response,
+and error. Physical ancestors retain the exact tuple order documented by the type.
+Native optional fields remain optional; missing files/counts do not prove restoration.
+
+GET/POST `/api/agents/:id/native-history/tracking` reads/sets a Claude-only preference.
+POST body is exactly `{ "enabled": true }` (or false). Default is disabled.
+The persisted preference applies only to the **next native session opening**; saving
+it does not restart, mutate, or retroactively instrument the retained session.
+The optional `currentSession` is an observed retained catalog boundary and actual
+startup tracking flag after a supported native init; absence means unconfirmed, never disabled.
+This confirms session configuration, not that any particular file has a backup. The preference alone is
+not confirmation of current tracking. Existing backups/catalog entries are not
+created by enabling or erased by disabling. No new session is automatically opened.
+
+Inventory GET now returns `eligibleTargets: [{agentId}]` using the same canonical
+emptiness/ownership checks as fork POST, including existing history reservations.
+Labels come from the Agent directory. Listing is advisory and creates nothing;
+POST revalidates. An empty list means no eligible existing target. Do not manufacture
+Agents, infer eligibility from directory metadata, or infer operation success from
+HTTP failure. Exact original key readback and unknown holds remain unchanged.

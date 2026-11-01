@@ -358,6 +358,7 @@ export interface ProviderRootExitDetail {
 }
 
 export interface OpenRuntimeSessionOptions {
+  fileCheckpointTracking?: boolean;
   /** Host-reserved fresh transcript context; never an adopted source lease. */
   transcriptFork?: NativeTranscriptSeed;
   assertHistoryCurrent?: () => void;

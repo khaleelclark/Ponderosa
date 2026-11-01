@@ -12,11 +12,11 @@ export class ClaudeFileHistory {
   private pending?: { id: string; resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
   uncertain = false;
   ready = false;
-  constructor(readonly sessionId: string, private readonly write: (frame: unknown) => Promise<void>) {}
+  constructor(readonly sessionId: string, private readonly write: (frame: unknown) => Promise<void>, private readonly trackingEnabled = false) {}
   beginTurn(): void { this.assistant = undefined; this.user = undefined; }
   catalog(): NativeHistoryCatalog {
-    return { sessionId: this.sessionId, checkpoints: [...this.checkpoints].map(messageId => ({sessionId:this.sessionId,messageId})),
-      forkPoints: [...this.cuts], fileRewindSupported: this.ready && !this.uncertain, transcriptForkSupported: this.ready && !this.uncertain };
+    return { ...(this.ready?{trackingEnabled:this.trackingEnabled}:{}), sessionId: this.sessionId, checkpoints: [...this.checkpoints].map(messageId => ({sessionId:this.sessionId,messageId})),
+      forkPoints: [...this.cuts], fileRewindSupported: this.trackingEnabled && this.ready && !this.uncertain, transcriptForkSupported: this.ready && !this.uncertain };
   }
   observe(raw: unknown): boolean {
     const e = object(raw);
@@ -39,7 +39,7 @@ export class ClaudeFileHistory {
     if (e.type === "assistant" && uuid(e.uuid)) this.assistant = e.uuid;
     if (e.type === "result") {
       if (e.subtype === "success" && e.is_error === false) {
-        if (this.user) this.checkpoints.add(this.user);
+        if (this.trackingEnabled && this.user) this.checkpoints.add(this.user);
         if (this.assistant) this.cuts.add(this.assistant);
         while (this.checkpoints.size > 128) this.checkpoints.delete(this.checkpoints.values().next().value!);
         while (this.cuts.size > 128) this.cuts.delete(this.cuts.values().next().value!);
@@ -49,7 +49,7 @@ export class ClaudeFileHistory {
     return false;
   }
   async rewind(messageId: string, dryRun: boolean): Promise<NativeFileRewindResult> {
-    if (!this.ready || this.uncertain || this.pending || !this.checkpoints.has(messageId)) throw new Error("Exact tracked native checkpoint unavailable");
+    if (!this.trackingEnabled || !this.ready || this.uncertain || this.pending || !this.checkpoints.has(messageId)) throw new Error("Exact tracked native checkpoint unavailable");
     const base = { sessionId:this.sessionId,messageId,dryRun };
     try {
       const value = await new Promise<unknown>((resolve, reject) => {

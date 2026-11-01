@@ -29,6 +29,37 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
     const now=boundary(id);
     if(!b||!now||now.runtime!==b.runtime||historyHash(now.boundary)!==historyHash(b.boundary))throw new Error("Native history ownership changed");
   };
+  const eligible=(id:string,b:HistoryBoundary,target:ReturnType<AgentStore['getAgent']>):boolean=>{
+    return !(!target||target.id===id||target.projectId!==b.projectId||target.conversationId!==b.conversationId||
+           target.activeEngine!==b.engine||target.workingCopy.rootPath!==b.rootPath||target.workingCopy.state!=='ready'||
+           store.resumeSessionId(target.id)||context.persistentRuntimeForTermination(target.id)||context.activeRuns.has(target.id)||
+           context.coordinationV3.activeAgentRun(target.id)||context.deletingAgentIds.has(target.id)||
+           store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? LIMIT 1").get(target.id)||
+           store.sqlite.prepare("SELECT 1 FROM events WHERE agent_id=? AND type IN ('user_message','session','session_snapshot','tool_call','text') LIMIT 1").get(target.id)||authority.held(target.id));
+  };
+  const trackingResponse=async(id:string)=>{
+    const preference=authority.tracking(id),b=boundary(id);
+    if(!b?.runtime.session.nativeHistory)return {preference};
+    try {
+      const catalog=await b.runtime.session.nativeHistory();same(id,b);
+      if(catalog.sessionId!==b.boundary.sessionId||catalog.trackingEnabled===undefined)return {preference};
+      return {preference,currentSession:{sessionId:catalog.sessionId,trackingEnabled:catalog.trackingEnabled}};
+    }catch{return {preference};}
+  };
+  app.get<{Params:{id:string}}>("/api/agents/:id/native-history/tracking",async(request,reply)=>{
+    const a=store.getAgent(request.params.id);
+    if(!a)return reply.code(404).send({error:"Agent not found"});
+    if(a.activeEngine!=='claude')return reply.code(409).send({error:"Claude tracking only"});
+    return trackingResponse(a.id);
+  });
+  app.post<{Params:{id:string};Body:import('@ponderosa/core').NativeHistoryTrackingRequest}>("/api/agents/:id/native-history/tracking",async(request,reply)=>{
+    const id=request.params.id,body=request.body;
+    if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||typeof body.enabled!=='boolean')return reply.code(400).send({error:"Exact enabled boolean required"});
+    if(!store.getAgent(id))return reply.code(404).send({error:"Agent not found"});
+    if(context.isClosed()||context.deletingAgentIds.has(id)||context.deletingProjectIds.has(store.getAgent(id)!.projectId))return reply.code(409).send({error:"Agent unavailable"});
+    try{authority.setTracking(id,body.enabled);return trackingResponse(id);}
+    catch{return reply.code(409).send({error:"Claude tracking preference unavailable"});}
+  });
   app.get<{Params:{id:string};Querystring:{key?:string}}>("/api/agents/:id/native-history",async(request,reply)=>{
     if(!store.getAgent(request.params.id))return reply.code(404).send({error:"Agent not found"});
     try {
@@ -41,7 +72,7 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
       if(!b||!b.runtime.session.nativeHistory)return reply.code(409).send({error:"Accepted idle native history unavailable"});
       const catalog=await b.runtime.session.nativeHistory();same(request.params.id,b);
       if(catalog.sessionId!==b.boundary.sessionId)throw new Error("Native catalog owner changed");
-      return {boundary:b.boundary,boundaryHash:historyHash(b.boundary),catalog,held:authority.held(request.params.id)};
+      return {boundary:b.boundary,boundaryHash:historyHash(b.boundary),catalog,held:authority.held(request.params.id),eligibleTargets:store.listAgents(b.boundary.projectId).filter(a=>eligible(request.params.id,b.boundary,a)).map(a=>({agentId:a.id}))} satisfies import("@ponderosa/core").NativeHistoryInventory;
     }catch(error){request.log.error({err:error},"Native history read unavailable");return reply.code(409).send({error:"Native history unavailable; no outcome inferred"});}
   });
   app.post<{Params:{id:string};Body:Record<string,unknown>}>("/api/agents/:id/native-history",async(request,reply)=>{
@@ -68,13 +99,8 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
       if(body.operation==='fork') {
         if(body.acknowledgeHistoryCopy!==true||!validKey(body.throughId)||!validKey(body.targetAgentId)||!catalog.transcriptForkSupported||!catalog.forkPoints.includes(body.throughId))throw new Error("Explicit exact completed transcript boundary and destination required");
         const target=store.getAgent(body.targetAgentId);
-        if(!target||target.id===id||target.projectId!==b.boundary.projectId||target.conversationId!==b.boundary.conversationId||
-           target.activeEngine!==b.boundary.engine||target.workingCopy.rootPath!==b.boundary.rootPath||target.workingCopy.state!=='ready'||
-           store.resumeSessionId(target.id)||context.persistentRuntimeForTermination(target.id)||context.activeRuns.has(target.id)||
-           context.coordinationV3.activeAgentRun(target.id)||context.deletingAgentIds.has(target.id)||
-           store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? LIMIT 1").get(target.id)||
-           store.sqlite.prepare("SELECT 1 FROM events WHERE agent_id=? AND type IN ('user_message','session','session_snapshot','tool_call','text') LIMIT 1").get(target.id))throw new Error("Destination must be a fresh empty same-Chat same-engine Agent on the same working folder");
-        const result=authority.reserve(b.boundary,body.idempotencyKey,'fork',body,{targetAgentId:target.id,throughId:body.throughId,newSessionId:randomUUID(),requestHash:historyHash(body)});
+        if(!eligible(id,b.boundary,target))throw new Error("Destination must be a fresh empty same-Chat same-engine Agent on the same working folder");
+        const result=authority.reserve(b.boundary,body.idempotencyKey,'fork',body,{targetAgentId:body.targetAgentId,throughId:body.throughId,newSessionId:randomUUID(),requestHash:historyHash(body)});
         return { ...result,nextAction:"Send a new human message to the destination Agent. Its scheduler Run opens the fresh fork once.",sourceWork:"unchanged",replayAuthorized:false};
       }
       if(!catalog.fileRewindSupported||!b.runtime.session.rewindFiles||!validKey(body.checkpointId)||!catalog.checkpoints.some(c=>c.messageId===body.checkpointId))throw new Error("Exact tracked native checkpoint unavailable");
@@ -84,7 +110,7 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
         (context.activeRuns.has(a.id)||context.coordinationV3.activeAgentRun(a.id)))throw new Error("Working folder has another active managed writer");
       if(body.operation==='rewind') {
         if(body.acknowledgeFileChanges!==true||!validKey(body.previewKey))throw new Error("Explicit tracked-file restore/delete acknowledgement and preview required");
-        const preview=authority.read(id,body.previewKey),r=preview?.result as {native?:import('@ponderosa/core').NativeFileRewindResult;facts?:unknown;boundaryHash?:string}|undefined;
+        const preview=authority.read(id,body.previewKey),r=preview?.result;
         if(!preview||preview.kind!=='preview'||preview.state!=='completed'||Date.now()-Date.parse(preview.createdAt)>60_000||
            r?.boundaryHash!==body.boundaryHash||r.native?.messageId!==body.checkpointId||!r.native.canRewind||r.native.outcome!=='completed'||
            historyHash(nativeRewindFileFacts(b.boundary.rootPath,r.native.filesChanged??[]))!==historyHash(r.facts))throw new Error("Exact fresh file preview changed; review another preview before mutation");

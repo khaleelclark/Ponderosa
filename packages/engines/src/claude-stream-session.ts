@@ -108,7 +108,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.selectedModel = opts.model;
     this.seedHistory = opts.resumeSessionId || opts.transcriptFork ? [] : [...opts.history];
     this.engineAgentId = opts.transcriptFork?.newSessionId ?? opts.resumeSessionId ?? randomUUID();
-    this.fileHistory = new ClaudeFileHistory(this.engineAgentId, frame => this.writeFrame(frame));
+    this.fileHistory = new ClaudeFileHistory(this.engineAgentId, frame => this.writeFrame(frame), opts.fileCheckpointTracking === true);
     this.taskLifetime = new ClaudeTaskLifetime(this.engineAgentId);
     this.taskStop = new ClaudeTaskStop(this.engineAgentId);
     this.contextObservations = new ClaudeContextUsage(this.engineAgentId);
@@ -149,7 +149,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       "--disallowedTools", ["AskUserQuestion",...(restrictionArgs[1]?[restrictionArgs[1]]:[])].join(","),
     ];
     opts.assertHistoryCurrent?.();
-    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: "true" };
+    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false" };
     const contained = spawnContainedCli({
       bin: opts.bin,
       args,
