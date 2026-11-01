@@ -321,3 +321,13 @@ Organization root-bundle controls, mapped post-import memory/browser Settings
 actions, new-root Chat flow, shared human Chat and peer preview consumers remain
 missing. Generic text preview also still awaits held Runtime successor source.
 No execution, passing test, playback/latency or full portability claim.
+
+## General before-entry rewind
+
+Features `e7394374` integrated conflict-free. Initial canceled-before-admission
+nonsecret checkpoints now admit all validated graph families anew with unchanged
+pins/input and atomic lineage; no existing paths/Steps/effects/resources restored.
+In-progress parallel/map/Agent/provider/resource continuation remains missing.
+This source extension does not establish full checkpoint parity. Tests deferred.
+Runtime recovery migration 0035 and audio follow-up are reported in progress;
+await committed source and inspect schema/asset overlap when handed off.
