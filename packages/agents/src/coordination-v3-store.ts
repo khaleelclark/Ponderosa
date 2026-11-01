@@ -1,6 +1,6 @@
 import {payloadHash} from './coordination-v3-canonical-json.js';
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
-import {CoordinationV3DestinationReconciliation,type CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
+import {CoordinationV3DestinationReconciliation,groupReconciliationAuthority,type CoordinationDestinationGroupReconciliationAuthority,type CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
 import {CoordinationV3DestinationAdmissionAuthority,groupDestinationAuthority,type CoordinationDestinationGroupAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
 import type {HostArtifactGrant} from './branch-host-adoption.js';
@@ -205,6 +205,15 @@ export class CoordinationV3Store {
   }
   retireCoordinationDestination(input:import('@ponderosa/core').CoordinationDestinationReconciliationInput,authority:CoordinationDestinationReconciliationAuthority,now=new Date().toISOString()) {
     return new CoordinationV3DestinationReconciliation(this.sqlite).retire(input,authority,now);
+  }
+  reviewCoordinationDestinationGroupReconciliation(id:string,operatorId:string,authority:CoordinationDestinationGroupReconciliationAuthority):import('@ponderosa/core').CoordinationDestinationGroupReconciliationReview {
+    return new CoordinationV3DestinationReconciliation(this.sqlite,true).review(id,operatorId,groupReconciliationAuthority(authority)) as import('@ponderosa/core').CoordinationDestinationGroupReconciliationReview;
+  }
+  retireCoordinationDestinationGroup(input:import('@ponderosa/core').CoordinationDestinationReconciliationInput,authority:CoordinationDestinationGroupReconciliationAuthority,now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt {
+    return new CoordinationV3DestinationReconciliation(this.sqlite,true).retire(input,groupReconciliationAuthority(authority),now) as import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt;
+  }
+  readCoordinationDestinationGroupRetirement(id:string):import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt|null {
+    return new CoordinationV3DestinationReconciliation(this.sqlite,true).read(id) as import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt|null;
   }
   readCoordinationDestinationRetirement(id:string) {
     return new CoordinationV3DestinationReconciliation(this.sqlite).read(id);

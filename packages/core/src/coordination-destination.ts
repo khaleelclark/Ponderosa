@@ -104,3 +104,17 @@ export interface CoordinationDestinationGroupReceipt extends CoordinationDestina
  resources:CoordinationDestinationGroupResource[];
  owners:CoordinationDestinationOwnerReceipt[];
 }
+
+/** Exact retained slot rows, including importer stages before whole-group assembly. */
+export interface CoordinationDestinationGroupReconciliationSlot {
+ admission_id:string; source_chat_id:string; source_execution_id:string; conversation_id:string; stage_json:string|null;
+}
+export interface CoordinationDestinationGroupReconciliationReview extends CoordinationDestinationReconciliationReview {
+ reservation:CoordinationDestinationReservation&{resources:CoordinationDestinationGroupResource[]};
+ groupChats:CoordinationDestinationGroupReconciliationSlot[];
+}
+export interface CoordinationDestinationGroupReconciliationReceipt extends CoordinationDestinationReconciliationReceipt {
+ resources:CoordinationDestinationGroupResource[];
+ groupChats:CoordinationDestinationGroupReconciliationSlot[];
+ evidenceSha256:string;
+}

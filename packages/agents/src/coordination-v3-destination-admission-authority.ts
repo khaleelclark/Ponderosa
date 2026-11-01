@@ -134,7 +134,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
     ||this.db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(d.projectId)
     ||this.db.prepare('SELECT 1 FROM coordination_destination_admissions WHERE conversation_id=?').get(d.conversationId)
     ||this.db.prepare('SELECT 1 FROM coordination_destination_group_chats WHERE conversation_id=?').get(d.conversationId)
-    ||this.db.prepare('SELECT 1 FROM coordination_destination_retirements WHERE conversation_id=?').get(d.conversationId))throw Error('Reserve every fresh destination Chat identity before creation');
+    ||this.db.prepare("SELECT 1 FROM coordination_destination_retirements WHERE conversation_id=? OR EXISTS(SELECT 1 FROM json_each(receipt_json,'$.resources') r WHERE json_extract(r.value,'$.destination.conversationId')=?)").get(d.conversationId,d.conversationId))throw Error('Reserve every fresh destination Chat identity before creation');
   }
   const row={reservation_json:stableJson(input),reservation_hash:payloadHash(input),snapshot_json:saved.snapshot_json};
   const {cut}=this.source(row),snapshot=JSON.parse(saved.snapshot_json);

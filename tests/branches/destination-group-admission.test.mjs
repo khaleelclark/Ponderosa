@@ -108,5 +108,5 @@ test('incremental stage replay refuses changed maps and singular entrypoints can
  f.db.transaction(()=>f.coordination.stageCoordinationDestinationGroupResource(f.reserved.admissionId,source,stage))();
  assert.throws(()=>f.db.transaction(()=>f.coordination.stageCoordinationDestinationGroupResource(f.reserved.admissionId,source,{...stage,agentMap:{[f.resources[0].custody.agentIds[0]]:randomUUID()}}))(),/conflict/);
  assert.throws(()=>f.db.transaction(()=>f.coordination.reviewCoordinationDestination(f.reserved.admissionId,{}))(),/singular or group/);
- assert.throws(()=>f.db.transaction(()=>f.coordination.reviewCoordinationDestinationReconciliation(f.reserved.admissionId,'operator',{}))(),/Group retirement/);
+ assert.throws(()=>f.db.transaction(()=>f.coordination.reviewCoordinationDestinationReconciliation(f.reserved.admissionId,'operator',{}))(),/singular or group/);
 });

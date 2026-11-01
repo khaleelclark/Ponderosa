@@ -24,7 +24,7 @@ Migration `0039_coordination_destination_group_chats.sql` reserves every source/
 
 Each source Chat and fresh Chat must be distinct within the group, one resource generation per Chat. Resource custody inventories are disjoint and equal captured member inventories. Every source owner must be settled and all current original Requests/effects/providers drained; a current host adapter proves actual custody/owner/whole-tree eligibility. A tree must capture the exhaustive resource inventory across ALL selected owners: incomplete/non-issued-owner resource captures refuse. Cross-resource Join membership/outcomes use the same whole graph map. Request/Join structural participants must still belong to their original resource Chat; outside control participants refuse. Unknown outcomes/recovery chains, expired deadlines, Decision suspensions, secret bindings, communication-owned artifacts and incomplete provenance remain refused. Multiple destination Projects, shared-Chat resource generations and automatic provider/native replay are outside this slice.
 
-Group retirement is deliberately refused by the singular reconciliation hook. Its source pins and Chat/member holds survive failed staging/restarts; only the separate exhaustive group lifecycle protocol below may retire them. No timeout/reimport/reclamation is inferred.
+Group retirement remains refused by the singular reconciliation hook. The separate whole-group canonical lifecycle API is described in coordination-destination-group-reconciliation.md and the operator protocol below; exhaustive current host evidence and exact durable approval are required before any pin release. No timeout/reimport/reclamation is inferred.
 
 ## Branch integration still required
 

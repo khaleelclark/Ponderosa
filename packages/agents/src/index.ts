@@ -196,7 +196,7 @@ export {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,rea
 
 export {destinationDisclosurePolicy} from './coordination-v3-destination-admission-authority.js';
 
-export type {CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
+export type {CoordinationDestinationReconciliationAuthority,CoordinationDestinationGroupReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
 export {BranchCustodyLifecycle,type BranchCustodyReference} from './branch-custody-lifecycle.js';
 
 export type {CoordinationDestinationGroupAuthority} from './coordination-v3-destination-admission-authority.js';
