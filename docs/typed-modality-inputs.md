@@ -35,7 +35,7 @@ Provider owner integration is required: both `startTurn` and `steer` must call t
 
 ## Deferred verification
 
-`packages/engines/test/typed-input.test.mjs` covers native image shapes, Claude PDF versus Codex file reference, original audio references, derived-original integrity, source provenance and the byte budget. It is authored for later execution after the coordinated build. It has not been run in this change.
+`packages/engines/test/typed-input.test.mjs` covers native image shapes, Claude PDF versus Codex file reference, original audio references, derived-original integrity, source provenance and the byte budget. It is authored for later execution after the coordinated build. `apps/server/test/runtime-input-files.test.mjs` adds private-access denial, current revocation, exact recipient provenance and descriptor-only context fixtures. Neither file has been run in this change.
 
 The final combined verification still needs package typechecks/builds; real fresh/resumed/steered Core and Branches deliveries; PDF and large-image CLI compatibility; lost-access/fence/cancel/recovery cases; original and preview downloads; descriptor-only UI audit rendering; no raw-media echo in logs; and existing voice/transcription behavior. No harness parity, accessibility or Phase 2 acceptance is inferred from source alone.
 
