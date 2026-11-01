@@ -7,7 +7,7 @@ export const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
 export async function verifyAcceptedMethod(path,expectedHash,requiredPaths){
  const bytes=await readFile(path);assert.equal(sha256(bytes),expectedHash,'Pin actual accepted receipt bytes');
  const value=JSON.parse(bytes);assert.equal(value.decision,'ACCEPT');assert.equal(value.scope,'METHOD');
- assert.equal(sha256(await readFile(value.review.path)),value.review.sha256,'Bind actual independent review bytes');
+ const reviewBytes=await readFile(value.review.path);assert.equal(sha256(reviewBytes),value.review.sha256,'Bind actual independent review bytes');assert(/^ACCEPT(?:\s|$)/m.test(reviewBytes.toString('utf8')),'Independent review must explicitly ACCEPT; no REQUEST_CHANGES receipt');
  assert(value.go32?.authorizedBy&&value.go32?.communicationReference,'Separate explicit GO32 authority reference required');
  const paths=value.inputs.map(r=>r.path);assert.equal(new Set(paths).size,paths.length,'No duplicate reviewed input paths');
  for(const required of requiredPaths)assert(paths.includes(required),'Missing reviewed input '+required);

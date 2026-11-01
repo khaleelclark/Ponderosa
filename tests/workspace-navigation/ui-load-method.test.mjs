@@ -33,10 +33,11 @@ test('twenty-work window rejects postcapture persistence and out-of-window provi
 test('method acceptance pins actual review, receipt and required input bytes',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'method-binding-'));
  try{
-  const review=join(dir,'review.md'),input=join(dir,'collector.mjs'),receipt=join(dir,'receipt.json');await writeFile(review,'Independent ACCEPT for exact inputs');await writeFile(input,'collector');
-  const value={decision:'ACCEPT',scope:'METHOD',review:{path:review,sha256:sha256('Independent ACCEPT for exact inputs')},go32:{authorizedBy:'manager',communicationReference:'explicit-reviewed-GO'},inputs:[{path:input,sha256:sha256('collector')}]},bytes=JSON.stringify(value);await writeFile(receipt,bytes);
+  const review=join(dir,'review.md'),input=join(dir,'collector.mjs'),receipt=join(dir,'receipt.json');await writeFile(review,'ACCEPT for exact inputs');await writeFile(input,'collector');
+  const value={decision:'ACCEPT',scope:'METHOD',review:{path:review,sha256:sha256('ACCEPT for exact inputs')},go32:{authorizedBy:'manager',communicationReference:'explicit-reviewed-GO'},inputs:[{path:input,sha256:sha256('collector')}]},bytes=JSON.stringify(value);await writeFile(receipt,bytes);
   assert.equal((await verifyAcceptedMethod(receipt,sha256(bytes),[input])).receipt.sha256,sha256(bytes));
   await assert.rejects(verifyAcceptedMethod(receipt,'wrong',[input]));await assert.rejects(verifyAcceptedMethod(receipt,sha256(bytes),['missing']));
+  await writeFile(review,'REQUEST_CHANGES for exact inputs');const rejected={...value,review:{path:review,sha256:sha256('REQUEST_CHANGES for exact inputs')}};await writeFile(receipt,JSON.stringify(rejected));await assert.rejects(verifyAcceptedMethod(receipt,sha256(JSON.stringify(rejected)),[input]));await writeFile(review,'ACCEPT for exact inputs');await writeFile(receipt,bytes);
   await writeFile(input,'drift');await assert.rejects(verifyAcceptedMethod(receipt,sha256(bytes),[input]));
  }finally{await rm(dir,{recursive:true});}
 });
