@@ -1,22 +1,24 @@
-import {matchesHumanTextReplyRoute} from './textReplyRoute';
+import {matchesTextReplyRoute,type ReplySource} from './textReplyRoute';
 import {Alert,Box} from '@mui/material';
-import type {MessageDto,VoiceReplySnapshot,VoiceReplyStatus} from '@ponderosa/core';
+import type {VoiceReplySnapshot,VoiceReplyStatus} from '@ponderosa/core';
 import {useEffect,useState} from 'react';
 import {api} from '../../api';
 
 /** Provisional host-authorized human reply; never authored Communication or audio. */
-export function DirectReplyPreview({sent,agentId,messages,projectId}:{sent:MessageDto;agentId:string;messages:MessageDto[];projectId:string}):JSX.Element|null {
+export function DirectReplyPreview({sent,agentId,messages,projectId,peerAgentId}:{sent:ReplySource;agentId:string;messages:ReplySource[];projectId:string;peerAgentId?:string}):JSX.Element|null {
  const [reply,setReply]=useState<VoiceReplySnapshot>();
  const [error,setError]=useState('');
  const messageId=sent.communicationEventId??sent.id;
  const conversationId=sent.conversationId;
  const receipt=sent.deliveryReceipts?.find(item=>item.targetAgentId===agentId);
  const executionId=receipt?.state==='recovered'?receipt.recoveryExecutionId:receipt?.executionId;
- const replyIntent=sent.communicationIntent==='broadcast'?'broadcast':'direct_to_user';
- const canonical=messages.some(item=>item.role==='assistant'&&item.communicationIntent===sent.communicationIntent&&item.authorAgentId===agentId&&item.executionId===(reply?.runId??executionId));
+ const replyIntent=sent.communicationIntent==='collaboration'?'collaboration':sent.communicationIntent==='broadcast'?'broadcast':'direct_to_user';
+ const sender=sent.communicationSender;
+ const peerSenderId=sender?.kind==='agent'?sender.agentId:undefined;
+ const canonical=Boolean(reply?.runId??executionId)&&messages.some(item=>item.role==='assistant'&&item.communicationIntent===sent.communicationIntent&&item.authorAgentId===agentId&&item.executionId===(reply?.runId??executionId)&&(replyIntent!=='collaboration'||(item.collaborationRecipients?.length===1&&item.collaborationRecipients[0].id===peerSenderId)));
  useEffect(()=>{
   setReply(undefined);setError('');
-  if(!conversationId||canonical||!receipt||['failed','cancelled','undelivered','retry_exhausted','unconfirmed'].includes(receipt.state))return;
+  if(!conversationId||canonical||(!receipt&&!peerAgentId)||['failed','cancelled','undelivered','retry_exhausted','unconfirmed'].includes(receipt?.state??''))return;
   let disposed=false,busy=false,version=0,blocked=false;
   let exposure:VoiceReplyStatus['memoryExposure'];
   let observed:VoiceReplySnapshot|undefined;
@@ -31,7 +33,7 @@ export function DirectReplyPreview({sent,agentId,messages,projectId}:{sent:Messa
     if(status.messageId!==messageId||!context||!['valid','disabled'].includes(context.state)||['failed','cancelled','outcome_unknown'].includes(status.runStatus??'')) {if(observed)blocked=true;clear();return;}
     if(exposure&&(exposure.state!==context.state||exposure.sessionResetSeq!==context.sessionResetSeq||exposure.projectGeneration!==context.projectGeneration||exposure.globalGeneration!==context.globalGeneration)){blocked=true;clear();setError('Reply context changed. Read the completed reply in Chat.');return;}
     exposure=context;
-    if(!next||!matchesHumanTextReplyRoute(sent,next)||next.projectId!==projectId||next.conversationId!==conversationId||next.messageId!==messageId||next.agentId!==agentId||next.runId!==status.runId||(context.runId&&context.runId!==next.runId)||(executionId&&executionId!==next.runId)){clear();return;}
+    if(!next||!matchesTextReplyRoute(sent,next,peerAgentId)||next.projectId!==projectId||next.conversationId!==conversationId||next.messageId!==messageId||next.agentId!==agentId||next.runId!==status.runId||(context.runId&&context.runId!==next.runId)||(executionId&&executionId!==next.runId)){clear();return;}
     if(next.state==='failed'||next.failureReason==='context_changed'){blocked=true;clear();setError('Streaming stopped. Waiting for the completed reply.');return;}
     if(observed&&(observed.runId!==next.runId||observed.fence!==next.fence||observed.streamId!==next.streamId)){blocked=true;clear();return;}
     if(observed&&next.sequence<observed.sequence)return;
@@ -49,7 +51,7 @@ export function DirectReplyPreview({sent,agentId,messages,projectId}:{sent:Messa
   });
   void refresh();const timer=setInterval(()=>void refresh(),500);
   return()=>{disposed=true;version++;clearInterval(timer);stream.close();};
- },[projectId,conversationId,messageId,agentId,executionId,canonical,receipt?.state,replyIntent]);
+ },[projectId,conversationId,messageId,agentId,executionId,canonical,receipt?.state,replyIntent,peerAgentId,peerSenderId]);
  if(canonical)return null;
  return <>{error&&<Alert severity="warning">{error}</Alert>}{reply?.text&&<Box aria-label="Reply in progress" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',py:1}}>{reply.text}</Box>}</>;
 }

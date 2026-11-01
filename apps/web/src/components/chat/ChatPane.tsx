@@ -170,6 +170,7 @@ function ChatPaneComponent({
   );
   const chatMessages = agentChat.messages;
   const latestDirectInput=[...chatMessages].reverse().find(message=>message.role==='user'&&message.communicationIntent==='user_dm');
+  const latestPeerInput=[...chatMessages].reverse().find(message=>message.communicationIntent==='collaboration'&&message.communicationSender?.kind==='agent'&&message.authorAgentId!==message.agentId&&!message.coordinationRequests?.length);
   const latestBroadcastInput=[...chatMessages].reverse().find(message=>message.role==='user'&&message.communicationIntent==='broadcast');
   const visibleRunIds = useMemo(
     () => new Set(agentChat.runs.map(run => run.id)),
@@ -523,7 +524,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
-              belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(message===latestDirectInput||message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={`${message.id}:${agentId}`} sent={message} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
+              belowBody: message===latestPeerInput&&projectId?<DirectReplyPreview sent={message} agentId={message.agentId} peerAgentId={message.agentId} messages={chatMessages} projectId={projectId}/>:message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(message===latestDirectInput||message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={`${message.id}:${agentId}`} sent={message} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
               attachmentDensity: "compact",
               status:
                 (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (

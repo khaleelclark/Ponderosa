@@ -1,3 +1,4 @@
+import {PostImportAccessReview} from './PostImportAccessReview';
 import {validWorkingRootDestinations} from './workingRootDestinations';
 import type { PortableAgentPreview } from "./agent-package-preview.types";
 import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
@@ -69,10 +70,11 @@ export function ImportAgentForm({
 }): JSX.Element {
   const notify = useMutationNotification();
   const [packageBlob, setPackageBlob] = useState<Blob>();
+  const [importResult,setImportResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
   const [roleOperation,setRoleOperation]=useState<import('@ponderosa/core').AgentImportOperationDto>();
   const [recoveryReview,setRecoveryReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
   const operationQuery=useQuery({queryKey:['role-import-operation',projectId,roleOperation?.id],queryFn:()=>api.getAgentImportOperation(projectId,roleOperation!.id),enabled:Boolean(roleOperation),refetchInterval:q=>q.state.data?.status==='completed'||q.state.data?.status==='failed'?false:500});
-  useEffect(()=>{const current=operationQuery.data;if(!current)return;setRoleOperation(current);if(current.status==='completed'){setRoleOperation(undefined);(onSubmitted??onCancel)();}else if(current.status==='failed'){setRoleOperation(undefined);importRequestId.current=createClientId();setError(current.error??'Import failed');}else if(current.error)setError(current.error);},[operationQuery.dataUpdatedAt]);
+  useEffect(()=>{const current=operationQuery.data;if(!current)return;setRoleOperation(current);if(current.status==='completed'){setRoleOperation(undefined);if(current.result)setImportResult(current.result);else setError('Import completed without a result receipt.');}else if(current.status==='failed'){setRoleOperation(undefined);importRequestId.current=createClientId();setError(current.error??'Import failed');}else if(current.error)setError(current.error);},[operationQuery.dataUpdatedAt]);
   const [roleReview,setRoleReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
   const [accessReview,setAccessReview]=useState<import('@ponderosa/core').AgentAccessImportReviewDto>();
   const [accessAction,setAccessAction]=useState<''|'keep_destination'|'use_source'>('');
@@ -204,7 +206,9 @@ export function ImportAgentForm({
     );},
     onSuccess: (operation) => {
       if(!operation)return;
-      if(packagePreview?.hasOutputRoles&&operation.status==='pending'){setRoleOperation(operation);return;}
+      if(operation.status==='pending'){setRoleOperation(operation);return;}
+      if(operation.status==='completed'&&operation.result){setImportResult(operation.result);return;}
+      if(operation.status==='failed')throw new Error(operation.error??'Import failed');
       clearPackageDraft();
       notify({
         key: `agent-import:${operation.id}`,
@@ -316,6 +320,7 @@ export function ImportAgentForm({
     }
   };
 
+  if(importResult)return <PostImportAccessReview result={importResult} projectId={projectId} onDone={()=>{setImportResult(undefined);clearPackageDraft();(onSubmitted??onCancel)();}}/>;
   return <Stack spacing={2}>
       <Alert severity="info">History stays private; credentials are excluded.</Alert>
       <Paper component="section" variant="outlined" aria-label="Import an external AI chat" sx={{ p: 1.5 }}>

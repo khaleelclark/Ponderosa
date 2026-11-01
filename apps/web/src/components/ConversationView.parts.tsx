@@ -1,3 +1,4 @@
+import {DirectReplyPreview} from './chat/DirectReplyPreview';
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
@@ -82,6 +83,7 @@ function ConversationMessageComponent({
   projectId,
   projectRoot,
   activeRunId,
+  replyMessages,
   operatorProfile,
 }: {
   message: ConversationMessageDto;
@@ -100,6 +102,7 @@ function ConversationMessageComponent({
   projectId: string;
   projectRoot?: string;
   activeRunId?: string;
+  replyMessages?:ConversationMessageDto[];
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const reportVisibility = useCallback((visible: boolean) =>
@@ -208,7 +211,7 @@ function ConversationMessageComponent({
           </>
         ),
         attachments: message.attachments,
-        belowBody: message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : undefined,
+        belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{conversation==='main'&&replyMessages&&message.communicationIntent==='broadcast'&&[...new Set(message.deliveryReceipts?.map(item=>item.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={agentId} sent={message} agentId={agentId} messages={replyMessages} projectId={projectId}/>)}</> : undefined,
         status:
           (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (
             <MessageDeliveryStatus
@@ -439,6 +442,8 @@ function MainConversationTimeline({
   ): void;
   notifications: WorkspaceNotificationDto[];
 }): JSX.Element {
+  const replySources=mainTimeline.flatMap(item=>item.kind==='message'?[item.message]:[]);
+  const latestReplySource=[...replySources].reverse().find(item=>item.role==='user'&&item.communicationIntent==='broadcast');
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
       {mainTimeline.length === 0 ? (
@@ -464,6 +469,7 @@ function MainConversationTimeline({
           key={entry.id}
           message={message}
           conversation="main"
+          replyMessages={message===latestReplySource?replySources:undefined}
           projectId={projectId}
           projectRoot={projectRoot}
           activeRunId={

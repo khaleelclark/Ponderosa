@@ -110,3 +110,31 @@ membership; they do not rebind Shared or Separate Git working-copy ownership.
 Fresh-worktree population/new-Project backend services, mapped memory/browser
 Settings actions, Branches folder forwarding and other previously listed UI gaps
 remain. No checks/tests/builds/types/browser execution or passing claim.
+
+## Remaining UI continuation
+
+The shared human Chat main timeline now consumes generic authorized text previews
+under its latest broadcast source. The same consumer handles same-Chat passive
+peer previews only in the receiving Agent audit view, matching explicit source
+sender, sole return recipient and exact responder/Run. Correlated Requests are
+excluded. Canonical replies replace provisional text in the same scope; Run,
+fence, stream, sequence and memory continuity remain enforced. Voice consumers
+continue to reject text presentation. Route regression source now includes peer
+isolation and correlated-report refusal.
+
+`ImportAgentDialog` retains completed async result receipts and opens
+`PostImportAccessReview`. Memory review groups exact destination Chat mappings,
+shows current grant/revision and source suggestions, and submits only an explicit
+human choice through the existing revision-checked Settings API. Browser review
+shows current destination access/profile, uses only destination-local profile IDs
+and existing Settings endpoints, and never adopts a source profile label or grant.
+Each action reports its own error; Done protects unapplied choices. No grants are
+changed merely by import or review. Deferred mounted regression source covers no
+automatic browser mutation and the exact destination Agent on explicit application.
+
+`OutputAgentDesignation` now offers the canonical expected-speaker move path with
+confirmation when another speaker exists; ordinary role removal still disables
+that speaker. The app keeps the previous Agent's history and server-owned singleton
+checks. New Project/live-root import setup awaits the portability owner's exact
+contract; no speculative root binding or folder overwrite is added. All execution
+remains deferred; source changes do not establish Bible/performance acceptance.

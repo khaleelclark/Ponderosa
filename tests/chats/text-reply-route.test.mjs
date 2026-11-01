@@ -14,3 +14,12 @@ test('Direct Message text requires the explicit direct route',()=>{
  assert.equal(matchesHumanTextReplyRoute(direct,reply),false);
  assert.equal(matchesHumanTextReplyRoute({...direct,role:'assistant'},{...reply,replyIntent:'direct_to_user'}),false);
 });
+test('peer drafts require the exact sole return recipient and never enter the human route',()=>{
+ const peer={...source,role:'assistant',communicationIntent:'collaboration',communicationSender:{kind:'agent',agentId:'sender'},authorAgentId:'sender',collaborationRecipients:[{id:'receiver'}]};
+ const draft={...reply,agentId:'receiver',replyIntent:'collaboration',recipientAgentIds:['sender']};
+ assert.equal(matchesHumanTextReplyRoute(peer,draft,'receiver'),true);
+ assert.equal(matchesHumanTextReplyRoute(source,draft),false);
+ assert.equal(matchesHumanTextReplyRoute(peer,draft),false);
+ for(const patch of [{recipientAgentIds:['other']},{recipientAgentIds:['sender','other']},{agentId:'other'},{replyIntent:'broadcast'}])assert.equal(matchesHumanTextReplyRoute(peer,{...draft,...patch},'receiver'),false);
+ assert.equal(matchesHumanTextReplyRoute({...peer,coordinationRequests:[{id:'request'}]},draft,'receiver'),false);
+});
