@@ -186,10 +186,12 @@ Installed Chrome155 exposes native performance.interactionCount:41 in both
 captured documents, with independently retained trusted ledger of one pointer
 click and40keydown/keyup pairs. Zero-delay historical-viewport diagnostic:
 41observed groups,p75184ms,LCP7568ms. Pinned412x823/75ms cadence:41native groups,
-zero observed entries (all below16ms reporting floor),LCP4344ms. Raw browser
-invocation exited1 because the collector wrongly rejected that legitimate
-all-subfloor case. Fixed rank logic; a focused regression and corrected offline
-evaluation of both unchanged raw captures pass. This is not a new successful
+zero observed entries,LCP4344ms. Interpreting missing groups as below16ms is
+conditional on independently validated collector completeness; this historical
+capture lacks the later required health receipts and remains diagnostic. Raw
+browser invocation exited1 when the collector rejected the zero-observed case.
+Fixed conditional rank arithmetic; a focused regression and corrected offline
+evaluation of both unchanged raw captures pass without establishing completeness. This is not a new successful
 end-to-end browser invocation or an accepted full performance result. The missing
 paced trace/screenshot after the exception is explicitly unavailable; first-cell
 7MBtrace, screenshot and both complete raw collector captures remain.
@@ -245,8 +247,10 @@ fixture finalization all completed even on this failing invocation.
 Observed: 100 articles at 7783.4ms; final eligible LCP 7892ms; canonical tail-readiness
 receipt 10777.5ms; first trusted-input cutoff 11140.8ms. The readiness receipt follows
 Playwright visibility and text extraction and is not the first article paint.
-Native interactionCount 41 with zero >=16ms EventTiming groups establishes a
-subfloor p75 for this finite unloaded capture, not invented zero-duration entries.
+Native interactionCount41 with zero >=16ms EventTiming groups supports a subfloor
+p75 only conditional on validated collector completeness. This historical capture
+lacks the later required health receipts, so its population remains diagnostic;
+no qualifying p75 or invented zero-duration entries follow.
 Cold API requests also spent about 3.4s before completing; browser timing alone
 cannot distinguish backend projection, transport scheduling and fixture overhead.
 Profiler and trace overhead are included; no causal comparison with earlier red
@@ -267,3 +271,116 @@ is claimed. Remaining: independently accepted METHOD; source attribution of the
 cold request delay and remaining rendering cost; contemporary browser-inclusive
 capacity receipt; accepted twenty-active continuity proof and explicit GO before
 32 sessions. This packet does not close #21/#27/#29 or Phase 2.
+
+## Fail-closed METHOD successor after independent 4b62 review
+
+Qualification now requires an explicit document ID and document namespace,
+window time origin/start/last-presentation frame, normalized first-input occurrence
+cutoff (handler observation retained separately), continuous visible lifecycle,
+registered/drained observer and supported zero-drop callback receipts. Trusted input
+and browser event-count receipts are retained and checked. Unknown dropped-entry
+support, absent callbacks, missing identity/window, or hidden-then-visible history
+keeps native-count data diagnostic. Legitimate all-subfloor populations remain
+supported only with complete independent health evidence. Older raw captures are
+unchanged and cannot acquire newly required health receipts by offline inference.
+
+The final window ends at the retained second animation-frame timestamp; observer
+delivery/drain time is separate. Canonical persisted checkpoint receipts must bind
+actual provider work and observed output advancement to the same Agent/Run inside
+navigation-to-last-presentation, with a frozen 10s maximum gap and all twenty
+Agents present. Postcapture sampling cannot create credit. Each snapshot compares
+lease owner/fence and actual process PID/PGID/birth epoch, not just Run/session.
+Pending samples are drained before assertion and after deactivation; shutdown and
+cleanup failures enter the terminal ledger and invalidate qualification.
+
+Full mode reads a retained JSON METHOD acceptance receipt whose exact SHA256 is
+provided separately. It requires decision ACCEPT, scope METHOD, actual independent
+review path/hash with an explicit ACCEPT line, distinct required source/build/
+profile/prerequisite inputs with verified hashes, and an explicit manager GO32
+communication reference. A file/env value does not confer authority. No accepted
+receipt or GO is created by these helpers. All product source trees and built output
+trees, drivers/collector/fixture, lockfile and primary-source bytes must be bound.
+All32 cells are predeclared before profile/fixture/browser setup and become complete,
+failed, or terminal not-run, including setup/activation/context and cleanup errors.
+
+Bounded checks at this successor are source/helper tests and an intentionally
+missing-profile negative setup. They do not repeat the credited official profile,
+10k tail or one-lease browser proofs, launch any active load, establish callback
+health in installed Chrome, or supply METHOD acceptance. The missing-profile driver
+refuses before fixture/browser construction and writes32 terminal not-run rows.
+
+### Postrepair finite health diagnostic
+
+At8b8723a8d one zero-active pinned-profile/75ms browser invocation completed exit0
+with complete trace/profile/context and browser/web/fixture cleanup. Native41,
+one observed40ms group and40censored groups satisfied the then-current explicit
+namespace/window/visible-lifecycle/trusted ledger and early zero-drop callback
+predicate. Its emitted below16ms interpretation was conditional: terminal delivery
+coverage was not established, so the historical population remains diagnostic. This
+does not retroactively validate historical zero-observed captures or establish
+universal completeness. LCP4604ms remains red; canonical-tail readiness6633.6ms.
+No causal performance improvement, live20/32 or METHOD acceptance follows.
+
+### Exact mapped-build render attribution
+
+A diagnostic-source-map build at8b872 (same product inputs as this documentation
+successor) and ONE pinned-profile/10k/75ms zero-active invocation each returned0.
+Several ordinary bundles differ from the map build, so no old frame positions
+were mapped using new files. The new actual bundle maps verify349 application
+TS/TSX source contents and resolve8155of8395generated frames;240 remain explicit.
+LCP4948ms is red,100article mutation4820.8ms, tail readiness7278.7ms. The latest
+initial history response ends1329.2ms, leaving3491.6ms before article mutation.
+These source-map/Profiler/trace measurements are not a causal comparison with the
+previous ordinary production capture.
+
+Trace main-frame DOMContentLoaded and load milestones crosscheck document-clock
+alignment within0.02ms; this is diagnostic alignment, not an accuracy guarantee.
+Response-to-article sampled self-time includes scrollToBottom128.906ms, React
+render work116.642ms at its largest location, MUI sx74.177ms and Emotion69.08ms.
+Inclusive ancestors overlap. Native/program/idle and unmapped frames are retained.
+The scroll helper must read current scrollHeight to reveal latest messages; this
+evidence does not establish a redundant removable call. Distributed styling and
+render cost does not isolate a safe product repair; no further product change
+or repeated browser invocation was made. Exact raw/trace/profile/maps and analysis
+are retained in the render-attribution packet. METHOD acceptance, contemporary
+capacity, actual20worker custody and explicitGO remain separate gates.
+
+### Terminal-health and structured-decision correction
+
+Read full independent exact8b review. A zero-drop early callback plus rAF/takeRecords
+does not establish delivery through the whole retained frame window. Installed
+collector now explicitly records terminalDelivery.supported=false; no browser
+contract is invented. Missing groups remain conditional diagnostic, including
+previous8b and mapped captures. Synthetic unit contract receipts test rank arithmetic
+only. Actual final-delivery contract validation remains OPEN.
+
+Entries must have finite ordered start/duration/processing fields and fit the frame
+window with a conservative8ms duration-quantization allowance. This is not exact
+pixel-presentation attestation. Independent documentId AND timeOrigin uniqueness
+reject relabelled duplicate documents. Host task begin/end ledger records planned
+trusted-type lower bounds, completion and native counter snapshots; all five input
+types reconcile against eventCounts. Native interactions are not equated to raw
+events. These new browser task/health paths have not been executed live.
+
+After monitoring stops every activated Agent is checked with f.settled (retained
+provider errors) plus all completed terminal Runs; every session-close attempt
+runs despite failure, and fixture disposal still runs. Focused regression injects
+a provider failure after the monitor window and verifies later Agent cleanup.
+No actual live20 shutdown proof follows from stub regression.
+
+Acceptance now reads manager-pinned structured JSON METHOD decision with exact
+reviewedHead and canonical enumerated input-manifest SHA256, not any prose ACCEPT
+line. Mixed PRODUCT ACCEPT/METHOD REQUEST_CHANGES or quoted ACCEPT is rejected.
+Separate pinned receipt hash/head and GO reference remain evidence, not permission.
+Input binding covers ENUMERATED FILE BYTES ONLY; Node/browser/Playwright/native/
+dependencies and source-to-build provenance are not established by this helper.
+Actual execution prerequisite/build-receipt acceptance remains a separate OPEN
+gate; no comprehensive-prerequisite claim or acceptance receipt is generated.
+
+Metadata erratum: the historical8b packet has9changed snapshots, not7 (the old
+count selected only.mjs extensions). Its retained15named passing cases are
+defined in TWO files. Historical argv also names absent qualification-ledger.test.mjs;
+no third-file cases or suite are credited. Original packet/argv bytes remain.
+Occurrence/LCP lifecycle source gate remains credited CLOSED; profile source
+substantially CLOSED; final delivery, execution prerequisite provenance, live20,
+contemporary capacity and full32/GO remain OPEN.

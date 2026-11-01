@@ -1,44 +1,64 @@
 // Inject before navigation. Raw entries remain evidence, including zero-ID noninteractions.
 export function installTimingObserver(){
- const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable',trustedInputs:[],eventCounts:null};
+ const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable',trustedInputs:[],eventCounts:null,tasks:[],window:{start:0,end:null,lastPresentation:null,timeOrigin:performance.timeOrigin},lifecycle:[{type:'init',time:performance.now(),visibility:document.visibilityState}],health:{registered:false,callbacks:0,callbackLedger:[],droppedEntries:null,drained:false,terminalDelivery:{supported:false,reason:'No reviewed installed-browser pending-presentation/delivery contract; rAF plus takeRecords is not final delivery proof'}}};
+ const occurrence=e=>e.timeStamp>performance.timeOrigin?e.timeStamp-performance.timeOrigin:e.timeStamp;
  const events=entries=>{for(const e of entries)state.events.push({name:e.name,startTime:e.startTime,duration:e.duration,processingStart:e.processingStart,processingEnd:e.processingEnd,interactionId:e.interactionId,target:e.target?.getAttribute('aria-label')??e.target?.tagName});};
  const paints=entries=>{for(const e of entries)state.lcp.push({startTime:e.startTime,renderTime:e.renderTime,loadTime:e.loadTime,size:e.size,id:e.id,element:e.element?.tagName});};
  let eventObserver,lcpObserver;
- try{eventObserver=new PerformanceObserver(list=>events(list.getEntries()));eventObserver.observe({type:'event',buffered:true,durationThreshold:16});}catch(error){state.errors.push(String(error));}
+ try{eventObserver=new PerformanceObserver((list,_observer,options)=>{state.health.callbacks++;state.health.callbackLedger.push({observedAt:performance.now(),droppedEntriesCount:options?.droppedEntriesCount??null});if(Number.isInteger(options?.droppedEntriesCount))state.health.droppedEntries=(state.health.droppedEntries??0)+options.droppedEntriesCount;events(list.getEntries());});eventObserver.observe({type:'event',buffered:true,durationThreshold:16});state.health.registered=true;}catch(error){state.errors.push(String(error));}
  try{lcpObserver=new PerformanceObserver(list=>paints(list.getEntries()));lcpObserver.observe({type:'largest-contentful-paint',buffered:true});}catch(error){state.errors.push(String(error));}
  const flush=()=>{events(eventObserver?.takeRecords()??[]);paints(lcpObserver?.takeRecords()??[]);};
- const cutoff=reason=>{if(state.cutoff)return;flush();state.cutoff={reason,time:performance.now()};};
- for(const type of ['pointerdown','pointerup','keydown','keyup','click'])addEventListener(type,e=>{if(e.isTrusted)state.trustedInputs.push({type,time:e.timeStamp,key:e.key,repeat:e.repeat,pointerId:e.pointerId});},{capture:true});
- for(const type of ['pointerdown','keydown'])addEventListener(type,e=>{if(e.isTrusted)cutoff('first-trusted-input');},{capture:true});
- addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')cutoff('hidden');});addEventListener('pagehide',()=>cutoff('pagehide'));
+ const cutoff=(reason,event)=>{if(state.cutoff)return;const handlerObservedAt=performance.now(),raw=event?.timeStamp;const occurrence=Number.isFinite(raw)?(raw>performance.timeOrigin?raw-performance.timeOrigin:raw):handlerObservedAt;flush();state.cutoff={reason,time:occurrence,handlerObservedAt,rawTimeStamp:raw??null,validOccurrence:!event||(occurrence>=0&&occurrence<=handlerObservedAt)};};
+ for(const type of ['pointerdown','pointerup','keydown','keyup','click'])addEventListener(type,e=>{if(e.isTrusted)state.trustedInputs.push({type,time:occurrence(e),key:e.key,repeat:e.repeat,pointerId:e.pointerId});},{capture:true});
+ for(const type of ['pointerdown','keydown'])addEventListener(type,e=>{if(e.isTrusted)cutoff('first-trusted-input',e);},{capture:true});
+ addEventListener('visibilitychange',()=>{state.lifecycle.push({type:'visibilitychange',time:performance.now(),visibility:document.visibilityState});if(document.visibilityState==='hidden')cutoff('hidden');});addEventListener('pagehide',()=>{state.lifecycle.push({type:'pagehide',time:performance.now(),visibility:document.visibilityState});cutoff('pagehide');});
+ window.__beginUiTask=(id,expectedTrustedCounts)=>{if(state.tasks.some(t=>!t.complete)||state.tasks.some(t=>t.id===id))throw Error('Overlapping or duplicate trusted task');state.tasks.push({id,start:performance.now(),expectedTrustedCounts,nativeStart:performance.interactionCount,complete:false});};
+ window.__endUiTask=id=>{const task=state.tasks.at(-1);if(!task||task.id!==id||task.complete)throw Error('Unexpected task completion');Object.assign(task,{end:performance.now(),nativeEnd:performance.interactionCount,complete:true});};
  window.__finalizeUiTiming=async()=>{
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve,0))));flush();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(time=>{state.window.lastPresentation=time;setTimeout(resolve,0);})));flush();
   if(!state.cutoff)cutoff('explicit-finalize');
   // Only an independently supplied browser count can establish subfloor groups; never infer them from key presses.
   if(Number.isInteger(performance.interactionCount)&&performance.interactionCount>=0){state.totalInteractions=performance.interactionCount;state.countSupport='performance.interactionCount';}
-  state.eventCounts=performance.eventCounts?Object.fromEntries(performance.eventCounts):null;state.nativeCountProperty=('interactionCount' in performance);state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
+  state.health.drained=true;state.window.end=state.window.lastPresentation;state.health.flushCompletedAt=performance.now();state.eventCounts=performance.eventCounts?Object.fromEntries(performance.eventCounts):null;state.nativeCountProperty=('interactionCount' in performance);state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
  };
 }
 export function summarizeTimings(sessions){
  if(!sessions.length)throw Error('No sessions');
- const durations=[],namespaces=new Set();let total=0,censored=0,complete=true;
+ const durations=[],namespaces=new Set(),documents=new Set(),origins=new Set();let total=0,censored=0,complete=true;
  const sessionResults=sessions.map((session,index)=>{
   if(session.errors.length||!session.supported.includes('event')||!session.supported.includes('largest-contentful-paint'))throw Error('Unsupported or failed timing observer');
-  const namespace=session.namespace??`session-${index}/${session.documentId??'legacy'}`;if(namespaces.has(namespace))throw Error('Duplicate document namespace');namespaces.add(namespace);
-  const grouped=new Map();for(const entry of session.events)if(entry.interactionId)grouped.set(entry.interactionId,Math.max(grouped.get(entry.interactionId)??0,entry.duration));
+  const namespace=session.namespace??`diagnostic-${index}`;if(namespaces.has(namespace))throw Error('Duplicate document namespace');namespaces.add(namespace);
+  if(session.documentId){if(documents.has(session.documentId))throw Error('Duplicate document identity');documents.add(session.documentId);}
+  if(Number.isFinite(session.window?.timeOrigin)){if(origins.has(session.window.timeOrigin))throw Error('Duplicate document time origin');origins.add(session.window.timeOrigin);}
+  const grouped=new Map();for(const entry of session.events)if(entry.interactionId&&Number.isFinite(entry.duration)&&entry.duration>=0)grouped.set(entry.interactionId,Math.max(grouped.get(entry.interactionId)??0,entry.duration));
   const eligible=session.lcp.filter(e=>!session.cutoff||e.startTime<=session.cutoff.time);
   if(!eligible.length)throw Error('Missing eligible LCP, never substitute zero');
   const values=[...grouped.values()];durations.push(...values);
-  const supported=session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length;
-  if(!grouped.size&&!(supported&&session.totalInteractions>0))throw Error('Missing qualified discrete interactions, never substitute zero');
+  const identity=typeof session.documentId==='string'&&session.documentId.length>0&&typeof session.namespace==='string'&&session.namespace.endsWith('/'+session.documentId);
+  const window=session.window,cutoff=session.cutoff;
+  const lifecycle=Array.isArray(session.lifecycle)&&session.lifecycle.length>0&&session.lifecycle[0].type==='init'&&session.lifecycle.every(e=>e.visibility==='visible'&&e.type!=='pagehide'&&Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end);
+  const health=session.health?.registered===true&&session.health.drained===true&&session.health.droppedEntries===0&&Number.isInteger(session.health.callbacks)&&session.health.callbacks>0&&Number.isFinite(session.health.flushCompletedAt)&&session.health.flushCompletedAt>=window?.end&&Array.isArray(session.health.callbackLedger)&&session.health.callbackLedger.length===session.health.callbacks&&session.health.callbackLedger.every(c=>Number.isFinite(c.observedAt)&&c.observedAt>=window?.start&&c.observedAt<=session.health.flushCompletedAt&&Number.isInteger(c.droppedEntriesCount)&&c.droppedEntriesCount>=0)&&session.eventCounts&&Array.isArray(session.trustedInputs)&&session.trustedInputs.length>0&&session.trustedInputs.every(e=>Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end)&&['pointerdown','pointerup','click','keydown','keyup'].every(type=>Number.isInteger(session.eventCounts[type]??0)&&(session.eventCounts[type]??0)>=session.trustedInputs.filter(e=>e.type===type).length);
+  const bounded=window&&Number.isFinite(window.start)&&Number.isFinite(window.end)&&Number.isFinite(window.timeOrigin)&&window.start===0&&window.end>window.start&&window.lastPresentation===window.end&&cutoff&&Number.isFinite(cutoff.time)&&cutoff.time>=window.start&&cutoff.time<=window.end&&cutoff.validOccurrence===true&&Number.isFinite(cutoff.handlerObservedAt)&&cutoff.handlerObservedAt>=cutoff.time&&cutoff.handlerObservedAt<=window.end;
+  const firstInput=session.trustedInputs?.filter(e=>['pointerdown','keydown'].includes(e.type)).reduce((time,e)=>Math.min(time,e.time),Infinity);
+  const occurrenceMatches=Number.isFinite(firstInput)&&cutoff?.reason==='first-trusted-input'&&cutoff.time===firstInput;
+  // Duration is quantized in 8ms units. Use one full quantum conservatively, never an exact paint timestamp.
+  const quantizationToleranceMs=8;
+  const eventWindow=Array.isArray(session.events)&&session.events.every(e=>[e.startTime,e.duration,e.processingStart,e.processingEnd].every(Number.isFinite)&&e.startTime>=window?.start&&e.duration>=0&&e.startTime<=e.processingStart&&e.processingStart<=e.processingEnd&&e.processingEnd<=window?.end&&e.startTime+e.duration+quantizationToleranceMs>=e.processingEnd&&Math.max(e.processingEnd,e.startTime+e.duration+quantizationToleranceMs)<=window?.end);
+  const tasks=session.tasks,types=['pointerdown','pointerup','click','keydown','keyup'];
+  const taskLedger=Array.isArray(tasks)&&tasks.length>0&&new Set(tasks.map(t=>t.id)).size===tasks.length&&tasks.every((t,i)=>t.complete===true&&Number.isFinite(t.start)&&Number.isFinite(t.end)&&t.start>=window?.start&&t.end>=t.start&&t.end<=window?.end&&(!i||t.start>=tasks[i-1].end)&&Number.isInteger(t.nativeStart)&&Number.isInteger(t.nativeEnd)&&t.nativeStart>=0&&t.nativeEnd>=t.nativeStart&&t.nativeEnd<=session.totalInteractions&&types.every(type=>Number.isInteger(t.expectedTrustedCounts?.[type])&&t.expectedTrustedCounts[type]>=0&&(session.trustedInputs??[]).filter(e=>e.type===type&&e.time>=t.start&&e.time<=t.end).length>=t.expectedTrustedCounts[type]))&&tasks[0].nativeStart===0&&tasks.at(-1).nativeEnd===session.totalInteractions&&(session.trustedInputs??[]).every(e=>tasks.some(t=>e.time>=t.start&&e.time<=t.end));
+  const terminal=session.health?.terminalDelivery;
+  // The installed collector intentionally supplies supported:false until this browser contract is independently established.
+  const terminalCoverage=terminal?.supported===true&&terminal.basis==='independently-reviewed-browser-delivery-contract'&&Number.isFinite(terminal.coversThrough)&&terminal.coversThrough>=window?.end&&Number.isFinite(terminal.observedAt)&&terminal.observedAt>=terminal.coversThrough;
+  const supported=Boolean(occurrenceMatches&&eventWindow&&taskLedger&&terminalCoverage&&identity&&bounded&&lifecycle&&health&&session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length);
+  if(!grouped.size&&!(Number.isInteger(session.totalInteractions)&&session.totalInteractions>0))throw Error('Missing qualified discrete interactions, never substitute zero');
   complete&&=supported;if(supported){total+=session.totalInteractions;censored+=session.totalInteractions-values.length;}
-  return {namespace,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
+  return {namespace,terminalCoverage,taskLedger:Boolean(taskLedger),eventWindow,quantizationToleranceMs,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
  });
  durations.sort((a,b)=>a-b);const observedP75=durations.length?durations[Math.ceil(.75*durations.length)-1]:null,rank=Math.ceil(.75*total);
  // Mixed thresholds cannot establish one subfloor population.
  complete&&=sessions.every(s=>s.threshold===16);
  const p75=complete?(rank<=censored?null:durations[rank-censored-1]):null;
- return {nSessions:sessions.length,nInteractions:durations.length,totalInteractions:complete?total:null,censored:complete?censored:null,qualifiedPopulation:complete,method:'per-document maxima; nearest-rank pooling; duration quantized by browser',observedP75,p75,p75BelowFloor:complete&&rank<=censored,reportingFloor:16,populationReason:complete?'browser count with finalized visible documents':'observed-only diagnostic; total/censoring or collection health unsupported',sessions:sessionResults};
+ return {nSessions:sessions.length,nInteractions:durations.length,totalInteractions:complete?total:null,censored:complete?censored:null,qualifiedPopulation:complete,method:'per-document maxima; nearest-rank pooling; duration quantized by browser',observedP75,p75,p75BelowFloor:complete&&rank<=censored,reportingFloor:16,populationReason:complete?'browser count with explicit identity, window, lifecycle and no-drop collector health':'conditional observed-only diagnostic; final delivery/task/window/identity health not established',sessions:sessionResults};
 }
 
 export function latencyBreakdown(session){

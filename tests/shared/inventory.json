@@ -2140,6 +2140,11 @@
       "path": "tests/shared/web-typescript-loader.mjs",
       "classification": "runner-or-inventory",
       "origin": "PR #693"
+    },
+    {
+      "path": "tests/workspace-navigation/qualification-ledger.mjs",
+      "classification": "runner-or-inventory",
+      "origin": "Fail-closed reviewed-input and terminal qualification ledger"
     }
   ],
   "upstreamSynchronizationHead": "22e99b4165357fc0fd79715880c47f605a5fcbf6"

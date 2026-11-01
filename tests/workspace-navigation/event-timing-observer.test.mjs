@@ -1,5 +1,8 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {summarizeTimings,latencyBreakdown} from './event-timing-observer.mjs';
-const session=(events,totalInteractions)=>({events,lcp:[{startTime:1000},{startTime:2000}],cutoff:{time:1500,reason:'first-trusted-input'},threshold:16,finalized:true,visibility:'visible',countSupport:'performance.interactionCount',totalInteractions,supported:['event','largest-contentful-paint'],errors:[]});
+import {runInNewContext} from 'node:vm';
+import test from 'node:test';import assert from 'node:assert/strict';import {summarizeTimings,latencyBreakdown,installTimingObserver} from './event-timing-observer.mjs';
+let sequence=0;
+// Synthetic terminal-contract receipts exercise arithmetic only; no installed-browser contract is asserted.
+const session=(events,totalInteractions)=>{const documentId='document-'+(++sequence),n=totalInteractions??1;return {documentId,namespace:'test/'+documentId,window:{start:0,end:4000,lastPresentation:4000,timeOrigin:1700000000000+sequence},lifecycle:[{type:'init',time:0,visibility:'visible'}],health:{registered:true,drained:true,callbacks:1,callbackLedger:[{observedAt:1515,droppedEntriesCount:0}],flushCompletedAt:4001,droppedEntries:0,terminalDelivery:{supported:true,basis:'independently-reviewed-browser-delivery-contract',coversThrough:4000,observedAt:4001}},tasks:[{id:'synthetic',start:1400,end:3900,complete:true,nativeStart:0,nativeEnd:totalInteractions,expectedTrustedCounts:{pointerdown:0,pointerup:0,click:0,keydown:n,keyup:n}}],eventCounts:{keydown:n,keyup:n},trustedInputs:Array.from({length:n},(_,i)=>[{type:'keydown',time:1500+i*.1},{type:'keyup',time:1500+i*.1+.05}]).flat(),events:events.map(e=>({name:'keydown',startTime:1500,processingStart:1501,processingEnd:1502,...e})),lcp:[{startTime:1000},{startTime:2000}],cutoff:{time:1500,handlerObservedAt:1510,validOccurrence:true,reason:'first-trusted-input'},threshold:16,finalized:true,visibility:'visible',countSupport:'performance.interactionCount',totalInteractions,supported:['event','largest-contentful-paint'],errors:[]};};
 test('unavailable independent counts stay diagnostic and cannot become an exact p75',()=>{
  const value=summarizeTimings([session([{interactionId:1,duration:32}],undefined)]);assert.equal(value.p75,null);assert.equal(value.qualifiedPopulation,false);assert.equal(value.observedP75,32);assert.equal(value.sessions[0].lcp,1000);
 });
@@ -20,4 +23,34 @@ test('latency decomposition preserves raw timing and separates queuing, handler 
 
 test('native positive count with healthy finalized collector may consist entirely of subfloor interactions',()=>{
  const value=summarizeTimings([session([],41)]);assert.equal(value.totalInteractions,41);assert.equal(value.censored,41);assert.equal(value.nInteractions,0);assert.equal(value.observedP75,null);assert.equal(value.p75,null);assert.equal(value.p75BelowFloor,true);assert.equal(value.qualifiedPopulation,true);
+});
+
+test('native counts cannot waive identity, hidden history, dropped entries or window evidence',()=>{
+ const row=session([],41);
+ for(const change of [{documentId:undefined},{namespace:undefined},{cutoff:undefined},{window:undefined},{health:undefined},{health:{...row.health,droppedEntries:1}},{health:{...row.health,droppedEntries:null}},{lifecycle:[...row.lifecycle,{type:'visibilitychange',time:100,visibility:'hidden'},{type:'visibilitychange',time:200,visibility:'visible'}]},{trustedInputs:[]}])assert.equal(summarizeTimings([{...row,...change}]).qualifiedPopulation,false);
+});
+
+test('actual collector uses event occurrence and excludes LCP between delayed input and handler',()=>{
+ const listeners={};const context={window:{},crypto:{randomUUID:()=> 'doc'},document:{visibilityState:'visible'},performance:{timeOrigin:1700000000000,now:()=>120},addEventListener:(type,fn)=>(listeners[type]??=[]).push(fn),PerformanceObserver:class {static supportedEntryTypes=['event','largest-contentful-paint'];observe(){}takeRecords(){return [];}},Number};
+ runInNewContext(`(${installTimingObserver.toString()})()`,context);
+ for(const fn of listeners.pointerdown)fn({isTrusted:true,timeStamp:100,type:'pointerdown'});
+ const cutoff=context.window.__uiTiming.cutoff;assert.equal(cutoff.time,100);assert.equal(cutoff.handlerObservedAt,120);
+ const row=session([{interactionId:1,duration:32}],1);row.cutoff=cutoff;row.lcp=[{startTime:90},{startTime:110}];assert.equal(summarizeTimings([row]).sessions[0].lcp,90);
+});
+
+test('early no-drop callback does not establish final delivery coverage',()=>{
+ const row=session([],41);row.health.terminalDelivery={supported:false};assert.equal(summarizeTimings([row]).qualifiedPopulation,false);row.health.terminalDelivery={supported:true,basis:'independently-reviewed-browser-delivery-contract',coversThrough:3999,observedAt:4001};assert.equal(summarizeTimings([row]).qualifiedPopulation,false);
+});
+test('finite entry ordering and conservative quantized completion must fit window',()=>{
+ const row=session([{interactionId:1,duration:32}],1);for(const change of [{startTime:undefined},{duration:NaN},{processingStart:1499},{processingEnd:1500},{startTime:3990,processingStart:3991,processingEnd:3992},{duration:0,processingEnd:1520}])assert.equal(summarizeTimings([{...row,events:[{...row.events[0],...change}]}]).qualifiedPopulation,false);
+});
+test('document identity and time origin cannot be reused under another namespace',()=>{
+ const a=session([],1),b=session([],1);assert.throws(()=>summarizeTimings([a,{...a,namespace:'other/'+a.documentId}]),/Duplicate document identity/);assert.throws(()=>summarizeTimings([a,{...b,window:{...b.window,timeOrigin:a.window.timeOrigin}}]),/Duplicate document time origin/);
+});
+test('incomplete task, keyup counter and native-boundary disagreement stay diagnostic',()=>{
+ const row=session([],1);for(const change of [{tasks:[{...row.tasks[0],complete:false}]},{tasks:[{...row.tasks[0],nativeEnd:0}]},{eventCounts:{keydown:1,keyup:0}},{tasks:[{...row.tasks[0],expectedTrustedCounts:{...row.tasks[0].expectedTrustedCounts,keyup:2}}]}])assert.equal(summarizeTimings([{...row,...change}]).qualifiedPopulation,false);
+});
+
+test('callback and terminal health timestamps must be finite and ordered',()=>{
+ const row=session([],1);for(const health of [{...row.health,callbacks:Infinity},{...row.health,callbackLedger:[{observedAt:NaN,droppedEntriesCount:0}]},{...row.health,callbackLedger:[]},{...row.health,flushCompletedAt:3999},{...row.health,terminalDelivery:{...row.health.terminalDelivery,observedAt:NaN}}])assert.equal(summarizeTimings([{...row,health}]).qualifiedPopulation,false);
 });
