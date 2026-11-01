@@ -15,7 +15,7 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
  const payload=JSON.parse(update.payload_json);
  const origin=db.prepare('SELECT * FROM coordination_restored_update_origins WHERE update_id=?').get(update.id) as Row|undefined;
  if(!origin){
-  if(update.actor_kind==='system'&&update.actor_id==='host-cut-restoration')throw Error('Historical result provenance unavailable');
+  if(update.kind==='historical_question'||update.kind==='historical_answer'||update.actor_kind==='system'&&update.actor_id==='host-cut-restoration')throw Error('Historical result provenance unavailable');
   return payload;
  }
  const receipt=db.prepare('SELECT * FROM coordination_cut_restorations WHERE id=?').get(origin.restoration_id) as Row|undefined;
@@ -27,10 +27,15 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
  if(!source||source.request_id!==origin.source_request_id||source.kind!==origin.source_kind||source.payload_hash!==origin.source_payload_hash
   ||source.resulting_version!==origin.source_resulting_version||source.payload_hash!==payloadHash(JSON.parse(source.payload_json))
   ||stableJson({kind:source.actor_kind,id:source.actor_id})!==origin.source_actor_json
+  ||map.restorationId!==receipt.id||map.checkpointId!==receipt.checkpoint_id||map.checkpointHash!==receipt.cut_hash
   ||map.updateMap[source.id]!==update.id||map.requestMap[source.request_id]!==update.request_id
+  ||(source.in_reply_to_update_id&&!map.updateMap[source.in_reply_to_update_id])
+  ||(update.in_reply_to_update_id??null)!==(source.in_reply_to_update_id?map.updateMap[source.in_reply_to_update_id]:null)
   ||update.actor_kind!=='system'||update.actor_id!=='host-cut-restoration'||update.resulting_version!==source.resulting_version||update.resulting_state!==source.resulting_state
   ||update.kind!==(source.kind==='question'?'historical_question':source.kind==='answer'?'historical_answer':source.kind)
-  ||payloadHash(payload)!==update.payload_hash||stableJson(payload?.historicalPayload)!==source.payload_json)throw Error('Historical result provenance differs from its retained fact');
+  ||stableJson(payload)!==update.payload_json||payloadHash(payload)!==update.payload_hash
+  ||stableJson(payload?.historicalOrigin)!==stableJson({restorationId:receipt.id,sourceRequestId:source.request_id,sourceUpdateId:source.id,sourceKind:source.kind,sourcePayloadHash:source.payload_hash,sourceVersion:source.resulting_version,historical:true})
+  ||stableJson(payload?.historicalPayload)!==source.payload_json)throw Error('Historical result provenance differs from its retained fact');
  return payload.historicalPayload;
 }
 

@@ -827,3 +827,24 @@ replay before/after completion, per-owner hash/pin/audit/shared-fact tampering,
 rollback after canonical admission, and current child grant/pin refusal on replay.
 No tests, checks, typechecks, builds, Node/native/browser/runner preparation or
 execution were performed.
+
+
+### Restored-history provenance prerequisite (partial source)
+
+The retained-result reader now verifies the complete import origin envelope
+against its immutable origin row, retained fact and exact restoration receipt
+identity/checkpoint/hash. Mapped question links must agree with the source link;
+missing mappings, altered origin fields and noncanonical envelope bytes are
+refused. Historical question/answer kinds without an origin row are refused even
+when their actor fields have been changed. Ordinary authored payloads retain
+their existing interpretation. Deferred regression source covers these cases;
+no execution checks were run.
+
+This is a prerequisite, not the restored-history recapture codec. Capture still
+marks historical question/answer provenance incomplete, and no refusal guard
+has been relaxed. Remaining work is to retain bounded immutable origin/receipt
+chains in the sealed cut, validate those facts during tree union and historical
+reduction, preserve ultimate original payloads and actors without granting them
+fresh authorship, and connect repeated capture/selection/rewind plus lost-response
+readback to the same owner transaction. Unknown or incomplete provenance remains
+refused. No resource, secret, cancellation or recovery case is widened.

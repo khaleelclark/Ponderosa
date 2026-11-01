@@ -177,10 +177,19 @@ test('Branch result reader consumes retained output and refuses altered import p
  assert.deepEqual(restoredRequestUpdatePayload(db,row),{text:'Original effects settled'});
  assert.throws(()=>restoredRequestUpdatePayload(db,{...row,request_id:f.selection.requestId}),/provenance differs/);
  assert.throws(()=>restoredRequestUpdatePayload(db,{...row,resulting_version:row.resulting_version+1}),/provenance differs/);
+ assert.throws(()=>restoredRequestUpdatePayload(db,{...row,in_reply_to_update_id:'unmapped-question'}),/provenance differs/);
+ for(const field of ['restorationId','sourceRequestId','sourceUpdateId','sourceKind','sourcePayloadHash','sourceVersion','historical']){
+  const payload=JSON.parse(row.payload_json);payload.historicalOrigin[field]='altered';
+  assert.throws(()=>restoredRequestUpdatePayload(db,{...row,payload_json:stableJson(payload),payload_hash:payloadHash(payload)}),/provenance differs/,field);
+ }
+ const withoutOrigin=JSON.parse(row.payload_json);delete withoutOrigin.historicalOrigin;
+ assert.throws(()=>restoredRequestUpdatePayload(db,{...row,payload_json:stableJson(withoutOrigin),payload_hash:payloadHash(withoutOrigin)}),/provenance differs/);
+ assert.throws(()=>restoredRequestUpdatePayload(db,{...row,payload_json:JSON.stringify(JSON.parse(row.payload_json),null,2)}),/provenance differs/);
  const changed={...JSON.parse(row.payload_json),historicalPayload:{text:'Unverified replacement'}};
  assert.throws(()=>restoredRequestUpdatePayload(db,{...row,payload_json:stableJson(changed),payload_hash:payloadHash(changed)}),/provenance differs/);
  const live=db.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get('source-completed');
  assert.deepEqual(restoredRequestUpdatePayload(db,{...live,payload_json:stableJson(changed)}),changed,'ordinary authored payloads do not acquire import authority');
+ for(const kind of ['historical_question','historical_answer'])assert.throws(()=>restoredRequestUpdatePayload(db,{...live,kind}),/provenance unavailable/);
  db.prepare('DELETE FROM coordination_restored_update_origins WHERE update_id=?').run(row.id);
  assert.throws(()=>restoredRequestUpdatePayload(db,row),/provenance unavailable/);
 });
