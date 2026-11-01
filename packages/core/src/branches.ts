@@ -347,7 +347,7 @@ export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:stri
 
 /** Partial group capture cannot release any custody or cleanup pin. */
 export interface BranchIssuedGroupCaptureStatus {
- state:'capturing'|'retained';cleanupHeld:boolean;abandonment:'unsupported';
+ state:'capturing'|'retained';cleanupHeld:boolean;abandonment:'unsupported';disposition?:'abandoned';
  sources:{checkpointId:string;resourceStepId:string;sourceChatId:string;sealed:boolean}[];
  checkpointId?:number;checkpointHash?:string;
 }

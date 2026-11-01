@@ -1,3 +1,4 @@
+import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import {readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
 import {readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
@@ -1298,7 +1299,8 @@ export class BranchStore {
   issuedGroupCaptureStatus(executionId:string,commandKey:string):import('@ponderosa/core').BranchIssuedGroupCaptureStatus {
     const v=readIssuedGroupCapture(this.sqlite,executionId,commandKey);
     if(!v)throw Error('Group capture command unavailable');
-    return {state:v.state,cleanupHeld:v.state==='capturing',abandonment:'unsupported',sources:v.sources.map((source:Row)=>({checkpointId:source.checkpointId,resourceStepId:source.intent.resourceStepId,sourceChatId:source.sourceChatId,sealed:v.receipts.some((receipt:Row)=>receipt.checkpointId===source.checkpointId)})),...(v.state==='retained'?{checkpointId:v.checkpointId,checkpointHash:v.checkpointHash}:{})};
+    const disposition=readGroupCaptureDisposition(this.sqlite,executionId,`issued-group-capture:${payloadHash(commandKey)}`,stableJson(v));
+    return {state:v.state,...(disposition?{disposition:'abandoned' as const}:{}),cleanupHeld:v.state==='capturing'&&!disposition,abandonment:'unsupported',sources:v.sources.map((source:Row)=>({checkpointId:source.checkpointId,resourceStepId:source.intent.resourceStepId,sourceChatId:source.sourceChatId,sealed:v.receipts.some((receipt:Row)=>receipt.checkpointId===source.checkpointId)})),...(v.state==='retained'?{checkpointId:v.checkpointId,checkpointHash:v.checkpointHash}:{})};
   }
   previewIssuedGroupCapture(executionId:string){
     const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Group capture restricted');
@@ -1313,8 +1315,9 @@ export class BranchStore {
     sealIssuedGroupMember(this.sqlite,executionId,commandKey,receipt);
   }
   issuedResourceCapturePending(stepId:string):boolean {
-    if(this.row(`SELECT 1 FROM branch_commands c,json_each(c.result_json,'$.sources') source WHERE c.command_key LIKE 'issued-group-capture:%'
-      AND json_extract(c.result_json,'$.state')='capturing' AND json_extract(source.value,'$.intent.resourceStepId')=? LIMIT 1`,stepId))return true;
+    if(this.rows(`SELECT c.execution_id,c.command_key,c.result_json FROM branch_commands c,json_each(c.result_json,'$.sources') source WHERE c.command_key LIKE 'issued-group-capture:%'
+      AND json_extract(c.result_json,'$.state')='capturing' AND json_extract(source.value,'$.intent.resourceStepId')=?`,stepId)
+      .some(row=>!readGroupCaptureDisposition(this.sqlite,row.execution_id,row.command_key,row.result_json)))return true;
     return this.rows("SELECT execution_id,command_key,result_json FROM branch_commands WHERE command_key LIKE 'issued-resource-capture:%' AND json_extract(result_json,'$.source.intent.resourceStepId')=? AND json_extract(result_json,'$.state')='capturing'",stepId)
       .some(row=>!this.custodyLifecycle.captureDisposed(row.execution_id,row.command_key,row.result_json));
   }

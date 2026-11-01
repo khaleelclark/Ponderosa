@@ -1,3 +1,4 @@
+import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import type Database from 'better-sqlite3';
 import {randomUUID} from 'node:crypto';
 import type {CheckpointPackageSource,CheckpointPackageReceipt} from '@ponderosa/core';
@@ -28,13 +29,14 @@ export function readIssuedGroup(db:Database.Database,executionId:string,checkpoi
  return s;
 }
 /** Read retained intent without recapturing a changed live frontier. Partial custody stays pinned. */
-export function readIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string):Row|undefined {
+export function readIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string,raw=false):Row|undefined {
  if(typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Exact group capture command required');
- const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row|undefined;
+ if(raw&&!/^issued-group-capture:[a-f0-9]{64}$/.test(commandKey))throw Error('Exact raw group capture key required');
+ const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,raw?commandKey:key(commandKey)) as Row|undefined;
  if(!row)return;
  const v=JSON.parse(row.result_json),snapshot=v.snapshot,resources=snapshot?.selected?.resources;
- if(v.commandKey!==undefined&&(v.commandKey!==commandKey||v.reviewHash!==payloadHash(snapshot)||v.versionId!==snapshot?.selected?.execution?.[0]?.version_id))throw Error('Group capture retained preview differs');
- if(stableJson(v)!==row.result_json||row.input_hash!==payloadHash({commandKey})||!['capturing','retained'].includes(v.state)
+ if(v.commandKey!==undefined&&((raw?key(v.commandKey)!==commandKey:v.commandKey!==commandKey)||v.reviewHash!==payloadHash(snapshot)||v.versionId!==snapshot?.selected?.execution?.[0]?.version_id))throw Error('Group capture retained preview differs');
+ if(stableJson(v)!==row.result_json||(raw?v.commandKey!==undefined&&row.input_hash!==payloadHash({commandKey:v.commandKey}):row.input_hash!==payloadHash({commandKey}))||!['capturing','retained'].includes(v.state)
   ||snapshot?.schema!=='branch-unit-selected.v2'||snapshot.captureKind!=='issued_group'||snapshot.issuedContinuation?.group!==true
   ||snapshot.selected.execution[0]?.id!==executionId||!verifyBranchHostCut(snapshot.hostDependencies,executionId)||!Array.isArray(resources)||resources.length<2||resources.length>32
   ||!Array.isArray(v.sources)||v.sources.length!==resources.length||!Array.isArray(v.receipts)||v.receipts.length>v.sources.length
@@ -75,6 +77,8 @@ export function previewIssuedGroupCapture(db:Database.Database,executionId:strin
 }
 export function reserveIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string,expectedReview?:{reviewHash:string;versionId:string}):Row {
  if(!db.inTransaction||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Group capture owner transaction/command required');
+ const original=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row|undefined;
+ if(original&&readGroupCaptureDisposition(db,executionId,key(commandKey),original.result_json))throw Error('Group capture abandoned; revival refused');
  const old=readIssuedGroupCapture(db,executionId,commandKey);
  if(old){if(expectedReview&&(old.reviewHash!==expectedReview.reviewHash||old.versionId!==expectedReview.versionId))throw Error('Group capture command preview conflict');return old;}
  if(!expectedReview||expectedReview.versionId===undefined)throw Error('Exact capture preview required');
@@ -87,6 +91,8 @@ export function reserveIssuedGroupCapture(db:Database.Database,executionId:strin
 }
 export function sealIssuedGroupMember(db:Database.Database,executionId:string,commandKey:string,receipt:CheckpointPackageReceipt):void {
  if(!db.inTransaction)throw Error('Group seal requires capture owner transaction');
+ const original=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row|undefined;
+ if(original&&readGroupCaptureDisposition(db,executionId,key(commandKey),original.result_json))throw Error('Group capture abandoned; seal refused');
  const v=readIssuedGroupCapture(db,executionId,commandKey);
  if(!v)throw Error('Group capture intent unavailable');const source=v.sources.find((s:Row)=>s.checkpointId===receipt.checkpointId);
  if(!source||!receiptMatchesSource(receipt,source))throw Error('Group member custody differs');

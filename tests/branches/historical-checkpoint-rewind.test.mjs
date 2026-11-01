@@ -1782,7 +1782,7 @@ async function twoIssuedResources(t,mode,count=2,parallel=false,completedIndices
 
  if(partialCapture){
   await assert.rejects(service().capture(f.branch.id,f.source.id,'two-resource-cut',preview),/injected final capture failure/);
-  return {f,service,issued};
+  return {f,service,issued,complete};
  }
  const captured=await service().capture(f.branch.id,f.source.id,'two-resource-cut',preview);
  const discovery=service().discover({kind:'captures',limit:1});assert.equal(discovery.items[0].commandKey,'two-resource-cut');assert.equal(discovery.items[0].discovery,'exact');
@@ -1928,4 +1928,23 @@ test('group discovery pagination rejects changed inventory and finds partial exa
  assert.throws(()=>s.discover({kind:'captures',limit:1,cursor:first.nextCursor}),/stale/);
  await f.reopen();assert.equal(x.service().discover({kind:'captures'}).items.filter(i=>i.executionId===f.source.id).length,3);
  for(const resource of preview.resources)assert.equal(f.branches.issuedResourceCapturePending(resource.resourceStepId),true);
+});
+
+for(const parallel of [false,true])test(`partial group ${parallel?'parallel':'serial'} abandonment commits one disposition and fences revival`,async t=>{
+ const x=await twoIssuedResources(t,'sync',3,parallel,parallel?[]:[0,1],true),{f}=x,db=f.store.sqlite;
+ for(const item of x.issued)if(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(item.request).state!=='completed')x.complete(item);
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ const row=db.prepare("SELECT command_key,result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id),l=f.branches.custodyLifecycle;
+ const review=l.inspectGroupCapture(f.source.id,row.command_key);assert.equal(review.abandonmentAllowed,true);
+ const input={executionId:f.source.id,captureKey:row.command_key,commandKey:'whole-group-abandon',captureSha256:review.captureSha256,expectedRevision:review.revision};
+ const proofs=review.members.map(m=>({custodyId:m.custodyId,sourceSha256:m.sourceSha256,revision:'inert-durable-package-receipt'}));let calls=0;
+ assert.throws(()=>l.abandonGroupCapture(input,()=>{calls++;return proofs.slice(1);}));assert.equal(calls,1);
+ for(const source of review.sources)assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),true);
+ const receipt=l.abandonGroupCapture(input,inventory=>{calls++;assert.equal(inventory.sources.length,3);return proofs;});assert.equal(calls,2);assert.equal(receipt.state,'abandoned');
+ assert.equal(db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,row.command_key).result_json,row.result_json);
+ for(const source of review.sources)assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),false);
+ assert.throws(()=>f.branches.reserveIssuedGroupCapture(f.source.id,'two-resource-cut'),/abandoned/);
+ const seal=JSON.parse(row.result_json).receipts[0];assert.throws(()=>db.transaction(()=>f.branches.sealIssuedGroupMember(f.source.id,'two-resource-cut',seal))(),/abandoned/);
+ await f.reopen();assert.deepEqual(f.branches.custodyLifecycle.abandonGroupCapture(input,()=>proofs),receipt);
+ assert.throws(()=>f.branches.custodyLifecycle.abandonGroupCapture(input,()=>proofs.map((p,i)=>i? p:{...p,revision:'changed'})),/proof replay differs/);
 });

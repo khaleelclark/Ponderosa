@@ -203,3 +203,5 @@ export type {CoordinationDestinationGroupAuthority} from './coordination-v3-dest
 
 export {readIssuedGroup} from './branch-issued-group-capture.js';
 export {readProviderExitEvidence,verifyRetainedProviderExitEvidence} from './provider-exit-evidence.js';
+
+export {readGroupCaptureDisposition,type BranchGroupCaptureAbandonInput,type BranchGroupPackageRetirementProof,type BranchGroupPackageInventory} from './branch-group-custody-disposition.js';

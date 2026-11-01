@@ -1,3 +1,5 @@
+import {readIssuedGroupCapture} from './branch-issued-group-capture.js';
+import {groupAbandonKey,readGroupCaptureDisposition,exactGroupPackageProofs,type BranchGroupCaptureAbandonInput,type BranchGroupPackageInventory,type BranchGroupPackageRetirementProof} from './branch-group-custody-disposition.js';
 import {createHash} from 'node:crypto';
 import type {CheckpointPackageSource} from '@ponderosa/core';
 import type {BranchStore} from './branch-store.js';
@@ -55,7 +57,12 @@ export class BranchCustodyLifecycle {
     if(value.schema!=='branch-resource-custody-release.v1'||row.input_hash!==payloadHash({stepExecutionId:value.stepExecutionId,input:value.input}))throw Error('Custody release receipt integrity failure');
     continue;
    }
+   if(row.command_key.startsWith('group-custody-abandoned:')){
+    const raw=this.db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(row.execution_id,value.input?.captureKey) as Row|undefined;
+    if(!raw||!readGroupCaptureDisposition(this.db,row.execution_id,value.input.captureKey,raw.result_json))throw Error('Group disposition source missing');continue;
+   }
    if(!matches(value))continue;
+   if(row.command_key.startsWith('issued-group-capture:')&&readGroupCaptureDisposition(this.db,row.execution_id,row.command_key,row.result_json))continue;
    if(['branch-resource-capture.v1','branch-issued-resource-capture.v1'].includes(value.schema)){
     if(value.state==='released'||this.captureDisposed(row.execution_id,row.command_key,row.result_json))continue;
    }
@@ -89,6 +96,8 @@ export class BranchCustodyLifecycle {
    if(requireDeletion&&this.db.prepare(`SELECT 1 FROM agent_deletion_receipts r,json_each(r.deleted_agent_ids_json) m WHERE m.value=? AND r.storage_cleanup_completed!=1 LIMIT 1`).get(id))blockers.push(`participant_cleanup_incomplete:${id}`);
    if(this.db.prepare(`SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','attached','retry_pending','outcome_unknown') LIMIT 1`).get(id))blockers.push(`participant_activation_not_drained:${id}`);
    if(this.db.prepare(`SELECT 1 FROM coordination_requests WHERE (recipient_agent_id=? OR requester_agent_id=?) AND state NOT IN ('completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded') LIMIT 1`).get(id,id))blockers.push(`participant_request_unresolved:${id}`);
+   if(this.db.prepare(`SELECT 1 FROM coordination_joins j WHERE j.state='open' AND (j.owner_agent_id=? OR EXISTS(SELECT 1 FROM coordination_join_members m JOIN coordination_requests q ON q.id=m.request_id WHERE m.join_id=j.id AND (q.recipient_agent_id=? OR q.requester_agent_id=?))) LIMIT 1`).get(id,id,id))blockers.push(`participant_join_unresolved:${id}`);
+   if(this.db.prepare("SELECT 1 FROM coordination_question_suspensions WHERE owner_agent_id=? AND state='open' LIMIT 1").get(id))blockers.push(`participant_suspension_unresolved:${id}`);
    if(this.db.prepare("SELECT 1 FROM agent_creation_operation_members m JOIN agent_creation_operations o ON o.id=m.operation_id WHERE m.agent_id=? AND o.status NOT IN ('completed','rolled_back') LIMIT 1").get(id))blockers.push(`import_unresolved:${id}`);
   }
   for(const row of this.db.prepare("SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'resource-operation:%'").all(source.intent.executionId) as Row[]){
@@ -152,6 +161,39 @@ export class BranchCustodyLifecycle {
     this.db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(owner,abandonKey(captureKey),payloadHash(dispositionInput),stableJson(disposition),receipt.createdAt);
    }
    this.db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(owner,key,payloadHash(exact),stableJson(receipt),receipt.createdAt);
+   return receipt;
+  }).immediate();
+ }
+ inspectGroupCapture(executionId:string,captureKey:string){
+  const capture=readIssuedGroupCapture(this.db,executionId,captureKey,true);
+  if(!capture)throw Error('Group capture intent unavailable');
+  const row=this.db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,captureKey) as Row;
+  const disposition=readGroupCaptureDisposition(this.db,executionId,captureKey,row.result_json);
+  const members=capture.sources.map((source:CheckpointPackageSource)=>{
+   const current=this.inspect(source);
+   const references=current.references.filter(ref=>!(ref.kind==='command'&&ref.ownerId===executionId&&ref.key===captureKey));
+   return {source,custodyId:current.custodyId,sourceSha256:payloadHash(source),revision:current.revision,references,blockers:current.abandonmentBlockers};
+  });
+  const evidence={executionId,captureKey,captureSha256:payloadHash(capture),state:capture.state,sources:capture.sources,receipts:capture.receipts,members};
+  return {...evidence,revision:payloadHash(evidence),abandonmentAllowed:!disposition&&capture.state==='capturing'&&members.every((m:Row)=>!m.references.length&&!m.blockers.length),disposition:disposition?.state};
+ }
+ abandonGroupCapture(input:BranchGroupCaptureAbandonInput,confirmPackagesRetired:(inventory:BranchGroupPackageInventory)=>BranchGroupPackageRetirementProof[]){
+  if(!input.commandKey||input.commandKey.length>200||!/^issued-group-capture:[a-f0-9]{64}$/.test(input.captureKey)||![input.captureSha256,input.expectedRevision].every(v=>/^[a-f0-9]{64}$/.test(v)))throw Error('Exact reviewed group abandonment required');
+  return this.branches.unitTransaction(()=>{
+   const row=this.db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(input.executionId,input.captureKey) as Row|undefined;
+   if(!row)throw Error('Group capture raw intent unavailable');
+   const prior=readGroupCaptureDisposition(this.db,input.executionId,input.captureKey,row.result_json);
+   if(prior){
+    if(stableJson(prior.input)!==stableJson(input))throw Error('Group abandonment command conflict');
+    const proofs=exactGroupPackageProofs(prior.sources,confirmPackagesRetired({sources:prior.sources,receipts:prior.receipts}));
+    if(stableJson(proofs)!==stableJson(prior.packageRetirements))throw Error('Group abandonment durable proof replay differs');return prior;
+   }
+   const current=this.inspectGroupCapture(input.executionId,input.captureKey);
+   if(!current.abandonmentAllowed||current.revision!==input.expectedRevision||current.captureSha256!==input.captureSha256)throw Error('Group capture remains referenced or unconfirmed');
+   const packageRetirements=exactGroupPackageProofs(current.sources,confirmPackagesRetired({sources:current.sources,receipts:current.receipts}));
+   if(this.inspectGroupCapture(input.executionId,input.captureKey).revision!==current.revision)throw Error('Group abandonment evidence changed during package confirmation');
+   const receipt={schema:'branch-group-custody-abandon.v1',input,sources:current.sources,receipts:current.receipts,originalCaptureRaw:row.result_json,packageRetirements,state:'abandoned',createdAt:new Date().toISOString()};
+   this.db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(input.executionId,groupAbandonKey(input.captureKey),payloadHash(input),stableJson(receipt),receipt.createdAt);
    return receipt;
   }).immediate();
  }
