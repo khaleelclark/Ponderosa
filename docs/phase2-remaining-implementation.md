@@ -1,6 +1,6 @@
 # Phase 2 remaining implementation inventory
 
-Source snapshot: `f2b05c5584a947f9ee03214d983093cea1367064`, integration worktree.
+Source snapshot: `8fba10951`, integration worktree.
 Includes bounded called-owner-tree UI and correlated Claude native command recovery;
 M1, M5 and M6 are resolved in source, with runtime qualification deferred.
 Basis: full `/tmp/ponderosa-phase2-upgrade-c8ace/published/bible-2.md`, all 32
@@ -10,7 +10,7 @@ No owner worktrees changed, no workers created, no execution or preparation.
 **No: the earlier four categories were not four final tasks.** This inventory
 accounts for all 35 top-level requirements (32 commandments + 3 Build features),
 with 24 explicit Build behavior rows below. It identifies **9 remaining source
-work/disposition entries: 3 concrete implementation/contract items and 6
+work/disposition entries: 3 tracked M items (external M2, partially delivered M3, internal M4) and 6
 unresolved contract/scope items**, plus **1 separate deferred-fixture source repair**.
 These are finite inventory counts, not acceptance percentages or a promise that
 future verification cannot discover another defect. Unresolved does not mean code
@@ -24,8 +24,8 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 
 | ID / state | Exact requirement | Concrete user behavior missing or unresolved; implemented boundary | Owner | Dependency |
 | --- | --- | --- | --- | --- |
-| M2 — missing code/contract | #1, #4, #12 crash survival | Recover a compaction whose acknowledgement/operation identities were lost, without repeating mutation. Codex now reads stored completion only for an accepted operation with both already observed turn/item IDs; durable caller-key lookup/idempotency across crashes is absent. | Runtime | External exact-session operation-key/result contract plus internal durable binding. Existing host durable-event reconciliation covers a different, already-recorded event gap. |
-| M3 — missing code/contract | #12 work survives restart; #13 unfinished work retained; #17 reliability | Resolve original uncertain source Run/tool/publication effects from exact original receipts instead of leaving source work indefinitely unknown. Context completion does not settle those effects; sourceWork remains held_unknown. | Runtime + Reliability | External/native result evidence where no host receipt exists, then canonical internal per-effect reconciliation. Never infer success from process exit or repeat effects. |
+| M2 — externally blocked contract | #1, #4, #12 crash survival | Recover a compaction whose native identities/result were never retained without repeating mutation. Existing host recovery reservation, caller key, native-start fence and durable-event reconciliation already exist; Codex reads stored completion only with exact observed turn/item IDs. | Runtime | Pinned public protocols establish no durable no-ID compact-key result lookup. See [native operation contract](native-operation-key-contract.md). External exact-session key/result semantics are required before an internal binding can safely be added; M2 is not completed by another host journal. |
+| M3 — host source delivered; external evidence unresolved | #12 work survives restart; #13 unfinished work retained; #17 reliability | Exact original outcome_unknown Run/fence and drained custody now support host-receipt GET inventory, hash/fence/key-bound POST reconciliation and exact-key GET receipt recovery. Communication, Request version, coordinate, artifact import and queued-information commits are identified; telemetry remains unknown. | Reliability + Runtime | [Host reconciliation](original-source-effect-reconciliation.md) is implemented in source. Unreceipted native/external effects still require exact external evidence. No scheduler/source Run/Request mutation, original replay or source settlement; sourceWork remains held_unknown. |
 | M4 — missing review display contract | #2 inspectable mechanisms, #3 clear controls, #24 accurate figures, #28/#32 checkpoint/subgraph review | Bounded tree web preview/capture/discovery/prepare/all-facts choice/admit/recovery is integrated. Actual DTO omits Call parentAttemptId, Branch idMap/counters and numeric fresh per-owner acceptance budgets; UI labels them unavailable/server-verified. Expose the appropriate nonsecret review evidence and render exact returned values. Backend already validates ancestry, mapped frontier and each fresh budget; do not invent values or expose private saved snapshots. | Features + Runtime DTO; UI rendering | Internal additive review/readback contract. These fields explain the already implemented mapped destination and acceptance; this does not require broader tree eligibility. |
 | U1 — unresolved source disposition | #4 **every** native harness capability | Exhaustive provider capability inventory has no established complete mapping to the inspected implementation. Browser/native tools and capability discovery exist; the identified compact gaps are not proof that they are the only parity gaps. | Runtime | Internal mapping against pinned official harness surfaces; provider compatibility execution separate. Do not create features from vague parity language without identifying the native capability. |
 | U2 — unresolved limit disposition | #5 no unjustified rules, #6 human-only access, #32 human-set limits | Determine which hard bounds are stability/byte bounds and which constrain user capability without the required justification/control. Generation32/maxAttempts33, group32 and evidence-size caps are explicit; the Bible permits documented stability limits, so increasing every cap is not automatically required work. | Features + Runtime; Cliff scope | Internal limit-purpose/access classification, then code only for a demonstrated violation. This is not a request to implement arbitrary combinations. |
@@ -35,7 +35,7 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 | U6 — unresolved state semantics | #32 pinned named **state** capability | Establish whether execution input/parameters, immutable Step results and ordered bundles satisfy the required pinned state capability. Representative source does not implement arbitrary mutable shared/reducer state. No accepted state-semantics disposition establishes whether another operation is required. | Features; Cliff scope | Internal comparison of exact named state operations with LangGraph1.0.5/LangChain1.0.8 baseline. Transitive/model pins and running examples are verification prerequisites, not proof of missing product code. |
 
 M1 is resolved in source by correlated Claude native command completion plus fresh
-occupancy control; provider/runtime compatibility remains unqualified. M2/M3 remain
+occupancy control; provider/runtime compatibility remains unqualified. M2 remains externally blocked; M3 host receipts are delivered while external effects remain unknown. These remain
 different observable behaviors: compaction does not resolve lost identity or source effects.
 M5 concise copy/evidence-row cleanup is resolved in source; see phase2-ui-copy-census.md.
 Rendered wrapping/accessibility/mobile and whole #29 judging remain deferred.
@@ -150,6 +150,6 @@ is never labeled whole implementation. Current-head source was preserved; active
 owner work remains outside this snapshot until separately handed off/integrated.
 
 This is exhaustive **requirement accounting**, not an exhaustive proof that there
-are only three concrete gaps in a large codebase. The bounded read cannot close U1–U6 or
+are only these tracked gaps in a large codebase. The bounded read cannot close U1–U6 or
 unrun universal criteria. Cliff should assign each numbered entry or resolve its
 scope; “four categories left” and “all implemented” would both overstate evidence.

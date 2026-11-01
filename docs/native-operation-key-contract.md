@@ -70,7 +70,7 @@ SDK declaration byte pins, not runtime qualification:
 The [official SDK reference](https://code.claude.com/docs/en/agent-sdk/typescript)
 describes these live correlations, stored-message reads and native command
 results. Its [command guide](https://code.claude.com/docs/en/agent-sdk/skills#compact-history-with-compact)
-documents `/compact`; implementing that live path is separate M1 work. It does
+documents `/compact`; the correlated live path is now integrated as M1 source work, with runtime qualification deferred. It does
 not establish read-only recovery of its lost result by caller UUID. A stored
 manual boundary near a user message is not an explicit command-to-boundary
 binding. The Python SDK's pinned [session reader](https://github.com/anthropics/claude-agent-sdk-python/blob/2146f9d8985513053e904b13200c8f744b36785a/src/claude_agent_sdk/_internal/sessions.py)
