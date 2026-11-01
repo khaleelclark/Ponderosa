@@ -1,37 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {randomUUID} from 'node:crypto';
-import {BranchStore,CapabilityPolicyStore} from '@ponderosa/agents';
-import {CAPABILITY_IDS} from '@ponderosa/core';
-import {instance,seed,read,vector} from './portability-fixture.mjs';
-const api=async(f,method,url,payload)=>{const r=await f.app.inject({method,url,headers:f.headers,...(payload===undefined?{}:{payload})});return {status:r.statusCode,body:r.json(),raw:r.body};};
-const ok=r=>{assert.equal(r.status,200,r.raw);return r.body;};
-const noRuns=f=>{for(const table of ['scheduler_runs','agent_activations','provider_operation_outbox'])assert.equal(f.store.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n,0);};
-const bindings=f=>({directories:{workspace:f.root},agents:{},engines:{fixture:'fixture'}});
-const selection={newAgents:[{chatRef:'chat',agentRef:'new'}],teamChats:['chat']};
-const confirm=(f,id,extra={})=>api(f,'POST',`/api/branches/installations/${id}/confirm`,{acknowledgeFullImport:true,acknowledgeMemoryUpdate:true,...extra});
-async function rows(f,chatId){const raw=f.memory.core.database.raw;return Promise.all(['memory','log'].map(async kind=>{const c=await raw.client.getCollection({name:raw.names('chat:'+chatId)[kind]});return c.get({include:['documents','metadatas','embeddings']});}));}
-const byId=rows=>Object.fromEntries(rows.ids.map((id,i)=>[id,[rows.documents[i],rows.metadatas[i],Array.from(rows.embeddings[i])]]));
-function preserve(before,after){for(let i=0;i<before.length;i++){const next=byId(after[i]);for(const [id,row] of Object.entries(byId(before[i])))assert.deepEqual(next[id],row,'Existing record stays byte-equivalent');}}
-async function setup(t){
- const source=await instance(t),f=await instance(t);await seed(source);const defs=[];
- for(const [index,a] of [source.a,source.b].entries()){
-  const ref=index?'new':'existing',pkg=ok(await api(source,'GET',`/api/agents/${a.id}/export?mode=full`));pkg.rootRef=ref;pkg.agents[0].ref=ref;for(const m of pkg.memory??[])m.agentRefs=Object.fromEntries(Object.keys(m.agentRefs).map(id=>[id,ref]));defs.push({ref,definition:pkg});
- }
- const pkg={schema:'ponderosa.branch-installation.v1',packageId:'additive.workflow',mode:'full',exportedAt:new Date().toISOString(),definition:{schema:'ponderosa.branch.v1',name:'Additive',trigger:{kind:'manual'},entry:'work',steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Never run a provider'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[{ref:'chat',title:'Preserved Chat',agents:defs}],agentBindings:{worker:{chatRef:'chat',agentRef:'existing'}}};
- const initial=structuredClone(pkg);initial.mode='template';initial.chats[0].agents=initial.chats[0].agents.slice(0,1);for(const a of initial.chats[0].agents){a.definition.mode='template';delete a.definition.memory;delete a.definition.agents[0].history;delete a.definition.agents[0].artifacts;}
- const plan=ok(await api(f,'POST','/api/branches/install-preview',{package:initial,bindings:bindings(f)})),installed=ok(await confirm(f,plan.id));assert.equal(installed.state,'completed',installed.error);
- const branchId=installed.branchId,config=ok(await api(f,'GET',`/api/branches/${branchId}/configuration`)),old=f.store.getAgent(config.agents.worker),chat=f.store.getConversation(old.conversationId);
- const scoped=Object.assign(Object.create(f),{chat,a:old,b:old});await seed(scoped);
- f.memory.setGrant(chat.id,true,0,'branches');new CapabilityPolicyStore(f.store.sqlite).put({scopeKind:'global',scopeId:'ponderosa',expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.scripts],actor:'operator',reason:'Retain destination script policy'});
- const global=await f.memory.core.database.raw.client.getCollection({name:f.memory.core.database.raw.names('global').memory}),globalBefore=await global.get({include:['documents','metadatas','embeddings']});
- const before=await rows(f,chat.id),permissions=structuredClone(old.managementPermissions),policies=f.store.sqlite.prepare('SELECT * FROM capability_policies ORDER BY scope_kind,scope_id').all(),grants=f.memory.policy.prepare('SELECT * FROM local_memory_chat_grants ORDER BY chat_id').all();
- pkg.chats[0].agents[0].definition.agents[0].managementPermissions.allowAutomaticDescendantDeletion=true;
- const preview=async(sel=selection,portable=pkg)=>api(f,'POST','/api/branches/install-preview',{branchId,package:portable,bindings:bindings(f),...(sel===undefined?{}:{memorySelection:sel})});
- const authority=async()=>{assert.deepEqual(await global.get({include:['documents','metadatas','embeddings']}),globalBefore);assert.deepEqual(f.store.getAgent(old.id).managementPermissions,permissions);assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM capability_policies ORDER BY scope_kind,scope_id').all(),policies);assert.deepEqual(f.memory.policy.prepare('SELECT * FROM local_memory_chat_grants ORDER BY chat_id').all(),grants);noRuns(f);};
- const unchanged=async()=>{assert.deepEqual(await rows(f,chat.id),before);await authority();};
- return {f,source,pkg,branchId,old,chat,before,preview,unchanged,authority,scoped,permissions};
-}
+import {BranchStore} from '@ponderosa/agents';
+import {read,vector} from './portability-fixture.mjs';
+import {api,ok,noRuns,bindings,selection,confirm,rows,byId,preserve,setup} from './workflow-additive-fixture.mjs';
 
 test('reviewed new Agent/private and preserved Chat/team additions preserve existing memory/authority across reopen and same-plan retry',async t=>{
  const x=await setup(t),{f}=x;const plan=ok(await x.preview());assert.equal(plan.memoryUpdateReview.incoming.length,1);assert.equal(plan.memoryUpdateReview.incoming[0].snapshot.chunks.length,3);assert.equal(plan.memoryUpdateReview.incoming[0].snapshot.conflicts.length,1);assert.equal(plan.memoryUpdateReview.excludedRows,4);assert.ok(plan.memoryUpdateReview.destination[0].chunks.length);
@@ -84,4 +55,81 @@ test('destination edits during staged recovery require a new review and compensa
  const actual=await rows(x.f,x.chat.id);assert.equal(actual[0].ids.length,x.before[0].ids.length);assert.equal(actual[1].ids.length,x.before[1].ids.length);assert.equal(byId(actual[0])[id][0],'Concurrent operator edit');
  for(let i=0;i<x.before.length;i++)for(const [key,row]of Object.entries(byId(x.before[i])))if(key!==id)assert.deepEqual(byId(actual[i])[key],row);
  await x.authority();assert.equal(x.f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE staging_plan_id=? AND state IN ('staging','retiring')").get(plan.id).n,0);noRuns(x.f);
+});
+
+import {BranchInstallationService} from '../../apps/server/dist/branch-installation-service.js';
+const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r});return {promise,resolve};};
+// Hold real inventory results and the delivery of a real, completed staged import.
+async function overlapping(x,plan,run){
+ const prototype=BranchInstallationService.prototype,inventory=prototype.memoryInventory;
+ const entered=[deferred(),deferred()],release=[deferred(),deferred()],imported=deferred(),releaseImport=deferred(),pending=[];
+ let service,engine,originalImport,imports=0,calls=0;
+ prototype.memoryInventory=async function(...args){
+  if(this.store!==x.f.store)return inventory.apply(this,args);
+  service=this;
+  if(!engine){engine=this.engine;originalImport=engine.importAgent;engine.importAgent=async function(...args){imports++;const result=await originalImport.apply(this,args);imported.resolve({result,signal:args[5]?.signal});await releaseImport.promise;args[5]?.signal?.throwIfAborted();return result;};}
+  const index=calls++,result=await inventory.apply(this,args);
+  if(index<2){entered[index].resolve();await release[index].promise;}
+  return result;
+ };
+ try{
+  const a=confirm(x.f,plan.id);pending.push(a);await entered[0].promise;
+  const b=confirm(x.f,plan.id);pending.push(b);await entered[1].promise;
+  release[0].resolve();const staged=await imported.promise;
+  return await run({a,b,staged,service,releaseDuplicate:()=>release[1].resolve(),releaseImport:()=>releaseImport.resolve(),imports:()=>imports});
+ }finally{
+  release.forEach(g=>g.resolve());releaseImport.resolve();
+  await Promise.allSettled(pending);
+  if(engine)engine.importAgent=originalImport;
+  prototype.memoryInventory=inventory;
+  if(service)await service.tick();
+ }
+}
+
+test('delayed duplicate confirmation cannot revive Stop while a real staged memory import is pending',async t=>{
+ const x=await setup(t),plan=ok(await x.preview()),beforeVersion=x.f.store.sqlite.prepare('SELECT active_version_id FROM branches WHERE id=?').get(x.branchId);
+ await overlapping(x,plan,async h=>{
+  assert.equal(h.service.status(plan.id).state,'applying');assert.equal(h.imports(),1);
+  const staged=x.f.store.sqlite.prepare("SELECT * FROM branch_installation_resources WHERE staging_plan_id=? AND agent_ref='new'").get(plan.id);assert.equal(staged.local_id,h.staged.result.rootAgentId);
+  assert.ok(x.f.store.getAgentCreationOperation(staged.creation_operation_id).result.memoryPlan.length,'Real imported rows retain exact cleanup receipt');
+  const stop=ok(await api(x.f,'POST',`/api/branches/installations/${plan.id}/cancel`,{}));assert.equal(stop.state,'canceling');assert(h.staged.signal.aborted);
+  h.releaseDuplicate();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.service.status(plan.id).state,'canceling','A delayed duplicate cannot reset Stop before completing');const late=await h.b;assert.equal(late.status,409,late.raw);assert.match(late.body.error,/no longer available/);assert.equal(h.service.status(plan.id).state,'canceling','Delayed admission must not clear Stop');
+  h.releaseImport();assert(['canceling','canceled'].includes(ok(await h.a).state));await h.service.tick();await h.service.tick();
+  assert.equal(h.service.status(plan.id).state,'canceled');assert.equal(h.imports(),1);assert.equal(x.f.store.getAgent(staged.local_id),undefined);assert.equal(x.f.store.getAgentCreationOperation(staged.creation_operation_id)?.result?.memoryPlan,undefined);
+  assert.deepEqual(x.f.store.sqlite.prepare("SELECT local_id,state FROM branch_installation_resources WHERE staging_plan_id=?").all(plan.id),[{local_id:staged.local_id,state:'deleted'}],'Cleanup retains only its deleted resource tombstone');assert.equal(x.f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE staging_plan_id=? AND state IN ('active','staging','retiring')").get(plan.id).n,0);assert.deepEqual(x.f.store.sqlite.prepare('SELECT active_version_id FROM branches WHERE id=?').get(x.branchId),beforeVersion);await x.unchanged();
+  for(const field of ['title','handle','activeEngine','model','effort','speed','managementPermissions','managerAgentId'])assert.deepEqual(x.f.store.getAgent(x.old.id)[field],x.old[field],`Stopped update preserves Agent ${field}`);
+  for(const field of ['title','instructions'])assert.deepEqual(x.f.store.getConversation(x.chat.id)[field],x.chat[field],`Stopped update preserves Chat ${field}`);
+ });
+});
+
+test('overlapping confirmations of one applying plan coalesce without importing twice or replacing memory',async t=>{
+ const x=await setup(t),plan=ok(await x.preview());
+ await overlapping(x,plan,async h=>{
+  h.releaseDuplicate();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.service.status(plan.id).state,'applying');assert.equal(h.imports(),1);
+  h.releaseImport();const [a,b]=await Promise.all([h.a,h.b]);assert.equal(ok(a).state,'completed');assert.equal(ok(b).state,'completed');assert.equal(h.imports(),1);
+  preserve(x.before,await rows(x.f,x.chat.id));await x.authority();assert.equal(x.f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE branch_id=? AND agent_ref='new' AND state='active'").get(x.branchId).n,1);
+ });
+});
+
+test('duplicate inventory admission released after completion returns the compacted receipt without revival',async t=>{
+ const x=await setup(t),plan=ok(await x.preview());
+ await overlapping(x,plan,async h=>{
+  h.releaseImport();assert.equal(ok(await h.a).state,'completed');const before=await rows(x.f,x.chat.id),receipt=x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id);assert.equal(receipt.package_json,'{}');
+  h.releaseDuplicate();assert.equal(ok(await h.b).state,'completed');assert.deepEqual(x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id),receipt);assert.deepEqual(await rows(x.f,x.chat.id),before);assert.equal(h.imports(),1);await x.authority();
+ });
+});
+
+test('pending inventory admission cannot revive expired, canceled or review-required durable receipts',async t=>{
+ const x=await setup(t),prototype=BranchInstallationService.prototype,inventory=prototype.memoryInventory;
+ for(const state of ['expired','canceled','review_required']){
+  const plan=ok(await x.preview()),entered=deferred(),release=deferred();let service,pending;
+  prototype.memoryInventory=async function(...args){if(this.store!==x.f.store)return inventory.apply(this,args);service=this;const result=await inventory.apply(this,args);entered.resolve();await release.promise;return result;};
+  try{
+   pending=confirm(x.f,plan.id);await entered.promise;
+   if(state==='expired'){x.f.store.sqlite.prepare('UPDATE branch_installation_plans SET created_at=? WHERE id=?').run('2000-01-01T00:00:00.000Z',plan.id);await service.tick();}
+   else service.compactPlan(plan.id,state,'Controlled terminal receipt transition');
+   const receipt=x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id);assert.equal(receipt.state,state);assert.equal(receipt.package_json,'{}');
+   release.resolve();const late=await pending;assert.equal(late.status,409,late.raw);assert.deepEqual(x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id),receipt);await x.unchanged();
+  }finally{release.resolve();if(pending)await pending;prototype.memoryInventory=inventory;}
+ }
 });

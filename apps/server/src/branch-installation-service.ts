@@ -323,22 +323,32 @@ export class BranchInstallationService {
  }
  reviewPublishedRoles(id:string){const plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);if(!plan||plan.state!=='applying')throw new Error('Committed import unavailable');const state=this.rolePlan(plan);if(!state.published||!state.review)throw new Error('Import has no pending role finalization');return this.outputApps!.reReviewImport(state.review.id,state.binding!,id,state.mapping!);}
  async confirm(id:string,acknowledgeFullImport=false,outputRoleReviewId?:string,acknowledgeMemoryUpdate=false):Promise<{branchId:string;state:string;error?:string}>{
-  const plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);if(!plan)throw new Error('Update preview unavailable');
+  const captured=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);if(!captured)throw new Error('Update preview unavailable');
+  let plan=captured;
   if(plan.state==='completed')return {branchId:plan.branch_id,state:plan.state};
   if(plan.state!=='preview'&&plan.state!=='applying')throw new Error('Update preview is no longer available; review the package again');
   if(plan.state==='preview'&&(JSON.parse(plan.package_json) as InstalledBranchPackage).mode==='full'&&!acknowledgeFullImport)throw new Error('Explicit acknowledgement is required to import full Agent context and files');
   if(plan.state==='preview'&&this.rolePlan(plan).memoryUpdate&&!acknowledgeMemoryUpdate)throw new Error('Explicit acknowledgement is required for reviewed additive memory');
   if(plan.state==='preview')await this.checkMemory(plan);
+  // Inventory IO must not let a delayed confirmation revive a stopped or expired plan.
+  this.maintainPlans();
+  const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);if(!current)throw new Error('Update preview unavailable');
+  plan=current;
+  if(plan.state==='completed')return {branchId:plan.branch_id,state:plan.state};
+  if(plan.state!=='preview'&&plan.state!=='applying')throw new Error('Update preview is no longer available; review the package again');
   let roleState=this.rolePlan(plan);
   if(outputRoleReviewId){if(!roleState.published||!roleState.review)throw new Error('No committed role outcome to review');this.outputApps!.claimImport(outputRoleReviewId,roleState.binding!,plan.id);const old=roleState.review.id;roleState={...roleState,review:this.outputApps!.checkImport(outputRoleReviewId,roleState.binding!,plan.id).review};this.run('UPDATE branch_installation_plans SET preview_json=?,next_attempt_at=NULL,error=NULL WHERE id=?',stableJson(roleState),plan.id);this.outputApps!.abandonReview(old);}
   if(roleState.review)this.outputApps!.claimImport(roleState.review.id,roleState.binding!,plan.id);
   if(plan.state==='preview')this.store.sqlite.transaction(()=>{
+   const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);
+   if(!current||current.state!=='preview')throw new Error('Update preview is no longer available; review the package again');
+   plan=current;
    if(plan.branch_id&&this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state='applying' AND id!=?",plan.branch_id,id))throw new Error('Another update is still applying');
    if(plan.branch_id&&this.row('SELECT 1 FROM branches WHERE id=? AND deleting=1',plan.branch_id))throw new Error('Branch deletion is pending');
    if(plan.branch_id&&plan.expected_resources_hash!==this.resourceRevision(plan.branch_id))throw new Error('Chats or Agent settings changed; review a new preview');
    if(plan.branch_id){const b=this.branches.getBranch(plan.branch_id);if(!b||b.versionId!==plan.expected_version_id||this.row('SELECT configuration_revision FROM branches WHERE id=?',plan.branch_id)!.configuration_revision!==plan.expected_configuration_revision)throw new Error('Branch changed; review a new preview');}
    else {const pkg=JSON.parse(plan.package_json);plan.branch_id=this.branches.create(pkg.definition.name,`installation-${id}`).id;this.run('UPDATE branch_installation_plans SET branch_id=? WHERE id=?',plan.branch_id,id);}
-   this.run("UPDATE branch_installation_plans SET state='applying',error=NULL,next_attempt_at=NULL,updated_at=? WHERE id=?",new Date().toISOString(),id);
+   if(this.store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',error=NULL,next_attempt_at=NULL,updated_at=? WHERE id=? AND state='preview'").run(new Date().toISOString(),id).changes!==1)throw new Error('Update preview is no longer available; review the package again');
   })();
   await this.tick();const next=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id)!;return {branchId:next.branch_id,state:next.state,...(next.error?{error:next.error}:{})};
  }
