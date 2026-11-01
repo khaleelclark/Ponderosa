@@ -49,7 +49,7 @@ Owner handoffs must distinguish an absent behavior from deferred qualification.
 | 29 | Core, Branches, OutputAgentApp, AssistantEntry, folder navigation | UI: retain folders; remove explanatory UI blocks, overlaps/flicker causes. Blind panels/recordings deferred. |
 | 30 | `local-memory-catalog.ts`, `local-memory.ts`, dynamic-tool handler | Features + Runtime: combined chat/global search and global-write human settings; named external model/runtime prerequisites do not prove memory correctness. |
 | 31 | `routes/streams.ts`, Agent/Workspace hooks, `BranchLiveOutput.tsx`, `voice-reply-stream.ts` | UI shared-human/private/peer previews and recovery controls integrated; mixed-route generation and early qualified voice remain Runtime work. Latency thresholds/recordings deferred. |
-| 32 | `packages/core/src/branches.ts`, `branch-store.ts`, routes/engine/checkpoint authorities | Features: named capability checklist below; framework examples and any incomplete restoration are implementation work where absent, not automatically a verification gap. |
+| 32 | `packages/core/src/branches.ts`, `branch-store.ts`, host-cut/provenance and canonical restoration authorities | Integrated bounded Fork/Map/control, issued persistent Request graph and owner-tree rewind, including restored-history recapture; see latest continuation. Resource consumer, secret/recovery/cancellation/forwarded-bundle/crash gaps and framework examples remain implementation work. No acceptance inferred. |
 
 ## Every Build-list subrequirement
 
@@ -118,7 +118,7 @@ only after implementation is complete under Patrick's current direction.
 | --- | --- | --- |
 | Graphs | BranchDefinition steps/controls/edges; WorkflowCanvas | Features: graph authoring and runtime routing share canonical definition. |
 | State | Branch parameters, execution input/results and configuration | Features: describe state semantics and missing general state operations explicitly. |
-| Checkpoints and rewind | Initial/historical checkpoint routes, branch-unit-saver, checkpoint invocations | Features + Reliability: identify unsupported resource-frontier restoration versus required capability. |
+| Checkpoints and rewind | Initial/historical routes, branch-unit-saver, branch-host-cut/provenance, canonical cut restoration | Bounded parallel/issued Request/tree/repeated rewind source integrated. Shared retained package API present; Branch resource consumer and fresh destination policy review remain open, as do secret/recovery/budget/cancellation/forwarded-bundle/crash families. |
 | Human-in-the-loop | human_gate, BranchGateResolution, execution actions | Features + UI: interruption/edit/resume and exact Decision state. |
 | Streaming | BranchLiveOutput and shared Agent stream | UI + Features: every agent-output surface, reconnect without duplicate authored results. |
 | Tools | Agent native harness tools and Script/action steps | Runtime + Features: optional tool integrations and actual harness access parity. |
@@ -577,3 +577,42 @@ cuts and arbitrary shell/user-folder/native-transcript/remote-bypass changes
 remain unsupported. No native snapshot, complete resource restoration, full
 #8/#32 or passing claim. No tests/checks/build/types/Node/native/browser/runner
 preparation or execution, push/deploy or qualification performed.
+
+## Branches parallel, canonical coordination and recapture chain assembled
+
+All sixteen actual owner commits a62ef242 through6c4a9eb integrated in ancestry
+order atop123f91222; final source commit1b1ffa842. Runtime/custody equivalents
+were not replayed. One source collision family: db.ts migration registration,
+resolved to preserve0035_provider_context_recovery_progress.sql followed by
+0036_coordination_cut_restorations.sql exactly once. Neither migration executed.
+The frozen RequestLifecycleCard delta is incorporated provisionally, pending
+sole UI-owner review through the tracked request; no independent web rewrite.
+
+This supersedes older blanket statements that Fork/Map, issued Request prefixes,
+owner trees or restored-history recapture lack source implementation. Supported
+bounded codecs now include nested Fork/Map; all/any/quorum joins; route/condition/
+loop/owned bundle replay; sanitized Script failures, retry generations/delays and
+observed drained Script remainder cancellation; human gates with fresh reviews;
+before-Request persistent Agent admission; reviewed persistent issued Request/
+question/answer/Join graph restoration; serial/parallel child-owner trees with
+one canonical map/receipt/transaction; and bounded provenance-verified recapture.
+Current grants/pins, complete owned audits, terminal versions, observed drain,
+fresh admission and exact fresh Communication proof remain required. Imported
+historical facts stay labelled data; no native Run/session/lease is restored.
+Host-cut evidence is scoped to original participants and immutable saved bytes.
+
+Operator host Request/graph review/adoption endpoints and public SDK are present.
+This does not establish completed browser review/adoption callers or UX acceptance.
+Same-transaction canonical/frontier insertion and readback, final-only wakes,
+immutable provenance maps and lost-response receipts are source coverage only.
+
+All32 and named Build capability inventory remain navigation, not acceptance.
+Shared checkpoint package custody/memory boundaries remain present. Branch
+resource capture-intent/finalization/readback/retention/rewind consumption and
+fresh destination policy review are a separate open continuation. Old metadata-
+only cuts have no retained private bytes. Changed/secret binding remap, Agent/
+child cancellation, cross-owner forwarded bundles, recovery/exhausted budgets,
+unknown native outcomes and broader crash reconciliation remain unsupported.
+Pinned framework examples/equivalence and prior Runtime/UI/performance gaps
+remain open. No tests/checks/build/types/Node/native/browser/runner preparation
+or execution, push/deploy, complete #32/Bible/Phase2 or passing claim.
