@@ -44,7 +44,9 @@ test('acknowledgement exposes actual provider bytes only after exact native succ
  assert.equal(stream.snapshot.text,'');assert.equal(stream.finalText(),undefined);
  const receipt={type:'tool_result',id:'native-operation',isError:false,voiceReplyStreamId:'stream',output:''};
  assert.equal(stream.observeWork({...receipt,id:'foreign'}),false);assert.equal(stream.snapshot.text,'');
- assert.equal(stream.observeWork({...receipt,isError:true}),false);assert.equal(stream.snapshot.text,'');
+ const failed=new VoiceReplyStream({...initial},[],'native-operation',args.acknowledgement);
+ assert.equal(failed.observeWork({...receipt,isError:true}),true);assert.equal(failed.snapshot.state,'failed');
+ assert.equal(failed.observeWork(receipt),false);assert.equal(failed.snapshot.text,'');
  assert.equal(stream.observeWork(receipt,'receipt-time'),true);assert.equal(stream.snapshot.text,args.acknowledgement);
  assert.equal(stream.snapshot.firstTextAt,'receipt-time');assert.equal(stream.snapshot.state,'streaming');
  assert.equal(stream.observeWork({type:'command',command:'inspect file'}),false);assert.equal(stream.receiptAccepted(),true);

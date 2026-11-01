@@ -40,7 +40,11 @@ export class VoiceReplyStream {
       }
       return false;
     }
-    if(this.snapshot.purpose === "acknowledgement")return event.type === "error" && this.invalidate();
+    if(this.snapshot.purpose === "acknowledgement"){
+      const authorizingResult=event.type === "tool_result" && this.authorizingOperationId !== undefined &&
+        (event.id === this.authorizingOperationId || event.voiceReplyOperationId === this.authorizingOperationId);
+      return (event.type === "error" || authorizingResult) && this.invalidate();
+    }
     return ["work_start", "command", "file_change", "tool_call", "tool_result", "error"].includes(event.type) && this.invalidate();
   }
   accept(event: Extract<AgentEvent, { type: "response_text" }>, now: string): boolean {
