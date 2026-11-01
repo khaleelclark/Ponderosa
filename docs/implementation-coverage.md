@@ -467,3 +467,22 @@ grouped Shared per-Agent choices and mapped post-install Settings. UI remains so
 web writer; backend grouped composition/binding/recovery stays Branches-owned.
 No tests/checks/types/build/browser/native/runner preparation or execution, push,
 deploy, #8/#12/Bible/Phase2 completion claim.
+
+## Connected workflow organization import caller
+
+Branches `8d5ee5a11475de121f86099a433c92cd4e4b8fea` integrated conflict-free
+with Reliability82cf46284 already present. One connected same-Chat organization
+can now compose into one canonical import with namespaced artifact/history refs,
+compatible Shared originals/memory consolidation and preserved Separate roots.
+Conflicting source manifests/bytes refuse. All fresh IDs bind atomically to one
+creation receipt; recovery validates ordered membership/result mapping and staged
+memory, and missing partial groups cannot fall back to individual imports.
+Actual-root confirmation, Stop and complete grouped policy digest remain required.
+All six changed source/doc/regression deliverables are present and source-read.
+This supersedes the blanket missing grouped connected-organization backend caller
+in earlier inventory entries. Disconnected same-Chat forests still need shared
+importer batch admission without inventing a manager; existing Agents are not
+regrouped. UI workflow-package controls remain sole UI-owner work. In-progress
+checkpoint fork/map/Request/provider/resource/recovery-secret families remain open.
+No tests/checks/builds/types/browser/native/runner preparation or execution,
+push/deploy or full #8/#32 completion claim.
