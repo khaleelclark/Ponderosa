@@ -1,7 +1,6 @@
 # Native approval callbacks and retained Claude controls
 
-Source implementation for U1 G1/G4, based on assembled `95448f0e5` (includes
-Claude compact successor). This is not execution qualification or whole harness
+Source implementation for U1 G1/G4, integrated from `bf54bc0e163e4a405e52eb47550e3785d69638d2` after current M4/Codex/G7 source. Shared adapters and provider dispatch compose those existing lanes. This is not execution qualification or whole harness
 parity acceptance. No native process, SDK, Node, tests, builds or typechecks were
 executed for this change.
 
@@ -155,9 +154,7 @@ Persistent per-Agent permission mode/launch settings, native hook registration a
 path-level filesystem escalation under an existing deny-only write policy are not introduced.
 M2 durable lost-ack/noIDs result lookup and M3 original uncertain effect
 reconciliation remain distinct work; no native source effects are inferred or
-replayed. G2/G3 remain their other owner's lane. G5 file rewind/fork, G6 modality,
-G7 browser console/recording and G8 pending native task lifetime remain separately
-assigned/unqualified. Native TaskOutput was removed upstream; inherited output-file
+replayed. G2 live-session paused goal controls and G3 individual-Agent human plan/review/schema actions are assembled, with active goal continuation and broader intake still open. G7 bounded console/recording tools/API/SDK are assembled; operator UI scope remains unresolved. G5 file rewind/fork, G6 modality and G8 pending native task lifetime remain pending assignment and unqualified. Native TaskOutput was removed upstream; inherited output-file
 Read is its domain disposition, not a request to resurrect a removed tool.
 Operator-native installation/login/TTY rendering remain documented domain
 boundaries, never an approved blanket exception to Bible #4. No whole-work done
