@@ -276,3 +276,24 @@ refusal, command recovery/restart and final-receipt rollback, then continuation 
 implementation and rendered acceptance. No portability tests/check/build/types,
 Node/native/browser/provider execution or preparation/install/migration/deploy ran.
 Frozen recording evidence keeps its original source heads and classification.
+
+Actual-app shared-recording follow-up (bounded, whole slice still unaccepted):
+`/tmp/ponderosa-recording-app-evidence/` preserves exact `4c8666a` execution
+packets. Application-5 exited 0 with real security/product hooks, native Chat REST
+admission and component-to-backend recording/download/single-JPEG decode,
+keyboard controls and delayed old-Project status isolation. Independent Quality
+classification is pending; no multi-frame timing or screen-reader claim follows.
+Application-8 (broker-backed app) exited 1: canonical Chat browser promotion
+returned 404 `Resource is unavailable in this product` AFTER saved-browser metadata
+committed (read-only receipt shows promoted_at). Do not retry that mutation.
+Application-7 fallback exited -15 after failed cleanup and is not a clean success.
+
+Chat owner adapter bug `chat:v1:` versus canonical `chat-browser:v1:` was fixed
+by frozen UI `b454ac51` and composed `f0d8aef9b`; its fixture remains deferred.
+Browser specialist owns isolated minimal saved-browser DTO/product guard fix and
+affected actual-backend rerun on the frozen recording boundary plus only relevant
+fixes. Delivery owns integration; Quality owns packet classification. Saved-browser
+actual-app recording/playback remains blocked until that rerun. Current integration
+portability code must not execute as a side effect; prior frozen packets stay
+immutable with their original source heads. Existing broad compiler diagnostics,
+full workspace shell and manual/screen-reader evidence remain separate limits.
