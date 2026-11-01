@@ -125,3 +125,7 @@ was removed. Supported selected foreign-checkpoint continuation also remains
 unimplemented: import data alone cannot satisfy existing current custody, fresh
 acceptance, budget and human-review consumer requirements. These are implementation
 gaps, not approved exclusions or an assertion that all permutations are required.
+
+The exact scalar-plan/ownership obstacle and smallest existing-writer resolution are
+recorded in `branch-runtime-tree-publication-contract.md`. That report adds no tree
+runtime support and is not an external blocker or an approved #8 exclusion.
