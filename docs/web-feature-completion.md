@@ -700,9 +700,109 @@ integration and executed lifecycle/native/accessibility/mobile qualification rem
 open. No whole UI/group/lifecycle/Bible/Phase2 acceptance is claimed.
 
 
-Integration note: lifecycle discovery/group retirement successor12e744222 is assembled
+Historical integration note (superseded by6b1f7a398): lifecycle discovery/group retirement successor12e744222 is assembled
 with equivalentf73a/393 backend source and Branch e7d27801 group command discovery/CAS.
 This successor does not adopt e7 capture preview/CAS: the existing eba8 capture UI still
 sends commandKey only, so new capture POST is incompatible until its separate successor.
 Lifecycle Settings discovery/retirement is distinct from that pending Branch capture UI.
 All execution qualification remains deferred.
+
+## Canonical group commands and authoritative 2–32-resource capture continuation
+
+Source-only successor to UI `12e744222fa1f3d0e07ac72ac8d34a14fe93d2e5`.
+Required backend is the committed Branch group discovery/capture-CAS contract at
+`e7d27801a3dc2e9605f261b246d5ce59deb9da69`, direct parent
+`a2581922eeb67ec059a99b6ee5d908e30c987df5`, in
+`/tmp/ponderosa-branches-group-discovery`. Actual routes, shared DTOs, SDK and
+`docs/branches-two-resource-destination.md` sections on canonical discovery and
+capture comparison were source-read. Preserve its assembled group consumer and
+Runtime/lifecycle ancestry or equivalent hunks; Integration owns equivalent
+assembly. Previous lifecycle discovery still requires `f73a1e5a44bdea1a5e29799416e423afffacfa30`
+and whole-group lifecycle `393a02f5c0946fafcebe3577e5432fc9878bb448` or equivalents.
+Earlier two-resource/browser-only descriptions above record the previous source
+contract; this continuation replaces those limits for group command discovery,
+capture and exhaustive disclosure in `BranchGroupReview`.
+
+Capture now starts with pure GET `.../destination-groups/capture-preview`. The
+server decides supported standalone serial/local-parallel eligibility, current
+host cut, owner/drain and all generation-zero resource identities. The UI rejects
+malformed previews, fewer than 2 or more than 32 resources, duplicate Steps/Chats,
+later generations and invalid cut hashes. Every resource/participant, review hash,
+version, binding revision, frontier and host-cut hash is visible. Separate explicit
+inventory acknowledgement, effects acknowledgement and final confirmation precede
+POST. The original preview and exact `{commandKey,reviewHash,versionId}` are saved
+before effects; no substitute fresh hash or cut is sent after an uncertain outcome.
+The pure status GET must independently show every exact source Step/Chat and seal
+before prepare. No local resource-count or serial-path heuristic authorizes capture.
+Called trees, unsupported native/package payloads and later generations remain
+subject to server refusal, with no new payload support in this UI.
+
+Canonical GET `/api/branches/destination-groups/discovery?kind=captures|admissions&limit=50`
+lists exact original keys, source Branch/Run, resource count, checkpoint/admission
+identity, state and current/retained source-owner presence. Explicit Load more
+follows the opaque cursor until absent. Any DB write or daemon restart may stale
+that cursor. Invalid/409 pages remove stale rows, selected readbacks and review/
+confirmation state; restart is explicit, with no automatic cursor restart or action
+replay. Pending original command inputs remain intact. The collection is global
+operator audit; it is not a claim of current action eligibility or owner deletion.
+Legacy missing original keys are labelled unsupported; no key reconstruction,
+pasted IDs or browser guesses are offered.
+
+Selecting a canonical capture uses its exact key for GET status, verifies count/
+checkpoint/hash, and retains the canonical saved review/version with returned Step
+identities. Selecting an admission uses its exact prepare key and checkpoint/hash
+for GET command readback, verifies admission/count/exhaustive resource identities,
+and can recover this source Run without needing a capture key or browser history.
+The retained preparation identity is only for GET/result binding; discovery does
+not supply optional original import settings, and it is never replayed as POST.
+Other source Runs can also be inspected through their exact scoped pure GETs here;
+those results are audit evidence, and disclosure actions require opening that source
+Run. Deleted/missing source owners can still make scoped GET refuse, although their
+retained discovery identity is visible. Missing owner-independent command readback
+is reported as a backend refusal, never replaced by POST. Lifecycle review for
+canonical discovered admissions remains separately available in Settings.
+
+Every resource package/map and every current policy now participates in whole-group
+preview matching for 2–32 resources. The whole private fact/actor/audience/recipient
+inventory remains explicit. Approval, revocation and atomic admission remain
+separate; unknown import/staging/admission slots stay held, exact commands remain
+persisted, pure choice/destination reads recover outcomes, and no mutation replay
+is introduced. Revocation remains possible after independent source preview refusal.
+Fresh Project directory reuse/default Chat/per-resource Chats/no separate workspace
+warnings remain visible. Partial group capture abandonment is still unsupported;
+all unresolved member pins remain held. Retirement remains the separate lifecycle
+surface, not a loop over members here.
+
+The UI-owned additive `BranchGroupClient` now imports the backend owner's named
+`BranchGroupCaptureInput`, `BranchGroupCaptureResult`, `BranchGroupCapturePreview`, and `BranchGroupDiscoveryPage`
+from `branches.ts`; it adds only transport methods for the exact existing routes.
+This older UI base does not contain those backend DTO declarations, as with the
+previous backend group-status dependency: integrate the required backend/core
+successor before qualification. Core ownership was coordinated with Branch owner;
+no edits to their `branches.ts`, `branches-client.ts`, routes, stores or migrations.
+Preserve both additive UI client and backend SDK during assembly.
+
+Six deliverables: `apps/web/src/components/branches/BranchGroupReview.tsx`,
+`branchGroupReview.ts`, `packages/core/src/branch-group-client.ts`,
+`tests/chats/branch-group-review.test.mjs`, `branch-group-review-mounted.tsx`, and
+this document. Existing ExecutionPanel mounting and core barrel exports are reused.
+Deferred fixture source covers 2/3/32 complete inventories and last-resource policy
+binding, malformed/later-generation cuts, exact preview/CAS transport, stale preview,
+three-resource local-parallel presentation, lost capture/prepare/choice/admit responses,
+remount without POST replay, no-preview revocation, empty-browser canonical recovery,
+51st discovery row, legacy missing keys, opaque pagination and cursor409 reset.
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, backend writes, push/merge/deploy or new workers. Fixtures are unexecuted.
+Source integration and separately authorized executed runtime/native/accessibility/
+mobile qualification remain open; no whole UI/group/lifecycle/Bible/Phase2 acceptance.
+
+
+
+Current integration note: UI6b1f7a398 now sends and persists the required exact
+commandKey/reviewHash/versionId; the earlier caller mismatch is resolved. Both SDKs
+and their shared DTOs are preserved. A separate backend source blocker remains:
+BranchStore.previewIssuedGroupCapture directly calls previewIssuedGroupCapture, whose
+captureBranchHostCut requires db.inTransaction. The GET path supplies no transaction.
+A Branch-owned read-transaction correction is not part of this UI-only assembly;
+new preview/capture usability remains held pending that correction. No execution claim.
