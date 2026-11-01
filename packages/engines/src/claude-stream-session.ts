@@ -1,3 +1,6 @@
+import { once } from "node:events";
+import { PassThrough } from "node:stream";
+import { ClaudeNativeCompaction } from "./claude-native-compaction.js";
 import { StderrTail } from "./stderr-tail.js";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
@@ -8,6 +11,8 @@ import type {
   EngineModelOption,
   OpenRuntimeSessionOptions,
   RuntimeSession,
+  RuntimeCommandResult,
+  RuntimeContextUsage,
   RuntimeSteerResult,
   RuntimeTurnInput,
 } from "@ponderosa/core";
@@ -56,6 +61,13 @@ export class ClaudeStreamSession implements RuntimeSession {
   private readonly child: ChildProcess;
   private reportDrainedRootExit?: () => void;
   private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
+  private nativeCommand?: ClaudeNativeCompaction;
+  private nativeUsage?: RuntimeContextUsage;
+  private sessionInitialization?: unknown;
+  private initialized = false;
+  private nativeCompactAdvertised = false;
+  private initializationReady!: () => void;
+  private readonly initialization = new Promise<void>(resolve => { this.initializationReady = resolve; });
   private active = false;
   private closed = false;
   private readonly stderrTail = new StderrTail();
@@ -156,11 +168,32 @@ export class ClaudeStreamSession implements RuntimeSession {
       request_id: this.modelInitializationRequestId,
       request: { subtype: "initialize", hooks: {}, sdkMcpServers: [] },
     })}\n`);
-    this.events = this.eventStream();
+    // One stdout reader serves both ordinary turns and idle native commands.
+    // Backpressure bounds normal event buffering; native receipts never enter it.
+    const output = new PassThrough({ objectMode: true, highWaterMark: 64 });
+    output.on("error", () => undefined);
+    this.events = { [Symbol.asyncIterator]: () =>
+      output.iterator({ destroyOnReturn: false }) as AsyncIterator<AgentEvent> };
+    void (async () => {
+      try {
+        for await (const event of this.eventStream()) {
+          if (!output.write(event)) await once(output, "drain");
+        }
+        output.end();
+      } catch (error) {
+        output.destroy(error instanceof Error ? error : new Error("Claude stream failed"));
+        void this.close().catch(() => undefined);
+      } finally {
+        this.nativeCommand?.fail();
+        this.initializationReady();
+      }
+    })();
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
-    if (this.active) throw new Error("Claude already has an active turn");
+    if (this.active || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude has active or uncertain native work");
+    this.nativeCommand = undefined;
+    this.nativeUsage = undefined;
     this.terminalEvent=undefined;
     const turnId = input.clientMessageId ?? randomUUID();
     const prompt = this.opts.resumeSessionId
@@ -179,6 +212,14 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   async capabilities(): Promise<EngineCapabilities> {
+    if (!this.initialized && !this.closed) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([this.initialization, new Promise<void>(resolve => {
+          timer = setTimeout(resolve, 5_000);
+        })]);
+      } finally { if (timer) clearTimeout(timer); }
+    }
     return this.capabilitiesSnapshot ?? {
       steering: true,
       persistentSessions: true,
@@ -187,18 +228,67 @@ export class ClaudeStreamSession implements RuntimeSession {
         selectedModel: this.opts.model,
         model: this.opts.model,
       } : {}),
-      commands: [],
+      commands: this.initialized && this.nativeCompactAdvertised && this.opts.resumeSessionId ? [{
+        name: "compact", description: "Compact retained Claude context with verified native receipts",
+        source: "adapter-implemented", acceptsArguments: false, insertText: "/compact",
+        invocation: "runtime", status: "available",
+      }] : [],
       mcpServers: [],
       composerCapabilities: [],
     };
   }
 
-  contextUsage(): { usedTokens: number; providerSessionGeneration: string } | undefined {
-    return this.contextObservations.contextUsage();
+  contextUsage(): RuntimeContextUsage | undefined {
+    if (this.nativeCommand && !this.nativeCommand.succeeded) return undefined;
+    return this.nativeUsage ?? this.contextObservations.contextUsage();
+  }
+
+  async invokeCommand(name: string, argumentsText?: string): Promise<RuntimeCommandResult> {
+    if (name !== "compact" || argumentsText?.trim()) throw new Error("Claude native compact accepts no arguments");
+    if (this.closed || this.active || this.nativeCommand && !this.nativeCommand.succeeded) {
+      throw new Error("Claude has active or uncertain native work; do not repeat compaction");
+    }
+    this.terminalEvent = undefined;
+    const command = new ClaudeNativeCompaction(this.engineAgentId, randomUUID());
+    this.nativeCommand = command;
+    if (this.sessionInitialization) command.observe(this.sessionInitialization);
+    this.nativeUsage = undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unknown = (): RuntimeCommandResult => ({ outcome: "outcome_unknown",
+      message: "Native compaction or fresh occupancy is unconfirmed. Do not repeat the command; source work remains held." });
+    const perform = async (): Promise<RuntimeCommandResult> => {
+      await this.initialization;
+      if (this.closed || command.cancelled || !this.initialized || !this.nativeCompactAdvertised ||
+          (!this.opts.resumeSessionId && !this.sessionInitialization) ||
+          this.capabilitiesSnapshot?.commands.some(candidate => candidate.name === "compact" && candidate.invocation !== "runtime")) {
+        command.fail(); return unknown();
+      }
+      command.inputSent = true;
+      // Documented built-in command dispatch, not a source Run or prose prompt.
+      await this.writeInput("/compact", command.commandId);
+      if (!await command.completion || this.closed || command.cancelled) return unknown();
+      const requestId = `ponderosa-context-${randomUUID()}`;
+      if (!command.requestUsage(requestId)) return unknown();
+      await this.writeFrame({ type: "control_request", request_id: requestId,
+        request: { subtype: "get_context_usage" } });
+      const usage = await command.usage;
+      if (!usage || this.closed || command.cancelled) return unknown();
+      this.nativeUsage = usage;
+      return { outcome: "completed", contextUsage: usage };
+    };
+    try {
+      return await Promise.race([perform(), new Promise<RuntimeCommandResult>(resolve => {
+        timer = setTimeout(() => { command.fail(); resolve(unknown()); }, 45_000);
+      })]);
+    } catch {
+      command.fail(); return unknown();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
-    if (!this.active) return { status: "not_active" };
+    if (this.nativeCommand || !this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
     this.contextObservations.submit(turnId);
     await this.writeInput(input.prompt, turnId);
@@ -219,6 +309,8 @@ export class ClaudeStreamSession implements RuntimeSession {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
+    this.nativeCommand?.fail();
+    this.initializationReady();
     this.child.stdin?.end();
     const attempt = terminateProcessGroup(this.child, {
       label: "Claude runtime",
@@ -240,6 +332,11 @@ export class ClaudeStreamSession implements RuntimeSession {
       session_id: this.engineAgentId,
       message: { role: "user", content: [{ type: "text", text: prompt }] },
     };
+    await this.writeFrame(frame);
+  }
+
+  private async writeFrame(frame: unknown): Promise<void> {
+    if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
     await new Promise<void>((resolve, reject) => {
       this.child.stdin!.write(`${JSON.stringify(frame)}\n`, (error) => error ? reject(error) : resolve());
     });
@@ -256,6 +353,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
         this.captureModelInitialization(raw);
         const capabilities = normalizeClaudeInitCapabilities(raw, this.opts.model);
+        if (capabilities?.sessionId === this.engineAgentId) this.sessionInitialization = raw;
         if (capabilities) {
           this.claudeCodeVersion = raw && typeof raw === "object" &&
             typeof (raw as { claude_code_version?: unknown }).claude_code_version === "string"
@@ -266,6 +364,12 @@ export class ClaudeStreamSession implements RuntimeSession {
             ...(this.liveModelCatalog() ? { modelCatalog: this.liveModelCatalog() } : {}),
           };
           this.opts.onCapabilitiesChanged?.();
+        }
+        if (this.nativeCommand) {
+          this.nativeCommand.observe(raw);
+          if (capabilities) map(raw, { cwd: this.opts.cwd });
+          // Native command output is not ordinary Agent work or publication.
+          continue;
         }
         const observation = this.contextObservations.observe(raw);
         if (observation) yield observation;
@@ -317,12 +421,17 @@ export class ClaudeStreamSession implements RuntimeSession {
       response?: {
         subtype?: unknown;
         request_id?: unknown;
-        response?: { models?: unknown };
+        response?: { models?: unknown; commands?: unknown };
       };
     };
     if (envelope.type !== "control_response" ||
         envelope.response?.subtype !== "success" ||
         envelope.response.request_id !== this.modelInitializationRequestId) return;
+    this.initialized = true;
+    const commands = envelope.response.response?.commands;
+    this.nativeCompactAdvertised = Array.isArray(commands) && commands.some(command =>
+      command !== null && typeof command === "object" && (command as {name?:unknown}).name === "compact");
+    this.initializationReady();
     try {
       this.providerModels = normalizeClaudeProviderModels(envelope.response.response?.models);
     } catch {

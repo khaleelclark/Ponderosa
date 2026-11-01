@@ -538,7 +538,7 @@ test('native recovery support describes actual mapped compaction and its crash l
  assert.deepEqual(new CodexAdapter({bin:'DO_NOT_EXECUTE'}).contextRecoverySupport,
   {status:'managed_compaction',crashReconciliation:'hold_without_native_query'});
  assert.deepEqual(new ClaudeAdapter({bin:'DO_NOT_EXECUTE'}).contextRecoverySupport,
-  {status:'unsupported',missingOperation:'structured_retained_session_compaction'});
+  {status:'managed_compaction',crashReconciliation:'hold_without_native_query'});
  assert.equal(new ProviderContextRecoveryUnavailableError().code,'provider_context_recovery_unsupported');
 });
 

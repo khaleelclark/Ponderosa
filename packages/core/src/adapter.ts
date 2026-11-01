@@ -300,8 +300,9 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   /** Live effective catalog for this authenticated session, with explicit
    * provenance for provider-advertised and adapter-implemented commands. */
   capabilities?(): Promise<EngineCapabilities>;
-  /** Invoke a provider command that is represented by a structured runtime
-   * method rather than by ordinary prompt text. */
+  /** Invoke an adapter-owned native command with validated provider receipts.
+   * A documented command-input wire format is distinct from ordinary user work;
+   * authored prose is never proof of native completion. */
   invokeCommand?(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;

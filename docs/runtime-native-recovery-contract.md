@@ -10,11 +10,11 @@ The event is written by `AgentStore.recordProviderRecoveryContextUsage` only aft
 
 - `packages/core/src/adapter.ts`, `RuntimeSession`: startTurn/steer/interrupt/close, optional capabilities/contextUsage/invokeCommand. No native operation status query, query key or idempotency receipt interface exists.
 - `packages/engines/src/codex-app-server.ts`, `invokeCommand('compact')`: `thread/compact/start` sends only threadId; its response is an empty acknowledgement. Matching live turn and contextCompaction item completion plus matching usage are the current completion proof. `ThreadResponse` used for open/resume contains thread ID and optional model, not an exact compaction operation receipt. The successor below integrates bounded stored completion readback for exact already observed IDs. It does not provide operation-key lookup across crashes.
-- `packages/engines/src/claude-stream-session.ts`: structured writes currently consist of initialization control plus streamed user input; `captureModelInitialization` accepts a matching successful model initialization response. The class has no `invokeCommand` implementation or native compact result reader. `startTurn`/`steer` are ordinary prompt writes and `interrupt` closes the process.
-- `packages/engines/src/claude.ts`: contextRecoverySupport remains explicitly unsupported. The discovery adapter adds its usage reader, not a structured retained-session compact command. The official command-input/result protocol is documented below; it is distinct from the structured-control-only recovery constraint.
+- `packages/engines/src/claude-stream-session.ts`: now implements documented native command dispatch plus exact UUID/local-command/manual-boundary completion and subsequent get_context_usage. See claude-native-command-recovery.md. Ordinary startTurn/steer remain separate; interrupt closes the owned process.
+- `packages/engines/src/claude.ts`: now advertises managed_compaction with hold_without_native_query. The updated assignment permits documented native command input, while ordinary model prose remains unusable as proof.
 - `packages/core/src/context-recovery.ts`: managed recovery explicitly retains hold_without_native_query; context recovery never settles prior uncertain source effects.
 
-Under the no-prompt constraint, remaining Claude implementation requires a supported structured compact control and exact completion/usage correlation; native lost-outcome recovery requires a supported durable native operation identity/result query or provider idempotency guarantee tied to the original session and operation. This source inspection establishes those missing integrations, not universal vendor capability absence. No new provider protocol, session-file parser, HTTP integration, authority callback or automatic mutation retry was invented.
+The previous no-command-input constraint has been superseded by explicit authorization of the documented command/result protocol. The successor implements Claude completion/occupancy correlation. Native lost-outcome recovery still requires a supported durable native operation identity/result query or provider idempotency guarantee tied to the original session and operation. This source inspection establishes those missing integrations, not universal vendor capability absence. No new provider protocol, session-file parser, HTTP integration, authority callback or automatic mutation retry was invented.
 
 Deferred `tests/providers/provider-recovery.test.mjs` covers recorded completion after phase loss/reopen, absent evidence, repeat idempotency and unchanged unknown source Run/no native commands. Existing unknown-result/refusal fixtures remain. No execution qualification is claimed.
 
@@ -60,7 +60,7 @@ provider turn completion alone cannot prove canonical tool/publication effects;
 those still need exact host receipts and original Run/fence custody. No endpoint
 implementing those stronger guarantees was established by the sources inspected.
 
-### Claude: documented command transport differs from structured control
+### Prior constraint disposition, superseded by native command authorization
 
 Claude DOES document retained-session compaction through native command input:
 [official SDK command guide](https://code.claude.com/docs/en/agent-sdk/skills#compact-history-with-compact).
@@ -77,18 +77,18 @@ The official Python SDK
 sends get_context_usage through the existing control protocol. Its enumerated
 [control request types](https://github.com/anthropics/claude-agent-sdk-python/blob/2146f9d8985513053e904b13200c8f744b36785a/src/claude_agent_sdk/types.py)
 do not define a compact operation. A structured occupancy query cannot perform
-compaction. The current assignment explicitly excludes prompt-based recovery;
+compaction. The previous assignment was interpreted as excluding command-input recovery;
 therefore no /compact user frame, invented compact subtype or direct Messages API
-compaction request was added. ClaudeAdapter remains unsupported under that exact
-constraint. This is a constraint-specific limitation, not universal provider
+compaction request was added. ClaudeAdapter was unsupported under that earlier
+constraint; the implemented successor below supersedes that disposition. This is a constraint-specific limitation, not universal provider
 capability absence.
 
 Minimal upstream contract under that constraint: a documented structured compact
 control for the retained exact session, correlated terminal receipt and fresh
 occupancy; durable operation-key lookup is additionally needed across lost
-outcomes. Alternatively an explicit scope change allowing the documented native
-command transport would permit implementing local-command/boundary verification
-plus the existing get_context_usage control, while still holding lost outcomes.
+outcomes. The subsequent explicit scope change authorizes the documented native command
+transport; local-command/boundary verification plus get_context_usage are now
+implemented, while lost outcomes stay held.
 No permission question or invented protocol is substituted for this distinction.
 
 Deferred `tests/providers/capabilities.test.mjs` adds exact stored turn/item,
@@ -96,3 +96,14 @@ foreign session, substitution, duplicate, pagination, unsupported-method and
 missing-identity refusal cases. These fixtures have not run. All implementation,
 provider compatibility and native behavior remain unqualified until the separately
 requested whole testing phase.
+
+
+## Claude command successor
+
+The documented native command transport is now explicitly authorized and
+implemented. See [Claude native command recovery](claude-native-command-recovery.md)
+for the exact usable API, proof sequence, canonical fence/drain connection and
+deferred fixtures. Earlier structured-control-only disposition above records the
+prior constraint, not a current missing Claude implementation. The implementation
+does not invent a compact control subtype or infer completion from model text.
+Cross-crash lost outcomes without durable provider key/query remain held.

@@ -400,11 +400,11 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     const advertisedSource: EngineCommand["source"] = declaredSource === "plugin" || pluginName
       ? "plugin" : declaredSource === "skill" || skillNames.has(name) ? "skill" : "provider-advertised";
     if (advertisedSource === "provider-advertised" && !CLAUDE_HEADLESS_BUILT_IN_COMMANDS.has(name)) continue;
-    const adapterImplemented = name === "usage" && advertisedSource === "provider-advertised";
+    const adapterImplemented = (name === "usage" || name === "compact") && advertisedSource === "provider-advertised";
     commands.set(name, {
       name,
       description: adapterImplemented
-        ? "Show Claude usage"
+        ? name === "compact" ? "Compact retained Claude context with verified native receipts" : "Show Claude usage"
         : string(advertised?.description) ?? "Claude-advertised command",
       source: adapterImplemented ? "adapter-implemented" : advertisedSource,
       acceptsArguments: adapterImplemented ? false : advertised?.accepts_arguments !== false,

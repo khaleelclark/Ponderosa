@@ -1,5 +1,4 @@
 import { claudeBillingEnvironment } from "./runtime-environment.js";
-import { UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY } from "@ponderosa/core";
 // The Claude adapter (SPEC §5, the planned second engine). Drives the
 // already-authenticated `claude` CLI (Claude Code) in its configured subscription
 // or API-key mode; no direct provider HTTP client. Spawns `claude -p --output-format
@@ -128,7 +127,7 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude";
   readonly supportsVoiceReplyStream = true;
-  readonly contextRecoverySupport = UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY;
+  readonly contextRecoverySupport = Object.freeze({ status: "managed_compaction" as const, crashReconciliation: "hold_without_native_query" as const });
   readonly displayName = "Claude";
   readonly trustedSystemPromptChannel = "system" as const;
   readonly providerUsageCommand = {
