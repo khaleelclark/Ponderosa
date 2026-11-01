@@ -1,3 +1,4 @@
+import {groupJournalAudit} from '../group-journal-audit.js';
 import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
 import {lifecycleDiscovery} from '../lifecycle-discovery.js';
 import {destinationLifecycle} from '../destination-lifecycle.js';
@@ -173,6 +174,11 @@ export function registerAgentPackageRoutes(
   app: FastifyInstance,
   context: AgentPackageRoutesContext,
 ): {packageEngine:BranchPackageEngine} {
+  const groupAudit=groupJournalAudit(context.store.sqlite,context.coordination);
+  app.get<{Querystring:import('@ponderosa/core').GroupJournalAuditSelection}>('/api/lifecycle/destination-groups/journal',(request,reply)=>{
+    try{exactObjectFields(validatedObject(request.query,'Group journal audit'),['kind','branchId','executionId','journalKey','journalSha256','custodySha256','commandKey','admissionId','reservationHash'],'Group journal audit');return groupAudit.read(request.query);}
+    catch(error){return reply.code(409).send({error:error instanceof SyntaxError?'Invalid retained group audit metadata':(error as Error).message});}
+  });
   const checkpointCustody=checkpointPackageCustody(context.dataDir);
   const lifecycle=checkpointCustodyLifecycle(path.join(context.dataDir,'checkpoint-package-custody'),(source,id)=>custodyLifecycleProof(context.store.sqlite,source,id,context.custodyOwner()));
   // Inherits the operator origin/capability boundary; reconciliation is never an Agent tool.

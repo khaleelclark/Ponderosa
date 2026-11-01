@@ -115,3 +115,20 @@ export interface LifecycleGroupCaptureEntry extends CheckpointGroupCaptureAbando
  sources:import('./branches.js').CheckpointPackageSource[];capturedCheckpointIds:string[];
  sourceOwner:'current'|'retained_only';state:'capturing';evidenceSha256:string;
 }
+
+
+/** Copy verbatim from group discovery. Hashes bind original retained evidence, not authority. */
+export interface GroupJournalAuditSelection {
+ kind:'captures'|'admissions';branchId:string;executionId:string;journalKey:string;
+ journalSha256:string;custodySha256:string;commandKey?:string;admissionId?:string;reservationHash?:string;
+}
+export interface GroupJournalAuditReadback {
+ historical:true;currentAuthority:false;actionEligible:false;held:true;
+ selection:GroupJournalAuditSelection;sourceOwnerPresent:boolean;state:string;journalSha256:string;evidenceSha256:string;
+ capture?:{sources:import('./branches.js').CheckpointPackageSource[];receipts:import('./branches.js').CheckpointPackageReceipt[];checkpointId?:number;checkpointHash?:string;disposition?:unknown};
+ reservationHash?:string;resources?:import('./coordination-destination.js').CoordinationDestinationGroupResource[];
+ idMap?:Record<string,string>;agentMap?:Record<string,string>;imports?:{sourceChatId:string;operationId:string;status:string}[];
+ owners?:{executionId:string;resourceStepId:string;present:boolean;commandPresent:boolean}[];
+ receipt?:import('./coordination-destination.js').CoordinationDestinationGroupReceipt|null;
+ retirement?:import('./coordination-destination.js').CoordinationDestinationReconciliationReceipt|null;
+}

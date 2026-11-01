@@ -197,6 +197,10 @@ export class CoordinationV3Store {
   admitCoordinationDestinationGroup(id:string,reviewHash:string,authority:CoordinationDestinationGroupAuthority,compose:(graph:import('@ponderosa/core').BranchHostGraphRestoreDto)=>import('@ponderosa/core').CoordinationDestinationOwnerReceipt[],now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
     return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).admit(id,reviewHash,groupDestinationAuthority(authority),compose,now) as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
   }
+  /** Host operator audit only: historical evidence, no disclosure/admission authority callback. */
+  inspectCoordinationDestinationGroupAudit(id:string){
+    return this.sqlite.transaction(()=>new CoordinationV3DestinationAdmissionAuthority(this.sqlite,()=>{throw Error('Audit read cannot deliver');},true).inspectGroupAudit(id))();
+  }
   readCoordinationDestinationGroup(id:string,reservationHash:string,authority:CoordinationDestinationGroupAuthority):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
     return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).read(id,reservationHash,groupDestinationAuthority(authority)) as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
   }

@@ -201,7 +201,7 @@ export {BranchCustodyLifecycle,type BranchCustodyReference} from './branch-custo
 
 export type {CoordinationDestinationGroupAuthority} from './coordination-v3-destination-admission-authority.js';
 
-export {readIssuedGroup} from './branch-issued-group-capture.js';
+export {readIssuedGroup,readIssuedGroupCaptureAudit} from './branch-issued-group-capture.js';
 export {readProviderExitEvidence,verifyRetainedProviderExitEvidence} from './provider-exit-evidence.js';
 
 export {readGroupCaptureDisposition,type BranchGroupCaptureAbandonInput,type BranchGroupPackageRetirementProof,type BranchGroupPackageInventory} from './branch-group-custody-disposition.js';

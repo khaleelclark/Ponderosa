@@ -540,3 +540,5 @@ all prior group custody/UI/lifecycle/observed-exit work. Prospective precleanup
 producer enablement and historical/later-generation admission remain held.
 Source inspection only; no tests/checks/build/types/Node/native/browser/preparation,
 migrations, push/deploy or new workers. No qualification or acceptance claim.
+
+Owner-independent group journal audit readback source: discovery emits exact raw journal/custody/admission/reservation hash selectors; operator read route and SDK validate retained group intent/receipt/retirement evidence after source-owner loss with explicit historical/no-current-authority/no-action flags. Current scoped authorizers remain unchanged. Deferred host and real Branch/canonical map-corruption fixtures are source only; no execution or broader lifecycle acceptance claim. See `group-journal-audit-readback.md`.

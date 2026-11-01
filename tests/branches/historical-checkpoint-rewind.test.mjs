@@ -1984,3 +1984,28 @@ test('whole-group host filesystem success and SQL failure retain all canonical B
  assert.equal(readFileSync(join(receipt.evidenceDirectory,id+'.payload'),'utf8'),payload);
  writeFileSync(join(receipt.evidenceDirectory,id+'.payload'),'changed');assert.throws(()=>api.abandon(input),/evidence changed/);
 });
+
+// Deferred audit composition; synthetic removal tests retained identity, not deletion eligibility.
+test('operator group journal readback survives source owner loss without current disclosure substitution',async t=>{
+ const x=await twoIssuedResources(t,'sync'),{f,input}=x,s=x.service(),db=f.store.sqlite;
+ const prepared=await s.prepare(f.branch.id,f.source.id,input),preview=await s.disclosures.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ await s.disclosures.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'audit-fixture-approval',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ const admitted=await s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash);await f.branches.unitSaver.drain();
+ const selection=s.discover({kind:'admissions'}).items.find(item=>item.admissionId===prepared.admissionId).auditSelection;
+ const captureSelection=s.discover({kind:'captures'}).items.find(item=>item.commandKey==='two-resource-cut').auditSelection;
+ const {groupJournalAudit}=await import('../../apps/server/dist/group-journal-audit.js');
+ const audit=groupJournalAudit(db,new CoordinationV3Store(db)),changes=db.prepare('SELECT total_changes() n').get().n;
+ const initial=audit.read(selection);assert.deepEqual(initial.receipt.requestMap,admitted.receipt.requestMap);assert.equal(initial.actionEligible,false);assert.equal(db.prepare('SELECT total_changes() n').get().n,changes);
+ db.pragma('foreign_keys = OFF');db.prepare('DELETE FROM branch_executions WHERE id=?').run(f.source.id);
+ assert.throws(()=>s.captureStatus(f.branch.id,f.source.id,'two-resource-cut'),/owner unavailable/);
+ const historical=audit.read(selection);assert.equal(historical.sourceOwnerPresent,false);assert.equal(historical.currentAuthority,false);assert.equal(historical.held,true);assert.deepEqual(historical.receipt.agentMap,admitted.receipt.agentMap);
+ assert.equal(audit.read(captureSelection).capture.receipts.length,2);
+ const plan=JSON.parse(db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,selection.journalKey).result_json),resource=plan.reservation.resources[1];
+ db.prepare('UPDATE agent_creation_operations SET conversation_id=? WHERE id=?').run('wrong-owner',historical.imports[1].operationId);
+ assert.throws(()=>audit.read(selection),/import ownership/);
+ db.prepare('UPDATE agent_creation_operations SET conversation_id=? WHERE id=?').run(resource.destination.conversationId,historical.imports[1].operationId);
+ const original=db.prepare('SELECT receipt_json FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId).receipt_json,receipt=JSON.parse(original);
+ db.exec('DROP TRIGGER coordination_destination_identity_immutable');
+ receipt.requestMap[Object.keys(receipt.requestMap)[0]]='wrong-mapped-request';db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(stableJson(receipt),prepared.admissionId);
+ assert.throws(()=>audit.read(selection),/map differs/);db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(original,prepared.admissionId);
+});

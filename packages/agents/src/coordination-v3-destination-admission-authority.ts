@@ -1,3 +1,5 @@
+import {branchContinuationIds} from './branch-continuation-remap.js';
+import {CoordinationV3DestinationReconciliation} from './coordination-v3-destination-reconciliation.js';
 import {randomUUID} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {
@@ -374,7 +376,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   this.db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(stableJson(receipt),admissionId);
   return receipt;
  }
- private verifyOwners(owners:CoordinationDestinationOwnerReceipt[],reservation:CoordinationDestinationReservation,stage:CoordinationDestinationStage,cut:BranchHostCut,graph:import('@ponderosa/core').BranchHostGraphRestoreDto):void {
+ private verifyOwners(owners:CoordinationDestinationOwnerReceipt[],reservation:CoordinationDestinationReservation,stage:CoordinationDestinationStage,cut:BranchHostCut,graph:import('@ponderosa/core').BranchHostGraphRestoreDto,audit=false):void {
   const resources=resourcesOf(reservation);
   if(owners.length!==resources.length||unique(owners.map(o=>o.resourceStepId)).length!==resources.length||owners.some(o=>!Array.isArray(o.requestBindings)))throw Error('Exact resource owner inventory required');
   const allBindings=owners.flatMap(o=>o.requestBindings);
@@ -386,31 +388,95 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(owner.executionId!==d.executionId||owner.resourceStepId!==d.resourceStepId||owner.resourceGeneration!==d.resourceGeneration||owner.creationOperationId!==localStage.importPlan.creationOperationId||!nonempty(owner.receiptId)
    ||!Array.isArray(owner.requestBindings)||owner.requestBindings.length!==roots.filter(r=>r.requestId).length||unique(owner.requestBindings.map(b=>b.sourceRequestId)).length!==roots.filter(r=>r.requestId).length
    ||roots.some(r=>r.requestId&&!owner.requestBindings.some(b=>b.sourceRequestId===r.requestId&&b.requestId===graph.requestMap[r.requestId!]&&nonempty(b.stepExecutionId)))
-   ||!this.db.prepare("SELECT 1 FROM agent_creation_operations WHERE id=? AND status='completed'").get(owner.creationOperationId))throw Error('Branch composer did not complete exact issued-step/import receipts');
-  if(this.group&&!this.db.prepare("SELECT 1 FROM agent_creation_operations WHERE id=? AND project_id=? AND conversation_id=? AND status='completed'").get(owner.creationOperationId,d.projectId,d.conversationId))throw Error('Group import ownership differs');
+   ||(!audit||this.db.prepare('SELECT 1 FROM agent_creation_operations WHERE id=?').get(owner.creationOperationId))&&!this.db.prepare("SELECT 1 FROM agent_creation_operations WHERE id=? AND status='completed'").get(owner.creationOperationId))throw Error('Branch composer did not complete exact issued-step/import receipts');
+  if(this.group&&(!audit||this.db.prepare('SELECT 1 FROM agent_creation_operations WHERE id=?').get(owner.creationOperationId))&&!this.db.prepare("SELECT 1 FROM agent_creation_operations WHERE id=? AND project_id=? AND conversation_id=? AND status='completed'").get(owner.creationOperationId,d.projectId,d.conversationId))throw Error('Group import ownership differs');
   for(const binding of owner.requestBindings){
-   if(!this.db.prepare(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+   if((!audit||this.db.prepare('SELECT 1 FROM branch_step_executions WHERE id=?').get(binding.stepExecutionId))&&!this.db.prepare(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
     WHERE a.request_id=? AND s.id=? AND s.execution_id=?`).get(binding.requestId,binding.stepExecutionId,d.executionId))throw Error('Branch issued-step reference was not persisted by composer');
   }
   const resource=this.db.prepare('SELECT execution_id,chat_id,generation,requested_count FROM branch_resources WHERE step_execution_id=?').get(d.resourceStepId) as Row|undefined;
   const resourceMembers=this.db.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(d.resourceStepId) as {agent_id:string}[];
   const command=this.db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(d.executionId,owner.receiptId) as Row|undefined;
-  if(!resource||resource.execution_id!==d.executionId||resource.chat_id!==d.conversationId||resource.generation!==d.resourceGeneration||resource.requested_count!==Object.keys(localStage.agentMap).length
+  if(audit&&!resource&&resourceMembers.length)throw Error('Orphan group resource members');
+  if((!audit||resource)&&(!resource||resource.execution_id!==d.executionId||resource.chat_id!==d.conversationId||resource.generation!==d.resourceGeneration||resource.requested_count!==Object.keys(localStage.agentMap).length
    ||stableJson(resourceMembers.map(m=>m.agent_id))!==stableJson(unique(Object.values(localStage.agentMap)))
-   ||!command||stableJson(JSON.parse(command.result_json).coordinationDestination)!==stableJson(graph))throw Error('Branch resource/owner command receipts were not persisted by composer');
+    ))throw Error('Branch resource/owner command receipts were not persisted by composer');
+  if((!audit||command)&&(!command||stableJson(JSON.parse(command.result_json).coordinationDestination)!==stableJson(graph)))throw Error('Branch owner command graph differs');
   }
+ }
+ /** Verify retained original group evidence without consulting or substituting live owner authority. */
+ inspectGroupAudit(admissionId:string){
+  if(!this.group)throw Error('Group audit reader required');
+  const tombstone=this.db.prepare('SELECT evidence_json FROM coordination_destination_retirements WHERE admission_id=?').get(admissionId) as Row|undefined;
+  const retirement=tombstone?new CoordinationV3DestinationReconciliation(this.db,true).read(admissionId):null;
+  const archived=tombstone?JSON.parse(tombstone.evidence_json):undefined;
+  const current=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(admissionId) as Row|undefined;
+  const row=archived?.row??current;if(!row||current&&archived&&stableJson(current)!==stableJson(row))throw Error('Original group admission evidence unavailable or conflicting');
+  const {reservation,cut}=this.source({...row,id:undefined}),snapshot=JSON.parse(row.snapshot_json),resources=reservation.resources;
+  if(!resources||resources.length<2||resources.length>32||row.id!==admissionId||row.branch_id!==reservation.branchId||row.source_execution_id!==reservation.sourceExecutionId||row.checkpoint_id!==reservation.checkpointId
+   ||row.project_id!==reservation.destination.projectId||row.conversation_id!==reservation.destination.conversationId||reservation.operatorId!=='local-operator'
+   ||snapshot.selected?.execution?.[0]?.id!==reservation.sourceExecutionId||snapshot.selected.execution[0].branch_id!==reservation.branchId
+   ||unique(resources.map(r=>r.custody.sourceChatId)).length!==resources.length||unique(resources.map(r=>r.destination.conversationId)).length!==resources.length
+   ||unique(resources.map(r=>r.destination.resourceStepId)).length!==resources.length||resources.some(r=>r.destination.projectId!==row.project_id)
+   ||stableJson(resources[0])!==stableJson({custody:reservation.custody,destination:reservation.destination})
+   ||snapshot.issuedGroupCustody?.length!==resources.length||resources.some(r=>!snapshot.issuedGroupCustody.some((c:Row)=>stableJson(c)===stableJson(r.custody))))throw Error('Original group audit resource inventory differs');
+  for(const resource of resources){
+   const {version,custodyId,boundaryId,sha256,byteLength,...source}=resource.custody;
+   const original=snapshot.selected.resources.find((r:Row)=>r.step_execution_id===source.intent.resourceStepId);
+   if(!receiptMatchesSource(resource.custody,source)||!original||source.intent.executionId!==reservation.sourceExecutionId||source.sourceChatId!==original.chat_id||source.intent.resourceGeneration!==original.generation
+    ||source.intent.frontierSha256!==resourceCaptureFrontierHash(snapshot.selected)||source.intent.hostCutSha256!==payloadHash(cut)||source.intent.bindingSha256!==snapshot.issuedContinuation?.bindingHash
+    ||source.intent.configurationSha256!==payloadHash(snapshot.issuedContinuation.configuration)||stableJson(source.agentIds)!==stableJson(JSON.parse(original.import_operation_json).result.agentIds))throw Error('Original group audit custody binding differs');
+  }
+  const checkpoint=this.db.prepare('SELECT execution_id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(reservation.checkpointId) as Row|undefined;
+  if(checkpoint&&(checkpoint.execution_id!==reservation.sourceExecutionId||checkpoint.content_hash!==reservation.checkpointHash||checkpoint.snapshot_json!==row.snapshot_json))throw Error('Original group checkpoint differs');
+  const slots=(archived?.groupChats??this.db.prepare('SELECT admission_id,source_chat_id,source_execution_id,conversation_id,stage_json FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(admissionId)) as Row[];
+  const expected=resources.map(r=>({admission_id:admissionId,source_chat_id:r.custody.sourceChatId,source_execution_id:r.custody.intent.executionId,conversation_id:r.destination.conversationId})).sort((a,b)=>a.source_chat_id<b.source_chat_id?-1:1);
+  if(stableJson(slots.map(({stage_json,...identity})=>identity))!==stableJson(expected))throw Error('Original group audit slots differ');
+  const stage=row.stage_json?JSON.parse(row.stage_json):null,agentMap:Record<string,string>={},imports:{sourceChatId:string;operationId:string;status:string|'absent'}[]=[];
+  for(const resource of resources){
+   const slot=slots.find(slot=>slot.source_chat_id===resource.custody.sourceChatId)!,local=slot.stage_json?JSON.parse(slot.stage_json):null;
+   const chat=this.db.prepare('SELECT project_id,branch_id,execution_id FROM conversations WHERE id=?').get(resource.destination.conversationId) as Row|undefined;
+   if(chat&&(chat.project_id!==resource.destination.projectId||chat.branch_id!==reservation.branchId||chat.execution_id!==resource.destination.executionId))throw Error('Original group audit Chat ownership differs');
+   if(!local)continue;
+   if(stableJson(local)!==slot.stage_json||!exactKeys(local.agentMap,resource.custody.agentIds)||unique(Object.values(local.agentMap) as string[]).length!==resource.custody.agentIds.length
+    ||local.importPlan?.projectId!==resource.destination.projectId||local.importPlan?.conversationId!==resource.destination.conversationId
+    ||local.importPlan.agents.length!==resource.custody.agentIds.length||Object.values(local.agentMap).some(id=>resource.custody.agentIds.includes(id as string))
+    ||stableJson(Object.fromEntries(local.importPlan.agents.map((a:Row)=>[a.sourceRef,a.agentId])))!==stableJson(local.agentMap)
+    ||stage&&(stableJson(stage.imports?.[resource.custody.sourceChatId])!==stableJson(local.importPlan)||resource.custody.agentIds.some(id=>stage.agentMap[id]!==local.agentMap[id])))throw Error('Original group audit import map differs');
+   for(const id of Object.values(local.agentMap)){
+    const agent=this.db.prepare('SELECT project_id,conversation_id FROM agents WHERE id=?').get(id) as Row|undefined;
+    if(agent&&(agent.project_id!==resource.destination.projectId||agent.conversation_id!==resource.destination.conversationId))throw Error('Original group audit Agent ownership differs');
+   }
+   Object.assign(agentMap,local.agentMap);
+   const op=this.db.prepare('SELECT project_id,conversation_id,status FROM agent_creation_operations WHERE id=?').get(local.importPlan.creationOperationId) as Row|undefined;
+   if(op&&(op.project_id!==resource.destination.projectId||op.conversation_id!==resource.destination.conversationId))throw Error('Original group audit import ownership differs');
+   imports.push({sourceChatId:resource.custody.sourceChatId,operationId:local.importPlan.creationOperationId,status:op?.status??'absent'});
+  }
+  const members=(archived?.members??this.db.prepare('SELECT * FROM coordination_destination_members WHERE admission_id=? ORDER BY agent_id').all(admissionId)) as Row[];
+  const expectedMembers=Object.entries(agentMap).map(([source_agent_id,agent_id])=>({admission_id:admissionId,source_agent_id,agent_id})).sort((a,b)=>a.agent_id<b.agent_id?-1:1);
+  if(stableJson(members)!==stableJson(expectedMembers))throw Error('Original group audit participant map differs');
+  if(stage&&(!exactKeys(stage.imports,resources.map(r=>r.custody.sourceChatId))||stableJson(stage.importPlan)!==stableJson(stage.imports[reservation.custody.sourceChatId])))throw Error('Original group audit complete import map differs');
+  if(unique(Object.values(agentMap)).length!==Object.keys(agentMap).length||stage&&stableJson(stage.agentMap)!==stableJson(agentMap))throw Error('Original group audit full Agent map differs');
+  const receipt=!retirement&&row.state==='admitted'?this.readGroupAudit(admissionId,row.reservation_hash):null;
+  return {reservation,reservationHash:row.reservation_hash,state:retirement?'retired':row.state,agentMap,imports,receipt,retirement,sourceIds:branchContinuationIds(snapshot.selected),snapshotSha256:payloadHash(snapshot),evidenceSha256:payloadHash({row,slots,retirement})};
+ }
+ /** Operator-retained evidence only. Never used by admission/replay or current disclosure reads. */
+ readGroupAudit(admissionId:string,reservationHash:string):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
+  if(!this.group)throw Error('Group audit reader required');
+  return this.db.transaction(()=>this.readInTransaction(admissionId,reservationHash,undefined,undefined,true))() as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
  }
  read(admissionId:string,reservationHash:string,authority:CoordinationDestinationAuthority,expectedReviewHash?:string):CoordinationDestinationReceipt {
   return this.db.transaction(()=>this.readInTransaction(admissionId,reservationHash,authority,expectedReviewHash))();
  }
- private readInTransaction(admissionId:string,reservationHash:string,authority:CoordinationDestinationAuthority,expectedReviewHash?:string):CoordinationDestinationReceipt {
+ private readInTransaction(admissionId:string,reservationHash:string,authority:CoordinationDestinationAuthority|undefined,expectedReviewHash?:string,audit=false):CoordinationDestinationReceipt {
   const row=this.row(admissionId);
   if(row.reservation_hash!==reservationHash||row.state!=='admitted'||!row.receipt_json)throw Error('Exact committed destination receipt unavailable');
   const receipt=JSON.parse(row.receipt_json) as CoordinationDestinationReceipt,{reservation,cut}=this.source(row),stage=JSON.parse(row.stage_json) as CoordinationDestinationStage;
+  if(audit&&(stableJson(receipt)!==row.receipt_json||stableJson(stage)!==row.stage_json))throw Error('Noncanonical retained group receipt/stage');
   if(expectedReviewHash&&expectedReviewHash!==receipt.reviewHash)throw Error('Destination admission replay review conflict');
   // Readback needs current disclosure permission, not surviving original objects or retained package bytes.
   const facts=this.facts(cut,stage);
-  if(!nonempty(synchronous(authority.authorizeDisclosure({admissionId,reservation,stage,facts}))))throw Error('Current receipt disclosure authority required');
+  if(!audit&&(!authority||!nonempty(synchronous(authority.authorizeDisclosure({admissionId,reservation,stage,facts})))))throw Error('Current receipt disclosure authority required');
   if(receipt.admissionId!==admissionId||receipt.checkpointHash!==reservation.checkpointHash||receipt.checkpointId!==reservation.checkpointId||stableJson(receipt.destination)!==stableJson(reservation.destination)||receipt.reservationHash!==reservationHash||receipt.stageHash!==payloadHash(stage)||stableJson(receipt.agentMap)!==stableJson(stage.agentMap)||stableJson(receipt.artifactMap)!==stableJson(stage.artifactMap))throw Error('Destination receipt map differs');
   const canonical=this.db.prepare('SELECT receipt_json FROM coordination_cut_restorations WHERE id=?').get(receipt.restorationId) as Row|undefined;
   if(!canonical)throw Error('Destination graph receipt unavailable');
@@ -419,41 +485,45 @@ export class CoordinationV3DestinationAdmissionAuthority {
    const map=receipt[field];
    if(!exactKeys(map,records.map(e=>e.row.id))||unique(Object.values(map)).length!==records.length||stableJson(map)!==stableJson(graph[field]))throw Error('Destination canonical graph map differs');
   }
-  if(graph.destination?.admissionId!==admissionId||graph.destination.projectId!==reservation.destination.projectId||stableJson(graph.destination.agentMap)!==stableJson(stage.agentMap)||stableJson(graph.destination.artifactMap)!==stableJson(stage.artifactMap)||resourcesOf(reservation).some(r=>!this.db.prepare("SELECT 1 FROM agent_creation_operations WHERE id=? AND status='completed'").get((stage.imports?.[r.custody.sourceChatId]??stage.importPlan).creationOperationId)))throw Error('Destination owner/import readback unavailable');
+  if(graph.destination?.admissionId!==admissionId||graph.destination.projectId!==reservation.destination.projectId||stableJson(graph.destination.agentMap)!==stableJson(stage.agentMap)||stableJson(graph.destination.artifactMap)!==stableJson(stage.artifactMap)||resourcesOf(reservation).some(r=>{const id=(stage.imports?.[r.custody.sourceChatId]??stage.importPlan).creationOperationId;return (!audit||this.db.prepare('SELECT 1 FROM agent_creation_operations WHERE id=?').get(id))&&!this.db.prepare("SELECT 1 FROM agent_creation_operations WHERE id=? AND status='completed'").get(id);}))throw Error('Destination owner/import readback unavailable');
   for(const {row:r} of cut.requests){
    const fresh=this.db.prepare('SELECT * FROM coordination_requests WHERE id=?').get(receipt.requestMap[r.id]) as Row|undefined;
+   if(audit&&!fresh)continue;
    if(!fresh||fresh.project_id!==reservation.destination.projectId||fresh.conversation_id!==(graph.destination.conversationMap?.[r.conversation_id]??reservation.destination.conversationId)||fresh.requester_agent_id!==(r.requester_agent_id?stage.agentMap[r.requester_agent_id]:null)||fresh.recipient_agent_id!==stage.agentMap[r.recipient_agent_id]||fresh.version<r.version)throw Error('Destination Request receipt scope differs');
    const payload=JSON.parse(fresh.payload_json);
    if(payload.destinationAdmissionId!==admissionId||stableJson(payload.historicalPayload)!==r.payload_json||stableJson(payload.historicalOrigin)!==stableJson({restorationId:receipt.restorationId,sourceRequestId:r.id,historical:true})
     ||fresh.version===r.version&&(fresh.open_question_update_id??null)!==(r.open_question_update_id?receipt.updateMap[r.open_question_update_id]:null))throw Error('Destination Request historical prefix differs');
   }
-  for(const {row:u} of cut.updates){const fresh=this.db.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get(receipt.updateMap[u.id]) as Row|undefined;if(!fresh)throw Error('Destination historical update unavailable');restoredRequestUpdatePayload(this.db,fresh);}
+  for(const {row:u} of cut.updates){const fresh=this.db.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get(receipt.updateMap[u.id]) as Row|undefined;if(audit&&!fresh)continue;if(!fresh)throw Error('Destination historical update unavailable');restoredRequestUpdatePayload(this.db,fresh);}
   for(const {row:a} of cut.artifactRefs){
    const fresh=this.db.prepare('SELECT * FROM runtime_artifacts WHERE id=?').get(stage.artifactMap[a.id]) as Row|undefined;
+   if(audit&&!fresh)continue;
    if(!fresh||fresh.owner_kind!=='request_update'||fresh.owner_id!==receipt.updateMap[a.owner_id]||fresh.project_id!==reservation.destination.projectId||fresh.blob_hash!==a.blob_hash||fresh.byte_length!==a.byte_length||fresh.role!==a.role)throw Error('Destination artifact receipt ownership/content differs');
   }
   for(const {row:j} of cut.joins){
    const fresh=this.db.prepare('SELECT * FROM coordination_joins WHERE id=?').get(receipt.joinMap[j.id]) as Row|undefined;
    const members=this.db.prepare('SELECT request_id,position FROM coordination_join_members WHERE join_id=? ORDER BY position').all(receipt.joinMap[j.id]);
    const expected=cut.members.filter(e=>e.row.join_id===j.id).map(e=>({request_id:receipt.requestMap[e.row.request_id],position:e.row.position})).sort((a,b)=>a.position-b.position);
+   if(audit&&!fresh){if(members.length)throw Error('Orphan destination Join members');continue;}
    if(!fresh||fresh.project_id!==reservation.destination.projectId||fresh.owner_agent_id!==stage.agentMap[j.owner_agent_id]||fresh.conversation_id!==(graph.destination.conversationMap?.[j.conversation_id]??reservation.destination.conversationId)
     ||fresh.continuation_request_ids_json!==stableJson(JSON.parse(j.continuation_request_ids_json).map((id:string)=>receipt.requestMap[id]))||stableJson(members)!==stableJson(expected))throw Error('Destination Join receipt differs');
   }
   for(const {row:s} of cut.suspensions){
-   if(!this.db.prepare(`SELECT 1 FROM coordination_question_suspensions WHERE question_update_id=? AND request_id=? AND owner_agent_id=? AND dependency_kind='join' AND dependency_id=?`)
+   if((!audit||this.db.prepare('SELECT 1 FROM coordination_question_suspensions WHERE question_update_id=? AND request_id=?').get(receipt.updateMap[s.question_update_id],receipt.requestMap[s.request_id]))&&!this.db.prepare(`SELECT 1 FROM coordination_question_suspensions WHERE question_update_id=? AND request_id=? AND owner_agent_id=? AND dependency_kind='join' AND dependency_id=?`)
     .get(receipt.updateMap[s.question_update_id],receipt.requestMap[s.request_id],stage.agentMap[s.owner_agent_id],receipt.joinMap[s.dependency_id]))throw Error('Destination suspension receipt differs');
   }
   if(this.group&&(stableJson((receipt as import('@ponderosa/core').CoordinationDestinationGroupReceipt).resources)!==stableJson(reservation.resources)
     ||stableJson(graph.destination.conversationMap)!==stableJson(Object.fromEntries(resourcesOf(reservation).map(r=>[r.custody.sourceChatId,r.destination.conversationId])))))throw Error('Destination group receipt inventory differs');
   const owners=receipt.owners??[receipt.owner];
-  this.verifyOwners(owners,reservation,stage,cut,graph);
+  this.verifyOwners(owners,reservation,stage,cut,graph,audit);
   if(stableJson(receipt.owner)!==stableJson(owners.find(o=>o.resourceStepId===reservation.destination.resourceStepId)))throw Error('Anchored owner receipt differs');
   for(const id of receipt.activationIds){
-   const activation=this.db.prepare('SELECT * FROM agent_activations WHERE id=? AND project_id=?').get(id,reservation.destination.projectId) as Row|undefined;
-   if(!activation||!Object.values(stage.agentMap).includes(activation.agent_id)||!resourcesOf(reservation).some(r=>activation.scope_key===`conversation:${r.destination.conversationId}`&&r.custody.agentIds.some(source=>stage.agentMap[source]===activation.agent_id)))throw Error('Destination activation receipt unavailable');
+   const activation=this.db.prepare('SELECT * FROM agent_activations WHERE id=?').get(id) as Row|undefined;
+   if(audit&&!activation)continue;
+   if(!activation||activation.project_id!==reservation.destination.projectId||!Object.values(stage.agentMap).includes(activation.agent_id)||!resourcesOf(reservation).some(r=>activation.scope_key===`conversation:${r.destination.conversationId}`&&r.custody.agentIds.some(source=>stage.agentMap[source]===activation.agent_id)))throw Error('Destination activation receipt unavailable');
    const payload=JSON.parse(activation.payload_json),source=payload.updateId?['request_update',payload.updateId]:payload.joinId?['join',payload.joinId]:['request',payload.requestId];
    if(!this.db.prepare('SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind=? AND source_id=?').get(id,...source))throw Error('Destination activation lineage differs');
   }
-  return {...receipt,replayed:true};
+  return audit?receipt:{...receipt,replayed:true};
  }
 }

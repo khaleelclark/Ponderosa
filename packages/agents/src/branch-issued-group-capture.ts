@@ -1,3 +1,4 @@
+import {verifyHostProvenance} from './branch-host-provenance.js';
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import type Database from 'better-sqlite3';
 import {randomUUID} from 'node:crypto';
@@ -29,7 +30,7 @@ export function readIssuedGroup(db:Database.Database,executionId:string,checkpoi
  return s;
 }
 /** Read retained intent without recapturing a changed live frontier. Partial custody stays pinned. */
-export function readIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string,raw=false):Row|undefined {
+function readGroupCapture(db:Database.Database,executionId:string,commandKey:string,raw=false,audit=false):Row|undefined {
  if(typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Exact group capture command required');
  if(raw&&!/^issued-group-capture:[a-f0-9]{64}$/.test(commandKey))throw Error('Exact raw group capture key required');
  const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,raw?commandKey:key(commandKey)) as Row|undefined;
@@ -55,11 +56,29 @@ export function readIssuedGroupCapture(db:Database.Database,executionId:string,c
  }
  if(v.receipts.some((receipt:CheckpointPackageReceipt)=>!v.sources.some((source:CheckpointPackageSource)=>receiptMatchesSource(receipt,source))))throw Error('Group capture partial receipt differs');
  if(v.state==='retained'){
-  const saved=readIssuedGroup(db,executionId,v.checkpointId,v.checkpointHash);
+  const saved=audit?{...snapshot,issuedGroupCustody:v.sources.map((source:Row)=>v.receipts.find((receipt:Row)=>receipt.checkpointId===source.checkpointId))}:readIssuedGroup(db,executionId,v.checkpointId,v.checkpointHash);
+  if(audit){
+   if(!Number.isSafeInteger(v.checkpointId)||v.checkpointId<1||payloadHash(saved)!==v.checkpointHash)throw Error('Group audit sealed checkpoint hash differs');
+   const cp=db.prepare('SELECT execution_id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(v.checkpointId) as Row|undefined;
+   if(cp&&(cp.execution_id!==executionId||cp.snapshot_json!==stableJson(saved)||cp.content_hash!==v.checkpointHash))throw Error('Group audit current checkpoint differs');
+  }
   if(v.receipts.length!==v.sources.length||stableJson(saved)!==stableJson({...snapshot,issuedGroupCustody:v.sources.map((source:Row)=>v.receipts.find((receipt:Row)=>receipt.checkpointId===source.checkpointId))}))throw Error('Group capture retained seal differs');
+ }
+ if(audit){
+  verifyHostProvenance(snapshot.hostDependencies);
+  const c=snapshot.issuedContinuation,e=snapshot.selected.execution[0];
+  if(c.schema!=='ponderosa.branch.issued-resource-continuation.v1'||c.versionId!==e.version_id||c.bindingRevisionId!==e.binding_revision_id||c.auditSha256!==payloadHash(c.audit)
+   ||c.frontierSha256!==resourceCaptureFrontierHash(snapshot.selected)||c.hostCutSha256!==payloadHash(snapshot.hostDependencies)||snapshot.hostDependencies.bindingPin.sha256!==c.bindingHash)throw Error('Group audit continuation binding differs');
+  for(const [table,column,id,expected]of [['branch_versions','definition_json',c.versionId,c.versionHash],['branch_bindings','bindings_json',c.bindingRevisionId,c.bindingHash]]){
+   const pin=db.prepare(`SELECT branch_id,${column} bytes,content_hash FROM ${table} WHERE id=?`).get(id) as Row|undefined;
+   if(pin&&(pin.branch_id!==e.branch_id||pin.content_hash!==expected||payloadHash(JSON.parse(pin.bytes))!==expected))throw Error('Group audit retained owner pins differ');
+  }
  }
  return v;
 }
+export function readIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string,raw=false):Row|undefined {return readGroupCapture(db,executionId,commandKey,raw);}
+/** Retained audit integrity only, never executable continuation or live owner eligibility. */
+export function readIssuedGroupCaptureAudit(db:Database.Database,executionId:string,rawCaptureKey:string):Row|undefined {return readGroupCapture(db,executionId,rawCaptureKey,true,true);}
 export function previewIssuedGroupCapture(db:Database.Database,executionId:string){
  const selected=selectBranchUnit(db,executionId),host=captureBranchHostCut(db,executionId,selected),e=selected.execution![0]!;
  if(selected.resources!.length<2||selected.resources!.length>32||!host?.coverage.complete||host.artifactRefs.length||e.parent_execution_id

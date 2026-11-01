@@ -393,6 +393,7 @@ export interface BranchIssuedResourceCaptureDto {commandKey:string;state:'not_fo
 /** Operator-only audit discovery. Legacy capture keys cannot be recovered from hashes. */
 export interface BranchGroupDiscoveryItem {
  kind:'captures'|'admissions';branchId:string;executionId:string;commandKey?:string;
+ auditSelection?:import('./lifecycle-reconciliation.js').GroupJournalAuditSelection;
  discovery:'exact'|'unsupported_legacy_key';state:string;ownerPresent:boolean;
  admissionId?:string;checkpointId?:number;checkpointHash?:string;reviewHash?:string;versionId?:string;resourceCount:number;
 }

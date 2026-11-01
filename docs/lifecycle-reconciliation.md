@@ -103,3 +103,7 @@ No mutation, automatic retry, cleanup, quarantine, inferred identity or resurrec
 ## Unsealed multiple-package groups
 
 The separate [group capture abandonment protocol](checkpoint-group-capture-abandonment.md) adds paginated exact group intent discovery and one whole-owner abandonment command. Zero or partial package receipts are preserved together with every uncaptured resource identity. All cleanup pins stay held through filesystem or SQL failure; unchanged recovery verifies all original bytes. Singular abandonment remains singular. This source does not qualify retained-group history reclamation or provider/native execution.
+
+## Owner-independent group journal audit
+
+[Group journal audit readback](group-journal-audit-readback.md) uses the exact `auditSelection` supplied by group discovery with `BranchesClient.groupJournalAudit`. It reads original retained capture/command/receipt/retirement evidence after source-owner loss without invoking current-owner disclosure authority. Every result is historical, held and ineligible for action. Missing original journals and unverifiable or conflicting retained evidence refuse; this source does not supply reclamation or recovery mutation.
