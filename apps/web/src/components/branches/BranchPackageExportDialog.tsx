@@ -11,6 +11,7 @@ export function BranchPackageExportDialog({source,pending,error,onCancel,onConfi
  const files=allFolders?Object.fromEntries((agents.data??[]).map(agent=>[agent.id,{wholeWorkingFolder:true}])):Object.fromEntries(Object.entries(choices).map(([id,choice])=>[id,choice.selectedWorkingFiles?{selectedWorkingFiles:choice.selectedWorkingFiles.filter(path=>path.trim())}:choice]));
  return <FullPackageExportDialog name={source.name} pending={pending} confirmDisabled={agents.isFetching||!agents.data||agents.isError} error={error??agents.error?.message} onCancel={onCancel} onConfirm={async()=>{if(!agents.data||agents.isError)return;await onConfirm(files);}}>
   <Stack spacing={1} sx={{mt:2}}>
+   <Alert severity="info">Full package includes supported private runtime facts and execution-owned Chats · new installation recreates held data · no native authority</Alert>
    <Typography>Working files optional · credentials, native ownership and sessions excluded</Typography>
    {agents.isError&&<Alert severity="error" action={<Button onClick={()=>void agents.refetch()}>Retry</Button>}>Could not load Agents.</Alert>}
    <FormControlLabel control={<Checkbox disabled={pending||!agents.data} checked={allFolders} onChange={event=>setAllFolders(event.target.checked)}/>} label="Include all workflow Agent working folders"/>

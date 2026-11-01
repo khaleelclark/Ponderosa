@@ -210,18 +210,46 @@ composer, recording and schema edits. Required contract documentation came only
 from `56a6cf554`; no unrelated ancestors or UI successor were replayed. This is
 source/Git inspection and hooks-disabled composition, with no portability execution.
 
-Current consumer gap: `BranchPackageDialog.tsx` still collects one root binding map,
-sends no `treeBindings`, and sends neither definition-tree nor runtime-manifest
-acknowledgment. Its local installation status omits both tree receipts, and it has
-no runtime-data GET/schema-discriminated tree fact viewer. Root parameter editing
-can also invalidate the hash-bound tree package; tree input needs a separate exact
-review contract. Existing flattened Chat/Agent file choices remain keyed by logical
-refs. The SDK accepts per-Branch bindings and both digests and returns standalone/tree
-runtime-data unions, but installation/confirm status is still typed `unknown`.
-These are explicit UI/SDK typing gaps, not a completed import user flow. UI `68319a`
-was not composed. Next acceptance gate requires separately authorized prerequisite
-build/types and deferred definition/execution-tree caller fixtures (atomic rollback,
-fresh ancestry, held/no-admission, restart/readback/re-export), followed by the tree
-review/readback UI and runnable-continuation acceptance. Existing frozen recording
-packets retain their original HEAD/component provenance; this composition does not
-requalify recording or expand its accepted scope.
+Tree package UI successor (SOURCE ONLY, based directly on `175b3cd317336c6007564cd79d82e30351a24205`):
+reconciles only the relevant `68319a` web hunks, without ancestor replay. Package
+review now collects exhaustive per-source-Branch destination bindings, sends the
+exact hash-bound tree package without root parameter rewriting, and separately
+acknowledges `definitionTreeReview.reviewSha256`, `runtimeDataReview.manifestSha256`
+and full Agent context/files. All private identities, owners, fact counts/hashes and
+original fact JSON remain available in reveal controls, including empty template
+Branches, `tree-import` generations and evidence-only leaves. Tree/runtime imports
+refuse existing-workflow overwrite. Flattened file/access/working-root/output-role
+continuations retain the original plan and both digests.
+
+Local installation status/confirm reads include both tree receipts. New tree/runtime
+confirmation saves exact package/preview/body/destination bindings before effect;
+lost response or remount recovers the original installation status by GET, with no
+new preview/confirm replay. Corrupt/conflicting storage and missing/wrong proof hold.
+Opening requires the saved definition receipt acknowledgment plus explicit runtime
+GET and held receipt acknowledgment when runtime data exists. Readback discriminates
+standalone `data.owners` from tree `data.branches`, shows all fresh owner/Branch/Chat/
+Agent/pin/frontier/reservation maps, and does not treat reserved IDs as native rows.
+Reopened imported execution panels resolve the actual tree root from installation
+status and keep imported owners held even if a workflow was enabled. Ordinary
+intervention/history/resource/cancel controls stay unavailable for these owners.
+No SDK edit is required: these web callers use the existing REST DTOs directly;
+the existing SDK status `unknown` typing is not consumed here.
+
+Deferred SOURCE fixtures cover standalone/tree schema discrimination, every Branch
+binding, independent digests, exact package bytes, new-only refusal, missing/wrong
+receipts, all private facts, save-before-confirm, lost response/remount original-plan
+GET without replay, deliberate receipt acknowledgments and reopened child root
+resolution. No tests/checks/build/types/Node/native/browser/provider execution or
+runner preparation, installs, migrations, push/deploy or workers were run. Recording,
+native history and native task controls are preserved; this does not requalify them.
+
+Next gate remains separately authorized prerequisite build/types and actual deferred
+definition/execution-tree caller fixtures (atomic rollback, fresh ancestry,
+held/no-admission, restart/readback/re-export), then mounted/HTTP full import/access/
+folder/output-role/unknown-response/readback qualification and rendered accessibility
+and mobile/keyboard/screen-reader review. Per-Branch bindings use explicit JSON
+editors in this bounded source UI. Backend readback remains authority for current
+native integrity; no client receipt establishes runnable context, acceptance,
+leases, source-effect settlement or process adoption. Runnable foreign selected
+checkpoint continuation and unsupported parent/frontier families remain backend
+consumer work. No runtime qualification, whole #8 or Phase 2 completion claim.
