@@ -1,6 +1,6 @@
 # Current implementation coverage and backlog
 
-Source snapshot: `69d27cf73`, integration branch
+Source snapshot: `9b181f750`, integration branch
 `phase2-implementation-integration`. Source inspection only; no acceptance verdict.
 [Historical snapshots](implementation-coverage-history.md) are archival, not current limits.
 
@@ -47,11 +47,11 @@ G1 native approval callbacks and G4 correlated Claude controls are source delive
 
 G2 paused live-session goal controls remain supported; active/resume/default-active creation and automatic continuations lack an external pre-start host-admission contract in pinned native source. G3 canonical human native commands now cover Agent, Broadcast and explicit DM/document intake, with competing-action/coalesced-review/steer refusal. [Exact external and intake boundaries](codex-native-goal-continuation-boundary.md); no installed-version verdict.
 
-G6 current typed files remain wired: Codex images, Claude images/PDF, original-file references for other modalities. Exact expected Claude media echoes validate session/UUID/normalized digest and strip media before mapping; submitted size +1 MiB, max224 MiB and32 digest-only slots replace the3 MiB refusal. Unrelated records retain4 MiB. [Transport](typed-modality-inputs.md), [framing](runtime-typed-session-wiring.md); maximum-size memory/installed compatibility and full parity remain unqualified.
+G6 Codex validates files before plan settings and after acknowledgement, preserves seed on validation failure, checks optional Run authority around steer billing/dispatch, and refuses review media. [Strengthened session contract](codex-typed-input-wiring.md). Current typed files remain wired: Codex images, Claude images/PDF, original-file references for other modalities. Exact expected Claude media echoes validate session/UUID/normalized digest and strip media before mapping; submitted size +1 MiB, max224 MiB and32 digest-only slots replace the3 MiB refusal. Unrelated records retain4 MiB. [Transport](typed-modality-inputs.md), [framing](runtime-typed-session-wiring.md); maximum-size memory/installed compatibility and full parity remain unqualified.
 
 G8 Claude accepted tasks/schedules retain the original Run until exact post-result idle with no pending obligations. Recurring crons may keep it open; crash receipt gaps remain unknown. Codex background list/terminate and Claude per-task stop remain internal implementation. [Lifetime contract](native-task-lifetimes.md).
 
-G7 is delivered in source as owned Run/control-bound console queries and explicit timestamped JPEG-frame JSON recording tools/API/SDK; [exact contract and operator UI scope disposition](browser-observation-api.md). No encoded-video/audio requirement or native parity verdict is inferred.
+G7 Agent tools plus operator REST/SDK are source delivered: exact session/epoch-owned console and private Agent/Run recording start/stop/status/download. Dedicated UI is separately active; shared Chat/saved recording remains unavailable pending canonical Chat artifact provenance. [Exact contract](browser-observation-api.md); no encoded-video/audio requirement or native parity verdict.
 
 U1's eight named contracts and exact assignments are in the [remaining inventory](phase2-remaining-implementation.md#u1-native-capability-contracts); G5 remains pending assignment.
 

@@ -20,7 +20,7 @@ Protocol references: [CDP Runtime consoleAPICalled](https://chromedevtools.githu
 
 Integrated source `d579e48c64574bf520ed4329fce8e728d79cf804` on the current integration branch, preserving existing M3/state/portability/native exports. G7 tools/API/SDK source is delivered; deferred fixtures remain unexecuted. The artifact format is exactly `ponderosa.browser-recording.v1` JSON containing timestamped JPEG frames, not an encoded video. No MP4 or audio requirement is established by this bounded contract.
 
-There is no dedicated operator console-query/recording UI in this change. The actual Behavior Bible #4 requires Agent native-harness capability equivalence; #3 requires clear UI for everything the user is meant to control. Those clauses do not establish whether these Agent observation tools must also be dedicated human controls, and this source-only task does not settle native equivalence. Cliff must resolve that scope against the exact native capability mapping and intended user control; absence of web edits is not an approved UI exclusion or a newly invented mandatory feature. No whole #3/#4 acceptance follows.
+The operator REST successor below is now integrated. Dedicated operator UI is separately active with the sole UI owner and is not delivered by this backend commit. Shared Chat/saved browser recording remains a named implementation gap until canonical Chat-owned artifact provenance exists; the explicit unavailable response is not an approved feature exclusion or permission grant. No whole Bible #3/#4 acceptance follows from source presence.
 
 ## Operator REST contract (source successor)
 
