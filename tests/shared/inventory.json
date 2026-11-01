@@ -2048,6 +2048,13 @@
       "lane": "manual",
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/timing-observer-smoke.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Existing Chrome; unloaded app, mobile4x CPU observer tooling proof only; not 10k/20-active acceptance"
     }
   ],
   "support": [

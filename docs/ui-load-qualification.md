@@ -53,3 +53,8 @@ is authorized. Actual reader tasks and native IME remain separately qualified.
 The broader committed `ui-acceptance-remaining.md` still names comparator/blind
 panel and all output/Assistant build-list gates. Source/built output identity and
 all normal cleanup exits must accompany any result.
+
+`timing-observer-smoke.mjs` independently checks actual in-page timing capture on
+the real unloaded app at the same4x mobile profile when active-load capacity is
+refused. Its result explicitly records zero active Agents and is never load
+acceptance. Set PONDEROSA_OBSERVER_EVIDENCE to an owned directory.
