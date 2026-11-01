@@ -1,6 +1,6 @@
 # Current implementation coverage and backlog
 
-Source-only inventory includes Branch72f46799 (parallel8ccf446bb plus retention-only evidence), Runtime publication7bc728008,
+Source-only inventory includes Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
 retirement9edf00516 and memory exposure13bf72442, sole UI-owner2c7db556e,
 and lifecycle source through c1d831646. Integration owns
 `phase2-implementation-integration` at
@@ -88,6 +88,18 @@ exact resource/members, immutable generation Chat context, operation receipts an
 ordered checkpoint audit. Conflicting evidence aborts. This does not reconstruct
 old evidence or enable later-generation continuation; current codecs still refuse
 retry history until all earlier custody, Request and host cuts are validated.
+
+See [branches-later-generation-block.md](branches-later-generation-block.md):
+the singular Runtime contract has no evidence-only historical participant partition.
+Reservation requires current custody Chat scope, staging requires both an exact
+current-custody Agent map and every historical participant in that map, and the
+canonical writer restores all Requests into current destination state. Runtime must
+define validated historical-only roots with original identities, provenance, update
+prefixes, disclosure/authority, readback and no dispatch. A multi-current-resource
+group API alone does not supply this partition. Separately, Branch still needs
+precleanup immutable host closure, observed historical native drain and actual sealed
+package custody, plus serial/parallel failed-attempt settlement, retry scheduling,
+retirement and fresh-generation replay. Existing retention does not supply these.
 
 ## Actual missing implementation / owner requirements
 
@@ -196,10 +208,14 @@ recorded gaps. Existing Python/native prerequisites are not new feature claims.
 ## Qualification deferred, separate from missing implementation
 
 No tests, types, builds, native/browser runs or runner preparation were executed.
-Deferred regression sources were integrated, not passed. Retention still needs owner
-regression sources for generation-zero exact receipts, evidence-before-pointer reset,
-immutable-conflict rollback, deletion/old-cut retention, serial/parallel full retry
-replay and stale/omitted earlier custody/Request/native-drain refusals. Required future evidence
+Deferred regression sources were integrated, not passed. e7602fc15 delivers four
+ASYNC/SYNC × serial/parallel fresh-context retry fixture variants with canonical
+cleanup/retirement, immutable-conflict rollback, exact operation/context/audit retention
+and reopen readback. Readback models a lost response, not an idempotent retirement
+command against a new generation. Complete later-generation capture/review/admission,
+tamper, stale/omitted prior custody/Request/drain and admission lost-response fixtures
+remain undelivered; no legitimate historical-only admission contract exists yet.
+Required future evidence
 includes package fresh-instance equivalence, canonical rollback/crash/lost-response,
 source-boundary/concurrency, destination authorization/lifecycle, provider parity,
 upgrade/reliability runs, all Build flows, desktop/mobile/accessibility and measured

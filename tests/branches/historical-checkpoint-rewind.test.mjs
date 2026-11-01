@@ -946,14 +946,14 @@ for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutab
 });
 
 // Resource replay stops before any external Chat/import release; suffix work uses fresh custody.
-async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false){
+async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
  const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Inert resource history',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Owner'}),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
  const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:permissions}]};
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result'},script('suffix')],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['team-arm','side-arm']}]:[],edges:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},{id:'to-suffix',from:'team',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:2,delayMs:0,freshContext:true}}:{})},script('suffix')],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['team-arm','side-arm']}]:[],edges:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},{id:'to-suffix',from:'team',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  let parent,root,source;
  if(childOwner){
@@ -1653,4 +1653,52 @@ test('Branch abandoned capture needs synchronous package retirement and cannot r
  assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,source.intent.resourceStepId,0,commandKey),/abandoned/);
  assert.throws(()=>db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,source.intent.resourceStepId,commandKey,{...x.saved.receipt,...source}))(),/abandoned/);
  assert.equal(api.inspect(source).references.length,0);
+});
+
+
+// Deferred source: canonical Request failure drives the real fresh-context retry.
+// Deliberately does not claim later-generation admission is supported.
+for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fresh resource generation ${mode} parallel=${parallel} retirement retains exact evidence transactionally`,async t=>{
+ const f=await reservationHistoryFixture(t,mode,false,parallel,true),prefix=await f.claim();
+ f.settle(prefix);await f.advance(f.source.id);
+ const stopped=new Error('fixture stops after canonical retirement');let retained;
+ await assert.rejects(()=>f.finish(f.source.id,undefined,undefined,async({stepId,requestId})=>{
+  const db=f.store.sqlite,coordination=new CoordinationV3Store(db);
+  const oldResource=db.prepare('SELECT * FROM branch_resources WHERE step_execution_id=?').get(stepId);
+  const members=db.prepare('SELECT * FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(stepId);
+  coordination.updateRequest({requestId,updateId:'failed-first-generation',kind:'failed',actor:{kind:'agent',id:oldResource.root_agent_id},payload:{text:'known failed generation'}});
+  for(let n=0;n<16&&!db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(stepId).retry_draining;n++){
+   f.branches.advance();await f.branches.unitSaver.drain();
+  }
+  assert.equal(db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(stepId).retry_draining,1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_attempts WHERE step_execution_id=?').get(stepId).n,2);
+  const ids=members.map(m=>m.agent_id),preview=f.store.previewAgentDeletion(ids);
+  f.store.deleteAgentSubtrees(ids,preview.previewHash,x=>coordination.handleAgentDeletion(x));
+  const deletion=f.store.commitConversationDeletion(oldResource.chat_id);
+  f.store.finishConversationDeletionStorageCleanup(deletion);f.store.markConversationDeletionServerCleanupComplete(oldResource.chat_id);
+  await f.branches.unitSaver.drain();
+  const key=`resource-generation-retired:${stepId}:0`;
+  db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(f.source.id,key,hash('conflict'),stableJson({conflict:true}),new Date().toISOString());
+  assert.throws(()=>f.branches.resourceRetired(stepId),/generation evidence differs/);
+  assert.equal(db.prepare('SELECT generation FROM branch_resources WHERE step_execution_id=?').get(stepId).generation,0);
+  assert.deepEqual(db.prepare('SELECT * FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(stepId),members);
+  db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,key);
+  f.branches.resourceRetired(stepId);await f.branches.unitSaver.drain();
+  retained=db.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,key);
+  assert.equal(hash(retained.result_json),retained.input_hash);
+  const value=JSON.parse(retained.result_json);
+  assert.equal(value.schema,'branch-resource-generation-retired.v1');
+  assert.equal(value.resource.generation,0);assert.equal(value.resource.chat_id,oldResource.chat_id);
+  assert.deepEqual(value.members,members);assert.equal(value.context.chat_id,oldResource.chat_id);
+  assert.deepEqual(value.operations.map(row=>JSON.parse(row.result_json).phase),['chat','import']);
+  assert.ok(value.audit.some(row=>row.kind==='retry_scheduled'));
+  assert.equal(db.prepare('SELECT generation FROM branch_resources WHERE step_execution_id=?').get(stepId).generation,1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_resource_members WHERE step_execution_id=?').get(stepId).n,0);
+  throw stopped;
+ }),error=>error===stopped);
+ // Readback after a lost response/reopen observes the same immutable evidence;
+ // it does not invoke retirement on a new generation or import prior Agents.
+ await f.reopen();
+ const saved=f.store.sqlite.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(retained.execution_id,retained.command_key);
+ assert.deepEqual(saved,retained);
 });
