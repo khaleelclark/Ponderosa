@@ -670,3 +670,22 @@ behavior. No execution, qualification or passing assertion is claimed. The alrea
 joined Runtime529 source-scope/fence correction omitted by the assembled base is
 included. See docs/branch-generation-one-destination.md for exact bounds and
 remaining parallel/called-tree/EXIT/unknown/secret/artifact/web limitations.
+
+Integration: cbe266387 is assembled on6aafb338 without ancestor replay. Runtime529
+original-Chat scope and resource-Chat Project fence files are owner-byte-equal;
+historical audit-read checks include each retained Request Project at package
+prepare/candidate/final authorization. ff40 real admission audit context and bounded
+private-evidence summary projection remain unchanged. Earlier generation-one-only
+backend statements are superseded only by the serial one-resource generations1–32
+source bound, maxAttempts<=33, with complete prior proof and consumed attempt numbers.
+The Runtime32-selection/32MiB evidence bounds still apply. No parallel/tree consumer
+or retry-offset restoration is established; a fresh destination starts generation0
+while retaining consumed attempt number, and further offset retry restoration remains
+held. Existing generation-one web controls are preserved, not widened to history.
+Source composition limitation: their literal "attempt 2 of 2" label does not reflect
+a generation-one backend policy whose newly accepted maxAttempts exceeds2. Broader
+history UI and accurate variable-budget presentation remain owner work; no UI/full-
+feature qualification is claimed. Deferred generation2/3/32 ASYNC/SYNC fixture source
+is present but unexecuted, including rollback/readback and no replenished budget.
+No tests/checks/build/types/Node/native/browser/preparation/execution/migrations/
+push/deploy/newworkers.
