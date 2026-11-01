@@ -522,3 +522,5 @@ writers, called trees/later generations, historical partition/Branch precleanup 
 wiring and native/provider/accessibility/mobile qualification remain separate or open.
 Fixtures are source only: no tests/checks/build/types/Node/native/browser/runner preparation
 or execution/migrations/push/deploy/newworkers and no acceptance claim.
+
+Prospective retry-generation exit capture producer source: durable pre-drain identity journal and owner hold, real server runtime/process drain wiring, complete selected/host/native/effect/provider envelope, real package engine outside SQL and exact same-owner revision seal before Agent/Chat cleanup. Retirement retains immutable seal reference; after-deletion reader verifies retained provider ledger evidence. Canonical Runtime intake fence is a tracked dependency and must positively recognize all originals before capture. Missing/preupgrade registrations, open parallel effects, deleted earlier roots and unsupported families remain held; historical partition/admission stays disabled. Deferred synthetic-provider/canonical-writer fixture source only.

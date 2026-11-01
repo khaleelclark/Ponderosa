@@ -14,6 +14,22 @@ const IMPORT_DEADLINE_MS = 5 * 60 * 1000;
 export class BranchResourceService {
   private importer?: BranchTemplateImporter;
   private packages?:BranchPackageEngine;
+  private generationExitDrain?:(agentIds:string[])=>Promise<void>;
+  setGenerationExitDrain(drain:(agentIds:string[])=>Promise<void>):void {this.generationExitDrain=drain;}
+  async captureGenerationExitBeforeCleanup(stepId:string):Promise<void>{
+    const generation=this.branches.resourceRetryGeneration(stepId);if(generation===undefined)return;
+    const resource=this.store.sqlite.prepare('SELECT execution_id FROM branch_resources WHERE step_execution_id=?').get(stepId) as {execution_id:string};
+    let journal=this.branches.generationExitCapture(resource.execution_id,stepId,generation);
+    if(journal?.state==='sealed'){if(!this.packages)throw Error('Generation custody unavailable');await this.packages.readCheckpoint(journal.receipt);return;}
+    journal=this.branches.fenceGenerationExit(stepId);
+    this.branches.requireGenerationExitFence(resource.execution_id,stepId,generation);
+    if(!this.generationExitDrain||!this.packages)throw Error('Observed generation runtime/custody service unavailable; cleanup held');
+    this.branches.cancelResourceWork(stepId);
+    await this.generationExitDrain(journal.identity.agentIds);
+    journal=this.branches.reserveGenerationExit(resource.execution_id,stepId,generation);
+    await this.packages.captureCheckpoint(journal.source,receipt=>this.branches.sealGenerationExit(resource.execution_id,stepId,generation,receipt));
+    if(this.branches.generationExitCapture(resource.execution_id,stepId,generation)?.state!=='sealed')throw Error('Generation exit seal unavailable; cleanup held');
+  }
   setPackageEngine(engine:BranchPackageEngine):void {this.packages=engine;}
   destinationPackageEngine():BranchPackageEngine {if(!this.packages)throw Error('Checkpoint package service unavailable');return this.packages;}
   private pending?: Promise<void>;
@@ -217,6 +233,7 @@ export class BranchResourceService {
         if(capture?.state==='capturing'&&!this.branches.resourceCaptureAbandoned(resource.stepExecutionId)||this.branches.issuedResourceCapturePending(resource.stepExecutionId))continue;
         if(capture?.state==='retained'){if(!this.packages||!capture.receipt)throw Error('Required checkpoint custody unavailable');await this.packages.readCheckpoint(capture.receipt);}
         this.branches.cancelResourceWork(resource.stepExecutionId);
+        await this.captureGenerationExitBeforeCleanup(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         await this.deleteAgents(resource.agentIds);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;

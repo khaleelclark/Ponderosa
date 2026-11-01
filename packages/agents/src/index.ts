@@ -35,7 +35,6 @@ export {
   searchCompactionHistory,
   resolveContextRolloverTail,
 } from "./compaction-history-retrieval.js";
-export type {
   CompactionHistoryBoundary,
   CompactionHistoryRetrievalAudit,
   ContextRolloverBoundaryBinding,
@@ -44,13 +43,11 @@ export type {
   SearchCompactionHistoryInput,
   ResolvedContextRolloverTailMessage,
 } from "./compaction-history-retrieval.js";
-export {
   CoordinationV3Store,
   MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
 } from "./coordination-v3-store.js";
 export { PendingActivationCapacityError } from "./coordination-v3-activation.js";
 export { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
-export type {
   CoordinateV3Input,
   CoordinateV3Result,
   UpdateRequestV3Input,
@@ -90,7 +87,6 @@ export type {
   ReplayAgentNextRunDeliveryInput,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
-export type {
   AgentDeletionReceipt,
   ConversationDeletionReceipt,
   ProjectDeletionReceipt,
@@ -103,7 +99,6 @@ export {artifactAgentProductSql,managedArtifactProductSql} from './artifact-prod
 export {activeChatOwnerSql,activeChatProductSql,chatProductSql,activeAgentOwnerSql,activeAgentProductSql,projectProductSql,type ProductScope} from './product-scope-sql.js';
 export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 export { openDb } from "./db.js";
-export {
   createOfflineDataDirectoryBackup,
   createOfflineWebDeploymentBackup,
   assertWebOnlyDeploymentCompatibility,
@@ -112,13 +107,11 @@ export {
   type WebDeploymentBackupManifest,
 } from "./data-directory-backup.js";
 export { stableJson } from "./coordination-v3-canonical-json.js";
-export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, managedArtifactStorageFilename, managedArtifactStorageFilenames, attachmentPath, attachmentsDir,
   importedAgentHistoryPath,
   communicationEventsPath,
   communicationProjectionsPath, communicationRevisionsPath,
 } from "./paths.js";
-export {
   MANAGED_ARTIFACT_MAX_BYTES,
   publishManagedArtifactContent,
   publishManagedArtifactContentAsync,
@@ -135,14 +128,12 @@ export {
   type ManagedArtifactReadInput,
 } from "./managed-artifact-files.js";
 export type { Db } from "./db.js";
-export {
   AgentWorkingCopyUnavailableError,
   resolveAgentWorkingCopy,
   sharedWorkingCopy,
   type ResolvedAgentWorkingCopy,
 } from "./working-copy.js";
 
-export {
   projectEvent,
   projectAll,
   initProjectionState,
@@ -151,7 +142,6 @@ export type { ProjectionOp, ProjectionState } from "./projectors.js";
 
 export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, CompactionHistoryRetrievalEvent, AgentLifecycleEvent, CoordinationV3ChangedEvent, GeneratedArtifactEvent, TurnDoneLogEvent, StoredLogEvent } from "./log-event.js";
 export * as schema from "./schema.js";
-export type {
   ProjectRow,
   AgentRow,
   MessageRow,
@@ -207,3 +197,5 @@ export {readProviderExitEvidence,verifyRetainedProviderExitEvidence} from './pro
 export {readGroupCaptureDisposition,type BranchGroupCaptureAbandonInput,type BranchGroupPackageRetirementProof,type BranchGroupPackageInventory} from './branch-group-custody-disposition.js';
 
 export {fenceBranchGenerationExit,generationExitHeld,requireGenerationExitOpen,type BranchGenerationExitFenceInput} from './branch-generation-exit-fence.js';
+
+export {generationExitKey,readGenerationExitCapture,generationExitPackageCaptureAuthorized,type BranchPriorGenerationEnvelope} from './branch-generation-exit-capture.js';

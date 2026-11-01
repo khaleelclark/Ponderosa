@@ -2,7 +2,7 @@ import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-aba
 import {lifecycleDiscovery} from '../lifecycle-discovery.js';
 import {destinationLifecycle} from '../destination-lifecycle.js';
 import {checkpointCaptureAbandonment} from '../checkpoint-capture-abandonment.js';
-import {destinationAdmissionHeld} from '@ponderosa/agents';
+import {destinationAdmissionHeld,generationExitPackageCaptureAuthorized} from '@ponderosa/agents';
 import {checkpointCustodyLifecycle} from '../checkpoint-custody-lifecycle.js';
 import {custodyLifecycleProof} from '../custody-lifecycle-proof.js';
 import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
@@ -2656,10 +2656,11 @@ export function registerAgentPackageRoutes(
       const memoryDatabases=memory?await memory.checkpointSourceDatabases():[];
       const token=beginSourceCapture(store.sqlite,...memoryDatabases);
       const admit=()=>{
+        const generationCapture=generationExitPackageCaptureAuthorized(store.sqlite,frozen);
         const chat=store.getConversation(frozen.sourceChatId);
-        if(!chat||!activeChatResourceOwner(store,'chat',chat.id))throw new Error('Checkpoint source Chat unavailable');
+        if(!chat||!generationCapture&&!activeChatResourceOwner(store,'chat',chat.id))throw new Error('Checkpoint source Chat unavailable');
         assertCheckpointMembership(frozen.sourceChatId,frozen.agentIds,store.listAgents(chat.projectId,{includePendingCreation:true}));
-        for(const id of frozen.agentIds){const agent=store.getAgent(id);if(!agent||!activeChatResourceOwner(store,'agent',id)||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');}
+        for(const id of frozen.agentIds){const agent=store.getAgent(id);if(!agent||!generationCapture&&!activeChatResourceOwner(store,'agent',id)||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');}
         memory?.assertCheckpointSourceSettled();
       };
       try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
