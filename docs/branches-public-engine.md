@@ -1082,8 +1082,8 @@ The web confirmation surface is not part of this backend slice.
 The server uses the existing single local operator host/origin boundary and the
 existing Project audit-read rule. `local-operator` is a host-defined constant,
 consistent with existing Branch operator actions; it is not supplied by a header,
-profile or rate-limit logging pseudonym. Future reservations using this adapter
-must use `BRANCH_DISCLOSURE_OPERATOR`. Incoming identity/grant/map/fact overrides
+profile or rate-limit logging pseudonym. Composer reservations using this adapter
+use `BRANCH_DISCLOSURE_OPERATOR`. Incoming identity/grant/map/fact overrides
 are rejected. This adds no account system or general authorization service.
 
 `BranchDisclosureReviewService.authorizeDisclosure` is the synchronous bound host
@@ -1111,7 +1111,54 @@ response loss/new service readback, changed-key conflict, no activation effects,
 revocation without bytes, old approval replay after revoke, changed fact/recipient
 map/policy revision, stale choice revisions, missing bytes and route override
 rejection. Fixtures use inert package receipts, have not been executed and are
-not destination-composer qualification. Remaining composer work includes actual
-reservation/Chat/import staging, Branch budget/acceptance, current admission custody
-proof, mapped Step/attempt/resource/import owner receipt composition, final-only
-Runtime admission/wakes and exact owner receipt/lifecycle reconciliation.
+not destination-composer qualification. The connected bounded composer is described below; abandoned-stage reclamation
+and broader resource families remain unsupported.
+
+
+### Issued destination commands (bounded source implementation)
+
+`BranchIssuedDestinationService` connects the sealed issued codec to the actual
+Runtime destination API. Operator endpoints are
+`/api/branches/:id/executions/:executionId/destinations` (GET discovery, GET
+`?commandKey`, POST prepare) and `/destinations/admit` (POST final admission).
+Shared input/summary DTOs and `BranchesClient.listIssuedDestinations`,
+`issuedDestinationReceipt`, `prepareIssuedDestination`, `admitIssuedDestination`
+expose these without automatic mutation retries. Discovery returns the canonical
+`admissionId` for the existing disclosure preview/choice routes.
+
+Prepare accepts `{commandKey,checkpointId,expectedHash,reconcileEffects:true}`.
+It reserves prospective deterministic managed Project/default Chat identities
+and a real manually accepted Branch execution/budget before managed publication.
+The import hook stages actual complete fresh source-ref maps, imports private
+organization state, applies the final destination policy, and durably pauses with
+`state:"awaiting_disclosure"`. Imported participants remain held and no executable
+Branch frontier or Runtime activation is created during this human wait.
+
+After explicit disclosure approval, admit accepts `{commandKey,reviewHash}` with
+the current human preview hash. Current bytes are synchronously hashed through the
+custody service in the owning transaction, with exact independent receipt and saved
+host graph binding, settled original effects/cleanup and current owner/pins.
+Runtime rechecks explicit fact disclosure and final policy revisions. The same
+transaction reconstructs and writes actual mapped Step/attempt/resource/member/
+context rows, fresh import/Chat receipts, counters, owner lineage, import completion
+and final saved selected checkpoint before final-frontier activations. No original
+Run, lease, grant, browser profile or native action is replayed.
+
+Exact admitted command readback uses immutable Runtime maps/receipts plus the
+owner's retained final checkpoint. It does not access source package bytes or
+recreate effects; changed preparation/admission inputs conflict. A committed
+receipt reports `restoreSupported:true`. Pending summaries report false and the
+ordinary historical checkpoint/rewind issued-resource refusal remains unchanged.
+Qualification is deferred: no tests, typechecks, builds or runtime execution have
+been performed for this source implementation.
+
+The supported case is exactly the sealed codec's standalone serial nonsecret
+ASYNC/SYNC generation-zero organization with no runtime/package artifacts, memory,
+source restrictions, elevated automatic management grants or native working-copy
+setup. Unsupported cases refuse. Admitted resource cleanup reuses actual new
+operation/member/context receipts. Interrupted partial imports and abandoned
+reservations retain their holds and original source pins; automatic reclamation
+and broader restoration families remain unsupported. The existing original
+Project audit-read requirement still applies. See
+`coordination-destination-admission.md` for the complete command and retention
+contract and deferred fixture scope.

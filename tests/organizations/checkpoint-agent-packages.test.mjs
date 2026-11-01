@@ -64,3 +64,10 @@ test('failed issued seal publishes neither Branch SQL nor a custody receipt',()=
   assert.equal(db.prepare('SELECT COUNT(*) n FROM seals').get().n,0);assert.equal((await custody.inspect(source)).state,'failed');
  }finally{releaseSourceCapture(token);db.close();}
 }));
+
+test('synchronous admission custody verification binds current retained bytes and rejects release or substitution',()=>fixture(async directory=>{
+ const custody=checkpointPackageCustody(directory),receipt=await custody.capture(source,'sync-admission-cut',async()=>portable());
+ assert.equal(custody.verifyNow(receipt),receipt.sha256);
+ assert.throws(()=>custody.verifyNow({...receipt,intent:{...receipt.intent,hostCutSha256:'a'.repeat(64)}}),/custody/);
+ await custody.release(receipt);assert.throws(()=>custody.verifyNow(receipt));
+}));

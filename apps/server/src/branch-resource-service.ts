@@ -15,6 +15,7 @@ export class BranchResourceService {
   private importer?: BranchTemplateImporter;
   private packages?:BranchPackageEngine;
   setPackageEngine(engine:BranchPackageEngine):void {this.packages=engine;}
+  destinationPackageEngine():BranchPackageEngine {if(!this.packages)throw Error('Checkpoint package service unavailable');return this.packages;}
   private pending?: Promise<void>;
   private maintenance?:Promise<void>;
   private importController?: AbortController;

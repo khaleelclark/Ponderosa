@@ -62,7 +62,26 @@ export function checkpointPackageCustody(dataDir:string){
     if(hash.digest('hex')!==receipt.sha256)throw new Error('Checkpoint custody digest mismatch');
     return validateMembership(validatePortableAgentPackage((await parsePortablePackageFile(pathname,{packageOnly:true})).portable).package,receipt);
   };
+  // Final admission cannot await between byte verification and owner composition.
+  const verifyNow=(receipt:CheckpointPackageReceipt):string=>{
+    const id=key(receipt),name=path.join(directory,`${id}.payload`);
+    const stored=JSON.parse(syncFs.readFileSync(path.join(directory,`${id}.json`),'utf8')) as CheckpointPackageReceipt;
+    if(!sameReceipt(stored,receipt)||receipt.custodyId!==id||syncFs.existsSync(path.join(directory,`${id}.released.json`)))throw new Error('Current checkpoint custody unavailable');
+    const stat=syncFs.lstatSync(name);
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.size!==receipt.byteLength||stat.size>AGENT_PACKAGE_MAX_BYTES)throw new Error('Current checkpoint custody bytes differ');
+    const fd=syncFs.openSync(name,'r'),hash=createHash('sha256'),buffer=Buffer.alloc(64*1024);
+    try{
+      const opened=syncFs.fstatSync(fd);if(opened.dev!==stat.dev||opened.ino!==stat.ino)throw new Error('Checkpoint custody changed');
+      let length=0,count:number;
+      while((count=syncFs.readSync(fd,buffer,0,buffer.length,null))>0){length+=count;if(length>receipt.byteLength)throw new Error('Checkpoint custody grew');hash.update(buffer.subarray(0,count));}
+      const after=syncFs.fstatSync(fd);
+      if(length!==receipt.byteLength||hash.digest('hex')!==receipt.sha256||after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs)throw new Error('Checkpoint custody digest changed');
+    }finally{syncFs.closeSync(fd);}
+    if(syncFs.existsSync(path.join(directory,`${id}.released.json`))||!sameReceipt(JSON.parse(syncFs.readFileSync(path.join(directory,`${id}.json`),'utf8')),receipt))throw new Error('Checkpoint custody released during verification');
+    return receipt.sha256;
+  };
   return {
+    verifyNow,
     inspect:(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>=>serial(async()=>{
       const id=key(source);
       const readJson=async(name:string)=>{try{return JSON.parse(await fs.readFile(path.join(directory,name),'utf8'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}};

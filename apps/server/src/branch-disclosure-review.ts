@@ -40,7 +40,7 @@ export class BranchDisclosureReviewService {
   const projects=new Set<string>(host.requests.map((e:Row)=>e.row.project_id));
   for(const projectId of projects)if(!this.store.getProject(projectId)||this.db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw Error('Original Project operator audit-read unavailable');
  }
- private owner(reservation:CoordinationDestinationReservation):string {
+ requireCurrentOwner(reservation:CoordinationDestinationReservation):string {
   if(!this.db.inTransaction)throw Error('Disclosure custody proof requires owner transaction');
   const saved=readIssuedResourceContinuation(this.db,reservation.sourceExecutionId,reservation.checkpointId,reservation.checkpointHash);
   if(stableJson(saved.custody)!==stableJson(reservation.custody)||saved.custody.intent.hostCutSha256!==hash(saved.hostDependencies))throw Error('Disclosure issued custody differs');
@@ -51,7 +51,7 @@ export class BranchDisclosureReviewService {
    ||e.current_binding!==saved.continuation.bindingRevisionId||Object.keys(JSON.parse(e.current_configuration).secretBindings??{}).length
    ||hash(Object.fromEntries(Object.entries(JSON.parse(e.current_configuration)).filter(([k])=>k!=='secretBindings')))!==saved.custody.intent.configurationSha256
    ||!r||r.generation!==0||r.generation!==saved.custody.intent.resourceGeneration||r.chat_id!==saved.custody.sourceChatId
-   ||r.state!=='retired'||!this.branches.resourceHistoryCustodySettled(reservation.sourceExecutionId)||!r.capture_json||JSON.parse(r.capture_json).state!=='retained')throw Error('Current disclosure custody/owner unavailable');
+   ||r.state!=='retired'||!this.branches.resourceHistoryCustodySettled(reservation.sourceExecutionId)||this.branches.resourceCaptureJournal(r.step_execution_id)?.state!=='retained')throw Error('Current disclosure custody/owner unavailable');
   const ids=(this.db.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(r.step_execution_id) as {agent_id:string}[]).map(m=>m.agent_id);
   if(stableJson(ids)!==stableJson([...saved.custody.agentIds].sort()))throw Error('Disclosure current resource membership changed');
   for(const id of ids)if(this.db.prepare(`SELECT 1 FROM agent_deletion_pending WHERE agent_id=? UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=?
@@ -70,7 +70,7 @@ export class BranchDisclosureReviewService {
   return value;
  }
  private candidate(row:Row):BranchDisclosureReviewDto {
-  const {review,policy}=this.coordination.inspectCoordinationDestinationDisclosure(row.id,r=>this.owner(r));
+  const {review,policy}=this.coordination.inspectCoordinationDestinationDisclosure(row.id,r=>this.requireCurrentOwner(r));
   const host=JSON.parse(row.snapshot_json).hostDependencies,policyRevision=hash(policy),hostCutSha256=hash(host);
   const groups:Record<string,Row[]>={request:host.requests,update:host.updates,communication:host.communications,join:host.joins};
   const facts=review.facts.map(f=>{

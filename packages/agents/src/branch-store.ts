@@ -1,3 +1,5 @@
+import {readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {issuedResourceCapture,reserveIssuedResourceCapture,sealIssuedResourceCapture} from './branch-issued-resource-capture.js';
 import {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
 import {insertBranchFrontier} from './branch-frontier-storage.js';
@@ -287,6 +289,7 @@ export class BranchStore {
   }
   private functionalReady(executionId: string): boolean {
     return this.ancestors(executionId).every(owner => {
+      if(this.row("SELECT 1 FROM coordination_destination_admissions WHERE json_extract(reservation_json,'$.destination.executionId')=? AND state!='admitted'",owner.id))return false;
       if(this.row("SELECT 1 FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id AND c.command_key='resource-capture:'||r.creation_key WHERE r.execution_id=? AND json_extract(c.result_json,'$.state')='capturing' LIMIT 1",owner.id))return false;
       const invocation=this.checkpointInvocationRow(owner.id);
       return (!invocation||invocation.state==='active')&&this.unitSaver.ready(owner.id,invocation?.mode??JSON.parse(owner.configuration_json).checkpointMode??'async');
@@ -767,6 +770,82 @@ export class BranchStore {
       this.selectedWrite(next.id);
       return this.execution(next.id)!;
     }).immediate();
+  }
+  /** Same owner transaction reserves acceptance, budget and prospective identities. */
+  reserveIssuedDestination(branchId:string,executionId:string,input:import('@ponderosa/core').BranchIssuedDestinationInput,
+    chat:{projectId:string;conversationId:string;creationKey:string;operatorId:string},authority:CoordinationDestinationAuthority,now=new Date().toISOString()):Row {
+    return this.unitTransaction(()=>{
+      const key=`issued-destination:${payloadHash(input.commandKey)}`,inputHash=payloadHash(input);
+      const prior=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
+      if(prior){if(prior.input_hash!==inputHash)throw Error('Issued destination command input conflict');return this.issuedDestinationPlan(branchId,executionId,input.commandKey);}
+      const saved=readIssuedResourceContinuation(this.sqlite,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.continuation;
+      if(!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
+        ||!branch||branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Current issued destination pins/owner unavailable');
+      const definition=this.version(branchId,c.versionId)!.definition;
+      if(this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||definition.steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Branch destination capabilities restricted');
+      if(saved.custody.agentIds.length>(definition.policy.maxEphemeralAgents??100))throw Error('Destination ephemeral Agent budget unavailable');
+      const next=this.accept(branchId,`issued-destination:${randomUUID()}`,saved.selected.execution![0]!.input_text,now);
+      if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Destination execution budget/capacity unavailable');
+      const idMap=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
+      const reservation:import('@ponderosa/core').CoordinationDestinationReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,
+        commandKey:input.commandKey,operatorId:chat.operatorId,reconcileEffects:true,custody:saved.custody,
+        destination:{projectId:chat.projectId,conversationId:chat.conversationId,executionId:next.id,resourceStepId:idMap[saved.selected.resources![0]!.step_execution_id]!,resourceGeneration:0}};
+      const reserved=this.coordination.reserveCoordinationDestination(reservation,authority,now);
+      const plan={schema:'ponderosa.branch.issued-destination.v1',input,reservation,admissionId:reserved.admissionId,idMap,chatCreationKey:chat.creationKey};
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,inputHash,stableJson(plan),now);
+      this.state(next.id,'waiting',now,'Waiting for destination disclosure review');this.selectedWrite(next.id);
+      return plan;
+    }).immediate();
+  }
+  issuedDestinationPlan(branchId:string,executionId:string,commandKey:string):Row {
+    const row=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,`issued-destination:${payloadHash(commandKey)}`);
+    if(!row)throw Error('Issued destination command not found');
+    const plan=JSON.parse(row.result_json),r=plan.reservation;
+    const admission=this.row('SELECT * FROM coordination_destination_admissions WHERE id=? AND source_execution_id=? AND branch_id=?',plan.admissionId,executionId,branchId);
+    if(plan.schema!=='ponderosa.branch.issued-destination.v1'||stableJson(plan)!==row.result_json||row.input_hash!==payloadHash(plan.input)||plan.input.commandKey!==commandKey
+      ||r?.sourceExecutionId!==executionId||r.branchId!==branchId||!admission||admission.reservation_json!==stableJson(r)||admission.reservation_hash!==payloadHash(r))throw Error('Issued destination command integrity failure');
+    return plan;
+  }
+  /** Actual Branch rows commit inside Runtime admission, before any activation. */
+  composeIssuedDestination(plan:Row,graph:import('@ponderosa/core').BranchHostGraphRestoreDto,result:ImportAgentPackageResponse,completeImport:()=>void,now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationOwnerReceipt {
+    if(!this.sqlite.inTransaction)throw Error('Issued destination requires same owner transaction');
+    const r=plan.reservation,d=r.destination,canonical=this.issuedDestinationPlan(r.branchId,r.sourceExecutionId,plan.input.commandKey);
+    if(stableJson(canonical)!==stableJson(plan))throw Error('Destination plan changed');
+    const admission=this.row('SELECT * FROM coordination_destination_admissions WHERE id=?',plan.admissionId)!,stage=JSON.parse(admission.stage_json);
+    const e=this.execution(d.executionId),branch=this.getBranch(r.branchId),saved=readIssuedResourceContinuation(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash);
+    if(!e||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested||e.state!=='waiting'
+      ||!branch?.enabled||branch.versionId!==e.versionId||branch.bindingRevisionId!==e.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(e.configuration)
+      ||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(branch.id,CAPABILITY_IDS.scripts)
+      ||!this.hasRunnableCapacity(e.id)||!this.executionBudgets.admit(e.id,now))throw Error('Current Branch destination acceptance/budget unavailable');
+    if(stableJson(result.agentRefs)!==stableJson(stage.agentMap)||stableJson([...result.agentIds].sort())!==stableJson(Object.values(stage.agentMap).sort())
+      ||result.rootAgentId!==stage.agentMap[saved.selected.resources![0]!.root_agent_id])throw Error('Actual import receipt differs from staged source map');
+    const restored=reconstructIssuedResourceContinuation(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash,
+      {executionId:d.executionId,conversationId:d.conversationId,resourceGeneration:0},{idMap:plan.idMap,requestMap:graph.requestMap,agentMap:stage.agentMap});
+    if(restored.resource.step_execution_id!==d.resourceStepId)throw Error('Destination resource identity differs');
+    insertBranchFrontier(this.sqlite,e.id,restored.frontier,now,new Set(Object.values(graph.requestMap)));
+    const resource={...restored.resource,state:'active'};
+    this.run(`INSERT INTO branch_resources(step_execution_id,execution_id,template_ref,state,requested_count,root_agent_id,chat_id,generation,retry_draining,error,creation_key) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+      resource.step_execution_id,e.id,resource.template_ref,resource.state,resource.requested_count,resource.root_agent_id,resource.chat_id,0,0,null,resource.creation_key);
+    for(const id of restored.agentIds)this.run("INSERT INTO branch_resource_members VALUES(?,?,'template')",id,d.resourceStepId);
+    this.run('INSERT INTO branch_ephemeral_contexts(step_execution_id,generation,chat_id,agent_ids_json) VALUES(?,0,?,?)',d.resourceStepId,d.conversationId,stableJson(result.agentIds));
+    this.writeResourceOperation(resource,'chat',{schema:'branch-resource-operation.v1',phase:'chat',token:`destination:${plan.admissionId}:chat`,state:'completed',generation:0,result:{chatId:d.conversationId},creationKey:plan.chatCreationKey});
+    this.writeResourceOperation(resource,'import',{schema:'branch-resource-operation.v1',phase:'import',token:`destination:${plan.admissionId}:import`,state:'completed',creationOperationId:stage.importPlan.creationOperationId,result});
+    this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',restored.executionCounters.traversals,restored.executionCounters.loopIterations,restored.executionCounters.depthCeiling,e.id);
+    const receiptId=`issued-destination-owner:${plan.admissionId}`;
+    this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',e.id,receiptId,payloadHash(plan),stableJson({coordinationDestination:graph,sourceCheckpoint:restored.sourceCheckpoint,idMap:plan.idMap}),now);
+    this.checkpoint(e.id,'issued-restored-prefix','issued_restored_prefix',{sourceCheckpoint:restored.sourceCheckpoint,admissionId:plan.admissionId,idMap:plan.idMap},now);
+    this.checkpoint(e.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',e.id)!.admission_json)},now);
+    this.checkpoint(e.id,`resource-bound:${d.resourceStepId}:0`,'resource_created',{...result,requestId:restored.requestBindings.find(b=>b.stepExecutionId===d.resourceStepId)?.requestId,creationKey:resource.creation_key},now);
+    this.state(e.id,'running',now);this.selectedWrite(e.id);completeImport();
+    // Admission publishes wakes in this transaction. Retain its final selected
+    // bytes now, including SYNC coverage, rather than relying on a later task.
+    const candidate=this.unitSaver.freeze({written:new Set([e.id])})[0];
+    if(!candidate?.content||!candidate.hash||Object.hasOwn(candidate,'error'))throw Error('Destination final checkpoint coverage unavailable');
+    const savedCheckpoint=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(e.id,candidate.content,candidate.hash);
+    const readiness={checkpointId:Number(savedCheckpoint.lastInsertRowid),checkpointHash:candidate.hash};
+    this.run("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?) WHERE id=?",readiness.checkpointId,e.id);
+    this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({coordinationDestination:graph,sourceCheckpoint:restored.sourceCheckpoint,idMap:plan.idMap,readiness}),e.id,receiptId);
+    return {executionId:e.id,resourceStepId:d.resourceStepId,resourceGeneration:0,creationOperationId:stage.importPlan.creationOperationId,requestBindings:restored.requestBindings,receiptId};
   }
   /** Recheck persistent targets before accepting a graph with an unlaunched Agent suffix. */
   private historicalAgentTargets(branchId:string,definition:BranchDefinition,bindings:BranchBindings):void {

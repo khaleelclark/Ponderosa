@@ -95,6 +95,8 @@ export interface BranchPackageEngine {
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
   captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
+  verifyCheckpointNow(receipt:CheckpointPackageReceipt):string;
+  finishDestinationImport(operationId:string,compose:(result:ImportAgentPackageResponse,complete:()=>void)=>void):void;
   releaseCheckpoint(receipt:CheckpointPackageReceipt):Promise<void>;
   composeAgents(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>;
   setOutputApps(owner:OutputAgentApps):void;
@@ -112,6 +114,8 @@ export interface BranchPackageImportError extends Error {
   accessSettingsReview?:AgentAccessImportReviewDto;
 }
 export interface BranchImportHooks {
+  /** Persist idle canonical members for a later explicit human admission command. */
+  holdForDisclosure?(result:ImportAgentPackageResponse):void;
   /** Called inside import reservation, before async effects and Agent creation. */
   stage?(plan:import('@ponderosa/core').CoordinationDestinationImportPlan):void;
   /** May wait for durable human disclosure review, outside any SQLite transaction. */
@@ -1819,7 +1823,13 @@ export function registerAgentPackageRoutes(
           const completeImport=()=>store.updateAgentCreationOperation(creationOperationId!, {
             status: "completed", result: branchHooks?{...response,memoryPlan:(store.getAgentCreationOperation(creationOperationId!)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan}:response, lastError: null,
           });
-          if(branchHooks?.admit){
+          if(branchHooks?.holdForDisclosure){
+            if(!branchHooks.stage||operationAgentIds.some(id=>!destinationAdmissionHeld(store.sqlite,id)))throw new Error('Disclosure hold requires exact staged identities');
+            if(roleIntent||packageMemory.length||plannedArtifacts.length||liveWorkingRoots.length||retainedWorkingFiles)throw new Error('Deferred admission supports only artifact-free private organization state');
+            store.updateAgentCreationOperation(creationOperationId!,{status:'canonical_committed',result:{...response,branchDestinationPrepared:true},lastError:null});
+            const held:unknown=branchHooks.holdForDisclosure(response);
+            if(held&&typeof held==='object'&&'then' in held)throw new Error('Disclosure hold must be synchronous');
+          }else if(branchHooks?.admit){
             const result:unknown=branchHooks.admit(response,completeImport);
             if(result&&typeof result==='object'&&'then' in result)throw new Error('Historical admission must be synchronous');
             if(store.getAgentCreationOperation(creationOperationId!)?.status!=='completed'||operationAgentIds.some(id=>destinationAdmissionHeld(store.sqlite,id)))throw new Error('Historical admission did not publish readiness and import completion');
@@ -1827,7 +1837,7 @@ export function registerAgentPackageRoutes(
         };
         if(branchHooks?.transaction)branchHooks.transaction(commit);else store.sqlite.transaction(commit)();
         for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
-        finishRoles(creationOperationId);
+        if(!branchHooks?.holdForDisclosure)finishRoles(creationOperationId);
       }
       try {
         appendWorkspace({
@@ -1848,7 +1858,7 @@ export function registerAgentPackageRoutes(
       } catch (error) {
         if(liveWorkingRoots.length)error=new Error(`${error instanceof Error?error.message:String(error)}; live working roots and displaced baselines retained at ${JSON.stringify(liveWorkingRoots)}`,{cause:error});
         if(retainedWorkingFiles)error=new Error(`${error instanceof Error?error.message:String(error)}; user working files retained at ${JSON.stringify(body.workingRootDestinations??body.workingFilesDestination)}`,{cause:error});
-        if(creationOperationId&&store.getAgentCreationOperation(creationOperationId)?.status==='completed'){
+        if(creationOperationId&&['completed','canonical_committed'].includes(store.getAgentCreationOperation(creationOperationId)?.status??'')){
           return reply.code(409).send({error:'Imported resources committed; output role finalization needs recovery/review: '+(error as Error).message,operationId:creationOperationId});
         }
         let rollbackComplete = true;
@@ -2554,6 +2564,16 @@ export function registerAgentPackageRoutes(
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();const result:unknown=seal?.(receipt);if(result&&typeof result==='object'&&'then' in result)throw new Error('Checkpoint sealing must be synchronous');publish();}));}finally{releaseSourceCapture(token);}
     }),
     readCheckpoint:receipt=>checkpointCustody.read(receipt),
+    verifyCheckpointNow:receipt=>checkpointCustody.verifyNow(receipt),
+    finishDestinationImport(operationId,compose){
+      const operation=store.getAgentCreationOperation(operationId),result=operation?.result as ImportAgentPackageResponse&{branchDestinationPrepared?:boolean};
+      if(!store.sqlite.inTransaction||operation?.status!=='canonical_committed'||operation.kind!=='import'||!result?.branchDestinationPrepared
+        ||operation.agentIds.some(id=>!destinationAdmissionHeld(store.sqlite,id)))throw new Error('Exact prepared destination import required');
+      const composed:unknown=compose(result,()=>{store.updateAgentCreationOperation(operationId,{status:'completed',lastError:null});});
+      if(composed&&typeof composed==='object'&&'then' in composed||store.getAgentCreationOperation(operationId)?.status!=='completed'||operation.agentIds.some(id=>destinationAdmissionHeld(store.sqlite,id)))throw new Error('Destination composition did not commit exact import readiness');
+      // This set is a process-local quarantine. SQLite remains the readiness authority.
+      for(const id of operation.agentIds)deletingAgentIds.delete(id);
+    },
     releaseCheckpoint:receipt=>checkpointCustody.release(receipt),
     composeAgents:composeAgentPackages,
     reviewAccess,

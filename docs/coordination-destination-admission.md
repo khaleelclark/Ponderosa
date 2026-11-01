@@ -1,8 +1,8 @@
 # Retained coordination into fresh resource participants
 
-Source-only implementation. No tests, typecheck, build or runtime qualification was run for this change. The Branch issued-resource consumer remains a separate integration task; its existing refusal must remain until it supplies the contract below.
+Source-only implementation. No tests, typecheck, build or runtime qualification was run for this change. The bounded Branch issued-resource consumer is connected through the operator commands below. Qualification remains deferred; ordinary historical rewind retains its issued-resource refusal.
 
-The existing `restoreHostCoordinationCut` still means fresh graph IDs in the **original** live scope and participants. Its authorizer and ordinary `coordinate`/`updateRequest` actor rules are unchanged. The new host-only `CoordinationV3Store` API admits explicitly mapped fresh participants; no provider tool or HTTP endpoint exposes it.
+The existing `restoreHostCoordinationCut` still means fresh graph IDs in the **original** live scope and participants. Its authorizer and ordinary `coordinate`/`updateRequest` actor rules are unchanged. The new host-only `CoordinationV3Store` API admits explicitly mapped fresh participants; no provider tool exposes it. Operator-only Branch destination commands compose this host API.
 
 Shared DTOs are in `packages/core/src/coordination-destination.ts`. Runtime authority is `packages/agents/src/coordination-v3-destination-admission-authority.ts`, exported through the store facade. Migration `0037_coordination_destination_admissions.sql` is registered in `db.ts`.
 
@@ -31,9 +31,9 @@ These are trusted host service functions, not serialized permissions or request-
 
 This operation admits one exact resource organization generation in one original Chat into one fresh destination Chat. All canonical graph participants must have explicit fresh imported identities in that organization; external control participants, multiple resource generations, recovery chains, unknown effects, expired lifetimes, Decision suspensions, communication-owned artifacts and missing reference closure refuse. Request-update-owned artifacts require actual fresh canonical content and explicit import map entries. The shared tree resolver has a separate opt-in for retained resource evidence used only by this operation/provenance; ordinary original-audience restoration keeps its existing resource refusal. Branch must capture an issued resource frontier and its bytes together, not reuse an earlier pre-opening package for a later Request cut.
 
-No automatic staging retry, failed-import revival, unknown-effect replay or abandoned reservation reclamation is supplied. Import compensation may clean its own partial bytes/Agents, while the durable reservation remains held for owner reconciliation. Branch must supply its final consumer, capture-intent journaling, actual custody/disclosure authorization adapters, correct initial Chat reservation, human review flow, whole owner-tree receipts, independent cleanup and retained checkpoint policy. General tree/multi-resource execution is not qualified. Deferred regression source is in `tests/branches/destination-admission.test.mjs`.
+No automatic staging retry, failed-import revival, unknown-effect replay or abandoned reservation reclamation is supplied. Import compensation may clean its own partial bytes/Agents, while the durable reservation remains held for owner reconciliation. The bounded consumer now supplies issued capture, executable continuation, real custody/disclosure adapters, managed Chat reservation, acceptance/budget, staging and single-owner receipts. Unsupported families and abandoned-stage reclamation remain refused. General tree/multi-resource execution is not qualified. Deferred regression source is in `tests/branches/destination-admission.test.mjs`.
 
-Lifecycle integration must explicitly reconcile/remove admission/member rows only after its historical canonical references and any staged destination runtime/bytes are safely retired. Until that consumer exists, retained source deletion can fail closed on the new pins; do not bypass them or directly delete admission rows to make deletion succeed.
+Lifecycle integration must explicitly reconcile/remove admission/member rows only after its historical canonical references and any staged destination runtime/bytes are safely retired. Retained source deletion fails closed on these pins; do not bypass them or directly delete admission rows to make deletion succeed.
 
 
 ## Branch human disclosure adapter (source integration)
@@ -48,5 +48,62 @@ without a permissive approval callback. `destinationDisclosurePolicy` shares the
 policy projection with admission and includes actual policy-layer revisions.
 The composer must reserve with host constant `BRANCH_DISCLOSURE_OPERATOR`, complete
 actual staging, obtain the explicit human choice, and supply this callback alongside
-its real current custody/owner adapter. No destination composer is connected yet.
+its real current custody/owner adapter. The bounded `BranchIssuedDestinationService` supplies prospective managed identities, actual staging, current byte/owner verification and final Branch composition.
 Tests/builds/types/runtime execution remain deferred; this is source coverage only.
+
+
+## Connected bounded Branch composer
+
+The server operator endpoints under
+`/api/branches/:id/executions/:executionId/destinations` now implement:
+
+- GET: canonical discovery of the latest 50 reserved/staged/admitted destination
+  summaries. It returns real `admissionId`, command key, selected checkpoint and
+  destination identities, including after restart. It never constructs an ID in
+  the browser. Admitted summary discovery does not disclose the graph receipt.
+- GET `?commandKey=...`: exact durable command inspection. Admitted readback
+  validates Runtime maps/owner/import/activations and the saved final checkpoint;
+  it reads neither source packages nor current source participant objects.
+- POST `{commandKey,checkpointId,expectedHash,reconcileEffects:true}`: reserve and
+  prepare. Optional `accessSettingsResolution` uses the existing import schema.
+  Current support refuses nonempty source restriction settings rather than
+  silently dropping them. The server uses the existing `workspaceCreationId`
+  Project/default Chat identities and managed `createChat` service, reserving
+  BEFORE publication, with fresh Branch manual acceptance and execution budget
+  admission. It stages actual import source-ref maps before Agent publication.
+- GET/POST the existing `/:admissionId/disclosure` operation for exact explicit
+  human review. Import reaches durable `canonical_committed` with a dedicated
+  prepared result, remains hidden/idle, and returns `awaiting_disclosure`; no
+  long-lived HTTP request, process-local promise or SQLite transaction holds the
+  human wait. Restart recovery retains the prepared import. No automatic approval.
+- POST `/admit` `{commandKey,reviewHash}`: requires the current approved HUMAN
+  preview hash, then recomputes Runtime's separate current authority review hash.
+  The final transaction synchronously re-verifies the independent issued receipt
+  and custody bytes, exact `hostCutSha256`, current source/destination ownership,
+  pins, policies and budgets. `composeIssuedDestination` uses the sealed codec and
+  inserts mapped actual Step/attempt/resource/member/context rows, fresh Chat and
+  import receipts, counters, lineage/owner command, completed import and a final
+  saved selected checkpoint before Runtime releases final-only wakes/readiness.
+  It creates no new native effects or intermediate historical wakes. Exact
+  admission replay checks the saved human-hash command before package access;
+  changed input conflicts. Current disclosure permission still governs readback.
+
+One standalone nonsecret serial generation-zero ASYNC/SYNC resource is supported.
+Package/runtime artifacts, memory payloads, native working copies, source
+restrictions, elevated automatic management permissions, missing old envelopes,
+unknown effects and broader codec cases explicitly refuse. The browser approval
+surface remains separately owned. This does not enable ordinary rewind or claim
+full resource-family restoration.
+
+Admitted resources enter the existing exact-member Branch cleanup lifecycle with
+new operation/context receipts. Unknown/partial imports and abandoned reservations
+remain durably held; they never reallocate staged identities, auto-retry unknown
+native effects, release source custody or bypass source retention pins. Automatic
+abandonment reclamation/removal of admission lineage is still unsupported. The
+original Project audit scope remains required for disclosure and receipt access.
+
+Deferred source fixtures cover ASYNC/SYNC reserve/stage/approval/admit/restart,
+no preapproval activation or executable rows, current custody failure, policy
+revision drift/revocation, final readiness and exact replay without package access.
+They use inert package/folder adapters and have not been executed. They do not
+constitute runtime qualification.

@@ -1469,3 +1469,107 @@ test('disclosure API exposes exact human confirmation and rejects fabricated ide
  const approved=await app.inject({method:'POST',url,payload:choice});assert.equal(approved.statusCode,200);assert.equal(approved.json().active,true);
  assert.deepEqual((await app.inject({method:'GET',url:url+'?commandKey=route-choice'})).json(),approved.json());
 });
+
+// Deferred composer regression: actual SQLite owner/runtime paths, inert package
+// and managed-folder adapters; no provider, Script or browser process is started.
+async function issuedDestinationFixture(t,mode='async'){
+ const f=await reservationHistoryFixture(t,mode),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let saved;
+ await f.finish(f.source.id,undefined,undefined,async({stepId,generation})=>{
+  const intent=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'composer-cut');
+  const receipt={...intent.source,version:1,custodyId:hash(intent.source.checkpointId),boundaryId:'inert-composer-boundary',sha256:hash('inert-composer-package'),byteLength:1};
+  f.store.sqlite.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'composer-cut',receipt))();
+  saved=f.branches.issuedResourceCapture(f.source.id,stepId,'composer-cut');
+ });
+ const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
+ const {BranchDisclosureReviewService}=await import('../../apps/server/dist/branch-disclosure-review.js');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ let bytes=true,creates=0,imports=0,reads=0,verifications=0;
+ const packageFor=receipt=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date(0).toISOString(),sourceLabel:'Inert captured organization',rootRef:receipt.agentIds[0],
+  agents:receipt.agentIds.map(ref=>({ref,title:'Retained worker',engine:'codex',sourceChat:{ref:receipt.sourceChatId,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))});
+ const engine={
+  readCheckpoint:async receipt=>{reads++;assert.deepEqual(receipt,saved.receipt);if(!bytes)throw Error('missing issued bytes');return packageFor(receipt);},
+  verifyCheckpointNow:receipt=>{verifications++;assert.deepEqual(receipt,saved.receipt);if(!bytes)throw Error('missing issued bytes');return receipt.sha256;},
+  validateAgent:()=>{},
+  importAgent:async(projectId,chatId,pkg,engines,key,{branchHooks:hooks})=>{
+   imports++;const store=f.store,db=store.sqlite,op=store.beginAgentCreationOperation({projectId,conversationId:chatId,actorScope:'user:local-operator',kind:'import',idempotencyKey:key,payloadHash:hash(stableJson(pkg))}).operation;
+   const agentMap=Object.fromEntries(pkg.agents.map(a=>[a.ref,randomUUID()]));
+   db.transaction(()=>{
+    Object.values(agentMap).forEach((id,index)=>store.addAgentCreationOperationMember(op.id,id,index));
+    hooks.stage({creationOperationId:op.id,projectId,conversationId:chatId,agents:Object.entries(agentMap).map(([sourceRef,agentId])=>({sourceRef,agentId})),artifacts:[]});
+   })();
+   await hooks.plan(Object.values(agentMap),op.id);
+   for(const id of Object.values(agentMap))store.createAgent(projectId,{title:'Fresh held worker',engine:'codex',conversationId:chatId},undefined,id);
+   const result={rootAgentId:agentMap[pkg.rootRef],agentIds:Object.values(agentMap),agentRefs:agentMap};
+   hooks.transaction(()=>{store.updateAgentCreationOperation(op.id,{status:'canonical_committed',result:{...result,branchDestinationPrepared:true}});hooks.holdForDisclosure(result);});
+   return result;
+  },
+  finishDestinationImport:(id,compose)=>{
+   const op=f.store.getAgentCreationOperation(id);assert.equal(op.status,'canonical_committed');assert.equal(op.result.branchDestinationPrepared,true);
+   compose(op.result,()=>f.store.updateAgentCreationOperation(id,{status:'completed'}));
+  },
+ };
+ const services=()=>{
+  const coordination=new CoordinationV3Store(f.store.sqlite),resources=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));
+  resources.setPackageEngine(engine);
+  const disclosure=new BranchDisclosureReviewService(f.store,f.branches,coordination,(...args)=>resources.verifyHistoricalCustody(...args));
+  const createChat=async(input,key,owner)=>{creates++;assert.ok(f.store.sqlite.prepare('SELECT 1 FROM coordination_destination_admissions WHERE conversation_id IS NOT NULL AND state=\'reserved\'').get(),'hold commits before any Chat publication');
+   const project=f.store.createProject({...input,hostPath:f.branches.localConfiguration(f.branch.id).directories.root,chatOwned:true,...owner},{idempotencyKey:key,payloadHash:hash(stableJson({input,owner}))});return f.store.getConversation(project.lastConversationId);};
+  return {disclosure,composer:new BranchIssuedDestinationService(f.store,f.branches,coordination,disclosure,()=>engine,createChat)};
+ };
+ const input={commandKey:'restore-issued-cut',checkpointId:saved.checkpointId,expectedHash:saved.checkpointHash,reconcileEffects:true};
+ return {f,saved,input,services,setBytes:value=>{bytes=value;},get counts(){return {creates,imports,reads,verifications};}};
+}
+for(const mode of ['async','sync'])test(`issued ${mode} composer reserves -> stages -> human approves -> atomically admits -> exact restart readback`,async t=>{
+ const x=await issuedDestinationFixture(t,mode);let {composer,disclosure}=x.services();const {f,input}=x,db=f.store.sqlite;
+ const prepared=await composer.prepare(f.branch.id,f.source.id,input);
+ assert.equal(prepared.state,'awaiting_disclosure');assert.equal(prepared.restoreSupported,false);
+ assert.equal(composer.list(f.branch.id,f.source.id)[0].admissionId,prepared.admissionId,'public discovery returns canonical admission identity');
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM agent_activations WHERE scope_key=?').get(`conversation:${prepared.destination.conversationId}`).n,0);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_step_executions WHERE execution_id=?').get(prepared.destination.executionId).n,0);
+ f.branches.advance();await f.branches.unitSaver.drain();assert.equal(f.branches.execution(prepared.destination.executionId).state,'waiting','staged acceptance cannot advance an empty frontier');
+ const preview=await disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/approval/);
+ await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'explicit-human-choice',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ x.setBytes(false);await assert.rejects(composer.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/missing issued bytes/);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(prepared.destination.executionId).n,0,'failed custody writes no owner rows');x.setBytes(true);
+ const admitted=await composer.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash);
+ assert.equal(admitted.state,'admitted');assert.equal(admitted.restoreSupported,true);assert.ok(admitted.receipt.activationIds.length,'only final open Request wakes');
+ const receipt=admitted.receipt,resource=db.prepare('SELECT * FROM branch_resources WHERE step_execution_id=?').get(receipt.owner.resourceStepId);
+ assert.equal(resource.execution_id,prepared.destination.executionId);assert.equal(resource.chat_id,prepared.destination.conversationId);assert.equal(resource.generation,0);
+ assert.notEqual(resource.root_agent_id,x.saved.receipt.agentIds[0]);assert.equal(f.store.getAgentCreationOperation(receipt.owner.creationOperationId).status,'completed');
+ for(const binding of receipt.owner.requestBindings)assert.ok(db.prepare('SELECT 1 FROM branch_attempts WHERE step_execution_id=? AND request_id=?').get(binding.stepExecutionId,binding.requestId));
+ const owner=JSON.parse(db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(receipt.owner.executionId,receipt.owner.receiptId).result_json);
+ assert.ok(db.prepare('SELECT 1 FROM branch_unit_snapshots WHERE id=? AND execution_id=? AND content_hash=?').get(owner.readiness.checkpointId,receipt.owner.executionId,owner.readiness.checkpointHash));
+ await f.branches.unitSaver.drain();await f.reopen();({composer,disclosure}=x.services());x.setBytes(false);const counts=x.counts;
+ const read=await composer.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash);assert.equal(read.receipt.admissionId,receipt.admissionId);assert.deepEqual(x.counts,counts,'exact committed readback never reads packages or creates effects');
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,input.commandKey,'a'.repeat(64)),/conflict/);
+ await assert.rejects(composer.prepare(f.branch.id,f.source.id,{...input,expectedHash:'b'.repeat(64)}),/conflict/);
+ assert.deepEqual(x.counts,counts);assert.equal(db.open,false,'original source connection was closed during restart');
+});
+test('issued composer final policy drift and explicit revocation hold all owner rows',async t=>{
+ const x=await issuedDestinationFixture(t),{composer,disclosure}=x.services(),f=x.f,p=await composer.prepare(f.branch.id,f.source.id,x.input);
+ const review=await disclosure.prepare(f.branch.id,f.source.id,p.admissionId),choice={commandKey:'human-approve',action:'approve',reviewHash:review.reviewHash,expectedRevision:0};
+ await disclosure.choose(f.branch.id,f.source.id,p.admissionId,choice);
+ const policies=new CapabilityPolicyStore(f.store.sqlite);policies.put({scopeKind:'chat',scopeId:p.destination.conversationId,expectedRevision:0,restrictedCapabilityIds:[]});
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash),/approval/);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(p.destination.executionId).n,0);
+ await disclosure.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'human-revoke',action:'revoke',reviewHash:review.reviewHash,expectedRevision:1});
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash),/approval/);
+ assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'awaiting_disclosure');
+});
+test('issued composer owner failure rolls back graph, import completion, readiness and all wakes',async t=>{
+ const x=await issuedDestinationFixture(t),{composer,disclosure}=x.services(),f=x.f,p=await composer.prepare(f.branch.id,f.source.id,x.input),db=f.store.sqlite;
+ const preview=await disclosure.prepare(f.branch.id,f.source.id,p.admissionId);
+ await disclosure.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'human-choice',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ const original=f.branches.composeIssuedDestination;
+ f.branches.composeIssuedDestination=function(...args){original.apply(this,args);throw Error('owner commit refused');};
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,preview.reviewHash),/owner commit refused/);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(p.destination.executionId).n,0);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_step_executions WHERE execution_id=?').get(p.destination.executionId).n,0);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM coordination_requests WHERE conversation_id=?').get(p.destination.conversationId).n,0);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM agent_activations WHERE scope_key=?').get(`conversation:${p.destination.conversationId}`).n,0);
+ assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'awaiting_disclosure');
+ f.branches.composeIssuedDestination=original;
+ assert.equal((await composer.admit(f.branch.id,f.source.id,x.input.commandKey,preview.reviewHash)).state,'admitted');
+});

@@ -1,3 +1,4 @@
+import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
 import type {BranchResourceService} from '../branch-resource-service.js';
 import type {OutputAgentApps} from '../output-agent-apps.js';
@@ -25,6 +26,26 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   // tokens cannot turn Branch read access into private historical Request access.
   const hostArtifactGrant=(projectId:string,artifactId:string,recipientAgentId:string)=>store.operatorCanReadProjectArtifact(projectId,artifactId)&&store.agentCanReadProjectArtifact(projectId,artifactId,recipientAgentId);
   const disclosures=new BranchDisclosureReviewService(store,branches,context.coordination,(executionId,checkpointId,expectedHash)=>context.resources.verifyHistoricalCustody(executionId,checkpointId,expectedHash));
+  const destinations=new BranchIssuedDestinationService(store,branches,context.coordination,disclosures,()=>context.resources.destinationPackageEngine(),context.createChat);
+  const destinationPath='/api/branches/:id/executions/:executionId/destinations';
+  type DestinationParams={id:string;executionId:string};
+  app.get<{Params:DestinationParams;Querystring:{commandKey?:string}}>(destinationPath,(request,reply)=>{
+    try{const p=request.params;return request.query.commandKey!==undefined?destinations.inspect(p.id,p.executionId,request.query.commandKey):destinations.list(p.id,p.executionId);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:DestinationParams;Body:unknown}>(destinationPath,async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Issued destination preparation');
+      exactObjectFields(body,['commandKey','checkpointId','expectedHash','reconcileEffects','accessSettingsResolution'],'Issued destination preparation');
+      const result=await destinations.prepare(p.id,p.executionId,body as unknown as import('@ponderosa/core').BranchIssuedDestinationInput);notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:DestinationParams;Body:unknown}>(destinationPath+'/admit',async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Issued destination admission');
+      exactObjectFields(body,['commandKey','reviewHash'],'Issued destination admission');
+      if(typeof body.commandKey!=='string'||typeof body.reviewHash!=='string')throw Error('Exact destination command and human review hash required');
+      const result=await destinations.admit(p.id,p.executionId,body.commandKey,body.reviewHash);notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   const disclosurePath='/api/branches/:id/executions/:executionId/destinations/:admissionId/disclosure';
   type DisclosureParams={id:string;executionId:string;admissionId:string};
   app.get<{Params:DisclosureParams;Querystring:{commandKey?:string}}>(disclosurePath,async(request,reply)=>{

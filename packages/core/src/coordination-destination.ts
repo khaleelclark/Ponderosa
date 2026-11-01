@@ -54,3 +54,15 @@ export interface BranchDisclosureReviewDto {
  facts:(CoordinationDestinationReview['facts'][number]&{content:unknown})[];
  policy:unknown;
 }
+
+/** Single supported issued-resource destination; effects require explicit commands. */
+export interface BranchIssuedDestinationInput {
+ commandKey:string; checkpointId:number; expectedHash:string; reconcileEffects:true;
+ accessSettingsResolution?:import('./dto/agents.js').ImportAgentPackageRequest['accessSettingsResolution'];
+}
+export interface BranchIssuedDestinationDto {
+ commandKey:string; admissionId:string; checkpointId:number; checkpointHash:string;
+ destination:CoordinationDestinationReservation['destination'];
+ state:'reserved'|'import_unknown'|'awaiting_disclosure'|'admitted';
+ restoreSupported:boolean; receipt?:CoordinationDestinationReceipt;
+}
