@@ -19,6 +19,7 @@ export function lifecycleReceiptMatches(command:LifecycleCommand,value:unknown):
  if(command.action==='approve')return receipt.admissionId===command.id&&receipt.reviewHash===('expectedReviewHash' in body?body.expectedReviewHash:undefined)&&sameLifecycleInput(receipt.choice,body);
  if('checkpoints' in body)return receipt.schema==='branch-custody-checkpoint-retirement.v1'&&receipt.state==='retired'&&receipt.custodyId===command.id&&sameLifecycleInput(receipt.input,body);
  if(receipt.commandKey!==body.commandKey)return false;
+ if(command.path?.includes('/destination-groups/')&&(!Array.isArray(receipt.resources)||receipt.resources.length<2||receipt.resources.length>32||!Array.isArray(receipt.groupChats)||typeof receipt.evidenceSha256!=='string'||!/^[a-f0-9]{64}$/.test(receipt.evidenceSha256)))return false;
  if('expectedReviewHash' in body)return receipt.admissionId===command.id&&receipt.reviewHash===body.expectedReviewHash&&receipt.releasedSourcePins===body.releaseSourcePins&&typeof receipt.retiredAt==='string';
  if('captureKey' in body)return receipt.custodyId===command.id&&receipt.reviewSha256===body.reviewSha256&&receipt.state==='abandoned';
  if(receipt.reviewSha256!==body.reviewSha256)return false;

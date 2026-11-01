@@ -46,3 +46,10 @@ test('unreadable retained commands hold new mutations instead of silently resett
   globalThis.localStorage={getItem:()=>null};assert.deepEqual(restoreLifecycleCommand('scope'),{});
  }finally{if(original===undefined)delete globalThis.localStorage;else globalThis.localStorage=original;}
 });
+
+test('whole group receipt cannot be replaced by a singular receipt or missing group evidence',()=>{
+ const command={id:'group',path:'/api/lifecycle/destination-groups/group',action:'retire',body:{commandKey:'key',expectedReviewHash:'review',releaseSourcePins:false,authorizeDeletedOwner:true}};
+ const receipt={admissionId:'group',commandKey:'key',reviewHash:'review',releasedSourcePins:false,retiredAt:'now',resources:[{custody:'one'},{custody:'two'}],groupChats:[],evidenceSha256:'a'.repeat(64)};
+ assert.equal(lifecycleReceiptMatches(command,receipt),true);
+ for(const change of [{resources:undefined},{resources:[receipt.resources[0]]},{groupChats:undefined},{evidenceSha256:'changed'},{releasedSourcePins:true}])assert.equal(lifecycleReceiptMatches(command,{...receipt,...change}),false);
+});

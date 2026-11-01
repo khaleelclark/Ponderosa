@@ -10,8 +10,8 @@ import {ConfirmDialog} from '../ConfirmationDialogs';
 import {useWorkspaceReadOnly} from '../WorkspaceReadOnlyContext';
 import {lifecycleReceiptMatches,sameLifecycleInput,restoreLifecycleCommand,type LifecycleCommand} from './lifecycleCommand';
 /** Only canonical owner references supply checkpoint IDs and original command keys. */
-export function BranchLifecycleReview({source,enabled=true}:{source:CheckpointPackageSource;enabled?:boolean}):JSX.Element {
- const [open,setOpen]=useState(false),[selected,setSelected]=useState<string[]>([]),[capture,setCapture]=useState(''),[captureReview,setCaptureReview]=useState<CheckpointCaptureAbandonmentReviewDto>(),[ack,setAck]=useState(false),[confirm,setConfirm]=useState<LifecycleCommand>(),[notice,setNotice]=useState('');
+export function BranchLifecycleReview({source,enabled=true,captureKey}:{source:CheckpointPackageSource;enabled?:boolean;captureKey?:string}):JSX.Element {
+ const [open,setOpen]=useState(false),[selected,setSelected]=useState<string[]>([]),[capture,setCapture]=useState(captureKey??''),[captureReview,setCaptureReview]=useState<CheckpointCaptureAbandonmentReviewDto>(),[ack,setAck]=useState(false),[confirm,setConfirm]=useState<LifecycleCommand>(),[notice,setNotice]=useState('');
  const key=JSON.stringify(['branch-lifecycle',window.location.origin,currentProductScope(),source]);
  const [restored]=useState(()=>restoreLifecycleCommand(key));
  const [pending,setPending]=useState<LifecycleCommand|undefined>(restored.command);
@@ -54,7 +54,7 @@ export function BranchLifecycleReview({source,enabled=true}:{source:CheckpointPa
   {value&&!review.isError&&<><details><summary>Exact source, revision and blockers</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto',fontSize:12}}>{JSON.stringify(value,null,2)}</Typography></details>
    {checkpoints.map(item=><FormControlLabel key={String(item.key)} control={<Checkbox checked={selected.includes(String(item.key))} disabled={busy||Boolean(pending)||selected.length>=128&&!selected.includes(String(item.key))} onChange={(_,checked)=>{setSelected(previous=>checked?[...previous,String(item.key)]:previous.filter(id=>id!==item.key));setAck(false);setConfirm(undefined);}}/>} label={`Retire checkpoint ${item.key} · ${item.sha256}`}/>)}
    <Typography variant="caption">Initial checkpoints are never selected automatically or retired here.</Typography>
-   <TextField select label="Canonical owner command to inspect" value={commands.some(item=>item.key===capture)?capture:''} disabled={busy||Boolean(pending)} onChange={event=>{setCapture(event.target.value);reset();}}><MenuItem value="">Choose command</MenuItem>{commands.map(item=><MenuItem key={String(item.key)} value={String(item.key)}>{String(item.key)}</MenuItem>)}</TextField>
+   {captureKey?<Typography sx={{overflowWrap:'anywhere'}}>Canonical discovered capture key: {captureKey}</Typography>:<TextField select label="Canonical owner command to inspect" value={commands.some(item=>item.key===capture)?capture:''} disabled={busy||Boolean(pending)} onChange={event=>{setCapture(event.target.value);reset();}}><MenuItem value="">Choose command</MenuItem>{commands.map(item=><MenuItem key={String(item.key)} value={String(item.key)}>{String(item.key)}</MenuItem>)}</TextField>}
    <Button disabled={busy||!capture||Boolean(pending)} onClick={()=>preview.mutate()}>Review capture abandonment</Button>
    {captureReview&&<Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(captureReview,null,2)}</Typography>}
    <FormControlLabel control={<Checkbox checked={ack} disabled={busy||Boolean(pending)||readOnly} onChange={(_,checked)=>setAck(checked)}/>} label="I reviewed this exact source, selection and revision"/>

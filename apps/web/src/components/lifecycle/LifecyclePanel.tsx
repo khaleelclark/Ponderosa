@@ -1,3 +1,4 @@
+import {LifecycleDiscovery} from './LifecycleDiscovery';
 import {useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {Alert,Button,MenuItem,Paper,Stack,TextField,Typography} from '@mui/material';
@@ -16,12 +17,13 @@ export function LifecyclePanel():JSX.Element {
   <Typography component="h2" variant="h6">Retained evidence and unresolved effects</Typography>
   <Button sx={{alignSelf:'flex-start'}} onClick={()=>setOpen(value=>!value)} aria-expanded={open}>{open?'Close lifecycle inventory':'Review lifecycle inventory'}</Button>
   {open&&<>
+   <LifecycleDiscovery/>
    <Button disabled={custody.isFetching||memory.isFetching||orphans.isFetching} onClick={()=>{setSelected('');void custody.refetch();void memory.refetch();void orphans.refetch();}}>Refresh inventories</Button>
    {[custody.error,memory.error,orphans.error].filter(Boolean).map((error,index)=><Alert severity="warning" key={index}>{error?.message}</Alert>)}
    <TextField select label="Canonical retained identity" value={target?selected:''} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose evidence</MenuItem>{items.map(item=><MenuItem key={JSON.stringify([item.kind,item.id])} value={JSON.stringify([item.kind,item.id])}>{item.label}</MenuItem>)}</TextField>
    {target&&<LifecycleReview key={selected} kind={target.kind as LifecycleKind} id={target.id}/>}
    {orphans.data&&<details><summary>Preserved orphan staging evidence ({orphans.data.length})</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(orphans.data,null,2)}</Typography></details>}
-   <Typography variant="caption">Original bytes stay preserved. Import and destination reviews open from their canonical operation or Branch destination.</Typography>
+   <Typography variant="caption">Original bytes stay preserved. Discovery entries supply exact identities; reviews independently determine eligibility.</Typography>
   </>}
  </Stack></Paper>;
 }

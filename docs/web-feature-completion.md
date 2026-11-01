@@ -611,3 +611,90 @@ plus existing `ExecutionPanel.tsx`, core `index.ts`, and this document.
 No tests/checks/build/types/Node/native/browser/runner preparation or execution,
 installs, backend writes, push/merge/deploy or new workers. Integration and executed
 qualification remain open; no whole UI/group/lifecycle/Bible/Phase2 acceptance.
+
+## Canonical lifecycle discovery and whole-group retirement continuation
+
+Source-only successor of `eba8fa646740aae741aad1e0f389ec30fdb6982e`, preserving the
+bounded two-resource capture/disclosure UI. Required backend is exact discovery
+`f73a1e5a44bdea1a5e29799416e423afffacfa30` atop composed group lifecycle
+`393a02f5c0946fafcebe3577e5432fc9878bb448` in the documented Reliability chain.
+The latter composes host0a9c1387/Runtime713af3ad plus393a02f5 callback/policy/native
+proof source; Integration owns equivalent assembly. No backend files or shared SDK
+source are copied or edited. Exact DTOs, SDK methods and routes were source-read at
+`/tmp/ponderosa-lifecycle-discovery`. The older isolated web base continues to require
+backend/core source integration before execution; this is not a standalone build.
+
+Settings `LifecyclePanel` now mounts `LifecycleDiscovery`. Three independent
+collections call the exact APIs exposed by `BranchesClient.lifecycleImports`,
+`lifecycleDestinations` and `lifecycleCaptures`: GET `/api/lifecycle/agent-imports`,
+`/destinations` and `/checkpoint-captures`, with limit50 and the returned opaque
+cursor. Existing operator `requestJson` preserves product routing and request errors;
+no larger SDK is duplicated into this older checkout. Each explicit Load more
+preserves the original page revision. Only absence of nextCursor means end of
+inventory. No latest50 ceiling is claimed. Invalid pages/revision changes and409
+hide all stale entries, unmount selected reviews/confirmations, and require an
+explicit restart of that collection. Completed other collections remain usable.
+A restart also clears its selected review; unresolved original commands stay in
+scoped localStorage rather than being discarded. Collections are on demand with
+no polling/reconnect retry or automatic mutation.
+
+Import choices use actual operationId and show product/status/phase, current versus
+completed-deletion-receipt versus retained-only Project/Chat identities, journal or
+retained-lifecycle origin and lifecycle state. unverifiedEvidenceCount supplies only
+a warning, never a guessed operation ID. Destination choices show singular/group
+kind, actual source Branch/execution/owner state, checkpoint/hash and every slot's
+source Chat, destination Project/Chat/Run/Step and owner evidence class. Retained-only
+is explicitly audit evidence, not inferred deletion, drain or action eligibility.
+Only these defined metadata fields/hashes and the full capture source are displayed;
+no import payload, private Request body or Branch snapshot comes from discovery.
+
+Source capture collection is mounted independently of destination discovery or
+retirement review. It passes exact returned `source:CheckpointPackageSource` and
+`captureKey` into existing `BranchLifecycleReview`; the discovered key is immutable
+presentation, not pasted input or inferred from custody IDs/reference hashes.
+The existing Branch/combined abandonment review still decides eligibility. Discovery
+does not change pins, authorize effects, manufacture deletion proof or permit group
+multiple-package abandonment. No loop of singular capture abandonment is added.
+The earlier frozen1544/frozen1aa discovery-gap descriptions remain historical
+contracts: this continuation supplies canonical lifecycle discovery fromf73a1e5a;
+it does not claim Branch group capture/prepare command discovery or capture CAS
+preview from the Branch owner's separate unpublished successor.
+
+Canonical discovered group admission IDs open `LifecycleReview kind=group` using
+GET `/api/lifecycle/destination-groups/:id/review`, separate POST `/approve` and
+`/retire`, and pure GET `/receipt`. Shared DestinationGroupRetirementReviewDto
+preserves the entire2–32-resource reservation, all retained slots and evidence
+revision. Group preview refuses missing group resource/slot inventories. Every
+resource and slot is displayed in the expandable current evidence; warnings explain
+whole-group atomicity, independently completed destination deletion, global runtime
+quiescence, policy/native evidence staleness, permanent preserve-only choice and
+remaining source references. Human acknowledgement and explicit pin disposition
+produce one stable command/hash/body saved before POST; approval never auto-retires.
+Retirement reuses that exact body under separate confirmation. Lost response/remount
+uses pure receipt lookup without POST. Existing canonical receipt inspection is also available without a saved command or
+successful review, displayed only as historical evidence and never as a new choice.
+Receipt recovery must bind original admission, key,
+review hash and pin disposition plus group resources/slots/evidenceSha256; a singular
+receipt cannot satisfy group recovery.409 resets confirmation/acknowledgement while
+retaining the original uncertain command. No hidden upgrade from preserve-only or
+silent hash replacement is available. Singular retirement callers stay separate;
+group reviews do not mount a loop of singular lifecycle actions.
+
+Deferred regression additions: `lifecycle-discovery.test.mjs` covers paging beyond50,
+opaque cursor/revision preservation and invalid/changed page refusal;
+`lifecycle-command.test.mjs` now covers group versus singular receipt evidence;
+`lifecycle-discovery-mounted.tsx` covers retained owner metadata,51st import,
+paging409 reset, independent capture source after group proof refusal, every group
+slot, separate approval/retirement with identical choice, lost response/remount and
+pure receipt lookup. These are source fixtures only; none executed.
+
+Ten deliverables: `apps/web/src/components/lifecycle/LifecycleDiscovery.tsx`,
+`lifecycleDiscovery.ts`, `LifecyclePanel.tsx`, `LifecycleReview.tsx`,
+`BranchLifecycleReview.tsx`, `lifecycleCommand.ts`; `tests/chats/`
+`lifecycle-discovery.test.mjs`, `lifecycle-discovery-mounted.tsx`, and updated
+`lifecycle-command.test.mjs`; plus this document (ten files total).
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, migrations, backend writes, push/merge/deploy or new workers. Source
+integration and executed lifecycle/native/accessibility/mobile qualification remain
+open. No whole UI/group/lifecycle/Bible/Phase2 acceptance is claimed.
