@@ -248,10 +248,58 @@ Consumes Branches contracts through6c4a9eb in the source integration tree;
 owner confirmed the preserved contract at7a190fbe. Graph restore/rewind controls
 require checkpoint restoreSupported and script_control_frontier eligibility;
 individual Request review/adoption remains separately admitted by the server.
-Later resource access-review/custody-release controls are not in this bounded
-caller increment and remain a concrete UI follow-up if assigned. Deferred source:
+Resource access-review/custody-release controls are supplied by the subsequent
+bounded increment documented below. Deferred source for this increment:
 branch-history-review.test.mjs and branch-history-review-mounted.tsx cover exact
 scope/hash checks, nonmutating review, stale409/fresh acknowledgement and ambiguous
 response reconciliation. No tests/checks/types/build/browser/runner preparation
 or execution, push, merge or deployment. Backend continuation/refusal families
 and qualification remain open; no #32/Bible/full-UI pass is claimed.
+
+## Resource destination review and exact checkpoint release (source only)
+
+The successor to41797eb8 mounts `BranchResourceReview` beside each temporary
+resource in `ExecutionPanel`. It consumes the exact shared DTO/HTTP contract at
+Branches f482ecfc0e9a99a7ad682f8ee27fefe0ec62f5e0 (required backend/core source
+dependency; not cherry-picked into this sole-writer web branch). The earlier
+contract blocker is resolved by that dependency, not by UI-invented identities.
+
+On-demand pure resource inspection displays exact Branch/Run/Step, numeric
+resource generation, actual destination Chat and availability, import state,
+current policy hash, source/current restrictions and expandable policy details.
+Per-source-Agent choices explicitly keep destination or apply source restrictions;
+an empty source settings set still requires an explicit choice. Shared
+`ConfirmDialog` confirms before POST. Stale409 clears all choices and confirmation,
+refreshes canonical inspection, and requires a fresh decision. Ambiguous access
+responses inspect canonical state without resubmitting the choice. Neither this
+caller nor its inspection uses the older journal-writing GET access-review.
+
+Only retained local capture custody with a full returned receipt identity can
+offer release. Restoration-source custody points to the original owner instead.
+The caller displays checkpoint/custody/receipt identity and referenced-custody
+refusal, and requires shared human confirmation of permanent byte removal.
+Before DELETE it durably retains the entire original commandKey, generation,
+custodyId and full receipt hash in browser localStorage. Package hashes never
+substitute for receipt hashes. Unconfirmed/releasing/error responses retain that
+input, including across remount. Pure same-key inspection precedes any explicit
+retry; retry confirmation resends the original input even if current generation
+has advanced. Returned command/Step/generation/custody/receipt must all match.
+Only an exact released receipt clears pending input. not_found is unconfirmed,
+not proof of release. No automatic mutation retries or effect-completion inference.
+
+Six deliverables: `apps/web/src/components/branches/BranchResourceReview.tsx`,
+`branchResourceReview.ts`, `ExecutionPanel.tsx`,
+`tests/chats/branch-resource-review.test.mjs`,
+`tests/chats/branch-resource-review-mounted.tsx`, and this document. Deferred
+regression source covers owner/identity checks, local-vs-source custody gating,
+opaque full receipt matching, pure inspection, fresh choices after stale409,
+referenced refusal, lost response/remount, and original-key retry after generation
+change. These regressions have not run.
+
+No tests/checks/types/build/Node/browser/native/runner preparation or execution,
+installs, workers, push, merge or deployment. Source was read and deliverables
+physically inspected. Owner-deletion/orphan reconciliation is not available in
+the backend contract; retained commands cannot be reconciled through a deleted
+owner. Wider resource admission/refusal families, integrated qualification,
+accessibility/mobile judging and performance gates remain open. No full
+UI/#32/Bible/Phase2 pass is claimed.
