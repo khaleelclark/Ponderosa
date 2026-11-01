@@ -57,7 +57,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
  const saveSchedule=()=>{
   if(!app||!validInterval)return;
-  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedBindingRevisionId:app.bindingRevisionId,automatic,everyMs:interval*60000})}));
+  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic,everyMs:interval*60000})}));
  };
  return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
