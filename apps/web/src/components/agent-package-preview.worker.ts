@@ -41,6 +41,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     worker.postMessage({ id, phase: "Preparing summary" });
     const sourceEngines = new Set<string>();
     const agentTitles: string[] = [];
+    const workingRoots=new Map<string,string[]>();
     const elevatedAgentRefs: string[] = [];
     let invalidPermissionShape = false;
     let artifactCount = 0;
@@ -62,6 +63,10 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
         }
       }
       agentTitles.push(node.title.trim().slice(0, 80) || "Imported Agent");
+      if(node.workingRootRef!==undefined){
+        if(typeof node.workingRootRef!=='string'||!node.workingRootRef.trim())throw new Error('Invalid working folder reference.');
+        workingRoots.set(node.workingRootRef,[...(workingRoots.get(node.workingRootRef)??[]),node.title.trim().slice(0,80)||'Imported Agent']);
+      }
       if (typeof node.engine === "string" && node.engine.trim()) {
         sourceEngines.add(node.engine);
       }
@@ -102,6 +107,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
         artifactCount,
         historyMessageCount,
         agentTitles,
+        workingRoots:[...workingRoots].map(([ref,agents])=>({ref,agents})),
         sourceEngines: [...sourceEngines],
         elevatedAgentRefs,
         invalidPermissionShape,

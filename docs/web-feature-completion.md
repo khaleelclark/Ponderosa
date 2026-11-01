@@ -90,3 +90,23 @@ response never replaces a later Stop/terminal state. Stop and background progres
 remain available. This applies no memory/browser grant. No tests, checks, builds,
 types or browser execution accompanied this caller increment. Folder bundles and
 additional import Settings actions remain separate implementation work.
+
+
+## Organization working-folder caller
+
+Consumes portability `dc73a5c33b44a3a432ac6209d75c7ecdfabd9c47` and ancestors.
+`AgentPackageDialogs` adds an explicit full-organization all-folders choice;
+copy/download and `realApi` forward `organizationWorkingFolders=true`, excluding
+selected/root-only options. The off-thread preview groups opaque `workingRootRef`
+values and lists every member Agent. `ImportAgentDialog` requires one new absolute
+path per root and forwards `workingRootDestinations` to both access-preview and
+import. Changed maps invalidate access review. UI refuses missing, equal and nested
+lexical destinations; the server validates canonical paths/existence and authority.
+Regression source in `tests/chats/working-root-destinations.test.mjs` is unexecuted.
+
+These controls close the Agent organization-folder transport caller gap, not live
+working-root restoration. Restored folders retain bytes and shared-source
+membership; they do not rebind Shared or Separate Git working-copy ownership.
+Fresh-worktree population/new-Project backend services, mapped memory/browser
+Settings actions, Branches folder forwarding and other previously listed UI gaps
+remain. No checks/tests/builds/types/browser execution or passing claim.

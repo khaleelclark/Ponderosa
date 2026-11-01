@@ -21,10 +21,11 @@ export function useAgentPackageActions({
     organization = false,
     workingFiles: string[] = [],
     wholeWorkingFolder = false,
+    organizationWorkingFolders = false,
   ) => {
     try {
       await copyDeferredText(
-        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder),
+        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders),
       );
       notify({ key: "copy-agent-package", message: "Copied" });
     } catch (error) {
@@ -38,9 +39,10 @@ export function useAgentPackageActions({
     organization = false,
     workingFiles: string[] = [],
     wholeWorkingFolder = false,
+    organizationWorkingFolders = false,
   ) => {
     const anchor = document.createElement("a");
-    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization, workingFiles, wholeWorkingFolder);
+    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders);
     anchor.download = portablePackageFileName(
       title ?? "agent",
       organization,

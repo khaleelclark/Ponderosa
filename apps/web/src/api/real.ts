@@ -811,14 +811,14 @@ export const realApi = {
       body: JSON.stringify(input),
     });
   },
-  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false): Promise<AgentPortablePackageDto> {
-    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&wholeWorkingFolder ? 'true' : undefined })}`);
+  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false): Promise<AgentPortablePackageDto> {
+    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !organizationWorkingFolders && !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder ? 'true' : undefined, organizationWorkingFolders: mode==='full'&&organization&&organizationWorkingFolders?'true':undefined })}`);
   },
-  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false): Promise<string> {
-    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&wholeWorkingFolder ? 'true' : undefined })}`);
+  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false): Promise<string> {
+    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !organizationWorkingFolders && !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder ? 'true' : undefined, organizationWorkingFolders: mode==='full'&&organization&&organizationWorkingFolders?'true':undefined })}`);
   },
-  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false): string {
-    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&wholeWorkingFolder ? 'true' : undefined, download: 1 })}`);
+  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false): string {
+    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), workingFiles: !organizationWorkingFolders && !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder ? 'true' : undefined, organizationWorkingFolders: mode==='full'&&organization&&organizationWorkingFolders?'true':undefined, download: 1 })}`);
   },
   importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
