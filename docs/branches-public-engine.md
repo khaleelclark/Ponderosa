@@ -1185,3 +1185,51 @@ actual destination prepare/review/admit path, check fresh parallel path IDs and
 resource count, and check admitted no-byte readback; they have not run.
 See `branches-framework-capabilities.md` for the nine named capability inventory
 and new representative application source, including the missing comparator pins.
+
+### Host custody lifecycle adapter
+
+`BranchStore.custodyLifecycle` and `BranchResourceService.custodyLifecycle` expose
+synchronous `BranchCustodyLifecycle` hooks, also exported from `@ponderosa/agents`.
+The adapter does not access, remove or reconstruct package bytes. Reliability's
+operator-only package lifecycle owns its separate durable command/byte journal.
+
+- `references(source)` enumerates exact custody/source references in unit/initial
+  checkpoints, capture/restore/owner commands and all destination reservations.
+  Malformed canonical evidence refuses; absence of the original execution does
+  not erase surviving references from other owners.
+- `inspect(source)` returns custody ID, references with exact row keys/hashes,
+  `blockers`, `abandonmentBlockers`, owner state, `revision`, and `releaseAllowed`.
+  Release requires no references and actual terminal owner/resource/participant
+  cleanup, completed Chat deletion receipts, native exit evidence, no outstanding
+  imports, activations, requests or unknown resource effects. Abandonment permits
+  a canceled/fenced owner awaiting cleanup but never unresolved native/effect work.
+- `assertRelease(source, expectedRevision)` must execute inside the package
+  owner's SQLite transaction immediately before committing its durable release
+  intent. An earlier preview is not admission authority. The package owner must
+  also fence publication/reuse of that source identity in its custody journal.
+- `retireCheckpoints(source, {commandKey, expectedRevision, checkpoints:[{id,
+  sha256}]})` explicitly retires exact selected unit rows, preserving a hashed
+  owner receipt. Incoming checkpoint/owner lineage and admission pins refuse.
+  A retained issued capture tied to a selected row gets a durable disposition;
+  its original intent remains stored, and old capture read/seal/resume refuse.
+  Initial checkpoints and unknown lineage remain pinned, not guessed away.
+- `abandonCapture(source, {commandKey,captureKey,captureSha256,expectedRevision},
+  confirmPackageRetired)` preserves an exact unsealed intent and records its
+  non-revivable disposition only after the host package owner's synchronous
+  callback proves durable `{custodyId,sourceSha256,revision}` retirement. A status
+  string, caller identity or an unknown capture outcome is not that proof. All
+  selected-history/admission/other-owner references must first be resolved.
+
+A pending capture used to prevent resource cleanup indefinitely. Validated
+abandonment now clears that capture hold without clearing native/process/import
+holds. Late capture completion cannot seal or resume the old identity. Full byte
+release still requires observed deletion cleanup. Existing capture-release commands
+now recheck current history/admission/drain pins on initial intent and retry, and
+terminal lifecycle journal writes do not enqueue another selected snapshot.
+
+All destination admission states remain pinned in this slice; Runtime owns their
+retirement operation. No admission rows, grants, owner lineage or unknown-effect
+receipts are deleted to bypass it. Operator routes, package reconciliation/bytes
+and shared DTOs are separately owned. Deferred regression source covers exact
+checkpoint retirement/readback, admission pinning, stale release review and
+non-revival; it has not been executed. There is no recovery or #32 acceptance claim.

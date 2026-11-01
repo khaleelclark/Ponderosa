@@ -1,3 +1,4 @@
+import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
 import {readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {issuedResourceCapture,reserveIssuedResourceCapture,sealIssuedResourceCapture} from './branch-issued-resource-capture.js';
@@ -1133,6 +1134,8 @@ export class BranchStore {
        restore?{kind:'restoration_source',state:'restoration_source',custodyId:receipt.custodyId,receiptSha256:payloadHash(receipt),checkpointId:receipt.checkpointId,packageSha256:receipt.sha256}:null,
       currentPolicyReview:null,accessChoiceCurrent:false};
   }
+  /** Host package reconciliation adapter; methods are synchronous and fail closed. */
+  get custodyLifecycle(){return new BranchCustodyLifecycle(this);}
   resourceCustodyReleaseStatus(stepExecutionId:string,commandKey:string):import('@ponderosa/core').BranchResourceCustodyReleaseStatus {
     return this.resourceCustodyReleaseCommand(stepExecutionId,commandKey)?.result??{commandKey,state:'not_found'};
   }
@@ -1156,7 +1159,11 @@ export class BranchStore {
     if(!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<0||!/^[a-f0-9]{64}$/.test(input.expectedCustodyId)||!/^[a-f0-9]{64}$/.test(input.expectedReceiptSha256))throw Error('Exact resource custody release identity required');
     return this.unitTransaction(()=>{
       const prior=this.resourceCustodyReleaseCommand(stepExecutionId,input.commandKey);
-      if(prior){if(stableJson(prior.input)!==stableJson(input))throw Error('Resource custody release idempotency conflict');return {receipt:prior.receipt,result:prior.result};}
+      if(prior){
+        if(stableJson(prior.input)!==stableJson(input))throw Error('Resource custody release idempotency conflict');
+        if(prior.result.state!=='released')this.resourceCaptureRelease(stepExecutionId,'releasing');
+        return {receipt:prior.receipt,result:prior.result};
+      }
       const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),capture=this.resourceCaptureJournal(stepExecutionId);
       if(!r||r.generation!==input.expectedGeneration||!capture?.receipt||!receiptMatchesSource(capture.receipt,capture.source)||capture.source.intent.resourceStepId!==stepExecutionId||capture.source.intent.executionId!==r.execution_id||capture.source.intent.resourceGeneration!==r.generation||capture.receipt.custodyId!==input.expectedCustodyId||payloadHash(capture.receipt)!==input.expectedReceiptSha256)throw Error('Resource custody generation or receipt changed');
       const receipt=this.resourceCaptureRelease(stepExecutionId,'releasing');
@@ -1177,7 +1184,7 @@ export class BranchStore {
       const result:import('@ponderosa/core').BranchResourceCustodyReleaseDto={...command.result,...(error?{error:branchText(error.slice(0,2000))}:{state:'released',error:undefined})};
       if(!error)this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...capture,state:'released'}),executionId,command.captureKey);
       this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...command,result}),executionId,`custody-release:${commandKey}`);
-      this.selectedWrite(executionId);return result;
+      return result;
     }).immediate();
   }
   resourceRestoreJournal(stepExecutionId:string):Row|undefined {
@@ -1213,7 +1220,14 @@ export class BranchStore {
     sealIssuedResourceCapture(this.sqlite,executionId,stepId,commandKey,receipt);
   }
   issuedResourceCapturePending(stepId:string):boolean {
-    return !!this.row("SELECT 1 FROM branch_commands WHERE command_key LIKE 'issued-resource-capture:%' AND json_extract(result_json,'$.source.intent.resourceStepId')=? AND json_extract(result_json,'$.state')='capturing' LIMIT 1",stepId);
+    return this.rows("SELECT execution_id,command_key,result_json FROM branch_commands WHERE command_key LIKE 'issued-resource-capture:%' AND json_extract(result_json,'$.source.intent.resourceStepId')=? AND json_extract(result_json,'$.state')='capturing'",stepId)
+      .some(row=>!this.custodyLifecycle.captureDisposed(row.execution_id,row.command_key,row.result_json));
+  }
+  resourceCaptureAbandoned(stepExecutionId:string):boolean {
+    const r=this.row('SELECT execution_id,creation_key FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+    if(!r)return false;
+    const key=`resource-capture:${r.creation_key}`,row=this.row('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,key);
+    return !!row&&this.custodyLifecycle.captureDisposed(r.execution_id,key,row.result_json);
   }
   resourceCaptureEligible(stepExecutionId:string):boolean {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),e=r&&this.execution(r.execution_id);
@@ -1231,7 +1245,9 @@ export class BranchStore {
     return this.unitTransaction(()=>{
       const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
       if(!r)throw Error('Resource capture owner unavailable');
-      const previous=this.resourceCaptureJournal(stepExecutionId);if(previous)return previous.source;
+      const previous=this.resourceCaptureJournal(stepExecutionId);
+      if(previous&&this.resourceCaptureAbandoned(stepExecutionId))throw Error('Resource capture was explicitly abandoned');
+      if(previous)return previous.source;
       const execution=this.execution(r.execution_id)!,branch=this.getBranch(execution.branchId),selected=selectBranchUnit(this.sqlite,r.execution_id),imported=this.resourceOperation(stepExecutionId,'import');
       if(!branch?.enabled||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration)
         ||Object.keys(execution.configuration.secretBindings??{}).length||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)
@@ -1247,6 +1263,7 @@ export class BranchStore {
   finishResourceCapture(source:import('@ponderosa/core').CheckpointPackageSource,receipt:import('@ponderosa/core').CheckpointPackageReceipt):void {
     this.unitTransaction(()=>{
       const current=this.resourceCaptureJournal(source.intent.resourceStepId),r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',source.intent.resourceStepId),execution=this.execution(source.intent.executionId);
+      if(r&&this.resourceCaptureAbandoned(source.intent.resourceStepId))throw Error('Resource capture was explicitly abandoned');
       if(!r||!execution||!current||stableJson(current.source)!==stableJson(source)||!receiptMatchesSource(receipt,source)||!['capturing','retained'].includes(current.state))throw Error('Resource capture receipt is fenced');
       if(current.state==='retained'){if(stableJson(current.receipt)!==stableJson(receipt))throw Error('Resource capture receipt changed');return;}
       const branch=this.getBranch(execution.branchId);
@@ -1261,9 +1278,11 @@ export class BranchStore {
       const c=this.resourceCaptureJournal(stepExecutionId),r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
       if(!c?.receipt||!r||!['retained','releasing','released'].includes(c.state))throw Error('Retained resource custody unavailable');
       if(c.state==='released')return c.receipt;
+      const custody=this.custodyLifecycle.inspect(c.source);
+      if(custody.blockers.length||custody.references.some(ref=>ref.kind!=='command'||ref.ownerId!==r.execution_id||ref.key!==`resource-capture:${r.creation_key}`))throw Error('Checkpoint custody retains history/admission references or unconfirmed owner cleanup');
       if(this.rows("SELECT result_json FROM branch_commands WHERE command_key LIKE 'resource-restore:%'").some(row=>JSON.parse(row.result_json).receipt?.custodyId===c.receipt!.custodyId))throw Error('Retained checkpoint custody is referenced by a restored resource');
       if(state==='released'&&c.state==='retained')throw Error('Release intent must commit before custody deletion');
-      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...c,state}),r.execution_id,`resource-capture:${r.creation_key}`);this.selectedWrite(r.execution_id);return c.receipt;
+      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...c,state}),r.execution_id,`resource-capture:${r.creation_key}`);return c.receipt;
     }).immediate();
   }
   async waitResourceCheckpoint(stepExecutionId:string):Promise<void> {
@@ -1451,7 +1470,7 @@ export class BranchStore {
     return rows.map(r=>({stepExecutionId:r.step_execution_id,chatId:r.chat_id??undefined,branchId:this.execution(r.execution_id)!.branchId,executionId:r.execution_id,agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id",r.step_execution_id).map(m=>m.agent_id)}));
   }
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
-    const capture=this.resourceCaptureJournal(stepExecutionId);if((capture&&capture.state==='capturing')||this.issuedResourceCapturePending(stepExecutionId))return false;
+    const capture=this.resourceCaptureJournal(stepExecutionId);if((capture&&capture.state==='capturing'&&!this.resourceCaptureAbandoned(stepExecutionId))||this.issuedResourceCapturePending(stepExecutionId))return false;
     const resource=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
     if(resource&&['chat','import'].some(phase=>{const operation=this.resourceOperation(stepExecutionId,phase as 'chat'|'import');
       return operation&&['running','unknown'].includes(operation.state)&&this.resourceOperationReleased(resource,operation);}))return false;

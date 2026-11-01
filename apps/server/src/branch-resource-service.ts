@@ -23,6 +23,7 @@ export class BranchResourceService {
   constructor(private readonly branches: BranchStore, private readonly store: AgentStore,
     private readonly deleteAgents: (agentIds: string[]) => Promise<void>, private readonly createChat: ChatCreator,
     private readonly deleteChat: (chatId: string) => Promise<void>) {}
+  get custodyLifecycle(){return this.branches.custodyLifecycle;}
   setImporter(importer: BranchTemplateImporter): void { this.importer = importer; }
   async tick(admit: boolean): Promise<void> {
     if (this.pending) {await this.maintain();return this.pending;}
@@ -213,7 +214,7 @@ export class BranchResourceService {
     for (const resource of this.branches.resourceCleanupCandidates()) {
       try {
         const capture=this.branches.resourceCaptureJournal(resource.stepExecutionId);
-        if(capture?.state==='capturing'||this.branches.issuedResourceCapturePending(resource.stepExecutionId))continue;
+        if(capture?.state==='capturing'&&!this.branches.resourceCaptureAbandoned(resource.stepExecutionId)||this.branches.issuedResourceCapturePending(resource.stepExecutionId))continue;
         if(capture?.state==='retained'){if(!this.packages||!capture.receipt)throw Error('Required checkpoint custody unavailable');await this.packages.readCheckpoint(capture.receipt);}
         this.branches.cancelResourceWork(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;

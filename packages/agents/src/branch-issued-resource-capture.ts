@@ -13,6 +13,7 @@ const key=(commandKey:string)=>`issued-resource-capture:${commandKey}`;
 export function issuedResourceCapture(db:Database.Database,executionId:string,stepId:string,commandKey:string):Row|undefined {
  const row=db.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row|undefined;
  if(!row)return;
+ if(db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-abandoned:${payloadHash(key(commandKey))}`))throw Error('Issued capture was explicitly abandoned');
  const value=JSON.parse(row.result_json);
  if(value.schema!=='branch-issued-resource-capture.v1'||stableJson(value)!==row.result_json||value.source.intent.resourceStepId!==stepId
   ||row.input_hash!==payloadHash({stepId,generation:value.source.intent.resourceGeneration,commandKey})||payloadHash(value.snapshot.hostDependencies)!==value.source.intent.hostCutSha256
@@ -26,6 +27,7 @@ export function issuedResourceCapture(db:Database.Database,executionId:string,st
 export function reserveIssuedResourceCapture(db:Database.Database,executionId:string,stepId:string,generation:number,commandKey:string):Row {
  if(!db.inTransaction)throw Error('Issued resource capture requires owner transaction');
  if(typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200||!Number.isSafeInteger(generation)||generation<0)throw Error('Exact issued resource capture intent required');
+ if(db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-abandoned:${payloadHash(key(commandKey))}`))throw Error('Issued capture was explicitly abandoned');
  const previous=issuedResourceCapture(db,executionId,stepId,commandKey);
  if(previous){if(previous.source.intent.resourceGeneration!==generation)throw Error('Issued resource capture command conflict');return previous;}
  const selected=selectBranchUnit(db,executionId),e=selected.execution?.[0],r=selected.resources?.[0];

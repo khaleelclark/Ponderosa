@@ -1605,3 +1605,50 @@ for(const mode of ['async','sync'])test(`issued destination ${mode} preserves lo
  assert.ok(db.prepare('SELECT id FROM branch_paths WHERE execution_id=?').all(destination).every(r=>!sourceIds.includes(r.id)));
  x.setBytes(false);assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'admitted');
 });
+
+// Deferred lifecycle adapter checks: no package bytes or external reconciliation run here.
+test('Branch custody inventory pins exact checkpoint and staged admission without releasing bytes',async t=>{
+ const x=await issuedDestinationFixture(t),{composer}=x.services(),f=x.f,source=x.saved.source,api=f.branches.custodyLifecycle;
+ const before=api.inspect(source);
+ assert.equal(before.custodyId,x.saved.receipt.custodyId);
+ assert.equal(before.releaseAllowed,false);
+ assert.ok(before.references.some(r=>r.kind==='checkpoint'&&r.key===String(x.saved.checkpointId)));
+ const opening=f.branches.resourceCaptureJournal(source.intent.resourceStepId);
+ assert.ok(api.references(opening.source).some(r=>r.kind==='checkpoint'),'serialized capture_json in a retained checkpoint remains a pin');
+ assert.throws(()=>api.assertRelease(source,before.revision),/same owner transaction/);
+ assert.throws(()=>f.branches.unitTransaction(()=>api.assertRelease(source,before.revision))(),/held/);
+ await composer.prepare(f.branch.id,f.source.id,x.input);
+ const staged=api.inspect(source);assert.ok(staged.references.some(r=>r.kind==='admission'));
+ assert.notEqual(staged.revision,before.revision);
+ assert.throws(()=>api.retireCheckpoints(source,{commandKey:'pinned-history',expectedRevision:staged.revision,checkpoints:[{id:x.saved.checkpointId,sha256:x.saved.checkpointHash}]}),/held/);
+ assert.ok(f.store.sqlite.prepare('SELECT 1 FROM branch_unit_snapshots WHERE id=?').get(x.saved.checkpointId));
+});
+test('Branch explicit checkpoint retirement preserves disposition and fences old issued identity',async t=>{
+ const x=await issuedDestinationFixture(t),f=x.f,source=x.saved.source,api=f.branches.custodyLifecycle;
+ const review=api.inspect(source),input={commandKey:'retire-exact-issued-cut',expectedRevision:review.revision,checkpoints:[{id:x.saved.checkpointId,sha256:x.saved.checkpointHash}]};
+ const receipt=api.retireCheckpoints(source,input);
+ assert.equal(receipt.state,'retired');assert.deepEqual(api.retireCheckpoints(source,input),receipt);
+ assert.throws(()=>api.retireCheckpoints(source,{...input,checkpoints:[]}),/selection/);
+ assert.equal(f.store.sqlite.prepare('SELECT 1 FROM branch_unit_snapshots WHERE id=?').get(x.saved.checkpointId),undefined);
+ assert.throws(()=>f.branches.issuedResourceCapture(f.source.id,source.intent.resourceStepId,'composer-cut'),/abandoned/);
+ const current=api.inspect(source);assert.equal(current.references.length,0);
+ f.branches.unitTransaction(()=>assert.equal(api.assertRelease(source,current.revision).releaseAllowed,true))();
+});
+
+test('Branch abandoned capture needs synchronous package retirement and cannot resume or seal',async t=>{
+ const x=await issuedDestinationFixture(t),f=x.f,db=f.store.sqlite,api=f.branches.custodyLifecycle;
+ const source={...x.saved.source,checkpointId:randomUUID()},commandKey='fixture-pending',captureKey=`issued-resource-capture:${commandKey}`;
+ const capture={schema:'branch-issued-resource-capture.v1',state:'capturing',source,snapshot:x.saved.snapshot};
+ db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(f.source.id,captureKey,hash(stableJson({stepId:source.intent.resourceStepId,generation:0,commandKey})),stableJson(capture),new Date().toISOString());
+ assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),true);
+ const review=api.inspect(source),input={commandKey:'abandon-inert-capture',captureKey,captureSha256:hash(stableJson(capture)),expectedRevision:review.revision};
+ assert.throws(()=>api.abandonCapture(source,input,()=>({custodyId:'wrong',sourceSha256:'wrong',revision:'wrong'})),/retirement proof/);
+ const inertPackageRetirement=()=>{assert.equal(db.inTransaction,true);return {custodyId:review.custodyId,sourceSha256:hash(stableJson(source)),revision:'inert-package-retirement-receipt'};};
+ const receipt=api.abandonCapture(source,input,inertPackageRetirement);
+ assert.equal(receipt.state,'abandoned');assert.deepEqual(api.abandonCapture(source,input,()=>assert.fail('exact replay must not repeat package action')),receipt);
+ assert.equal(f.branches.issuedResourceCapturePending(source.intent.resourceStepId),false);
+ assert.ok(db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,captureKey),'original intent remains audit evidence');
+ assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,source.intent.resourceStepId,0,commandKey),/abandoned/);
+ assert.throws(()=>db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,source.intent.resourceStepId,commandKey,{...x.saved.receipt,...source}))(),/abandoned/);
+ assert.equal(api.inspect(source).references.length,0);
+});
