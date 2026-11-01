@@ -10,7 +10,7 @@ function fixture(t){
  const db=new Database(':memory:');t.after(()=>db.close());
  db.exec(`CREATE TABLE branches(id TEXT PRIMARY KEY); CREATE TABLE branch_executions(id TEXT PRIMARY KEY);
  CREATE TABLE branch_unit_snapshots(id INTEGER PRIMARY KEY); CREATE TABLE conversations(id TEXT);
- CREATE TABLE agents(id TEXT,conversation_id TEXT); CREATE TABLE scheduler_runs(agent_id TEXT,status TEXT);
+ CREATE TABLE agents(id TEXT,conversation_id TEXT,deleted_at TEXT); CREATE TABLE scheduler_runs(agent_id TEXT,status TEXT);
  CREATE TABLE agent_activations(agent_id TEXT,state TEXT);
  CREATE TABLE agent_creation_operations(id TEXT,conversation_id TEXT,status TEXT);`);
  for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql','0039_coordination_destination_group_chats.sql'])
@@ -52,4 +52,12 @@ test('unknown import and surviving identities preserve pins; approval mutation r
  assert.throws(()=>f.retire(input),/changed reconciliation evidence/);
  assert.equal(f.service.read('admission'),null);
  assert.equal(f.db.prepare('SELECT count(*) n FROM coordination_destination_members').get().n,1);
+});
+
+test('canonical soft-deleted audit identity is retained while live mapped identity refuses',t=>{
+ const f=fixture(t);f.db.exec("INSERT INTO agents VALUES('new',NULL,NULL)");
+ assert.throws(()=>f.review(),/canonical deletion/);
+ f.db.exec("UPDATE agents SET deleted_at='deleted'");
+ const receipt=f.retire(f.input());assert.equal(receipt.releasedSourcePins,true);
+ assert.equal(f.db.prepare("SELECT deleted_at FROM agents WHERE id='new'").get().deleted_at,'deleted');
 });

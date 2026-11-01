@@ -27,8 +27,8 @@ export class CoordinationV3DestinationReconciliation {
   if(payloadHash(reservation)!==row.reservation_hash)throw Error('Reservation evidence differs');
   // No surviving identity may be made dispatchable or stripped of its retention witnesses.
   if(this.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(row.conversation_id)
-   ||this.db.prepare(`SELECT 1 FROM agents WHERE conversation_id=? OR id IN
-    (SELECT agent_id FROM coordination_destination_members WHERE admission_id=?)`).get(row.conversation_id,id))throw Error('Destination identities must finish canonical deletion before retirement');
+   ||this.db.prepare(`SELECT 1 FROM agents WHERE conversation_id=? OR (deleted_at IS NULL AND id IN
+    (SELECT agent_id FROM coordination_destination_members WHERE admission_id=?))`).get(row.conversation_id,id))throw Error('Destination identities must finish canonical deletion before retirement');
   const members=this.db.prepare('SELECT * FROM coordination_destination_members WHERE admission_id=? ORDER BY agent_id').all(id) as Row[];
   for(const member of members){
    if(this.db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown')").get(member.agent_id)

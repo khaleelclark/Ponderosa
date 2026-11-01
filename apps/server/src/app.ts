@@ -1186,6 +1186,9 @@ app.server.on("upgrade", linkPreviewUpgrade);
 
   const application=registerApplicationRoutes(app, {
     custodyOwner:()=>branches.custodyLifecycle,
+    // Conservative live-host barrier also covers opening/closing native sessions without SQL rows.
+    destinationRuntimeIdle:()=>activeRuns.size===0&&providerProcessAuthority.count()===0&&[...runtimeAuthorities.values()].every(authority=>pendingRuntimeAuthorityCount(authority)===0&&!authority.retryTimer&&!authority.retryInProgress&&authority.retryAttempt===0),
+    assertLifecycleEffectsSettled:()=>{localMemoryFor(app)?.assertCheckpointSourceSettled();},
     opts,
     store,
     assets,

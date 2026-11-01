@@ -95,7 +95,7 @@ export function commitSourceCapture<T>(token: SourceCaptureToken, publish: () =>
 export function releaseSourceCapture(token: SourceCaptureToken): void { cuts.delete(token);activeCaptures.delete(token); }
 
 /** Operator reconciliation must retain backend/effect evidence before removing one exact hold. */
-export function sourceMutationState(){return {epoch:epoch.toString(),activeWriters:writers.size,activeCaptures:activeCaptures.size};}
+export function sourceMutationState(){return {epoch:epoch.toString(),activeWriters:writers.size,activeCaptures:activeCaptures.size,uncertainWriters:uncertain.size};}
 export function reconcileSourceMutation(reason:string,expectedEpoch:string,publish:()=>void):void {
   if(writers.size||activeCaptures.size||epoch.toString()!==expectedEpoch)throw new SourceCaptureChangedError();
   const result:unknown=publish();if(result&&typeof result==='object'&&'then'in result)throw Error('Source reconciliation publication must be synchronous');

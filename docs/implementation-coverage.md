@@ -2,7 +2,7 @@
 
 Source-only inventory includes Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
 retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner2c7db556e,
-and lifecycle source through c1d831646. Integration owns
+and lifecycle source through1544fee9d. Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
 No tests/checks/build/types/Node/native/browser/runner preparation or execution,
@@ -34,7 +34,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 14 | Provider errors, explicit unconfirmed outcomes and recovery surfaces assembled. | Runtime/UI; backoff/failure delivery trials deferred. |
 | 15 | Marker-only unlink and nonrecursive tombstone cleanup preserve unexpected user content; private custody is independent. | Reliability; racing-file/deletion trials deferred. |
 | 16 | Trigger schedules/conditions/occurrence identity source assembled. | Features; timing/clock-change trials deferred. |
-| 17 | Exact additive predecessor fixtures and migrations0035/0036/0037/0038/0039 retained once each. | Runtime/Reliability; upgrade/reliability runs deferred. |
+| 17 | Exact additive predecessor fixtures and migrations0035/0036/0037/0038/0039/0040 retained once each. | Runtime/Reliability; upgrade/reliability runs deferred. |
 | 18 | Inbox/notification journal and Assistant cadence source assembled. | UI/Features; quiet-default/deduplication trials deferred. |
 | 19 | Authored communication, activity and execution evidence stay distinct; known secret-field redaction source retained. | Runtime/UI; redaction/diagnostic trials deferred. |
 | 20 | Host/origin operator authority has no general token gate; local-operator is server-owned. Native account login, scoped Run/internal/browser capabilities and human access remain domain authority. No further dedicated-auth deletion warranted by inspected source. | Runtime; secure-environment boundary trials deferred. |
@@ -57,7 +57,7 @@ Seven actual Branch commits integrated in ancestry order: d1e79d107,ea3d6fa37,
 e5a6fee0f,778a001d3,fd8a55e63,d39f40f80,6b7f18a4a. UI00c62faa1 is the sole
 UI-owner successor to already integrateda1da73c5. No old dependency merge replay.
 Branch8ccf446bb extends local parallel replay; UI2c7db556e adds publication/voice consumers.
-Runtime staging/authority, retirement and migrations0035–0039/custody retained.
+Runtime staging/authority, retirement and migrations0035–0040/custody retained.
 
 Actual source now seals independently retained package bytes, selected frontier,
 host digest and executable audit envelope; verifies issued custody; reserves exact
@@ -129,10 +129,18 @@ regrouping already has a canonical operator endpoint; cross-Chat/root relocation
 unsupported. Runtime staged-destination retirement is integrated with immutable
 tombstones, review CAS and independent identity/import refusals. Branch owner lifecycle review and explicit checkpoint-retirement endpoints are wired;
 package custody composes canonical references and cleanup/drain proof. Destination
-retirement still needs a destination-specific authority/approval adapter and operator
-route. Group retirement is explicitly refused by the singular hook; all group pins/holds
-remain until exhaustive group lifecycle authority and reconciliation are implemented. Combined abandoned-intent/package retirement remains unimplemented. Existing
-admission pins remain enforced; no operator assertion substitutes for observed drain.
+retirement now has a destination-specific deletion/drain/reference adapter, durable
+exact private fsynced human approval and operator review/approve/retire/receipt routes.
+Combined capture abandonment joins a package prepare/tombstone/archive recovery journal
+to Branch disposition and independent immutable SQL commit receipt. Exact unchanged
+replay verifies retained original bytes after owner deletion; missing/corrupt/conflicting
+proof and older unsealed filesystem receipts remain held. Source drain is not
+destination proof. Global runtime quiescence is deliberately conservative; pre-stage
+reservations lacking completed destination deletion receipts remain held. Group
+retirement stays refused and pinned; no preserve-only upgrade or cascading retirement.
+Source only; focused regression/crash execution deferred. Lifecycle migration renamed
+`0040_lifecycle_reconciliation.sql` after existing Runtime0039; both registered once,
+neither executed.
 
 - Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
   consumers. Atomic Runtime group API is delivered; Branch still needs exhaustive
@@ -145,13 +153,12 @@ admission pins remain enforced; no operator assertion substitutes for observed d
   approval/evidence recheck, immutable receipt/tombstone and optional proven-safe source-pin
   release for unadmitted destinations only. Retired identities stay held; admitted
   provenance cannot retire. See coordination-destination-reconciliation.md.
-- Features + Reliability still must implement exhaustive current owner/capture/restore/package
-  destination-specific reference and observed-exit/resolved-outcome evidence, deleted-owner
-  authority, durable human review and operator retirement routes. General Branch owner
-  review/selected-history retirement and package reference composition are now wired;
-  combined abandoned-intent/package retirement remains missing. Abandoned destination references require explicit reconciliation;
-  unknown import/effect outcomes remain held. Retaining pins has no later release upgrade
-  in this slice. This host boundary alone is not end-to-end lifecycle reclamation.
+- Features + Reliability: exhaustive group lifecycle adapter/operator protocol remains
+  missing. Singular destination deletion/drain/reference/deleted-owner authority, durable
+  approval and combined abandoned-intent/package retirement source are now delivered.
+  Other retained checkpoints/commands/admissions/package references still pin source
+  custody; there is no cascading history retirement or preserve-only upgrade. Unknown
+  effects and legacy unsealed receipts remain held; source-only protocols are unqualified.
 - Features + Reliability: artifact/memory/working-copy/source-restriction/elevated-grant
   support in the new issued destination consumer; its current narrower refusal is explicit.
   Old metadata-only cuts cannot reconstruct purged private bytes.

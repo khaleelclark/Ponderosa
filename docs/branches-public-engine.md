@@ -1233,3 +1233,11 @@ receipts are deleted to bypass it. Operator routes, package reconciliation/bytes
 and shared DTOs are separately owned. Deferred regression source covers exact
 checkpoint retirement/readback, admission pinning, stale release review and
 non-revival; it has not been executed. There is no recovery or #32 acceptance claim.
+
+The lifecycle host successor composes these hooks with operator destination retirement
+and a package/Branch abandonment recovery journal; see
+[lifecycle-reconciliation.md](lifecycle-reconciliation.md). Abandonment archives the
+full original capture row independently before disposition. Source drain never
+substitutes for destination cleanup/provider exit. Source references remain pinned
+until their own explicit protocol retires them. No tests or native qualification
+were executed for this composition.

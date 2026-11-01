@@ -1,3 +1,5 @@
+import {destinationLifecycle} from '../destination-lifecycle.js';
+import {checkpointCaptureAbandonment} from '../checkpoint-capture-abandonment.js';
 import {destinationAdmissionHeld} from '@ponderosa/agents';
 import {checkpointCustodyLifecycle} from '../checkpoint-custody-lifecycle.js';
 import {custodyLifecycleProof} from '../custody-lifecycle-proof.js';
@@ -130,6 +132,8 @@ export interface BranchImportHooks {
 }
 
 interface AgentPackageRoutesContext {
+  destinationRuntimeIdle:()=>boolean;
+  assertLifecycleEffectsSettled:()=>void;
   custodyOwner:()=>import('@ponderosa/agents').BranchCustodyLifecycle;
   dataDir: string;
   workingCopies?: AgentWorkingCopyService;
@@ -176,6 +180,15 @@ export function registerAgentPackageRoutes(
   });
   app.post<{Params:{id:string};Body:import('@ponderosa/core').CheckpointCustodyReconcileInput}>('/api/lifecycle/checkpoint-custody/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
     try{const body=validatedObject(request.body,'Custody reconciliation');exactObjectFields(body,['commandKey','reviewSha256','preserveEvidence'],'Custody reconciliation');return context.store.sqlite.transaction(()=>lifecycle.reconcile(request.params.id,body as unknown as import('@ponderosa/core').CheckpointCustodyReconcileInput)).immediate();}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
+  const abandonment=checkpointCaptureAbandonment(context.dataDir,context.store.sqlite,context.custodyOwner);
+  app.post<{Body:import('@ponderosa/core').CheckpointCaptureAbandonmentReviewInput}>('/api/lifecycle/checkpoint-captures/abandonment-review',(request,reply)=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Capture abandonment review');exactObjectFields(body,['source','captureKey'],'Capture abandonment review');return abandonment.review(request.body);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Body:import('@ponderosa/core').CheckpointCaptureAbandonmentInput}>('/api/lifecycle/checkpoint-captures/abandon',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Capture abandonment');exactObjectFields(body,['source','captureKey','commandKey','reviewSha256','preserveEvidence'],'Capture abandonment');return abandonment.abandon(request.body);}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
   }));
   const {
@@ -2371,6 +2384,18 @@ export function registerAgentPackageRoutes(
     },
   );
 
+  const destinationRetirement=destinationLifecycle({dataDir:context.dataDir,store,coordination:coordinationV3,owner:context.custodyOwner,runtimeIdle:context.destinationRuntimeIdle,creationLeases:agentCreationConversationLeases});
+  const retirementPath='/api/lifecycle/destinations/:id';
+  app.get<{Params:{id:string}}>(retirementPath+'/review',async(request,reply)=>{
+    try{await operationHydration;context.assertLifecycleEffectsSettled();return destinationRetirement.review(request.params.id);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:{id:string}}>(retirementPath+'/receipt',(request,reply)=>{
+    try{return destinationRetirement.receipt(request.params.id)??reply.code(404).send({error:'Retirement receipt unavailable'});}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  for(const action of ['approve','retire'] as const)app.post<{Params:{id:string};Body:import('@ponderosa/core').DestinationRetirementChoice}>(retirementPath+'/'+action,(request,reply)=>withAgentImportAdmission(async()=>{
+    try{await operationHydration;context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Destination retirement choice');exactObjectFields(body,['commandKey','expectedReviewHash','releaseSourcePins','authorizeDeletedOwner'],'Destination retirement choice');return destinationRetirement[action](request.params.id,request.body);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
   void operationHydration.then(() => {
     for (const operation of operationCache.values()) {
       if (operation.status === "pending") {

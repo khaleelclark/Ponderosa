@@ -1,3 +1,4 @@
+import type {CoordinationDestinationReconciliationReview} from './coordination-destination.js';
 export interface MemoryMutationEffect {
   scope:string;log:boolean;operation:'create_collection'|'delete_collection'|'upsert'|'add'|'update'|'delete'|'modify';
 }
@@ -25,7 +26,7 @@ export interface CheckpointCustodyReconcileInput {
 }
 export interface CheckpointCustodyReconcileReceipt {
   version:1;custodyId:string;commandKey:string;reviewSha256:string;state:'reconciled';
-  evidenceDirectory:string;preservedBytes:number;operatorId:'local-operator';
+  evidenceDirectory:string;preservedBytes:number;filesSha256:string;operatorId:'local-operator';
 }
 export interface AgentImportLifecycleReview {
   operationId:string;creationOperationId?:string;canRetireMutationFree:boolean;
@@ -42,4 +43,26 @@ export interface AgentImportLifecycleReceipt {
 export interface BranchCustodyReviewInput {source:import('./branches.js').CheckpointPackageSource}
 export interface BranchCustodyCheckpointRetirementInput extends BranchCustodyReviewInput {
  commandKey:string;expectedRevision:string;checkpoints:{id:number;sha256:string}[];
+}
+export interface CheckpointCaptureAbandonmentReviewInput {source:import('./branches.js').CheckpointPackageSource;captureKey:string}
+export interface CheckpointCaptureAbandonmentInput extends CheckpointCaptureAbandonmentReviewInput {
+ commandKey:string;reviewSha256:string;preserveEvidence:true;
+}
+export interface DestinationRetirementChoice {
+ commandKey:string;expectedReviewHash:string;releaseSourcePins:boolean;authorizeDeletedOwner:true;
+}
+export interface CheckpointCaptureAbandonmentReviewDto {
+ custodyId:string;branchRevision:string;captureSha256:string;packageReviewSha256:string;
+ references:string[];blockers:string[];reviewSha256:string;
+}
+export interface CheckpointCaptureAbandonmentReceipt {
+ state:'abandoned';custodyId:string;commandKey:string;reviewSha256:string;captureArchiveSha256:string;
+ branch:unknown;package:CheckpointCustodyReconcileReceipt;
+}
+export interface DestinationRetirementApprovalDto {
+ admissionId:string;operatorId:'local-operator';choice:DestinationRetirementChoice;reviewHash:string;
+}
+
+export interface DestinationRetirementReviewDto extends CoordinationDestinationReconciliationReview {
+ preserveOnlyPermanent:true;globalRuntimeQuiescenceRequired:true;canReleaseSourcePins:boolean;
 }
