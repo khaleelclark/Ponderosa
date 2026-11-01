@@ -98,8 +98,15 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
   const cancel=(id:string)=>{
    const owned=new Set([id]);for(let count=-1;count!==owned.size;){count=owned.size;for(const p of m.paths!)if(owned.has(p.parent_path_id))owned.add(p.id);}
    for(const p of m.paths!.filter(p=>owned.has(p.id)&&['active','waiting','joining'].includes(p.state))){
-    for(const step of m.steps!.filter(step=>step.path_id===p.id&&!['completed','failed','canceled'].includes(step.state))){const a=m.attempts!.filter(a=>a.step_execution_id===step.id).sort((a,b)=>b.number-a.number)[0]!;require(['prepared','waiting'].includes(a.state)&&!authorized.has(a.id)&&!context?.children[a.id]);a.fence++;a.cancel_requested=1;a.state=step.state='canceled';}
-    p.state='canceled';const item=m.items!.find(item=>item.path_id===p.id);if(item)cancelledItems.add(item.id);
+    let pending=false;
+    for(const step of m.steps!.filter(step=>step.path_id===p.id&&!['completed','failed','canceled'].includes(step.state))){
+     const a=m.attempts!.filter(a=>a.step_execution_id===step.id).sort((a,b)=>b.number-a.number)[0]!,node=d.steps.find(node=>node.id===step.step_id);
+     require(!context?.children[a.id]);
+     const launched=node?.kind==='script'&&a.state==='running'&&authorized.has(a.id);
+     require(launched||['prepared','waiting'].includes(a.state)&&!authorized.has(a.id));
+     a.fence++;a.cancel_requested=1;a.state=step.state=launched?'outcome_unknown':'canceled';pending||=launched;
+    }
+    p.state=pending?'canceling':'canceled';const item=m.items!.find(item=>item.path_id===p.id);if(item)cancelledItems.add(item.id);
     for(const g of m.gates!.filter(g=>g.state==='waiting'&&m.steps!.some(step=>step.id===g.step_execution_id&&step.path_id===p.id))){g.state='canceled';g.revision++;cancelledGates.add(g.id);}
    }updateMaps();
   };
@@ -126,8 +133,19 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      }else if(event.kind==='script_authorized'){
       require(!interruption&&a.state==='leased'&&key===`launched:${a.id}:${a.fence}`&&!authorized.has(a.id));authorized.add(a.id);a.state='running';step.state='running';
      }else if(event.kind==='script_process_exit'){
-      const summary=branchScriptFailureSummary(v.code,v.error),result=JSON.parse(final('attempts',a.id).result_json);require(authorized.has(a.id)&&key===`process-exit:${a.id}:${a.fence}`&&!exited.has(a.id)&&(Number.isInteger(v.code)||v.code===null)&&(v.error===undefined||typeof v.error==='string')&&typeof v.stdout==='string'&&result.failed===(summary!==undefined)&&result.output===(summary??v.stdout)&&v.outputHash===hash(v.stdout));exited.add(a.id);
-     }else require(exited.has(a.id)&&key===`cleaned:${a.id}:${a.fence}`);
+      const captured=final('attempts',a.id),canceled=captured.state==='canceled'&&captured.cancel_requested===1;
+      const fence=a.cancel_requested?a.fence-1:a.fence;
+      require(authorized.has(a.id)&&key===`process-exit:${a.id}:${fence}`&&!exited.has(a.id)&&(Number.isInteger(v.code)||v.code===null)&&(v.error===undefined||typeof v.error==='string')&&typeof v.stdout==='string'&&v.outputHash===hash(v.stdout));
+      if(!canceled){const summary=branchScriptFailureSummary(v.code,v.error),result=JSON.parse(captured.result_json);require(result.failed===(summary!==undefined)&&result.output===(summary??v.stdout));}
+      else require(captured.result_json===null);
+      exited.add(a.id);
+     }else {
+      require(exited.has(a.id)&&key===`cleaned:${a.id}:${a.fence}`);
+      if(a.cancel_requested){
+       const p=find('paths',step.path_id);require(a.state==='outcome_unknown'&&step.state==='outcome_unknown'&&p.state==='canceling');
+       a.state=step.state=p.state='canceled';const item=m.items!.find(item=>item.path_id===p.id);if(item)completedItems.add(item.id);updateMaps();
+      }
+     }
      break;
     }
     case 'step_settled':{
@@ -254,7 +272,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      const gate=find('gates',v.gateId);require(cancelledGates.delete(gate.id)&&gate.state==='canceled'&&v.revision===gate.revision-1&&key===`gate-canceled:${gate.id}:${v.revision}`);break;
     }
     case 'map_item_canceled':{
-     const item=find('items',v.itemId);require(cancelledItems.delete(item.id)&&!v.pendingCleanup&&v.mapInvocationId===item.map_invocation_id&&v.index===item.item_index&&v.pathId===item.path_id&&key===`map-canceled:${item.id}`);completedItems.add(item.id);break;
+     const item=find('items',v.itemId);require(cancelledItems.delete(item.id)&&v.pendingCleanup===(find('paths',item.path_id).state==='canceling')&&v.mapInvocationId===item.map_invocation_id&&v.index===item.item_index&&v.pathId===item.path_id&&key===`map-canceled:${item.id}`);if(!v.pendingCleanup)completedItems.add(item.id);break;
     }
     case 'child_admitted':case 'child_completed':{
      const a=find('attempts',v.attemptId),step=find('steps',a.step_execution_id),p=find('paths',step.path_id),child=context?.children[a.id],node=d.steps.find(row=>row.id===step.step_id);

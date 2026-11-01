@@ -567,3 +567,30 @@ verified live generation, creation receipts, member/Chat ownership and no cleanu
 its existence does not authorize arbitrary historical resource transfer. These
 seams remain refused rather than impersonating an original participant or
 reusing old activation/resource authority.
+
+
+A running Script remainder canceled by a parallel Join can now appear in an
+executable historical frontier only after its matching launch-generation exit
+and advanced-fence cleanup observation are both in the owned audit. Replay
+models canceling as uncertain until that drain closes; Map pending-cleanup
+notices are not completion proof. The final canceled attempt has no accepted
+result. Restoration maps its identity with fence zero and schedules no
+replacement for that canceled effect. Child-owned or Agent cancellation, missing
+exit/cleanup, live effects and uncertain frontiers remain refused. Deferred
+regression source covers an any-Join canceling an already authorized Map Script,
+refusal before drain, exit/cleanup tampering and no relaunch after rewind.
+
+The runtime owner has supplied a concrete proposed internal Request restoration
+contract, not an implemented API. A dedicated trusted owner transaction must
+validate the saved cut and current original scopes/grants, assign new Request,
+update and Join identities, and retain source authors as historical provenance.
+Imported question/answer facts need explicit historical kinds or a separate
+restore reducer; live recipient question authorization must stay unchanged.
+Mapped open-question pointers and suspensions must reference new identities,
+ordered Join members must have exact final version/update outcomes, and only
+the final appropriate question/answer/Join activations may be published. The
+restoration receipt and all maps/rows/outbox writes must commit atomically.
+Question/history readers must label imported provenance and support new live
+answers without treating historical facts as freshly authored messages. Until
+that authority, reader and final-delivery path exists together, Branches refuses
+issued-Request graph restoration. Provenance tables alone cannot enable it.

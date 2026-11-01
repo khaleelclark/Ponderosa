@@ -252,3 +252,26 @@ for(const delayMs of [0,250])test(`Map Script retry generation and ${delayMs}ms 
  await finish(next.id);assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
  assert.ok(f.points(next.id).some(cp=>cp.snapshot.selected.attempts.some(a=>a.number===2)),'the restored generation prefix can be selected again');
 });
+
+// Deferred: the identity and exit observations are controlled fixture evidence, not native execution.
+test('an observed drained Script remainder restores canceled without relaunching the canceled effect',async t=>{
+ const f=fixture(t,{transform(d){d.controls.find(c=>c.kind==='map').maxConcurrentItems=2;const j=d.controls.find(c=>c.kind==='join');j.mode='any';j.remainder='cancel';}});
+ const leases=[];for(let n=0;n<40&&leases.length<2;n++){await f.tick();const lease=f.branches.claimScript('inert');if(lease){f.branches.authorizeScript(lease,identity);leases.push(lease);}}
+ assert.equal(leases.length,2);const [winner,loser]=leases;
+ f.branches.recordScriptEvidence(winner,identity,{stdout:'winner',outputHash:hash('winner'),code:0});f.branches.settleScript(winner,{failed:false,output:'winner'});
+ for(let n=0;n<20&&f.branches.detail(f.source.id).attempts.find(a=>a.id===loser.attemptId).state!=='outcome_unknown';n++)await f.tick();
+ assert.equal(f.branches.detail(f.source.id).attempts.find(a=>a.id===loser.attemptId).state,'outcome_unknown');
+ assert.ok(!f.points(f.source.id).some(cp=>cp.snapshot.selected.attempts.some(a=>a.id===loser.attemptId&&a.state==='outcome_unknown')));
+ f.branches.recordScriptEvidence(loser,identity,{stdout:'discarded canceled output',outputHash:hash('discarded canceled output'),code:null});
+ f.branches.recoverScript(loser.attemptId);await f.branches.unitSaver.drain();
+ const cut=f.points(f.source.id).find(cp=>cp.snapshot.selected.attempts.some(a=>a.id===loser.attemptId&&a.state==='canceled'));assert.ok(cut);
+ const original=cut.snapshot;assert.equal(replayParallelCut(original.selected,f.definition,original.continuation.configuration,original.continuation.audit),true);
+ for(const kind of ['script_cleanup_observed','script_process_exit']){
+  const bad=structuredClone(original);bad.continuation.audit=bad.continuation.audit.filter(a=>!(a.kind===kind&&(a.transition_key.includes(loser.attemptId)||JSON.parse(a.evidence_json).attemptId===loser.attemptId)));
+  assert.equal(replayParallelCut(bad.selected,f.definition,bad.continuation.configuration,bad.continuation.audit),false);
+ }
+ await f.finish(f.source.id);const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'drained');
+ const canceled=f.branches.detail(next.id).attempts.find(a=>a.state==='canceled');assert.ok(canceled);assert.equal(canceled.fence,0);assert.equal(canceled.result,undefined);
+ await f.finish(next.id);assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='script_authorized' AND json_extract(evidence_json,'$.attemptId')=?").get(next.id,canceled.id).n,0);
+});
