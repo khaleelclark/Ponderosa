@@ -54,6 +54,9 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
         await context.recover(result.request);
         result = { ...result, request: coordinationV3.contextRecovery.byKey(agent.id,body.idempotencyKey!)! };
       }
+      if(result.replayed&&!context.unavailable(agent.id,agent.projectId)&&coordinationV3.contextRecovery.reconcileRecordedCompletion(agent.id,result.request.id)) {
+        result={...result,request:coordinationV3.contextRecovery.byKey(agent.id,body.idempotencyKey!)!};
+      }
       if (result.request.progress) return reply.code(result.request.progress.phase === "context_accepted" ? 200 : 409).send({
         ...result, sourceEvidence:sourceEvidence(agent.id,result.request.sourceRunId), recoveredContext:result.request.progress.phase === "context_accepted",
         sourceWork:"held_unknown", retryable:false,

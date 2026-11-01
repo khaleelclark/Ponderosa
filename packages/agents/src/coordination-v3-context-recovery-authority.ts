@@ -107,6 +107,26 @@ export class CoordinationV3ContextRecoveryAuthority {
       return project(this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=?").get(id) as Row);
     })();
   }
+  /** Recover only the local event-to-phase commit gap, never a missing native result. */
+  reconcileRecordedCompletion(agentId:string,id:string):boolean {
+    return this.sqlite.transaction(()=>{
+      const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id,agentId) as Row|undefined;
+      if(!row||!row.progress_json||JSON.parse(row.progress_json).phase!=='native_started')return false;
+      this.assertSource(row);
+      if(this.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1').get(agentId))return false;
+      const events=this.sqlite.prepare(`SELECT seq,payload_json FROM events WHERE agent_id=? AND type='context_usage'
+        AND json_extract(payload_json,'$.providerSessionId')=? AND json_extract(payload_json,'$.providerSessionGeneration')=?
+        AND json_extract(payload_json,'$.providerCommand.name')='compact' AND json_extract(payload_json,'$.providerCommand.invocationId')=?
+        AND json_extract(payload_json,'$.providerCommand.executionId')=? AND json_extract(payload_json,'$.providerCommand.fencingToken')=? LIMIT 2`)
+        .all(agentId,row.provider_session_id,row.provider_session_id,id,row.source_run_id,row.source_fence) as {seq:number;payload_json:string}[];
+      if(!events.length)return false;
+      if(events.length!==1)throw new ContextRecoveryConflictError('Recovery completion evidence is ambiguous');
+      const event=events[0]!,usage=JSON.parse(event.payload_json);
+      this.advanceOperation(agentId,id,'native_started','context_accepted',{usedTokens:usage.usedTokens,
+        ...(usage.windowTokens!==undefined?{windowTokens:usage.windowTokens}:{}),contextUsageEventSequence:event.seq});
+      return true;
+    })();
+  }
   private assertSource(row: Row): void {
     if (!this.sqlite.prepare(`SELECT 1 FROM agents a JOIN scheduler_runs r ON r.id=? AND r.agent_id=a.id
       WHERE a.id=? AND a.active_session_id=? AND a.active_session_contract_hash=? AND a.project_id=? AND a.deleted_at IS NULL

@@ -391,7 +391,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const sourceOwner=cut.resources.find(e=>e.row.step_execution_id===resourceInput.custody.intent.resourceStepId)?.row.execution_id;
   const retained=JSON.parse((this.db.prepare('SELECT snapshot_json FROM coordination_destination_admissions WHERE id=?').get(graph.destination!.admissionId) as Row).snapshot_json);
   const branch=retainedBranchHostGraph(retained,reservation.sourceExecutionId,true,true).owners.find(o=>o.executionId===sourceOwner)?.branchId;
-  const chat=this.db.prepare('SELECT project_id,branch_id,execution_id FROM conversations WHERE id=?').get(d.conversationId) as Row|undefined;
+  const chat=this.db.prepare('SELECT project_id,branch_id,branch_execution_id AS execution_id FROM conversations WHERE id=?').get(d.conversationId) as Row|undefined;
   const execution=this.db.prepare('SELECT branch_id FROM branch_executions WHERE id=?').get(d.executionId) as Row|undefined;
   if(execution&&execution.branch_id!==branch)throw Error('Destination execution owner Branch differs');
   if((!audit||chat)&&(!chat||!execution||chat.project_id!==d.projectId||chat.branch_id!==branch||chat.execution_id!==d.executionId))throw Error('Destination resource owner Branch differs');
@@ -446,7 +446,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
    const slot=slots.find(slot=>slot.source_chat_id===resource.custody.sourceChatId);
    // Admitted audit uses the retained canonical stage when a live slot was removed.
    const local=slot?(slot.stage_json?JSON.parse(slot.stage_json):null):stage&&row.state==='admitted'?resourceStage(resource,stage,cut):null;
-   const chat=this.db.prepare('SELECT project_id,branch_id,execution_id FROM conversations WHERE id=?').get(resource.destination.conversationId) as Row|undefined;
+   const chat=this.db.prepare('SELECT project_id,branch_id,branch_execution_id AS execution_id FROM conversations WHERE id=?').get(resource.destination.conversationId) as Row|undefined;
    const sourceOwner=retainedBranchHostGraph(snapshot,reservation.sourceExecutionId,true,true).owners.find(o=>o.executionId===resource.custody.intent.executionId);
    if(chat&&(chat.project_id!==resource.destination.projectId||chat.branch_id!==sourceOwner?.branchId||chat.execution_id!==resource.destination.executionId))throw Error('Original group audit Chat ownership differs');
    if(!local)continue;

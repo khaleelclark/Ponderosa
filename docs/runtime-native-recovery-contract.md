@@ -1,0 +1,19 @@
+# Native recovery implementation boundary
+
+Source-only disposition; no provider or test execution.
+
+The existing exact-key `POST /api/agents/:id/context-recoveries` now invokes canonical `contextRecovery.reconcileRecordedCompletion(agentId,id)` on an idle replay. The synchronous owner transaction accepts only an active `native_started` recovery, unchanged original Agent/session/contract/Project/source Run/scope/fence and no surviving provider process authority. Exactly one durable `context_usage` event must bind both provider session fields and `providerCommand` name compact, invocation recovery ID, original execution and fence. Its nonnegative exact usage, optional positive window and event sequence pass the existing acceptance validator. Missing evidence returns false; ambiguous or invalid evidence refuses. This never calls a provider, clears source uncertainty, dismisses a hold or schedules/replays source work. GET is unchanged and read-only.
+
+The event is written by `AgentStore.recordProviderRecoveryContextUsage` only after `routes/provider-commands.ts` has observed a completed native compact with fresh matching-session occupancy and drained the recovery process. The append-only event writer owns filesystem durability separately from the SQLite phase. A crash after the event and before phase advancement can now complete that local phase on exact-key replay. A crash before durable event publication still remains held. No attempt is made to infer a native result from a partial log or resume.
+
+## Actual integrated provider interfaces
+
+- `packages/core/src/adapter.ts`, `RuntimeSession`: startTurn/steer/interrupt/close, optional capabilities/contextUsage/invokeCommand. No native operation status query, query key or idempotency receipt interface exists.
+- `packages/engines/src/codex-app-server.ts`, `invokeCommand('compact')`: `thread/compact/start` sends only threadId; its response is an empty acknowledgement. Matching live turn and contextCompaction item completion plus matching usage are the current completion proof. `ThreadResponse` used for open/resume contains thread ID and optional model, not an exact compaction operation receipt. No native result-query mapping is integrated. The new canonical method does not manufacture one.
+- `packages/engines/src/claude-stream-session.ts`: structured writes currently consist of initialization control plus streamed user input; `captureModelInitialization` accepts a matching successful model initialization response. The class has no `invokeCommand` implementation or native compact result reader. `startTurn`/`steer` are ordinary prompt writes and `interrupt` closes the process.
+- `packages/engines/src/claude.ts`: contextRecoverySupport remains explicitly unsupported. The discovery adapter adds its usage reader, not a structured retained-session compact command. Advertising or sending `/compact` as user text would not provide a correlated structured compaction receipt.
+- `packages/core/src/context-recovery.ts`: managed recovery explicitly retains hold_without_native_query; context recovery never settles prior uncertain source effects.
+
+Remaining implementation requires an actual supported native compact operation and exact completion/usage correlation for Claude; native lost-outcome recovery requires a supported durable native operation identity/result query or provider idempotency guarantee tied to the original session and operation. This source inspection establishes those missing integrations, not universal vendor capability absence. No new provider protocol, session-file parser, HTTP integration, authority callback or automatic mutation retry was invented.
+
+Deferred `tests/providers/provider-recovery.test.mjs` covers recorded completion after phase loss/reopen, absent evidence, repeat idempotency and unchanged unknown source Run/no native commands. Existing unknown-result/refusal fixtures remain. No execution qualification is claimed.

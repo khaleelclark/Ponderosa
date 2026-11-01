@@ -921,3 +921,45 @@ custody/provider/native/runtime/end-to-end/accessibility/mobile and full Phase2/
 qualification remain open. ZERO tests/checks/build/types/Node/native/browser/runner
 preparation or execution, migrations, push/deploy/newworkers. Hooks disabled;
 source/files/Git inspection only.
+
+
+### Runtime remaining implementation disposition — source only
+
+Runtime successor on assembled64d950ad consumes frozen owner-tree5a76a6b0f
+without duplicating its authority. Canonical group reserve/stage/review/admit/read,
+audit and retirement now validate exact per-owner selected frontier, host,
+binding/configuration/member/custody inventory through retainedBranchHostGraph
+with destination resources enabled. Explicit source(row,'audit') preserves real
+admission identity for immutable historical partition readback and allows missing
+live slots; current authority remains required for ordinary paths. Destination
+Chat queries use actual branch_execution_id, aliased to the existing local field.
+Branch request23446 previously received its canonical terminal committed contract;
+its owner-tree dependency is implemented in Runtime source, not still awaiting code.
+Branch consumer composition and successful execution remain separate.
+
+One feasible crash gap is implemented: exact-key context-recovery POST replay can
+reconcile native_started to context_accepted from the ONE exact already durable
+post-completion/post-drain occupancy event. Agent/session/contract/source Run/fence,
+command invocation and observed process absence are checked again. Missing or
+ambiguous evidence, changed source and existing provider handles refuse. No native
+command, source Run/Request settlement or new activation is performed. The original
+sourceWork stays held_unknown. GET remains read-only. See
+[runtime-native-recovery-contract.md](runtime-native-recovery-contract.md).
+
+Actual unimplemented external integration boundaries remain: Claude structured
+retained-session compaction and query/idempotency reconciliation of native outcomes
+whose exact durable completion was never recorded. The current integrated Claude
+stream transport has user messages, initialization/model control response, steering
+and process close; no structured compact/result-query method is implemented. Codex
+uses thread/compact/start with empty acknowledgement plus correlated live turn/item
+completion and occupancy; no persistent operation key/result-query mapping exists.
+RuntimeSession likewise exposes no such native query. This is evidence about the
+current integrated interfaces, not a claim about every vendor release. Inventing a
+control subtype, replaying /compact as prompt text, reading arbitrary session files,
+or treating thread resume/process exit as completion would not implement that
+contract. Source-turn unknown effects therefore remain held. No provider execution
+or external contract probe was performed.
+
+Deferred fixtures cover per-owner evidence and exact durable completion readback;
+full testing remains after implementation. No tests/checks/build/types/Node/native/
+browser/preparation/execution/migrations/push/deploy/new workers were performed.

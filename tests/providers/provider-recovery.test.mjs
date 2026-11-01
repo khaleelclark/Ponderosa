@@ -784,3 +784,34 @@ test('human Stop fences an in-flight recovery acceptance without replaying sourc
    providerCommandResult:async({sessionId})=>{entered=true;await new Promise(resolve=>releaseCommand=resolve);
     return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
 });
+
+// Deferred source: exact durable occupancy reconciles only the local phase-write gap.
+test('recorded recovery completion survives phase loss without repeating native input',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recorded recovery'),agent=await f.createIdleAgent(chat,'Unknown owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Original unknown work');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
+  const authority=new CoordinationV3Store(store.sqlite).contextRecovery;
+  const r=authority.request({...boundary,idempotencyKey:'recorded-gap'}).request;
+  authority.reserveOperation(agent.id,r.id);authority.advanceOperation(agent.id,r.id,'reserved','drained');
+  authority.advanceOperation(agent.id,r.id,'drained','native_started');
+  assert.equal(authority.reconcileRecordedCompletion(agent.id,r.id),false,'missing native result cannot be reconstructed');
+  const before=f.commands.length,original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
+  await until(()=>!store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=?').get(agent.id),'original process drain');
+  const event=store.recordProviderRecoveryContextUsage(agent.id,r.id,{usedTokens:1234,windowTokens:100000});assert.ok(event);
+  assert.throws(()=>store.sqlite.transaction(()=>{
+   store.sqlite.prepare('UPDATE scheduler_runs SET fencing_token=fencing_token+1 WHERE id=?').run(boundary.sourceRunId);
+   assert.throws(()=>authority.reconcileRecordedCompletion(agent.id,r.id),/source authority changed/);throw Error('restore exact source');
+  })(),/restore exact source/);
+  await f.reopen();
+  const reopened=new CoordinationV3Store(store.sqlite).contextRecovery;
+  assert.equal(reopened.reconcileRecordedCompletion(agent.id,r.id),true);
+  assert.equal(reopened.active(agent.id).progress.contextUsageEventSequence,event.seq);
+  assert.equal(reopened.active(agent.id).progress.sourceWork,'held_unknown');
+  assert.equal(reopened.reconcileRecordedCompletion(agent.id,r.id),false,'accepted phase is not rewritten');
+  assert.equal(reopened.reserveOperation(agent.id,r.id),false);assert.equal(f.commands.length,before);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true});
+});
