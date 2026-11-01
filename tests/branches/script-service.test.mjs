@@ -146,7 +146,7 @@ for(const [label,source,timeoutMs,expected] of [
  assert.equal(result.output,expected);assert.equal(f.branches.detail(f.execution.id).attempts[0].scriptEvidence.error,expected);f.done();
 });
 
-test('resource await is an admission boundary and stop before release preserves a prepared notification',options,async t=>{
+test('resource start yields to stop before fresh Script or notification claims',options,async t=>{
  let release,entered;let notifications=0;
  const gate=new Promise(resolve=>{release=resolve}),ready=new Promise(resolve=>{entered=resolve});
  const resources={errors:()=>[],async tick(){entered();await gate},requestStop(){},async stop(){release()}};
@@ -165,5 +165,44 @@ test('resource await is an admission boundary and stop before release preserves 
  assert.equal(notifications,0);
  assert.equal(f.store.sqlite.prepare('SELECT a.state FROM branch_actions a JOIN branch_attempts attempt ON attempt.id=a.attempt_id JOIN branch_step_executions s ON s.id=attempt.step_execution_id WHERE s.execution_id=?').get(execution.id).state,'pending');
  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE lease_owner IS NOT NULL OR process_identity_json IS NOT NULL").get().n,0);
+ f.done();
+});
+
+
+test('resource work is tracked through stop without holding cleanup ticks or swallowing rejection',options,async t=>{
+ let release,entered,cleanup=0;
+ const ready=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
+ const resources={errors:()=>[],async tick(admit){if(!admit){cleanup++;return}entered();await gate;throw Error('tracked resource rejection')},requestStop(){},async stop(){}};
+ const f=fixture(t,'// inert',{resources});
+ // Do not start the unrelated Script in this lifecycle-only probe.
+ f.service.launch=async lease=>f.branches.settleScript(lease,{failed:false,output:'independent'});
+ let stopped=false;
+ try{
+  await f.service.tick(true);await ready;
+  assert.equal(f.branches.execution(f.execution.id).state,'completed');
+  await f.service.tick(false);assert.equal(cleanup,1);
+  const closing=f.service.stop().then(()=>{stopped=true});
+  await Promise.resolve();assert.equal(stopped,false,'stop retains the outstanding pass even if the resource stop hook returns early');
+  release();await assert.rejects(closing,/cleanup or checkpoint durability remains pending/);
+  await assert.rejects(f.service.tick(false),/checkpoint durability failed/);
+ }finally{
+  release();
+  // Failure is intentionally retained; the fixture cleanup must observe it too.
+  await assert.rejects(f.service.stop(),/cleanup or checkpoint durability remains pending/);
+  const stop=f.service.stop.bind(f.service);
+  f.service.stop=async()=>{await assert.rejects(stop(),/cleanup or checkpoint durability remains pending/)};
+ }
+});
+
+test('notification callback stop prevents fresh claims in the same pass',options,async t=>{
+ let notified=0;
+ const f=fixture(t,'// inert',{notifyAction:()=>{notified++;f.service.requestStop();return 'known-notification'}});
+ const action=f.branches.deploy({chatId:'',idempotencyKey:'stop-actions',definition:{schema:'ponderosa.branch.v1',name:'Stop actions',trigger:{kind:'manual'},entry:'notify',controls:[],edges:[],steps:[{id:'notify',kind:'action',action:'notify',configRefs:[]}],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:f.root}}});
+ const first=f.branches.accept(action.id,'notify-first','first'),second=f.branches.accept(action.id,'notify-second','second');
+ await f.service.tick(true);
+ assert.equal(notified,1);
+ assert.equal(f.branches.execution(first.id).state,'completed');
+ assert.equal(f.store.sqlite.prepare('SELECT a.state,a.lease_owner FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?').get(second.id).lease_owner,null);
+ assert.equal(f.store.sqlite.prepare('SELECT a.state FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?').get(f.execution.id).state,'prepared');
  f.done();
 });

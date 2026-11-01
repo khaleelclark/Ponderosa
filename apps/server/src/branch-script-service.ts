@@ -21,6 +21,7 @@ await import('data:text/javascript;base64,' + Buffer.from(source).toString('base
 export class BranchScriptService {
   private stopped = false;
   private readonly resourceFailures:unknown[]=[];
+  private readonly resourceJobs = new Set<Promise<void>>();
   private readonly pendingActions = new Map<string,BranchActionLease>();
   private readonly pendingScripts = new Map<string,BranchScriptLease>();
   private readonly active = new Map<string, { handle: RuntimeProcessHandle; done: Promise<void> }>();
@@ -46,22 +47,25 @@ export class BranchScriptService {
   async tick(admit: boolean): Promise<void> {
     await this.recoverScripts();
     this.publishAudit();
-    if (this.stopped || !admit) { this.reconcileGateNotifications(); await this.driveResources(false); this.checkpointErrors(); return; }
+    if (this.stopped) { this.checkpointErrors(); return; }
+    if (!admit) { this.reconcileGateNotifications(); this.driveResources(false); await Promise.resolve(); this.checkpointErrors(); return; }
     void this.options.installations?.tick().catch(() => undefined);
     this.branches.advance();
     this.reconcileGateNotifications();
-    await this.driveResources(admit);
-    if (this.stopped) return;
+    this.driveResources(admit);
+    // Yield at resource start, not completion: stop must fence the next effect.
+    await Promise.resolve();
+    if (this.stopped) { this.checkpointErrors(); return; }
     if(this.options.notifyAction){
       for(const action of this.pendingActions.values())this.dispatchAction(action);
-      for(let index=0;index<100;index++){
+      for(let index=0;!this.stopped&&index<100;index++){
         const action=this.branches.claimAction(this.workerId);if(!action)break;
         this.pendingActions.set(action.attemptId,action);this.dispatchAction(action);
       }
     }
     // Waiting saver tickets consume no process slot and never await the global tick.
     for(const lease of this.pendingScripts.values()){
-      if(this.active.size >= (this.options.maxConcurrentScripts??4))break;
+      if(this.stopped || this.active.size >= (this.options.maxConcurrentScripts??4))break;
       await this.dispatchScript(lease);
     }
     for(let index=0;!this.stopped&&index<(this.options.maxConcurrentScripts??4)&&this.active.size<(this.options.maxConcurrentScripts??4);index++){
@@ -72,6 +76,7 @@ export class BranchScriptService {
     this.checkpointErrors();
   }
   private dispatchAction(action:BranchActionLease):void {
+    if (this.stopped) return;
     const readiness=this.branches.checkpointDispatch(action);
     if(readiness==='waiting')return;
     this.pendingActions.delete(action.attemptId);if(readiness==='fenced')return;
@@ -79,15 +84,20 @@ export class BranchScriptService {
     catch(error) { this.branches.actionDeliveryFailed(action,error instanceof Error?error.message:'Notification delivery remains pending'); }
   }
   private async dispatchScript(lease:BranchScriptLease):Promise<void> {
+    if (this.stopped) return;
     const readiness=this.branches.checkpointDispatch(lease);
     if(readiness==='waiting')return;
     this.pendingScripts.delete(lease.attemptId);if(readiness==='fenced')return;
     await this.launch(lease);
   }
-  private async driveResources(admit:boolean):Promise<void> {
-    // The outer scheduler tracks this pass independently of Run/cancellation work.
-    try { await this.options.resources?.tick(admit); }
-    catch(error) { this.resourceFailures.push(error); }
+  private driveResources(admit:boolean):void {
+    // Resource awaits cannot hold unrelated dispatch; stop still observes every pass.
+    const job = (async () => {
+      try { await this.options.resources?.tick(admit); }
+      catch(error) { this.resourceFailures.push(error); }
+    })();
+    this.resourceJobs.add(job);
+    void job.then(() => this.resourceJobs.delete(job));
   }
   private checkpointErrors():void {
     const errors=[...this.branches.unitSaver.errors(),...(this.options.resources?.errors()??[]),...this.resourceFailures];
@@ -200,12 +210,12 @@ export class BranchScriptService {
   }
   async stop(): Promise<void> {
     this.requestStop();
-    await this.options.installations?.stop();
-    await this.options.resources?.stop();
-    const results = await Promise.allSettled([...this.active.values()].map(async operation => {
-      await operation.handle.close(); await operation.done;
-    }));
+    const results = await Promise.allSettled([this.options.installations?.stop(), this.options.resources?.stop(), ...this.resourceJobs,
+      ...[...this.active.values()].map(async operation => {
+        await operation.handle.close(); await operation.done;
+      })]);
     const failures = results.flatMap(r => r.status === 'rejected' ? [r.reason] : []);
+    try { this.checkpointErrors(); } catch(error) { failures.push(error); }
     // Shutdown may precede the first tick; durable identities must also drain.
     failures.push(...await this.recoverScripts(true));
     // Drain after mandatory cleanup; saver failures never enter markUnknown/deliveryFailed.
