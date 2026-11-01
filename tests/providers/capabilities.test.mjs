@@ -155,6 +155,7 @@ function nativeCompactSession() {
   session.rpc = { request: async () => ({}), close: async () => {} };
   session.usageByTurnId = new Map(); session.providerRequestUsageByTurnId = new Map(); session.usageCheckpointsByTurnId = new Map();
   session.seedHistory = []; session.cwd = '/owned-fixture';
+  session.nativeTaskItems = new Map();
   return session;
 }
 const { CodexAppServerSession: CodexAppServerSessionForTest, ContextUsageObservationGate: ContextUsageGateForTest } = await import('../../packages/engines/dist/codex-app-server.js');

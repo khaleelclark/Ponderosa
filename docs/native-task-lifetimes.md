@@ -1,5 +1,10 @@
 # Native accepted work and the managed Run lifetime
 
+This document records the original a10b Claude lifetime delivery. Its statements
+that native per-task controls and Codex wiring remain unimplemented are superseded
+by [native-task-controls.md](native-task-controls.md), the source successor. The
+original provider contract evidence and restart limits remain applicable.
+
 G8 source implementation, 2026-11-01, based on
 `04e8e60bb` (the full base is recorded in the commit parent). This changes the
 Claude persistent stream path only. It is not a whole-harness parity verdict.

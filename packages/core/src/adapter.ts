@@ -1,5 +1,6 @@
 import type { RuntimeInputFile } from "./runtime-input-files.js";
 import type { NativeHistoryCatalog, NativeFileRewindResult, NativeTranscriptSeed } from "./native-history.js";
+import type { NativeTask, NativeTaskStopOutcome } from "./native-tasks.js";
 import type { ProviderContextRecoverySupport } from "./context-recovery.js";
 // The Adapter (engine) abstraction — SPEC §5. Every engine implements this one
 // interface. The agent stores canonical history; the adapter translates it into
@@ -334,6 +335,8 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   invokeCommand?(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void>;
   nativeHistory?(): Promise<NativeHistoryCatalog>;
   rewindFiles?(messageId: string, dryRun: boolean): Promise<NativeFileRewindResult>;
+  listNativeTasks?(): Promise<NativeTask[]>;
+  stopNativeTask?(taskKey: string): Promise<NativeTaskStopOutcome>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;

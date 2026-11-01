@@ -2,6 +2,7 @@ import { codexTurnContent } from "./typed-input.js";
 import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
 import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
 import { forkCodexTranscript } from "./codex-transcript-fork.js";
+import { CodexBackgroundTasks } from "./codex-background-tasks.js";
 import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
 import {
@@ -494,6 +495,11 @@ import { CodexResponseText } from "./codex-response-text.js";
 
 export class CodexAppServerSession implements RuntimeSession {
   readonly validatesResumeBeforeTurn = true;
+  private readonly backgroundTasks: CodexBackgroundTasks;
+  private nativeTaskReceiptSeen = false;
+  private readonly nativeTaskItems = new Map<string,string>();
+  private nativeTaskHold = false;
+  private closingNativeTasks = false;
   private activeTurnId?: string;
   private accountGeneration = 0;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
@@ -527,6 +533,7 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly cliVersion: string,
     private readonly expectedBillingMode?: "subscription" | "api",
   ) {
+    this.backgroundTasks = new CodexBackgroundTasks(engineAgentId, (method, params) => rpc.request(method, params));
     this.processIdentity = rpc.processIdentity;
     if (fresh) this.baselineTotal = zeroUsage();
     this.events = this.eventStream();
@@ -746,6 +753,7 @@ export class CodexAppServerSession implements RuntimeSession {
       throw new Error(command?.unavailableReason ?? `/${name} is unavailable in the Codex command catalog`);
     }
     if (name === "compact") {
+      if (this.nativeTaskHold) throw new Error("Native terminal work still owns the source Run");
       if (this.compactOperation && !this.compactOperation.terminalStatus && !this.compactOperation.closed) {
         throw new Error("Native compaction is already in progress; do not repeat the command.");
       }
@@ -984,8 +992,12 @@ export class CodexAppServerSession implements RuntimeSession {
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
     input.assertCurrent?.();
+    if (this.nativeTaskHold) throw new Error("Native terminal work still owns the source Run");
     await this.validateBillingMode();
     input.assertCurrent?.();
+    if (this.nativeTaskHold) throw new Error("Native terminal work still owns the source Run");
+    this.nativeTaskReceiptSeen = false;
+    this.nativeTaskItems.clear();
     if (this.compactOperation && !this.compactOperation.closed && !this.compactOperation.terminalStatus) {
       throw new Error("Native compaction is still in progress; its completion is unconfirmed.");
     }
@@ -1062,6 +1074,21 @@ export class CodexAppServerSession implements RuntimeSession {
     }
   }
 
+  async listNativeTasks() {
+    if (!this.isAlive()) throw new Error("Native session is unavailable");
+    const tasks = await this.backgroundTasks.list();
+    if (tasks.some(task => !task.itemId || this.nativeTaskItems.get(task.itemId) !== task.processId))
+      throw new Error("Native registry includes work without an exact current-source item receipt");
+    return tasks;
+  }
+
+  async stopNativeTask(taskKey: string) {
+    if (!this.isAlive()) throw new Error("Native session is unavailable");
+    const owned = [...this.nativeTaskItems].some(([itemId,processId]) => JSON.stringify([this.engineAgentId,itemId,processId]) === taskKey);
+    if (!owned) throw new Error("Native terminal has no current-source item receipt");
+    return this.backgroundTasks.stop(taskKey);
+  }
+
   async interrupt(): Promise<void> {
     if (!this.activeTurnId) return;
     await this.rpc.request("turn/interrupt", { threadId: this.engineAgentId, turnId: this.activeTurnId });
@@ -1072,6 +1099,7 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   close(): Promise<void> {
+    this.closingNativeTasks = true;
     this.stopCompactObservation();
     return this.rpc.close();
   }
@@ -1079,6 +1107,27 @@ export class CodexAppServerSession implements RuntimeSession {
   private stopCompactObservation(): void {
     if (this.compactOperation) this.compactOperation.closed = true;
     this.contextUsageGate.observe();
+  }
+
+  private async *retainBackgroundTasks(): AsyncIterable<AgentEvent> {
+    this.nativeTaskHold = true;
+    const observed = new Map<string, string>();
+    while (!this.closingNativeTasks && this.isAlive()) {
+      const tasks = await this.listNativeTasks();
+      const current = new Set(tasks.map(task => task.taskKey));
+      for (const [key, id] of observed) if (!current.has(key)) {
+        yield { type: "work_item_update", workItemId: `native:${key}`, title: `Native terminal: ${id}`, status: "done" };
+        observed.delete(key);
+      }
+      for (const task of tasks) if (!observed.has(task.taskKey)) {
+        observed.set(task.taskKey, task.taskId);
+        yield { type: "work_item_update", workItemId: `native:${task.taskKey}`, title: `Native terminal: ${task.taskId}`, status: "running" };
+      }
+      if (!tasks.length) { this.nativeTaskHold = false; return; }
+      // Read cadence for an existing native registry, never a scheduled model turn.
+      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+    }
+    throw new Error("Native terminal lifetime ended without a complete empty registry");
   }
 
   private async *eventStream(): AsyncIterable<AgentEvent> {
@@ -1137,6 +1186,16 @@ export class CodexAppServerSession implements RuntimeSession {
         }
         continue;
       }
+      const taskParams = object(notification.params), taskItem = object(taskParams?.item);
+      if (taskParams?.threadId === this.engineAgentId && taskParams.turnId === this.activeTurnId &&
+          ["item/started", "item/completed"].includes(notification.method) && taskItem?.type === "commandExecution" &&
+          typeof taskItem.processId === "string" && taskItem.processId.length > 0) {
+        if (typeof taskItem.id !== "string" || !taskItem.id || taskItem.id.length > 1024 || taskItem.processId.length > 1024 ||
+            /[\u0000-\u001f\u007f-\u009f]/u.test(taskItem.id + taskItem.processId) || this.nativeTaskItems.size >= 1000 && !this.nativeTaskItems.has(taskItem.id))
+          throw new Error("Invalid or excessive current-source native terminal identity");
+        this.nativeTaskItems.set(taskItem.id,taskItem.processId);
+        this.nativeTaskReceiptSeen = true;
+      }
       if (notification.method === "turn/started") {
         const turn = (notification.params as { turn?: { id?: string } } | undefined)?.turn;
         if (turn?.id) this.activeTurnId = turn.id;
@@ -1154,12 +1213,19 @@ export class CodexAppServerSession implements RuntimeSession {
       const providerRequestUsage = completedUsage
         ? reconcileProviderRequestUsage(completedUsage, completedRequestUsage)
         : undefined;
-      yield* mapCodexAppServerNotification(
-        notification,
-        this.cwd,
-        completedUsage,
-        providerRequestUsage,
-      );
+      for (const event of mapCodexAppServerNotification(notification, this.cwd, completedUsage, providerRequestUsage)) {
+        if (event.type === "turn_done" && this.nativeTaskReceiptSeen) {
+          try { yield* this.retainBackgroundTasks(); }
+          catch {
+            const closing = this.close();
+            void closing.catch(() => undefined);
+            yield { type: "error", terminalStatus: "unknown", message: "Native terminal inventory could not establish completion; source outcome held without replay" };
+            await closing;
+            return;
+          }
+        }
+        yield event;
+      }
       if (typeof completedTurnId === "string") {
         this.usageByTurnId.delete(completedTurnId);
         this.providerRequestUsageByTurnId.delete(completedTurnId);

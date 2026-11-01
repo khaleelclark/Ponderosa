@@ -1,5 +1,6 @@
 import { registerNativeHistoryRoutes } from "./native-history.js";
 import { NativeHistoryAuthority } from "../native-history-authority.js";
+import { registerNativeTaskRoutes } from "./native-tasks.js";
 import { registerSourceEffectRoutes } from "./source-effects.js";
 import { registerNativeControlRoutes } from "./native-controls.js";
 import { registerContextRecoveryRoutes } from "./context-recovery.js";
@@ -169,6 +170,11 @@ export function registerProviderCommandRoutes(
   } = context;
 
   registerSourceEffectRoutes(app, { store });
+  registerNativeTaskRoutes(app, { store, activeRuns, unavailable: agentId => {
+    const agent = store.getAgent(agentId);
+    const project = agent && store.getChatContext(agent.conversationId);
+    return isClosed() || !project || deletingAgentIds.has(agentId) || deletingProjectIds.has(project.id);
+  } });
 
 const activeAgentProviderCommands = new Set<string>();
 registerNativeHistoryRoutes(app,{store,coordinationV3,activeRuns,deletingAgentIds,deletingProjectIds,persistentRuntimeForTermination,isClosed,workingCopies,busy:activeAgentProviderCommands});

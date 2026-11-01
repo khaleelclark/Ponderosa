@@ -3,6 +3,7 @@ import { claudeTurnContent } from "./typed-input.js";
 import { ClaudeControls } from "./claude-controls.js";
 import { requestNativeApproval } from "./native-approvals.js";
 import { ClaudeFileHistory } from "./claude-file-history.js";
+import { ClaudeTaskStop } from "./claude-task-stop.js";
 import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import { ClaudeNativeCompaction } from "./claude-native-compaction.js";
@@ -73,6 +74,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
   private nativeCommand?: ClaudeNativeCompaction;
   private readonly taskLifetime: ClaudeTaskLifetime;
+  private readonly taskStop: ClaudeTaskStop;
   private nativeUsage?: RuntimeContextUsage;
   private usageInvalidated = false;
   private sessionInitialization?: unknown;
@@ -108,6 +110,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.engineAgentId = opts.transcriptFork?.newSessionId ?? opts.resumeSessionId ?? randomUUID();
     this.fileHistory = new ClaudeFileHistory(this.engineAgentId, frame => this.writeFrame(frame));
     this.taskLifetime = new ClaudeTaskLifetime(this.engineAgentId);
+    this.taskStop = new ClaudeTaskStop(this.engineAgentId);
     this.contextObservations = new ClaudeContextUsage(this.engineAgentId);
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
       ? JSON.stringify({
@@ -378,6 +381,17 @@ export class ClaudeStreamSession implements RuntimeSession {
     return { status: "accepted", turnId };
   }
 
+  async listNativeTasks() {
+    if (this.closed || !this.active || !this.taskLifetime.ownsRun) throw new Error("No live native task Run");
+    return this.taskLifetime.inventory();
+  }
+
+  async stopNativeTask(taskKey: string) {
+    if (this.closed || !this.active || !this.taskLifetime.ownsRun) throw new Error("No live native task Run");
+    const task = this.taskLifetime.requireTask(taskKey);
+    return this.taskStop.stop(task.taskId, frame => this.writeFrame(frame));
+  }
+
   async interrupt(): Promise<void> {
     this.cancelApprovals();
     if (this.nativeCommand?.succeeded) this.nativeCommand = undefined;
@@ -462,6 +476,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.fileHistory.close();
     this.controls.close();
     this.cancelApprovals();
+    this.taskStop.close();
     this.nativeCommand?.fail();
     this.initializationReady();
     this.child.stdin?.end();
@@ -511,6 +526,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     const map = claudeStreamEventMapper();
     try {
       for await (const raw of this.mediaReplayFraming().parse(stdout as AsyncIterable<Buffer>)) {
+        if (this.taskStop.observe(raw)) continue;
         if (this.fileHistory.observe(raw)) continue;
         if (this.controls.observe(raw)) continue;
         const stopHook = this.taskLifetime.stopHook(raw);
@@ -583,6 +599,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     } finally {
       // Parser completion, not the stream close event, proves buffered JSONL
       // was consumed. The root timer remains the bounded fallback.
+      this.taskStop.close();
       this.reportDrainedRootExit?.();
     }
     if (!this.closed) {

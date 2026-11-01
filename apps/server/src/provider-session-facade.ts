@@ -1,4 +1,5 @@
 import { projectNativeHistory, projectNativeRewind } from "./native-history-projection.js";
+import type { NativeTask, NativeTaskStopOutcome } from "@ponderosa/core";
 import { canonicalProviderFailureEvent, redactProviderDiagnostic } from "./provider-failure-event.js";
 import { isProxy } from "node:util/types";
 import {
@@ -362,6 +363,34 @@ export function projectProviderRootExitDetail(value: unknown): ProviderRootExitD
   return detail;
 }
 
+function nativeTasks(value: unknown): NativeTask[] {
+  const array = target(value);
+  const length = dataMember(array, "length");
+  if (!Array.isArray(array) || !Number.isSafeInteger(length) || (length as number) < 0 || (length as number) > 1000) throw new Error(INVALID_PROVIDER_STRUCTURE);
+  const result: NativeTask[] = [], seen = new Set<string>();
+  for (let index = 0; index < (length as number); index++) {
+    const row = target(dataMember(array, String(index)));
+    const text = (name: string, optional = false): string | undefined => {
+      const value = dataMember(row, name);
+      if (optional && value === undefined) return undefined;
+      if (typeof value !== "string" || !value || value.length > 4096 || UNSAFE_IDENTITY_CONTROL.test(value)) throw new Error(INVALID_PROVIDER_STRUCTURE);
+      return value;
+    };
+    const taskKey = text("taskKey")!, taskId = text("taskId")!, kind = text("kind")!;
+    const taskRunId = text("taskRunId", true), itemId = text("itemId", true), processId = text("processId", true);
+    const cancellable = dataMember(row, "cancellable");
+    if (typeof cancellable !== "boolean" || seen.has(taskKey)) throw new Error(INVALID_PROVIDER_STRUCTURE);
+    seen.add(taskKey);
+    result.push({ taskKey, taskId, kind, cancellable, ...(taskRunId ? {taskRunId} : {}), ...(itemId ? {itemId} : {}), ...(processId ? {processId} : {}) });
+  }
+  return result;
+}
+
+function nativeStopOutcome(value: unknown): NativeTaskStopOutcome {
+  if (!["acknowledged", "terminated", "not_found", "unknown"].includes(value as string)) throw new Error(INVALID_PROVIDER_STRUCTURE);
+  return value as NativeTaskStopOutcome;
+}
+
 /** Copy a provider-returned RuntimeSession into one closed, code-owned facade.
  * Downstream consumers can use ordinary property access only on this facade;
  * all provider members were captured through non-Proxy data descriptors. */
@@ -381,6 +410,8 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
   let capabilitiesMethod: ((...args: unknown[]) => unknown) | undefined;
   let nativeHistoryMethod: ((...args: unknown[]) => unknown) | undefined;
   let rewindFilesMethod: ((...args: unknown[]) => unknown) | undefined;
+  let listNativeTasksMethod: ((...args: unknown[]) => unknown) | undefined;
+  let stopNativeTaskMethod: ((...args: unknown[]) => unknown) | undefined;
   let invokeCommandMethod: ((...args: unknown[]) => unknown) | undefined;
   try {
     raw = target(value);
@@ -401,6 +432,8 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     invokeCommandMethod = method(raw, "invokeCommand", false);
     nativeHistoryMethod = method(raw,"nativeHistory",false);
     rewindFilesMethod = method(raw,"rewindFiles",false);
+    listNativeTasksMethod = method(raw, "listNativeTasks", false);
+    stopNativeTaskMethod = method(raw, "stopNativeTask", false);
   } catch (error) {
     throw boundaryError("project provider session", error);
   }
@@ -472,6 +505,20 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     } : {}),
     ...(nativeHistoryMethod ? { nativeHistory: async () => { if(nativeMutationActive)throw new Error("Native operation is active");return projectNativeHistory(await providerRuntimeOperation("read native history", () => Reflect.apply(nativeHistoryMethod!,raw,[]))); } } : {}),
     ...(rewindFilesMethod ? { rewindFiles: async (messageId:string,dryRun:boolean) => projectNativeRewind(await nativeMutation("rewind native files", () => Reflect.apply(rewindFilesMethod!,raw,[messageId,dryRun]))) } : {}),
+    ...(listNativeTasksMethod ? {
+      listNativeTasks: async () => {
+        const value = await providerRuntimeOperation("list native tasks", () => Reflect.apply(listNativeTasksMethod!, raw, []));
+        try { return nativeTasks(value); }
+        catch (error) { throw boundaryError("project native tasks", error); }
+      },
+    } : {}),
+    ...(stopNativeTaskMethod ? {
+      stopNativeTask: async taskKey => {
+        const value = await providerRuntimeOperation("stop native task", () => Reflect.apply(stopNativeTaskMethod!, raw, [taskKey]));
+        try { return nativeStopOutcome(value); }
+        catch (error) { throw boundaryError("project native task stop", error); }
+      },
+    } : {}),
     ...(invokeCommandMethod ? {
       invokeCommand: async (name, argumentsText) => {
         const value = await nativeMutation(

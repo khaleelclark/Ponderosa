@@ -225,3 +225,5 @@ export {issuedGroupOwners,issuedGroupResources,issuedGroupHost} from './branch-i
 
 export { CoordinationV3SourceEffectsAuthority, SourceEffectConflictError } from "./coordination-v3-source-effects-authority.js";
 export {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';
+
+export { NativeTaskStopAuthority } from "./native-task-stop-authority.js";

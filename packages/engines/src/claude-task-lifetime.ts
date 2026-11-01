@@ -1,4 +1,4 @@
-import type { AgentEvent, TokenUsage } from "@ponderosa/core";
+import type { AgentEvent, TokenUsage, NativeTask } from "@ponderosa/core";
 
 type Done = Extract<AgentEvent, { type: "turn_done" }>;
 type Work = Extract<AgentEvent, { type: "work_item_update" }>;
@@ -30,6 +30,21 @@ export class ClaudeTaskLifetime {
   }
 
   get ownsRun(): boolean { return this.open; }
+
+  inventory(): NativeTask[] {
+    if (!this.open) return [];
+    const tasks = new Map([...this.background, ...this.tasks]);
+    const inventory: NativeTask[] = [...tasks.values()].map(task => ({ taskKey: this.key(task), taskId: task.id,
+      kind: task.kind, ...(task.run ? { taskRunId: task.run } : {}), cancellable: true }));
+    for (const id of this.crons) inventory.push({ taskKey: this.key({ id, kind: "schedule" }), taskId: id, kind: "schedule", cancellable: false });
+    return inventory;
+  }
+
+  requireTask(taskKey: string): NativeTask {
+    const task = this.inventory().find(task => task.taskKey === taskKey && task.cancellable);
+    if (!task) throw new Error("Exact native task is no longer owned by this Run");
+    return task;
+  }
 
   beginTurn(): void {
     if (this.open) throw new Error("Native work still owns the managed Run");

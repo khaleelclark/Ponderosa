@@ -1802,6 +1802,22 @@
       "lane": "engines",
       "moduleBase": "packages/engines/package.json",
       "requirements": "Deferred: built engines, Node24, controlled owned native-stream fixture; no provider account. Not executed in implementation-only lane."
+    },
+    {
+      "path": "tests/providers/native-task-controls.test.mjs",
+      "feature": "providers",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Deferred whole-implementation authorization; built workspaces; inert controlled RPC only; no provider account",
+      "origin": "G8 exact native task list/stop identity, receipt semantics and retained lifetime"
+    },
+    {
+      "path": "tests/providers/native-task-routes.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Deferred whole-implementation authorization; built workspaces and SQLite; inert Fastify injection only; no provider account",
+      "origin": "G8 canonical live Run/fence/session task controls and durable no-replay receipt"
     }
   ],
   "retainedReleasePayload": [
