@@ -369,3 +369,21 @@ This supersedes the backend content-only limitation in prior inventory entries.
 UI/Branches explicit activation and new-Chat choices remain missing; omission
 continues content-only behavior. Full #8 remains incomplete/unverified.
 No tests/builds/types/Node/browser/runner work performed.
+
+## Runtime hold lifted and successor integrated
+
+Manager authorized Runtime chain `5511e2bd` -> `8d9dfaa8` -> `f446d63e`.
+Integrated retained normal contracts, authorized text reply endpoints/receipts,
+exact usage/diagnostics, billing admission and durable Codex recovery custody,
+Stop/status/dismiss with original unknown work held. Previous Runtime-held and
+missing generic endpoint entries are historical and superseded. UI recovery and
+shared Chat/peer consumers still require their owner successors. Unknown original
+turn reconciliation and Claude structured compaction remain explicit gaps.
+
+One source conflict: assets.ts duplicate audio admission. Retained existing shared
+recordingMediaType validator/extension map, removed Runtime local audioType and
+duplicate keys, aligned deferred audio fixtures/documentation to the shared
+contract. No broad admission fallback. Migration0035 is unique in the assembled
+schema directory and registered once; ALTER-only progress column follows0034.
+No migration/test execution. Runtime docs and recovery contract fully read.
+No builds/types/browser/native/network/runner checks or passing claim.

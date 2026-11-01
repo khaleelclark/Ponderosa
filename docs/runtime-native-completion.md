@@ -219,11 +219,12 @@ owned by the web lane; it was coordinated and is not changed in this worktree.
 The existing asset pipeline now preserves `audio/webm`, `audio/ogg` and `audio/mp4`
 for recorded voice attachments. Admission checks the extension, declared MIME
 (with codec parameters normalized), container signature and audio codec/handler.
-Ogg recognizes Opus/Vorbis identification packets; WebM recognizes its EBML signature,
-WebM document marker and Opus/Vorbis codec identity; MP4 walks standard sized
-moov/trak/mdia boxes to an audio handler. This is container admission, not full codec
-decoding. Unsupported/extended box layouts may be refused; browser playback owns
-decoding and may report malformed content. Original bytes and MIME follow existing
+Integration reuses the single `audio-container.ts` recording validator from
+portability: complete Opus Ogg pages, WebM Opus identity without video markers,
+and bounded MP4 metadata/audio-codec plus media boxes. The duplicate Runtime
+detector was removed; one extension map admits .webm/.ogg/.m4a/.mp4. This is
+container admission, not full codec decoding or browser playback qualification.
+Original bytes and MIME follow existing
 staging, association, persistence and download authority. No transcoder, transcriber,
 provider HTTP path or new credential store is introduced. Tests are written in
 `tests/files-results/audio-attachments.test.mjs` and remain unexecuted.
