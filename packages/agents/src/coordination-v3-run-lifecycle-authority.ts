@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import type {
   CoordinationRequestState,
+  RuntimeInputFile,
   ProviderInputSourceManifest,
   PromptInjectionSourceManifestDto,
   ProviderFailureCategory,
@@ -164,6 +165,7 @@ export class CoordinationV3RunLifecycleAuthority {
     runId: string;
     fencingToken: number;
     prompt: string;
+    inputFiles?: RuntimeInputFile[];
     now?: string;
   }): void {
     const now = input.now ?? new Date().toISOString();
@@ -172,18 +174,23 @@ export class CoordinationV3RunLifecycleAuthority {
       this.support.getFencedRun(input.runId, input.fencingToken);
       requireBranchScheduleInjectionEligible(this.sqlite,input.injectionId,input.runId,now,this.canonicalTaskDecisions);
       const row = this.sqlite.prepare(`
-        SELECT prompt_hash, state, kind, activation_ids_json FROM scheduler_prompt_injections
+        SELECT prompt_hash, state, kind, activation_ids_json, source_manifest_json FROM scheduler_prompt_injections
         WHERE id = ? AND run_id = ?
       `).get(input.injectionId, input.runId) as {
         prompt_hash: string;
         state: string;
         activation_ids_json: string;
+        source_manifest_json: string | null;
         kind: "turn" | "steer";
       } | undefined;
       if (!row) throw new Error("prompt injection not found");
       if (row.prompt_hash && row.prompt_hash !== hash) {
         throw new Error("prompt injection payload changed");
       }
+      const previousFiles = row.source_manifest_json
+        ? (JSON.parse(row.source_manifest_json) as PromptInjectionSourceManifestDto).inputFiles ?? [] : [];
+      if (row.prompt_hash && stableJson(previousFiles) !== stableJson(input.inputFiles ?? []))
+        throw new Error("prompt injection typed input changed");
       if (row.state !== "pending" && !row.prompt_hash) {
         throw new Error("submitted injection has no durable prompt hash");
       }
@@ -191,6 +198,7 @@ export class CoordinationV3RunLifecycleAuthority {
       const manifest: PromptInjectionSourceManifestDto = {
         schemaVersion: 1, runId: input.runId, injectionId: input.injectionId,
         kind: row.kind, activationIds,
+        ...(input.inputFiles?.length ? { inputFiles: input.inputFiles } : {}),
         sources: activationIds.map(ref => ({ kind: "activation", ref })),
       };
       this.sqlite.prepare(`

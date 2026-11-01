@@ -1,3 +1,4 @@
+import type { RuntimeInputFile } from "../runtime-input-files.js";
 import type { EngineId, EffortOption, EngineModelOption, EngineModelValidationError, ModelOption } from "../adapter.js";
 import type { TokenUsage } from "../events.js";
 import type { ProviderFailureCategory } from "../provider-failure-summary.js";
@@ -65,6 +66,8 @@ export interface RetainedNormalRuntimeContract {
 export interface ProviderInputSourceManifestV3 {
   /** Exact additional structured input submitted alongside this accepted packet. */
   nativeAction?: import("../native-turn.js").NativeTurnAction;
+  /** Exact original/representation digests; bytes stay in managed storage, not logs. */
+  inputFiles?: RuntimeInputFile[];
   normalRuntimeContract?: RetainedNormalRuntimeContract;
   /** Frozen authorization and selection evidence for this exact accepted packet. */
   historyContext?: {
@@ -133,6 +136,7 @@ export type ProviderInputSourceManifest = ProviderInputSourceManifestV1 | Provid
 /** Exact scheduler packet, including steering. This does not claim to snapshot
  * opaque retained provider history or create a second execution identity. */
 export interface PromptInjectionSourceManifestDto {
+  inputFiles?: RuntimeInputFile[];
   schemaVersion: 1;
   runId: string;
   injectionId: string;

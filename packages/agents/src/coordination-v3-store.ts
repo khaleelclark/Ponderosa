@@ -1,3 +1,4 @@
+import type { RuntimeInputFile } from "@ponderosa/core";
 import {payloadHash} from './coordination-v3-canonical-json.js';
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import {CoordinationV3DestinationReconciliation,groupReconciliationAuthority,type CoordinationDestinationGroupReconciliationAuthority,type CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
@@ -1218,7 +1219,7 @@ export class CoordinationV3Store {
   }
 
   preparePromptInjection(input: {
-    injectionId: string; runId: string; fencingToken: number; prompt: string; now?: string;
+    injectionId: string; runId: string; fencingToken: number; prompt: string; inputFiles?: RuntimeInputFile[]; now?: string;
   }): void {
     this.runLifecycleAuthority.preparePromptInjection(input);
   }

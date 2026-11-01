@@ -1,3 +1,4 @@
+import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
 import { replyStreamCommit } from "../reply-stream-publication.js";
 import { canonicalProviderFailureEvent } from "../provider-failure-event.js";
 import {localMemoryFor} from "../local-memory.js";
@@ -12,6 +13,7 @@ import {
   type ProviderFailureCategory,
   type ProviderInputSourceManifest,
   type RuntimeDynamicToolSpec,
+  type RuntimeInputFile,
   type RuntimeCapabilityRestrictions,
   type RuntimeProcessHandle,
   unicodeCodePointLength,
@@ -128,6 +130,7 @@ export interface ProviderRunExecutionInput {
   runtimeSessionContractHash: string;
   expectedBillingMode?: "subscription" | "api";
   workingCopy: ResolvedAgentWorkingCopy;
+  inputFiles?: RuntimeInputFile[];
   runtimeAttachmentDirectory: string | undefined;
   runtimeAttachmentCleanupAfterRun: boolean;
   seedHistory: ChatMessage[];
@@ -242,6 +245,7 @@ export function startProviderRunExecution(
     runtimeSessionContractHash,
     expectedBillingMode,
     workingCopy,
+    inputFiles = [],
     runtimeAttachmentDirectory,
     runtimeAttachmentCleanupAfterRun,
     seedHistory,
@@ -682,6 +686,7 @@ export function startProviderRunExecution(
                   try {
                     await persistentRuntime!.session.startTurn({
                       prompt,
+                      inputFiles,
                       kind: "collaboration",
                       model: effectiveModel,
                       effort: effectiveEffort,
@@ -752,6 +757,7 @@ export function startProviderRunExecution(
                   try {
                     await persistentRuntime!.session.startTurn({
                       prompt: freshPrompt,
+                      inputFiles,
                       kind: "collaboration",
                       model: effectiveModel,
                       effort: effectiveEffort,
@@ -866,6 +872,8 @@ export function startProviderRunExecution(
       while (true) {
         const bufferedSessionEvents: Extract<AgentEvent, { type: "session" }>[] = [];
         let retryFresh = false;
+        if (inputFiles.length && !persistentRuntime) throw new Error("This engine has no typed-file session transport; input was not submitted");
+        requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: agent.projectId, agentId: agent.id, store, assets: context.assets });
         if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
           coordinationV3!.markPromptSubmitted({
             injectionId: v3InjectionId!,

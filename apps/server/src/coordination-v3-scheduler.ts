@@ -1,3 +1,4 @@
+import type { RuntimeInputFile } from "@ponderosa/core";
 import type { ActivationTerminalOutcome, CoordinationV3Store, ProviderOperation, SchedulerLease, SteeringLease } from "@ponderosa/agents";
 
 export interface CoordinationV3DispatchResult {
@@ -33,6 +34,7 @@ export interface CoordinationV3SchedulerMetrics {
 export const DISPATCH_LATENCY_SAMPLE_LIMIT = 256;
 
 export interface ActivationPromptCompilation {
+  inputFiles?: RuntimeInputFile[];
   prompt: string;
 }
 
@@ -373,6 +375,7 @@ export class CoordinationV3Scheduler {
         runId: steering.runId,
         fencingToken: steering.fencingToken,
         prompt,
+        inputFiles: compilation.inputFiles,
       });
     } catch (error) {
       this.metrics.rejectedRuns += 1;
@@ -453,6 +456,7 @@ export class CoordinationV3Scheduler {
         runId: lease.runId,
         fencingToken: lease.fencingToken,
         prompt,
+        inputFiles: compilation.inputFiles,
       });
     } catch (error) {
       this.metrics.rejectedRuns += 1;

@@ -1025,6 +1025,7 @@ export function registerAgentMessageRunRoute(
         freshProviderInputManifest,
         manifestArtifactIds,
         pendingCommunicationV4NextRunDeliveryIds,
+        inputFiles,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
@@ -1258,6 +1259,7 @@ export function registerAgentMessageRunRoute(
         workingCopy,
         availableRuntimeTools,
         capabilityRestrictions,
+        inputFiles,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,
         seedHistory,

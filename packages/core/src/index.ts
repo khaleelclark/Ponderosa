@@ -41,3 +41,4 @@ export * from "./source-effects.js";
 export * from "./browser-observation.js";
 
 export * from "./native-turn.js";
+export { requireRuntimeInputFileBudget, type RuntimeInputFile, type RuntimeInputMaterial } from "./runtime-input-files.js";

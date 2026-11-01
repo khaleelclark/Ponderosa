@@ -1,9 +1,8 @@
-import type { AssetDto } from "@ponderosa/core";
-import { attachmentsDir } from "@ponderosa/agents";
+import type { AssetDto, RuntimeInputMaterial } from "@ponderosa/core";
 import type { AssetStore } from "./assets.js";
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync, rmSync } from "@ponderosa/native-host/fs";
-import { copyFile, mkdir, rm, writeFile } from "@ponderosa/native-host/fs/promises";
+import { constants, openSync, closeSync, fstatSync, readFileSync, realpathSync, rmSync } from "@ponderosa/native-host/fs";
+import { mkdir, rm, writeFile } from "@ponderosa/native-host/fs/promises";
 import path from "node:path";
 
 const safeScopeId = (value: string): string =>
@@ -79,19 +78,46 @@ export const runtimeAttachmentName = (item: AssetDto): string => {
   return `${item.id}-${name}`;
 };
 
-/** Named copies are shared by normal turns and active steering. */
-export async function copyRuntimeAttachment(dataDir: string, directory: string, projectId: string, item: AssetDto,
-  assets: Pick<AssetStore, "content">): Promise<{ localPath: string; available: boolean }> {
-  const source = path.join(attachmentsDir(dataDir, projectId, item.agentId),
-    `${item.id}${usesRuntimeImagePreview(item) ? ".preview.png" : ".bin"}`);
-  if (!existsSync(source)) return { localPath: source, available: false };
+export interface RuntimeAttachmentCopy {
+  localPath: string;
+  available: boolean;
+  original?: RuntimeInputMaterial;
+  image?: RuntimeInputMaterial;
+}
+
+async function writeImmutableRuntimeCopy(file: string, body: Buffer): Promise<void> {
+  try { await writeFile(file, body, { mode: 0o600, flag: "wx" }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1 || info.size !== body.length ||
+          !readFileSync(fd).equals(body)) throw new Error("Runtime attachment copy changed after admission");
+    } finally { closeSync(fd); }
+  }
+}
+
+/** Named copies are shared by normal turns and active steering. Originals are never replaced by previews. */
+export async function copyRuntimeAttachment(_dataDir: string, directory: string, projectId: string, item: AssetDto,
+  assets: Pick<AssetStore, "content">): Promise<RuntimeAttachmentCopy> {
+  // The managed content reader verifies immutable original bytes for both Chat and Agent owners.
+  const original = await assets.content(projectId, item.agentId, item.id, false);
+  if (!original || original.asset.conversationId !== item.conversationId ||
+      original.asset.sha256 !== item.sha256 || original.body.length !== item.size)
+    return { localPath: "", available: false };
+  const preview = usesRuntimeImagePreview(item) ? await assets.content(projectId, item.agentId, item.id, true) : undefined;
+  if (usesRuntimeImagePreview(item) && !preview) return { localPath: "", available: false };
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const localPath = path.join(directory, runtimeAttachmentName(item));
-  if (item.conversationId) {
-    const verified = await assets.content(projectId, item.agentId, item.id, usesRuntimeImagePreview(item));
-    if (!verified || verified.asset.conversationId !== item.conversationId || verified.asset.sha256 !== item.sha256)
-      return { localPath: "", available: false };
-    await writeFile(localPath, verified.body, { mode: 0o600 });
-  } else await copyFile(source, localPath);
-  return { localPath: runtimeAttachmentProviderPath(localPath), available: true };
+  const originalPath = preview ? `${localPath}.original` : localPath;
+  await writeImmutableRuntimeCopy(originalPath, original.body);
+  if (preview) await writeImmutableRuntimeCopy(localPath, preview.body);
+  const material = (file: string, body: Buffer, mediaType: string): RuntimeInputMaterial => ({
+    localPath: runtimeAttachmentProviderPath(file), mediaType, byteLength: body.length,
+    sha256: createHash("sha256").update(body).digest("hex"),
+  });
+  return { localPath: runtimeAttachmentProviderPath(localPath), available: true,
+    original: material(originalPath, original.body, item.mediaType),
+    ...(preview ? { image: material(localPath, preview.body, "image/png") } : {}) };
 }

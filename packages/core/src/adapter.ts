@@ -1,3 +1,4 @@
+import type { RuntimeInputFile } from "./runtime-input-files.js";
 import type { ProviderContextRecoverySupport } from "./context-recovery.js";
 // The Adapter (engine) abstraction — SPEC §5. Every engine implements this one
 // interface. The agent stores canonical history; the adapter translates it into
@@ -173,6 +174,8 @@ export interface SeedOptions extends RunOptionsBase {
 export type RuntimeDeliveryKind = "user_message" | "collaboration" | "system";
 
 export interface RuntimeTurnInput {
+  /** Authorized current-delivery files; adapters preserve their native modality. */
+  inputFiles?: RuntimeInputFile[];
   prompt: string;
   kind: RuntimeDeliveryKind;
   model?: string;
