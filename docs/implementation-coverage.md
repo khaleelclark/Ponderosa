@@ -193,7 +193,7 @@ collections with independent pagination/revision validation and explicit restart
 provides separate whole-group retirement controls. Branch checkpoint retirement still
 depends on retained owner/source identity; no owner-independent journal. These are
 source deliveries, not executed qualification; separate group capture preview/CAS UI
-is now assembled by6b1f7a398 below, with a separate backend preview-transaction blocker.
+is now assembled by6b1f7a398 below, with the Branch preview read-transaction correction now assembled.
 
 - Features + Runtime: called resource trees, later-generation historical participants,
   retry/recovery, parallel cleanup-held frontiers and broader package payloads remain
@@ -383,8 +383,8 @@ changed cut. Exact retained commands read saved seals without recapture.
 UI6b1f7a398 now supplies the required commandKey/reviewHash/versionId and full persisted
 preview. The earlier commandKey-only input mismatch is resolved. Both BranchesClient
 and additive BranchGroupClient retain shared DTOs and all prior exports/methods. GET
-status remains unchanged. The separate backend preview-transaction blocker below
-still prevents claiming new-capture usability or executed qualification.
+status remains compatible, with an additive disposition field. The Branch preview
+read-transaction correction is assembled; executable qualification remains open.
 Partial multi-package abandonment requires the separate explicit whole-group protocol below. Existing
 historical participant, precleanup sealed evidence and broader payload limits remain.
 Deferred source covers preview purity/stale cut, serial/parallel exact and legacy keys,
@@ -416,7 +416,7 @@ remains authoritative. No polling, automatic mutation/retry or singular-action l
 
 This closes lifecycle discovery callers and group retirement UI source. Separate Branch
 capture/prepare discovery and e7 preview/CAS UI are now assembled by6b1f7a398; legacy
-lost GROUP keys cannot be reconstructed. The backend transaction blocker below remains.
+lost GROUP keys cannot be reconstructed. The backend read-transaction correction is assembled.
 Atomic multi-package abandonment source is composed below; existing eligibility,
 bounds, quiescence, references, historical partition and Branch precleanup-seal gaps
 remain. Two new deferred discovery fixture files plus command receipt additions were
@@ -443,13 +443,7 @@ never replayed as POST. Other source Runs are audit-only in this component; acti
 require their original source Run. Retained journal input survives ambiguous outcomes;
 no capture/prepare/admit/choice replay is offered. Unknown slots remain held.
 
-CURRENT BACKEND BLOCKER (source-read, not an executed result): BranchStore's
-previewIssuedGroupCapture calls its helper without opening a transaction; that helper
-calls captureBranchHostCut, which explicitly requires db.inTransaction. The GET route
-supplies no transaction. Thus the new UI caller contract is correct but authoritative
-preview/new-capture usability remains held until the Branch-owned read-transaction
-correction is assembled. This UI-only integration does not apply an unnamed backend
-successor or silently patch that owner code.
+Preview transaction correction (source only): Branch owner f623c81ffe0cfee94ab447580617b61589460b13 is assembled. BranchStore.previewIssuedGroupCapture now invokes the synchronous helper inside this.sqlite.transaction on the same connection, providing the host-cut read snapshot and existing-transaction savepoint nesting. The source dependency is resolved; no executed usability or qualification claim.
 
 Owner-independent group command readback remains missing: discovery can show retained
 owners while exact scoped GET still refuses missing source owners. Partial multi-package
@@ -463,3 +457,8 @@ revocation; none executed. No native/browser/mobile/accessibility or acceptance 
 
 Multiple-package unsealed issued-group capture abandonment: source-only host discovery/review/commit protocol and deferred boundary fixtures. One complete prepare inventory, all package tombstones and one canonical owner disposition; filesystem progress cannot release a subset of SQL cleanup pins. See `checkpoint-group-capture-abandonment.md`. No executed qualification, historical-group reclamation or unknown-outcome replay claim.
 Canonical group partial-capture abandonment hooks now compare whole raw intent/revision, every source's drain/effect/reference inventory and all actual package retirement proofs in one owner transaction. Original bytes retained, exact proof replay and reserve/seal revival guards; only verified group disposition releases its own cleanup/reference pins. Host adapter is composed with these hooks in the dedicated protocol; package bytes are archived, never deleted. Deferred source only, no execution qualification.
+
+
+### Composed whole-group abandonment integration (source only)
+
+Successors535301c24/46ba3475e/9bbdaad1b are assembled without replaying already-equivalent lifecycle discovery. The separate fourth lifecycle group-capture collection exposes exact raw keys and full sources independently of destination review/drain. One complete private prepare journal precedes every package tombstone/archive; one Branch owner callback validates all proofs and one outer SQL commit releases group pins. Filesystem or SQL failure keeps every SQL cleanup pin held; unchanged explicit replay verifies original archives, including after owner removal. Current generation/import/member/subtree/attempt/Chat effect checks and reserve/seal revival fences remain mandatory. Retained/sealed groups, history/disk reclamation, unknown schemas/outcomes and external writers remain held. Dedicated group abandonment UI is not assembled. Fixture source includes actual Branch-hook/host composition with synthetic payloads and injected SQL failure; no execution occurred.

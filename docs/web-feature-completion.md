@@ -769,7 +769,7 @@ separate; unknown import/staging/admission slots stay held, exact commands remai
 persisted, pure choice/destination reads recover outcomes, and no mutation replay
 is introduced. Revocation remains possible after independent source preview refusal.
 Fresh Project directory reuse/default Chat/per-resource Chats/no separate workspace
-warnings remain visible. Partial group capture abandonment is still unsupported;
+warnings remain visible. Partial group capture abandonment uses a separately assembled backend protocol;
 all unresolved member pins remain held. Retirement remains the separate lifecycle
 surface, not a loop over members here.
 
@@ -801,8 +801,12 @@ mobile qualification remain open; no whole UI/group/lifecycle/Bible/Phase2 accep
 
 Current integration note: UI6b1f7a398 now sends and persists the required exact
 commandKey/reviewHash/versionId; the earlier caller mismatch is resolved. Both SDKs
-and their shared DTOs are preserved. A separate backend source blocker remains:
-BranchStore.previewIssuedGroupCapture directly calls previewIssuedGroupCapture, whose
-captureBranchHostCut requires db.inTransaction. The GET path supplies no transaction.
-A Branch-owned read-transaction correction is not part of this UI-only assembly;
-new preview/capture usability remains held pending that correction. No execution claim.
+and their shared DTOs are preserved. Branch owner correction
+f623c81ffe0cfee94ab447580617b61589460b13 is now assembled: the synchronous
+preview helper runs inside a same-connection SQLite read transaction, including
+safe savepoint nesting when a transaction already exists. This resolves the source
+dependency described by UI docs51704f458; no executed usability claim.
+
+The separate whole-group abandonment backend protocol is also assembled source only.
+Its fourth lifecycle collection and review/abandon calls have no dedicated UI here.
+Retained/sealed groups and history/disk reclamation remain separate.
