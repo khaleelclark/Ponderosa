@@ -25,16 +25,16 @@ Owner handoffs must distinguish an absent behavior from deferred qualification.
 | 5 | `apps/server/src/local-memory-config.ts`, `deploy/README.md`, configurable adapters | Runtime: classify required infrastructure versus optional integrations; no new outside dependency in this slice. |
 | 6 | `apps/server/src/runtime-authority.ts`, `local-memory-authority.ts`, capability-policy history | Runtime: human-origin access mutations and live rechecks; UI exposes human settings. |
 | 7 | `apps/server/src/operator-auth-proxy.ts`, server origin boundary | Runtime: finish removal of dedicated authentication while retaining browser-origin checks; file name alone does not establish a live token gate. |
-| 8 | `portable-agent-package-validation.ts`, `portable-execution-archive.ts`, `portable-memory-snapshot.ts`, `portable-output-roles.ts`, `docs/combined-migration-contract.md` | Reliability + Features: docs explicitly identify excluded machine/session/execution state. Decide which exclusions contradict full recreation and implement required state, rather than labeling all remaining portability work testing. Known secret fields stay excluded. |
+| 8 | `portable-agent-package-validation.ts`, `portable-execution-archive.ts`, `portable-memory-snapshot.ts`, `portable-output-roles.ts`, `docs/combined-migration-contract.md` | Reliability increment integrated: portable role/speed/preset snapshot and remapped guidance refs, validated import selections, shared export warning. Concrete remaining transport gaps listed below; full recreation remains incomplete. Known secret fields stay excluded. |
 | 9 | Shared core DTOs, Adapter interface, shared composer/dialogs | All owners: remove abandoned paths and avoid duplicated authority; broad dead-code analysis deferred. |
 | 10 | `apps/server/src/routes/branches.ts`, **new `examples/branches-client/client.ts`** | Integration: standalone outside-app start/status/result client, public HTTP only; not executed. No private fixture dependencies. |
 | 11 | Communication catalogs/prompts and canonical tool routing; `docs/PERMISSION_HISTORY_AND_PROTOCOL.md` | Runtime: concise asks/results and artifact references; message-log judging deferred. |
 | 12 | SQLite coordination/outbox, event journal, `runtime-event-authority.ts`, imported history retrieval | Reliability: preserve recoverable writes and disclose truncation; crash evidence deferred. |
 | 13 | `coordination-v3-steering-authority.ts`, scheduler fences, pause/resume UI | Runtime + UI: retain unfinished work, human priority/newest-sender order, noninterrupting FYI handling; state-specific behavior requires owner handoff. |
 | 14 | `packages/engines/src/auth.ts`, provider diagnostics, operational notifications | Runtime + UI: exact failures visible, bounded backoff disclosed, no silent abandonment. |
-| 15 | `agent-deletion-authority.ts`, `conversation-deletion-authority.ts`, managed workspaces | Reliability: delete owned state only; user working folders preserved; destruction intent explicit. |
+| 15 | `agent-deletion-authority.ts`, `conversation-deletion-authority.ts`, managed workspaces | Reliability increment integrated: marker-only unlink plus nonrecursive tombstone rmdir preserves unexpected/racing user content; broader removal invariance remains unverified. |
 | 16 | `branch-trigger-service.ts`, `packages/agents/src/branch-trigger-store.ts` | Reliability + Features: schedules/conditions/reasons, clock changes, occurrence identity; timing trials deferred. |
-| 17 | Scheduler/request recovery authorities, source regression tests | Reliability + Integration: integrate fixes without discarding accepted behavior; actual upgrade and 20-run evidence deferred, not implemented as a status flag. |
+| 17 | Scheduler/request recovery authorities, source regression tests | Reliability increment integrated: exact ordered 0027–0033 predecessor schema reconstruction; current runtime initialization and leased transaction preserved. Actual upgrade and 20-run evidence deferred. |
 | 18 | `notification-routing.ts`, notification journal, Inbox projection, `docs/notification-defaults.md` | UI + Features: quiet default unread state, human-selected mentions/alerts; Assistant uses same notification path. |
 | 19 | Activity/Run/Work log projections, provider diagnostics, `portable-secrets.ts` | Runtime + UI: trace real causes and redact known secrets without obscuring failures; no new competing log. |
 | 20 | Server origin boundary, operator-auth paths | Runtime: remove live operator/network token gates; preserve origin checks and human-owned grants. |
@@ -82,12 +82,23 @@ Owner handoffs must distinguish an absent behavior from deferred qualification.
 
 1. Integration added the previously absent standalone public HTTP example and
    corrected source billing/setup documentation plus remaining Inbox comment.
-2. Features, Reliability, Runtime and UI have tracked commit handoffs open. No
-   owner commit has been integrated yet; no conflict outcome is invented.
-3. Portability documentation names excluded provider sessions/exact provider
-   inputs/historical execution Chats and incomplete full-machine recreation.
-   Reliability/Features must report which required exported state still lacks
-   code. Pinned runtime/harness transfer secrets are a separate explicit exclusion.
+2. Reliability commit `b003ae28b8c3eeb3b0890971d552ffa68d138da6` integrated
+   as `1fab1e1f4` without conflicts. Features, Runtime and UI handoffs remain open.
+   Source changes cover portable Agent setup, safe tombstone cleanup and exact
+   additive predecessor matching; regression source is present but unexecuted.
+3. Concrete #8 implementation backlog (Reliability; Cliff assigns continuation):
+   structured authored communication scope/metadata; general uploaded attachment
+   DTO and bytes; working-copy and cross-Chat topology destination bindings;
+   human-reviewed transport of nonsecret capability settings; selected external
+   working-folder content. These are missing implementation, not deferred tests.
+   Workflow operational/checkpoint preservation remains Features-owned. Native
+   sessions, credentials and live scheduler ownership remain excluded/inert;
+   selected global-memory transfer already has its separate operator flow.
+   Caller follow-through: Features must use the shared export warning and replace
+   the Assistant regression's hybrid predecessor fixture with an exact prefix;
+   UI must use the shared warning. Reliability notified both owners.
+   #12 has no additional demonstrated defect from this increment; crash recovery
+   remains unverified. #16 requires the Features trigger disposition.
 4. Historical Branches feature-map still describes an earlier implementation
    plan; current owner source inventory supersedes it for backlog decisions.
    Checkpoint/refused frontier restoration and all named framework capabilities
