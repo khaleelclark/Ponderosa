@@ -1,0 +1,3 @@
+# Released comparison baseline; intentionally not installed. Transitives are not locked.
+langgraph==1.0.5
+langchain==1.0.8

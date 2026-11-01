@@ -1,6 +1,6 @@
 # Current implementation coverage and backlog
 
-Source-only inventory includes Branch8ccf446bb, Runtime publication7bc728008,
+Source-only inventory includes Branch72f46799 (parallel8ccf446bb plus retention-only evidence), Runtime publication7bc728008,
 retirement9edf00516 and memory exposure13bf72442, sole UI-owner2c7db556e,
 and lifecycle source through c1d831646. Integration owns
 `phase2-implementation-integration` at
@@ -82,6 +82,13 @@ end-to-end behavior. See branches-public-engine.md, coordination-destination-adm
 and web-feature-completion.md for ordering and limits. Completed parallel cleanup
 holds and called resource trees remain refused.
 
+Branch72f46799 prospectively retains canonical hashed retired-generation evidence
+in the owner transaction before member deletion and current-pointer replacement:
+exact resource/members, immutable generation Chat context, operation receipts and
+ordered checkpoint audit. Conflicting evidence aborts. This does not reconstruct
+old evidence or enable later-generation continuation; current codecs still refuse
+retry history until all earlier custody, Request and host cuts are validated.
+
 ## Actual missing implementation / owner requirements
 
 Lifecycle successor source adds operator package/import evidence reconciliation and
@@ -123,10 +130,11 @@ admission pins remain enforced; no operator assertion substitutes for observed d
   preserve-current operator reconciliation; backend drain text is testimony, not native
   result-query proof. Arbitrary shell/native/user-folder writers are outside the
   participating source-boundary guarantee.
-- Features: comparator version pins and matched equivalence dispositions remain missing.
-  Nine capability source dispositions and a public-client research/critique/subgraph/human
-  review example now exist in branches-framework-capabilities.md and
-  examples/branches-capabilities; neither establishes LangGraph/LangChain parity.
+- Features: released comparator baseline now pins LangGraph 1.0.5 / LangChain 1.0.8
+  with matched Python research/subgraph, independent critique and editable review source
+  in examples/branches-capabilities. All nine dispositions have official documentation
+  links in branches-framework-capabilities.md. Transitive locks, provider/model pins,
+  source compatibility and executed equivalence remain unqualified; no parity verdict.
 - Runtime/UI/Features: the Runtime auth disposition is recorded in
   runtime-publication-and-voice.md; remaining Build/native parity questions need
   concrete source dispositions before a missing-code or completion claim.
@@ -188,7 +196,10 @@ recorded gaps. Existing Python/native prerequisites are not new feature claims.
 ## Qualification deferred, separate from missing implementation
 
 No tests, types, builds, native/browser runs or runner preparation were executed.
-Deferred regression sources were integrated, not passed. Required future evidence
+Deferred regression sources were integrated, not passed. Retention still needs owner
+regression sources for generation-zero exact receipts, evidence-before-pointer reset,
+immutable-conflict rollback, deletion/old-cut retention, serial/parallel full retry
+replay and stale/omitted earlier custody/Request/native-drain refusals. Required future evidence
 includes package fresh-instance equivalence, canonical rollback/crash/lost-response,
 source-boundary/concurrency, destination authorization/lifecycle, provider parity,
 upgrade/reliability runs, all Build flows, desktop/mobile/accessibility and measured

@@ -1,11 +1,13 @@
 # Branch framework capability inventory
 
-Inventory base: 3a999571db29491060603ff587a0f11b8f9b695e. This is source navigation
-and an implementation disposition, not an equivalence verdict. Repository search
-found no pinned LangGraph or LangChain comparator versions, dependency locks or
-matched comparator applications. Those pins remain **missing**; no external
-research or dependency installation was performed. Naming nine capabilities does
-not establish framework equivalence or broader API/state semantics.
+Inventory base: 3a999571db29491060603ff587a0f11b8f9b695e. Source navigation,
+not an equivalence verdict. Released Python comparator baseline:
+[LangGraph 1.0.5](https://pypi.org/project/langgraph/1.0.5/) and
+[LangChain 1.0.8](https://pypi.org/project/langchain/1.0.8/).
+These are selected released versions, not a claim of latest releases or a resolved
+transitive lock. No packages installed or examples executed. Current official docs
+may describe newer APIs; the comparator uses the baseline StateGraph/stream API,
+not newer event-stream projections. Source compatibility remains unqualified.
 
 | Named capability | Existing implementation | Representative application / limit |
 | --- | --- | --- |
@@ -24,3 +26,28 @@ its README, alongside `examples/branches-client` and `examples/branches-engine-a
 Deploying this example performs real work only when explicitly invoked by its
 caller; writing the source did not deploy it. All execution, fresh-instance,
 crash/lost-response, upgrade and comparator qualification remains deferred.
+
+## Matched comparator definition
+
+`examples/branches-capabilities/comparator.py` mirrors the public Branch app:
+question → parallel research subgraph and independent critic → ordered review
+payload → explicit editable approve/reject → retained approved answer. Caller
+provides actual chat models and authorized evidence search. No fabricated tool
+response or backend identity equivalence. Its requirements file pins only the two
+top-level framework releases; provider packages/model versions remain caller input.
+
+| Capability | Comparator operation and official definition |
+| --- | --- |
+| Graphs | StateGraph nodes/edges and parallel fan-in: [workflows](https://docs.langchain.com/oss/python/langgraph/workflows-agents). |
+| State | TypedDict question/research/critique/answer; distinct parallel output keys: [graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). |
+| Checkpoints and rewind | InMemorySaver, get_state_history and explicit selected checkpoint config: [persistence](https://docs.langchain.com/oss/python/langgraph/persistence). Replay can repeat model/tool calls; Branch issued admission instead imports retained custody under current review. |
+| Human-in-the-loop | interrupt plus Command(resume), caller decision/edit: [interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts). |
+| Streaming | stream_mode=updates in start/resume/rewind: [stream modes](https://docs.langchain.com/oss/python/langgraph/streaming). This streams state updates; Branch example streams canonical Agent output. |
+| Tools | create_agent with caller-backed evidence_search: [tools](https://docs.langchain.com/oss/python/langchain/tools). Branch uses configured native tools, with separate permission semantics. |
+| Memory | InMemoryStore retrieves earlier approved answers across threads within this process: [memory](https://docs.langchain.com/oss/python/langgraph/add-memory). Branch example requests permitted catalog search; durable parity is unproven. |
+| Subgraphs | Compiled research graph installed as parent node: [subgraphs](https://docs.langchain.com/oss/python/langgraph/use-subgraphs). |
+| Multi-agent | Two independently supplied model-backed create_agent instances: [multi-agent](https://docs.langchain.com/oss/python/langchain/multi-agent). Branch uses canonical managed Agent identities; lifecycles differ. |
+
+In-memory comparator checkpoints/store do not survive process loss. Approved memory
+publication follows the interrupt in a separate node. Neither example establishes
+crash durability, model quality, native effect safety, or framework parity.

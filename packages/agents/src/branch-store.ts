@@ -1516,6 +1516,18 @@ export class BranchStore {
       const ids=this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",stepExecutionId).map(m=>m.agent_id);
       if(!this.resourceCanRetire(stepExecutionId,ids) || this.row("SELECT 1 FROM branch_resource_members m JOIN agents a ON a.id=m.agent_id WHERE m.step_execution_id=? AND a.deleted_at IS NULL",stepExecutionId))throw new Error("Resource retirement is no longer eligible");
       if(r.retry_draining===1){
+        // Preserve the exact drained generation before replacing its current pointers.
+        // Replay still refuses later generations until it validates this full retry history.
+        const generationKey=`resource-generation-retired:${stepExecutionId}:${r.generation}`;
+        const generationEvidence={schema:'branch-resource-generation-retired.v1',resource:r,
+          members:this.rows('SELECT * FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id',stepExecutionId),
+          context:this.row('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=? AND generation=?',stepExecutionId,r.generation)??null,
+          operations:['chat','import'].map(phase=>this.row('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,`resource-operation:${r.creation_key}:${phase}`)??null),
+          audit:this.rows('SELECT * FROM branch_checkpoints WHERE execution_id=? ORDER BY id',r.execution_id)};
+        const generationJson=stableJson(generationEvidence),generationHash=payloadHash(generationEvidence);
+        const retained=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,generationKey);
+        if(retained&&(retained.input_hash!==generationHash||retained.result_json!==generationJson))throw new Error('Retired resource generation evidence differs');
+        if(!retained)this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',r.execution_id,generationKey,generationHash,generationJson,now);
         this.run('DELETE FROM branch_resource_members WHERE step_execution_id=?',stepExecutionId);
         this.run("UPDATE branch_resources SET state='reserved',retry_draining=0,root_agent_id=NULL,chat_id=NULL,error=NULL,generation=generation+1,creation_key=? WHERE step_execution_id=?",`branch-resource:${stepExecutionId}:${r.generation+1}`,stepExecutionId);
       }else this.run("UPDATE branch_resources SET state='retired',error=NULL WHERE step_execution_id=?",stepExecutionId);
