@@ -1,8 +1,9 @@
+import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {randomUUID} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {TERMINAL_REQUEST_STATES,REQUEST_UPDATE_AUTHORIZATION,reduceCoordinationRequest,evaluateCoordinationJoin,type CoordinationRequestSnapshot,type CoordinationRequestUpdateKind,type BranchHostGraphRestoreInput,type BranchHostGraphRestoreDto,type BranchHostGraphReviewDto} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
-import {verifyBranchHostCut,type BranchHostCut} from './branch-host-cut.js';
+import {verifyBranchHostCut} from './branch-host-cut.js';
 import {reviewBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
 import type {CreateActivationV3Input} from './coordination-v3-runtime-communication-authority.js';
 import {branchKey} from './branch-definition.js';
@@ -20,7 +21,7 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
  const receipt=db.prepare('SELECT * FROM coordination_cut_restorations WHERE id=?').get(origin.restoration_id) as Row|undefined;
  const saved=receipt&&db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(receipt.checkpoint_id,receipt.source_execution_id) as Row|undefined;
  if(!receipt||!saved||saved.content_hash!==receipt.cut_hash||payloadHash(JSON.parse(saved.snapshot_json))!==receipt.cut_hash)throw Error('Historical result retained cut unavailable');
- const cut=JSON.parse(saved.snapshot_json).hostDependencies as BranchHostCut;
+ const {cut}=retainedBranchHostGraph(JSON.parse(saved.snapshot_json),receipt.source_execution_id);
  if(!verifyBranchHostCut(cut,receipt.source_execution_id)||!cut.coverage.complete)throw Error('Historical result retained cut integrity failure');
  const source=cut.updates.find(({row})=>row.id===origin.source_update_id)?.row,map=JSON.parse(receipt.receipt_json);
  if(!source||source.request_id!==origin.source_request_id||source.kind!==origin.source_kind||source.payload_hash!==origin.source_payload_hash
@@ -57,21 +58,35 @@ export class CoordinationV3CutRestorationAuthority {
   if(Buffer.byteLength(stableJson(input.payload))>256_000)throw Error('Restored delivery exceeds bounded provider context');
   return this.createActivation(input);
  }
- private cut(branchId:string,executionId:string,checkpointId:number,expectedHash:string):BranchHostCut {
+ private graph(branchId:string,executionId:string,checkpointId:number,expectedHash:string):ReturnType<typeof retainedBranchHostGraph> {
   if(!this.db.inTransaction)throw Error('Historical graph requires one owner transaction');
   if(!Number.isSafeInteger(checkpointId)||checkpointId<1||!/^[a-f0-9]{64}$/.test(expectedHash))throw Error('Invalid retained graph selection');
   const saved=this.db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(checkpointId,executionId) as Row|undefined;
   if(!saved||saved.content_hash!==expectedHash)throw Error('Retained graph unavailable');
-  const snapshot=JSON.parse(saved.snapshot_json),cut=snapshot.hostDependencies as BranchHostCut|undefined;
-  if(stableJson(snapshot)!==saved.snapshot_json||payloadHash(snapshot)!==expectedHash||!cut||!verifyBranchHostCut(cut,executionId)||!cut.coverage.complete||!cut.requests.length)throw Error('Retained graph integrity failure');
+  const snapshot=JSON.parse(saved.snapshot_json);
+  if(stableJson(snapshot)!==saved.snapshot_json||payloadHash(snapshot)!==expectedHash)throw Error('Retained graph integrity failure');
+  const graph=retainedBranchHostGraph(snapshot,executionId);
+  if(snapshot.continuation?.schema==='ponderosa.branch.script-tree-continuation.v1')for(const o of snapshot.continuation.owners){
+   const current=this.db.prepare(`SELECT e.branch_id,e.version_id,e.binding_revision_id source_binding,e.configuration_json source_configuration,
+    b.active_version_id,b.binding_revision_id,b.configuration_json,b.enabled,b.deleting,
+    EXISTS(SELECT 1 FROM branch_installation_plans p WHERE p.branch_id=b.id AND p.state IN ('applying','canceling')) applying
+    FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=?`).get(o.executionId) as Row|undefined;
+   if(!current||!current.enabled||current.deleting||current.applying||current.branch_id!==o.selected.execution[0].branch_id
+    ||current.version_id!==o.versionId||current.active_version_id!==o.versionId||current.source_binding!==o.bindingRevisionId||current.binding_revision_id!==o.bindingRevisionId)throw Error('Tree current owner pins unavailable');
+   for(const bytes of [current.source_configuration,current.configuration_json]){
+    const {secretBindings,...safe}=JSON.parse(bytes);
+    if(Object.keys(secretBindings??{}).length||stableJson(safe)!==stableJson(o.configuration))throw Error('Tree current configuration or secret pins changed');
+   }
+  }
+  if(!graph.cut.requests.length)throw Error('Retained graph is empty');
   if(!this.db.prepare('SELECT 1 FROM branch_executions WHERE id=? AND branch_id=?').get(executionId,branchId))throw Error('Graph owner unavailable');
-  return cut;
+  return graph;
  }
  review(branchId:string,executionId:string,selection:{checkpointId:number;expectedHash:string},grant:HostArtifactGrant):BranchHostGraphReviewDto {
   selection={checkpointId:selection.checkpointId,expectedHash:selection.expectedHash};
-  const cut=this.cut(branchId,executionId,selection.checkpointId,selection.expectedHash);
+  const {cut,owners}=this.graph(branchId,executionId,selection.checkpointId,selection.expectedHash);
   // Every private member is checked independently. A Join relationship is never a grant.
-  const requests=cut.requests.map(({row})=>reviewBranchHostRequest(this.db,branchId,executionId,{...selection,requestId:row.id},grant));
+  const requests=owners.flatMap(owner=>owner.cut.requests.map(({row})=>reviewBranchHostRequest(this.db,branchId,executionId,{...selection,requestId:row.id},grant,owner.executionId)));
   for(const {row:join} of cut.joins){
    const owner=this.db.prepare('SELECT project_id,conversation_id,deleted_at FROM agents WHERE id=?').get(join.owner_agent_id) as Row|undefined;
    if(!owner||owner.deleted_at||owner.project_id!==join.project_id||owner.conversation_id!==join.conversation_id||this.db.prepare('SELECT 1 FROM agent_deletion_pending WHERE agent_id=?').get(join.owner_agent_id))throw Error('Original Join owner unavailable');
@@ -110,7 +125,7 @@ export class CoordinationV3CutRestorationAuthority {
   if(review.requests.some(r=>r.current.requiredSecretRefs.length))throw Error('Secret-dependent graph prefix remapping is not admitted');
   const execution=this.db.prepare('SELECT e.state,b.enabled FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=?').get(executionId) as Row;
   if(!execution.enabled||!['completed','failed','canceled'].includes(execution.state))throw Error('Historical graph source must settle');
-  const cut=this.cut(branchId,executionId,input.checkpointId,input.expectedHash),requests=cut.requests.map(({row})=>row),updates=cut.updates.map(({row})=>row),joins=cut.joins.map(({row})=>row);
+  const {cut}=this.graph(branchId,executionId,input.checkpointId,input.expectedHash),requests=cut.requests.map(({row})=>row),updates=cut.updates.map(({row})=>row),joins=cut.joins.map(({row})=>row);
   if(requests.some(r=>r.state==='outcome_unknown'||r.superseded_by_request_id))throw Error('Unknown outcomes or recovery chains require a separate disposition');
   if(review.requests.some(r=>!TERMINAL_REQUEST_STATES.has(r.current.requestState as any)))throw Error('Original graph must settle before fresh admission');
   const participants=[...new Set([...requests.flatMap(r=>[r.requester_agent_id,r.recipient_agent_id]),...joins.map(j=>j.owner_agent_id)].filter(Boolean))];

@@ -3,7 +3,7 @@ import {restoredRequestUpdatePayload} from './coordination-v3-cut-restoration-au
 import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,childTreeLineage} from './branch-tree-continuation.js';
+import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts,readBranchLiveOutputs} from './branch-run-status.js';
@@ -688,7 +688,7 @@ export class BranchStore {
       if(!row)throw Error('Historical checkpoint not found in this execution');
       const snapshot=JSON.parse(row.snapshot_json);
       if(row.content_hash!==expectedHash||payloadHash(snapshot)!==expectedHash||stableJson(snapshot)!==row.snapshot_json)throw Error('Historical checkpoint hash integrity failure');
-      if(snapshot.continuation?.schema===TREE_SCHEMA)return this.rewindHistoricalTree(branchId,executionId,checkpointId,expectedHash,commandKey,snapshot,now);
+      if(snapshot.continuation?.schema===TREE_SCHEMA)return this.rewindHistoricalTree(branchId,executionId,checkpointId,expectedHash,commandKey,snapshot,now,graph);
       const commandHash=payloadHash({executionId,checkpointId,expectedHash}),receiptKey=`historical-rewind:${payloadHash(commandKey)}`;
       const prior=this.row('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,receiptKey);
       if(prior){
@@ -826,13 +826,23 @@ export class BranchStore {
         OR EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id IN (SELECT value FROM json_each(c.agent_ids_json)) AND run.status IN ('leased','running')))`,executionId);
   }
   /** Quiescent owner tree, including an unstarted resource reservation without transferred effects. */
-  private rewindHistoricalTree(branchId:string,executionId:string,checkpointId:number,expectedHash:string,commandKey:string,snapshot:Row,now:string):BranchExecutionDto {
+  private rewindHistoricalTree(branchId:string,executionId:string,checkpointId:number,expectedHash:string,commandKey:string,snapshot:Row,now:string,graph?:{reviewHash:string;reconcileEffects:true;grant:HostArtifactGrant}):BranchExecutionDto {
     if(!scriptTreeSnapshotSupported(this.sqlite,executionId,snapshot))throw Error('Historical tree continuation integrity unsupported');
     const c=snapshot.continuation,commandHash=payloadHash({executionId,checkpointId,expectedHash}),key=`tree-historical-rewind:${payloadHash(commandKey)}`;
     if(c.owners.some((o:Row)=>o.selected.resources.length)){
       for(const o of c.owners)for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',resource.step_execution_id);if(!row||row.execution_id!==o.executionId||['template_ref','requested_count','creation_key','generation'].some(k=>row[k]!==resource[k]))throw Error('Historical resource custody identity unavailable');}
       if(!this.resourceHistoryCustodySettled(executionId))throw Error('Historical resource custody is not retired or verified');
     }
+    for(const o of c.owners){
+      const e=o.selected.execution[0],branch=this.getBranch(e.branch_id);
+      if(!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',e.branch_id)?.deleting)throw Error('Tree Branch unavailable');
+      if(branch.chatId)this.chat(branch.chatId);
+      if(branch.versionId!==o.versionId||branch.bindingRevisionId!==o.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(o.configuration))throw Error('Tree current pins changed');
+      this.historicalAgentTargets(branch.id,JSON.parse(this.row('SELECT definition_json FROM branch_versions WHERE id=?',o.versionId)!.definition_json),JSON.parse(this.row('SELECT bindings_json FROM branch_bindings WHERE id=?',o.bindingRevisionId)!.bindings_json));
+      if(this.restricted(branch.id,CAPABILITY_IDS.scripts)||this.restricted(branch.id,CAPABILITY_IDS.branchCalls)||o.selected.resources.length&&this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate))throw Error('Tree current authority is restricted');
+    }
+    const issued=c.owners.some((o:Row)=>o.selected.attempts.some((a:Row)=>a.request_id));
+    if(issued&&!graph)throw Error('Reviewed historical tree graph authority required');
     const prior=this.row('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
     if(prior){
       if(prior.input_hash!==commandHash)throw Error('Rewind command idempotency conflict');
@@ -841,6 +851,13 @@ export class BranchStore {
       const line=JSON.parse(row.snapshot_json);
       if(line.schema!=='ponderosa.branch.tree-rewind-lineage.v1'||line.commandHash!==commandHash||line.commandKey!==commandKey||line.sourceExecutionId!==executionId||line.checkpointId!==checkpointId||line.checkpointHash!==expectedHash||line.executionId!==result.executionId)throw Error('Tree lineage integrity failure');
       if(!treeIdMapSupported(c.owners,line.idMap,executionId,result.executionId))throw Error('Tree lineage ID map integrity failure');
+      if(!treeCoordinationLineageSupported(this.sqlite,line,snapshot))throw Error('Tree canonical provenance lineage differs');
+      let canonical:import('@ponderosa/core').BranchHostGraphRestoreDto|undefined;
+      if(issued){
+        if(line.graphReviewHash!==graph!.reviewHash)throw Error('Tree graph review lineage differs');
+        canonical=this.coordination.restoreHostCoordinationCut(branchId,executionId,{checkpointId,expectedHash,commandKey:`branch-tree-rewind:${payloadHash(commandKey)}`,reviewHash:graph!.reviewHash,reconcileEffects:graph!.reconcileEffects},graph!.grant,now);
+        if(!canonical.replayed||stableJson({...canonical,replayed:false})!==stableJson(line.coordination))throw Error('Tree canonical receipt lineage differs');
+      }else if(line.coordination)throw Error('Tree has unowned canonical lineage');
       for(const o of c.owners){
         const target=line.idMap[o.executionId],origin=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",target);
         const prefix=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_restored_prefix' AND transition_key='tree-restored-prefix'",target),owner=this.row('SELECT * FROM branch_executions WHERE id=?',target),old=o.selected.execution[0];
@@ -850,10 +867,10 @@ export class BranchStore {
         if(evidence.commandKey!==commandKey||evidence.lineageId!==result.lineageId||evidence.sourceExecutionId!==o.executionId||evidence.sourceRootId!==executionId||evidence.checkpointId!==checkpointId||evidence.checkpointHash!==expectedHash)throw Error('Tree owner lineage integrity failure');
         if(['branch_id','version_id','binding_revision_id','input_text','call_depth','depth_ceiling'].some(key=>owner[key]!==old[key]))throw Error('Tree mapped owner identity failure');
         if(owner.input_hash!==(old.parent_attempt_id?payloadHash({parentAttempt:line.idMap[old.parent_attempt_id],input:old.input_text}):old.input_hash))throw Error('Tree mapped input identity failure');
-        const map=line.idMap,remapped=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,map[id]])),o.executionId,target);
+        const map=line.idMap,remapped=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,map[id]])),o.executionId,target,canonical?.requestMap);
         for(const p of o.selected.paths){const row=this.row('SELECT execution_id FROM branch_paths WHERE id=?',map[p.id]);if(row?.execution_id!==target)throw Error('Tree mapped path ownership failure');}
         for(const step of remapped.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=?',step.id);if(!row||row.execution_id!==target||row.path_id!==step.path_id||['step_id','invocation','input_text'].some(key=>row[key]!==step[key]))throw Error('Tree mapped Step ownership failure');}
-        for(const a of remapped.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',a.id);if(!row||row.step_execution_id!==a.step_execution_id||row.number!==a.number||row.input_hash!==a.input_hash)throw Error('Tree mapped attempt ownership failure');}
+        for(const a of remapped.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',a.id);if(!row||row.step_execution_id!==a.step_execution_id||row.number!==a.number||row.input_hash!==a.input_hash||row.request_id!==(a.request_id??null))throw Error('Tree mapped attempt ownership failure');}
         for(const r of remapped.sealedResults!){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=?',r.id);if(!row||row.execution_id!==target||row.path_id!==r.path_id||row.step_execution_id!==r.step_execution_id||row.terminal_attempt_id!==r.terminal_attempt_id||row.result_json!==r.result_json||row.content_hash!==r.content_hash)throw Error('Tree mapped result ownership failure');}
         for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',map[resource.step_execution_id]);if(!row||row.execution_id!==target||row.template_ref!==resource.template_ref||row.requested_count!==resource.requested_count||row.creation_key!==`branch-resource:${map[resource.step_execution_id]}`)throw Error('Tree mapped resource ownership failure');}
         if(o.executionId!==executionId){const child=this.row('SELECT * FROM branch_unit_snapshots WHERE id=? AND execution_id=?',evidence.childLineageId,target);
@@ -866,17 +883,15 @@ export class BranchStore {
     const live=this.rows(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
       SELECT a.id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id IN (SELECT id FROM owned) AND (a.state IN ('leased','running','outcome_unknown') OR a.process_identity_json IS NOT NULL AND NOT EXISTS(SELECT 1 FROM branch_checkpoints p WHERE p.execution_id=s.execution_id AND p.kind='script_process_exit' AND p.transition_key='process-exit:'||a.id||':'||a.fence))`,executionId);
     if(live.length)throw Error('Historical tree has live or uncertain effects');
-    for(const o of c.owners){
-      const e=o.selected.execution[0],branch=this.getBranch(e.branch_id);
-      if(!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',e.branch_id)?.deleting)throw Error('Tree Branch unavailable');
-      if(branch.chatId)this.chat(branch.chatId);
-      if(branch.versionId!==o.versionId||branch.bindingRevisionId!==o.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(o.configuration))throw Error('Tree current pins changed');
-      this.historicalAgentTargets(branch.id,JSON.parse(this.row('SELECT definition_json FROM branch_versions WHERE id=?',o.versionId)!.definition_json),JSON.parse(this.row('SELECT bindings_json FROM branch_bindings WHERE id=?',o.bindingRevisionId)!.bindings_json));
-      if(this.restricted(branch.id,CAPABILITY_IDS.scripts)||this.restricted(branch.id,CAPABILITY_IDS.branchCalls)||o.selected.resources.length&&this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate))throw Error('Tree current authority is restricted');
-    }
     const ids=new Map<string,string>(treeIds(c.owners).map(id=>[id,randomUUID()]));
     for(const o of c.owners)for(const item of o.selected.items)ids.set(item.id,`${ids.get(item.map_invocation_id)}:${item.item_index}`);
     const next=this.accept(branchId,`tree-rewind:${randomUUID()}`,root.selected.execution[0].input_text,now);ids.set(executionId,next.id);
+    let canonical:import('@ponderosa/core').BranchHostGraphRestoreDto|undefined;
+    if(issued){
+      if(c.owners.some((o:Row)=>!['completed','failed','canceled'].includes(this.execution(o.executionId)?.state??'')))throw Error('Original tree graph owners must settle');
+      canonical=this.coordination.restoreHostCoordinationCut(branchId,executionId,{checkpointId,expectedHash,commandKey:`branch-tree-rewind:${payloadHash(commandKey)}`,reviewHash:graph!.reviewHash,reconcileEffects:graph!.reconcileEffects},graph!.grant,now);
+      if(canonical.replayed)throw Error('Canonical graph already belongs to a separate tree restoration');
+    }
     const mapped=(id:string|null):string|null=>id===null?null:ids.get(id)??(()=>{throw Error('Incomplete tree ID map');})();
     const pending=c.owners.filter((o:Row)=>o.executionId!==executionId),ordered:Row[]=[root];
     while(pending.length){const n=pending.findIndex((o:Row)=>ordered.some(p=>p.executionId===o.selected.execution[0].parent_execution_id));if(n<0)throw Error('Tree ownership cycle');ordered.push(pending.splice(n,1)[0]);}
@@ -889,19 +904,24 @@ export class BranchStore {
         ids.set(e.id,child.id);target=child.id;
         this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,['completed','failed'].includes(e.state)?e.state:'queued',e.output_text,target);
       }
-      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target);
-      insertBranchFrontier(this.sqlite,target,restored,now);
+      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target,canonical?.requestMap);
+      insertBranchFrontier(this.sqlite,target,restored,now,canonical?new Set(Object.values(canonical.requestMap)):undefined);
       for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,target,g.prompt_text,g.purpose,now,now);
       for(const resource of o.selected.resources)this.run("INSERT INTO branch_resources(step_execution_id,execution_id,template_ref,state,requested_count,creation_key) VALUES(?,?,?,'reserved',?,?)",mapped(resource.step_execution_id),target,resource.template_ref,resource.requested_count,`branch-resource:${mapped(resource.step_execution_id)}`);
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',e.traversals,e.loop_iterations,e.depth_ceiling,target);this.selectedWrite(target);
     }
-    const line={schema:'ponderosa.branch.tree-rewind-lineage.v1',sourceExecutionId:executionId,executionId:next.id,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,idMap:Object.fromEntries(ids)};
+    const line={schema:'ponderosa.branch.tree-rewind-lineage.v1',sourceExecutionId:executionId,executionId:next.id,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,...(canonical?{coordination:canonical,graphReviewHash:graph!.reviewHash}:{}),idMap:Object.fromEntries(ids)};
     const saved=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(next.id,stableJson(line),payloadHash(line)),lineageId=Number(saved.lastInsertRowid);
     for(const o of ordered){
       const target=mapped(o.executionId)!;let childLineageId:number|undefined;
       if(o!==root){const childLine=childTreeLineage(line,lineageId,o.executionId,target);childLineageId=Number(this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(target,stableJson(childLine),payloadHash(childLine)).lastInsertRowid);}
       const evidence={sourceRootId:executionId,sourceExecutionId:o.executionId,checkpointId,checkpointHash:expectedHash,commandKey,lineageId,...(childLineageId?{childLineageId}:{})};
       this.checkpoint(target,'tree-restored-prefix','tree_restored_prefix',evidence,now);this.checkpoint(target,'tree-rewind-origin','tree_historical_rewind',evidence,now);
+      if(canonical&&!['completed','failed'].includes(o.selected.execution[0].state)&&(o===root||o.invocation.mode!=='exit')){
+        if(!this.executionBudgets.admit(target,now))throw Error('Restored tree owner admission unavailable');
+        this.checkpoint(target,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',target)!.admission_json)},now);
+        this.state(target,o.selected.paths.some((p:Row)=>p.state==='active')?'running':'waiting',now);
+      }
       if(o!==root&&!['completed','failed'].includes(o.selected.execution[0].state)&&o.invocation.mode==='exit'){
         // Rewind restores data, while an explicit resume owns the fresh child invocation.
         const invocation=this.checkpointInvocationRow(target)!,interruptionId=randomUUID();
@@ -910,6 +930,7 @@ export class BranchStore {
         this.selectedWrite(target);
       }
     }
+    if(canonical)for(const o of ordered)if(!this.hasRunnableCapacity(mapped(o.executionId)!,true))throw Error('Restored tree graph capacity unavailable');
     this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,commandHash,stableJson({executionId:next.id,lineageId}),now);
     return this.execution(next.id)!;
   }
@@ -2660,14 +2681,14 @@ export class BranchStore {
     this.movePath(pathId,edge?.to,nextInput,result,now,terminal);
   }
   /** Waiting parents do not reserve provider or Script capacity. */
-  private hasRunnableCapacity(executionId:string):boolean {
+  private hasRunnableCapacity(executionId:string,validateInventory=false):boolean {
     const e=this.execution(executionId)!;
     const active=this.rows(`${REQUEST_SOURCE_LINEAGE_CTE} SELECT DISTINCT e.id FROM branch_executions e JOIN branch_step_executions s ON s.execution_id=e.id JOIN branch_attempts a ON a.step_execution_id=s.id
       WHERE e.branch_id=? AND e.cancel_requested=0 AND (a.state IN ('leased','running') OR EXISTS(
         SELECT 1 FROM coordination_requests q JOIN request_source_lineage source ON source.request_id=q.id
         JOIN agent_activations activation ON activation.id=source.activation_id
         WHERE q.id=a.request_id AND q.state IN ('open','in_progress') AND activation.state IN ('pending','attached','retry_pending')))`,e.branchId);
-    return active.some(r=>r.id===executionId)||active.length<this.definition(e).policy.maxConcurrentExecutions;
+    return validateInventory?active.length<=this.definition(e).policy.maxConcurrentExecutions:active.some(r=>r.id===executionId)||active.length<this.definition(e).policy.maxConcurrentExecutions;
   }
   private advanceCall(execution:BranchExecutionDto,attempt:Row,step:Extract<BranchDefinition['steps'][number],{kind:'branch_call'}>,now:string):void {
     let child=this.row("SELECT * FROM branch_executions WHERE parent_attempt_id=?",attempt.id);

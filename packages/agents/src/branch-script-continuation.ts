@@ -24,8 +24,7 @@ export type ScriptOwnerContext={resourceFrontier?:boolean;terminal:boolean;termi
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
   try {
     if(hasParallelControls(definition))return parallelFrontierSupported(selected,definition,context,hostCut);
-    // Tree owners need their own sealed cuts and a shared graph receipt before admission.
-    if(context&&selected.attempts!.some(a=>a.request_id)||!issuedRequestFrontierSupported(selected,definition,hostCut))return false;
+    if(!issuedRequestFrontierSupported(selected,definition,hostCut))return false;
     const issued=selected.attempts!.filter(a=>a.request_id);
     const tables=['execution','paths','steps','attempts','forks','joins','loops','maps','items','sealedResults','bundles','gates','actions','resources'];
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
@@ -208,7 +207,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       ||stableJson(configuration)!==stableJson(JSON.parse(owner.configuration_json)))return false;
     const boundRequests=new Set<string>();
     if(selected.attempts!.some(a=>a.request_id)){
-      if(seed||context)return false;
+      if(seed)return false;
       const binding=db.prepare('SELECT bindings_json FROM branch_bindings WHERE id=?').get(e.binding_revision_id) as Row|undefined;
       const chat=db.prepare('SELECT chat_id FROM branches WHERE id=?').get(e.branch_id) as Row|undefined;
       if(!binding||!chat)return false;

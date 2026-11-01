@@ -660,7 +660,7 @@ graph pins and inconsistent frozen Join outcomes are not admitted. Explicit
 native effect.
 
 **Issued-Request Branch rewind:** supported nonsecret persistent-Agent single-path
-and Fork/Map cuts attach canonical restoration maps to fresh Branch
+and Fork/Map cuts, including supported issued child-owner trees, attach maps to fresh Branch
 Step/attempt/path identities in the historical-rewind owner transaction. The
 operator first calls `reviewHostGraph`, then supplies
 `graphReview:{reviewHash,reconcileEffects:true}` to the existing historical rewind
@@ -689,8 +689,8 @@ An independently restored graph cannot be adopted as a rewind suffix. Retained
 terminal facts are consumed as data; waiting attempts observe only the mapped
 fresh Request. No old Run, reply, lease, session or effect is relaunched.
 
-Issued-Request child-owner trees, resources, failed/cancelled/uncertain or recovery
-attempts, changed or secret pins and restored-history recapture remain refused. Released resource
+Issued-Request resource, failed/cancelled/uncertain or recovery attempts, changed
+or secret pins and restored-history recapture remain refused. Released resource
 custody, graph binding/secret remapping, Agent/child cancellation, forwarded-bundle
 pointer/hash transfer, recovery/exhausted-budget codecs and broader crash
 reconciliation remain outside this increment. This is a supported internal path,
@@ -759,11 +759,9 @@ closing invocation only in lineage. Terminal Request facts create no recipient
 Request delivery. Original grants, final-only canonical wakes, exact Communication
 proof, owner-transaction rollback and lost-response receipts are unchanged.
 
-Child-owner tree integration remains unfinished: its per-owner sealed host cuts,
-reviewed owner pins and shared Request/Join closure must be captured and validated
-before a single canonical mapping can be attached to all fresh tree owners. The
-existing tree validator still rejects issued Requests. Calling restoration once
-per child would conflict on shared participants/graphs and is not an accepted
+Child-owner tree integration is described in the following source continuation.
+It uses per-owner sealed cuts and one shared canonical receipt. Calling restoration
+once per child would conflict on shared participants/graphs and is not an accepted
 substitute. No unrelated resource, secret, recovery or cross-owner forwarded
 bundle cases were widened.
 
@@ -773,5 +771,59 @@ canonical IDs and zero fences, pending Map dispatch, receipt replay before and
 after suffix completion, exact request-bound/terminal-version/gate-response
 refusal, and rollback of canonical rows/outbox plus fresh gate notifications.
 No test, check, typecheck, build, Node/native/browser/runner preparation or
-execution was run. This is a partial source slice; child-owner trees and full
-#32 acceptance remain outstanding.
+execution was run. These source slices do not establish full #32 acceptance.
+
+
+### Issued child-owner trees (source continuation)
+
+The tree saver captures each owner's host dependency cut in the same read boundary
+as its selected frontier and audit prefix. Each cut has its own content hash and
+original owner binding pin. Serial and parallel tree replay validate local Agent
+Request bindings, task/input, update versions and request-bound/terminal events
+using the existing shared replay path. Only the precise issued-owner guard was
+removed; live Script/child cancellation, uncertain effects, secret pins and
+resources do not gain a new codec.
+
+`retainedBranchHostGraph` resolves only these server-retained owner cuts. It
+validates tree ancestry, unique owned roots and per-owner hashes/pins. Shared
+Request, update, Join, suspension, artifact and frozen outcome records must agree
+byte for byte. Their union has one fresh canonical identity map. A missing cut,
+different shared version or conflicting shared fact refuses the graph; a second
+owner does not confer access to another participant's private history.
+
+Graph review checks each Request through every original owner cut containing it,
+using that owner's current Branch bindings/configuration, Chat, participant and
+artifact grants. Single-Request evidence adoption is not extended to tree cuts.
+The root graph review and existing historical rewind input remain the caller
+interface; no web or DTO change is required.
+
+Tree rewind invokes the canonical restoration authority once inside its existing
+immediate owner transaction. That one receipt, all fresh owner acceptances,
+Step/attempt/path rows, pending review notifications, child admission and root/
+child lineage commit or roll back together. The root lineage retains canonical
+maps and the graph review hash; child lineage binds to its restoration receipt.
+Mapped terminal results use the verified retained payload reader; live results
+use ordinary canonical reduction and child completion propagation to the fresh
+parent suffix. Required fresh Communication proof remains unchanged. Current
+Branch concurrency and execution-budget admission apply to the fresh owners.
+
+Lost-response retries verify current owner pins and grants, exact canonical
+receipt/provenance, mapped Request ownership on every attempt, typed tree links
+and sealed results before returning the same root. An independently restored
+canonical graph cannot be borrowed as a tree suffix. Prefix composition also
+checks the canonical receipt before using its tree lineage. Existing fresh exit
+child holds remain in effect; this change never acknowledges an undrained Request
+or an unknown native effect.
+
+Restored-history recapture still requires its separate provenance codec and is
+refused. Cross-owner forwarded bundles, resource custody, secret/recovery/budget
+frontiers, cancellation and broader crash reconciliation remain outside this
+slice. This source implementation does not establish #32 acceptance.
+
+Deferred regression source covers serial/parallel issued trees, retained terminal
+results, two child owners sharing participants and a question/Join closure, one
+canonical receipt, fresh IDs and zero fences, exact child result propagation,
+replay before/after completion, per-owner hash/pin/audit/shared-fact tampering,
+rollback after canonical admission, and current child grant/pin refusal on replay.
+No tests, checks, typechecks, builds, Node/native/browser/runner preparation or
+execution were performed.

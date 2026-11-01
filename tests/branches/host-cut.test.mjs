@@ -11,7 +11,7 @@ function fixture(t,{secret=false,mode,maxConcurrent=8,requireCommunication=false
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Host cut',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Host cut'}),agent=store.createAgent(project.id,{title:'Worker',engine:'codex',conversationId:chat.id}),peer=store.createAgent(project.id,{title:'Peer',engine:'codex',conversationId:chat.id});
  const definition={schema:'ponderosa.branch.v1',name:'Host cut',trigger:{kind:'manual'},...(secret?{parameters:{token:{type:'secret'}}}:{}),entry:'agent',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Do the retained task',...(requireCommunication?{requireUserCommunication:true}:{})}],controls:[],edges:[],policy:{maxConcurrentExecutions:maxConcurrent,failure:{action:'stop'}}};
- const extra=transform?.(definition,{agent,peer})??{};
+ const extra=transform?.(definition,{agent,peer,branches,store,project,chat,dir})??{};
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{},...extra}});
  if(mode)branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  const source=branches.accept(branch.id,'source',input);
@@ -383,4 +383,91 @@ test('Mixed issued rewind rolls back both graphs and pending gate notifications 
  f.db.exec("CREATE TEMP TRIGGER reject_parallel_gate BEFORE INSERT ON branch_gate_notifications BEGIN SELECT RAISE(ABORT,'controlled gate insertion failure'); END");
  assert.throws(()=>f.rewind(),/controlled gate insertion failure/);assert.deepEqual(counts(),before);
  f.db.exec('DROP TRIGGER reject_parallel_gate');assert.ok(f.rewind().id);
+});
+
+
+// Deferred source only: canonical graph admission is shared across every captured tree owner.
+async function treeIssuedFixture(t,{parallel=false,shared=false,terminal=false}={}){
+ let leaf;
+ const f=fixture(t,{transform:(d,{branches,chat,agent,peer})=>{
+  const edge=(id,from,to,on='success')=>({id,from,to,on});
+  const leafDefinition={schema:'ponderosa.branch.v1',name:'Issued leaf',trigger:{kind:'manual'},entry:parallel?'fork':'work',steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Reconcile owned leaf'},...(parallel?[{id:'peer',kind:'agent',target:{kind:'persistent_agent',ref:'peer'},instructions:'Reconcile peer leaf'}]:[])],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['b','a']}]:[],edges:parallel?[edge('a','fork','work','selected'),edge('b','fork','peer','selected'),edge('a-join','work','join'),edge('b-join','peer','join')]:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}};
+  leaf=branches.deploy({chatId:chat.id,idempotencyKey:'tree-leaf',definition:leafDefinition,bindings:{agents:{worker:agent.id,peer:peer.id},directories:{}}});
+  d.entry=parallel?'fork':'call';d.steps=[{id:'call',kind:'branch_call',branchRef:'leaf'},...(parallel?[{id:'other',kind:'branch_call',branchRef:'leaf'}]:[])];
+  d.controls=parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['right','left']}]:[];
+  d.edges=parallel?[edge('left','fork','call','selected'),edge('right','fork','other','selected'),edge('call-join','call','join'),edge('other-join','other','join')]:[];
+  return {branches:{leaf:leaf.id}};
+ }}),db=f.store.sqlite;
+ const owners=id=>db.prepare('WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT e.* FROM branch_executions e JOIN tree t ON t.id=e.id ORDER BY e.id').all(id);
+ const requests=id=>db.prepare('WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT a.id,a.request_id,r.recipient_agent_id,r.state FROM tree t JOIN branch_step_executions s ON s.execution_id=t.id JOIN branch_attempts a ON a.step_execution_id=s.id JOIN coordination_requests r ON r.id=a.request_id').all(id);
+ const tick=async()=>{f.branches.advance();await f.branches.unitSaver.drain();};
+ for(let n=0;n<100&&requests(f.source.id).length<(parallel?4:1);n++)await tick();
+ assert.equal(requests(f.source.id).length,parallel?4:1);
+ let dependency;
+ if(shared){
+  const roots=requests(f.source.id).filter(r=>r.recipient_agent_id===f.agent.id).map(r=>r.request_id);
+  dependency=f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,requesterAgentId:f.agent.id,actorScope:'tree-shared-join',idempotencyKey:'shared',requests:[{recipientAgentId:f.peer.id,lifetime:{kind:'indefinite'},payload:{text:'Reconcile one shared dependency'}}],join:{mode:'all',continuationRequestIds:roots}});
+  f.coordination.updateRequest({requestId:dependency.requestIds[0],updateId:'tree-shared-question',kind:'question',actor:{kind:'agent',id:f.peer.id},payload:{text:'Which retained source?'}});
+ }
+ const complete=id=>{for(const r of requests(id))if(!['completed','failed','cancelled'].includes(r.state))f.coordination.updateRequest({requestId:r.request_id,updateId:`tree-done:${r.request_id}`,kind:'completed',actor:{kind:'agent',id:r.recipient_agent_id},payload:{text:'Reconciled leaf'}});};
+ if(terminal)complete(f.source.id);
+ const candidate=f.branches.unitSaver.freeze({written:new Set([f.source.id])})[0];assert.ok(candidate.content);
+ const saved=JSON.parse(candidate.content);assert.equal(saved.continuation?.schema,'ponderosa.branch.script-tree-continuation.v1');assert.equal(saved.restore_supported,true);
+ const checkpointId=Number(db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,candidate.content,candidate.hash).lastInsertRowid),selection={checkpointId,expectedHash:candidate.hash};
+ if(dependency)f.coordination.updateRequest({requestId:dependency.requestIds[0],updateId:'tree-original-dependency-done',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Original dependency settled'}});
+ const finish=async id=>{for(let n=0;n<120&&f.branches.execution(id).state!=='completed';n++){complete(id);await tick();}assert.equal(f.branches.execution(id).state,'completed');};
+ await finish(f.source.id);assert.ok(owners(f.source.id).every(o=>o.state==='completed'));
+ db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const grant=()=>true,review=f.branches.reviewHostGraph(f.branch.id,f.source.id,selection,grant),graph={reviewHash:review.reviewHash,reconcileEffects:true,grant};
+ const rewind=(key='tree-issued')=>f.branches.rewindHistorical(f.branch.id,f.source.id,checkpointId,candidate.hash,key,undefined,graph);
+ return {...f,db,leaf,saved,selection,graph,dependency,owners,requests,rewind,finish};
+}
+for(const parallel of [false,true])for(const terminal of [false,true])test(`issued ${parallel?'parallel':'serial'} child-owner tree restores ${terminal?'terminal':'live'} facts with one canonical receipt`,async t=>{
+ const f=await treeIssuedFixture(t,{parallel,terminal}),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,next=f.rewind();
+ const line=JSON.parse(f.db.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").get(next.id).snapshot_json);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before+1);
+ if(terminal)assert.equal(f.db.prepare("SELECT COUNT(*) n FROM agent_activations WHERE json_extract(payload_json,'$.requestId') IN (SELECT value FROM json_each(?))").get(JSON.stringify(line.coordination.requestMap)).n,0,'retained terminal tree facts create no recipient Request delivery');
+ const {treeCoordinationLineageSupported}=await import('../../packages/agents/dist/branch-tree-continuation.js');assert.equal(treeCoordinationLineageSupported(f.db,line,f.saved),true);
+ for(const o of f.saved.continuation.owners)for(const a of o.selected.attempts.filter(a=>a.request_id)){
+  const row=f.db.prepare('SELECT a.*,s.execution_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE a.id=?').get(line.idMap[a.id]);
+  assert.equal(row.execution_id,line.idMap[o.executionId]);assert.equal(row.request_id,line.coordination.requestMap[a.request_id]);assert.notEqual(row.request_id,a.request_id);assert.equal(row.fence,0);
+ }
+ assert.equal(f.rewind().id,next.id);await f.finish(next.id);assert.equal(f.rewind().id,next.id);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before+1);
+ assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
+});
+test('shared child-owner Join/question history is deduplicated into one graph with fresh continuation identities',async t=>{
+ const f=await treeIssuedFixture(t,{parallel:true,shared:true}),{retainedBranchHostGraph}=await import('../../packages/agents/dist/branch-tree-host-cut.js'),merged=retainedBranchHostGraph(f.saved,f.source.id),occurrences=merged.owners.flatMap(o=>o.cut.requests).filter(({row})=>row.id===f.dependency.requestIds[0]);
+ assert.equal(occurrences.length,2);assert.equal(merged.cut.requests.filter(({row})=>row.id===f.dependency.requestIds[0]).length,1);
+ const next=f.rewind(),line=JSON.parse(f.db.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").get(next.id).snapshot_json),map=line.coordination;
+ const requestId=map.requestMap[f.dependency.requestIds[0]],questionId=map.updateMap['tree-shared-question'];
+ f.coordination.updateRequest({requestId,updateId:'tree-fresh-answer',kind:'answer',actor:{kind:'user'},inReplyToUpdateId:questionId,payload:{text:'Inspect the retained source'}});
+ f.coordination.updateRequest({requestId,updateId:'tree-fresh-dependency-complete',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Shared dependency reconciled'}});
+ assert.ok(f.db.prepare("SELECT 1 FROM activation_sources WHERE source_kind='join' AND source_id=?").get(map.joinMap[f.dependency.joinId]));
+ await f.finish(next.id);
+});
+for(const kind of ['cut-hash','request-bound','owner-pin','shared-fact'])test(`tree issued restore rejects ${kind} changes before creating canonical ownership`,async t=>{
+ const f=await treeIssuedFixture(t,{parallel:true,shared:kind==='shared-fact'}),{payloadHash,stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js'),saved=structuredClone(f.saved),o=saved.continuation.owners.find(o=>o.hostDependencies);
+ if(kind==='cut-hash')o.hostDependenciesHash='0'.repeat(64);
+ if(kind==='request-bound')o.audit=o.audit.filter(a=>a.kind!=='request_bound');
+ if(kind==='owner-pin')o.hostDependencies.bindingPin.revisionId='another-owner';
+ if(kind==='shared-fact'){const record=o.hostDependencies.requests.find(({row})=>row.id===f.dependency.requestIds[0]);record.row.updated_at='2099-01-01T00:00:00.000Z';record.sha256=payloadHash(record.row);o.hostDependenciesHash=payloadHash(o.hostDependencies);}
+ const hash=payloadHash(saved),id=Number(f.db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,stableJson(saved),hash).lastInsertRowid),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n;
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash,'tampered-tree',undefined,f.graph),/integrity|unsupported/);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);
+});
+test('child frontier failure rolls back the single tree receipt, deliveries and every fresh owner',async t=>{
+ const f=await treeIssuedFixture(t,{parallel:true}),tables=['branch_executions','branch_attempts','branch_commands','coordination_requests','coordination_request_updates','coordination_cut_restorations','agent_activations','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
+ f.db.exec("CREATE TEMP TRIGGER fail_tree_child BEFORE INSERT ON branch_attempts WHEN NEW.request_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'controlled tree child insertion failure'); END");
+ assert.throws(()=>f.rewind(),/controlled tree child insertion failure/);assert.deepEqual(counts(),before);
+ f.db.exec('DROP TRIGGER fail_tree_child');assert.ok(f.rewind().id);
+});
+test('lost-response tree replay still checks child participant grants and current child binding pins',async t=>{
+ const f=await treeIssuedFixture(t),next=f.rewind(),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n;
+ f.db.prepare('UPDATE agents SET conversation_id=NULL WHERE id=?').run(f.agent.id);assert.throws(()=>f.rewind(),/unavailable|current grant/);
+ f.db.prepare('UPDATE agents SET conversation_id=? WHERE id=?').run(f.chat.id,f.agent.id);
+ f.db.prepare("UPDATE branches SET enabled=0 WHERE id=?").run(f.leaf.id);assert.throws(()=>f.rewind(),/unavailable/);
+ f.db.prepare("UPDATE branches SET enabled=1 WHERE id=?").run(f.leaf.id);
+ const config=f.branches.configuration(f.leaf.id);f.branches.configure(f.leaf.id,{...config,limits:{...config.limits,maxTraversals:config.limits.maxTraversals+1}},0);assert.throws(()=>f.rewind(),/pins changed|configuration/);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);assert.ok(next.id);
 });

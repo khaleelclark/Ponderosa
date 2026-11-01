@@ -22,7 +22,7 @@ export function parallelDefinitionSupported(d:BranchDefinition,calls=false):bool
 }
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
-  if(context&&s.attempts!.some(a=>a.request_id)||!issuedRequestFrontierSupported(s,d,hostCut))return false;
+  if(!issuedRequestFrontierSupported(s,d,hostCut))return false;
   const expected=['execution',...keys,'actions','resources'];
   if(!parallelDefinitionSupported(d,!!context)||stableJson(Object.keys(s).sort())!==stableJson(expected.sort())||expected.some(k=>!Array.isArray(s[k])))return false;
   const e=s.execution![0],terminal=context?.terminal===true;

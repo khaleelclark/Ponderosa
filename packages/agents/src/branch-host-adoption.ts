@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import {TERMINAL_REQUEST_STATES,type CoordinationRequestState,type BranchHostRequestSelection,type BranchHostRequestReviewDto,type BranchHostRequestAdoption,type BranchHostRequestAdoptionDto} from '@ponderosa/core';
-import {verifyBranchHostCut,type BranchHostCut} from './branch-host-cut.js';
+import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {CapabilityPolicyStore} from './capability-policy-store.js';
 import type {CoordinationV3Store} from './coordination-v3-store.js';
@@ -10,15 +10,21 @@ type Row=Record<string,any>;
 export type HostArtifactGrant=(projectId:string,artifactId:string,recipientAgentId:string)=>boolean;
 
 /** Only the authenticated operator route may call this. No bulk cut/Join disclosure. */
-export function reviewBranchHostRequest(db:Database.Database,branchId:string,executionId:string,selection:BranchHostRequestSelection,grant:HostArtifactGrant):BranchHostRequestReviewDto {
+export function reviewBranchHostRequest(db:Database.Database,branchId:string,executionId:string,selection:BranchHostRequestSelection,grant:HostArtifactGrant,retainedOwnerExecutionId?:string):BranchHostRequestReviewDto {
  if(!db.inTransaction)throw Error('Host review requires one owner transaction');
  if(!Number.isSafeInteger(selection.checkpointId)||selection.checkpointId<1||!/^[a-f0-9]{64}$/.test(selection.expectedHash)||!selection.requestId)throw Error('Invalid host cut selection');
- const owner=db.prepare(`SELECT b.*,e.configuration_json source_configuration,e.version_id source_version_id FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=? AND b.id=? AND b.deleting=0
-  AND NOT EXISTS(SELECT 1 FROM branch_installation_plans p WHERE p.branch_id=b.id AND p.state IN ('applying','canceling'))`).get(executionId,branchId) as Row|undefined;
+ const readOwner=(id:string,branch:string)=>db.prepare(`SELECT b.*,e.configuration_json source_configuration,e.version_id source_version_id FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=? AND b.id=? AND b.deleting=0
+  AND NOT EXISTS(SELECT 1 FROM branch_installation_plans p WHERE p.branch_id=b.id AND p.state IN ('applying','canceling'))`).get(id,branch) as Row|undefined;
+ const rootOwner=readOwner(executionId,branchId);
  const saved=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(selection.checkpointId,executionId) as Row|undefined;
- if(!owner||!saved)throw Error('Host cut unavailable');
- const snapshot=JSON.parse(saved.snapshot_json),cut=snapshot.hostDependencies as BranchHostCut|undefined;
- if(saved.content_hash!==selection.expectedHash||stableJson(snapshot)!==saved.snapshot_json||payloadHash(snapshot)!==selection.expectedHash||!cut||!verifyBranchHostCut(cut,executionId))throw Error('Host cut integrity failure');
+ if(!rootOwner||!saved)throw Error('Host cut unavailable');
+ const snapshot=JSON.parse(saved.snapshot_json);
+ if(saved.content_hash!==selection.expectedHash||stableJson(snapshot)!==saved.snapshot_json||payloadHash(snapshot)!==selection.expectedHash)throw Error('Host cut integrity failure');
+ if(snapshot.continuation?.schema==='ponderosa.branch.script-tree-continuation.v1'&&!retainedOwnerExecutionId)throw Error('Tree host graph requires complete graph review');
+ const graph=retainedBranchHostGraph(snapshot,executionId),scope=graph.owners.find(o=>(!retainedOwnerExecutionId||o.executionId===retainedOwnerExecutionId)&&o.cut.requests.some(({row})=>row.id===selection.requestId));
+ if(!scope)throw Error('Request lacks its retained owner scope');
+ const cut=scope.cut,owner=readOwner(scope.executionId,scope.branchId);
+ if(!owner||snapshot.continuation?.schema==='ponderosa.branch.script-tree-continuation.v1'&&!owner.enabled)throw Error('Retained host owner unavailable');
  if(!cut.coverage.complete)throw Error('Host dependency cut is incomplete');
  const original=cut.requests.find(({row})=>row.id===selection.requestId)?.row;
  if(!original)throw Error('Request is not in the retained cut');
@@ -29,7 +35,7 @@ export function reviewBranchHostRequest(db:Database.Database,branchId:string,exe
   AND EXISTS(SELECT 1 FROM projects p WHERE p.id=c.project_id)
   AND NOT EXISTS(SELECT 1 FROM project_deletion_pending p WHERE p.project_id=c.project_id)
   AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts d WHERE d.conversation_id=c.id)`).get(original.conversation_id,original.project_id) as Row|undefined;
- if(!chat||chat.branch_id!==branchId&&chat.id!==owner.chat_id)throw Error('Original Chat ownership unavailable');
+ if(!chat||chat.branch_id!==scope.branchId&&chat.id!==owner.chat_id)throw Error('Original Chat ownership unavailable');
  for(const id of [original.requester_agent_id,original.recipient_agent_id].filter(Boolean)){
   if(!db.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.conversation_id=? AND a.deleted_at IS NULL
    AND NOT EXISTS(SELECT 1 FROM agent_deletion_pending d WHERE d.agent_id=a.id)
@@ -49,7 +55,7 @@ export function reviewBranchHostRequest(db:Database.Database,branchId:string,exe
   const live=db.prepare('SELECT owner_kind,owner_id,project_id,blob_hash,byte_length FROM runtime_artifacts WHERE id=?').get(artifact.id) as Row|undefined;
   if(!live||Object.keys(live).some(key=>live[key]!==artifact[key])||!grant(original.project_id,artifact.id,original.recipient_agent_id))throw Error('Original artifact current grant unavailable');
  }
- const binding=db.prepare('SELECT id,content_hash,bindings_json FROM branch_bindings WHERE id=? AND branch_id=?').get(owner.binding_revision_id,branchId) as Row|undefined;
+ const binding=db.prepare('SELECT id,content_hash,bindings_json FROM branch_bindings WHERE id=? AND branch_id=?').get(owner.binding_revision_id,scope.branchId) as Row|undefined;
  if(!binding||payloadHash(JSON.parse(binding.bindings_json))!==binding.content_hash)throw Error('Current binding integrity failure');
  const configuration=JSON.parse(owner.configuration_json),policies=new CapabilityPolicyStore(db);
  const {secretBindings,...safeConfiguration}=configuration,recipientPolicy=policies.resolveForAgent(original.recipient_agent_id);
@@ -60,8 +66,8 @@ export function reviewBranchHostRequest(db:Database.Database,branchId:string,exe
   artifacts:artifacts.map(row=>({id:row.id,sha256:row.blob_hash,byteLength:row.byte_length})),
   current:{requestState:current.state,requestVersion:current.version,versionId:owner.active_version_id,versionChanged:owner.active_version_id!==owner.source_version_id,bindingRevisionId:binding.id,bindingSha256:binding.content_hash,configuration:safeConfiguration,recipientRestrictions:recipientPolicy.restrictedCapabilityIds,bindingsChanged:binding.id!==cut.bindingPin.revisionId||binding.content_hash!==cut.bindingPin.sha256,configurationChanged:owner.configuration_json!==owner.source_configuration,requiredSecretRefs}};
  // Secret handles stay server-side. Their revision/hash and current policy bind the review.
- const reviewHash=payloadHash({review,configurationHash:payloadHash(configuration),configurationRevision:owner.configuration_revision,versionId:owner.active_version_id,enabled:owner.enabled,
-  branchPolicy:policies.resolveForBranch(branchId),recipientPolicy});
+ const reviewHash=payloadHash({review,retainedOwner:{executionId:scope.executionId,branchId:scope.branchId,cutHash:payloadHash(cut)},configurationHash:payloadHash(configuration),configurationRevision:owner.configuration_revision,versionId:owner.active_version_id,enabled:owner.enabled,
+  branchPolicy:policies.resolveForBranch(scope.branchId),recipientPolicy});
  return {...review,reviewHash};
 }
 
