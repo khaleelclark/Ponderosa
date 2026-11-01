@@ -6,11 +6,11 @@ import {join} from 'node:path';
 import {AgentStore,CoordinationV3Store,BranchStore} from '../../packages/agents/dist/index.js';
 import {readBranchRunCounts,readBranchWorkingStepCount} from '../../packages/agents/dist/branch-run-status.js';
 
-function fixture(t,{script=false,parallel=false,action=false}={}){
+function fixture(t,{script=false,parallel=false,action=false,freshArm=false}={}){
  const root=mkdtempSync(join(tmpdir(),'branch-run-counts-')),store=new AgentStore(root),coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
  const project=store.createProject({label:'Run counts',hostPath:root,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Workflow'}),agent=store.createAgent(project.id,{title:'Worker',engine:'codex',conversationId:chat.id});
  const work=script?{id:'work',kind:'script',runtime:'node',source:'console.log("controlled")',cwdRef:'root',timeoutMs:1000}:action?{id:'work',kind:'action',action:'notify',configRefs:[]}:{id:'work',kind:'agent',target:{kind:'persistent_organization',ref:'worker'},instructions:'Report the canonical result'};
- const definition={schema:'ponderosa.branch.v1',name:'Counts',trigger:{kind:'manual'},entry:parallel?'fork':'work',steps:[work,...(parallel?[{id:'approval',kind:'human_gate',prompt:'Waiting for a person',editable:false}]:[])],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['work-path','approval-path']}]:[],edges:parallel?[{id:'work-path',from:'fork',to:'work',on:'selected'},{id:'approval-path',from:'fork',to:'approval',on:'selected'},{id:'work-done',from:'work',to:'join',on:'success'},{id:'approval-done',from:'approval',to:'join',on:'approved'}]:[],policy:{maxConcurrentExecutions:100,maxPathInstances:1000,maxStepInvocations:1000,failure:{action:'stop'}}};
+ const definition={schema:'ponderosa.branch.v1',name:'Counts',trigger:{kind:'manual'},entry:parallel?'fork':'work',steps:[work,...(freshArm?[{...work,id:'fresh'}]:[]),...(parallel?[{id:'approval',kind:'human_gate',prompt:'Waiting for a person',editable:false}]:[])],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['work-path',...(freshArm?['fresh-path']:[]),'approval-path']}]:[],edges:parallel?[{id:'work-path',from:'fork',to:'work',on:'selected'},...(freshArm?[{id:'fresh-path',from:'fork',to:'fresh',on:'selected'},{id:'fresh-done',from:'fresh',to:'join',on:'success'}]:[]),{id:'approval-path',from:'fork',to:'approval',on:'selected'},{id:'work-done',from:'work',to:'join',on:'success'},{id:'approval-done',from:'approval',to:'join',on:'approved'}]:[],policy:{maxConcurrentExecutions:100,maxPathInstances:1000,maxStepInvocations:1000,failure:{action:'stop'}}};
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'definition',definition,bindings:{agents:{worker:agent.id},directories:{root}}}),execution=branches.accept(branch.id,'first','input');
  let passed=false;t.after(()=>{store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic('Retained count fixture: '+root)});
  return {store,coordination,branches,project,chat,agent,branch,execution,counts:()=>readBranchRunCounts(store.sqlite,[branch.id]).get(branch.id),working:()=>readBranchWorkingStepCount(store.sqlite,execution.id),pass(){passed=true}};
@@ -50,9 +50,16 @@ test('an unrelated started Run on the same Agent does not make the workflow Runn
 });
 
 test('a parallel approval cannot hide a current working Script; queued leases and expired authority remain Pending',t=>{
- const f=fixture(t,{script:true,parallel:true});f.branches.advance();assert.ok(f.branches.detail(f.execution.id).gates.some(gate=>gate.state==='waiting'));
- const lease=f.branches.claimScript('controlled-no-process');assert.ok(lease);assert.deepEqual(f.counts(),expected(0,1,0));
- f.branches.authorizeScript(lease,{pid:123,pgid:123,birthMarker:'inert-fixture'});assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);
+ const f=fixture(t,{script:true,parallel:true,freshArm:true});
+ // Advance one committed unit at a time so the sibling starts before the gate interrupts fresh arms.
+ let lease;for(let n=0;n<8&&!lease;n++){f.branches.unitTransaction(()=>f.branches.advance())();lease=f.branches.claimScript('controlled-no-process');}
+ assert.ok(lease);assert.deepEqual(f.counts(),expected(0,1,0));
+ assert.equal(f.branches.detail(f.execution.id).gates.some(gate=>gate.state==='waiting'),false);
+ f.branches.authorizeScript(lease,{pid:123,pgid:123,birthMarker:'inert-fixture'});
+ f.branches.advance();assert.ok(f.branches.detail(f.execution.id).gates.some(gate=>gate.state==='waiting'));
+ assert.ok(f.branches.detail(f.execution.id).steps.some(step=>step.stepId==='fresh'&&step.state==='prepared'),'Fresh sibling is prepared, not absent');
+ assert.equal(f.branches.claimScript('fresh-arm'),undefined,'An open gate refuses new Script arms');
+ assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);
  const expired=new Date(Date.now()+60000).toISOString();assert.deepEqual(readBranchRunCounts(f.store.sqlite,[f.branch.id],expired).get(f.branch.id),expected(0,1,0));
  f.branches.scriptCleanupFailed(lease.attemptId,'Controlled uncertain outcome');assert.deepEqual(f.counts(),expected(0,1,0));f.pass();
 });
