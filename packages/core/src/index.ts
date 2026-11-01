@@ -1,4 +1,5 @@
 // @ponderosa/core — shared contracts and browser-safe runtime helpers.
+export * from './lifecycle-reconciliation.js';
 // Node-only config remains a separate subpath so this barrel does not
 // pull Node built-ins into the browser bundle.
 

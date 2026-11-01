@@ -184,6 +184,7 @@ export { ContextRecoveryConflictError } from "./coordination-v3-context-recovery
 
 export { beginSourceCapture, assertSourceCapture, commitSourceCapture, releaseSourceCapture, beginSourceMutation, withSourceMutation, touchSourceMutation, SourceCaptureChangedError } from "./source-capture-boundary.js";
 export type { SourceCaptureToken } from "./source-capture-boundary.js";
+export {sourceMutationState,reconcileSourceMutation} from './source-capture-boundary.js';
 
 export {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
 

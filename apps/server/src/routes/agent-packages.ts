@@ -1,4 +1,6 @@
 import {destinationAdmissionHeld} from '@ponderosa/agents';
+import {checkpointCustodyLifecycle} from '../checkpoint-custody-lifecycle.js';
+import {custodyLifecycleProof} from '../custody-lifecycle-proof.js';
 import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
 import {assertCheckpointMembership} from '../checkpoint-package-membership.js';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
@@ -15,7 +17,7 @@ import {localMemoryFor} from '../local-memory.js';
 import {validateMemorySnapshot} from '../portable-memory-snapshot.js';
 import {executionArchive,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
+import syncFs,{ createReadStream, promises as fs } from "@ponderosa/native-host/fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
   normalizeAgentRole, FULL_PACKAGE_EXPORT_WARNING, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
@@ -165,6 +167,16 @@ export function registerAgentPackageRoutes(
   context: AgentPackageRoutesContext,
 ): {packageEngine:BranchPackageEngine} {
   const checkpointCustody=checkpointPackageCustody(context.dataDir);
+  const lifecycle=checkpointCustodyLifecycle(path.join(context.dataDir,'checkpoint-package-custody'),(source,id)=>custodyLifecycleProof(context.store.sqlite,source,id));
+  // Inherits the operator origin/capability boundary; reconciliation is never an Agent tool.
+  app.get('/api/lifecycle/checkpoint-custody',()=>lifecycle.list());
+  app.get<{Params:{id:string}}>('/api/lifecycle/checkpoint-custody/:id',(request,reply)=>{
+    try{return context.store.sqlite.transaction(()=>lifecycle.review(request.params.id))();}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:{id:string};Body:import('@ponderosa/core').CheckpointCustodyReconcileInput}>('/api/lifecycle/checkpoint-custody/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{const body=validatedObject(request.body,'Custody reconciliation');exactObjectFields(body,['commandKey','reviewSha256','preserveEvidence'],'Custody reconciliation');return context.store.sqlite.transaction(()=>lifecycle.reconcile(request.params.id,body as unknown as import('@ponderosa/core').CheckpointCustodyReconcileInput)).immediate();}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
   const {
     store,
     coordination: coordinationV3,
@@ -436,6 +448,51 @@ export function registerAgentPackageRoutes(
       return undefined;
     }
   };
+  const importLifecyclePath=(id:string)=>{if(!operationIdPattern.test(id))throw Error('Invalid import identity');return path.join(importOperationDirectory,`${id}.lifecycle.json`);};
+  const writeLifecycle=(file:string,value:unknown)=>{
+    const temporary=`${file}.${randomUUID()}.tmp`,fd=syncFs.openSync(temporary,'wx',0o600);
+    try{syncFs.writeFileSync(fd,stableJson(value));syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}syncFs.renameSync(temporary,file);
+    if(process.platform!=='win32'){const fd=syncFs.openSync(path.dirname(file),'r');try{syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}}
+  };
+  const importLifecycleReview=async(id:string)=>{
+    await operationHydration;const operation=await readOperation(id);if(!operation)throw Error('Import operation unavailable; corrupt evidence remains quarantined');
+    const creation=store.findAgentCreationOperation({projectId:operation.projectId,actorScope:'user:local-operator',kind:'import',idempotencyKey:operation.requestId});
+    const references=creation?custodyLifecycleProof(store.sqlite,undefined,creation.id).references:[];
+    const blockers=[...(operation.status==='completed'||operation.result?['Committed import must retain its canonical owner receipt']:[]),...references.map(ref=>`Canonical reference: ${ref}`),...(creation&&(creation.status!=='preparing'||creation.agentIds.length||creation.artifactIds.length||creation.result)?['Import has actual/reserved effects; canonical owner reconciliation required']:[])];
+    const reviewSha256=createHash('sha256').update(stableJson({operation,creation,references})).digest('hex');
+    return {operation,creation,dto:{operationId:id,...(creation?{creationOperationId:creation.id}:{}),canRetireMutationFree:!blockers.length,blockers,reviewSha256} as import('@ponderosa/core').AgentImportLifecycleReview};
+  };
+  app.get<{Params:{id:string}}>('/api/lifecycle/agent-imports/:id',async(request,reply)=>{
+    try{return (await importLifecycleReview(request.params.id)).dto;}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get('/api/lifecycle/agent-imports/orphan-evidence',async()=>{
+    await operationHydration;const directory=path.join(importOperationDirectory,'retained-orphans');
+    const names=await fs.readdir(directory).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error;});
+    return Promise.all(names.sort().slice(0,1000).map(async name=>{const stat=await fs.lstat(path.join(directory,name));return {name,byteLength:stat.size,regular:stat.isFile()&&!stat.isSymbolicLink(),state:'preserved_unresolved' as const};}));
+  });
+  app.post<{Params:{id:string};Body:import('@ponderosa/core').AgentImportLifecycleReconcileInput}>('/api/lifecycle/agent-imports/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
+    try{
+      const input=validatedObject(request.body,'Import lifecycle reconciliation');exactObjectFields(input,['commandKey','reviewSha256','action','note'],'Import lifecycle reconciliation');
+      if(typeof input.commandKey!=='string'||!input.commandKey||input.commandKey.length>256||typeof input.note!=='string'||input.note.length<8||input.note.length>4096||!['preserve_unresolved','retire_mutation_free'].includes(String(input.action)))throw Error('Exact operator reconciliation command and note required');
+      const file=importLifecyclePath(request.params.id);
+      if(syncFs.existsSync(file)){const saved=JSON.parse(syncFs.readFileSync(file,'utf8'));if(stableJson(saved.input)!==stableJson(input))throw Error('Import lifecycle command conflict');if(saved.receipt.state==='retired'){const operation=await readOperation(request.params.id);if(operation?.status==='pending')await writeOperation({...operation,status:'failed',phase:'failed',error:'Operator retired mutation-free import; original upload evidence retained',updatedAt:new Date().toISOString()});}return saved.receipt as import('@ponderosa/core').AgentImportLifecycleReceipt;}
+      const review=await importLifecycleReview(request.params.id);
+      if(review.dto.reviewSha256!==input.reviewSha256)throw Error('Import custody changed; review again');
+      if(review.operation.status==='completed'||review.operation.result)throw Error('Committed import ownership cannot be replaced by an unresolved hold');
+      if(input.action==='retire_mutation_free'&&!review.dto.canRetireMutationFree)throw Error('Only proved mutation-free unreferenced imports may retire');
+      const receipt:import('@ponderosa/core').AgentImportLifecycleReceipt={version:1,operationId:request.params.id,commandKey:input.commandKey,reviewSha256:review.dto.reviewSha256,state:input.action==='retire_mutation_free'?'retired':'preserved_unresolved',operatorId:'local-operator'};
+      store.sqlite.transaction(()=>{
+        const actual=review.creation?store.getAgentCreationOperation(review.creation.id):undefined;
+        if(stableJson(actual)!==stableJson(review.creation))throw Error('Import effects changed; review again');
+        if(input.action==='retire_mutation_free'&&actual&&custodyLifecycleProof(store.sqlite,undefined,actual.id).references.length)throw Error('Import acquired a canonical reference; owner retirement required');
+        if(input.action==='retire_mutation_free'&&actual)store.updateAgentCreationOperation(actual.id,{status:'rolled_back',lastError:'Operator retired proved mutation-free import'});
+        // This durable hold is checked before every background import attempt and survives owner deletion.
+        writeLifecycle(file,{input,receipt,operation:review.operation,creation:review.creation});
+      }).immediate();
+      if(receipt.state==='retired')await writeOperation({...review.operation,status:'failed',phase:'failed',error:'Operator retired mutation-free import; original upload evidence retained',updatedAt:new Date().toISOString()});
+      return receipt;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  }));
   const operationHydration = fs.mkdir(importOperationDirectory, { recursive: true })
     .then(async () => {
       const names = await fs.readdir(importOperationDirectory);
@@ -471,9 +528,13 @@ export function registerAgentPackageRoutes(
           (copyMatch && liveCopy && liveCopy.status !== "completed") ||
           (!payloadMatch && !copyMatch)
         )) continue;
-        await fs.unlink(path.join(importOperationDirectory, name))
-          .then(() => { cleaned = true; })
-          .catch(() => undefined);
+        // Abandoned uploads/copy payloads can be the last private originals. Preserve them.
+        const orphanStat=await fs.lstat(path.join(importOperationDirectory,name)).catch(()=>undefined);
+        if(!orphanStat?.isFile()||orphanStat.isSymbolicLink()||orphanStat.nlink!==1)continue;
+        const evidence=path.join(importOperationDirectory,'retained-orphans');
+        await fs.mkdir(evidence,{recursive:true,mode:0o700});
+        await fs.rename(path.join(importOperationDirectory,name),path.join(evidence,`${randomUUID()}-${name}`)).then(()=>{cleaned=true;}).catch(()=>undefined);
+        if(process.platform!=='win32'){const fd=await fs.open(evidence,'r');try{await fd.sync();}finally{await fd.close();}}
       }
       if (cleaned && process.platform !== "win32") {
         const directory = await fs.open(importOperationDirectory, "r");
@@ -492,6 +553,11 @@ export function registerAgentPackageRoutes(
         stagedImportBytes += stat.size;
         stagedReservations.set(reservationId, stat.size);
         if (name.endsWith(".payload")) operationReservations.set(id, reservationId);
+      }
+      const orphanDirectory=path.join(importOperationDirectory,'retained-orphans');
+      for(const name of await fs.readdir(orphanDirectory).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error;})){
+        const stat=await fs.lstat(path.join(orphanDirectory,name));if(!stat.isFile()||stat.isSymbolicLink())continue;
+        stagedImportBytes+=stat.size;stagedReservations.set(`orphan:${name}`,stat.size);
       }
     });
   const stagedImportParser = (jsonEnvelope = false): FastifyContentTypeParser => (request, payload, done) => {
@@ -1123,6 +1189,8 @@ export function registerAgentPackageRoutes(
       }
       const durableOperation = store.getAgentCreationOperation(creationOperationId);
       if (!durableOperation) throw new Error("Agent import creation operation is unavailable");
+      const backgroundId=operationByRequest.get(requestOperationKey(projectId,durableOperation.idempotencyKey));
+      if(backgroundId&&syncFs.existsSync(importLifecyclePath(backgroundId)))return reply.code(409).send({error:'Import is held by an explicit lifecycle reconciliation decision',operationId:backgroundId});
       if (durableOperation.projectId !== projectId || durableOperation.conversationId !== body.conversationId) {
         return reply.code(409).send({error:"Agent import destination does not match its durable owner"});
       }
@@ -2000,6 +2068,7 @@ export function registerAgentPackageRoutes(
   const runBackgroundImport = async (operationId: string): Promise<void> =>
     withAgentImportAdmission(async () => {
     await operationHydration;
+    if(syncFs.existsSync(importLifecyclePath(operationId)))return;
     let operation = await readOperation(operationId);
     if (!operation || operation.status !== "pending") return;
     const update = async (patch: Partial<AgentImportOperationDto>) => {

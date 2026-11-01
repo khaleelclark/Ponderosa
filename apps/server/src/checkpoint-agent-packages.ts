@@ -35,6 +35,7 @@ export function checkpointPackageCustody(dataDir:string){
     await syncDirectory();
   };
   const publishReceipt=(id:string,value:CheckpointPackageReceipt)=>{
+    if(syncFs.existsSync(path.join(directory,`${id}.reconciled.json`)))throw Error('Checkpoint capture identity was reconciled and cannot be republished');
     const temporary=path.join(directory,`${id}.${randomUUID()}.tmp`),fd=syncFs.openSync(temporary,'wx',0o600);
     try{syncFs.writeFileSync(fd,JSON.stringify(value));syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}
     syncFs.renameSync(temporary,path.join(directory,`${id}.json`));
@@ -52,6 +53,7 @@ export function checkpointPackageCustody(dataDir:string){
   };
   const verifiedRead=async(receipt:CheckpointPackageReceipt)=>{
     const id=key(receipt),stored=await receiptAt(id);
+    if(syncFs.existsSync(path.join(directory,`${id}.reconciled.json`)))throw Error('Checkpoint custody was reconciled');
     try{await fs.access(path.join(directory,`${id}.released.json`));throw new Error('Checkpoint custody has been released');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     if(!stored||stored.version!==1||receipt.version!==1||stored.custodyId!==id||receipt.custodyId!==id||!sameSource(stored,receipt)||stored.boundaryId!==receipt.boundaryId||stored.sha256!==receipt.sha256||stored.byteLength!==receipt.byteLength)throw new Error('Checkpoint custody receipt does not match retained capture');
     const pathname=path.join(directory,`${id}.payload`),stat=await fs.lstat(pathname);
@@ -60,13 +62,15 @@ export function checkpointPackageCustody(dataDir:string){
     const handle=await fs.open(pathname,'r');const hash=createHash('sha256');
     try{for await(const bytes of handle.createReadStream({autoClose:false}))hash.update(bytes);}finally{await handle.close();}
     if(hash.digest('hex')!==receipt.sha256)throw new Error('Checkpoint custody digest mismatch');
-    return validateMembership(validatePortableAgentPackage((await parsePortablePackageFile(pathname,{packageOnly:true})).portable).package,receipt);
+    const portable=validateMembership(validatePortableAgentPackage((await parsePortablePackageFile(pathname,{packageOnly:true})).portable).package,receipt);
+    if(syncFs.existsSync(path.join(directory,`${id}.reconciled.json`))||syncFs.existsSync(path.join(directory,`${id}.released.json`)))throw Error('Checkpoint custody retired during read');
+    return portable;
   };
   // Final admission cannot await between byte verification and owner composition.
   const verifyNow=(receipt:CheckpointPackageReceipt):string=>{
     const id=key(receipt),name=path.join(directory,`${id}.payload`);
     const stored=JSON.parse(syncFs.readFileSync(path.join(directory,`${id}.json`),'utf8')) as CheckpointPackageReceipt;
-    if(!sameReceipt(stored,receipt)||receipt.custodyId!==id||syncFs.existsSync(path.join(directory,`${id}.released.json`)))throw new Error('Current checkpoint custody unavailable');
+    if(!sameReceipt(stored,receipt)||receipt.custodyId!==id||syncFs.existsSync(path.join(directory,`${id}.released.json`))||syncFs.existsSync(path.join(directory,`${id}.reconciled.json`)))throw new Error('Current checkpoint custody unavailable');
     const stat=syncFs.lstatSync(name);
     if(!stat.isFile()||stat.isSymbolicLink()||stat.size!==receipt.byteLength||stat.size>AGENT_PACKAGE_MAX_BYTES)throw new Error('Current checkpoint custody bytes differ');
     const fd=syncFs.openSync(name,'r'),hash=createHash('sha256'),buffer=Buffer.alloc(64*1024);
@@ -77,13 +81,14 @@ export function checkpointPackageCustody(dataDir:string){
       const after=syncFs.fstatSync(fd);
       if(length!==receipt.byteLength||hash.digest('hex')!==receipt.sha256||after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs)throw new Error('Checkpoint custody digest changed');
     }finally{syncFs.closeSync(fd);}
-    if(syncFs.existsSync(path.join(directory,`${id}.released.json`))||!sameReceipt(JSON.parse(syncFs.readFileSync(path.join(directory,`${id}.json`),'utf8')),receipt))throw new Error('Checkpoint custody released during verification');
+    if(syncFs.existsSync(path.join(directory,`${id}.released.json`))||syncFs.existsSync(path.join(directory,`${id}.reconciled.json`))||!sameReceipt(JSON.parse(syncFs.readFileSync(path.join(directory,`${id}.json`),'utf8')),receipt))throw new Error('Checkpoint custody released during verification');
     return receipt.sha256;
   };
   return {
     verifyNow,
     inspect:(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>=>serial(async()=>{
       const id=key(source);
+      if(syncFs.existsSync(path.join(directory,`${id}.reconciled.json`)))return {state:'failed',source,boundaryId:'reconciled',reason:'Lifecycle reconciled; original capture identity cannot be reused'};
       const readJson=async(name:string)=>{try{return JSON.parse(await fs.readFile(path.join(directory,name),'utf8'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}};
       const released=await readJson(`${id}.released.json`) as CheckpointPackageReceipt|undefined;
       if(released){if(!sameSource(released,source))throw new Error('Checkpoint capture intent conflict');return {state:'released',receipt:released};}
@@ -96,6 +101,7 @@ export function checkpointPackageCustody(dataDir:string){
     /** Caller must hold the common source boundary until this promise settles. */
     capture:(source:CheckpointPackageSource,boundaryId:string,capture:()=>Promise<AgentPortablePackageDto>,commit:(publish:()=>void,receipt:CheckpointPackageReceipt)=>void=publish=>publish())=>serial(async()=>{
       const id=key(source);if(!boundaryId)throw new Error('Checkpoint source boundary required');
+      if(syncFs.existsSync(path.join(directory,`${id}.reconciled.json`)))throw Error('Checkpoint capture identity was reconciled');
       await fs.mkdir(directory,{recursive:true,mode:0o700});
       const existing=await receiptAt(id);
       if(existing){if(!sameSource(existing,source))throw new Error('Checkpoint identity already has different source membership');await verifiedRead(existing);return existing;}

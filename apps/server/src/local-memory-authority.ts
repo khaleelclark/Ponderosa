@@ -1,7 +1,7 @@
 import {validateGlobalMemory,globalMemoryHash} from './portable-global-memory.js';
 import {withSourceMutation} from '@ponderosa/agents';
 import {memorySourceMutations} from './memory-source-mutations.js';
-import type {PortableGlobalMemorySnapshotDto} from '@ponderosa/core';
+import type {PortableGlobalMemorySnapshotDto,MemoryMutationEffect,MemoryMutationReconcileInput} from '@ponderosa/core';
 import {withoutPortableSecrets} from './portable-secrets.js';
 import {createHash} from 'node:crypto';
 import {MEMORY_SNAPSHOT_MAX_BYTES,validateMemorySnapshot,type PortableMemorySnapshot,type PortableMemoryRow} from './portable-memory-snapshot.js';
@@ -15,18 +15,35 @@ const context=new AsyncLocalStorage<Frame>();const key=(scope:string,id:string)=
 const denied=()=>new Error('Memory source unavailable or unauthorized');
 const noGeneration={name:'local-memory-precomputed',generate:async():Promise<number[][]>=>{throw Error('Explicit embeddings required');}};
 const mutationBoundaries=new WeakMap<ChromaStorage,ReturnType<typeof memorySourceMutations>>();
-const mutate=<T>(raw:ChromaStorage,work:()=>Promise<T>)=>mutationBoundaries.get(raw)?.run(work)??withSourceMutation(work);
-function trackedCollection<T extends object>(raw:ChromaStorage,collection:T):T{
- return new Proxy(collection,{get(target,key){const value=Reflect.get(target,key);if(typeof value!=='function')return value;return (...args:unknown[])=>['upsert','add','update','delete','modify'].includes(String(key))?mutate(raw,()=>Reflect.apply(value,target,args)):Reflect.apply(value,target,args);}});
+const mutate=<T>(raw:ChromaStorage,work:()=>Promise<T>,effect?:MemoryMutationEffect)=>mutationBoundaries.get(raw)?.run(work,effect)??withSourceMutation(work);
+function trackedCollection<T extends object>(raw:ChromaStorage,collection:T,scope:string,log:boolean):T{
+ return new Proxy(collection,{get(target,key){const value=Reflect.get(target,key);if(typeof value!=='function')return value;return (...args:unknown[])=>['upsert','add','update','delete','modify'].includes(String(key))?mutate(raw,()=>Reflect.apply(value,target,args),{scope,log,operation:String(key) as MemoryMutationEffect['operation']}):Reflect.apply(value,target,args);}});
 }
 export async function checkedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>,create=false):Promise<Awaited<ReturnType<ChromaStorage["client"]["getCollection"]>>>{
- await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(!create||!/not.?found|does not exist/i.test(String(e)))throw e;await guard();c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384}}));}await guard();
- if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Incompatible memory collection binding');return trackedCollection(raw,c);
+ await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(!create||!/not.?found|does not exist/i.test(String(e)))throw e;await guard();c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384}}),{scope,log,operation:'create_collection'});}await guard();
+ if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Incompatible memory collection binding');return trackedCollection(raw,c,scope,log);
 }
 /** A per-call storage view, not persistence, a journal, a transaction or a recovery coordinator. */
 export class AuthorityStorage implements MemoryStorage{
  constructor(readonly raw:ChromaStorage,readonly principal:string,readonly inference:Inference,mutationDirectory?:string){if(mutationDirectory)mutationBoundaries.set(raw,memorySourceMutations(mutationDirectory));}
  assertSourceSettled(){const boundary=mutationBoundaries.get(this.raw);if(!boundary)throw Error('Checkpoint memory source boundary unavailable');boundary.assertSettled();}
+ private mutationBoundary(){const boundary=mutationBoundaries.get(this.raw);if(!boundary)throw Error('Memory reconciliation unavailable');return boundary;}
+ listMutationHolds(){return this.mutationBoundary().list();}
+ private async observeMutation(effect:MemoryMutationEffect,guard:()=>Promise<void>){
+  if(!/^(global|chat:.+)$/.test(effect.scope)||effect.scope.length>512||typeof effect.log!=='boolean')throw Error('Memory effect scope invalid');
+  await guard();let collection;
+  try{collection=await checkedCollection(this.raw,effect.scope,effect.log,guard);}catch(error){if(error instanceof Error&&(error.name==='ChromaNotFoundError'||/not.?found|does not exist/i.test(error.message)))return {rows:{scope:effect.scope,log:effect.log,absent:true},rowCount:0};throw error;}
+  const rows:Array<{id:string;document:unknown;metadata:unknown;embedding:unknown}>=[];let bytes=0;
+  for(let offset=0;;offset+=100){
+   await guard();const page=await collection.get({offset,limit:100,include:['documents','metadatas','embeddings'] as any});await guard();
+   for(let index=0;index<page.ids.length;index++){const row={id:page.ids[index]!,document:page.documents[index],metadata:page.metadatas[index],embedding:Array.from(page.embeddings?.[index]??[])};bytes+=Buffer.byteLength(JSON.stringify(row));if(bytes>MEMORY_SNAPSHOT_MAX_BYTES||rows.length>=10000)throw Error('Memory reconciliation inventory bound exceeded');rows.push(row);}
+   if(page.ids.length<100)break;
+  }
+  rows.sort((a,b)=>a.id.localeCompare(b.id));if(new Set(rows.map(row=>row.id)).size!==rows.length)throw Error('Memory reconciliation inventory changed');
+  return {rows:{scope:effect.scope,log:effect.log,rows},rowCount:rows.length};
+ }
+ reviewMutationHold(id:string,guard:()=>Promise<void>){return this.raw.exclusive(()=>this.mutationBoundary().review(id,effect=>this.observeMutation(effect,guard)));}
+ reconcileMutationHold(id:string,input:MemoryMutationReconcileInput,guard:()=>Promise<void>){return this.raw.exclusive(()=>this.mutationBoundary().reconcile(id,input,effect=>this.observeMutation(effect,guard)));}
  packageVisible?:(operationId:string)=>boolean;
  onRead?:(authority:MemoryAuthority,row:Chunk)=>void;
  onMutation?:(scope:string,id:string)=>void;
@@ -228,7 +245,7 @@ export class AuthorityStorage implements MemoryStorage{
    }
    for(const {collection,log,ids}of selected){
     await guard();
-    if(!agentId){await mutate(this.raw,()=>this.raw.client.deleteCollection({name:collection.name}));}
+    if(!agentId){await mutate(this.raw,()=>this.raw.client.deleteCollection({name:collection.name}),{scope,log,operation:'delete_collection'});}
     else for(let i=0;i<ids.length;i+=100){await guard();await collection.delete({ids:ids.slice(i,i+100)});}
     if(!log)for(const id of ids)this.onMutation?.(scope,id);
     await guard();

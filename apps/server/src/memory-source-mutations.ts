@@ -1,7 +1,8 @@
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import fs from '@ponderosa/native-host/fs';
-import {beginSourceMutation} from '@ponderosa/agents';
+import {beginSourceMutation,sourceMutationState,reconcileSourceMutation,stableJson} from '@ponderosa/agents';
+import type {MemoryMutationEffect,MemoryMutationHoldDto,MemoryMutationReviewDto,MemoryMutationReconcileInput,MemoryMutationReconcileReceipt} from '@ponderosa/core';
 
 /** A failed/unknown remote write stays ineligible across restart until explicit reconciliation. */
 export function memorySourceMutations(directory:string){
@@ -9,16 +10,66 @@ export function memorySourceMutations(directory:string){
   const stat=fs.lstatSync(directory);if(!stat.isDirectory()||stat.isSymbolicLink()||(stat.mode&0o077))throw new Error('Memory source hold directory must be private');
   if(process.platform!=='win32'){const parent=fs.openSync(path.dirname(directory),'r');try{fs.fsyncSync(parent);}finally{fs.closeSync(parent);}}
   const sync=()=>{if(process.platform!=='win32'){const fd=fs.openSync(directory,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}};
+  const syncAudit=(audit:string)=>{if(process.platform!=='win32'){const fd=fs.openSync(audit,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}};
+  const digest=(value:unknown)=>createHash('sha256').update(stableJson(value)).digest('hex');
+  const filename=(id:string)=>{if(!/^[a-f0-9-]{36}$/.test(id))throw Error('Invalid memory hold identity');return path.join(directory,`${id}.json`);};
+  const read=(id:string)=>{
+    const file=filename(id),stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536)throw Error('Memory hold evidence unavailable');
+    const hold=JSON.parse(fs.readFileSync(file,'utf8')) as {version:number;id:string;effect?:MemoryMutationEffect};
+    if(hold.version!==1||hold.id!==id)throw Error('Memory hold identity differs');return hold;
+  };
+  const inspect=(id:string):MemoryMutationHoldDto=>{const hold=read(id);return {id,sha256:digest(hold),effect:hold.effect,state:'unsettled',legacy:!hold.effect};};
+  const review=async(id:string,observe:(effect:MemoryMutationEffect)=>Promise<{rows:unknown;rowCount:number}>)=>{
+    const before=sourceMutationState(),hold=inspect(id);
+    if(before.activeWriters)throw Error('Source writers must drain before memory reconciliation');
+    if(!hold.effect)return {dto:{hold,reviewSha256:digest({hold,before}),canReconcile:false,backendDrainEvidenceRequired:true,reason:'Legacy hold has no exact collection/effect evidence; preserve it until independently reconciled'} as MemoryMutationReviewDto,epoch:before.epoch};
+    const observed=await observe(hold.effect),confirmed=await observe(hold.effect),after=sourceMutationState();
+    if(after.activeWriters||before.epoch!==after.epoch||digest(observed)!==digest(confirmed)||inspect(id).sha256!==hold.sha256)throw Error('Memory backend or hold changed during review');
+    const dto:MemoryMutationReviewDto={hold,reviewSha256:digest({hold,before,backend:digest(observed.rows)}),backendSha256:digest(observed.rows),rowCount:observed.rowCount,canReconcile:true,backendDrainEvidenceRequired:true};
+    return {dto,epoch:before.epoch,rows:observed.rows};
+  };
   return {
+    list:():MemoryMutationHoldDto[]=>fs.readdirSync(directory).filter(name=>/^[a-f0-9-]{36}\.json$/.test(name)).sort().map(name=>inspect(name.slice(0,-5))),
+    review:async(id:string,observe:(effect:MemoryMutationEffect)=>Promise<{rows:unknown;rowCount:number}>)=>(await review(id,observe)).dto,
+    async reconcile(id:string,input:MemoryMutationReconcileInput,observe:(effect:MemoryMutationEffect)=>Promise<{rows:unknown;rowCount:number}>):Promise<MemoryMutationReconcileReceipt>{
+      filename(id);
+      if(typeof input.commandKey!=='string'||!input.commandKey||input.commandKey.length>256||typeof input.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(input.reviewSha256)||input.preserveCurrentBackend!==true||typeof input.backendDrainEvidence!=='string'||input.backendDrainEvidence.trim().length<16||input.backendDrainEvidence.length>4096)throw Error('Explicit operator backend-drain evidence and preserve-current choice required');
+      const audit=path.join(directory,'reconciled'),receiptFile=path.join(audit,`${id}.json`);
+      let previous:MemoryMutationReconcileReceipt|undefined;
+      try{previous=JSON.parse(fs.readFileSync(receiptFile,'utf8')) as MemoryMutationReconcileReceipt;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+      if(previous){
+        if(previous.version!==1||previous.id!==id||previous.operatorId!=='local-operator'||previous.state!=='reconciled'||previous.commandKey!==input.commandKey||previous.reviewSha256!==input.reviewSha256||previous.backendDrainEvidence!==input.backendDrainEvidence)throw Error('Memory reconciliation command conflict');
+        if(digest(JSON.parse(fs.readFileSync(path.join(audit,`${id}.backend.json`),'utf8')))!==previous.backendSha256)throw Error('Retained reconciliation backend evidence differs');
+        // Complete an interrupted hold retirement; receipt already seals the reviewed backend bytes.
+        const epoch=sourceMutationState().epoch;
+        reconcileSourceMutation(`memory-source-mutation:${id}`,epoch,()=>{
+          if(fs.existsSync(filename(id))){if(inspect(id).sha256!==previous!.holdSha256||fs.existsSync(path.join(audit,`${id}.hold.json`)))throw Error('Memory hold retirement evidence differs');fs.renameSync(filename(id),path.join(audit,`${id}.hold.json`));}
+          if(digest(JSON.parse(fs.readFileSync(path.join(audit,`${id}.hold.json`),'utf8')))!==previous!.holdSha256)throw Error('Retained memory hold evidence differs');syncAudit(audit);sync();
+        });return previous;
+      }
+      const current=await review(id,observe);
+      if(!current.dto.canReconcile||!current.dto.backendSha256||current.dto.reviewSha256!==input.reviewSha256)throw Error('Exact current memory reconciliation review required');
+      const receipt:MemoryMutationReconcileReceipt={version:1,id,commandKey:input.commandKey,reviewSha256:input.reviewSha256,holdSha256:current.dto.hold.sha256,backendSha256:current.dto.backendSha256,backendDrainEvidence:input.backendDrainEvidence,operatorId:'local-operator',state:'reconciled'};
+      reconcileSourceMutation(`memory-source-mutation:${id}`,current.epoch,()=>{
+        fs.mkdirSync(audit,{recursive:true,mode:0o700});
+        const write=(file:string,value:unknown)=>{const temporary=`${file}.${randomUUID()}.tmp`,fd=fs.openSync(temporary,'wx',0o600);try{fs.writeFileSync(fd,stableJson(value));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}fs.renameSync(temporary,file);};
+        // Retain observed bytes before the decision receipt or hold retirement. Never mutate backend data.
+        const evidence=path.join(audit,`${id}.backend.json`);
+        if(fs.existsSync(evidence)){if(digest(JSON.parse(fs.readFileSync(evidence,'utf8')))!==receipt.backendSha256)throw Error('Prior backend evidence differs');}else write(evidence,current.rows);
+        write(receiptFile,receipt);
+        syncAudit(audit);sync();
+        fs.renameSync(filename(id),path.join(audit,`${id}.hold.json`));syncAudit(audit);sync();
+      });return receipt;
+    },
     assertSettled(){
       if(fs.readdirSync(directory).some(name=>name.endsWith('.json')))throw new Error('Checkpoint capture refused: memory mutation requires reconciliation');
     },
-    async run<T>(work:()=>Promise<T>):Promise<T>{
+    async run<T>(work:()=>Promise<T>,effect?:MemoryMutationEffect):Promise<T>{
       const finish=beginSourceMutation(),id=randomUUID(),file=path.join(directory,`${id}.json`);let settled=false;
       try{
         fs.mkdirSync(directory,{recursive:true,mode:0o700});
         const fd=fs.openSync(file,'wx',0o600);
-        try{fs.writeFileSync(fd,JSON.stringify({version:1,id,state:'remote_write_unsettled'}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}sync();
+        try{fs.writeFileSync(fd,JSON.stringify({version:1,id,state:'remote_write_unsettled',...(effect?{effect}:{} )}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}sync();
         const result=await work();
         fs.unlinkSync(file);sync();settled=true;return result;
       }finally{finish(settled?undefined:`memory-source-mutation:${id}`);}

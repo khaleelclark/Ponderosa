@@ -83,6 +83,15 @@ holds and called resource trees remain refused.
 
 ## Actual missing implementation / owner requirements
 
+Lifecycle successor source adds operator package/import evidence reconciliation and
+explicit evidence-bearing remote-memory hold reconciliation, with preserved originals,
+fresh CAS/drain checks and no unknown-write replay. See
+[lifecycle-reconciliation.md](lifecycle-reconciliation.md) for endpoints/DTOs and limits.
+Legacy memory holds without effect metadata remain held. Existing same-Chat reporting
+regrouping already has a canonical operator endpoint; cross-Chat/root relocation remains
+unsupported. Canonical staged admission/owner reference retirement is still being
+coordinated with Runtime and Features; the successor does not bypass existing pins.
+
 - Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
   consumers and atomic Runtime group destination API (no independent-loop substitute); changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
   cancellation and cross-owner forwarded bundles. Keep unsupported families refused.

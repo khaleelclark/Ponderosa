@@ -6,6 +6,7 @@ import {randomUUID} from 'node:crypto';
 export interface SourceCaptureToken { readonly kind: "source_capture";readonly boundaryId:string }
 type Stamp = { changes: bigint; data: bigint; schema: bigint };
 const cuts = new WeakMap<SourceCaptureToken, { epoch: bigint; databases: Array<{ db: Database.Database; stamp: Stamp }> }>();
+const activeCaptures=new Set<SourceCaptureToken>();
 let epoch = 0n;
 const writers = new Set<object>();
 const uncertain = new Set<string>();
@@ -51,6 +52,7 @@ export function beginSourceCapture(...databases: Database.Database[]): SourceCap
   if (!databases.length || writers.size || uncertain.size) throw new SourceCaptureChangedError();
   const token: SourceCaptureToken = Object.freeze({ kind: "source_capture",boundaryId:randomUUID() });
   cuts.set(token, { epoch, databases: [...new Set(databases)].map(db => ({ db, stamp: stamp(db) })) });
+  activeCaptures.add(token);
   return token;
 }
 
@@ -90,4 +92,12 @@ export function commitSourceCapture<T>(token: SourceCaptureToken, publish: () =>
   } finally { releaseSourceCapture(token); }
 }
 
-export function releaseSourceCapture(token: SourceCaptureToken): void { cuts.delete(token); }
+export function releaseSourceCapture(token: SourceCaptureToken): void { cuts.delete(token);activeCaptures.delete(token); }
+
+/** Operator reconciliation must retain backend/effect evidence before removing one exact hold. */
+export function sourceMutationState(){return {epoch:epoch.toString(),activeWriters:writers.size,activeCaptures:activeCaptures.size};}
+export function reconcileSourceMutation(reason:string,expectedEpoch:string,publish:()=>void):void {
+  if(writers.size||activeCaptures.size||epoch.toString()!==expectedEpoch)throw new SourceCaptureChangedError();
+  const result:unknown=publish();if(result&&typeof result==='object'&&'then'in result)throw Error('Source reconciliation publication must be synchronous');
+  uncertain.delete(reason);epoch++;
+}
