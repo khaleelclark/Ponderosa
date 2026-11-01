@@ -16,7 +16,7 @@ import type {
   PortableAgentHistoryMessageDto,
   ProjectDto,
 } from "@ponderosa/core";
-import { allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
+import { isCommunicationEvent, allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
 import { CompactionHistoryQueryError } from "./compaction-history-retrieval.js";
 import { decodeImportedUtf8Window, normalizeImportedHistorySearchText, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
 import type { Db } from "./db.js";
@@ -64,7 +64,8 @@ const AGENT_CREATION_MARKER = ".ponderosa-agent-creation.json";
 const agentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 type ImportedArchive = { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[];
-  initialInstructions?: string; initialInstructionsSeparated?: boolean };
+  initialInstructions?: string; initialInstructionsSeparated?: boolean;
+  portableState?: {workingFiles?:Array<{path:string;artifactRef:string}>} };
 type ImportedIndex = { archive_version: string; integrity_key: string; imported_at: string; expected_messages: number;
   status: "preparing" | "ready" | "unavailable" };
 
@@ -679,7 +680,7 @@ export class AgentCatalogAuthority {
   }
 
   /** Creation-pending fencing keeps incomplete imports out of ordinary views. */
-  async setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string): Promise<void> {
+  async setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:Array<{path:string;artifactRef:string}>}): Promise<void> {
     const agent = this.getAgent(agentId);
     if (!agent) throw new Error("agent not found");
     if (!this.client.prepare(`SELECT 1 FROM agent_creation_operation_members AS members
@@ -688,6 +689,7 @@ export class AgentCatalogAuthority {
       throw new Error("async history import requires a creation operation");
     }
     const imported: ImportedArchive = { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages,
+      ...(portableState?{portableState}:{}),
       ...(initialInstructions !== undefined ? { initialInstructions, initialInstructionsSeparated: true } : {}) };
     this.validateImportedArchiveSize(imported);
     this.importedIndexQueue.delete(agentId);
@@ -702,7 +704,7 @@ export class AgentCatalogAuthority {
         await handle.writeFile((index ? "," : "") + JSON.stringify(messages[index]));
       }
       await handle.writeFile("]" + (initialInstructions !== undefined
-        ? ',"initialInstructions":' + JSON.stringify(initialInstructions) + ',"initialInstructionsSeparated":true' : "") + "}\n");
+        ? ',"initialInstructions":' + JSON.stringify(initialInstructions) + ',"initialInstructionsSeparated":true' : "") + (portableState?',"portableState":'+JSON.stringify(portableState):'') + "}\n");
       await handle.sync();
       await handle.close();
       await fs.rename(temporary, pathname);
@@ -720,15 +722,25 @@ export class AgentCatalogAuthority {
 
   private validateImportedArchiveSize(imported: ImportedArchive): void {
     if (!imported || typeof imported !== "object" || Array.isArray(imported) ||
-        Object.keys(imported).some(key => !["source", "importedAt", "messages", "initialInstructions", "initialInstructionsSeparated"].includes(key)) ||
+        Object.keys(imported).some(key => !["source", "importedAt", "messages", "initialInstructions", "initialInstructionsSeparated", "portableState"].includes(key)) ||
         typeof imported.source !== "string" || typeof imported.importedAt !== "string" || !Array.isArray(imported.messages) ||
         imported.initialInstructions !== undefined && typeof imported.initialInstructions !== "string" ||
         imported.initialInstructionsSeparated !== undefined && typeof imported.initialInstructionsSeparated !== "boolean" ||
         imported.messages.some(message => !message || typeof message !== "object" || Array.isArray(message) ||
-          Object.keys(message).some(key => !["role", "text", "createdAt"].includes(key)) ||
+          Object.keys(message).some(key => !["role", "text", "createdAt", "communication", "communicationRevisions", "attachmentRefs", "artifactRefs"].includes(key)) ||
           !["user", "assistant", "system"].includes(message.role) || typeof message.text !== "string" ||
           message.createdAt !== undefined && typeof message.createdAt !== "string")) {
       throw new Error("Imported history archive has invalid fields or types");
+    }
+    if(imported.portableState!==undefined){
+      const state=imported.portableState;
+      if(!state||typeof state!=='object'||Array.isArray(state)||Object.keys(state).some(key=>key!=='workingFiles')||!Array.isArray(state.workingFiles)||state.workingFiles.some(file=>!file||typeof file.path!=='string'||typeof file.artifactRef!=='string'))throw new Error('Invalid imported working-file manifest');
+    }
+    for(const message of imported.messages){
+      if(message.communication!==undefined&&!isCommunicationEvent(message.communication))throw new Error('Invalid imported historical Communication');
+      if(message.attachmentRefs!==undefined&&(!Array.isArray(message.attachmentRefs)||message.attachmentRefs.some(ref=>typeof ref!=='string')))throw new Error('Invalid imported attachment refs');
+      if(message.artifactRefs!==undefined&&(!message.artifactRefs||typeof message.artifactRefs!=='object'||Array.isArray(message.artifactRefs)||Object.values(message.artifactRefs).some(ref=>typeof ref!=='string')))throw new Error('Invalid imported artifact refs');
+      if(message.communicationRevisions!==undefined&&(!message.communication||!Array.isArray(message.communicationRevisions)||message.communicationRevisions.some(revision=>!revision||revision.targetEventId!==message.communication!.eventId||revision.projectId!==message.communication!.projectId||revision.kind!=='edit'||typeof revision.text!=='string'||!agentPackageTextIsWellFormed(revision.text))))throw new Error('Invalid imported Communication revisions');
     }
     if (imported.initialInstructions !== undefined && !agentPackageTextIsWellFormed(imported.initialInstructions) ||
         imported.messages.some(message => !agentPackageTextIsWellFormed(message.text))) {

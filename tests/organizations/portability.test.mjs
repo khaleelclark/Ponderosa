@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import Fastify from 'fastify';
-import { AgentStore, publishManagedArtifactContentAsync, readManagedArtifactContent, importedAgentHistoryPath } from '@ponderosa/agents';
-import { deriveCommunicationBehavior } from '@ponderosa/core';
+import { CapabilityPolicyStore, AgentStore, publishManagedArtifactContentAsync, readManagedArtifactContent, importedAgentHistoryPath } from '@ponderosa/agents';
+import { CAPABILITY_IDS, deriveCommunicationBehavior } from '@ponderosa/core';
 import { AssetStore } from '../../apps/server/dist/assets.js';
 import { registerAgentPackageRoutes } from '../../apps/server/dist/routes/agent-packages.js';
 
@@ -52,10 +52,10 @@ async function withPortability(t, run) {
     }
     const collaboration = communication({ kind: 'agent', agentId: a.id, executionId: randomUUID() }, 'collaboration',
       { kind: 'agents', agentIds: [b.id] }, 'COLLABORATION_MARKER');
+    const upload=await assets.stage({projectId:project.id,agentId:a.id,name:'upload.txt',declaredType:'text/plain',body:Buffer.from('hello')});
+    await assets.associate(project.id,a.id,[upload.id]);
     communication({ kind: 'user', userId: 'operator' }, 'user_dm',
-      { kind: 'user_agent', userId: 'operator', agentId: a.id }, 'PRIVATE_DM_MARKER', {
-        attachments: [{ id: randomUUID(), agentId: a.id, name: 'upload.txt', mediaType: 'text/plain', size: 5, url: '/fixture-upload' }],
-      });
+      { kind: 'user_agent', userId: 'operator', agentId: a.id }, 'PRIVATE_DM_MARKER', {attachments:[upload]});
     communication({ kind: 'user', userId: 'operator' }, 'user_dm',
       { kind: 'user_agent', userId: 'operator', agentId: outside.id }, 'UNRELATED_PRIVATE_MARKER');
     communication({ kind: 'user', userId: 'operator' }, 'broadcast',
@@ -95,8 +95,8 @@ test('full organization round trips retain the reviewed contracts and one guidan
   assert.deepEqual(pkg.agents.map(x => x.ref).sort(), [f.a.id, f.b.id].sort());
   assert.equal(pkg.agents.find(x => x.ref === f.b.id).managerRef, f.a.id);
   assert.deepEqual(pkg.agents.map(x => x.history.some(m => m.text === f.collaboration.text)), [true, true]);
-  assert.deepEqual(Object.keys(pkg.agents[0].history.find(x => x.text === f.collaboration.text)).sort(), ['createdAt', 'role', 'text']);
-  for (const excluded of ['upload.txt', 'UNRELATED_PRIVATE_MARKER', 'BROADCAST_WITHOUT_AGENT_PROJECTION', 'UNMANAGED_FILE_MARKER']) assert.equal(JSON.stringify(pkg).includes(excluded), false);
+  assert.deepEqual(pkg.agents[0].history.find(x => x.text === f.collaboration.text).communication, f.collaboration);
+  for (const excluded of ['UNRELATED_PRIVATE_MARKER', 'UNMANAGED_FILE_MARKER']) assert.equal(JSON.stringify(pkg).includes(excluded), false);
   assert.equal(pkg.agents[0].artifacts[0].dataBase64, f.bytes.toString('base64'));
   const template = await f.exportAgent(f.a.id, 'template');
   assert.equal(template.agents.every(x => !('history' in x) && !('artifacts' in x)), true);
@@ -388,4 +388,56 @@ test('portable setup retains standing role, processing tier and preset provenanc
   const bad=structuredClone(pkg);Object.assign(bad.agents.find(a=>a.ref===pkg.rootRef),patch);
   const refused=await f.request(f.importRequest(bad));assert.ok(refused.statusCode>=400,refused.body);assert.equal(f.store.listAgents(f.project.id).length,before);
  }
+}));
+
+
+test('full Communication preserves private scope and uploaded originals across repeated imports',options,t=>withPortability(t,async f=>{
+  const source=await f.exportAgent(f.a.id);
+  const message=source.agents[0].history.find(m=>m.text==='PRIVATE_DM_MARKER');
+  assert.equal(message.communication.intent,'user_dm');
+  assert.equal(message.communication.audience.agentId,f.a.id);
+  assert.equal(message.attachmentRefs.length,1);
+  assert.equal(source.agents[0].artifacts.find(a=>a.ref===message.attachmentRefs[0]).dataBase64,Buffer.from('hello').toString('base64'));
+  assert.equal(source.agents[1].history.some(m=>m.text==='PRIVATE_DM_MARKER'),false);
+  let pkg=source;
+  for(let i=0;i<2;i++){
+    const result=f.ok(await f.request(f.importRequest(pkg)));
+    const history=f.store.getImportedHistory(result.rootAgentId).messages;
+    const restored=history.find(m=>m.text==='PRIVATE_DM_MARKER');
+    assert.deepEqual(restored.communication,message.communication);
+    const artifact=f.store.getProjectArtifact(f.project.id,restored.attachmentRefs[0]);
+    assert.ok(artifact);assert.equal(readManagedArtifactContent(f.dataDir,f.project.id,artifact.id,artifact.size,artifact.sha256)?.body.toString(),'hello');
+    pkg=await f.exportAgent(result.rootAgentId);
+  }
+}));
+
+
+test('source capability restrictions require explicit hash-bound human review and survive restart',options,t=>withPortability(t,async f=>{
+  const policies=new CapabilityPolicyStore(f.store.sqlite);
+  policies.put({scopeKind:'agent',scopeId:f.a.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite],actor:'operator'});
+  const pkg=await f.exportAgent(f.a.id);
+  const review=await f.request(f.importRequest(pkg));assert.equal(review.statusCode,409);
+  const {reviewSha256}=review.json();assert.match(reviewSha256,/^[a-f0-9]{64}$/);
+  const imported=f.ok(await f.request(f.importRequest(pkg,randomUUID(),{accessSettingsResolution:{action:'use_source',reviewSha256}})));
+  assert.deepEqual(policies.get('agent',imported.rootAgentId).restrictedCapabilityIds,[CAPABILITY_IDS.memoryWrite]);
+  assert.equal(policies.history('agent',imported.rootAgentId).changes[0].actor,'operator');
+  await f.restart();assert.deepEqual(new CapabilityPolicyStore(f.store.sqlite).get('agent',imported.rootAgentId).restrictedCapabilityIds,[CAPABILITY_IDS.memoryWrite]);
+}));
+
+test('selected working files copy to a new folder and never overwrite an existing destination',options,t=>withPortability(t,async f=>{
+  const response=await f.request({method:'GET',url:`/api/agents/${f.a.id}/export?mode=full&workingFiles=${encodeURIComponent(JSON.stringify(['unmanaged-working-file.txt']))}`});
+  const pkg=f.ok(response);assert.equal(pkg.agents[0].workingFiles[0].path,'unmanaged-working-file.txt');
+  const destination=path.join(f.dataDir,'selected-copy');
+  const imported=f.ok(await f.request(f.importRequest(pkg,randomUUID(),{workingFilesDestination:destination})));
+  assert.equal(imported.workingFilesDestination,destination);
+  assert.equal(await readFile(path.join(destination,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
+  const again=await f.exportAgent(imported.rootAgentId);
+  assert.equal(again.agents[0].workingFiles[0].path,'unmanaged-working-file.txt');
+  const collision=await f.request(f.importRequest(pkg,randomUUID(),{workingFilesDestination:destination}));assert.ok(collision.statusCode>=400);
+  assert.equal(await readFile(path.join(destination,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
+}));
+
+test('foreign source Chat bindings are refused before an organization is silently collapsed',options,t=>withPortability(t,async f=>{
+  const pkg=await f.exportAgent(f.a.id);pkg.agents[1].sourceChat.ref=randomUUID();
+  const response=await f.request(f.importRequest(pkg));assert.equal(response.statusCode,400);assert.match(response.body,/source Chat bindings/i);
 }));

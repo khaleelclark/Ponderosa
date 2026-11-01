@@ -585,6 +585,7 @@ app.get<{ Params: { id: string; seq: string } }>(
 );
 
 const agentPackages=registerAgentPackageRoutes(app, {
+  workingCopies,
   dataDir: opts.dataDir,
   store,
   coordination: coordinationV3,

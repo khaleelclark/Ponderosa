@@ -114,7 +114,16 @@ export interface AgentDto {
 export const FULL_PACKAGE_EXPORT_WARNING = 'History and stored data may contain sensitive information. Known credential fields are excluded; re-enter credentials after import. Global memory, installation permissions, live work and provider sessions are excluded.';
 
 export type AgentExportMode = "template" | "context" | "full";
-export interface PortableAgentHistoryMessageDto { role: "user" | "assistant" | "system"; text: string; createdAt?: string }
+export interface PortableAgentHistoryMessageDto {
+  role: "user" | "assistant" | "system"; text: string; createdAt?: string;
+  /** Original immutable scope and provenance; never live destination routing authority. */
+  communication?: import("../communication.js").CommunicationEvent;
+  communicationRevisions?: import("../communication.js").CommunicationRevisionEvent[];
+  /** Portable managed originals, in source attachment order. */
+  attachmentRefs?: string[];
+  /** Original source artifact identity to destination managed original. */
+  artifactRefs?: Record<string,string>;
+}
 export interface PortableArtifactDto {
   ref: string;
   kind: ArtifactKind;
@@ -139,6 +148,12 @@ export interface PortableAgentNodeDto {
   initialInstructions?: string;
   managerRef?: string;
   managementPermissions: AgentManagementPermissionsDto;
+  /** Source effective restrictions; destination application always requires human review. */
+  accessSettings?: { restrictedCapabilityIds: string[] };
+  /** Setup intent only. Native ownership receipts are never portable. */
+  workingCopyMode?: AgentWorkingCopyMode;
+  sourceChat?: {ref:string;title:string};
+  workingFiles?: Array<{path:string;artifactRef:string}>;
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
 }
@@ -187,6 +202,10 @@ export interface AgentImportChatInstructionsResolution {
 export interface ImportAgentPackageRequest {
   package: AgentPortablePackageDto;
   outputRoleReviewId?: string;
+  workingFilesDestination?: string;
+  accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string};
+  /** Human-selected destination folder mode; omitted retains source mode. */
+  workingCopyMode?: AgentWorkingCopyMode;
   conversationId: string;
   engineMapping: Record<string, string>;
   chatInstructionsResolution?: AgentImportChatInstructionsResolution;
@@ -197,6 +216,9 @@ export interface CopyAgentPackageRequest {
   sourceAgentId: string;
   conversationId: string;
   chatInstructionsResolution?: AgentImportChatInstructionsResolution;
+  accessSettingsResolution?: ImportAgentPackageRequest['accessSettingsResolution'];
+  workingCopyMode?: AgentWorkingCopyMode;
+  workingFilesDestination?: string;
   /** Optional new name for the copied organization root; descendants retain their names. */
   rootTitle?: string;
   /** Template copies omit history and files. Defaults to full. */
@@ -206,7 +228,7 @@ export interface CopyAgentPackageRequest {
   /** Required when any copied Agent receives autonomous destructive authority. */
   acknowledgeElevatedManagementPermissions?: boolean;
 }
-export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[] }
+export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; workingFilesDestination?:string }
 export type AgentImportPhase =
   | "queued"
   | "creating_records"
