@@ -181,3 +181,24 @@ no edits copied from its active tree. Cross-Chat organization reporting bindings
 remain a model decision because canonical organizations are same-Chat-only;
 owner refuses unsupported multi-Chat imports before writes. No silent widening
 of that invariant or completed-portability claim.
+
+## Portability transport continuation
+
+Committed successor `cccd84af` is now integrated without conflicts, including
+the one-line existing `workingCopies` service context in application routes.
+Source now transports structured historical Communication/revisions, uploaded
+originals and remapped artifact bindings, source Chat/mode, explicit hash-bound
+reviewed capability restrictions, and selected regular working-file bytes into
+an exclusively new folder with a retained failure-location receipt. This
+supersedes the earlier absent-backend backlog for those specific fields.
+
+Remaining implementation: UI must submit explicit access review and display
+structured imported provenance/attachments; Branches must forward the reviewed
+choice (restrictions otherwise refuse with 409). Selected-file UI is integrated,
+but complete destination Chat/root binding is still absent. Selected bytes do
+not preserve Git history/modes/timestamps/symlinks or recursively recreate every
+organization folder. Memory-read and saved-browser grants still need explicit
+local Settings, with no general reviewed portable mapping claimed.
+Cross-Chat reporting remains an ownership-model decision under the canonical
+same-Chat invariant. See the updated portability status and migration contract.
+Full #8 remains incomplete; all changes remain unexecuted.
