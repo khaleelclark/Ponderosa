@@ -251,3 +251,17 @@ upgrade/reliability runs, all Build flows, desktop/mobile/accessibility and meas
 performance. Historical LCP failure remains unresolved. None of all32, #8, #12,
 #32, Build, full UI, Bible or Phase2 is accepted by this inventory.
 
+
+### Bounded two-resource group consumer
+
+Source now connects exact one-owner serial/two-generation-zero issued capture,
+per-resource actual custody, fresh Project/two owned Chats/full maps, sequential
+prepared imports, whole human fact/policy disclosure choice, nested finish wrappers
+around one Runtime group admit, both owner receipts, after-admission same-transaction
+checkpoint and exact no-byte replay. See `branches-two-resource-destination.md` for
+operator routes, current directory reuse and hard limits. Existing single resource
+and group holds preserved. Actual deferred SQLite/inert-package fixture source covers
+capture/retire/review/admit/readback, second-completion rollback, policy/revocation and
+tamper refusals. No fixture/check/build/typecheck/preparation executed. Trees, parallel
+resource groups, later-generation evidence-only partitions, broader package payloads,
+partial-group capture abandonment and group lifecycle remain incomplete.

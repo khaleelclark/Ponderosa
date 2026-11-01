@@ -1,3 +1,4 @@
+import {readIssuedGroup,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
 import {readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
@@ -776,6 +777,78 @@ export class BranchStore {
     }).immediate();
   }
   /** Same owner transaction reserves acceptance, budget and prospective identities. */
+  reserveIssuedGroupDestination(branchId:string,executionId:string,input:import('@ponderosa/core').BranchIssuedDestinationInput,
+    scope:{projectId:string;conversationIds:string[];creationKey:string;operatorId:string},authority:import('./coordination-v3-destination-admission-authority.js').CoordinationDestinationGroupAuthority,now=new Date().toISOString()):Row {
+    return this.unitTransaction(()=>{
+      const key=`issued-group-destination:${payloadHash(input.commandKey)}`,old=this.row('SELECT input_hash FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
+      if(old){if(old.input_hash!==payloadHash(input))throw Error('Group command conflict');return this.issuedGroupDestinationPlan(branchId,executionId,input.commandKey);}
+      const saved=readIssuedGroup(this.sqlite,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.issuedContinuation;
+      if(scope.conversationIds.length!==2||new Set(scope.conversationIds).size!==2||!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
+       ||!branch?.enabled||branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration)
+       ||this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(source).steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current two-resource group owner unavailable');
+      const next=this.accept(branchId,`issued-group-destination:${randomUUID()}`,saved.selected.execution[0].input_text,now);
+      if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Group execution budget unavailable');
+      if(saved.issuedGroupCustody.reduce((n:number,r:Row)=>n+r.agentIds.length,0)>(this.definition(source).policy.maxEphemeralAgents??100))throw Error('Group Agent budget unavailable');
+      const idMap=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
+      const resources=saved.selected.resources.map((resource:Row,index:number)=>({custody:saved.issuedGroupCustody.find((c:Row)=>c.intent.resourceStepId===resource.step_execution_id),destination:{projectId:scope.projectId,conversationId:scope.conversationIds[index],executionId:next.id,resourceStepId:idMap[resource.step_execution_id],resourceGeneration:0}}));
+      const inputReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,commandKey:input.commandKey,operatorId:scope.operatorId,reconcileEffects:true as const,resources};
+      const reserved=this.coordination.reserveCoordinationDestinationGroup(inputReservation,authority,now);
+      const reservation=JSON.parse(this.row('SELECT reservation_json FROM coordination_destination_admissions WHERE id=?',reserved.admissionId)!.reservation_json);
+      const plan={schema:'ponderosa.branch.issued-group-destination.v1',input,reservation,admissionId:reserved.admissionId,reservationHash:reserved.reservationHash,idMap,creationKey:scope.creationKey};
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,payloadHash(input),stableJson(plan),now);
+      this.state(next.id,'waiting',now,'Waiting for whole-group disclosure review');this.selectedWrite(next.id);return plan;
+    }).immediate();
+  }
+  issuedGroupDestinationPlan(branchId:string,executionId:string,commandKey:string):Row {
+    const row=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,`issued-group-destination:${payloadHash(commandKey)}`);
+    if(!row)throw Error('Group destination command unavailable');const plan=JSON.parse(row.result_json),r=plan.reservation;
+    const admission=this.row('SELECT reservation_json,reservation_hash FROM coordination_destination_admissions WHERE id=? AND branch_id=? AND source_execution_id=?',plan.admissionId,branchId,executionId);
+    if(plan.schema!=='ponderosa.branch.issued-group-destination.v1'||stableJson(plan)!==row.result_json||row.input_hash!==payloadHash(plan.input)||plan.input.commandKey!==commandKey||!admission
+     ||admission.reservation_json!==stableJson(r)||admission.reservation_hash!==plan.reservationHash||payloadHash(r)!==plan.reservationHash)throw Error('Group destination plan integrity failure');return plan;
+  }
+  composeIssuedGroupDestination(plan:Row,graph:import('@ponderosa/core').BranchHostGraphRestoreDto,imports:{result:ImportAgentPackageResponse;complete:()=>void}[],now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationOwnerReceipt[] {
+    if(!this.sqlite.inTransaction)throw Error('Group composer requires same owner transaction');const r=plan.reservation;
+    if(stableJson(plan)!==stableJson(this.issuedGroupDestinationPlan(r.branchId,r.sourceExecutionId,plan.input.commandKey)))throw Error('Group plan changed');
+    const saved=readIssuedGroup(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash),stage=JSON.parse(this.row('SELECT stage_json FROM coordination_destination_admissions WHERE id=?',plan.admissionId)!.stage_json),e=this.execution(r.resources[0].destination.executionId),branch=this.getBranch(r.branchId);
+    if(!e||imports.length!==2||r.resources.some((x:Row)=>x.destination.executionId!==e.id)||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested||e.state!=='waiting'
+     ||!branch?.enabled||branch.versionId!==e.versionId||branch.bindingRevisionId!==e.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(e.configuration)
+     ||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(branch.id,CAPABILITY_IDS.scripts)
+     ||!this.hasRunnableCapacity(e.id)||!this.executionBudgets.admit(e.id,now))throw Error('Current group acceptance unavailable');
+    const frontier=remapBranchFrontier(saved.selected,plan.idMap,r.sourceExecutionId,e.id,graph.requestMap);
+    insertBranchFrontier(this.sqlite,e.id,frontier,now,new Set(Object.values(graph.requestMap)));
+    const owners=r.resources.map((item:Row,index:number)=>{
+      const d=item.destination,source=saved.selected.resources.find((x:Row)=>x.step_execution_id===item.custody.intent.resourceStepId),{result,complete}=imports[index]!,op=stage.imports[item.custody.sourceChatId];
+      const map=Object.fromEntries(item.custody.agentIds.map((id:string)=>[id,stage.agentMap[id]]));
+      if(stableJson(result.agentRefs)!==stableJson(map)||stableJson([...result.agentIds].sort())!==stableJson(Object.values(map).sort())||result.rootAgentId!==map[source.root_agent_id]||d.resourceStepId!==plan.idMap[source.step_execution_id])throw Error('Actual group import receipt differs');
+      const creationKey=`branch-resource:${d.resourceStepId}`;
+      this.run(`INSERT INTO branch_resources(step_execution_id,execution_id,template_ref,state,requested_count,root_agent_id,chat_id,generation,retry_draining,error,creation_key) VALUES(?,?,?,'active',?,?,?,0,0,NULL,?)`,d.resourceStepId,e.id,source.template_ref,result.agentIds.length,result.rootAgentId,d.conversationId,creationKey);
+      for(const id of result.agentIds)this.run("INSERT INTO branch_resource_members VALUES(?,?,'template')",id,d.resourceStepId);
+      this.run('INSERT INTO branch_ephemeral_contexts(step_execution_id,generation,chat_id,agent_ids_json) VALUES(?,0,?,?)',d.resourceStepId,d.conversationId,stableJson(result.agentIds));
+      const resource={creation_key:creationKey,execution_id:e.id,step_execution_id:d.resourceStepId};
+      this.writeResourceOperation(resource,'chat',{schema:'branch-resource-operation.v1',phase:'chat',token:`destination:${plan.admissionId}:${index}:chat`,state:'completed',generation:0,result:{chatId:d.conversationId},creationKey:`${plan.creationKey}:chat:${index}`});
+      this.writeResourceOperation(resource,'import',{schema:'branch-resource-operation.v1',phase:'import',token:`destination:${plan.admissionId}:${index}:import`,state:'completed',creationOperationId:op.creationOperationId,result});
+      const receiptId=`issued-group-destination-owner:${plan.admissionId}:${index}`;
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',e.id,receiptId,payloadHash(plan),stableJson({coordinationDestination:graph,sourceCheckpoint:{executionId:r.sourceExecutionId,checkpointId:r.checkpointId,expectedHash:r.checkpointHash},idMap:plan.idMap}),now);
+      const requestBindings=saved.hostDependencies.roots.filter((root:Row)=>saved.selected.attempts.some((a:Row)=>a.id===root.attemptId&&a.step_execution_id===source.step_execution_id)).map((root:Row)=>({sourceRequestId:root.requestId,requestId:graph.requestMap[root.requestId],stepExecutionId:d.resourceStepId}));
+      complete();return {executionId:e.id,resourceStepId:d.resourceStepId,resourceGeneration:0,creationOperationId:op.creationOperationId,requestBindings,receiptId};
+    });
+    const source=saved.selected.execution[0];this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',source.traversals,source.loop_iterations,source.depth_ceiling,e.id);
+    this.checkpoint(e.id,'issued-group-restored-prefix','issued_restored_prefix',{admissionId:plan.admissionId,idMap:plan.idMap},now);
+    this.checkpoint(e.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',e.id)!.admission_json)},now);
+    this.state(e.id,'running',now);this.selectedWrite(e.id);return owners;
+  }
+  checkpointIssuedGroupDestination(plan:Row):void {
+    if(!this.sqlite.inTransaction||this.row('SELECT state FROM coordination_destination_admissions WHERE id=?',plan.admissionId)?.state!=='admitted')throw Error('Group final checkpoint requires admitted graph in same transaction');
+    const id=plan.reservation.resources[0].destination.executionId,candidate=this.unitSaver.freeze({written:new Set([id])})[0];
+    if(!candidate?.content||!candidate.hash||Object.hasOwn(candidate,'error'))throw Error('Group final checkpoint coverage unavailable');
+    const cp=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,candidate.content,candidate.hash);
+    const readiness={checkpointId:Number(cp.lastInsertRowid),checkpointHash:candidate.hash};
+    this.run("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?) WHERE id=?",readiness.checkpointId,id);
+    for(let index=0;index<2;index++){
+      const key=`issued-group-destination-owner:${plan.admissionId}:${index}`,row=this.row('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?',id,key)!;
+      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...JSON.parse(row.result_json),readiness}),id,key);
+    }
+  }
   reserveIssuedDestination(branchId:string,executionId:string,input:import('@ponderosa/core').BranchIssuedDestinationInput,
     chat:{projectId:string;conversationId:string;creationKey:string;operatorId:string},authority:CoordinationDestinationAuthority,now=new Date().toISOString()):Row {
     return this.unitTransaction(()=>{
@@ -1222,7 +1295,17 @@ export class BranchStore {
     const execution=this.execution(executionId);if(!execution||this.restricted(execution.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current issued capture authority restricted');
     sealIssuedResourceCapture(this.sqlite,executionId,stepId,commandKey,receipt);
   }
+  reserveIssuedGroupCapture(executionId:string,commandKey:string){
+    const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Group capture restricted');
+    return this.unitTransaction(()=>reserveIssuedGroupCapture(this.sqlite,executionId,commandKey)).immediate();
+  }
+  sealIssuedGroupMember(executionId:string,commandKey:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt){
+    const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current group sealing restricted');
+    sealIssuedGroupMember(this.sqlite,executionId,commandKey,receipt);
+  }
   issuedResourceCapturePending(stepId:string):boolean {
+    if(this.row(`SELECT 1 FROM branch_commands c,json_each(c.result_json,'$.sources') source WHERE c.command_key LIKE 'issued-group-capture:%'
+      AND json_extract(c.result_json,'$.state')='capturing' AND json_extract(source.value,'$.intent.resourceStepId')=? LIMIT 1`,stepId))return true;
     return this.rows("SELECT execution_id,command_key,result_json FROM branch_commands WHERE command_key LIKE 'issued-resource-capture:%' AND json_extract(result_json,'$.source.intent.resourceStepId')=? AND json_extract(result_json,'$.state')='capturing'",stepId)
       .some(row=>!this.custodyLifecycle.captureDisposed(row.execution_id,row.command_key,row.result_json));
   }

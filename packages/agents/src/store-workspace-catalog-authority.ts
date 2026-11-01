@@ -845,19 +845,23 @@ export class AgentWorkspaceCatalogAuthority {
     projectId: string,
     input: CreateConversationRequest,
     identity?: WorkspaceCreationIdentity,
+    owner?: {branchId:string;executionId:string},
   ): ConversationDto {
+    const validateOwner=()=>{if(owner&&!this.db.get(sql`SELECT 1 FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=${owner.executionId} AND b.id=${owner.branchId} AND b.deleting=0`))throw Error('Branch group Chat owner unavailable');};
+    validateOwner();
     const project = this.getProject(projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
     if (readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId)).ownerConversationId) {
       throw new Error("Create a separate Chat rather than nesting Chats inside a Chat");
     }
     const replay = identity ? this.getConversationCreation(projectId, identity) : undefined;
-    if (replay) return replay;
+    if (replay) {if(replay.branchId!==owner?.branchId||replay.executionId!==owner?.executionId)throw Error('Chat creation owner conflict');return replay;}
     const id = identity ? creationId("conversation", projectId, identity.idempotencyKey) : randomUUID();
     const now = new Date().toISOString();
     const record: ConversationJson = {
       id,
       projectId,
+      ...(owner??{}),
       title: input.title || "New Chat",
       workingDirectory: project.hostPath,
       instructions: "",
@@ -906,6 +910,7 @@ export class AgentWorkspaceCatalogAuthority {
         lastConversationId: id,
       });
       this.db.transaction((tx) => {
+        validateOwner();
         if (tx.select({ projectId: projectDeletionPending.projectId })
           .from(projectDeletionPending)
           .where(eq(projectDeletionPending.projectId, projectId)).get()) {
@@ -914,6 +919,7 @@ export class AgentWorkspaceCatalogAuthority {
         tx.insert(conversations).values({
           id,
           projectId,
+          branchId:owner?.branchId??null,executionId:owner?.executionId??null,
           title: record.title,
           defaultEngine: record.defaultEngine ?? null,
           defaultModel: record.defaultModel ?? null,

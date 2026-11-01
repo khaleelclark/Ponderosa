@@ -200,3 +200,5 @@ export type {CoordinationDestinationReconciliationAuthority} from './coordinatio
 export {BranchCustodyLifecycle,type BranchCustodyReference} from './branch-custody-lifecycle.js';
 
 export type {CoordinationDestinationGroupAuthority} from './coordination-v3-destination-admission-authority.js';
+
+export {readIssuedGroup} from './branch-issued-group-capture.js';

@@ -946,14 +946,14 @@ for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutab
 });
 
 // Resource replay stops before any external Chat/import release; suffix work uses fresh custody.
-async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false){
+async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
  const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Inert resource history',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Owner'}),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
  const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:permissions}]};
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:2,delayMs:0,freshContext:true}}:{})},script('suffix')],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['team-arm','side-arm']}]:[],edges:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},{id:'to-suffix',from:'team',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:2,delayMs:0,freshContext:true}}:{})},...(twoResources?[{id:'team2',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Second inert local result'}]:[]),script('suffix')],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['team-arm','side-arm']}]:[],edges:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...(twoResources?[{id:'team-team2',from:'team',to:'team2',on:'success'},{id:'team2-suffix',from:'team2',to:'suffix',on:'success'}]:[{id:'to-suffix',from:'team',to:'suffix',on:'success'}])],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  let parent,root,source;
  if(childOwner){
@@ -1717,4 +1717,96 @@ for(const mode of ['async','sync'])test(`group reservation ${mode} holds every d
  assert.equal(f.branches.checkpointDispatch(lease),'waiting');
  db.prepare("UPDATE coordination_destination_admissions SET state='admitted' WHERE id=?").run(id);
  assert.equal(f.branches.checkpointDispatch(lease),'ready');
+});
+
+// Deferred complete host consumer source. Package bytes/import effects are inert
+// adapters; Branch/Runtime/Chat/Step/Request/disclosure/transaction writers are real.
+async function twoIssuedResources(t,mode){
+ const f=await reservationHistoryFixture(t,mode,false,false,false,true),db=()=>f.store.sqlite,coord=()=>new CoordinationV3Store(db());
+ const prefix=await f.claim();f.settle(prefix);const issued=[];
+ async function openResource(){
+  let r;for(let n=0;n<30;n++){f.branches.advance();await f.branches.unitSaver.drain();r=db().prepare("SELECT * FROM branch_resources WHERE execution_id=? AND state='reserved' ORDER BY rowid DESC LIMIT 1").get(f.source.id);if(r)break;}assert.ok(r);
+  for(let n=0;n<6&&f.branches.resourceRelease(r.step_execution_id)!=='ready';n++){await f.branches.unitSaver.drain();f.branches.advance();}
+  const chatToken=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');await f.branches.unitSaver.drain();assert.equal(f.branches.releaseResourceChat(r.step_execution_id,r.creation_key,chatToken),true);
+  const p=f.store.createProject({label:'Group source organization',hostPath:f.branches.localConfiguration(f.branch.id).directories.root,defaultEngine:'codex',chatOwned:true,branchId:f.branch.id,executionId:f.source.id});
+  const chat=f.store.getConversation(p.lastConversationId);f.branches.completeResourceOperation(r.step_execution_id,'chat',chatToken,{chatId:chat.id});await f.branches.unitSaver.drain();
+  const token=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'import');await f.branches.unitSaver.drain();
+  const op=f.store.beginAgentCreationOperation({projectId:p.id,conversationId:chat.id,actorScope:'inert-group-source',kind:'import',idempotencyKey:r.creation_key,payloadHash:'inert'}).operation,id=randomUUID();
+  f.store.addAgentCreationOperationMember(op.id,id,0);f.branches.observeResourceImportPlan(r.step_execution_id,token,op.id);await f.branches.unitSaver.drain();f.branches.planResource(r.step_execution_id,[id],token);
+  const agent=f.store.createAgent(p.id,{title:'Inert group source',engine:'codex',conversationId:chat.id},undefined,id),result={rootAgentId:id,agentIds:[id],agentRefs:{worker:id}};
+  f.store.updateAgentCreationOperation(op.id,{status:'completed',result});f.branches.completeResourceOperation(r.step_execution_id,'import',token,result);await f.branches.unitSaver.drain();
+  if(f.branches.resourceCaptureEligible(r.step_execution_id)){
+   const source=f.branches.reserveResourceCapture(r.step_execution_id),receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-opening',sha256:hash('opening'),byteLength:1};f.branches.finishResourceCapture(source,receipt);await f.branches.unitSaver.drain();
+  }
+  f.branches.bindResource(r.step_execution_id,result);await f.branches.unitSaver.drain();
+  const request=db().prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id;
+  const item={stepId:r.step_execution_id,request,chatId:chat.id,agentId:agent.id};issued.push(item);return item;
+ }
+ const first=await openResource();coord().updateRequest({requestId:first.request,updateId:'first-completed',kind:'completed',actor:{kind:'agent',id:first.agentId},payload:{text:'first evidence'}});
+ const second=await openResource();let bytes=true,imports=0,failSecond=false;
+ const custody=new Map();
+ const packageFor=receipt=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date(0).toISOString(),sourceLabel:'Inert group custody',rootRef:receipt.agentIds[0],agents:receipt.agentIds.map(ref=>({ref,title:'Retained group worker',engine:'codex',sourceChat:{ref:receipt.sourceChatId,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))});
+ const engine={
+  captureCheckpoint:async(source,seal)=>{const receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-issued-group',sha256:hash(stableJson(source)),byteLength:1};custody.set(receipt.custodyId,receipt);db().transaction(()=>seal(receipt))();return receipt;},
+  readCheckpoint:async receipt=>{assert.deepEqual(receipt,custody.get(receipt.custodyId));if(!bytes)throw Error('missing group bytes');return packageFor(receipt);},
+  verifyCheckpointNow:receipt=>{assert.deepEqual(receipt,custody.get(receipt.custodyId));if(!bytes)throw Error('missing group bytes');return receipt.sha256;},validateAgent:()=>{},
+  importAgent:async(projectId,chatId,pkg,engines,key,{branchHooks:hooks})=>{
+   imports++;const op=f.store.beginAgentCreationOperation({projectId,conversationId:chatId,actorScope:'user:local-operator',kind:'import',idempotencyKey:key,payloadHash:hash(stableJson(pkg))}).operation,map=Object.fromEntries(pkg.agents.map(a=>[a.ref,randomUUID()]));
+   db().transaction(()=>{Object.values(map).forEach((id,index)=>f.store.addAgentCreationOperationMember(op.id,id,index));hooks.stage({creationOperationId:op.id,projectId,conversationId:chatId,agents:Object.entries(map).map(([sourceRef,agentId])=>({sourceRef,agentId})),artifacts:[]});})();await hooks.plan();
+   for(const id of Object.values(map))f.store.createAgent(projectId,{title:'Fresh group worker',engine:'codex',conversationId:chatId},undefined,id);
+   const result={rootAgentId:map[pkg.rootRef],agentIds:Object.values(map),agentRefs:map};hooks.transaction(()=>{f.store.updateAgentCreationOperation(op.id,{status:'canonical_committed',result:{...result,branchDestinationPrepared:true}});hooks.holdForDisclosure();});return result;
+  },
+  finishDestinationImport:(id,compose)=>{const op=f.store.getAgentCreationOperation(id);assert.equal(op.status,'canonical_committed');compose(op.result,()=>{if(failSecond&&id===lastOperation())throw Error('injected second completion');f.store.updateAgentCreationOperation(id,{status:'completed'});});assert.equal(f.store.getAgentCreationOperation(id).status,'completed');},
+ };
+ const {BranchIssuedGroupDestinationService}=await import('../../apps/server/dist/branch-issued-group-destination.js');
+ const service=()=>new BranchIssuedGroupDestinationService(f.store,f.branches,coord(),()=>engine);
+ const captured=await service().capture(f.branch.id,f.source.id,'two-resource-cut');
+ coord().updateRequest({requestId:second.request,updateId:'second-completed',kind:'completed',actor:{kind:'agent',id:second.agentId},payload:{text:'second evidence'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ for(const item of issued){const preview=f.store.previewAgentDeletion([item.agentId]);f.store.deleteAgentSubtrees([item.agentId],preview.previewHash,id=>coord().handleAgentDeletion(id));const receipt=f.store.commitConversationDeletion(item.chatId);f.store.finishConversationDeletionStorageCleanup(receipt);f.store.markConversationDeletionServerCleanupComplete(item.chatId);f.branches.resourceRetired(item.stepId);await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(f.source.id).state,'completed');
+ const input={commandKey:'restore-two-resource-cut',checkpointId:captured.checkpointId,expectedHash:captured.checkpointHash,reconcileEffects:true};
+ function lastOperation(){const row=db().prepare('SELECT stage_json FROM coordination_destination_admissions WHERE command_key=?').get(input.commandKey);if(!row?.stage_json)return;const plan=f.branches.issuedGroupDestinationPlan(f.branch.id,f.source.id,input.commandKey);return JSON.parse(row.stage_json).imports[plan.reservation.resources[1].custody.sourceChatId].creationOperationId;}
+ return {f,captured,input,service,get imports(){return imports},setBytes:v=>{bytes=v},setFailure:v=>{failSecond=v}};
+}
+for(const mode of ['async','sync'])test(`two-resource ${mode} capture -> held imports -> whole human review -> admit -> no-byte restart readback`,async t=>{
+ const x=await twoIssuedResources(t,mode),{f,input}=x,s=x.service(),prepared=await s.prepare(f.branch.id,f.source.id,input);
+ assert.equal(prepared.state,'awaiting_disclosure');assert.equal(prepared.resources.length,2);assert.equal(new Set(prepared.resources.map(r=>r.destination.projectId)).size,1);
+ for(const item of prepared.resources)assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM agent_activations WHERE scope_key=?').get(`conversation:${item.destination.conversationId}`).n,0);
+ const preview=await s.disclosures.prepare(f.branch.id,f.source.id,prepared.admissionId);assert.ok(preview.facts.length);
+ await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/approval/);
+ await s.disclosures.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'approve-group',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ const admitted=await s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash);assert.equal(admitted.state,'admitted');assert.equal(admitted.receipt.owners.length,2);
+ assert.equal(new Set(admitted.receipt.owners.map(o=>o.executionId)).size,1);
+ assert.equal(admitted.receipt.owners.flatMap(o=>o.requestBindings).length,2);
+ assert.equal(admitted.receipt.activationIds.length,1,'only the selected open second root wakes after both imports/owners commit');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(admitted.receipt.owner.executionId).n,2);
+ const before=x.imports;x.setBytes(false);await f.reopen();const replay=await x.service().admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash);
+ assert.deepEqual(replay.receipt,admitted.receipt);assert.equal(x.imports,before);
+});
+for(const mode of ['async','sync'])test(`two-resource ${mode} composer second-import failure rolls back all graph owners and receipts`,async t=>{
+ const x=await twoIssuedResources(t,mode),{f,input}=x,s=x.service(),p=await s.prepare(f.branch.id,f.source.id,input),preview=await s.disclosures.prepare(f.branch.id,f.source.id,p.admissionId);
+ await s.disclosures.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'approve',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ x.setFailure(true);await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/injected second completion/);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(p.admissionId).state,'staged');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(p.resources[0].destination.executionId).n,0);
+ for(const item of p.resources){const slot=f.store.sqlite.prepare('SELECT stage_json FROM coordination_destination_group_chats WHERE admission_id=? AND source_chat_id=?').get(p.admissionId,item.custody.sourceChatId);assert.equal(f.store.getAgentCreationOperation(JSON.parse(slot.stage_json).importPlan.creationOperationId).status,'canonical_committed');}
+ x.setFailure(false);assert.equal((await s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash)).state,'admitted');
+});
+for(const mode of ['async','sync'])test(`two-resource ${mode} second-policy change invalidates whole review and no-byte revocation remains possible`,async t=>{
+ const x=await twoIssuedResources(t,mode),{f,input}=x,s=x.service(),p=await s.prepare(f.branch.id,f.source.id,input),preview=await s.disclosures.prepare(f.branch.id,f.source.id,p.admissionId);
+ await s.disclosures.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'approve',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ const policies=new CapabilityPolicyStore(f.store.sqlite);policies.put({scopeKind:'chat',scopeId:p.resources[1].destination.conversationId,expectedRevision:0,restrictedCapabilityIds:[]});
+ await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/approval/);
+ x.setBytes(false);const revoked=await s.disclosures.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'revoke',action:'revoke',reviewHash:preview.reviewHash,expectedRevision:1});
+ assert.equal(revoked.active,false);assert.equal(revoked.state,'revoked');
+});
+test('two-resource saved host/custody omission or rehashed changed generation refuses before destination effects',async t=>{
+ const x=await twoIssuedResources(t,'async'),{f,input}=x,db=f.store.sqlite,row=db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(input.checkpointId),original=JSON.parse(row.snapshot_json);
+ for(const mutate of [s=>s.issuedGroupCustody.pop(),s=>s.selected.resources[1].generation++,s=>s.issuedContinuation.audit.splice(s.issuedContinuation.audit.findIndex(e=>e.kind==='resource_created'),1)]){
+  const value=structuredClone(original);mutate(value);if(value.issuedContinuation.audit)value.issuedContinuation.auditSha256=hash(stableJson(value.issuedContinuation.audit));
+  const changedHash=hash(stableJson(value));db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(stableJson(value),changedHash,input.checkpointId);
+  await assert.rejects(x.service().prepare(f.branch.id,f.source.id,{...input,expectedHash:changedHash}),/integrity|custody|unsupported/);assert.equal(x.imports,0);
+ }
+ db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,input.expectedHash,input.checkpointId);
 });

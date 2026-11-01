@@ -7,8 +7,17 @@ import {branchText} from './branch-definition.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 
 /** Evidence-only opt-in for the dedicated issued-resource codec, never ordinary rewind. */
-export function issuedResourceFrontierSupported(selected:Selected,definition:BranchDefinition,cut?:BranchHostCut):boolean {
+export function issuedResourceFrontierSupported(selected:Selected,definition:BranchDefinition,cut?:BranchHostCut,group=false):boolean {
  try{
+  if(group){
+   if(selected.resources!.length!==2||!cut||new Set(selected.resources!.map(r=>r.chat_id)).size!==2)return false;
+   return selected.resources!.every(resource=>{
+    const attempts=selected.attempts!.filter(a=>a.step_execution_id===resource.step_execution_id);
+    const local={...cut,resources:cut.resources.filter(x=>x.row.step_execution_id===resource.step_execution_id),resourceMembers:cut.resourceMembers.filter(x=>x.row.step_execution_id===resource.step_execution_id),resourceContexts:cut.resourceContexts.filter(x=>x.row.step_execution_id===resource.step_execution_id),requests:cut.requests.filter(x=>x.row.conversation_id===resource.chat_id),joins:cut.joins.filter(x=>x.row.conversation_id===resource.chat_id)};
+    const step=selected.steps!.find(s=>s.id===resource.step_execution_id);
+    return issuedResourceFrontierSupported({...selected,resources:[resource],attempts},{...definition,steps:definition.steps.filter(s=>s.kind!=='agent'||s.id===step?.step_id)},local);
+   });
+  }
   const e=selected.execution?.[0],r=selected.resources?.[0],s=selected.steps?.find(s=>s.id===r?.step_execution_id),node=definition.steps.find(n=>n.id===s?.step_id);
   if(!e||!r||!s||!cut||!verifyBranchHostCut(cut,e.id)||!cut.coverage.complete||cut.bindingPin.requiredSecretRefs.length
    ||selected.resources?.length!==1||cut.resources.length!==1||stableJson(cut.resources[0]!.row)!==stableJson(r)
@@ -35,19 +44,19 @@ export function issuedResourceFrontierSupported(selected:Selected,definition:Bra
   if(imported.rootAgentId!==r.root_agent_id||stableJson(imported.agentIds)!==stableJson(ids))return false;
   if(cut.artifactRefs.length||cut.resourceReceipts.some(x=>x.row.conversation_id)||cut.requests.some(x=>x.row.project_id!==creation.project_id||x.row.conversation_id!==r.chat_id||[x.row.requester_agent_id,x.row.recipient_agent_id].filter(Boolean).some(id=>!ids.includes(id))||x.row.superseded_by_request_id||x.row.state==='outcome_unknown')
    ||cut.joins.some(x=>x.row.project_id!==creation.project_id||x.row.conversation_id!==r.chat_id||!ids.includes(x.row.owner_agent_id))||cut.suspensions.some(x=>x.row.dependency_kind!=='join'))return false;
-  const issued=selected.attempts.filter(a=>a.request_id);
+  const issued=selected.attempts!.filter(a=>a.request_id);
   return issued.length===1&&issued[0]!.step_execution_id===s.id;
  }catch{return false;}
 }
 
 /** Shared ownership boundary; graph replay must separately prove each binding and audit event. */
-export function issuedRequestFrontierSupported(selected:Selected,definition:BranchDefinition,hostCut?:BranchHostCut,issuedResource=false):boolean {
+export function issuedRequestFrontierSupported(selected:Selected,definition:BranchDefinition,hostCut?:BranchHostCut,issuedResource=false,group=false):boolean {
  try {
   const issued=selected.attempts?.filter(a=>a.request_id)??[];
   if(issued.length){
     if(!hostCut||!verifyBranchHostCut(hostCut,selected.execution![0]!.id)||!hostCut.coverage.complete
       ||hostCut.roots.length!==issued.length||new Set(hostCut.roots.map(root=>root.attemptId)).size!==issued.length
-      ||new Set(issued.map(a=>a.request_id)).size!==issued.length||(issuedResource?!issuedResourceFrontierSupported(selected,definition,hostCut):hostCut.resources.length))return false;
+      ||new Set(issued.map(a=>a.request_id)).size!==issued.length||(issuedResource?!issuedResourceFrontierSupported(selected,definition,hostCut,group):hostCut.resources.length))return false;
     verifyHostProvenance(hostCut);
     for(const a of issued){
       const s=selected.steps!.find(s=>s.id===a.step_execution_id),node=definition.steps.find(n=>n.id===s?.step_id),r=hostCut.requests.find(({row})=>row.id===a.request_id)?.row;

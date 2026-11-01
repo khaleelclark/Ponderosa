@@ -1376,8 +1376,9 @@ export class AgentStore extends AgentEventSessionFacade {
     projectId: string,
     input: CreateConversationRequest,
     identity?: WorkspaceCreationIdentity,
+    owner?: {branchId:string;executionId:string},
   ): ConversationDto {
-    return this.workspaceCatalog.createConversation(projectId, input, identity);
+    return this.workspaceCatalog.createConversation(projectId, input, identity,owner);
   }
 
   getConversationCreation(

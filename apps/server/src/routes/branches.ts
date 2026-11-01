@@ -1,3 +1,4 @@
+import {BranchIssuedGroupDestinationService} from '../branch-issued-group-destination.js';
 import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
 import type {BranchResourceService} from '../branch-resource-service.js';
@@ -27,6 +28,36 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   const hostArtifactGrant=(projectId:string,artifactId:string,recipientAgentId:string)=>store.operatorCanReadProjectArtifact(projectId,artifactId)&&store.agentCanReadProjectArtifact(projectId,artifactId,recipientAgentId);
   const disclosures=new BranchDisclosureReviewService(store,branches,context.coordination,(executionId,checkpointId,expectedHash)=>context.resources.verifyHistoricalCustody(executionId,checkpointId,expectedHash));
   const destinations=new BranchIssuedDestinationService(store,branches,context.coordination,disclosures,()=>context.resources.destinationPackageEngine(),context.createChat);
+  const groups=new BranchIssuedGroupDestinationService(store,branches,context.coordination,()=>context.resources.destinationPackageEngine());
+  const groupPath='/api/branches/:id/executions/:executionId/destination-groups';
+  type GroupParams={id:string;executionId:string;admissionId:string};
+  app.post<{Params:GroupParams;Body:unknown}>(groupPath+'/capture',async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Issued group capture');exactObjectFields(body,['commandKey'],'Issued group capture');
+      if(typeof body.commandKey!=='string')throw Error('Capture command key required');const result=await groups.capture(p.id,p.executionId,body.commandKey);notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:GroupParams;Querystring:{commandKey:string}}>(groupPath,(request,reply)=>{
+    try{const p=request.params;if(typeof request.query.commandKey!=='string')throw Error('Exact group command key required');return groups.inspect(p.id,p.executionId,request.query.commandKey);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:GroupParams;Body:unknown}>(groupPath,async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Issued group destination');exactObjectFields(body,['commandKey','checkpointId','expectedHash','reconcileEffects','accessSettingsResolution'],'Issued group destination');
+      const result=await groups.prepare(p.id,p.executionId,body as unknown as import('@ponderosa/core').BranchIssuedDestinationInput);notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:GroupParams;Body:unknown}>(groupPath+'/admit',async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Issued group admission');exactObjectFields(body,['commandKey','reviewHash'],'Issued group admission');
+      if(typeof body.commandKey!=='string'||typeof body.reviewHash!=='string')throw Error('Exact group command/review required');const result=await groups.admit(p.id,p.executionId,body.commandKey,body.reviewHash);notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.get<{Params:GroupParams;Querystring:{commandKey?:string}}>(groupPath+'/:admissionId/disclosure',async(request,reply)=>{
+    try{const p=request.params;return request.query.commandKey!==undefined?groups.disclosures.readCommand(p.id,p.executionId,p.admissionId,request.query.commandKey):await groups.disclosures.prepare(p.id,p.executionId,p.admissionId);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:GroupParams;Body:unknown}>(groupPath+'/:admissionId/disclosure',async(request,reply)=>{
+    try{const p=request.params,body=validatedObject(request.body,'Human group disclosure');exactObjectFields(body,['commandKey','action','reviewHash','expectedRevision'],'Human group disclosure');return await groups.disclosures.choose(p.id,p.executionId,p.admissionId,body as unknown as import('@ponderosa/core').BranchDisclosureChoice);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   const destinationPath='/api/branches/:id/executions/:executionId/destinations';
   type DestinationParams={id:string;executionId:string};
   app.get<{Params:DestinationParams;Querystring:{commandKey?:string}}>(destinationPath,(request,reply)=>{
