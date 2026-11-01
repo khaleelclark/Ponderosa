@@ -493,6 +493,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     projectBrowserSessions,
     restoreSharedBrowsers,
   } = createBrowserAuthority({
+    assets,
     dataDir: opts.dataDir,
     browserServiceSocket: opts.browserServiceSocket,
     store,

@@ -46,3 +46,37 @@ export class BrowserObservationClient {
   startRecording(pageId: string) { return this.call<BrowserRecordingStatus>('recording_start', {page_id: pageId}); }
   stopRecording(recordingId: string) { return this.call<BrowserRecordingArtifact>('recording_stop', {recording_id: recordingId}); }
 }
+
+/** Operator observations use existing browser-route ownership, never a Run capability. */
+export interface BrowserOperatorObservationContext {
+  sessionId: string;
+  expectedControlEpoch: number;
+}
+export interface BrowserOperatorConsoleRequest extends BrowserOperatorObservationContext {
+  query: BrowserConsoleQuery & {pageId: string};
+}
+export interface BrowserOperatorRecordingStartRequest extends BrowserOperatorObservationContext {
+  pageId: string;
+}
+export interface BrowserOperatorRecordingStopRequest extends BrowserOperatorObservationContext {
+  recordingId: string;
+}
+/** Managed receipt is also recoverable through recording/status after a lost response. */
+export interface BrowserOperatorRecordingResult extends BrowserRecordingArtifact {
+  downloadUrl: string;
+}
+export interface BrowserOperatorRecordingState {
+  recording?: BrowserRecordingStatus;
+  artifact?: BrowserRecordingArtifact;
+}
+export interface BrowserOperatorRecordingResponse extends Omit<BrowserOperatorRecordingState, 'artifact'> {
+  artifact?: BrowserOperatorRecordingResult;
+}
+/** Supply an existing owned-browser REST base; this client does not acquire ownership or retry requests. */
+export class BrowserOperatorObservationClient {
+  constructor(private readonly post: <T>(suffix: string, input: object) => Promise<T>) {}
+  console(input: BrowserOperatorConsoleRequest) { return this.post<BrowserConsoleResult>('observations/console', input); }
+  startRecording(input: BrowserOperatorRecordingStartRequest) { return this.post<BrowserRecordingStatus>('observations/recording/start', input); }
+  stopRecording(input: BrowserOperatorRecordingStopRequest) { return this.post<BrowserOperatorRecordingResult>('observations/recording/stop', input); }
+  recordingStatus(input: BrowserOperatorObservationContext) { return this.post<BrowserOperatorRecordingResponse>('observations/recording/status', input); }
+}

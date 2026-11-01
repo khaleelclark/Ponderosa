@@ -10,6 +10,7 @@ import { playwrightBrowserDriverFactory, type BrowserDriverFactory } from "./chr
 import type { ActiveRun } from "./app-contracts.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { BrowserProfileAuthority } from "./browser-profile-authority.js";
+import type {AssetStore} from "./assets.js";
 import { BrowserServiceClient } from "./browser-service.js";
 import { recoverBrowserResidue } from "./browser-session-residue.js";
 
@@ -18,6 +19,7 @@ interface BrowserAuthorityContext {
   browserServiceSocket?: string;
   driverFactory?: BrowserDriverFactory;
   store: AgentStore;
+  assets: Pick<AssetStore, "registerGeneratedArtifact">;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   publish(agentId: string, stored: StoredLogEvent): void;
   logWarn(meta: Record<string, unknown>, message: string): void;
@@ -46,6 +48,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserServiceSocket,
     driverFactory,
     store,
+    assets,
     activeRuns,
     publish,
     persistRuntimeEvent,
@@ -107,6 +110,18 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     return { artifact, content };
   };
 
+  const registerBrowserRecording = (agentId: string, event: LogEvent | AgentEvent) => {
+    if (event.type !== "generated_artifact") return;
+    const agent = store.getAgent(agentId);
+    const artifact = agent && store.getProjectArtifact(agent.projectId, event.artifactId);
+    if (!artifact || artifact.kind !== "generated_file" || !artifact.projectId || !artifact.originAgentId || !artifact.summary || !artifact.mediaType || artifact.size === undefined || !artifact.sha256) {
+      throw new BrowserSessionError("Recording publication has no complete managed catalog identity.", 409);
+    }
+    // Reverify managed bytes and register the immutable download authority, using the catalog's exact timestamp/provenance.
+    assets.registerGeneratedArtifact({...artifact, projectId: artifact.projectId, originAgentId: artifact.originAgentId,
+      kind: "generated_file", summary: artifact.summary, mediaType: artifact.mediaType, size: artifact.size, sha256: artifact.sha256});
+  };
+
   const browserSessions = new BrowserSessionManager(
     dataDir,
     browserFactory,
@@ -128,6 +143,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       if (event.type === "browser_screenshot" || event.type === "generated_artifact") {
         return persistRuntimeEvent(scope.agentId, run, event).then((stored) => {
           if (!stored) throw new Error("browser artifact lost exact Run authority before publication");
+          registerBrowserRecording(scope.agentId, event);
         }).catch((error: unknown) => {
           logWarn(
             { err: error, agentId: scope.agentId, runId: scope.runId },
@@ -180,6 +196,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
           { ...event, executionId: grant.runId },
         ).then((stored) => {
           if (!stored) throw new Error("browser artifact lost exact Run authority before publication");
+          registerBrowserRecording(grant.agentId, event);
         }).catch((error: unknown) => {
           logWarn(
             { err: error, agentId: grant.agentId, runId: grant.runId },

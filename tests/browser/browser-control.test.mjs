@@ -159,3 +159,67 @@ test('observation manager requires exact owner/Run and discards recording on con
  await manager.setControl(scope,'operator',opened.controlEpoch);assert.ok(discarded>before);
  await assert.rejects(manager.consoleQuery(scope,{}));await assert.rejects(manager.stopRecording(scope,'owned-recording'));assert.equal(queries,1);
 });
+
+// Deferred with the combined implementation: no execution performed for this source delivery.
+test('operator observations require exact session/epoch/page and retain recoverable recording receipts', async t => {
+ const root=await mkdtemp(path.join(tmpdir(),'pbr-operator-'));
+ let alive=true,queries=0,active='page',published=0;
+ const buffer=new BrowserObservationBuffer();
+ const manager=new BrowserSessionManager(root,async()=>({isAlive:()=>alive,close:async()=>{alive=false;},
+  pages:async()=>({activePageId:active,pages:[{pageId:'page',url:'about:blank',title:'Owned',active:active==='page',isNew:false,closable:false},{pageId:'sibling',url:'about:blank',title:'Other',active:active==='sibling',isNew:false,closable:true}]}),
+  cancelPendingFileChooser:async()=>{},consoleQuery:async q=>{queries++;return buffer.query(q);},
+  recordingStart:async page=>buffer.start(page),recordingStop:async id=>buffer.stop(id),recordingDiscard:async()=>buffer.discard()
+ }),(_scope,event)=>{if(event.type==='generated_artifact')published++;});
+ t.after(async()=>{await manager.closeAll('fixture_complete');await rm(root,{recursive:true,force:true});});
+ const conversationId=randomUUID(),scope={projectId:randomUUID(),agentId:randomUUID(),runId:randomUUID(),conversationId,owner:{version:1,kind:'chat',conversationId}};
+ const opened=await manager.open(scope,undefined,'operator');
+ const context={sessionId:opened.id,expectedControlEpoch:opened.controlEpoch};
+ buffer.console('page','info','owned');
+ assert.equal((await manager.operatorConsole(scope,context,{pageId:'page'})).entries[0].text,'owned');
+ for(const changed of [{...context,sessionId:randomUUID()},{...context,expectedControlEpoch:context.expectedControlEpoch+1}]) {
+  await assert.rejects(manager.operatorConsole(scope,changed,{pageId:'page'}));
+  await assert.rejects(manager.operatorRecordingStart(scope,changed,'page'));
+  await assert.rejects(manager.operatorRecordingStatus(scope,changed));
+ }
+ await assert.rejects(manager.operatorConsole(scope,context,{pageId:'unadmitted'}));
+ await assert.rejects(manager.operatorConsole({...scope,runId:randomUUID()},context,{pageId:'page'}));
+ assert.equal(queries,1,'rejected requests reached the driver');
+ await assert.rejects(manager.operatorRecordingStart(scope,context,'sibling'));
+ active='sibling';await assert.rejects(manager.operatorRecordingStart(scope,context,'page'),'driver active-page race must be checked inside the queue');active='page';
+ const recording=await manager.operatorRecordingStart(scope,context,'page');
+ assert.deepEqual((await manager.operatorRecordingStatus(scope,context)).recording,recording,'lost start response can be recovered without another start');
+ buffer.frame('page','/9j/2Q==');
+ await assert.rejects(manager.operatorRecordingStop(scope,context,'wrong-id'));
+ const receipt=await manager.operatorRecordingStop(scope,context,recording.id);
+ assert.equal(receipt.frames,1);assert.equal(published,1);
+ assert.deepEqual((await manager.operatorRecordingStatus(scope,context)).artifact,receipt,'lost stop response recovers its original receipt');
+ assert.deepEqual(await manager.operatorRecordingStop(scope,context,recording.id),receipt);assert.equal(published,1,'repeated exact stop published twice');
+ await manager.setControl(scope,'agent',context.expectedControlEpoch);
+ await assert.rejects(manager.operatorRecordingStatus(scope,context));
+ await assert.rejects(manager.operatorRecordingStop(scope,context,recording.id));
+});
+
+test('operator shared browser console is available without a grant, but recording cannot fabricate artifact provenance',async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'pbr-shared-observation-'));let alive=true,started=0;
+ const manager=new BrowserSessionManager(root,async()=>({isAlive:()=>alive,close:async()=>{alive=false;},
+  pages:async()=>({activePageId:'page',pages:[{pageId:'page',url:'about:blank',title:'Owned',active:true,isNew:false,closable:false}]}),
+  cancelPendingFileChooser:async()=>{},consoleQuery:async()=>({entries:[],next:0,truncated:false}),recordingStart:async()=>{started++;}
+ }),()=>{});
+ t.after(async()=>{await manager.closeAll('fixture_complete');await rm(root,{recursive:true,force:true});});
+ const conversationId=randomUUID(),scope={projectId:randomUUID(),agentId:`chat:v1:${conversationId}`,runId:`chat:v1:${conversationId}`,conversationId,owner:{version:1,kind:'chat',conversationId}};
+ const opened=await manager.open(scope,undefined,'operator');const context={sessionId:opened.id,expectedControlEpoch:opened.controlEpoch};
+ assert.equal((await manager.operatorConsole(scope,context,{pageId:'page'})).next,0);
+ await assert.rejects(manager.operatorRecordingStart(scope,context,'page'),e=>e.code==='operator_recording_unavailable');assert.equal(started,0);
+});
+
+test('operator observation reports driver unavailability rather than silently opening another browser',async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'pbr-no-observation-'));let alive=true,opens=0;
+ const manager=new BrowserSessionManager(root,async()=>{opens++;return {isAlive:()=>alive,close:async()=>{alive=false;},
+  pages:async()=>({activePageId:'page',pages:[{pageId:'page',url:'about:blank',title:'Owned',active:true,isNew:false,closable:false}]}),cancelPendingFileChooser:async()=>{}};},()=>{});
+ t.after(async()=>{await manager.closeAll('fixture_complete');await rm(root,{recursive:true,force:true});});
+ const scope={projectId:randomUUID(),agentId:randomUUID(),runId:randomUUID()};const opened=await manager.open(scope,undefined,'operator');
+ const context={sessionId:opened.id,expectedControlEpoch:opened.controlEpoch};
+ await assert.rejects(manager.operatorConsole(scope,context,{pageId:'page'}),e=>e.statusCode===409&&/unavailable/.test(e.message));
+ await assert.rejects(manager.operatorRecordingStart(scope,context,'page'),e=>e.statusCode===409&&/unavailable/.test(e.message));
+ assert.equal(opens,1);
+});
