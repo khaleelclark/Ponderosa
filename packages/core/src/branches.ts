@@ -364,3 +364,18 @@ export type CheckpointPackageStatus=
   | {state:'capturing';source:CheckpointPackageSource;boundaryId:string}
   | {state:'failed';source:CheckpointPackageSource;boundaryId:string;reason:string}
   | {state:'released';receipt:CheckpointPackageReceipt};
+
+/** Operator-only resource identity; receiptSha256 hashes the complete canonical receipt. */
+export interface BranchResourceInspectionDto {
+ branchId:string;executionId:string;stepExecutionId:string;generation:number;state:string;destinationChatId:string|null;destinationChatAvailable:boolean;importState:string|null;
+ custody:null|{kind:'capture'|'restoration_source';state:'capturing'|'retained'|'releasing'|'released'|'restoration_source';custodyId:string|null;receiptSha256:string|null;checkpointId:string;packageSha256:string|null};
+ currentPolicyReview:import('./dto/agents.js').AgentAccessImportReviewDto|null;
+ accessChoiceCurrent:boolean;reviewError?:string;
+}
+export interface BranchResourceCustodyReleaseInput {
+ commandKey:string;expectedGeneration:number;expectedCustodyId:string;expectedReceiptSha256:string;
+}
+export interface BranchResourceCustodyReleaseDto {
+ commandKey:string;stepExecutionId:string;generation:number;custodyId:string;receiptSha256:string;state:'releasing'|'released';error?:string;
+}
+export type BranchResourceCustodyReleaseStatus=BranchResourceCustodyReleaseDto|{commandKey:string;state:'not_found'};

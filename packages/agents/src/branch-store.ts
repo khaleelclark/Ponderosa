@@ -1042,6 +1042,63 @@ export class BranchStore {
     try{if(r.owner_chat_id)this.chat(r.owner_chat_id);if(r.chat_id)this.chat(r.chat_id);}catch{return 'fenced';}
     return this.functionalReady(r.execution_id)&&this.hasRunnableCapacity(r.execution_id)?'ready':'waiting';
   }
+  /** Pure owner projection; no review choice or custody state is changed. */
+  resourceInspection(stepExecutionId:string):import('@ponderosa/core').BranchResourceInspectionDto {
+    const r=this.row('SELECT r.*,e.branch_id FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?',stepExecutionId);
+    if(!r)throw Error('Resource owner unavailable');
+    const capture=this.resourceCaptureJournal(stepExecutionId),restore=this.resourceRestoreJournal(stepExecutionId),receipt=capture?.receipt??restore?.receipt;
+    return {branchId:r.branch_id,executionId:r.execution_id,stepExecutionId,generation:r.generation,state:r.state,importState:this.resourceOperation(stepExecutionId,'import')?.state??null,destinationChatId:r.chat_id??null,destinationChatAvailable:!!r.chat_id&&!!this.row('SELECT 1 FROM conversations c WHERE c.id=? AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts d WHERE d.conversation_id=c.id) AND NOT EXISTS(SELECT 1 FROM project_deletion_pending p WHERE p.project_id=c.project_id)',r.chat_id),
+      custody:capture?{kind:'capture',state:capture.state,custodyId:receipt?.custodyId??null,receiptSha256:receipt?payloadHash(receipt):null,checkpointId:capture.source.checkpointId,packageSha256:receipt?.sha256??null}:
+       restore?{kind:'restoration_source',state:'restoration_source',custodyId:receipt.custodyId,receiptSha256:payloadHash(receipt),checkpointId:receipt.checkpointId,packageSha256:receipt.sha256}:null,
+      currentPolicyReview:null,accessChoiceCurrent:false};
+  }
+  resourceCustodyReleaseStatus(stepExecutionId:string,commandKey:string):import('@ponderosa/core').BranchResourceCustodyReleaseStatus {
+    return this.resourceCustodyReleaseCommand(stepExecutionId,commandKey)?.result??{commandKey,state:'not_found'};
+  }
+  private resourceCustodyReleaseCommand(stepExecutionId:string,commandKey:string):Row|undefined {
+    branchKey(commandKey);
+    const r=this.row('SELECT execution_id FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
+    if(!r)throw Error('Resource owner unavailable');
+    const row=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,`custody-release:${commandKey}`);
+    if(!row)return;
+    const command=JSON.parse(row.result_json);
+    const {version,custodyId,boundaryId,sha256,byteLength,...source}=command.receipt??{};
+    if(stableJson(command)!==row.result_json||command.schema!=='branch-resource-custody-release.v1'||command.stepExecutionId!==stepExecutionId||row.input_hash!==payloadHash({stepExecutionId,input:command.input})
+      ||!receiptMatchesSource(command.receipt,source)||command.receipt.intent.resourceStepId!==stepExecutionId||command.receipt.intent.executionId!==r.execution_id||command.receipt.intent.resourceGeneration!==command.input.expectedGeneration||command.result.commandKey!==commandKey||command.result.stepExecutionId!==stepExecutionId
+      ||command.result.generation!==command.input.expectedGeneration||command.result.custodyId!==command.receipt.custodyId||command.result.receiptSha256!==payloadHash(command.receipt)
+      ||command.input.expectedCustodyId!==command.receipt.custodyId||command.input.expectedReceiptSha256!==payloadHash(command.receipt)
+      ||!['releasing','released'].includes(command.result.state))throw Error('Resource custody release command integrity failure');
+    return command;
+  }
+  beginResourceCustodyRelease(stepExecutionId:string,input:import('@ponderosa/core').BranchResourceCustodyReleaseInput):{receipt:import('@ponderosa/core').CheckpointPackageReceipt;result:import('@ponderosa/core').BranchResourceCustodyReleaseDto} {
+    branchKey(input.commandKey);
+    if(!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<0||!/^[a-f0-9]{64}$/.test(input.expectedCustodyId)||!/^[a-f0-9]{64}$/.test(input.expectedReceiptSha256))throw Error('Exact resource custody release identity required');
+    return this.unitTransaction(()=>{
+      const prior=this.resourceCustodyReleaseCommand(stepExecutionId,input.commandKey);
+      if(prior){if(stableJson(prior.input)!==stableJson(input))throw Error('Resource custody release idempotency conflict');return {receipt:prior.receipt,result:prior.result};}
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),capture=this.resourceCaptureJournal(stepExecutionId);
+      if(!r||r.generation!==input.expectedGeneration||!capture?.receipt||!receiptMatchesSource(capture.receipt,capture.source)||capture.source.intent.resourceStepId!==stepExecutionId||capture.source.intent.executionId!==r.execution_id||capture.source.intent.resourceGeneration!==r.generation||capture.receipt.custodyId!==input.expectedCustodyId||payloadHash(capture.receipt)!==input.expectedReceiptSha256)throw Error('Resource custody generation or receipt changed');
+      const receipt=this.resourceCaptureRelease(stepExecutionId,'releasing');
+      const result:import('@ponderosa/core').BranchResourceCustodyReleaseDto={commandKey:input.commandKey,stepExecutionId,generation:r.generation,custodyId:receipt.custodyId,receiptSha256:payloadHash(receipt),state:capture.state==='released'?'released':'releasing'};
+      const command={schema:'branch-resource-custody-release.v1',stepExecutionId,input,receipt,captureKey:`resource-capture:${r.creation_key}`,result};
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',r.execution_id,`custody-release:${input.commandKey}`,payloadHash({stepExecutionId,input}),stableJson(command),new Date().toISOString());
+      return {receipt,result};
+    }).immediate();
+  }
+  finishResourceCustodyRelease(stepExecutionId:string,commandKey:string,error?:string):import('@ponderosa/core').BranchResourceCustodyReleaseDto {
+    return this.unitTransaction(()=>{
+      const command=this.resourceCustodyReleaseCommand(stepExecutionId,commandKey);
+      if(!command)throw Error('Resource custody release command unavailable');
+      if(command.result.state==='released')return command.result;
+      const executionId=command.receipt.intent.executionId,row=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,command.captureKey);
+      const capture=row&&JSON.parse(row.result_json);
+      if(!capture||row.input_hash!==payloadHash(capture.source)||stableJson(capture.receipt)!==stableJson(command.receipt)||!['releasing','released'].includes(capture.state))throw Error('Original resource custody release intent unavailable');
+      const result:import('@ponderosa/core').BranchResourceCustodyReleaseDto={...command.result,...(error?{error:branchText(error.slice(0,2000))}:{state:'released',error:undefined})};
+      if(!error)this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...capture,state:'released'}),executionId,command.captureKey);
+      this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...command,result}),executionId,`custody-release:${commandKey}`);
+      this.selectedWrite(executionId);return result;
+    }).immediate();
+  }
   resourceRestoreJournal(stepExecutionId:string):Row|undefined {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
     const record=r&&this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',r.execution_id,`resource-restore:${r.creation_key}`);
@@ -1051,8 +1108,8 @@ export class BranchStore {
   resourceRestoreReview(stepExecutionId:string,review:import('@ponderosa/core').AgentAccessImportReviewDto,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']):void {
     this.unitTransaction(()=>{
       const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),journal=this.resourceRestoreJournal(stepExecutionId);
-      if(!r||r.state!=='reserved'||!r.chat_id||!journal||this.resourceOperation(stepExecutionId,'import')?.state==='completed')throw Error('Resource destination review is unavailable');
-      if(choice&&(choice.reviewSha256!==review.reviewSha256||journal.review?.reviewSha256!==review.reviewSha256))throw Error('Resource destination access review changed');
+      if(!r||r.state!=='reserved'||!r.chat_id||!journal||this.resourceOperation(stepExecutionId,'import'))throw Error('Resource destination review is unavailable');
+      if(choice&&choice.reviewSha256!==review.reviewSha256)throw Error('Resource destination access review changed');
       this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...journal,review,...(choice?{choice}:{choice:null})}),r.execution_id,`resource-restore:${r.creation_key}`);
     }).immediate();
   }

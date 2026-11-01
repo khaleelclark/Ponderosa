@@ -3,7 +3,7 @@ import type {ChatCreator} from "./routes/projects.js";
 import {createHash} from 'node:crypto';
 import {realpathSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
-import {retainedResourceCapture,type AgentStore,type BranchStore,type BranchResourceProvision } from '@ponderosa/agents';
+import {retainedResourceCapture,stableJson,type AgentStore,type BranchStore,type BranchResourceProvision } from '@ponderosa/agents';
 import type { ImportAgentPackageResponse } from '@ponderosa/core';
 export type BranchTemplateImporter = (input: BranchResourceProvision, hooks: {
   plan(agentIds: string[],creationOperationId?:string): void | Promise<void>; commit(result: ImportAgentPackageResponse): void;
@@ -37,19 +37,34 @@ export class BranchResourceService {
       if(capture){if(!this.packages)throw Error('Checkpoint package service unavailable');await this.packages.readCheckpoint(capture.receipt!);}
     }
   }
+  async inspectResource(stepExecutionId:string):Promise<import('@ponderosa/core').BranchResourceInspectionDto> {
+    const snapshot=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
+    if(!journal||!snapshot.destinationChatId||!snapshot.destinationChatAvailable||snapshot.state!=='reserved'||snapshot.importState)return snapshot;
+    let review:import('@ponderosa/core').AgentAccessImportReviewDto|null=null,reviewError:string|undefined;
+    try{
+      if(!this.packages)throw Error('Checkpoint package service unavailable');
+      const portable=await this.packages.readCheckpoint(journal.receipt);
+      review=await this.packages.reviewAccess({...portable,rootRef:journal.rootRef},snapshot.destinationChatId);
+    }catch(error){reviewError=error instanceof Error?error.message:'Resource policy review unavailable';}
+    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal))throw Error('Resource inspection changed; refresh');
+    return {...snapshot,currentPolicyReview:review,accessChoiceCurrent:!!review&&journal.choice?.reviewSha256===review.reviewSha256,...(reviewError?{reviewError}:{})};
+  }
   async reviewRestoreAccess(stepExecutionId:string,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']) {
     if(!this.packages)throw Error('Checkpoint package service unavailable');
-    const journal=this.branches.resourceRestoreJournal(stepExecutionId);
+    const snapshot=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
     const row=this.store.sqlite.prepare('SELECT r.chat_id,r.execution_id,e.branch_id FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepExecutionId) as {chat_id:string;execution_id:string;branch_id:string}|undefined;
     if(!journal||!row?.chat_id)throw Error('Fresh resource destination Chat is not ready');
     const portable=await this.packages.readCheckpoint(journal.receipt),review=await this.packages.reviewAccess({...portable,rootRef:journal.rootRef},row.chat_id);
+    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal))throw Error('Resource destination changed; review again');
     this.branches.resourceRestoreReview(stepExecutionId,review,choice);return review;
   }
-  async releaseCapture(stepExecutionId:string):Promise<void> {
+  async releaseCapture(stepExecutionId:string,input:import('@ponderosa/core').BranchResourceCustodyReleaseInput):Promise<import('@ponderosa/core').BranchResourceCustodyReleaseDto> {
     if(!this.packages)throw Error('Checkpoint package service unavailable');
-    const receipt=this.branches.resourceCaptureRelease(stepExecutionId,'releasing');
-    await this.packages.releaseCheckpoint(receipt);
-    this.branches.resourceCaptureRelease(stepExecutionId,'released');
+    const command=this.branches.beginResourceCustodyRelease(stepExecutionId,input);
+    if(command.result.state==='released')return command.result;
+    try{await this.packages.releaseCheckpoint(command.receipt);}
+    catch(error){return this.branches.finishResourceCustodyRelease(stepExecutionId,input.commandKey,error instanceof Error?error.message:'Checkpoint custody release outcome unknown');}
+    return this.branches.finishResourceCustodyRelease(stepExecutionId,input.commandKey);
   }
   private idle(agentIds: string[]): boolean {
     return agentIds.every(id => !this.store.sqlite.prepare(`SELECT 1 FROM agent_creation_operation_members m JOIN agent_creation_operations o ON o.id=m.operation_id WHERE m.agent_id=? AND o.status NOT IN ('completed','rolled_back')`).get(id)

@@ -1198,6 +1198,8 @@ for(const mode of ['async','sync','exit'])test(`prospective imported resource ${
  assert.equal(f.store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(resource.step_execution_id).request_id,null);
  const before=allocationCounts(f);await f.reopen();assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'retained-resource').id,fresh.id);assert.deepEqual(allocationCounts(f),before);
  assert.throws(()=>f.branches.resourceCaptureRelease(retained.stepId,'releasing'),/referenced/);
+ const inspection=f.branches.resourceInspection(retained.stepId);
+ assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{commandKey:'referenced-release',expectedGeneration:inspection.generation,expectedCustodyId:inspection.custody.custodyId,expectedReceiptSha256:inspection.custody.receiptSha256}),/referenced/);
 });
 
 // Deferred: source-only child custody, owner transaction rollback and restart readback.
@@ -1233,4 +1235,55 @@ for(const mode of ['async','sync'])test(`retained resource in ${mode} child owne
  assert.equal(f.branches.resourceRelease(resource.step_execution_id),'fenced','ancestor readback checks child source cleanup');
  assert.throws(()=>f.branches.rewindHistorical(f.parent.id,f.root.id,checkpoint.id,checkpoint.contentHash,'child-new-command'),/custody/);
  assert.deepEqual(allocationCounts(f),allocated);
+});
+
+// Deferred public custody command invariants: no bytes are actually deleted by this mock engine.
+test('resource custody release command survives response loss and never selects a later generation',async t=>{
+ const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let retained;await f.finish(f.source.id,async c=>{retained=c;});
+ const before=f.store.sqlite.prepare('SELECT * FROM branch_commands ORDER BY execution_id,command_key').all();
+ const inspection=f.branches.resourceInspection(retained.stepId);
+ assert.equal(inspection.generation,retained.source.intent.resourceGeneration);
+ assert.equal(inspection.destinationChatId,retained.source.sourceChatId);
+ assert.equal(inspection.custody.custodyId,retained.receipt.custodyId);
+ assert.deepEqual(f.branches.resourceInspection(retained.stepId),inspection);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM branch_commands ORDER BY execution_id,command_key').all(),before,'pure inspection never stages a review or release');
+ const input={commandKey:'release-original',expectedGeneration:inspection.generation,expectedCustodyId:inspection.custody.custodyId,expectedReceiptSha256:inspection.custody.receiptSha256};
+ for(const changed of [{expectedGeneration:99},{expectedCustodyId:'e'.repeat(64)},{expectedReceiptSha256:'f'.repeat(64)}])assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{...input,...changed}),/changed/);
+ assert.deepEqual(f.branches.resourceCustodyReleaseStatus(retained.stepId,'unknown'),{commandKey:'unknown',state:'not_found'});
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ const create=()=>new BranchResourceService(f.branches,f.store,async()=>assert.fail('Agents'),async()=>assert.fail('Chat'),async()=>assert.fail('Chat'));
+ let calls=0;
+ const service=create();service.setPackageEngine({releaseCheckpoint:async receipt=>{calls++;assert.deepEqual(receipt,retained.receipt);throw Error('response lost after durable release');}});
+ const lost=await service.releaseCapture(retained.stepId,input);assert.equal(lost.state,'releasing');assert.match(lost.error,/response lost/);
+ const statusBefore=f.store.sqlite.prepare('SELECT * FROM branch_commands ORDER BY execution_id,command_key').all();
+ assert.deepEqual(f.branches.resourceCustodyReleaseStatus(retained.stepId,input.commandKey),lost);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM branch_commands ORDER BY execution_id,command_key').all(),statusBefore,'command inspection does not retry deletion');
+ assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{...input,expectedGeneration:inspection.generation+1}),/conflict/);
+ await f.reopen();
+ // A later generation must not redirect an existing command's byte ownership.
+ f.store.sqlite.prepare('UPDATE branch_resources SET generation=generation+1,creation_key=? WHERE step_execution_id=?').run('later-generation',retained.stepId);
+ const recovered=create();recovered.setPackageEngine({releaseCheckpoint:async receipt=>{calls++;assert.deepEqual(receipt,retained.receipt);}});
+ assert.equal((await recovered.releaseCapture(retained.stepId,input)).state,'released');assert.equal(calls,2);
+ assert.equal(f.branches.resourceInspection(retained.stepId).generation,inspection.generation+1);
+ assert.equal(f.branches.resourceCustodyReleaseStatus(retained.stepId,input.commandKey).generation,inspection.generation);
+ assert.equal((await recovered.releaseCapture(retained.stepId,input)).state,'released');assert.equal(calls,2,'finished command readback does not call byte release');
+ assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{...input,commandKey:'new-stale-command'}),/changed/);
+});
+
+test('fresh resource access choice accepts a pure review and refuses a different current hash',async t=>{
+ const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let checkpoint;await f.finish(f.source.id,async()=>{checkpoint=await f.capture(f.source.id);assert.ok(checkpoint);});
+ const next=f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'pure-review-destination');await f.advance(next.id);
+ const r=f.reservation(next.id),token=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(token);await f.branches.unitSaver.drain();
+ assert.equal(f.branches.releaseResourceChat(r.step_execution_id,r.creation_key,token),true);
+ const p=f.store.createProject({label:'Fresh pure review destination',hostPath:f.branches.localConfiguration(f.branch.id).directories.root,defaultEngine:'codex',chatOwned:true,branchId:f.branch.id,executionId:next.id});
+ f.branches.completeResourceOperation(r.step_execution_id,'chat',token,{chatId:p.lastConversationId});await f.branches.unitSaver.drain();
+ assert.equal(f.branches.resourceRestoreJournal(r.step_execution_id).review,undefined);
+ const review={reviewSha256:'a'.repeat(64),source:[],destination:{restrictedCapabilityIds:[]}};
+ assert.throws(()=>f.branches.resourceRestoreReview(r.step_execution_id,review,{action:'use_source',reviewSha256:'b'.repeat(64)}),/changed/);
+ assert.doesNotThrow(()=>f.branches.resourceRestoreReview(r.step_execution_id,review,{action:'keep_destination',reviewSha256:review.reviewSha256}));
+ assert.equal(f.branches.resourceRestoreJournal(r.step_execution_id).choice.reviewSha256,review.reviewSha256);
+ const importToken=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'import');assert.ok(importToken);
+ assert.throws(()=>f.branches.resourceRestoreReview(r.step_execution_id,review,{action:'use_source',reviewSha256:review.reviewSha256}),/unavailable/);
 });
