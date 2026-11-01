@@ -1795,6 +1795,13 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24; owned loopback HTTP listener and controlled browser setup/teardown failures; no browser or provider",
       "origin": "Additive mounted fixture setup and independent cleanup ownership regression"
+    },
+    {
+      "path": "tests/providers/claude-task-lifetime.test.mjs",
+      "feature": "providers",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Deferred: built engines, Node24, controlled owned native-stream fixture; no provider account. Not executed in implementation-only lane."
     }
   ],
   "retainedReleasePayload": [

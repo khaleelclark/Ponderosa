@@ -4,6 +4,7 @@ import { requestNativeApproval } from "./native-approvals.js";
 import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import { ClaudeNativeCompaction } from "./claude-native-compaction.js";
+import { ClaudeTaskLifetime } from "./claude-task-lifetime.js";
 import { StderrTail } from "./stderr-tail.js";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
@@ -66,6 +67,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private reportDrainedRootExit?: () => void;
   private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
   private nativeCommand?: ClaudeNativeCompaction;
+  private readonly taskLifetime: ClaudeTaskLifetime;
   private nativeUsage?: RuntimeContextUsage;
   private usageInvalidated = false;
   private sessionInitialization?: unknown;
@@ -99,6 +101,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.selectedModel = opts.model;
     this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
     this.engineAgentId = opts.resumeSessionId ?? randomUUID();
+    this.taskLifetime = new ClaudeTaskLifetime(this.engineAgentId);
     this.contextObservations = new ClaudeContextUsage(this.engineAgentId);
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
       ? JSON.stringify({
@@ -179,7 +182,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.child.stdin?.write(`${JSON.stringify({
       type: "control_request",
       request_id: this.modelInitializationRequestId,
-      request: { subtype: "initialize", hooks: {}, sdkMcpServers: [] },
+      request: { subtype: "initialize", hooks: { Stop: [{ hookCallbackIds: [this.taskLifetime.stopCallbackId] }] }, sdkMcpServers: [] },
     })}\n`);
     // One stdout reader serves both ordinary turns and idle native commands.
     // Backpressure bounds normal event buffering; native receipts never enter it.
@@ -217,6 +220,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     const prompt = this.opts.resumeSessionId
       ? input.prompt
       : renderSeedPrompt(this.seedHistory.splice(0), input.prompt);
+    this.taskLifetime.beginTurn();
     this.contextObservations.beginTurn(turnId);
     this.active = true;
     this.activeInputId = turnId;
@@ -299,7 +303,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
     if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude control is active or uncertain");
     if (name !== "compact" || argumentsText?.trim()) throw new Error("Claude native compact accepts no arguments");
-    if (this.closed || this.active || this.nativeCommand && !this.nativeCommand.succeeded) {
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded) {
       throw new Error("Claude has active or uncertain native work; do not repeat compaction");
     }
     this.terminalEvent = undefined;
@@ -497,6 +501,14 @@ export class ClaudeStreamSession implements RuntimeSession {
           };
           this.opts.onCapabilitiesChanged?.();
         }
+        const stopHook = this.taskLifetime.stopHook(raw);
+        if (stopHook) {
+          for (const event of stopHook.events) yield event;
+          await this.writeFrame({ type: "control_response", response: {
+            subtype: "success", request_id: stopHook.requestId, response: {},
+          } });
+          continue;
+        }
         if (this.nativeCommand) {
           this.nativeCommand.observe(raw);
           if (capabilities) map(raw, { cwd: this.opts.cwd });
@@ -505,7 +517,9 @@ export class ClaudeStreamSession implements RuntimeSession {
         }
         const observation = this.contextObservations.observe(raw);
         if (observation) { this.usageInvalidated = false; yield observation; }
-        for (const event of map(raw, { cwd: this.opts.cwd })) {
+        const lifetimeEvents = this.taskLifetime.observe(raw);
+        const projected = map(raw, { cwd: this.opts.cwd }).flatMap(event => this.taskLifetime.project(event, raw));
+        for (const event of [...lifetimeEvents, ...projected]) {
           if(event.type==='error')this.terminalEvent=event;
           if (event.type === "turn_done" || event.type === "error") {
             this.active = false;
@@ -513,10 +527,10 @@ export class ClaudeStreamSession implements RuntimeSession {
             this.cancelApprovals();
             this.contextObservations.endTurn();
           }
-          if (event.type === "error" && event.code === "quota_exhausted") {
-            // A rejected allowance event can arrive while Claude's own retry
-            // watchdog is waiting. Observe exit before handing recovery back
-            // to Ponderosa; never leave two independent retry authorities.
+          if (event.type === "error" && (event.code === "quota_exhausted" || this.taskLifetime.ownsRun)) {
+            // A terminal failure cannot leave accepted native work running
+            // after its managed Run loses authority. Quota failures likewise
+            // drain the provider's own retry watchdog before host recovery.
             const closing=this.close();
             // The caller may stop advancing this iterator at the error. Begin
             // owned teardown, deliver the cause now, and let close() remain the

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { ClaudeTaskLifetime } from '../../packages/engines/dist/claude-task-lifetime.js';
 import { ClaudeNativeCompaction } from '../../packages/engines/dist/claude-native-compaction.js';
 import { ClaudeStreamSession } from '../../packages/engines/dist/claude-stream-session.js';
 import { normalizeClaudeInitCapabilities } from '../../packages/engines/dist/capabilities.js';
@@ -81,7 +82,7 @@ test('usage rejects aggregate/plaintext, invalid counters, other model, errors a
 test('existing invokeCommand sends one command and one occupancy control without a normal turn or native replay', async () => {
   const session = Object.create(ClaudeStreamSession.prototype);
   Object.assign(session, { engineAgentId: sessionId, opts: { resumeSessionId: sessionId },
-    controls: {uncertain:false}, initialized: true, nativeCompactAdvertised: true, initialization: Promise.resolve(), sessionInitialization: init });
+    controls: {uncertain:false}, initialized: true, nativeCompactAdvertised: true, initialization: Promise.resolve(), sessionInitialization: init, taskLifetime: new ClaudeTaskLifetime(sessionId) });
   const frames = [];
   session.writeInput = async (text, id) => {
     frames.push({ text, id });
