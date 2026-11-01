@@ -749,3 +749,35 @@ test('Bible25 both native harness probe launches preserve configured modes witho
     }
   }
 });
+
+
+import { StderrTail } from '../../packages/engines/dist/stderr-tail.js';
+import { PROVIDER_STDERR_DETAIL_LIMIT } from '@ponderosa/core';
+for (const size of [8193, 20000]) test(`formatted stderr ${size} survives actual server root-exit projection`, () => {
+ const tail = new StderrTail();
+ const cause = ' final cause api_key=SYNTHETIC_TAIL_SECRET';
+ tail.append('x'.repeat(size - cause.length) + cause);
+ const detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:7,signal:'SIGTERM',outputDraining:true});
+ assert.equal(detail.exitCode,7); assert.equal(detail.signal,'SIGTERM'); assert.equal(detail.outputDraining,true);
+ assert.match(detail.stderr,new RegExp(`^\\[stderr truncated: ${size - 8192} UTF-16 code units omitted; retained tail follows\\]\\n`));
+ assert.match(detail.stderr,/final cause/); assert.doesNotMatch(detail.stderr,/SYNTHETIC_TAIL_SECRET/);
+ assert.ok(tail.text().length <= PROVIDER_STDERR_DETAIL_LIMIT);
+});
+test('Unicode cut and cumulative omission survive actual server root-exit projection', () => {
+ const tail = new StderrTail();
+ tail.append('ab😀' + 'x'.repeat(8191));
+ let detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:2,signal:null});
+ assert.match(detail.stderr,/^\[stderr truncated: 4 UTF-16 code units omitted; retained tail follows\]\nx/u);
+ assert.doesNotMatch(detail.stderr,/[\uD800-\uDFFF]/u);
+ tail.append('last cause');
+ detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:2,signal:null});
+ assert.match(detail.stderr,/^\[stderr truncated: 13 UTF-16 code units omitted;/u);
+ assert.ok(detail.stderr.endsWith('last cause')); assert.equal(detail.exitCode,2); assert.equal(detail.signal,null);
+});
+test('root-exit diagnostic bound still rejects invalid provider data', () => {
+ assert.doesNotThrow(()=>projectProviderRootExitDetail({stderr:'x'.repeat(PROVIDER_STDERR_DETAIL_LIMIT)}));
+ for(const stderr of ['x'.repeat(PROVIDER_STDERR_DETAIL_LIMIT+1),42,null,{}]) {
+  assert.throws(()=>projectProviderRootExitDetail({stderr,exitCode:7}));
+ }
+ assert.throws(()=>projectProviderRootExitDetail({stderr:'valid',exitCode:1.5}));
+});

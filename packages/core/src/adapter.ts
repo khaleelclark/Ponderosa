@@ -305,6 +305,11 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   interrupt(): Promise<void>;
 }
 
+/** UTF-16 units: retained stderr plus bounded omission notice (including numeric count). */
+export const PROVIDER_STDERR_TAIL_LIMIT = 8192;
+// 128 covers the fixed notice and any JavaScript numeric count representation.
+export const PROVIDER_STDERR_DETAIL_LIMIT = PROVIDER_STDERR_TAIL_LIMIT + 128;
+
 export interface ProviderRootExitDetail {
   /** Root is gone; the adapter is draining already-emitted output for a bounded interval. */
   outputDraining?: boolean;

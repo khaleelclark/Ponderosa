@@ -1,3 +1,5 @@
+import { PROVIDER_STDERR_TAIL_LIMIT } from "@ponderosa/core";
+
 /** Bounded provider diagnostics with explicit loss accounting (UTF-16 units). */
 export class StderrTail {
   private tail = "";
@@ -5,7 +7,7 @@ export class StderrTail {
 
   append(chunk: string): void {
     const text = this.tail + chunk;
-    let start = Math.max(0, text.length - 8192);
+    let start = Math.max(0, text.length - PROVIDER_STDERR_TAIL_LIMIT);
     // Never retain only the low half of a Unicode character at the cut.
     if (start > 0 && /[\uDC00-\uDFFF]/u.test(text[start]!)) start++;
     this.omitted += start;
