@@ -23,6 +23,7 @@ test('counts require exact started scheduler authority and distinguish accepted,
  f.coordination.updateRequest({requestId,updateId:'progress',kind:'progress',actor:{kind:'agent',id:f.agent.id},payload:{text:'Running, according to authored prose'}});
  assert.deepEqual(f.counts(),expected(0,1,0));const lease=f.coordination.leaseNextRun({workerId:'test'});assert.ok(lease);assert.deepEqual(f.counts(),expected(0,1,0),'A leased provider Run has not started');
  f.coordination.markRunStarted(lease.runId,lease.fencingToken);assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);
+ assert.deepEqual(f.branches.detail(f.execution.id).liveOutputs,[{attemptId:f.branches.detail(f.execution.id).attempts[0].id,stepId:'work',agentId:f.agent.id,projectId:f.project.id,runId:lease.runId}]);
  f.coordination.updateRequest({requestId,updateId:'dependency',kind:'waiting_dependency',actor:{kind:'agent',id:f.agent.id},payload:{text:'Waiting for related work'}});
  assert.deepEqual(f.counts(),expected(0,1,0),'A dependency wait is not working even before the provider unwinds');
  f.coordination.updateRequest({requestId,updateId:'resumed',kind:'progress',actor:{kind:'agent',id:f.agent.id},payload:{text:'Resume'}});assert.deepEqual(f.counts(),expected(1,0,0));
@@ -40,12 +41,12 @@ test('an answered question resumes through canonical Request-update lineage, not
  const resumed=f.coordination.leaseNextRun({workerId:'resumed'});assert.ok(resumed);assert.notEqual(resumed.runId,original.runId);
  assert.ok(f.store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations attached JOIN activation_sources source ON source.activation_id=attached.activation_id WHERE attached.run_id=? AND source.source_kind='request_update' AND source.source_id='answer'").get(resumed.runId));
  assert.deepEqual(f.counts(),expected(0,1,0),'A resumed lease alone is still pending');f.coordination.markRunStarted(resumed.runId,resumed.fencingToken);
- assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);f.pass();
+ assert.deepEqual(f.counts(),expected(1,0,0));assert.equal(f.working(),1);assert.equal(f.branches.detail(f.execution.id).liveOutputs[0].runId,resumed.runId);f.pass();
 });
 
 test('an unrelated started Run on the same Agent does not make the workflow Running',t=>{
  const f=fixture(t);f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,actorScope:'user:local-operator',idempotencyKey:'unrelated',requests:[{recipientAgentId:f.agent.id,lifetime:{kind:'indefinite'}}]});
- const other=f.coordination.leaseNextRun({workerId:'test'});f.coordination.markRunStarted(other.runId,other.fencingToken);f.branches.advance();assert.deepEqual(f.counts(),expected(0,1,0));assert.equal(f.working(),0);f.pass();
+ const other=f.coordination.leaseNextRun({workerId:'test'});f.coordination.markRunStarted(other.runId,other.fencingToken);f.branches.advance();assert.deepEqual(f.counts(),expected(0,1,0));assert.equal(f.working(),0);assert.deepEqual(f.branches.detail(f.execution.id).liveOutputs,[]);f.pass();
 });
 
 test('a parallel approval cannot hide a current working Script; queued leases and expired authority remain Pending',t=>{
@@ -79,5 +80,30 @@ test('expired, fenced, terminal and noncurrent scheduler evidence cannot count a
   if(condition==='old-path')f.store.sqlite.prepare("UPDATE branch_paths SET state='arrived',step_execution_id=NULL WHERE execution_id=?").run(f.execution.id);
   if(condition==='canceled-attempt')f.store.sqlite.prepare('UPDATE branch_attempts SET cancel_requested=1 WHERE request_id IS NOT NULL').run();
   assert.deepEqual(f.counts(),expected(0,1,0),condition);f.pass();
+ }
+});
+
+
+test('live output identities refuse unstarted, expired, fenced and cancelled custody and never mutate canonical state',t=>{
+ const f=fixture(t);f.branches.advance();
+ const detail=()=>f.branches.detail(f.execution.id),attempt=detail().attempts[0];
+ assert.deepEqual(detail().liveOutputs,[]);
+ const lease=f.coordination.leaseNextRun({workerId:'live-output'});assert.ok(lease);assert.deepEqual(detail().liveOutputs,[]);
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ const before=f.store.sqlite.prepare('SELECT total_changes() n').get().n;
+ for(let i=0;i<3;i++)assert.deepEqual(detail().liveOutputs,[{attemptId:attempt.id,stepId:'work',agentId:f.agent.id,projectId:f.project.id,runId:lease.runId}]);
+ assert.equal(f.store.sqlite.prepare('SELECT total_changes() n').get().n,before,'telemetry read owns no authority changes');
+ const expiry=f.store.sqlite.prepare('SELECT lease_expires_at FROM scheduler_runs WHERE id=?').get(lease.runId).lease_expires_at;
+ f.store.sqlite.prepare('UPDATE scheduler_runs SET lease_expires_at=? WHERE id=?').run('2000-01-01T00:00:00.000Z',lease.runId);assert.deepEqual(detail().liveOutputs,[]);
+ f.store.sqlite.prepare('UPDATE scheduler_runs SET lease_expires_at=? WHERE id=?').run(expiry,lease.runId);
+ f.coordination.updateRequest({requestId:attempt.requestId,updateId:'completed-output',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Canonical final result'}});
+ assert.deepEqual(detail().liveOutputs,[],'terminal Request cannot stream unrelated later work');f.pass();
+});
+
+test('live output identities stop at side-effect fences and workflow cancellation',t=>{
+ for(const mode of ['fence','cancel']){
+  const f=fixture(t);f.branches.advance();const lease=f.coordination.leaseNextRun({workerId:mode});f.coordination.markRunStarted(lease.runId,lease.fencingToken);assert.equal(f.branches.detail(f.execution.id).liveOutputs.length,1);
+  if(mode==='fence')f.coordination.fenceRunSideEffects(lease.runId,lease.fencingToken,mode);else f.branches.cancel(f.execution.id);
+  assert.deepEqual(f.branches.detail(f.execution.id).liveOutputs,[]);f.pass();
  }
 });

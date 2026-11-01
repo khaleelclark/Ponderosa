@@ -141,7 +141,13 @@ export interface BranchAttemptDto {
   scriptEvidence?: {stderr?:string;stdout?:string;code?:number|null;error?:string;outputHash?:string;cwd?:string;runtime?:string;finishedAt?:string};
   error?: string; retryBlockedReason?: string; requestOutcomeUnknown?: boolean; availableAt?: string; purpose?: "step" | "recovery"; result?: BranchResult;
 }
+/** Exact current Attempt → started scheduler Run association, not execution authority. */
+export interface BranchLiveOutputDto {
+  attemptId:string; stepId:string; agentId:string; projectId:string; runId:string;
+}
 export interface BranchExecutionDetailDto {
+  /** Live telemetry targets for this bounded history page. */
+  liveOutputs?:BranchLiveOutputDto[];
   execution: BranchExecutionDto; steps: BranchStepExecutionDto[]; attempts: BranchAttemptDto[];
   paths: BranchPathDto[]; gates: BranchGateDto[]; resources: BranchResourceDto[];
   sealedResults?: BranchSealedResultDto[]; maps?: BranchMapInvocationDto[]; mapItems?: BranchMapItemDto[];

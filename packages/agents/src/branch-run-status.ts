@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type {BranchRunCountsDto} from '@ponderosa/core';
+import type {BranchLiveOutputDto,BranchRunCountsDto} from '@ponderosa/core';
 import {requestSourceLineageBody} from './coordination-v3-request-lineage.js';
 
 /** Bound the shared source map by live scheduler authority before mapping
@@ -14,17 +14,39 @@ export const BRANCH_LIVE_REQUEST_LINEAGE_CTE=`WITH branch_live_sources AS MATERI
 
 /** Canonical Request attachment, including answer/Join continuations. The
  * alias is restricted to the two existing projection callers. */
-export function branchStartedRequestRunSql(requestAlias:'request'|'r'):string {
-  return `EXISTS(
-    SELECT 1 FROM request_source_lineage source
+function branchStartedRequestRunsSql(requestAlias:'request'|'r'):string {
+  return `SELECT scheduler.id FROM request_source_lineage source
     CROSS JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
     CROSS JOIN scheduler_runs scheduler ON scheduler.id=attached.run_id AND scheduler.agent_id=${requestAlias}.recipient_agent_id AND scheduler.project_id=${requestAlias}.project_id
       AND scheduler.scope_key=CASE WHEN ${requestAlias}.conversation_id IS NOT NULL THEN 'conversation:'||${requestAlias}.conversation_id ELSE 'agent:'||${requestAlias}.recipient_agent_id END
     WHERE source.request_id=${requestAlias}.id AND ${requestAlias}.state IN ('open','in_progress') AND ${requestAlias}.terminal_at IS NULL
       AND scheduler.status='running' AND scheduler.started_at IS NOT NULL
       AND scheduler.terminal_at IS NULL AND scheduler.side_effects_fenced_at IS NULL
-      AND scheduler.lease_expires_at>:now
-  )`;
+      AND scheduler.lease_expires_at>:now`;
+}
+
+export function branchStartedRequestRunSql(requestAlias:'request'|'r'):string {
+  return `EXISTS(${branchStartedRequestRunsSql(requestAlias)})`;
+}
+
+/** Presentation identity only; text still comes from the canonical Agent stream.
+ * Restrict this read to the already bounded detail page, never Agent-wide recency. */
+export function readBranchLiveOutputs(db:Database.Database,executionId:string,attemptIds:readonly string[],now=new Date().toISOString()):BranchLiveOutputDto[] {
+  if(!attemptIds.length)return [];
+  return db.prepare(`${BRANCH_LIVE_REQUEST_LINEAGE_CTE}
+    SELECT DISTINCT attempt.id attemptId,step.step_id stepId,request.recipient_agent_id agentId,
+      request.project_id projectId,scheduler.id runId
+    FROM branch_executions execution
+    JOIN branch_step_executions step ON step.execution_id=execution.id
+    JOIN branch_paths path ON path.id=step.path_id AND path.execution_id=execution.id AND path.step_execution_id=step.id
+    JOIN branch_attempts attempt ON attempt.step_execution_id=step.id
+    JOIN coordination_requests request ON request.id=attempt.request_id
+    JOIN scheduler_runs scheduler ON scheduler.id IN (${branchStartedRequestRunsSql('request')})
+    WHERE execution.id=:executionId AND execution.state IN ('running','waiting') AND execution.cancel_requested=0
+      AND attempt.id IN (SELECT value FROM json_each(:attemptIds)) AND attempt.state='waiting' AND attempt.cancel_requested=0
+      AND path.state NOT IN ('arrived','canceled','completed','skipped')
+      AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=step.id AND newer.number>attempt.number)
+    ORDER BY attempt.id,scheduler.id`).all({executionId,attemptIds:JSON.stringify(attemptIds),now}) as BranchLiveOutputDto[];
 }
 
 /** An unrelated Agent Run, a queued lease, or authored progress is not proof

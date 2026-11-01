@@ -91,19 +91,17 @@ Existing active Agents' current memory must not be overwritten by incoming
 history; the preview must state which incoming data is applied or preserved.
 The refusal is a temporary data-integrity boundary, not an access policy.
 
-Installation-global memory is explicitly listed in each snapshot's
-`excludedScopes: ["global"]`; it is not silently swept or demoted to Chat scope.
-No UI or API for selected global transport is implemented in this batch. Required
-follow-up: add an explicit human global-memory selection to export, show ancestor
-and conflict closure before confirmation, and carry a separately versioned global
-section. Import must offer a separate human action to install those selected
-facts as global data, use new namespace IDs/principal provenance and the same
-durable visibility/rollback plan, and preserve the destination's existing
-readGlobal grants. Required but disabled access must appear in installation
-results, with no automatic permission change. Tests must cover global selection,
-recall only under destination grants, cancellation and crash recovery without
-affecting unrelated global rows. Keep global data unimplemented until that
-product path exists.
+Installation-global memory remains excluded from Agent packages. The later model-A
+implementation provides separate explicit selection, source/destination review,
+ancestor/conflict coverage and deterministic additive transfer in Settings → General.
+See [combined migration](../combined-migration-contract.md) for the current contract.
+Destination grants/policies remain local; parallel facts/conflicts are preserved.
+The accepted selected803 batch includes the eleven transfer cases; it is bounded
+regression evidence, not a general recall, crash-atomicity or external-writer claim.
+This later flow uses ordinary memory's in-process queue and readable partial-prefix
+retry contract, not package import's visibility/rollback journal. A crash or external
+storage writer requires inspection and fresh review; no whole-installation restore
+or source-authority transfer is implied.
 
 Multi-Chat organization recreation, provider-native transcripts, exact provider
 inputs, historical Branch execution Chats and full workflow equality remain open.
