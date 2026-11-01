@@ -262,9 +262,10 @@ export interface InstalledBranchPackage {
  outputRoles?:Array<{chatRef:string;agentRef:string;output:boolean;speaker:boolean}>;
  runtimeData?:BranchPortableRuntimeData;
  definitionTree?:BranchPortableDefinitionTree;
+ executionTree?:BranchPortableExecutionTree;
 }
 
-/** Full, execution-free dependency closure. Chat refs are unique across this inventory. */
+/** Full dependency closure, optionally paired with held execution data. Chat refs are globally unique. */
 export interface BranchPortableDefinitionNode {
  sourceBranchId:string;sourceVersionId:string;sourceBindingRevisionId:string;packageId:string;
  definition:BranchDefinition;agentBindings:InstalledBranchPackage['agentBindings'];chatRefs:string[];
@@ -275,13 +276,17 @@ export interface BranchPortableDefinitionTree {rootSourceBranchId:string;package
 export interface BranchDefinitionTreeReceipt {
  manifestSha256:string;branchMap:Record<string,string>;chatMap:Record<string,string>;agentMap:Record<string,string>;
  nodes:Record<string,{sourceVersionId:string;sourceBindingRevisionId:string;branchId:string;versionId:string;bindingRevisionId:string;definition:BranchDefinition;bindings:BranchBindings;configuration:BranchConfiguration;packageId:string;chatRefs:string[]}>;
- executionOwners:0;currentAuthority:false;dispatched:false;workflowEnabled:false;
+ executionOwners:number;currentAuthority:false;dispatched:false;workflowEnabled:false;
 }
 
 /** Private evidence bytes never carry dispatch, grants, leases or provider ownership. */
-export interface BranchPortableRuntimeFact {kind:'frontier'|'definition'|'bindings'|'configuration'|'provenance'|'host'|'initial'|'checkpoint'|'transition'|'command'|'custody'|'import'|'trigger';key:string;json:string;sha256:string}
+export interface BranchPortableRuntimeFact {kind:'frontier'|'definition'|'bindings'|'configuration'|'provenance'|'host'|'initial'|'checkpoint'|'transition'|'command'|'custody'|'import'|'trigger'|'tree-import';key:string;json:string;sha256:string}
 export interface BranchPortableRuntimeOwner {sourceExecutionId:string;sourceBranchId:string;chatRefs:string[];facts:BranchPortableRuntimeFact[];sha256:string}
 export interface BranchPortableRuntimeData {schema:'ponderosa.branch-runtime-data.v1';sourceBranchId:string;identities:{chats:Record<string,string>;agents:Record<string,{chatRef:string;agentRef:string}>};owners:BranchPortableRuntimeOwner[];sha256:string}
+export interface BranchPortableExecutionTree {schema:'ponderosa.branch-runtime-tree.v1';rootSourceBranchId:string;branches:Record<string,BranchPortableRuntimeData>;sha256:string}
+export interface BranchRuntimeTreePlan {reservedFrontiers:Record<string,Record<string,string>>;executionMap:Record<string,string>;frontiers:Record<string,BranchRuntimeFrontierReceipt>}
+export interface BranchRuntimeTreeReceipt extends BranchRuntimeTreePlan {schema:'ponderosa.branch-runtime-tree-import.v1';ownerPins:Record<string,{versionId:string;bindingRevisionId:string}>;planId:string;rootBranchId:string;manifestSha256:string;branchMap:Record<string,string>;chatMap:Record<string,string>;agentMap:Record<string,string>;held:true;currentAuthority:false;dispatched:false}
+export interface BranchRuntimeTreeReadback {receipt:BranchRuntimeTreeReceipt;data:BranchPortableExecutionTree}
 export interface BranchRuntimeFrontierReceipt {disposition:'recreated_held'|'evidence_only';idMap:Record<string,string>;reason?:string}
 export interface BranchRuntimeDataReceipt {schema:'ponderosa.branch-runtime-import.v1';planId:string;branchId:string;manifestSha256:string;frontiers:Record<string,BranchRuntimeFrontierReceipt>;executionMap:Record<string,string>;chatMap:Record<string,string>;agentMap:Record<string,string>;disposition:'held';currentAuthority:false;dispatched:false;workflowEnabled:false;credentials:'reenter';nativeState:'not_adopted';createdAt:string}
 export interface BranchRuntimeDataReadback {receipt:BranchRuntimeDataReceipt;data:BranchPortableRuntimeData}

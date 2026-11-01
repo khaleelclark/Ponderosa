@@ -1,3 +1,4 @@
+import {insertBranchExecutionTree,readBranchExecutionTree} from './branch-runtime-tree-package.js';
 import {validateBranchRuntimeData} from './branch-runtime-package.js';
 import {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';
 import {branchSharedState,branchStateResult} from './branch-shared-state.js';
@@ -586,6 +587,11 @@ export class BranchStore {
     return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual");
   }
   /** Recreate private data owners without an acceptance, budget debit or dispatchable frontier. */
+  importRuntimeTree(planId:string,data:import('@ponderosa/core').BranchPortableExecutionTree,plan:import('@ponderosa/core').BranchRuntimeTreePlan,branchMap:Record<string,string>,chatMap:Record<string,string>,agentMap:Record<string,string>,now=new Date().toISOString()) {
+    if(!this.sqlite.inTransaction)throw Error('Runtime tree requires the all-Branch transaction');
+    return insertBranchExecutionTree(this.sqlite,planId,data,plan,branchMap,chatMap,agentMap,now);
+  }
+  runtimeTreeData(planId:string,branchId:string){return readBranchExecutionTree(this.sqlite,planId,branchId);}
   importRuntimeData(planId:string,branchId:string,value:import('@ponderosa/core').BranchPortableRuntimeData,chatMap:Record<string,string>,agentMap:Record<string,string>,now=new Date().toISOString()):import('@ponderosa/core').BranchRuntimeDataReceipt {
     return this.unitTransaction(()=>{
       const data=validateBranchRuntimeData(value),key=`portable-runtime-manifest:${payloadHash(planId)}`;

@@ -104,3 +104,12 @@ or runtime-tree completion claim follows from this change.
 No tests, checks, builds, types, Node/native/provider/browser execution, preparation,
 installation, migrations, push, deployment or new workers were run. Deferred source
 fixtures have not been executed.
+
+## Execution-bearing successor
+
+The [held execution-tree source implementation](branch-execution-tree-publication.md)
+extends this definition-only slice. Full export now inventories runtime owners
+instead of applying the original blanket execution-owner refusal. Independent
+runtime-manifest acknowledgment, held native Call ancestry, evidence-only leaf
+handling and receipt readback are described there; unsupported parents still refuse
+before staging. Definition-only packages retain this document's original flow.

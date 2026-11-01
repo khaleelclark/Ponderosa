@@ -134,3 +134,8 @@ Execution-free multi-Branch definition/dependency/template-Chat publication now 
 an additive full-package caller contract; see
 [definition tree publication](branch-definition-tree-publication.md). This does not
 close runtime-owner-tree ancestry or foreign-checkpoint continuation.
+
+Supported execution-bearing multi-Branch DATA publication now extends the existing
+composer; see [held execution-tree publication](branch-execution-tree-publication.md).
+This is source-only supported-family implementation, not runnable foreign continuation
+or a full portability/runtime qualification claim.

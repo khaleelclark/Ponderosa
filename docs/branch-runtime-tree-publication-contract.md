@@ -119,3 +119,10 @@ The subsequent [execution-free publication slice](branch-definition-tree-publica
 implements the existing-plan/final-writer extension for ZERO execution owners.
 The earlier missing scalar seam remains accurate for execution-bearing trees;
 all-owner frontier allocation and real parent Call ancestry are still required.
+
+The [execution-bearing source successor](branch-execution-tree-publication.md) now
+implements that shared plan/writer seam for supported held Call/Script owner trees,
+including terminal children and evidence-only unknown leaves. Unsupported parent
+frontiers still refuse before staging; runnable foreign continuation remains a
+separate fresh-acceptance/current-custody/budget/current-review consumer. This is
+source implementation with deferred fixtures, not executed runtime qualification.

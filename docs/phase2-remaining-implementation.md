@@ -195,3 +195,10 @@ Reliability-owned Git/config/filesystem remainder and UI review. No full #8 verd
 or runtime/fresh-machine qualification follows from this source successor.
 
 Standalone source successor: automatic-source occurrence facts (or explicit unavailable holds) and imported-held private-manifest re-export now use existing held publication. Called/cross-Branch native ancestry/dependencies and runnable foreign-checkpoint continuation remain unimplemented. See `branch-runtime-package-recreation.md`; no execution or full #8 claim.
+
+Held execution-tree DATA source now has an actual reviewed composer/publication/
+receipt/re-export path; see `branch-execution-tree-publication.md`. Remaining:
+foreign selected-checkpoint fresh-acceptance/current-review/custody/budget consumer;
+issued/resource/unknown/historical-definition parents, native automatic frontiers
+and cross-owner result-bundle families. Unsupported parents refuse, unsupported
+leaves preserve held evidence. All runtime/check/build qualification remains held.

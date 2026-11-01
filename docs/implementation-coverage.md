@@ -145,3 +145,11 @@ open. See the remaining inventory for the full separate verification list. Sourc
 is not a whole-commandment True verdict or full Phase2 acceptance.
 
 Standalone source successor: automatic-source occurrence facts (or explicit unavailable holds) and imported-held private-manifest re-export now use existing held publication. Called/cross-Branch native ancestry/dependencies and runnable foreign-checkpoint continuation remain unimplemented. See `branch-runtime-package-recreation.md`; no execution or full #8 claim.
+
+Execution-tree source successor: `branch-execution-tree-publication.md` records actual
+export/preview/composer/all-Branch held publication/readback/re-export, persistent
+owner/frontier maps, real Call FKs, terminal children and unknown leaf evidence.
+Unsupported parents refuse before staging. Deferred caller-flow fixture source is
+`tests/branches/execution-tree-publication.test.mjs`; nothing was executed. Foreign
+selected-checkpoint fresh-acceptance/custody/budget consumer and unsupported parent/
+automatic/bundle families remain open; no full #8/runtime qualification claim.

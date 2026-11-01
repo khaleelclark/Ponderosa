@@ -228,3 +228,5 @@ export {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';
 
 export { NativeTaskStopAuthority } from "./native-task-stop-authority.js";
 export {captureBranchRuntimeData,validateBranchRuntimeData} from './branch-runtime-package.js';
+
+export {validateBranchExecutionTree,planBranchExecutionTree,insertBranchExecutionTree,readBranchExecutionTree} from './branch-runtime-tree-package.js';

@@ -57,7 +57,7 @@ test('definition closure: actual exporter -> per-Branch preview -> actual compos
  await f.reopen();assert.deepEqual((await f.api('GET',`/api/branches/installations/${p.id}`)).definitionTreeReceipt,r);
  const reexported=await f.api('GET',`/api/branches/${done.branchId}/package?mode=full`);assert.equal(reexported.definitionTree.nodes.length,2);assert.equal(reexported.runtimeData,undefined);
 });
-test('definition closure rejects incomplete/aliased manifests and refuses execution-bearing graphs before export writes',async t=>{
+test('definition closure rejects incomplete/aliased manifests and includes execution-bearing graphs in the runtime extension',async t=>{
  const f=await fixture(t);
  for(const edit of [d=>d.nodes.pop(),d=>d.nodes[1].chatRefs=d.nodes[0].chatRefs,d=>delete d.nodes[0].dependencies.child]){
   const pkg=structuredClone(f.exported);edit(pkg.definitionTree);const {sha256,...data}=pkg.definitionTree;pkg.definitionTree.sha256=hash(data);
@@ -67,7 +67,7 @@ test('definition closure rejects incomplete/aliased manifests and refuses execut
  const changed=await f.app.inject({method:'POST',url:'/api/branches/install-preview',payload:{package:tampered,bindings:{agents:{},directories:{}},treeBindings:f.treeBindings}});assert.equal(changed.statusCode,400);assert.match(changed.json().error,/package bytes differ/);
  await f.api('POST',`/api/branches/${f.child.branch.id}/executions`,{occurrenceKey:'unknown-source-owner',input:'do not dispatch'});
  const before=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_installation_resources').get().n;
- const response=await f.app.inject({method:'GET',url:`/api/branches/${f.parent.branch.id}/package?mode=full`});assert.equal(response.statusCode,400);assert.match(response.json().error,/ZERO execution owners/);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_installation_resources').get().n,before);
+ const response=await f.api('GET',`/api/branches/${f.parent.branch.id}/package?mode=full`);assert.ok(response.executionTree);assert.equal(Object.values(response.executionTree.branches).flatMap(b=>b.owners).length,1);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_installation_resources').get().n,before);
 });
 test('failure at the final child publication rolls back every version/dependency/final Chat ownership change',async t=>{
  const f=await fixture(t),p=await f.preview(),plan=JSON.parse(f.store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(p.id).preview_json).tree,childId=plan.branchMap[f.child.branch.id];

@@ -6,7 +6,7 @@ import {captureBranchHostCut} from './branch-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {validateBranchDefinition} from './branch-definition.js';
 type Row=Record<string,any>;
-const kinds=new Set(['frontier','definition','bindings','configuration','provenance','host','initial','checkpoint','transition','command','custody','import','trigger']);
+const kinds=new Set(['frontier','definition','bindings','configuration','provenance','host','initial','checkpoint','transition','command','custody','import','trigger','tree-import']);
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 const exact=(v:unknown,keys:string[])=>!!v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('|')===keys.sort().join('|');
 function noCredentials(value:unknown,depth=0):void {
@@ -22,9 +22,9 @@ function parseFact(f:BranchPortableRuntimeFact):any {
  if(!exact(f,['kind','key','json','sha256'])||!kinds.has(f.kind)||typeof f.key!=='string'||!f.key||typeof f.json!=='string'||sha(f.json)!==f.sha256)throw Error('Runtime evidence bytes or identity differ');
  const parsed=JSON.parse(f.json);noCredentials(parsed);return parsed;
 }
-export function validateBranchRuntimeData(value:unknown):BranchPortableRuntimeData {
+export function validateBranchRuntimeData(value:unknown,called=false):BranchPortableRuntimeData {
  const d=value as BranchPortableRuntimeData;
- if(!exact(d,['schema','sourceBranchId','identities','owners','sha256'])||d.schema!=='ponderosa.branch-runtime-data.v1'||typeof d.sourceBranchId!=='string'||!d.sourceBranchId||!Array.isArray(d.owners)||!d.owners.length||d.owners.length>1000||Buffer.byteLength(stableJson(d))>32*1024*1024)throw Error('Invalid or oversized Branch runtime data');
+ if(!exact(d,['schema','sourceBranchId','identities','owners','sha256'])||d.schema!=='ponderosa.branch-runtime-data.v1'||typeof d.sourceBranchId!=='string'||!d.sourceBranchId||!Array.isArray(d.owners)||(!called&&!d.owners.length)||d.owners.length>1000||Buffer.byteLength(stableJson(d))>32*1024*1024)throw Error('Invalid or oversized Branch runtime data');
  if(payloadHash({schema:d.schema,sourceBranchId:d.sourceBranchId,identities:d.identities,owners:d.owners})!==d.sha256)throw Error('Runtime manifest hash differs');
  if(!exact(d.identities,['chats','agents'])||!d.identities.chats||!d.identities.agents||Array.isArray(d.identities.chats)||Array.isArray(d.identities.agents)||new Set(Object.values(d.identities.chats)).size!==Object.keys(d.identities.chats).length)throw Error('Invalid runtime identity inventory');
  if(Object.entries(d.identities.chats).some(([id,ref])=>!id||typeof ref!=='string'||!ref))throw Error('Invalid runtime Chat identities');
@@ -39,10 +39,13 @@ export function validateBranchRuntimeData(value:unknown):BranchPortableRuntimeDa
   for(const f of o.facts){const key=f.kind+':'+f.key;if(seen.has(key))throw Error('Duplicate runtime evidence');seen.add(key);parseFact(f);}
   for(const kind of ['frontier','definition','bindings','configuration','provenance'])if(o.facts.filter(f=>f.kind===kind).length!==1)throw Error('Incomplete runtime owner pins');
   const frontier=JSON.parse(o.facts.find(f=>f.kind==='frontier')!.json),e=frontier.execution?.[0];
-  if(frontier.execution?.length!==1||e?.id!==o.sourceExecutionId||e.branch_id!==o.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||!['manual','automatic'].includes(e.admission_source)||typeof e.input_text!=='string'||typeof e.input_hash!=='string'||!/^[a-f0-9]{64}$/u.test(e.input_hash))throw Error('Portable runtime data requires standalone owners with an original input identity');
+  if(frontier.execution?.length!==1||e?.id!==o.sourceExecutionId||e.branch_id!==o.sourceBranchId||(!called&&(e.parent_execution_id||e.parent_attempt_id))||!(called?['manual','automatic','call']:['manual','automatic']).includes(e.admission_source)||typeof e.input_text!=='string'||typeof e.input_hash!=='string'||!/^[a-f0-9]{64}$/u.test(e.input_hash))throw Error('Portable runtime data requires standalone owners with an original input identity');
   const provenance=JSON.parse(o.facts.find(f=>f.kind==='provenance')!.json);
   const imported=o.facts.filter(f=>f.kind==='import');
-  if(provenance.source==='portable_runtime_data'){
+  if(o.facts.some(f=>f.kind==='tree-import')&&!(called&&provenance.source==='portable_runtime_data'&&provenance.tree===true))throw Error('Private tree manifest has no matching provenance');
+  if(called&&provenance.source==='portable_runtime_data'&&provenance.tree===true){
+   if(o.facts.filter(f=>f.kind==='tree-import').length!==1||e.admitted_at||e.admission_json)throw Error('Tree data owner has no original acceptance');
+  }else if(provenance.source==='portable_runtime_data'){
    if(imported.length!==1||e.admitted_at||e.admission_json)throw Error('Re-exported data owner has no original acceptance');
    const original=JSON.parse(imported[0]!.json),receipt=original.receipt;
    if(!exact(original,['receipt','data']))throw Error('Re-export source manifest differs');
@@ -58,6 +61,8 @@ export function validateBranchRuntimeData(value:unknown):BranchPortableRuntimeDa
     if(trigger.length!==1||typeof provenance.occurrenceId!=='string'||e.occurrence_key!==`trigger:${provenance.occurrenceId}`)throw Error('Automatic runtime occurrence provenance differs');
     const evidence=JSON.parse(trigger[0]!.json),row=evidence.occurrence;
     if(evidence.currentAuthority!==false||!['retained_data','unavailable_held'].includes(evidence.disposition)||evidence.disposition==='retained_data'&&(!row||row.id!==provenance.occurrenceId||row.branch_execution_id!==e.id||row.branch_id!==e.branch_id||row.input_hash!==e.input_hash))throw Error('Runtime trigger occurrence evidence differs');
+   }else if(called&&e.admission_source==='call'){
+    if(!e.parent_execution_id||!e.parent_attempt_id)throw Error('Call owner requires exact parent ancestry');
    }else if(e.admission_source!=='manual'||e.input_hash!==payloadHash({input:e.input_text,source:'manual'}))throw Error('Runtime original input identity differs');
   }
   const definitionFact=o.facts.find(f=>f.kind==='definition')!,bindingFact=o.facts.find(f=>f.kind==='bindings')!;
@@ -71,13 +76,13 @@ export function validateBranchRuntimeData(value:unknown):BranchPortableRuntimeDa
  return d;
 }
 /** Exact saved bytes plus shared selected/host codecs; never operational SQLite rows. */
-export function captureBranchRuntimeData(db:Database.Database,branchId:string,chatRefs:Record<string,string>,agentRefs:Record<string,{chatRef:string;agentRef:string}>):BranchPortableRuntimeData|undefined {
+export function captureBranchRuntimeData(db:Database.Database,branchId:string,chatRefs:Record<string,string>,agentRefs:Record<string,{chatRef:string;agentRef:string}>,called=false):BranchPortableRuntimeData|undefined {
  return db.transaction(()=>{
   const rows=db.prepare('SELECT id,parent_execution_id,admission_source,configuration_json,provenance_json,version_id,binding_revision_id,admitted_at,admission_json FROM branch_executions WHERE branch_id=? ORDER BY created_at,id').all(branchId) as Row[];
-  if(!rows.length)return undefined;
+  if(!rows.length&&!called)return undefined;
   if(rows.length>1000)throw Error('Portable runtime owner bound exceeded');
   const owners:BranchPortableRuntimeOwner[]=rows.map(e=>{
-   if(e.parent_execution_id||!['manual','automatic'].includes(e.admission_source)||db.prepare('SELECT 1 FROM branch_executions WHERE parent_execution_id=?').get(e.id))throw Error('Full runtime export currently requires standalone execution owners; called trees cannot be omitted');
+   if(!called&&(e.parent_execution_id||!['manual','automatic'].includes(e.admission_source)||db.prepare('SELECT 1 FROM branch_executions WHERE parent_execution_id=?').get(e.id)))throw Error('Full runtime export currently requires standalone execution owners; called trees cannot be omitted');
    const facts:BranchPortableRuntimeFact[]=[],add=(kind:BranchPortableRuntimeFact['kind'],key:string,json:string)=>{const fact={kind,key,json,sha256:sha(json)};parseFact(fact);facts.push(fact);};
    const selected=selectBranchUnit(db,e.id);add('frontier','current',stableJson(selected));
    for(const [kind,table,id,column] of [['definition','branch_versions',e.version_id,'definition_json'],['bindings','branch_bindings',e.binding_revision_id,'bindings_json']] as const){
@@ -92,7 +97,12 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
     const occurrence=db.prepare('SELECT id,trigger_id,occurrence_key,branch_id,branch_execution_id,payload_json,provenance_json,trigger_snapshot_json,payload_media_type,input_hash,activation_config_json,state,occurred_at,created_at,updated_at FROM trigger_occurrences WHERE id=? AND branch_execution_id=? AND branch_id=?').get(origin.occurrenceId,e.id,branchId);
     add('trigger','original',stableJson(occurrence?{disposition:'retained_data',occurrence,currentAuthority:false}:{disposition:'unavailable_held',occurrenceId:origin.occurrenceId,reason:'Original occurrence bytes are unavailable; no trigger is recreated',currentAuthority:false}));
    }
-   if(origin.source==='portable_runtime_data'){
+   if(origin.source==='portable_runtime_data'&&origin.tree===true){
+    if(e.admitted_at||e.admission_json)throw Error('Imported tree data owner acquired acceptance');
+    const manifest=db.prepare("SELECT input_hash,result_json FROM branch_commands WHERE command_key=?").get(`portable-runtime-tree-manifest:${payloadHash(origin.planId)}`) as Row|undefined;
+    if(!manifest||payloadHash(JSON.parse(manifest.result_json))!==manifest.input_hash)throw Error('Imported private runtime tree unavailable or changed');
+    add('tree-import','original',manifest.result_json);
+   }else if(origin.source==='portable_runtime_data'){
     if(e.admitted_at||e.admission_json)throw Error('Imported data owner acquired acceptance');
     const manifest=db.prepare("SELECT c.input_hash,c.result_json FROM branch_commands c JOIN branch_executions x ON x.id=c.execution_id WHERE x.branch_id=? AND c.command_key=?").get(branchId,`portable-runtime-manifest:${payloadHash(origin.planId)}`) as Row|undefined;
     if(!manifest||payloadHash(JSON.parse(manifest.result_json))!==manifest.input_hash)throw Error('Imported private runtime manifest unavailable or changed');
@@ -107,6 +117,6 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
    const refs=(db.prepare('SELECT id FROM conversations WHERE branch_execution_id=? ORDER BY id').all(e.id) as Row[]).map(c=>{if(!chatRefs[c.id])throw Error('Execution-owned Chat is absent from the package');return chatRefs[c.id]!;});
    const owner={sourceExecutionId:e.id,sourceBranchId:branchId,chatRefs:refs,facts};return {...owner,sha256:payloadHash(owner)};
   });
-  const data={schema:'ponderosa.branch-runtime-data.v1' as const,sourceBranchId:branchId,identities:{chats:chatRefs,agents:agentRefs},owners};return validateBranchRuntimeData({...data,sha256:payloadHash(data)});
+  const data={schema:'ponderosa.branch-runtime-data.v1' as const,sourceBranchId:branchId,identities:{chats:chatRefs,agents:agentRefs},owners};return validateBranchRuntimeData({...data,sha256:payloadHash(data)},called);
  }).deferred();
 }
