@@ -7,7 +7,7 @@ import type {
   BrowserFrameMetadata,
   BrowserViewportSize,
 } from "@ponderosa/core";
-import { BrowserOperatorObservationClient } from "@ponderosa/core";
+import { browserOwnerFromId, BrowserOperatorObservationClient } from "@ponderosa/core";
 import { requestJson } from "../../api/real";
 import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
@@ -51,9 +51,10 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
 }
 
 export function projectBrowserAdapter(projectId: string, destinationProjectId?: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
+  const owner = browserOwnerFromId(projectId);
   return {
     queryKey: queryKeys.projectBrowser.project(projectId),
-    ...(destinationProjectId ? {recordingProjectId:destinationProjectId,sharedRecording:{projectId:destinationProjectId,...(projectId.startsWith("chat:v1:")?{conversationId:projectId.slice("chat:v1:".length)}:{})}} : {}),
+    ...(destinationProjectId ? {recordingProjectId:destinationProjectId,sharedRecording:{projectId:destinationProjectId,...(owner?.kind === "chat" ? {conversationId:owner.conversationId} : {})}} : {}),
     observations: operatorObservations(`/api/projects/${encodeURIComponent(projectId)}/browser`),
     get: () => api.getProjectBrowser(projectId),
     open: (url) => api.openProjectBrowser(projectId, url),

@@ -105,3 +105,26 @@ export async function savedRecordingProjectSwitchRegression():Promise<void>{
   await render('B');noA();assert(localStorage.getItem(legacy)===original,'foreign legacy command untouched');await render('A');assert(document.body.textContent?.includes('Original start'),'legacy original scope recovery remains available');assert(starts===1&&stops===1,'switches never replay effects');
  }finally{root.unmount();host.remove();api.listConversations=list;for(const [name,value] of prior){if(value===null)localStorage.removeItem(name);else localStorage.setItem(name,value);}}
 }
+
+// Exercise the actual adapter boundary used by ProjectBrowserDialog, not a synthetic shared scope.
+export async function canonicalChatRecordingOwnerRegression():Promise<void>{
+ const {chatBrowserOwnerId}=await import('@ponderosa/core');
+ const {projectBrowserAdapter}=await import('../../apps/web/src/components/browser/browserAdapters');
+ const adapter=projectBrowserAdapter(chatBrowserOwnerId('canonical-chat'),'canonical-project');
+ assert(adapter.sharedRecording?.conversationId==='canonical-chat','canonical owner binds immutable Chat');
+ assert(adapter.sharedRecording?.projectId==='canonical-project','destination retains actual Project');
+ assert(!projectBrowserAdapter('saved-browser','canonical-project').sharedRecording?.conversationId,'saved browser still requires explicit Chat choice');
+ assert(!projectBrowserAdapter('chat:v1:canonical-chat','canonical-project').sharedRecording?.conversationId,'obsolete prefix does not infer Chat authority');
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const session:any={id:'canonical-owner-session',controlEpoch:7,status:'ready',controlOwner:'operator',activePageId:'page',pages:[{id:'page'}]};
+ let inspected=false;
+ adapter.observations={recordingStatus:async(input:any)=>{assert(input.destination?.conversationId==='canonical-chat','status uses immutable owner Chat');inspected=true;return {};}} as any;
+ try{
+  root.render(<BrowserObservations adapter={adapter} session={session} pageId="page"/>);await settle();
+  button('Console & recording').click();await settle();
+  assert(document.body.textContent?.includes('canonical-project / canonical-chat'),'visible canonical destination');
+  assert(!Array.from(document.querySelectorAll('button')).some(item=>item.textContent==='Load destination Chats'),'Chat owner has no saved-browser selector');
+  assert(!(button('Inspect recording status') as HTMLButtonElement).disabled,'canonical Chat status needs no selector choice');
+  button('Inspect recording status').click();await settle();assert(inspected,'status reaches actual adapter destination boundary');
+ }finally{root.unmount();host.remove();}
+}
