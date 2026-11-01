@@ -28,10 +28,10 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
   <Typography component="h3" variant="subtitle1">{titles[kind]}</Typography>
   <Button disabled={query.isFetching} onClick={()=>{setSelected('');setGeneration(value=>value+1);}}>Restart {titles[kind].toLowerCase()}</Button>
   {query.isFetching&&<Typography role="status">Reading canonical inventory…</Typography>}
-  {query.error&&<Alert severity="warning">{query.error.message} Prior selections and confirmations are cleared. Explicitly restart this inventory.</Alert>}
+  {query.error&&<Alert severity="warning">{query.error.message} · selections + confirmations cleared · explicitly restart inventory</Alert>}
   {!query.isError&&<>
    <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Loaded {items.length} · revision {revision??'pending'} · {query.isPending?'reading first page':query.hasNextPage?'more entries available':'end of inventory'}</Typography>
-   {Boolean(pages[0]?.unverifiedEvidenceCount)&&<Alert severity="warning">{pages[0].unverifiedEvidenceCount} unverified evidence files remain quarantined or unrecognized. They supply no selectable operation IDs.</Alert>}
+   {Boolean(pages[0]?.unverifiedEvidenceCount)&&<Alert severity="warning">{pages[0].unverifiedEvidenceCount} unverified evidence files · quarantined/unrecognized · no selectable operation IDs</Alert>}
    <TextField select label={titles[kind]} value={target?selected:''} disabled={query.isFetching} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose canonical identity</MenuItem>{items.map(item=><MenuItem key={identity(item)} value={identity(item)}>{label(item)}</MenuItem>)}</TextField>
    {query.hasNextPage&&<Button disabled={query.isFetching} onClick={()=>void query.fetchNextPage()}>Load more {titles[kind].toLowerCase()}</Button>}
   </>}
@@ -53,18 +53,18 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
     <BranchLifecycleReview source={target.source} captureKey={target.captureKey}/>
    </>}
    <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Evidence SHA256 {target.evidenceSha256}</Typography>
-   <Alert severity="info">Retained-only identity is audit evidence. It does not prove deletion, drain, current authority or action eligibility. The exact current review remains required.</Alert>
+   <Alert severity="info">Retained identity · audit only · no deletion/drain/authority/eligibility proof · current review required</Alert>
   </Stack>}
  </Stack></Paper>;
 }
 export function LifecycleDiscovery():JSX.Element {
  return <Stack spacing={2}>
-  <Typography>Canonical current, deleted-owner and retained audit identities. Load more until the inventory ends. Discovery reveals identities and hashes; existing reviews decide eligibility.</Typography>
+  <Typography>Discovery · current / deleted-owner / retained identities + hashes · load all pages · eligibility requires current review</Typography>
   <Inventory kind="imports"/>
   <Inventory kind="destinations"/>
   <Inventory kind="captures"/>
   <Inventory kind="groupCaptures"/>
   <RetainedGroupCaptureAbandonments/>
-  <Alert severity="warning">Only reviewed unsealed whole-group captures can use group abandonment. Fully retained groups, unknown outcomes and history/disk reclamation stay held; no singular abandonment loop is authorized.</Alert>
+  <Alert severity="warning">Abandonment · reviewed unsealed whole groups only · fully retained/unknown groups held · no history/disk reclamation or singular loop</Alert>
  </Stack>;
 }

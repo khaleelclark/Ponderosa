@@ -38,7 +38,7 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
     :!query.data&&query.isError?<Alert severity="error" action={<Button color="inherit" onClick={()=>void query.refetch({cancelRefetch:false})}>Retry</Button>}>{section==='activeExecutions'?'Active executions':'Recent outcomes'} could not be loaded.</Alert>
     :!query.data?<Typography color="text.secondary">Loading {section==='activeExecutions'?'active executions':'recent outcomes'}…</Typography>
     :<Paper variant="outlined" sx={{p:2}}><Typography color="text.secondary">{section==='activeExecutions'?'No executions are active right now.':'Finished workflow executions will appear here.'}</Typography></Paper>}
-   {query.isFetchNextPageError?<Alert severity="warning">The next page could not be loaded. Current results are still available.</Alert>:null}
+   {query.isFetchNextPageError?<Alert severity="warning">Next page unavailable · current results retained</Alert>:null}
    {query.hasNextPage?<Button sx={{alignSelf:'flex-start'}} disabled={query.isFetchingNextPage} onClick={()=>void query.fetchNextPage({cancelRefetch:false})}>{query.isFetchingNextPage?'Loading…':query.isFetchNextPageError?'Retry next page':section==='activeExecutions'?'Load more active executions':'Load more outcomes'}</Button>:null}
   </Stack>;
  };
@@ -50,7 +50,7 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
    </Box>
    {initialError||refreshError?<Alert severity={initialError?'error':'warning'} action={<Button color="inherit" aria-label="Retry workflow Home" onClick={retry}>Retry</Button>}>{initialError?'Workflow Home could not be loaded.':'Home could not refresh. Last loaded counts and cards are still available.'}</Alert>:null}
    {enginesError?<Alert severity="warning" action={<Button color="inherit" onClick={onRetryEngines}>Retry</Button>}>Provider health could not refresh. {enginesLoaded?'Showing the last loaded provider state. ':''}Script-only workflows can still run.</Alert>
-    :enginesLoaded&&provider.severity==='warning'?<Alert severity="warning" action={<Button color="inherit" onClick={()=>onNavigate({tab:'workflow',global:'providers'})}>Provider Settings</Button>}>Provider access for Agent steps needs attention. Script-only workflows can still run.</Alert>:null}
+    :enginesLoaded&&provider.severity==='warning'?<Alert severity="warning" action={<Button color="inherit" onClick={()=>onNavigate({tab:'workflow',global:'providers'})}>Provider Settings</Button>}>Agent provider access needs attention · Script-only workflows available</Alert>:null}
    {data?.workflowCount===0?<HomeFirstItem icon={<AccountTreeOutlinedIcon color="action" sx={{fontSize:42,mb:1}}/>} title="Start Your First Workflow" description="Build a repeatable workflow or import a Branch package.">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent="center"><Button variant="contained" startIcon={<AddIcon/>} disabled={creating} onClick={onCreate}>{creating?'Creating workflow…':'New workflow'}</Button><Button startIcon={<FileUploadOutlinedIcon/>} onClick={onImport}>Import workflow</Button></Stack>
    </HomeFirstItem>:null}

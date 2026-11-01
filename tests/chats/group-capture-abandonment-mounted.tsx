@@ -45,7 +45,7 @@ export async function groupCaptureAbandonmentRegression():Promise<void>{
   assert(Boolean(localStorage.getItem(key)),'FS/SQL409 retains original command');assert(posts.filter(p=>p.url.endsWith('/abandon')).length===1,'no automatic replay');
   button('Close').click();await settle();button('Restart whole-group capture intents').click();await settle();await select('issued-group-capture:'+'0'.repeat(64));stalePage=true;button('Load more whole-group capture intents').click();await settle();assert(!button('Review whole-group capture abandonment'),'cursor409 unmounts stale review and confirmation');
   ownerRemoved=true;root.unmount();root=createRoot(host);client.clear();render();await settle();button('Recover retained whole-group command').click();await settle();
-  assert(document.body.textContent?.includes('uncaptured members'),'all original members retained through remount');
+  assert(document.body.textContent?.includes('1 captured / 1 uncaptured'),'all original member counts retained through remount');
   button('Recover exact whole-group command').click();await settle();button('Confirm whole-group abandonment').click();await settle();
   const mutations=posts.filter(p=>p.url.endsWith('/abandon'));assert(mutations.length===2&&JSON.stringify(mutations[0].body)===JSON.stringify(mutations[1].body),'explicit recovery uses byte-identical original POST');
   assert(!localStorage.getItem(key),'only exact exhaustive receipt clears pending');assert(!document.body.textContent?.includes('PRIVATE RAW SNAPSHOT'),'raw Branch snapshot undisplayed');

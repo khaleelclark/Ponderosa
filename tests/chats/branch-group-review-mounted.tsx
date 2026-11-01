@@ -51,7 +51,7 @@ export async function branchGroupReviewRegression(scope:'standalone'|'owner_tree
  const confirm=async()=>{await settle();button('Confirm exact group action').click();await settle();};
  const acknowledge=async()=>{check('I reviewed every original fact, actor, audience, mapped recipient, every resource identity and current policy');await settle();};
  try{
-  await open();assert(document.body.textContent?.includes('no separate workspace'),'directory reuse warning');
+  await open();assert(document.body.textContent?.includes('Shared existing Project directory · no separate workspace or working copy'),'visible directory reuse warning');assert(document.body.textContent?.includes('Each owner · original Project audit access · current policy · fresh acceptance budget'),'per-owner consent prerequisites remain visible');
   button(scope==='owner_tree'?'Preview called owner tree':'Preview authoritative capture cut').click();await settle();assert(button('Capture exact resource cut').disabled,'stale preview cannot capture');
   button(scope==='owner_tree'?'Preview called owner tree':'Preview authoritative capture cut').click();await settle();check('I reviewed the complete server capture inventory and exact cut hashes');await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Capture exact resource cut').click();await confirm();
   assert(sent.length===1,'one capture attempt');if(scope==='owner_tree')assert(JSON.parse(localStorage.getItem(storageKey)!).capture.preview.owners[1].executionId==='child-source','whole original tree saved before capture');assert(localStorage.getItem(storageKey)?.includes('pending'),'lost capture retained');

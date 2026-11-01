@@ -68,16 +68,16 @@ export function BranchHistoryReview({branchId,executionId,enabled,onChanged}:{br
     <TextField select label="Action" value={action} disabled={locked||loadReview.isPending} onChange={event=>{reset();setAction(event.target.value as Action);}}>
      <MenuItem value="adopt">Start reviewed Request</MenuItem><MenuItem value="restore" disabled={!historyActionAvailable('restore',checkpoint)}>Restore Request graph</MenuItem><MenuItem value="rewind" disabled={!historyActionAvailable('rewind',checkpoint)}>Rewind Run with Request graph</MenuItem>
     </TextField>
-    {checkpoint&&!checkpoint.restoreSupported&&<Alert severity="info">Graph restoration and rewind unavailable for this checkpoint. Individual Request review remains available.</Alert>}
+    {checkpoint&&!checkpoint.restoreSupported&&<Alert severity="info">Checkpoint restore/rewind unavailable · individual Request review available</Alert>}
     {action==='adopt'&&<TextField label="Source Request ID" value={requestId} disabled={locked||loadReview.isPending} onChange={event=>{reset();setRequestId(event.target.value);}}/>}
     <Button disabled={!enabled||!available||locked||loadReview.isPending||!checkpoint||action==='adopt'&&!requestId.trim()} onClick={()=>{clearReview();submit.reset();loadReview.mutate();}}>Review current scope</Button>
     {loadReview.error&&<Alert severity="error">{loadReview.error.message}</Alert>}
-    {unconfirmed&&!submit.error&&<Alert severity="warning">Earlier submission unconfirmed. Reconcile the retained submission before starting another action.</Alert>}
+    {unconfirmed&&!submit.error&&<Alert severity="warning">Earlier submission unconfirmed · reconcile retained submission before another action</Alert>}
     {submit.error&&<Alert severity="warning">{unconfirmed?'Submission unconfirmed. Keep this dialog open; reconcile the same submission.':submit.error.message}</Alert>}
     {review&&<>
      <Typography variant="subtitle2">Source: {branchId} · {executionId} · checkpoint {checkpoint?.id}</Typography>
      <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Checkpoint hash: {checkpoint?.contentHash}</Typography>
-     <Alert severity="info">Historical facts remain evidence. Completed effects are not replayed.</Alert>
+     <Alert severity="info">Historical facts · evidence only · no completed-effect replay</Alert>
      {requests.map(item=><Stack key={item.source.requestId} spacing={1}>
       <Typography fontWeight={600}>Request {item.source.requestId} · saved {item.request.state} v{item.request.version} · current {item.current.requestState} v{item.current.requestVersion}</Typography>
       <Typography variant="body2">Project {item.request.projectId} · Chat {item.request.conversationId} · recipient {item.request.recipientAgentId} · requester {item.request.requesterAgentId??'User'}</Typography>

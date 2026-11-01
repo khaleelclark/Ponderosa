@@ -46,7 +46,7 @@ abandonment and retained historical audit. New canonical deletion retains exact 
 old erased proof remains unavailable. Audit is evidence-only, never action authority.
 Precleanup/deletion guards and private historical projections remain intact.
 
-M5 tracks explanatory UI prose cleanup. Claude native compaction/fresh occupancy is delivered in source; lost native outcomes and original source effects remain M2/M3. Package,
+M5 source cleanup is integrated: [UI copy census](phase2-ui-copy-census.md) inventories concise labels/evidence rows and retained consequential consent. Exact authored facts and policy/server content remain verbatim; no visual #29 verdict is claimed. Claude native compaction/fresh occupancy is delivered in source; lost native outcomes and original source effects remain M2/M3. Package,
 provider/native/runtime, end-to-end, accessibility/mobile and all Bible/Build qualification
 remain deferred, as does F1 fixture-source repair. Deferred UI sources include
 branch-owner-tree-group.test.mjs and branch-group-review-mounted.tsx; neither was run.

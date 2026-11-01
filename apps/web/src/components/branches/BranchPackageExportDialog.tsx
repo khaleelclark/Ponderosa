@@ -11,12 +11,12 @@ export function BranchPackageExportDialog({source,pending,error,onCancel,onConfi
  const files=allFolders?Object.fromEntries((agents.data??[]).map(agent=>[agent.id,{wholeWorkingFolder:true}])):Object.fromEntries(Object.entries(choices).map(([id,choice])=>[id,choice.selectedWorkingFiles?{selectedWorkingFiles:choice.selectedWorkingFiles.filter(path=>path.trim())}:choice]));
  return <FullPackageExportDialog name={source.name} pending={pending} confirmDisabled={agents.isFetching||!agents.data||agents.isError} error={error??agents.error?.message} onCancel={onCancel} onConfirm={async()=>{if(!agents.data||agents.isError)return;await onConfirm(files);}}>
   <Stack spacing={1} sx={{mt:2}}>
-   <Typography>Working files are optional. Credentials, native ownership and sessions remain excluded.</Typography>
+   <Typography>Working files optional · credentials, native ownership and sessions excluded</Typography>
    {agents.isError&&<Alert severity="error" action={<Button onClick={()=>void agents.refetch()}>Retry</Button>}>Could not load Agents.</Alert>}
    <FormControlLabel control={<Checkbox disabled={pending||!agents.data} checked={allFolders} onChange={event=>setAllFolders(event.target.checked)}/>} label="Include all workflow Agent working folders"/>
    {!allFolders&&agents.data?.map(agent=><Stack key={agent.id} spacing={1}>
     <TextField select disabled={pending} label={`Working files: ${agent.chatTitle} · ${agent.title}`} value={choices[agent.id]?.wholeWorkingFolder?'whole':choices[agent.id]?.selectedWorkingFiles?'selected':''} onChange={event=>setChoices(current=>{const next={...current};if(!event.target.value)delete next[agent.id];else next[agent.id]=event.target.value==='whole'?{wholeWorkingFolder:true}:{selectedWorkingFiles:[]};return next;})}><MenuItem value="">No working files</MenuItem><MenuItem value="whole">Whole working folder</MenuItem><MenuItem value="selected">Select relative files</MenuItem></TextField>
-    {choices[agent.id]?.selectedWorkingFiles&&<TextField multiline minRows={2} disabled={pending} label={`Relative file paths: ${agent.title}`} value={choices[agent.id].selectedWorkingFiles!.join('\n')} onChange={event=>setChoices(current=>({...current,[agent.id]:{selectedWorkingFiles:event.target.value.split('\n')}}))} helperText="One relative path per line. Server path and credential checks apply."/>}
+    {choices[agent.id]?.selectedWorkingFiles&&<TextField multiline minRows={2} disabled={pending} label={`Relative file paths: ${agent.title}`} value={choices[agent.id].selectedWorkingFiles!.join('\n')} onChange={event=>setChoices(current=>({...current,[agent.id]:{selectedWorkingFiles:event.target.value.split('\n')}}))} helperText="One relative path per line · server path/credential checks required"/>}
    </Stack>)}
   </Stack>
  </FullPackageExportDialog>;

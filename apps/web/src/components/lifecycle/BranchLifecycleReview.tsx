@@ -26,7 +26,7 @@ export function BranchLifecycleReview({source,enabled=true,captureKey}:{source:C
  const preview=useMutation({retry:false,mutationFn:async()=>{
   const version=epoch.current;
   const value=await requestJson<CheckpointCaptureAbandonmentReviewDto>('/api/lifecycle/checkpoint-captures/abandonment-review',{method:'POST',body:JSON.stringify({source,captureKey:capture})});
-  if(value.custodyId!==review.data?.custodyId||value.branchRevision!==review.data?.revision)throw Error('Capture or Branch scope changed. Refresh evidence.');return {value,version};
+  if(value.custodyId!==review.data?.custodyId||value.branchRevision!==review.data?.revision)throw Error('Capture/Branch scope changed · refresh evidence');return {value,version};
  },onSuccess:({value,version})=>{if(version===epoch.current){setCaptureReview(value);setAck(false);}},onError:error=>{setNotice(error.message);setCaptureReview(undefined);setAck(false);}});
  const send=useMutation({retry:false,mutationFn:async(command:LifecycleCommand)=>{
   if(readOnly||!['/api/lifecycle/branch-custody/retire-checkpoints','/api/lifecycle/checkpoint-captures/abandon'].includes(command.path)||!('source' in command.body)||!sameLifecycleInput(command.body.source,source))throw Error('Branch lifecycle scope unavailable.');
@@ -34,7 +34,7 @@ export function BranchLifecycleReview({source,enabled=true,captureKey}:{source:C
   const receipt=await requestJson(command.path,{method:'POST',body:JSON.stringify(command.body)});
   if(!lifecycleReceiptMatches(command,receipt))throw Error('Receipt differs from the retained command.');
   setReceipt(receipt);localStorage.removeItem(key);setPending(undefined);setNotice('Canonical disposition confirmed; original evidence remains preserved.');void refresh();
- },onError:error=>{setNotice(`Outcome unconfirmed; no automatic retry. ${error.message}`);if(error instanceof ApiRequestError&&error.status===409)void refresh();},onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
+ },onError:error=>{setNotice(`Outcome unconfirmed · no automatic retry · ${error.message}`);if(error instanceof ApiRequestError&&error.status===409)void refresh();},onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
  const value=review.data;
  const refs=(Array.isArray(value?.references)?value.references:[]).filter((item):item is Record<string,unknown>=>Boolean(item&&typeof item==='object'));
  const checkpoints=refs.filter(item=>item.kind==='checkpoint'&&item.ownerId===source.intent.executionId&&typeof item.key==='string'&&/^[1-9]\d*$/.test(item.key)&&Number.isSafeInteger(Number(item.key))&&typeof item.sha256==='string');
@@ -50,7 +50,7 @@ export function BranchLifecycleReview({source,enabled=true,captureKey}:{source:C
   <Button disabled={busy} onClick={()=>void refresh()}>Refresh owner references</Button>
   {restored.error&&<Alert severity="error">{restored.error}</Alert>}
   {review.error&&<Alert severity="error">{review.error.message}</Alert>}{notice&&<Alert severity="info">{notice}</Alert>}
-  <Alert severity="warning">Preserve all original package bytes and selected snapshot rows. Unknown effects and other source pins stay held.</Alert>
+  <Alert severity="warning">Original package bytes + selected snapshots preserved · unknown effects and other source pins held</Alert>
   {value&&!review.isError&&<><details><summary>Exact source, revision and blockers</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:320,overflow:'auto',fontSize:12}}>{JSON.stringify(value,null,2)}</Typography></details>
    {checkpoints.map(item=><FormControlLabel key={String(item.key)} control={<Checkbox checked={selected.includes(String(item.key))} disabled={busy||Boolean(pending)||selected.length>=128&&!selected.includes(String(item.key))} onChange={(_,checked)=>{setSelected(previous=>checked?[...previous,String(item.key)]:previous.filter(id=>id!==item.key));setAck(false);setConfirm(undefined);}}/>} label={`Retire checkpoint ${item.key} · ${item.sha256}`}/>)}
    <Typography variant="caption">Initial checkpoints are never selected automatically or retired here.</Typography>
@@ -62,7 +62,7 @@ export function BranchLifecycleReview({source,enabled=true,captureKey}:{source:C
    <Button color="error" disabled={!ready||!captureReview||Boolean(captureReview?.references.length||captureReview?.blockers.length)} onClick={()=>stage('capture')}>Abandon reviewed capture</Button>
   </>}
   {receipt!==undefined&&<details><summary>Canonical disposition receipt</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(receipt,null,2)}</Typography></details>}
-  {pending&&<><Alert severity="warning">Exact command retained. No pure command receipt lookup is provided for this operation. Retry only the unchanged input.</Alert><Button disabled={busy||readOnly} onClick={()=>setConfirm(pending)}>Retry exact lifecycle command</Button></>}
+  {pending&&<><Alert severity="warning">Exact command retained · no receipt GET · deliberate retry: unchanged input only</Alert><Button disabled={busy||readOnly} onClick={()=>setConfirm(pending)}>Retry exact lifecycle command</Button></>}
  </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={()=>{reset();setOpen(false);}}>Close</Button></DialogActions></Dialog>
  <ConfirmDialog open={Boolean(confirm)} title="Preserve evidence and retire this state?" confirmLabel="Confirm exact disposition" pending={send.isPending} confirmDisabled={readOnly||fence.current} onCancel={()=>setConfirm(undefined)} onConfirm={()=>{if(!confirm||fence.current)return;fence.current=true;send.mutate(confirm);}}><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{confirm?JSON.stringify(confirm.body,null,2):''}</Typography></ConfirmDialog></>;
 }

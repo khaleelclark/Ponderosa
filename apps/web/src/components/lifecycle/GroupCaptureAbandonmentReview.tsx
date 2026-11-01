@@ -27,8 +27,8 @@ export function GroupCaptureAbandonmentReview({entry,recoveryOnly=false}:{entry:
   localStorage.setItem(key,JSON.stringify(command));setPending(command);reset();setNotice('');
   const value=await requestJson(groupCaptureAbandonmentPath,{method:'POST',body:JSON.stringify(command.input)});
   if(!groupAbandonmentReceiptMatches(command,value))throw Error('Receipt differs from the original whole-group command or package inventory.');
-  setReceipt(groupAbandonmentReceiptSummary(value));localStorage.removeItem(key);setPending(undefined);setNotice('Whole-group abandonment confirmed. Original bytes are retained; disk space and history were not reclaimed.');
- },onError:error=>{setNotice(`Outcome unconfirmed. All group SQL cleanup pins must remain treated as held; partial filesystem progress is not success. ${error.message}`);if(error instanceof ApiRequestError&&error.status===409)reset();},onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
+  setReceipt(groupAbandonmentReceiptSummary(value));localStorage.removeItem(key);setPending(undefined);setNotice('Whole-group abandonment confirmed · original bytes retained · disk space and history were not reclaimed');
+ },onError:error=>{setNotice(`Outcome unconfirmed · all group SQL cleanup pins held · partial filesystem progress supplies no success proof · ${error.message}`);if(error instanceof ApiRequestError&&error.status===409)reset();},onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
  function commandInvalid(command:GroupAbandonmentCommand):boolean {
   return command.input.executionId!==entry.executionId||command.input.captureKey!==entry.captureKey||command.input.preserveEvidence!==true||command.input.reviewSha256!==command.review.reviewSha256||!groupAbandonmentReviewMatches(command.review,entry)||groupAbandonmentHeld(command.review);
  }
@@ -36,9 +36,9 @@ export function GroupCaptureAbandonmentReview({entry,recoveryOnly=false}:{entry:
  return <><Button onClick={()=>{reset();setOpen(true);}}>{recoveryOnly?'Recover retained whole-group command':'Review whole-group capture abandonment'}</Button>
   <Dialog open={open} fullWidth maxWidth="md" disableEscapeKeyDown={busy} onClose={()=>{if(!busy){reset();setOpen(false);}}}><DialogTitle>Whole-group capture abandonment</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
    <Typography sx={{overflowWrap:'anywhere'}}>Source Run {entry.executionId} · raw stored capture key {entry.captureKey} · {entry.sourceOwner} · evidence {entry.evidenceSha256}</Typography>
-   <Alert severity="warning">One whole-group disposition covers all {entry.sources.length} resources, Discovery recorded {entry.capturedCheckpointIds.length} captured and {entry.sources.length-entry.capturedCheckpointIds.length} uncaptured members; the current review supplies the authoritative package evidence. Every original byte and uncaptured identity is preserved. This does not reclaim disk space, retire history, delete source owners or replay external effects.</Alert>
-   <Alert severity="warning">Unknown effects, stale references and filesystem/SQL partial outcomes keep every group cleanup pin held. No member can be released separately; there is no singular fallback.</Alert>
-   {recoveryOnly&&<Alert severity="info">Saved canonical identity is historical recovery evidence. Current discovery may omit an already committed or removed owner. Only the exact saved command can be submitted here.</Alert>}
+   <Alert severity="warning"><Stack spacing={0.5}><Typography>Whole group · {entry.sources.length} resources · discovered: {entry.capturedCheckpointIds.length} captured / {entry.sources.length-entry.capturedCheckpointIds.length} uncaptured</Typography><Typography>Package evidence · current review required · all original bytes + uncaptured identities preserved</Typography><Typography>No disk reclamation · history retirement · source deletion · external-effect replay</Typography></Stack></Alert>
+   <Alert severity="warning">Unknown effects / stale references / partial filesystem or SQL outcomes · whole group pinned · no separate release or singular fallback</Alert>
+   {recoveryOnly&&<Alert severity="info">Historical saved identity · committed/removed owners may be absent from discovery · exact saved command only</Alert>}
    <Evidence title="Every original source and captured member identity" value={entry}/>
    {restored.error&&<Alert severity="error">{restored.error}</Alert>}{notice&&<Alert severity="warning">{notice}</Alert>}
    <Button disabled={busy||Boolean(pending)||recoveryOnly||Boolean(receipt)} onClick={()=>preview.mutate()}>Refresh whole-group abandonment review</Button>
@@ -46,11 +46,11 @@ export function GroupCaptureAbandonmentReview({entry,recoveryOnly=false}:{entry:
     <FormControlLabel control={<Checkbox checked={ack} disabled={readOnly||busy||Boolean(pending)} onChange={(_,value)=>{setAck(value);setConfirm(undefined);}}/>} label="I reviewed every captured and uncaptured member, file inventory, revision and blocker; preserve all evidence"/>
     <Button color="error" disabled={!ready} onClick={()=>{if(ready&&review)setConfirm({entry,review,input:{executionId:entry.executionId,captureKey:entry.captureKey,commandKey:createClientId(),reviewSha256:review.reviewSha256,preserveEvidence:true}});}}>Abandon reviewed whole-group capture</Button>
    </>}
-   {pending&&<><Alert severity="warning">Original whole-group command retained. No receipt GET exists. Recovery requires deliberate confirmation of the unchanged POST; no new hash or command will be substituted.</Alert><Evidence title="Original saved whole-group command and reviewed inventory" value={pending}/><Button disabled={busy||readOnly} onClick={()=>setConfirm(pending)}>Recover exact whole-group command</Button></>}
+   {pending&&<><Alert severity="warning">Original whole-group command retained · no receipt GET · recovery: confirm unchanged POST/hash/key</Alert><Evidence title="Original saved whole-group command and reviewed inventory" value={pending}/><Button disabled={busy||readOnly} onClick={()=>setConfirm(pending)}>Recover exact whole-group command</Button></>}
    {receipt!==undefined&&<Evidence title="Canonical whole-group disposition and retained package proofs" value={receipt}/>}
   </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={()=>{reset();setOpen(false);}}>Close</Button></DialogActions></Dialog>
   <ConfirmDialog open={Boolean(confirm)} title="Preserve evidence and abandon the whole group?" confirmLabel="Confirm whole-group abandonment" cancelLabel="Back" pending={send.isPending} confirmDisabled={readOnly||busy||Boolean(!pending&&!ready)} onCancel={()=>setConfirm(undefined)} onConfirm={()=>{if(!confirm||fence.current||readOnly||busy||!pending&&!ready)return;fence.current=true;send.mutate(confirm);}}>
-   <Typography>All captured and uncaptured members are one command. Bytes remain retained. Partial filesystem progress releases no subset of SQL pins.</Typography><Evidence title="Exact unchanged command" value={confirm?.input}/>
+   <Typography>Confirm one command for every captured/uncaptured member; bytes retained and all SQL pins held through partial filesystem progress</Typography><Evidence title="Exact unchanged command" value={confirm?.input}/>
   </ConfirmDialog>
  </>;
 }

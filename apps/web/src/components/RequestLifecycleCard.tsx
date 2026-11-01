@@ -457,7 +457,7 @@ export function RequestLifecycleCard({
             onConfirm={() => retry.mutateAsync()}
           >
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{resolvedRequestText ?? "Assignment description unavailable."}</Typography>
-            <Typography variant="body2" sx={{ mt: 1 }}>Earlier work or changes may already exist. Retrying starts another attempt and may duplicate changes. Review the activity first.</Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>Earlier effects unknown · retry starts another attempt and may duplicate changes · review activity first</Typography>
           </ConfirmDialog>
         </Box>
       </AccordionDetails>

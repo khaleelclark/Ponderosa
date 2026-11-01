@@ -551,7 +551,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           <Button disabled={!live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked} onClick={() => { stopAutomatic(); listen(); }}>Listen</Button>
           <Button disabled={!live || !checked || !text.trim() || recording || inFlight || recovering || blocked || Boolean(attempt.current)} onClick={() => { void send(); }}>Send turn</Button>
         </Stack>
-        <Typography variant="caption" color="text.secondary">Keep this page visible. Ending or reloading discards unsent words; accepted work continues.</Typography>
+        <Typography variant="caption" color="text.secondary">Keep page visible · ending/reloading discards unsent words · accepted work continues</Typography>
       </Stack>}
     </Stack></DialogContent>
   </Dialog>;

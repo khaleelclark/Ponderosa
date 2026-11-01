@@ -320,7 +320,7 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
       spacing={1}
       sx={{ px: 2, py: 0.75, borderBottom: 1, borderColor: "divider", color: "text.secondary" }}
     >
-      <Typography variant="caption">Syntax highlighting unavailable. Plain code is still readable.</Typography>
+      <Typography variant="caption">Syntax highlighting unavailable · plain code retained</Typography>
       <Button size="small" color="inherit" onClick={retry}>Retry highlighting</Button>
     </Stack> : null}
     <Box

@@ -84,17 +84,17 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
      </>}
     </>}
     {retained&&<>
-     <Alert severity="warning">Release unconfirmed. Inspect the retained command before retrying.</Alert>
+     <Alert severity="warning">Release unconfirmed · inspect retained command before retry</Alert>
      <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Command {retained.commandKey} · generation {retained.expectedGeneration} · custody {retained.expectedCustodyId} · receipt {retained.expectedReceiptSha256}</Typography>
      <Button disabled={busy} onClick={()=>inspectRelease.mutate()}>Inspect release outcome</Button>
-     {releaseStatus&&<Alert severity={releaseStatus.state==='released'?'success':'warning'}>{releaseStatus.state==='not_found'?'No command receipt found. Completion is unconfirmed.':releaseStatus.state==='releasing'?`Release pending or unknown. ${releaseStatus.error??''}`:'Released'}</Alert>}
+     {releaseStatus&&<Alert severity={releaseStatus.state==='released'?'success':'warning'}>{releaseStatus.state==='not_found'?'No receipt found · completion unconfirmed':releaseStatus.state==='releasing'?`Release pending or unknown. ${releaseStatus.error??''}`:'Released'}</Alert>}
      {inspectRelease.error&&<Alert severity="error">{inspectRelease.error.message}</Alert>}
      <Button color="error" disabled={!enabled||busy||!retryReady} onClick={()=>setConfirm('release')}>Retry exact release</Button>
     </>}
    </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={()=>setOpen(false)}>Close</Button></DialogActions>
   </Dialog>
   <ConfirmDialog open={Boolean(confirm)} title={confirm==='access'?'Apply reviewed restrictions?':retained?'Retry the retained release?':'Release retained checkpoint?'} confirmLabel={confirm==='access'?'Apply restrictions':'Release checkpoint'} cancelLabel="Back" pending={access.isPending||release.isPending} confirmDisabled={!enabled||busy||confirm==='access'&&!accessReady||confirm==='release'&&!(retained?retryReady:newRelease&&!inspection.isFetching)} onCancel={()=>setConfirm(undefined)} onConfirm={apply}>
-   <Typography>{confirm==='access'?'Uses the displayed destination policy hash and explicit per-Agent choices.':`Permanently removes retained package bytes and prevents future restoration. ${retained?'Uses the original command, generation and receipt.':'Uses the displayed generation and exact custody receipt.'}`}</Typography>
+   <Typography>{confirm==='access'?'Uses the displayed destination policy hash and explicit per-Agent choices.':`Permanently removes retained package bytes + future restoration · ${retained?'Uses the original command, generation and receipt.':'Uses the displayed generation and exact custody receipt.'}`}</Typography>
    {confirm==='access'&&<Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Destination {value?.destinationChatId} · policy {review?.reviewSha256}</Typography>}
    {confirm==='release'&&<Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Generation {retained?.expectedGeneration??value?.generation} · custody {retained?.expectedCustodyId??value?.custody?.custodyId} · receipt {retained?.expectedReceiptSha256??value?.custody?.receiptSha256}</Typography>}
   </ConfirmDialog>

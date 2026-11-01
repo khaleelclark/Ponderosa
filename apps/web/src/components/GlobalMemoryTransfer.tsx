@@ -28,7 +28,7 @@ export function GlobalMemoryTransfer():JSX.Element {
  const confirmImport=()=>work(async()=>{
   if(!review)return;
   const result=await post<{added:number}>('import',{snapshot:review.snapshot,selection:selectionOf(review.snapshot),reviewHash:review.reviewHash,acknowledge:true});
-  setReview(undefined);setNotice(`Transfer complete: ${result.added} records added. Destination permissions and grants remain unchanged.`);
+  setReview(undefined);setNotice(`Transfer complete · ${result.added} records added · permissions + grants unchanged`);
  });
  const confirmExport=()=>work(async()=>{
   if(!inventory)return;
@@ -38,19 +38,19 @@ export function GlobalMemoryTransfer():JSX.Element {
  });
  return <Paper variant="outlined" sx={{p:2.5}}><Stack spacing={2}>
   <Typography variant="h6" component="h2">Transfer selected global memory</Typography>
-  <Typography>Transfer global records separately from an Agent or organization package. Select each fact, required earlier version and conflict to include. Destination facts and conflicts are preserved for explicit resolution; this never overwrites them or changes permissions and read grants.</Typography>
-  <Alert severity="warning">Stored text and history may contain sensitive information. Review the selected content before downloading or importing it.</Alert>
+  <Stack spacing={0.5}><Typography>Separate memory transfer · select facts + required earlier versions + conflicts</Typography><Typography>Destination records/conflicts preserved · explicit resolution required</Typography><Typography>Unchanged · permissions + read grants</Typography></Stack>
+  <Alert severity="warning">Sensitive text/history · review selected content before download/import</Alert>
   <Stack direction="row" spacing={1}><Button disabled={busy} onClick={load}>Choose local records</Button><Button component="label" disabled={busy}>Choose transfer file<input hidden type="file" accept=".json,application/json" disabled={busy} onChange={event=>{const file=event.target.files?.[0];event.target.value='';if(file)void chooseFile(file);}} /></Button></Stack>
-  {source&&<Typography variant="body2">Source: {source.sourcePrincipal}. Nothing is selected automatically.</Typography>}
+  {source&&<Typography variant="body2">Source · {source.sourcePrincipal} · no automatic selection</Typography>}
   {source&&([...source.chunks.map(row=>({row,kind:'chunkIds' as const,label:'Fact'})),...source.conflicts.map(row=>({row,kind:'conflictIds' as const,label:'Conflict'}))]).map(({row,kind,label})=><Paper variant="outlined" key={`${kind}:${row.id}`} sx={{p:1}}>
    <FormControlLabel control={<Checkbox disabled={busy} checked={selection[kind].includes(row.id)} onChange={()=>toggle(kind,row.id)} />} label={`${label}: ${row.id}`} />
    <Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.text}</Typography><Typography variant="caption" component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({metadata:row.metadata,provenance:row.stamp},null,2)}</Typography>
   </Paper>)}
   {source&&<Button disabled={busy||!selection.chunkIds.length} onClick={incoming?preview:()=>setExportReview(true)}>{incoming?'Review selected import':'Download selected records'}</Button>}
   {error&&<Alert severity="error">{error}</Alert>}{notice&&<Alert severity="success">{notice}</Alert>}
-  <ConfirmDialog open={exportReview} title="Download selected global memory" confirmLabel="Download selected records" pending={busy} error={error} onCancel={()=>setExportReview(false)} onConfirm={confirmExport}><Typography>Download {selection.chunkIds.length} selected facts and {selection.conflictIds.length} conflicts. Stored content may be sensitive. Known credential fields, permissions, grants and live work are excluded.</Typography></ConfirmDialog>
+  <ConfirmDialog open={exportReview} title="Download selected global memory" confirmLabel="Download selected records" pending={busy} error={error} onCancel={()=>setExportReview(false)} onConfirm={confirmExport}><Stack spacing={0.5}><Typography>Download · {selection.chunkIds.length} selected facts · {selection.conflictIds.length} conflicts</Typography><Typography>Warning · stored content may be sensitive</Typography><Typography>Excluded · known credential fields · permissions · grants · live work</Typography></Stack></ConfirmDialog>
   <ConfirmDialog open={Boolean(review)} title="Review selected global-memory import" confirmLabel="Import reviewed records" pending={busy} error={error} onCancel={()=>setReview(undefined)} onConfirm={confirmImport}>
-   <Alert severity="warning">Selected facts and conflict history will be added as parallel records. No existing fact is replaced and no conflict is resolved automatically. A failed multi-record transfer may leave partial additions; review again before retrying.</Alert>
+   <Alert severity="warning"><Stack spacing={0.5}><Typography>Confirm · add selected facts + conflict history as parallel records</Typography><Typography>Preserved · existing facts + unresolved conflicts</Typography><Typography>Failure may leave partial additions · review again before retry</Typography></Stack></Alert>
    {review&&<><Typography>Selected source records</Typography>{[...review.snapshot.chunks,...review.snapshot.conflicts].map((row,index)=><Typography key={index} component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({id:row.id,text:row.text,metadata:row.metadata,provenance:row.stamp},null,2)}</Typography>)}<Typography>Existing destination facts and conflicts (preserved)</Typography>{[...review.destination.chunks,...review.destination.conflicts].map((row,index)=><Typography key={index} component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({id:row.id,text:row.text,metadata:row.metadata,provenance:row.stamp},null,2)}</Typography>)}</>}
   </ConfirmDialog>
  </Stack></Paper>;

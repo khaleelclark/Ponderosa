@@ -351,7 +351,7 @@ export function ImportAgentForm({
           <Stack spacing={0.25} sx={{ minWidth: 0 }}>
             <Typography variant="subtitle2">Import a Codex or Claude chat</Typography>
             <Typography variant="body2" color="text.secondary">
-              Give this prompt to the agent in that chat. Then paste or upload the JSON it creates below.
+              Give prompt to Agent → paste or upload resulting JSON
             </Typography>
           </Stack>
           <Button size="small" variant="outlined" startIcon={<ContentCopyOutlinedIcon />} onClick={() => void copyExternalPrompt()} sx={{ flexShrink: 0 }}>
@@ -359,7 +359,7 @@ export function ImportAgentForm({
           </Button>
         </Stack>
       </Paper>
-      <Typography variant="body2" color="text.secondary">Agent and organization packages: up to {AGENT_PACKAGE_LIMIT_LABEL}, with up to {AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL} of embedded artifacts. Choose a file for large imports.</Typography>
+      <Typography variant="body2" color="text.secondary">Agent and organization packages: up to {AGENT_PACKAGE_LIMIT_LABEL}, with up to {AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL} embedded artifacts · large imports: choose file</Typography>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
         <Button component="label" variant="outlined" startIcon={<UploadFileOutlinedIcon />}>
           Choose JSON File
@@ -427,18 +427,18 @@ export function ImportAgentForm({
         <Typography variant="body2">Will not import: credentials.</Typography>
         <Typography variant="caption" color="text.secondary">{packagePreview.sourceLabel}</Typography>
       </Alert> : !inspecting && !error ? <Typography variant="body2" color="text.secondary">
-        Choose or paste a Ponderosa Agent package. It can contain one Agent or an organization.
+        Choose or paste Agent / organization package
       </Typography> : null}
       {!fixedConversationId&&!createdChat&&<Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
         <Typography variant="subtitle1">Import into a new Chat and workspace</Typography>
-        <Typography variant="body2">Create a new empty managed folder. Creation is retained even if you cancel this import.</Typography>
+        <Typography variant="body2">Create new empty managed folder · retained if import canceled</Typography>
         <TextField disabled={createDestination.isPending} label="New Chat name" value={newChatLabel} onChange={event=>{setNewChatLabel(event.target.value);createChatRequestId.current=createClientId();}}/>
         <TextField disabled={createDestination.isPending} label="New managed folder name" value={newFolderName} onChange={event=>{setNewFolderName(event.target.value);createChatRequestId.current=createClientId();}}/>
         <TextField select disabled={createDestination.isPending} label="New Chat engine" value={newChatEngine} onChange={event=>{setNewChatEngine(event.target.value);createChatRequestId.current=createClientId();}}>{engines.map(engine=><MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</TextField>
         <Button disabled={createDestination.isPending||importAgents.isPending||Boolean(roleOperation)||!newChatLabel.trim()||!newFolderName.trim()||!newChatEngine} onClick={()=>{if(pendingRef.current)return;pendingRef.current=true;onPendingChange?.(true);createDestination.mutate();}}>Create new destination</Button>
       </Stack></Paper>}
-      {createdChat&&<Alert severity="info">New destination created: {createdChat.title} · {createdChat.workingDirectory}. This Chat and workspace remain available if import is cancelled.</Alert>}
-      {conversations.length === 0 ? <Alert severity="warning">This workspace has no destination chats. Create a destination above, or choose another workspace.</Alert> : fixedConversationId || conversations.length === 1 ? <Typography variant="body2" color="text.secondary">
+      {createdChat&&<Alert severity="info">New destination created: {createdChat.title} · {createdChat.workingDirectory} · Chat/workspace retained if import canceled</Alert>}
+      {conversations.length === 0 ? <Alert severity="warning">No destination Chats · create above or choose another workspace</Alert> : fixedConversationId || conversations.length === 1 ? <Typography variant="body2" color="text.secondary">
         Destination chat: {conversations.find(conversation => conversation.id === fixedConversationId)?.title ?? conversations[0]!.title}
       </Typography> : <FormControl fullWidth>
         <InputLabel id="import-chat-label">Destination chat</InputLabel>
@@ -446,19 +446,19 @@ export function ImportAgentForm({
           {conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}
         </Select>
       </FormControl>}
-      {workingRoots.length>0?<><Typography>Restore each shared source folder once to a new recovery folder. Live working folders are populated only when you explicitly enable activation below.</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}))} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="If the package contains working files, choose a new absolute host folder. Existing folders are never overwritten."/>}
+      {workingRoots.length>0?<><Typography>Recovery · one new folder per shared source root · live population: explicit activation required</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}))} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="Included files: new absolute host folder · no existing-folder overwrite"/>}
       <TextField select label="Working folder mode" value={workingCopyMode} onChange={event=>{setWorkingCopyMode(event.target.value as typeof workingCopyMode);importRequestId.current=createClientId();}}><MenuItem value="">Keep source mode</MenuItem><MenuItem value="shared">Shared folder</MenuItem><MenuItem value="separate_git">Separate Git copy</MenuItem></TextField>
       <FormControlLabel control={<Checkbox checked={activateWorkingFiles} disabled={packagePreview?.mode!=='full'||!packagePreview.hasWorkingFiles||importAgents.isPending||Boolean(roleOperation)} onChange={event=>setActivateWorkingFiles(event.target.checked)}/>} label="Use restored files in live Agent working folders"/>
-      {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>setConfirmSharedRoot(event.target.checked)}/>} label={`Confirm new workspace folder: ${createdChat.workingDirectory??'unavailable'}`}/>:<Alert severity="info">Existing workspaces support Separate Git copy activation only and must already contain a Git repository. Shared activation requires a new managed destination from the package import dialog.</Alert>)}
-      {activateWorkingFiles&&<Typography variant="body2">Recovery folders remain required and must be separate from the live folder. Source Git history, credentials and native ownership are excluded. The server refuses incompatible root membership and retains recovery locations on failure.</Typography>}
+      {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>setConfirmSharedRoot(event.target.checked)}/>} label={`Confirm new workspace folder: ${createdChat.workingDirectory??'unavailable'}`}/>:<Alert severity="info"><Stack spacing={0.5}><Typography>Existing workspace · Separate Git copy only · existing Git repository required</Typography><Typography>Shared activation · new managed destination required</Typography></Stack></Alert>)}
+      {activateWorkingFiles&&<Stack spacing={0.5}><Typography>Recovery folders · required + separate from live folder · retained on failure</Typography><Typography>Excluded · source Git history · credentials · native ownership</Typography><Typography>Root membership · server validation required</Typography></Stack>}
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
         value={instructionsAction} onChange={value => { setInstructionsAction(value); importRequestId.current = createClientId(); }} />
       {packagePreview && repeatedTitles.length ? <Alert severity="warning">
-        Repeated within this package: {repeatedTitles.slice(0, 5).join(", ")}{repeatedTitles.length > 5 ? ` and ${repeatedTitles.length - 5} more` : ""}. These will become separate Agents with the same name.
+        Repeated within this package: {repeatedTitles.slice(0, 5).join(", ")}{repeatedTitles.length > 5 ? ` and ${repeatedTitles.length - 5} more` : ""} · creates separate Agents with identical names
       </Alert> : null}
       {packagePreview && conversationId ? (
         destinationAgentsQuery.isFetching ? <Typography role="status" variant="body2" color="text.secondary">Checking names in the destination chat…</Typography>
-          : destinationAgentsQuery.isError ? <Alert severity="warning">Could not check existing Agent names in this chat. Importing still creates new Agents and does not replace existing ones.</Alert>
+          : destinationAgentsQuery.isError ? <Alert severity="warning">Agent name check unavailable · import creates new Agents without replacing existing Agents</Alert>
           : overlappingTitles.length ? <Alert severity="warning">
             {overlappingTitles.length ? <Typography variant="body2">Already in this chat: {overlappingTitles.slice(0, 5).join(", ")}{overlappingTitles.length > 5 ? ` and ${overlappingTitles.length - 5} more` : ""}.</Typography> : null}
             <Typography variant="body2">Import creates separate Agents; it will not overwrite existing ones.</Typography>
@@ -476,7 +476,7 @@ export function ImportAgentForm({
         </FormControl>;
       })}
       {invalidPermissionShape ? <Alert severity="error">
-        This package has invalid management permissions. Both permission values must be true or false booleans.
+        Invalid management permissions · both values must be true/false
       </Alert> : null}
       {elevatedAgents.length > 0 ? <Alert severity="warning">
         <Typography variant="body2" sx={{ mb: 1 }}>

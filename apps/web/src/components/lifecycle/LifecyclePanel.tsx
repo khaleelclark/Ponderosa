@@ -23,7 +23,7 @@ export function LifecyclePanel():JSX.Element {
    <TextField select label="Canonical retained identity" value={target?selected:''} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose evidence</MenuItem>{items.map(item=><MenuItem key={JSON.stringify([item.kind,item.id])} value={JSON.stringify([item.kind,item.id])}>{item.label}</MenuItem>)}</TextField>
    {target&&<LifecycleReview key={selected} kind={target.kind as LifecycleKind} id={target.id}/>}
    {orphans.data&&<details><summary>Preserved orphan staging evidence ({orphans.data.length})</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(orphans.data,null,2)}</Typography></details>}
-   <Typography variant="caption">Original bytes stay preserved. Discovery entries supply exact identities; reviews independently determine eligibility.</Typography>
+   <Typography variant="caption">Original bytes preserved · discovery: exact identities · current review: eligibility</Typography>
   </>}
  </Stack></Paper>;
 }

@@ -29,7 +29,7 @@ export function restoreGroupJournal(storageKey:string):{journal:GroupJournal;err
   if(value.pending?.kind==='admit'&&value.pending.body.commandKey!==value.prepare.commandKey)throw Error('Admission command differs from original preparation');
   if(value.pending?.kind==='capture'&&!sameLifecycleInput(value.pending,value.capture)||value.pending?.kind==='prepare'&&!sameLifecycleInput(value.pending.body,value.prepare))throw Error('Retained group identities differ');
   return {journal:value};
- }catch{return {journal:{},error:'Retained group input cannot be read. Preserve browser storage and reconcile its outcome before new changes.'};}
+ }catch{return {journal:{},error:'Retained input unreadable · preserve browser storage · reconcile outcome before new changes'};}
 }
 /** Status never recreates packages. Only exact exhaustive retained seals unlock preparation. */
 export function groupCaptureMatches(status:GroupCaptureStatus,command:Extract<GroupCommand,{kind:'capture'}>):boolean {
