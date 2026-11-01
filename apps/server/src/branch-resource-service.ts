@@ -3,7 +3,7 @@ import type {ChatCreator} from "./routes/projects.js";
 import {createHash} from 'node:crypto';
 import {realpathSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
-import {retainedResourceCapture,stableJson,type AgentStore,type BranchStore,type BranchResourceProvision } from '@ponderosa/agents';
+import {retainedResourceCapture,receiptMatchesSource,resourceCaptureFrontierHash,stableJson,type AgentStore,type BranchStore,type BranchResourceProvision } from '@ponderosa/agents';
 import type { ImportAgentPackageResponse } from '@ponderosa/core';
 export type BranchTemplateImporter = (input: BranchResourceProvision, hooks: {
   plan(agentIds: string[],creationOperationId?:string): void | Promise<void>; commit(result: ImportAgentPackageResponse): void;
@@ -32,10 +32,32 @@ export class BranchResourceService {
     const row=this.store.sqlite.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(executionId,checkpointId) as {snapshot_json:string;content_hash:string}|undefined;
     if(!row||row.content_hash!==expectedHash||createHash('sha256').update(row.snapshot_json).digest('hex')!==expectedHash)throw Error('Historical resource checkpoint unavailable');
     const snapshot=JSON.parse(row.snapshot_json);
-    for(const owner of snapshot.continuation?.owners??[{selected:snapshot.selected}]){
-      const capture=retainedResourceCapture(owner.selected);
-      if(capture){if(!this.packages)throw Error('Checkpoint package service unavailable');await this.packages.readCheckpoint(capture.receipt!);}
+    if(stableJson(snapshot)!==row.snapshot_json)throw Error('Historical resource checkpoint is not canonical');
+    const digest=(value:unknown)=>createHash('sha256').update(stableJson(value)).digest('hex');
+    if(snapshot.captureKind==='issued_resource'){
+      // The pre-opening resource capture in selected.resources belongs to an
+      // earlier frontier and cannot stand in for this issued package.
+      const receipt=snapshot.issuedResourceCustody as import('@ponderosa/core').CheckpointPackageReceipt|undefined;
+      const selected=snapshot.selected,resource=selected?.resources?.[0],host=snapshot.hostDependencies;
+      if(!receipt||!selected||!host||selected.execution?.[0]?.id!==executionId
+        ||selected.resources?.length!==1||!resource||!host.coverage?.complete
+        ||receipt.intent.executionId!==executionId||receipt.intent.resourceStepId!==resource.step_execution_id
+        ||receipt.intent.resourceGeneration!==resource.generation||receipt.sourceChatId!==resource.chat_id
+        ||receipt.intent.hostCutSha256!==digest(host)||receipt.intent.frontierSha256!==resourceCaptureFrontierHash(selected)
+        ||receipt.intent.bindingSha256!==host.bindingPin?.sha256)throw Error('Issued custody does not bind the exact retained host graph');
+      const {version,custodyId,boundaryId,sha256,byteLength,...source}=receipt;
+      if(!receiptMatchesSource(receipt,source))throw Error('Issued custody receipt integrity failure');
+      if(!this.packages)throw Error('Checkpoint package service unavailable');
+      await this.packages.readCheckpoint(receipt);
+    }else{
+      if(snapshot.issuedResourceCustody)throw Error('Issued custody requires an issued checkpoint');
+      for(const owner of snapshot.continuation?.owners??[{selected:snapshot.selected}]){
+        const capture=retainedResourceCapture(owner.selected);
+        if(capture){if(!this.packages)throw Error('Checkpoint package service unavailable');await this.packages.readCheckpoint(capture.receipt!);}
+      }
     }
+    const current=this.store.sqlite.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(executionId,checkpointId) as typeof row;
+    if(!current||current.snapshot_json!==row.snapshot_json||current.content_hash!==row.content_hash)throw Error('Historical resource checkpoint changed during custody verification');
   }
   issuedResourceCaptureStatus(executionId:string,stepId:string,commandKey:string):import('@ponderosa/core').BranchIssuedResourceCaptureDto {
     const journal=this.branches.issuedResourceCapture(executionId,stepId,commandKey);

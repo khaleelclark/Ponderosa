@@ -967,3 +967,28 @@ Deferred source regressions cover canonical issued fact drift, generation confli
 retirement hold, exact snapshot/receipt sealing, restart readback, continuing ordinary
 rewind refusal, custody host-digest substitution and rollback when Branch sealing
 fails. None were executed; this is not end-to-end restoration qualification.
+
+The server's historical custody verifier now recognizes `captureKind:'issued_resource'`
+and verifies the independently retained **issued** receipt. It checks the exact saved
+host-graph digest, selected frontier, execution/Step/generation/Chat and binding pin
+before reading package bytes. It never substitutes the embedded pre-opening receipt.
+An absent package service, missing/released bytes, changed graph binding or changed
+snapshot during the asynchronous byte read refuses. This verifier supplies a byte
+integrity check only; its return value is not a reusable synchronous admission proof,
+owner authorization or human disclosure approval.
+
+The existing issued capture format has no `continuation` envelope or retained audit
+prefix. `issuedRequestFrontierSupported` currently refuses resource host cuts and
+requires persistent Agent targets; `resourceReservationSupported` accepts pre-opening
+reserved resources only. Therefore the ordinary Script continuation replay cannot
+validate an issued ephemeral organization, even after its package verifies. A future
+consumer must retain and validate executable resource continuation evidence at the
+original capture boundary (or implement a separately exhaustive bounded validator).
+It must not synthesize a historical audit from a later source execution, promote the
+existing `restore_supported:false` snapshot, or use graph ID remapping as participant
+or Branch continuation reconstruction. Destination reservation, explicit human fact
+review and atomic owner composition remain unconnected and restoration stays disabled.
+
+Additional deferred fixture source checks issued-byte verification, missing bytes,
+host-digest substitution before package access and snapshot mutation across the byte
+read. These fixtures have not been run.
