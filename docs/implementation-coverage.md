@@ -952,10 +952,12 @@ whose exact durable completion was never recorded. The current integrated Claude
 stream transport has user messages, initialization/model control response, steering
 and process close; no structured compact/result-query method is implemented. Codex
 uses thread/compact/start with empty acknowledgement plus correlated live turn/item
-completion and occupancy; no persistent operation key/result-query mapping exists.
+completion and occupancy; the successor below adds known-ID stored completion
+readback, while persistent operation-key lookup remains absent.
 RuntimeSession likewise exposes no such native query. This is evidence about the
 current integrated interfaces, not a claim about every vendor release. Inventing a
-control subtype, replaying /compact as prompt text, reading arbitrary session files,
+control subtype, substituting /compact command input under the no-prompt constraint,
+reading arbitrary session files,
 or treating thread resume/process exit as completion would not implement that
 contract. Source-turn unknown effects therefore remain held. No provider execution
 or external contract probe was performed.
@@ -1038,3 +1040,17 @@ custody/provider/native/crash/runtime/end-to-end/accessibility/mobile and full P
 Bible qualification remain open. No reclamation writer or external reconciliation.
 ZERO tests/checks/build/types/Node/native/browser/runner preparation or execution,
 migrations, push/deploy/newworkers. Hooks disabled; source/files/Git inspection only.
+
+
+Runtime official-native-contract successor: existing Codex invokeCommand compact
+now performs bounded stored-history completion readback for an already observed
+exact native turn/item pair through official thread/read and thread/turns/list.
+It never retries native mutation or infers fresh occupancy/source effects. Missing
+operation IDs and unsupported history remain held. Claude official documentation
+DOES support retained-session /compact command input and structured result/boundary
+observations plus a separate occupancy control; no dedicated structured compact
+control was established. The current no-prompt recovery constraint leaves that
+adapter unsupported. See runtime-native-recovery-contract.md for pinned official
+protocol sources, exact limits and minimal upstream requirements. No tests/checks/
+build/types/Node/native/browser/preparation/execution/push/deploy were performed;
+whole implementation and qualification remain incomplete.

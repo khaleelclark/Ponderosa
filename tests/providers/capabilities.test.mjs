@@ -324,3 +324,42 @@ test('internal native-work projection rejects payloads and accessor fields', asy
   assert.throws(() => projectAgentEvent({ type: 'work_start', kind: 'native_tool', get callId() { reads++; return 'secret'; } }));
   assert.equal(reads, 0);
 });
+
+
+test('stored compaction readback requires exact observed thread, turn and item; no mutation or occupancy inference', async () => {
+  const operation = { rpcStatus: 'accepted', turnId: 'exact-turn', itemId: 'exact-item', itemCompleted: false, closed: false };
+  const turn = { id: operation.turnId, status: 'completed', error: null, itemsView: 'full', items: [{ id: operation.itemId, type: 'contextCompaction' }] };
+  async function read(pages, metadata = 'compact-owned-generation', selected = operation) {
+    const session = nativeCompactSession(); const calls = [];
+    session.rpc.request = async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'thread/read') return { thread: { id: metadata } };
+      assert.equal(method, 'thread/turns/list');
+      assert.equal(params.threadId, session.engineAgentId);
+      assert.equal(params.itemsView, 'full');
+      return pages.shift();
+    };
+    const confirmed = await session.readStoredCompactionCompletion(selected, Date.now() + 1000);
+    assert.equal(session.latestContextUsage.usedTokens, 160000, 'History never manufactures fresh occupancy');
+    assert.deepEqual(selected, operation, 'Readback itself never mutates the operation');
+    return { confirmed, calls };
+  }
+  assert.equal((await read([{ data: [turn], nextCursor: null }])).confirmed, true);
+  for (const changed of [
+    { ...turn, id: 'other-turn' }, { ...turn, status: 'inProgress' },
+    { ...turn, error: {} }, { ...turn, itemsView: 'summary' },
+    { ...turn, items: [{ id: 'other-item', type: 'contextCompaction' }] },
+    { ...turn, items: [{ id: operation.itemId, type: 'agentMessage' }] },
+    { ...turn, items: [turn.items[0], turn.items[0]] },
+  ]) assert.equal((await read([{ data: [changed], nextCursor: null }])).confirmed, false);
+  assert.equal((await read([{ data: [turn, turn], nextCursor: null }])).confirmed, false);
+  assert.equal((await read([], 'foreign-thread')).confirmed, false);
+  const paged = await read([{ data: [], nextCursor: 'next' }, { data: [turn], nextCursor: null }]);
+  assert.equal(paged.confirmed, true); assert.equal(paged.calls[2].params.cursor, 'next');
+  assert.equal((await read([{ data: [], nextCursor: 'cycle' }, { data: [], nextCursor: 'cycle' }])).confirmed, false);
+  assert.equal((await read(Array.from({ length: 4 }, (_, i) => ({ data: [], nextCursor: String(i) })))).confirmed, false);
+  const session = nativeCompactSession(); session.rpc.request = async () => { throw new Error('Unsupported method'); };
+  assert.equal(await session.readStoredCompactionCompletion(operation, Date.now() + 1000), false);
+  assert.equal(await session.readStoredCompactionCompletion({ ...operation, turnId: undefined }, Date.now() + 1000), false);
+  assert.equal(await session.readStoredCompactionCompletion(operation, Date.now() - 1), false);
+});

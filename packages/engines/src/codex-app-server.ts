@@ -695,6 +695,7 @@ export class CodexAppServerSession implements RuntimeSession {
       // Stay inside the existing 60-second HTTP handler budget, including the
       // acknowledgement and all progress/telemetry; never stack timeouts.
       const deadline = Date.now() + 45_000;
+      const liveDeadline = deadline - 5_000;
       // This RPC returns {} immediately. Completion belongs to the matching
       // contextCompaction item and its terminal turn, not to this response.
       try {
@@ -720,7 +721,7 @@ export class CodexAppServerSession implements RuntimeSession {
               ...(operation.usage.aggregateTokens !== undefined ? { aggregateTokens: operation.usage.aggregateTokens } : {}),
               providerSessionGeneration: this.engineAgentId } };
           }
-          const remaining = deadline - Date.now();
+          const remaining = liveDeadline - Date.now();
           if (remaining <= 0) break;
           await this.contextUsageGate.waitAfter(version, remaining);
           version = this.contextUsageGate.currentVersion();
@@ -728,6 +729,18 @@ export class CodexAppServerSession implements RuntimeSession {
       } catch {
         // Missing completion/telemetry is an uncertain native mutation, never
         // permission to replay the operation or trust the pre-command getter.
+      }
+      // Stored history can recover a lost completion notification, never a
+      // missing operation identity or fresh post-compaction occupancy.
+      if (!operation.closed && operation.rpcStatus === "accepted" &&
+          operation.turnId && operation.itemId &&
+          (!operation.terminalStatus || operation.terminalStatus === "completed" && !operation.itemCompleted)) {
+        const confirmed = await this.readStoredCompactionCompletion(operation, deadline);
+        if (confirmed && !operation.closed &&
+            (!operation.terminalStatus || operation.terminalStatus === "completed")) {
+          operation.itemCompleted = true;
+          operation.terminalStatus = "completed";
+        }
       }
       const completed = operation.itemCompleted && operation.terminalStatus === "completed";
       return { outcome: completed ? "completed" : "outcome_unknown", message: completed
@@ -739,6 +752,53 @@ export class CodexAppServerSession implements RuntimeSession {
       return { message: formatCodexStatus({ sessionId: this.engineAgentId, model: this.activeModel, context: this.latestContextUsage, rateLimits }) };
     }
     throw new Error(`unsupported Codex runtime command: ${name}`);
+  }
+
+  private async readStoredCompactionCompletion(operation: CompactOperation, deadline: number): Promise<boolean> {
+    const { turnId, itemId } = operation;
+    if (!turnId || !itemId || operation.closed || operation.rpcStatus !== "accepted") return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = async (): Promise<boolean> => {
+      const metadata = object(await this.rpc.request("thread/read", { threadId: this.engineAgentId }));
+      if (object(metadata?.thread)?.id !== this.engineAgentId) return false;
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      // Bounded history only; absence past the cap is unknown, never replay.
+      for (let page = 0; page < 4 && Date.now() < deadline && !operation.closed; page++) {
+        const response = object(await this.rpc.request("thread/turns/list", {
+          threadId: this.engineAgentId, limit: 100, sortDirection: "desc", itemsView: "full",
+          ...(cursor ? { cursor } : {}),
+        }));
+        if (!Array.isArray(response?.data) || response.data.length > 100) return false;
+        const matches = response.data.filter(candidate => object(candidate)?.id === turnId);
+        if (matches.length) {
+          if (matches.length !== 1) return false;
+          const turn = object(matches[0]);
+          if (turn?.status !== "completed" || turn.error !== null || turn.itemsView !== "full" ||
+              !Array.isArray(turn.items)) return false;
+          const items = turn.items.filter(candidate => object(candidate)?.id === itemId);
+          return items.length === 1 && object(items[0])?.type === "contextCompaction";
+        }
+        const next = response?.nextCursor;
+        if (typeof next !== "string" || !next || next.length > 4096 || cursors.has(next)) return false;
+        cursors.add(next);
+        cursor = next;
+      }
+      return false;
+    };
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    try {
+      return await Promise.race([read(), new Promise<false>(resolve => {
+        timer = setTimeout(() => resolve(false), remaining);
+      })]);
+    } catch {
+      // Unsupported/version-mismatched history, transport loss and invalid
+      // evidence retain the existing unknown outcome. No mutation is retried.
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   contextUsage(): { usedTokens: number; windowTokens?: number; aggregateTokens?: number; providerSessionGeneration: string } | undefined {
