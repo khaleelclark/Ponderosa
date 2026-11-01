@@ -514,7 +514,7 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     } : {}),
     ...(stopNativeTaskMethod ? {
       stopNativeTask: async taskKey => {
-        const value = await providerRuntimeOperation("stop native task", () => Reflect.apply(stopNativeTaskMethod!, raw, [taskKey]));
+        const value = await nativeMutation("stop native task", () => Reflect.apply(stopNativeTaskMethod!, raw, [taskKey]));
         try { return nativeStopOutcome(value); }
         catch (error) { throw boundaryError("project native task stop", error); }
       },

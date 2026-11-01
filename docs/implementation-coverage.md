@@ -24,7 +24,7 @@ unavailable. Preparation checks the retained preview/capture pair; no invented w
 Historical Request/Project audit access and human disclosure choice remain distinct from
 fresh destination ownership. Tree/group commands persist before POST; unknown results use
 original-key GET, with no automatic mutation replay. Runtime corrections, audit privacy,
-producer/deletion fences and additive migrations 0035–0040 remain assembled and unexecuted.
+producer/deletion fences and additive migrations 0035–0041 remain assembled and unexecuted.
 
 ## Single remaining implementation/disposition checklist
 
@@ -49,7 +49,7 @@ G2 paused live-session goal controls remain supported; active/resume/default-act
 
 G6 Codex validates files before plan settings and after acknowledgement, preserves seed on validation failure, checks optional Run authority around steer billing/dispatch, and refuses review media. [Strengthened session contract](codex-typed-input-wiring.md). Current typed files remain wired: Codex images, Claude images/PDF, original-file references for other modalities. Exact expected Claude media echoes validate session/UUID/normalized digest and strip media before mapping; submitted size +1 MiB, max224 MiB and32 digest-only slots replace the3 MiB refusal. Unrelated records retain4 MiB. [Transport](typed-modality-inputs.md), [framing](runtime-typed-session-wiring.md); maximum-size memory/installed compatibility and full parity remain unqualified.
 
-G8 Claude accepted tasks/schedules retain the original Run until exact post-result idle with no pending obligations. Recurring crons may keep it open; crash receipt gaps remain unknown. Codex background list/terminate and Claude per-task stop remain internal implementation. [Lifetime contract](native-task-lifetimes.md).
+G8 bounded backend source now includes Codex exact current-item/process background registry list/terminate and Claude same-reader correlated per-task stop. Original Run lifetime remains held until native completion/empty registry; acknowledgements do not remove Claude tasks or prove process drain. Human inventory/stop/original-key read routes bind exact live Run/lease/fence/session, with durable unknown-before-dispatch and unique-target no-retry receipts. Dedicated UI is queued. Recurring schedules, restart receipt gaps and installed compatibility remain unqualified. [Controls contract](native-task-controls.md), [lifetime evidence](native-task-lifetimes.md).
 
 G7 Agent tools plus operator REST/SDK are source delivered: exact session/epoch-owned console and private Agent/Run recording start/stop/status/download. Dedicated operator console/private recording UI is source delivered; shared Chat/saved recording remains unavailable pending the canonical Chat artifact publication successor actively owned by `f11661cc-2638-463b-a447-c615a5c9c3f0`. [Exact contract](browser-observation-api.md); no encoded-video/audio requirement or native parity verdict.
 
@@ -83,7 +83,7 @@ criteria, a complete audit may still find concrete missing code.
 | 14 | S | Explicit provider errors/unconfirmed recovery and shared UI errors; induced failure/clarity trials deferred. |
 | 15 | S + U5 | `empty-tombstone.ts` unlinks marker and nonrecursive rmdir; `portable-working-files.ts` retains displaced/import bytes. Race/folder equivalence trials deferred. |
 | 16 | S | `branch-trigger-service.ts`, `branch-trigger-store.ts`; occurrence keys/catch-up source present, clock/timing trials deferred. |
-| 17 | S + F1 below | `state-admission.ts`, `db.ts`, additive0035–0040 registered once; existing deferred fixture source mismatch is concrete, repeated suites/upgrades unrun. |
+| 17 | S + F1 below | `state-admission.ts`, `db.ts`, additive0035–0041 registered once; existing deferred fixture source mismatch is concrete, repeated suites/upgrades unrun. |
 | 18 | S | `notification-routing.ts`, `notificationActiveView.tsx`, Assistant report cursor; burst/default-settings trials deferred. |
 | 19 | S | Canonical audit receipts, `group-journal-audit.ts`, activity/UI projections; random action trails/redaction/log judging deferred. |
 | 20 | S | Same origin/domain authority disposition as #7; no new token-gate deletion justified by inspected source. |
