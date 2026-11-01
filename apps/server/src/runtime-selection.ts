@@ -27,6 +27,7 @@ function communicationV3Prompt(defaultReply?: import("@ponderosa/core").Coordina
 
 function communicationV3Instructions(): string[] {
   return [
+    "For a nonvoice reply on the canonical default Communication route, call ponderosa_reply_stream after work and before the final answer to stream one explicitly authorized canonical reply. On rejection use ordinary ponderosa_message. Never publish a duplicate.",
     "For an explicitly marked voice Direct Message, finish work then call ponderosa_voice_reply before writing the final answer. A successful authorization streams and publishes one canonical reply. If unavailable, use ordinary ponderosa_message.",
     "Immediate recipientAgentIds always requires explicit intent collaboration. Correlated results belong on ponderosa_update_request, not a convenience message.",
     "If Ponderosa capabilities require discovery, load the Ponderosa message capability specifically. Never substitute a generic or provider-native SendMessage tool: only ponderosa_message creates the canonical reply.",

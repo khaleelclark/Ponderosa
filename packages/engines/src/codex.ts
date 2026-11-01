@@ -198,6 +198,7 @@ export class CodexAdapter implements Adapter {
   }
 
   seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
+    if (opts.expectedBillingMode) return this.billingModeRun(opts);
     const prompt = renderSeedPrompt(opts.history, opts.prompt);
     const args = [
       "exec",
@@ -210,6 +211,7 @@ export class CodexAdapter implements Adapter {
   }
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
+    if (opts.expectedBillingMode) return this.billingModeRun(opts);
     const args = [
       "exec",
       "resume",
@@ -220,6 +222,23 @@ export class CodexAdapter implements Adapter {
       "-",
     ];
     return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
+  }
+
+  /** Selected-mode one-shot callers use the same account-observed native
+   * transport as retained sessions; no second CLI status probe or credential store. */
+  private async *billingModeRun(opts: SeedOptions | ContinueOptions): AsyncIterable<AgentEvent> {
+    const session = await this.openSession({ ...opts,
+      history: "history" in opts ? opts.history : [],
+      ...("resumeSessionId" in opts ? {resumeSessionId:opts.resumeSessionId} : {}),
+      onRuntimeRootExit: () => opts.onRuntimeRootExit(),
+    });
+    try {
+      await session.startTurn({prompt:opts.prompt,kind:"user_message",model:opts.model,effort:opts.effort,speed:opts.speed});
+      for await (const event of session.events) {
+        yield event;
+        if(event.type === "turn_done" || event.type === "error") return;
+      }
+    } finally { await session.close(); }
   }
 
   /** Spawn codex, stream JSONL, and yield mapped AgentEvents. */

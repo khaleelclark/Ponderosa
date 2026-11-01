@@ -476,6 +476,23 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.communicationJournalBoundary(projectId);
   }
 
+  /** Source-only reconciliation: hashes and durable positions survive restart;
+   * they never certify native tail completeness or clear a dispatch guard. */
+  providerContextRecoveryEvidence(agentId: string, sourceRunId: string):
+    Omit<import("@ponderosa/core").ProviderContextRecoveryEvidence, "attachedRequestIds"> | undefined {
+    const source=this.client.prepare(`SELECT status,provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?`)
+      .get(sourceRunId,agentId) as {status:string;provider_session_id:string|null}|undefined;
+    if(!source?.provider_session_id)return undefined;
+    const input=this.getProviderInput(sourceRunId);
+    const last=this.client.prepare(`SELECT seq,created_at FROM events WHERE agent_id=? ORDER BY seq DESC LIMIT 1`)
+      .get(agentId) as {seq:number;created_at:string}|undefined;
+    return {sourceRunId,sourceRunStatus:source.status,providerSessionId:source.provider_session_id,
+      currentSessionMatches:this.resumeSessionId(agentId)===source.provider_session_id,
+      providerInput:input?{available:true,promptHash:input.promptHash,...(input.systemPromptHash?{systemPromptHash:input.systemPromptHash}:{})}:{available:false},
+      ...(last?{lastDurableAgentEvent:{sequence:last.seq,at:last.created_at}}:{}),
+      nativeTailCompleteness:"unknown",priorEffects:"unknown",historyDisposition:"retained"};
+  }
+
   /** Exact canonical Communication identities known to occupy the currently
    * accepted provider session. Scheduler Runs carry the provider-session
    * identity observed after acknowledged injection; rejected replacement

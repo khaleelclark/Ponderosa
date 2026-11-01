@@ -312,3 +312,42 @@ for (const persistent of [false, true]) test(`Claude native launch emits partial
     assert.equal(events.at(-1).type, 'turn_done');
   } finally { await runtime?.close(); await Promise.all(handles.map(handle => handle.close())); await rm(root, { recursive: true, force: true }); }
 });
+
+
+test('Claude billing environment freezes configured selectors and refuses conflicting human mode without changing host environment',async()=>{
+ const {claudeBillingEnvironment}=await import('../../packages/engines/dist/runtime-environment.js');
+ const overrides={ANTHROPIC_API_KEY:'synthetic-only-key',ANTHROPIC_AUTH_TOKEN:undefined,CLAUDE_CODE_OAUTH_TOKEN:undefined};
+ const env=claudeBillingEnvironment(overrides,'api');overrides.ANTHROPIC_API_KEY='changed-synthetic-key';
+ assert.equal(env.ANTHROPIC_API_KEY,'synthetic-only-key');
+ assert.throws(()=>claudeBillingEnvironment(overrides,'subscription'),/billing-mode selection/);
+ assert.throws(()=>claudeBillingEnvironment({...overrides,CLAUDE_CODE_OAUTH_TOKEN:'synthetic-oauth'},'api'),/billing-mode selection/);
+ assert.throws(()=>claudeBillingEnvironment({...overrides,ANTHROPIC_API_KEY:undefined},'api'),/billing-mode selection/);
+ assert.equal(claudeBillingEnvironment({...overrides,ANTHROPIC_API_KEY:undefined},'subscription').ANTHROPIC_API_KEY,undefined);
+});
+
+
+for (const mode of ['subscription','api']) test('executing Codex account mode fences thread and turn admission '+mode,async()=>{
+ const root=mkdtempSync(path.join(os.tmpdir(),'ponderosa-billing-admission-')),handles=[];let session;
+ const type=mode==='api'?'apiKey':'chatgpt';
+ writeFileSync(path.join(root,'app-server'),`
+  const fs=require('node:fs');const seen=[];
+  require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+   const m=JSON.parse(line);if(m.id===undefined)return;seen.push(m.method);fs.writeFileSync('seen.json',JSON.stringify(seen));
+   const changed=fs.existsSync('changed');
+   const result=m.method==='initialize'?{userAgent:'codex/0.100.0'}:
+    m.method==='account/read'?{account:{type:changed?${JSON.stringify(type==='apiKey'?'chatgpt':'apiKey')}:${JSON.stringify(type)}}}:
+    m.method==='turn/start'?{turn:{id:'turn'}}:{thread:{id:'saved'}};
+   console.log(JSON.stringify({id:m.id,result}));
+  });
+ `);
+ try{
+  session=await CodexAppServerSession.open({bin:process.execPath,cwd:root,agentId:'a',history:[],resumeSessionId:'saved',
+   expectedBillingMode:mode,sandboxMode:'read-only',signal:new AbortController().signal,killGraceMs:50,
+   onRuntimeSpawned:h=>handles.push(h),onRuntimeRootExit(){}});
+  const seen=JSON.parse(readFileSync(path.join(root,'seen.json'),'utf8'));
+  assert.ok(seen.indexOf('account/read')<seen.indexOf('thread/resume'));
+  writeFileSync(path.join(root,'changed'),'');
+  await assert.rejects(session.startTurn({prompt:'must stay pending'}),/billing mode/);
+  assert.equal(JSON.parse(readFileSync(path.join(root,'seen.json'),'utf8')).includes('turn/start'),false);
+ }finally{await session?.close();await Promise.all(handles.map(h=>h.close()));await rm(root,{recursive:true,force:true});}
+});

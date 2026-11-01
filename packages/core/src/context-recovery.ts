@@ -11,7 +11,7 @@ export const UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY: Readonly<ProviderContextReco
 export class ProviderContextRecoveryUnavailableError extends Error {
   readonly code = "provider_context_recovery_unsupported";
   constructor() {
-    super("The native harness has no unchanged-contract, no-effects recovery operation. Context and uncertain prior effects were retained; no recovery turn was sent. New work is held until this request is dismissed; the original context guard then remains.");
+    super("No recovery operation is mapped for this exact uncertain native boundary. Context and uncertain prior effects were retained; no recovery turn was sent. New work is held until this request is dismissed; the original context guard then remains.");
   }
 }
 export interface ProviderContextRecoveryRequest {
@@ -27,4 +27,18 @@ export interface ProviderContextRecoveryRequest {
   code: "provider_context_recovery_unsupported";
   createdAt: string;
   dismissedAt?: string;
+}
+
+/** Durable source custody, not proof of native completion or absence of effects. */
+export interface ProviderContextRecoveryEvidence {
+  sourceRunId: string;
+  sourceRunStatus: string;
+  providerSessionId: string;
+  currentSessionMatches: boolean;
+  providerInput: { available: boolean; promptHash?: string; systemPromptHash?: string };
+  lastDurableAgentEvent?: { sequence: number; at: string };
+  attachedRequestIds: string[];
+  nativeTailCompleteness: "unknown";
+  priorEffects: "unknown";
+  historyDisposition: "retained";
 }

@@ -13,14 +13,21 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
   support(engineId: string): Readonly<ProviderContextRecoverySupport> | undefined;
 }) {
   const {store,coordinationV3} = context;
+  const sourceEvidence=(agentId:string,sourceRunId:string|undefined)=>{
+    if(!sourceRunId)return undefined;
+    const evidence=store.providerContextRecoveryEvidence(agentId,sourceRunId);
+    return evidence?{...evidence,attachedRequestIds:coordinationV3.requestIdsAttachedToRun(sourceRunId,agentId)}:undefined;
+  };
   app.get<{Params:{id:string};Querystring:{idempotencyKey?:string}}>("/api/agents/:id/context-recoveries",async(request,reply)=>{
     const agent=store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({error:"Agent not found"});
     const key=request.query.idempotencyKey;
     if(key !== undefined && (typeof key !== 'string' || !key.trim() || key.length>200)) return reply.code(400).send({error:"Invalid idempotencyKey"});
-    return {support:context.support(agent.activeEngine) ?? UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY,
-      boundary:store.uncertainProviderContextRecoveryBoundary(request.params.id) ?? null,
-      request: key ? coordinationV3.contextRecovery.byKey(request.params.id,key) ?? null : coordinationV3.contextRecovery.active(request.params.id) ?? null};
+    const recovery=key?coordinationV3.contextRecovery.byKey(agent.id,key):coordinationV3.contextRecovery.active(agent.id);
+    const boundary=store.uncertainProviderContextRecoveryBoundary(agent.id);
+    return {sourceEvidence:sourceEvidence(agent.id,recovery?.sourceRunId??boundary?.sourceRunId),support:context.support(agent.activeEngine) ?? UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY,
+      boundary:boundary ?? null,
+      request:recovery ?? null};
   });
   app.post<{Params:{id:string};Body:{idempotencyKey?:string;expectedSessionId?:string;expectedSourceRunId?:string;expectedToolContractHash?:string;acknowledgeUnknownEffects?:boolean}}>("/api/agents/:id/context-recoveries",async(request,reply)=>{
     const body=request.body;
@@ -43,7 +50,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
     try {
       const result=coordinationV3.contextRecovery.request(input);
       const refusal=new ProviderContextRecoveryUnavailableError();
-      return reply.code(409).send({...result,support:context.support(agent.activeEngine) ?? UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY,code:refusal.code,error:result.request.state==='dismissed' ? "This request was dismissed without recovering context. The original context guard remains." : refusal.message,retryable:false});
+      return reply.code(409).send({...result,sourceEvidence:sourceEvidence(agent.id,result.request.sourceRunId),support:context.support(agent.activeEngine) ?? UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY,code:refusal.code,error:result.request.state==='dismissed' ? "This request was dismissed without recovering context. The original context guard remains." : refusal.message,retryable:false});
     } catch (error) {
       if(error instanceof ContextRecoveryConflictError) return reply.code(409).send({code:'context_recovery_conflict',error:error.message,retryable:false});
       // A write exception is not proof of non-commit. Read by exact key before

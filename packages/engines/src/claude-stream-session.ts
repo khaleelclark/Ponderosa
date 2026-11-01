@@ -17,7 +17,7 @@ import { ClaudeContextUsage } from "./claude-context-usage.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
-import { runtimeEnvironment } from "./runtime-environment.js";
+import { claudeBillingEnvironment } from "./runtime-environment.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
 import { normalizeClaudeProviderModels } from "./claude-models.js";
@@ -109,7 +109,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       // ponderosa_decision tool as the only user-question path in this host.
       "--disallowedTools", ["AskUserQuestion",...(restrictionArgs[1]?[restrictionArgs[1]]:[])].join(","),
     ];
-    const environment = runtimeEnvironment(opts.environment);
+    const environment = claudeBillingEnvironment(opts.environment, opts.expectedBillingMode);
     const contained = spawnContainedCli({
       bin: opts.bin,
       args,

@@ -555,6 +555,12 @@ test('explicit unsupported recovery holds exact unknown context durably without 
   const before={turns:f.turns.length,commands:f.commands.length,steers:f.steers.length,probes:f.providerProbes.length};
   const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`));
   assert.equal(status.support.status,'unsupported');assert.equal(status.boundary.sourceRunId,boundary.sourceRunId);
+  assert.equal(status.sourceEvidence.sourceRunId,boundary.sourceRunId);
+  assert.equal(status.sourceEvidence.nativeTailCompleteness,'unknown');assert.equal(status.sourceEvidence.priorEffects,'unknown');
+  assert.equal(status.sourceEvidence.currentSessionMatches,true);assert.equal(status.sourceEvidence.providerInput.available,true);
+  assert.equal(status.sourceEvidence.providerInput.promptHash,store.getProviderInput(boundary.sourceRunId).promptHash);
+  assert.equal(status.sourceEvidence.historyDisposition,'retained');
+  assert.ok(Number.isSafeInteger(status.sourceEvidence.lastDurableAgentEvent.sequence));
   const providerInputCount=store.sqlite.prepare('SELECT count(*) n FROM provider_inputs').get().n;
   store.sqlite.exec("CREATE TEMP TRIGGER fail_recovery_insert AFTER INSERT ON provider_context_recovery_requests BEGIN SELECT RAISE(ABORT,'controlled receipt persistence failure'); END");
   const failed=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);

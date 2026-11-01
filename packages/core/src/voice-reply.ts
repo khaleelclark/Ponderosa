@@ -1,5 +1,10 @@
 /** Provisional, explicitly authorized call reply. Never a Communication or context source. */
 export interface VoiceReplySnapshot {
+  /** Missing means voice for existing persisted snapshots. */
+  presentation?: "text" | "voice";
+  /** Canonical route selected by the host; never infer a Chat scope from text. */
+  replyIntent?: "broadcast" | "direct_to_user" | "collaboration";
+  recipientAgentIds?: string[];
   projectId: string; conversationId: string; agentId: string; messageId: string;
   runId: string; fence: number; streamId: string; itemId?: string; providerTurnId?: string;
   steeringInjectionId?: string;

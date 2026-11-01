@@ -399,8 +399,10 @@ export async function prepareAgentRun(
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
   const schedulerRunScopeKey = v3SchedulerRunId
     ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id) : undefined;
+  const expectedBillingMode = workspacePreferences.providerBillingModes?.[runtimeEngineId];
   const effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
     runtimeSessionContractHash,
+    expectedBillingMode,
     ...(runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode ? { billingMode: runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode } : {}),
     systemPromptHash,
     scopeKey: schedulerRunScopeKey,
@@ -1357,6 +1359,7 @@ export async function prepareAgentRun(
     systemPrompt: effectiveSystemPrompt,
     systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+    expectedBillingMode,
     workingCopy,
     availableRuntimeTools,
     capabilityRestrictions,

@@ -1,3 +1,4 @@
+import { claudeBillingEnvironment } from "./runtime-environment.js";
 import { UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY } from "@ponderosa/core";
 // The Claude adapter (SPEC §5, the planned second engine). Drives the
 // already-authenticated `claude` CLI (Claude Code) in its configured subscription
@@ -304,7 +305,7 @@ export class ClaudeAdapter implements Adapter {
       this.baseArgs(prompt, opts.systemPrompt, opts.model, opts.effort),
       opts.cwd,
       opts.signal,
-      opts.environment,
+      claudeBillingEnvironment(opts.environment, opts.expectedBillingMode),
       opts.onRuntimeRootExit,
       opts.onRuntimeSpawned,
     );
@@ -316,7 +317,7 @@ export class ClaudeAdapter implements Adapter {
       "--resume",
       opts.resumeSessionId,
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
+    return this.run(args, opts.cwd, opts.signal, claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), opts.onRuntimeRootExit, opts.onRuntimeSpawned);
   }
 
   private async *run(

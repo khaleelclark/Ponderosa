@@ -15,7 +15,7 @@ import { AgentStore, CoordinationV3Store, BranchStore } from '../../packages/age
 import { createServer } from '../../apps/server/dist/app.js';
 import { isAgentStreamEvent } from '../../apps/server/dist/sse.js';
 import { mapCodexAppServerNotification } from '../../packages/engines/dist/index.js';
-import { PONDEROSA_VOICE_REPLY_TOOL } from '../../packages/core/dist/index.js';
+import { PONDEROSA_VOICE_REPLY_TOOL, PONDEROSA_REPLY_STREAM_TOOL } from '../../packages/core/dist/index.js';
 import { createProviderDynamicToolHandler } from '../../apps/server/dist/routes/provider-dynamic-tool-handler.js';
 import { localMemoryFor } from '../../apps/server/dist/local-memory.js';
 import { VoiceReplyStream } from '../../apps/server/dist/voice-reply-stream.js';
@@ -72,6 +72,8 @@ async function isolatedChroma(){
 }
 after(async()=>{if(chroma){chroma.child.kill('SIGTERM');await chroma.exit;await rm(chroma.root,{recursive:true,force:true});}});
 async function fixture(options={},runCheck){
+ const replyTool=options.textStream?PONDEROSA_REPLY_STREAM_TOOL:PONDEROSA_VOICE_REPLY_TOOL;
+ const replyUrl=options.textStream?"/api/agent-reply-stream":"/api/agent-voice-reply";
  const dir=await realpath(await mkdtemp(path.join(tmpdir(),'voice-stream-canonical-')));console.log('OWN ROOT',dir);
  const store=new AgentStore(path.join(dir,'data')),coord=new CoordinationV3Store(store.sqlite),token=randomBytes(32).toString('hex'),headers={authorization:`Bearer ${token}`};
  const branch=new BranchStore(store.sqlite,coord).create('Disposable streaming Branch','fixture');
@@ -121,16 +123,16 @@ async function fixture(options={},runCheck){
    };
    yield {type:'text',delta:'FORBIDDEN WORK LOG'};
   if(options.ordinaryWork)yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'webSearch',id:'ordinary',query:'PRIVATE NATIVE PAYLOAD'}}},dir);
-  if(nativeMap)yield* nativeMap({type:'assistant',session_id:'native-session',parent_tool_use_id:null,message:{id:'native-authorization',content:[{type:'tool_use',id:'native-voice-call',name:'mcp__ponderosa__voice_reply',input:{}}]}});
-  else yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:'ponderosa_voice_reply',arguments:{}}}},dir);
+  if(nativeMap)yield* nativeMap({type:'assistant',session_id:'native-session',parent_tool_use_id:null,message:{id:'native-authorization',content:[{type:'tool_use',id:'native-voice-call',name:options.textStream?'mcp__ponderosa__reply_stream':'mcp__ponderosa__voice_reply',input:{}}]}});
+  else yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:replyTool.name,arguments:{}}}},dir);
   const fence=coord.latestAcknowledgedSteeringInjection(coord.activeAgentRun(agent.id).id);
-  const authorization=await createProviderDynamicToolHandler(app,[PONDEROSA_VOICE_REPLY_TOOL],opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN)({id:'voice-rpc',operationId:'voice-authorize',name:'ponderosa_voice_reply',arguments:fence?{steeringInjectionId:fence}:{}});
+  const authorization=await createProviderDynamicToolHandler(app,[replyTool],opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN)({id:'voice-rpc',operationId:'voice-authorize',name:replyTool.name,arguments:fence?{steeringInjectionId:fence}:{}});
   assert.deepEqual(JSON.parse(authorization.text),{...JSON.parse(armed.body),...(authorization.success?{}:{statusCode:armed.statusCode})},'actual provider tool route receipt, including normalized failure status');
   if(authorization.success){
    // Normal authorizing acknowledgement must not invalidate the stream.
    if(nativeMap)yield* nativeMap({type:'user',session_id:'native-session',parent_tool_use_id:null,message:{content:[{type:'tool_result',tool_use_id:'native-voice-call',is_error:false,content:[{type:'text',text:armed.body}]}]}});
-   else for(const ack of mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:'ponderosa_voice_reply',success:true,contentItems:[{text:armed.body,type:'inputText'}]}}},dir))yield ack;
-   if(options.delayedAuthorStart)yield {type:'tool_call',id:'voice-authorize',name:'ponderosa_voice_reply',input:{}};
+   else for(const ack of mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:replyTool.name,success:true,contentItems:[{text:armed.body,type:'inputText'}]}}},dir))yield ack;
+   if(options.delayedAuthorStart)yield {type:'tool_call',id:'voice-authorize',name:replyTool.name,input:{}};
    const work=function*(){if(options.nativeItems){for(const notification of options.nativeItems)yield* mapCodexAppServerNotification(notification,dir);}else yield options.work;};
    if(options.workAt==='before')yield* work();
    yield* responseEvents('start','');
@@ -139,9 +141,9 @@ async function fixture(options={},runCheck){
    if(options.workAt==='during')yield* work();
    if(options.workAt==='after'){yield candidate('complete','First stable phrase. ');yield* work();}
    if(options.nativeItems){
-    reauthorization=await createProviderDynamicToolHandler(app,[PONDEROSA_VOICE_REPLY_TOOL],opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN)({id:'reauthorize-rpc',operationId:'voice-authorize',name:'ponderosa_voice_reply',arguments:fence?{steeringInjectionId:fence}:{}});
+    reauthorization=await createProviderDynamicToolHandler(app,[replyTool],opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN)({id:'reauthorize-rpc',operationId:'voice-authorize',name:replyTool.name,arguments:fence?{steeringInjectionId:fence}:{}});
     // A duplicate original acknowledgement and new candidates cannot restore authority.
-    yield* mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:'ponderosa_voice_reply',success:true,contentItems:[{text:authorization.text,type:'inputText'}]}}},dir);
+    yield* mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'voice-authorize',tool:replyTool.name,success:true,contentItems:[{text:authorization.text,type:'inputText'}]}}},dir);
    }
    if(options.overflow)yield candidate('delta','x'.repeat(10001));
    reached=true; await gate;
@@ -155,7 +157,7 @@ async function fixture(options={},runCheck){
  // This inert voice fixture exercises voice authority, not the live CI
  // host's pressure. Admission holds/recovery are tested with explicit samples.
  app=createServer({resourceAdmissionObservation:{sample:async()=>({availableBytes:8*1024**3,memoryFullPercent:0,ioFullPercent:0,source:'linux_host'})},dataDir:path.join(dir,'data'),store,authToken:token,engines:[{adapter,authStatus:async()=>({authenticated:true})}],logger:false,...(options.memory?{localMemory:{chromaUrl:await isolatedChroma(),collectionPrefix:'voice_'+branch.id.replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR ?? path.join(tmpdir(),'unconfigured-memory-models'),stateDirectory:path.join(dir,'memory-policy'),provision:true}}:{}),communicationV3:{pollMs:10}});
- app.addHook('onSend',async(request,reply,payload)=>{if(request.url==='/api/agent-voice-reply')armed={statusCode:reply.statusCode,body:typeof payload==='string'?payload:JSON.stringify(payload)};return payload;});
+ app.addHook('onSend',async(request,reply,payload)=>{if(request.url===replyUrl)armed={statusCode:reply.statusCode,body:typeof payload==='string'?payload:JSON.stringify(payload)};return payload;});
  const memoryUrl='/api/agent-local-memory';
  if(options.publicationAckRace){
   let changed=false;
@@ -201,7 +203,7 @@ async function fixture(options={},runCheck){
  }
  if(options.restricted)new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]});
  if(options.exposureFull)for(let i=0;i<128;i++)localMemoryFor(app).speech.set('occupied-'+i,{authority:{actor:{id:'occupied-'+i},runId:'occupied-'+i},refs:new Map(),invalid:false,started:false,expires:Date.now()+3600000});
- const input={text:'Synthetic voice input' ,idempotencyKey:'turn',recipients:[{agentId:agent.id}],activeRunDelivery:'queue',...(!options.ordinary?{voiceReply:true}:{})};
+ const input={text:'Synthetic voice input' ,idempotencyKey:'turn',recipients:[{agentId:agent.id}],activeRunDelivery:'queue',...(!options.ordinary&&!options.textStream?{voiceReply:true}:{})};
  const sendUrl=`/api/branches/engine/conversations/${chat.id}/direct-messages`;
  const sent=await app.inject({method:'POST',url:sendUrl,headers,payload:input});assert.equal(sent.statusCode,200,sent.body);
  const messageId=sent.json().message.communicationEventId;
@@ -624,4 +626,42 @@ test('Claude-native normalized authorization and partials use the actual server 
  const replies=f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent');
  assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.text,'First stable phrase. Second phrase.');
  const final=await f.app.inject({method:'GET',url:f.url,headers:f.headers});assert.equal(final.json().reply.state,'completed');
+}));
+
+
+for (const claudeNative of [false,true]) test('explicit nonvoice publication streams before canonical commit '+JSON.stringify({claudeNative}),async()=>fixture({textStream:true,claudeNative},async f=>{
+ assert.equal(f.armed.statusCode,200,f.armed.body);
+ const early=await f.app.inject({method:'GET',url:f.url,headers:f.headers});
+ assert.equal(early.json().reply.presentation,'text');assert.equal(early.json().reply.text,'First stable phrase. ');
+ assert.equal(f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent').length,0);
+ f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'text completion');
+ const replies=f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent');
+ assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.text,'First stable phrase. Second phrase.');
+ const final=await f.app.inject({method:'GET',url:f.url,headers:f.headers});assert.equal(final.json().reply.presentation,'text');assert.equal(final.json().reply.state,'completed');
+}));
+
+test('normalized Claude receipt survives the actual closed adapter projection and rejects orphan operation identity',async()=>{
+ const {projectAgentEvent}=await import('../../packages/engines/dist/index.js');
+ const receipt={type:'tool_result',id:'native-call',output:'',isError:false,voiceReplyStreamId:'stream',voiceReplyOperationId:'host-operation'};
+ assert.deepEqual(projectAgentEvent(receipt),receipt);
+ assert.throws(()=>projectAgentEvent({...receipt,voiceReplyStreamId:undefined}));
+ assert.throws(()=>projectAgentEvent({...receipt,isError:true}));
+});
+
+
+test('text streaming selects canonical shared/private/peer routes and refuses correlated or foreign scope',async()=>fixture({textStream:true},async f=>{
+ const {canonicalVoiceReplyInput}=await import('../../apps/server/dist/voice-reply-input.js');
+ for(const intent of ['broadcast','direct_to_user','collaboration']){
+  const input={eventId:'source',projectId:f.project.id,conversationId:f.chat.id,createdAt:'2026-10-10T00:00:00Z',text:'request',
+   intent:intent==='direct_to_user'?'user_dm':intent,
+   sender:intent==='collaboration'?{kind:'agent',agentId:'peer'}:{kind:'user',userId:'local-operator'},
+   audience:intent==='broadcast'?{kind:'organization',organizationId:'org'}:intent==='collaboration'?{kind:'agents',agentIds:[f.agent.id]}:{kind:'user_agents',userId:'local-operator',agentIds:[f.agent.id]}};
+  const activation={id:'activation',kind:'human_message',promptClass:'human',payload:{communication:input}};
+  const fake={requestIdsAttachedToRun:()=>[],requiredReplyObligationsForRun:()=>[{state:'pending',replyAuthority:{intent,...(intent==='collaboration'?{recipientAgentIds:['peer']}:{})}}],
+   activationIdsAttachedToRun:()=>['activation'],activationPayloads:()=>[activation],runtimeCommunication:()=>({projectId:f.project.id,payload:{communication:input},activations:[{id:'activation',agentId:f.agent.id}]})};
+  const scope={runId:'run',agentId:f.agent.id,conversationId:f.chat.id};
+  assert.equal(canonicalVoiceReplyInput(f.store,fake,scope,'text').input.eventId,'source');
+  assert.equal(canonicalVoiceReplyInput(f.store,{...fake,requestIdsAttachedToRun:()=>['correlated']},scope,'text'),undefined);
+  input.conversationId='foreign';assert.equal(canonicalVoiceReplyInput(f.store,fake,scope,'text'),undefined);
+ }
 }));

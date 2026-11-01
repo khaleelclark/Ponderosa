@@ -491,6 +491,7 @@ import { CodexResponseText } from "./codex-response-text.js";
 export class CodexAppServerSession implements RuntimeSession {
   readonly validatesResumeBeforeTurn = true;
   private activeTurnId?: string;
+  private accountGeneration = 0;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
   private readonly providerRequestUsageByTurnId = new Map<string, TokenUsage[]>();
   private readonly usageCheckpointsByTurnId = new Map<string, Set<string>>();
@@ -520,6 +521,7 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly configuredMcps: EngineMcpServer[],
     private readonly onCapabilitiesChanged: (() => void) | undefined,
     private readonly cliVersion: string,
+    private readonly expectedBillingMode?: "subscription" | "api",
   ) {
     this.processIdentity = rpc.processIdentity;
     if (fresh) this.baselineTotal = zeroUsage();
@@ -563,6 +565,7 @@ export class CodexAppServerSession implements RuntimeSession {
         if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
           throw new Error(`unsupported server request: ${method}`);
         }
+        if (session) await session.validateBillingMode();
         const call = params as DynamicToolCallParams;
         if (/^(?:request_user_input(?:_async)?|AskUserQuestion)$/iu.test(call.tool)) {
           throw new Error("Ponderosa cannot display this provider-native question. Call ponderosa_decision so the user receives it in their Chat.");
@@ -580,6 +583,7 @@ export class CodexAppServerSession implements RuntimeSession {
       },
     });
     const cliVersion = codexCliVersion(await rpc.initialize());
+    if (opts.expectedBillingMode) await requireCodexBillingMode(rpc, opts.expectedBillingMode);
     const response = opts.resumeSessionId
       ? await rpc.request<ThreadResponse>("thread/resume", {
           threadId: opts.resumeSessionId,
@@ -621,6 +625,7 @@ export class CodexAppServerSession implements RuntimeSession {
       (opts.configuredMcps??[]).filter(server=>!restrictedConnectors.has(server.name)),
       opts.onCapabilitiesChanged,
       cliVersion,
+      opts.expectedBillingMode,
     );
     return session;
   }
@@ -757,6 +762,7 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private observeNotification(notification: JsonRpcNotification): void {
+    if (notification.method === "account/updated") this.accountGeneration++;
     const compact = this.compactOperation;
     const params = object(notification.params);
     if (compact && !compact.closed && params?.threadId === this.engineAgentId) {
@@ -843,7 +849,15 @@ export class CodexAppServerSession implements RuntimeSession {
     this.onCapabilitiesChanged?.();
   }
 
+  private async validateBillingMode(): Promise<void> {
+    if (!this.expectedBillingMode) return;
+    const generation = this.accountGeneration;
+    await requireCodexBillingMode(this.rpc, this.expectedBillingMode);
+    if (generation !== this.accountGeneration) throw new Error("Native account changed during billing-mode admission; no new input was authorized");
+  }
+
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
+    await this.validateBillingMode();
     if (this.compactOperation && !this.compactOperation.closed && !this.compactOperation.terminalStatus) {
       throw new Error("Native compaction is still in progress; its completion is unconfirmed.");
     }
@@ -871,6 +885,7 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
+    await this.validateBillingMode();
     if (!this.activeTurnId) return { status: "not_active" };
     try {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
@@ -1249,7 +1264,7 @@ export function mapCodexAppServerNotification(
     let voiceReplyStreamId: string | undefined;
     // Provider-specific content-item parsing stays in the engine. This receipt
     // alone grants no authority; the host compares its operation and scoped stream.
-    if (item.success === true && item.tool === "ponderosa_voice_reply" &&
+    if (item.success === true && (item.tool === "ponderosa_voice_reply" || item.tool === "ponderosa_reply_stream") &&
         (item.namespace === undefined || item.namespace === null || item.namespace === "") &&
         Array.isArray(item.contentItems) && item.contentItems.length === 1) {
       const content = object(item.contentItems[0]);
@@ -1271,4 +1286,14 @@ export function mapCodexAppServerNotification(
   // fence on either lifecycle edge, without inventing a public tool projection.
   if (["agentMessage", "reasoning", "plan", "userMessage", "contextCompaction"].includes(item.type)) return [];
   return [{ type: "work_start", kind: "native_tool" }];
+}
+
+/** Observe the executing harness, not the host status cache. No account fields
+ * or credentials cross the adapter boundary. This RPC is not a turn transaction. */
+async function requireCodexBillingMode(rpc: JsonRpcProcess, expected: "subscription" | "api"): Promise<void> {
+  const response = object(await rpc.request("account/read", { refreshToken: false }));
+  const account = object(response?.account);
+  const mode = account?.type === "apiKey" ? "api"
+    : account?.type === "chatgpt" || account?.type === "chatgptAuthTokens" ? "subscription" : undefined;
+  if (mode !== expected) throw new Error("Executing Codex harness billing mode is unavailable or differs from the human selection; input retained");
 }

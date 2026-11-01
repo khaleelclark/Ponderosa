@@ -91,7 +91,7 @@ export function claudeStreamEventMapper(): (raw: unknown, context?: CodexMapCont
       const prefix = message.id === messageId ? blocks.get(index) : undefined;
       if (block?.type === "tool_use") {
         voiceReady = false;
-        if (block.name === "mcp__ponderosa__voice_reply" && identity(block.id)) voiceCallId = block.id;
+        if ((block.name === "mcp__ponderosa__voice_reply" || block.name === "mcp__ponderosa__reply_stream") && identity(block.id)) voiceCallId = block.id;
       }
       if (block?.type === "text" && typeof block.text === "string") {
         if (prefix === undefined) mapped.push(...candidate(message.id, index, "start", ""));

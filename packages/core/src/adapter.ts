@@ -142,6 +142,8 @@ export interface RunOptionsBase {
   speed?: string;
   /** Per-run capability variables supplied by the orchestrator. */
   environment?: Record<string, string>;
+  /** Human-selected native billing mode; adapters refuse mismatches before input. */
+  expectedBillingMode?: "subscription" | "api";
   /** Abort → the adapter kills the underlying process (SPEC §11 cancel/kill). */
   signal: AbortSignal;
   /** Called synchronously after a one-shot provider process is spawned. The
@@ -334,6 +336,8 @@ export interface OpenRuntimeSessionOptions {
   /** "standard" clears any provider tier override; other values are provider IDs. */
   speed?: string;
   environment?: Record<string, string>;
+  /** Human-selected native billing mode; adapters refuse mismatches before input. */
+  expectedBillingMode?: "subscription" | "api";
   /** Host tools are transported by the adapter, never through the agent shell. */
   dynamicTools?: RuntimeDynamicToolSpec[];
   /** Resolved restriction-only controls translated by the provider adapter. */

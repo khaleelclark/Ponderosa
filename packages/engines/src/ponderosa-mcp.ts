@@ -82,7 +82,7 @@ async function handle(request: RpcRequest): Promise<void> {
       ? params.arguments as { agentId?: unknown }
       : {};
     const workspaceOperation=params.name.startsWith('workspace_')?params.name.slice('workspace_'.length):params.name==='assistant_check'?'check':undefined;
-    const targetUrl = workspaceOperation ? messageUrl?.replace(/\/api\/agent-messages$/, '/api/agent-workspace') : localMemoryOperation ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-local-memory") : params?.name === "voice_reply" ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-voice-reply") : params?.name === "create_managed_agent"
+    const targetUrl = workspaceOperation ? messageUrl?.replace(/\/api\/agent-messages$/, '/api/agent-workspace') : localMemoryOperation ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-local-memory") : params?.name === "reply_stream" ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-reply-stream") : params?.name === "voice_reply" ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-voice-reply") : params?.name === "create_managed_agent"
       ? spawnUrl
       : params?.name === "coordinate"
         ? coordinateUrl
@@ -110,7 +110,7 @@ async function handle(request: RpcRequest): Promise<void> {
       const response = await fetch(targetUrl, {
         method: isDirectory ? "GET" : "POST",
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json",
-          ...(params.name === "voice_reply" ? { "x-ponderosa-voice-operation-id": String(request.id) } : {}) },
+          ...((params.name === "voice_reply" || params.name === "reply_stream") ? { "x-ponderosa-voice-operation-id": String(request.id) } : {}) },
         ...(!isDirectory ? { body: JSON.stringify(workspaceOperation ? {...(params.arguments&&typeof params.arguments==='object'?params.arguments:{}),operation:workspaceOperation} : localMemoryOperation ? {...(params?.arguments&&typeof params.arguments==="object"?params.arguments:{}),operation:localMemoryOperation} : browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
           : params?.name === "import_file"

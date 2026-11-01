@@ -10,7 +10,9 @@ export function canonicalVoiceReplyInput(
   store: AgentStore,
   coordination: CoordinationV3Store,
   scope: { runId: string; agentId: string; conversationId?: string },
+  presentation: "voice" | "text" = "voice",
 ): { input: CommunicationEvent; activationId: string } | undefined {
+  if (presentation === "text") return canonicalTextReplyInput(store, coordination, scope);
   const { runId, agentId, conversationId } = scope;
   if (!conversationId || coordination.requestIdsAttachedToRun(runId, agentId).length ||
       canonicalDefaultReplyRoute(coordination, runId, agentId)?.intent !== "direct_to_user" ||
@@ -46,4 +48,38 @@ export function canonicalVoiceReplyInput(
       chat.projectId !== input.projectId || canonical.projectId !== input.projectId || agent.conversationId !== chat.id ||
       coordination.voiceReplyRunTiming(eventId, agentId)?.runId !== runId) return undefined;
   return { input, activationId: ids[0]! };
+}
+
+/** Text publication uses the canonical default route, including shared Chat and
+ * passive peer messages. Correlated results remain on update_request. */
+function canonicalTextReplyInput(store: AgentStore, coordination: CoordinationV3Store,
+  scope: { runId: string; agentId: string; conversationId?: string },
+): { input: CommunicationEvent; activationId: string } | undefined {
+  const {runId,agentId,conversationId}=scope;
+  const route=canonicalDefaultReplyRoute(coordination,runId,agentId);
+  const agent=store.getAgent(agentId),chat=conversationId?store.getConversation(conversationId):undefined;
+  if(!route || !agent || !chat || agent.conversationId!==chat.id || agent.projectId!==chat.projectId ||
+      !activeChatResourceOwner(store,"agent",agentId) || !activeChatResourceOwner(store,"conversation",chat.id) ||
+      coordination.requestIdsAttachedToRun(runId,agentId).length ||
+      coordination.requiredReplyObligationsForRun(runId).some(o=>o.state==='satisfied'))return undefined;
+  const ids=coordination.activationIdsAttachedToRun(runId,agentId);
+  const sources=coordination.activationPayloads(agentId,ids,runId);
+  let selected: {input:CommunicationEvent;activationId:string}|undefined;
+  for(const source of sources){
+    const payload=source.payload as {communication?:CommunicationEvent;dispatch?:{voiceReply?:boolean}}|undefined;
+    const id=payload?.communication?.eventId;
+    if(!id || payload?.dispatch?.voiceReply===true)continue;
+    const canonical=coordination.runtimeCommunication(id);
+    const input=(canonical?.payload as {communication?:CommunicationEvent}|undefined)?.communication;
+    if(!input || input.document || input.projectId!==chat.projectId || input.conversationId!==chat.id ||
+        !canonical?.activations?.some(a=>a.id===source.id&&a.agentId===agentId))continue;
+    const direct=route.intent==='direct_to_user' && input.intent==='user_dm' && input.sender.kind==='user' &&
+      input.sender.userId==='local-operator' && (input.audience.kind==='user_agent' ? input.audience.agentId===agentId
+      : input.audience.kind==='user_agents' && input.audience.agentIds.includes(agentId));
+    const shared=route.intent==='broadcast' && input.intent==='broadcast' && input.sender.kind==='user';
+    const peer=route.intent==='collaboration' && input.intent==='collaboration' && input.sender.kind==='agent' &&
+      input.audience.agentIds.includes(agentId) && route.recipientAgentIds?.length===1 && route.recipientAgentIds[0]===input.sender.agentId;
+    if(direct||shared||peer)selected={input,activationId:source.id};
+  }
+  return selected;
 }

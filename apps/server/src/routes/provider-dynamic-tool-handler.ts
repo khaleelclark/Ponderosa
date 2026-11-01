@@ -7,6 +7,7 @@ import {
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_VOICE_REPLY_TOOL,
+  PONDEROSA_REPLY_STREAM_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   type RuntimeDynamicToolHandler,
@@ -32,7 +33,8 @@ export function createProviderDynamicToolHandler(
       : {};
     const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
     const workspaceOperation=call.name.startsWith('ponderosa_workspace_')?call.name.slice('ponderosa_workspace_'.length):call.name==='ponderosa_assistant_check'?'check':undefined;
-    const url = workspaceOperation ? '/api/agent-workspace' : localMemoryOperation ? "/api/agent-local-memory" : call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? "/api/agent-voice-reply" : call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
+    const replyStream = call.name === PONDEROSA_VOICE_REPLY_TOOL.name || call.name === PONDEROSA_REPLY_STREAM_TOOL.name;
+    const url = call.name === PONDEROSA_REPLY_STREAM_TOOL.name ? "/api/agent-reply-stream" : workspaceOperation ? '/api/agent-workspace' : localMemoryOperation ? "/api/agent-local-memory" : call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? "/api/agent-voice-reply" : call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
       ? "/api/agent-spawn"
       : call.name === PONDEROSA_DECISION_TOOL.name
         ? "/api/agent-decisions"
@@ -62,7 +64,7 @@ export function createProviderDynamicToolHandler(
       headers: {
         authorization: `Bearer ${messageCapability}`,
         "content-type": "application/json",
-        ...(call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? {"x-ponderosa-voice-operation-id":call.operationId ?? call.id} : {}),
+        ...(replyStream ? {"x-ponderosa-voice-operation-id":call.operationId ?? call.id} : {}),
       },
       ...(!isDirectory ? { payload: JSON.stringify(workspaceOperation ? {...(call.arguments&&typeof call.arguments==='object'?call.arguments:{}),operation:workspaceOperation} : localMemoryOperation ? {...(call.arguments&&typeof call.arguments==="object"?call.arguments:{}),operation:localMemoryOperation} : browserOperation
         ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), operation: browserOperation }

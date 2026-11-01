@@ -272,7 +272,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "sessionId", "providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens", "requestOutputIncluded",
     "executionId", "rolloverId", "lowWaterMark", "seedPromptUtf8Bytes", "contextSections",
     "previousProviderSessionId", "replacementProviderSessionId", "startingOccupancy", "delta", "id", "name", "input",
-    "output", "voiceReplyStreamId", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
+    "output", "voiceReplyStreamId", "voiceReplyOperationId", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
     "providerTurnId", "itemId", "phase", "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
@@ -359,9 +359,11 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, id: identifier(row, "id", budget, 2), name: identifier(row, "name", budget, 2), input: jsonValue(row.get("input"), budget, 2) };
     }
     case "tool_result": {
-      const row = exact(value, ["id", "output", "voiceReplyStreamId", "isError", "failureCategory", "retryable", "exitCode", "signal", "retryAfterMs"], budget);
+      const row = exact(value, ["id", "output", "voiceReplyStreamId", "voiceReplyOperationId", "isError", "failureCategory", "retryable", "exitCode", "signal", "retryAfterMs"], budget);
       const isError = optionalBoolean(row, "isError", budget, 2);
       const voiceReplyStreamId = optionalIdentifier(row, "voiceReplyStreamId", budget, 2);
+      const voiceReplyOperationId = optionalIdentifier(row, "voiceReplyOperationId", budget, 2);
+      if (voiceReplyOperationId !== undefined && voiceReplyStreamId === undefined) reject();
       if (voiceReplyStreamId !== undefined && isError !== false) reject();
       const hasFailureCategory = row.has("failureCategory");
       const hasRetryable = row.has("retryable");
@@ -382,6 +384,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
         id: identifier(row, "id", budget, 2),
         output: string(row, "output", budget, 2),
         ...(voiceReplyStreamId === undefined ? {} : { voiceReplyStreamId }),
+        ...(voiceReplyOperationId === undefined ? {} : { voiceReplyOperationId }),
         ...(isError === undefined ? {} : { isError }),
         ...(failureCategory === undefined ? {} : { failureCategory, retryable: retryable! }),
         ...(exitCode === undefined ? {} : { exitCode }),
