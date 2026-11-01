@@ -1,3 +1,4 @@
+import {generationExitHeld} from './branch-generation-exit-fence.js';
 import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js';
 import type Database from "better-sqlite3";
 import {
@@ -209,7 +210,7 @@ export class CoordinationV3RuntimeScopeAuthority {
     }
 
     for (const agentId of identityAgentIds) {
-      if(requireCurrentAuthorization&&destinationAdmissionHeld(this.sqlite,agentId,conversationId))return false;
+      if(requireCurrentAuthorization&&(destinationAdmissionHeld(this.sqlite,agentId,conversationId)||generationExitHeld(this.sqlite,agentId,conversationId)))return false;
       if (!this.sqlite.prepare(`
         SELECT 1 FROM agents WHERE id = ? AND project_id = ?
           AND (? = 0 OR deleted_at IS NULL)
@@ -226,7 +227,7 @@ export class CoordinationV3RuntimeScopeAuthority {
       }
     }
     for (const conversationId of conversationIds) {
-      if(requireCurrentAuthorization&&destinationAdmissionHeld(this.sqlite,undefined,conversationId))return false;
+      if(requireCurrentAuthorization&&(destinationAdmissionHeld(this.sqlite,undefined,conversationId)||generationExitHeld(this.sqlite,undefined,conversationId)))return false;
       if (!this.sqlite.prepare(`
         SELECT 1 FROM conversations
         WHERE id = ? AND project_id = ? AND (? = 0 OR NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = conversations.id))
@@ -281,7 +282,7 @@ export class CoordinationV3RuntimeScopeAuthority {
     agentId: string,
     scopeKey: string,
   ): boolean {
-    if(destinationAdmissionHeld(this.sqlite,agentId,scopeKey.startsWith("conversation:")?scopeKey.slice(13):undefined))return false;
+    if((destinationAdmissionHeld(this.sqlite,agentId,scopeKey.startsWith("conversation:")?scopeKey.slice(13):undefined)||generationExitHeld(this.sqlite,agentId,scopeKey.startsWith("conversation:")?scopeKey.slice(13):undefined)))return false;
     const activeAgent = this.sqlite.prepare(`
       SELECT 1 FROM agents
       WHERE id = ? AND project_id = ? AND deleted_at IS NULL

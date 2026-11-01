@@ -1,3 +1,4 @@
+import {requireGenerationExitOpen} from './branch-generation-exit-fence.js';
 import {requireDestinationAdmitted} from './coordination-v3-destination-staging.js';
 import type Database from "better-sqlite3";
 import {
@@ -56,6 +57,7 @@ export class CoordinationV3StoreSupport {
 
   requireAgent(projectId: string, agentId: string): void {
     requireDestinationAdmitted(this.sqlite,agentId);
+    requireGenerationExitOpen(this.sqlite,agentId);
     if (!this.sqlite.prepare(`
       SELECT 1 FROM agents
       WHERE id = ? AND project_id = ? AND deleted_at IS NULL
@@ -66,6 +68,7 @@ export class CoordinationV3StoreSupport {
 
   requireConversation(projectId: string, conversationId: string): void {
     requireDestinationAdmitted(this.sqlite,undefined,conversationId);
+    requireGenerationExitOpen(this.sqlite,undefined,conversationId);
     if (!this.sqlite.prepare(`
       SELECT 1 FROM conversations
       WHERE id = ? AND project_id = ? AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = conversations.id)
