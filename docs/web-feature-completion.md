@@ -366,3 +366,62 @@ nonsecret generation-zero supported cuts, no broader issued/multi-resource/nativ
 unknown-effect recovery, and no abandoned-stage/deleted-owner reclamation. Actual
 accessibility/mobile/performance qualification remains open. No whole UI/#32/Bible/
 Phase2 pass is claimed.
+
+## Explicit publication and acknowledgement consumer continuation
+
+Source-only continuation of `00c62faa106d42450dce40a54a50dad113b203d0` in
+`phase2/web-feature-completion`, sole UI writer. Requires Runtime's frozen
+`101594dc87d522dadae42601021440f7572cba91` then
+`7bc728008d7ef8bf5151665815c8f2b968ed4898` contracts; backend/core were read, not
+copied into this UI tree. Runtime's `docs/runtime-publication-and-voice.md` owns
+native receipt qualification and the shared `VoiceReplySnapshot` DTO.
+
+`VoiceConversation` now uses separate acknowledgement and answer phrase buffers.
+Only actual nonempty native-receipted acknowledgement snapshots supply speech;
+open snapshots remain silent. Exact stream/sequence and operation/provider identity
+deduplicate receipt playback. Acknowledgement tails can finish their own buffer,
+but cannot finish the speech queue, settle the accepted input, become Play reply,
+set answer completion/onset clocks, or restart hands-free recognition. One queue
+retains ownership between acknowledgement and answer, including the silent work
+gap. The answer has its own prefix and stream identity; later old acknowledgement
+events cannot replace its text or replay speech. Run/fence/steering/publication
+changes still refuse playback. A reconnect that missed the acknowledgement receipt
+can accept the separately authorized answer without inventing acknowledgement audio.
+Existing memory validation before each phrase, visible-surface suspension, exact
+accepted input/Agent/Chat matching and canonical DM settlement remain in place.
+No browser filler, provisional Communication or latency claim is introduced.
+
+Shared `DirectReplyPreview` accepts explicit message publication scopes for human
+Broadcast/DM and sole peer returns; documentTitle/taskDelivery do not widen their
+source audience. A Request publication is excluded from every message preview.
+The same preview mounts only in an expanded exact `RequestLifecycleCard`, reads
+`reply-streams/:requestId/:recipientAgentId`, and requires publication.kind
+`request_update`, matching requestId/messageId, exact Project/Chat/Agent/current
+Run, no legacy message route, and completed/blocked/failed selection. Drafts are
+labeled Request result in progress, not added to authored history. The canonical
+terminal state of that same Request hides the draft; unrelated Chat messages do
+not settle it. Memory/session invalidation clears it and stream/fence/steering
+drift remains blocked even after a transient read failure.
+
+Contract issue found during implementation: frozen7bc Request status omits
+memoryExposure. The UI deliberately requires current valid/disabled exposure for
+Request drafts too; it does not fabricate or bypass memory authority. A tracked
+Runtime contract clarification/successor is pending before declaring that caller
+usable with the frozen backend alone.
+
+Ten deliverables: `apps/web/src/components/speech/voiceReplyStream.ts`,
+`VoiceConversation.tsx`, `apps/web/src/components/chat/textReplyRoute.ts`,
+`DirectReplyPreview.tsx`, `apps/web/src/components/RequestLifecycleCard.tsx`,
+`tests/speech/voice-acknowledgement-consumer.test.mjs`,
+`tests/chats/text-reply-route.test.mjs`, `request-reply-route.test.mjs`,
+`request-reply-preview-mounted.tsx`, and this document. Deferred regressions cover
+short acknowledgement tails/deduplication, separate answer prefixes, changed native
+receipt/scope/stream refusal, reconnect gaps, exact private Request routing,
+explicit document/mixed routes, mounted Request context revocation and canonical
+terminal hiding. These sources have not run.
+
+No tests/checks/types/build/Node/browser/native/runner preparation or execution,
+installs, new workers, backend writes, push, merge or deployment. Source integration,
+executed native/browser speech qualification, cancellation/revocation races,
+accessibility/mobile and actual performance remain open. No whole UI/#8/#12/#32/
+Bible/Phase2 acceptance is claimed.

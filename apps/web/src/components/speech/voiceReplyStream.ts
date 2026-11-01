@@ -70,6 +70,45 @@ export class VoicePhraseBuffer {
     return out;
   }
 }
+/** One accepted input, with a native-receipted acknowledgement before its answer. */
+export class VoiceReplyBuffers {
+  readonly answer = new VoicePhraseBuffer();
+  readonly acknowledgement = new VoicePhraseBuffer();
+  private scope?: string;
+  private acknowledgementId?: string;
+  private answerId?: string;
+  private acknowledgementText?: string;
+  private acknowledgementReceipt?: string;
+  private acknowledgementSequence = -1;
+  accept(reply: VoiceReplySnapshot): { purpose: "answer" | "acknowledgement"; phrases: string[] } {
+    const purpose = reply.purpose ?? "answer";
+    const scope = JSON.stringify([reply.projectId, reply.conversationId, reply.messageId, reply.agentId,
+      reply.runId, reply.fence, reply.steeringInjectionId, reply.publication]);
+    if (this.scope && this.scope !== scope) throw new Error("The response scope changed. Continue in Chat.");
+    this.scope = scope;
+    if (purpose === "acknowledgement") {
+      if (this.acknowledgementId && this.acknowledgementId !== reply.streamId) throw new Error("The acknowledgement stream changed. Continue in Chat.");
+      this.acknowledgementId = reply.streamId;
+      // Late events from the old stream cannot replace the answer or replay speech.
+      if (this.answerId || reply.sequence <= this.acknowledgementSequence) return { purpose, phrases: [] };
+      this.acknowledgementSequence = reply.sequence;
+      if (reply.state === "failed") throw new Error("The acknowledgement stopped. Continue in Chat.");
+      if (reply.state === "open" || !reply.itemId || !reply.text) return { purpose, phrases: [] };
+      const receipt = JSON.stringify([reply.itemId, reply.providerTurnId]);
+      if (this.acknowledgementReceipt && this.acknowledgementReceipt !== receipt) throw new Error("The acknowledgement receipt changed. Continue in Chat.");
+      this.acknowledgementReceipt = receipt;
+      if (this.acknowledgementText !== undefined && this.acknowledgementText !== reply.text) throw new Error("The acknowledgement changed. Continue in Chat.");
+      if (this.acknowledgementText !== undefined) return { purpose, phrases: [] };
+      this.acknowledgementText = reply.text;
+      // The receipt carries the complete provider-authored acknowledgement, not deltas.
+      return { purpose, phrases: [...this.acknowledgement.accept(reply), ...this.acknowledgement.finish(reply.text)] };
+    }
+    if (this.answerId && this.answerId !== reply.streamId || this.acknowledgementId === reply.streamId)
+      throw new Error("The answer stream changed. Continue in Chat.");
+    this.answerId = reply.streamId;
+    return { purpose, phrases: this.answer.accept(reply) };
+  }
+}
 export interface VoiceTiming {
   acceptedAt?: string; runStartedAt?: string; leasedAt?: string; firstTextAt?: string; completedAt?: string;
   submittedAt?: string; firstModelTextAt?: string;

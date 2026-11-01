@@ -1,3 +1,4 @@
+import {DirectReplyPreview} from './chat/DirectReplyPreview';
 import {
   Accordion,
   AccordionDetails,
@@ -400,6 +401,9 @@ export function RequestLifecycleCard({
                 </Typography>
               )}
             </Box>
+            {expanded && conversationId && lifecycle.request.id === requestId && lifecycle.request.recipientAgentId === recipientAgentId ? (
+              <DirectReplyPreview projectId={projectId} agentId={recipientAgentId} request={{id:requestId,conversationId,state:lifecycle.request.state}} />
+            ) : null}
             {lifecycle.updatesTruncated ? (
               <Alert severity="info">
                 Earlier Request updates are omitted from this bounded view.

@@ -17,7 +17,7 @@ import { speechSnapshot, startSpeech, startSpeechQueue, stopSpeech, subscribeSpe
 import { monitorSpeechSurfaceAccessibility } from "./speechSurfaceAccessibility";
 import { speakableMessageText } from "./speechText";
 import { useDictation } from "./useDictation";
-import { VoicePhraseBuffer, voiceTimingText, type VoiceTiming } from "./voiceReplyStream";
+import { VoiceReplyBuffers, voiceTimingText, type VoiceTiming } from "./voiceReplyStream";
 import { voiceReplyInWindow } from "./voiceReply";
 import { VOICE_ATTEMPT_TTL, prepareVoiceCallAttempt, restoreVoiceCallAttempt, retainVoiceCallAttempt, settleVoiceCallAttempt, voiceCallAttemptCanRetry, type VoiceCallAttempt, type VoiceRoute } from "./voiceCallAttempt";
 
@@ -81,6 +81,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const replyPendingRef = useRef(false);
   const setReplyPending = (next: boolean) => { replyPendingRef.current = next; setReplyPendingState(next); };
   const [provisionalReply, setProvisionalReply] = useState("");
+  const [acknowledgement, setAcknowledgement] = useState("");
   const observedRun = useRef<string>();
   const [transcript, setTranscript] = useState<ConversationMessageDto[]>([]);
   const [playText, setPlayText] = useState<string>();
@@ -104,6 +105,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     generation.current++;
     observationCleanup.current?.();
     setReplyPending(false);
+    setAcknowledgement("");
     dictationRef.current.abandon();
     stopSpeech(ownerId);
   }, [ownerId]);
@@ -222,7 +224,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       attempt.current = undefined; setText(""); stopAutomatic(); setBlocked(true); setError("The unconfirmed turn expired. Review Chat before sending again."); return;
     }
     if (!attempt.current && !textRef.current.trim()) return;
-    if (!attempt.current) { timing.current = { settled: recognitionSettled.current }; recognitionSettled.current = undefined; setLatency(undefined); setRenderReply(undefined); setProvisionalReply(""); observedRun.current = undefined; }
+    if (!attempt.current) { timing.current = { settled: recognitionSettled.current }; recognitionSettled.current = undefined; setLatency(undefined); setAcknowledgement(""); setRenderReply(undefined); setProvisionalReply(""); observedRun.current = undefined; }
     // Set synchronously before hashing/storage/HTTP so two clicks cannot create two keys.
     changePhase("sending"); setLocked(true); setError(undefined);
     const current = ++generation.current;
@@ -288,9 +290,11 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     let dispose = () => {};
     const fail = (message: string) => { if (valid()) {
       tombstoned.current = current; cancelled = true; setReplyPending(false); stopSpeech(ownerId); stopAutomatic();
-      setProvisionalReply(""); setPlayText(undefined); changePhase("paused"); setError(message); dispose();
+      setAcknowledgement(""); setProvisionalReply(""); setPlayText(undefined); changePhase("paused"); setError(message); dispose();
     } };
-    const buffer = new VoicePhraseBuffer();
+    const buffers = new VoiceReplyBuffers();
+    const buffer = buffers.answer;
+    const queuedPurposes: Array<"answer" | "acknowledgement"> = [];
     let queue: SpeechQueue | undefined;
     let streaming = false;
     let streamFailed = false;
@@ -298,9 +302,9 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     let exposure: import("@ponderosa/core").VoiceReplyStatus["memoryExposure"];
     let canonicalSeen = false;
     let validationVersion = 0;
-    const append = (phrases: string[]) => {
+    const append = (phrases: string[], purpose: "answer" | "acknowledgement" = "answer") => {
       if (!valid() || !phrases.length) return;
-      if (timing.current) { timing.current.firstSpeakable ??= performance.now(); publishTiming(); }
+      if (purpose === "answer" && timing.current) { timing.current.firstSpeakable ??= performance.now(); publishTiming(); }
       if (ttsUnavailable) return;
       if (!queue) {
         changePhase("loading");
@@ -310,8 +314,9 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           changePhase("ready");
           if (handsFreeRef.current) listenRef.current();
         }, () => {
-          buffer.started();
-          audioStarted(current);
+          const purpose = queuedPurposes.shift();
+          if (purpose === "acknowledgement") buffers.acknowledgement.started();
+          else { buffer.started(); audioStarted(current); }
         }, async () => {
           if (!valid()) return false;
           const permitted = await refreshStatus();
@@ -322,8 +327,9 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       }
       for (const phrase of phrases) {
         const queuedAt = performance.now();
+        queuedPurposes.push(purpose);
         if (!queue.append(phrase)) { fail(speechSnapshot().error ?? "Browser speech paused. Read the reply in Chat."); break; }
-        if (timing.current) { timing.current.firstQueued ??= queuedAt; publishTiming(); }
+        if (purpose === "answer" && timing.current) { timing.current.firstQueued ??= queuedAt; publishTiming(); }
       }
     };
     const accept = (reply: import("@ponderosa/core").VoiceReplySnapshot) => {
@@ -332,7 +338,9 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           reply.agentId !== agentId || reply.messageId !== messageId) return;
       if (observedRun.current && observedRun.current !== reply.runId) { fail("This turn moved to another Run. Continue in Chat."); return; }
       observedRun.current = reply.runId;
-      if (timing.current) {
+      if (reply.publication && (reply.publication.kind !== "message" || reply.publication.intent !== "direct_to_user" || reply.publication.recipientAgentIds?.length)) return;
+      const isAcknowledgement = reply.purpose === "acknowledgement";
+      if (!isAcknowledgement && timing.current) {
         Object.assign(timing.current, { acceptedAt: reply.acceptedAt, leasedAt: reply.leasedAt,
           runStartedAt: reply.runStartedAt, submittedAt: reply.submittedAt, firstModelTextAt: reply.firstModelTextAt, firstTextAt: reply.firstTextAt ?? timing.current.firstTextAt, completedAt: reply.completedAt ?? timing.current.completedAt });
         if (reply.text && reply.state !== "failed" && !streamFailed) timing.current.firstReceived ??= performance.now();
@@ -345,15 +353,21 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       if (reply.state === "failed") {
         // This intentional queue stop still awaits the exact canonical fallback.
         changePhase("waiting");
-        streamFailed = true; queue?.stop(); queue = undefined; buffer.discardQueued(); streaming = false; stopAutomatic();
+        streamFailed = true; queue?.stop(); queue = undefined; queuedPurposes.length = 0; buffer.discardQueued(); streaming = false; stopAutomatic();
         setNotice("Streaming stopped. Waiting for the exact canonical reply; read Chat if it changes."); return;
       }
       if (streamFailed) return;
+      if (isAcknowledgement) {
+        try {
+          const accepted = buffers.accept(reply);
+          if (accepted.phrases.length) { setAcknowledgement(reply.text); append(accepted.phrases, accepted.purpose); }
+        } catch (error) { fail((error as Error).message); }
+        return;
+      }
       setRenderReply({ generation: current, inputId: messageId, runId: reply.runId, text: reply.text });
       setProvisionalReply(reply.text);
-      if (reply.state !== "streaming") return;
-      streaming = true;
-      try { append(buffer.accept(reply)); } catch (error) { fail((error as Error).message); }
+      streaming = reply.state === "streaming";
+      try { append(buffers.accept(reply).phrases); } catch (error) { fail((error as Error).message); }
     };
     const refreshStatus = (): Promise<boolean> => {
       if (!valid()) return Promise.resolve(false);
@@ -363,8 +377,8 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         if (!valid() || status.messageId !== messageId || version !== validationVersion) return false;
         if (timing.current) {
           Object.assign(timing.current, { acceptedAt: status.acceptedAt, leasedAt: status.leasedAt, runStartedAt: status.runStartedAt,
-            submittedAt: status.reply?.submittedAt ?? timing.current.submittedAt, firstModelTextAt: status.reply?.firstModelTextAt ?? timing.current.firstModelTextAt,
-            firstTextAt: status.reply?.firstTextAt ?? timing.current.firstTextAt, completedAt: status.reply?.completedAt ?? timing.current.completedAt });
+            submittedAt: status.reply?.purpose === "acknowledgement" ? timing.current.submittedAt : status.reply?.submittedAt ?? timing.current.submittedAt, firstModelTextAt: status.reply?.purpose === "acknowledgement" ? timing.current.firstModelTextAt : status.reply?.firstModelTextAt ?? timing.current.firstModelTextAt,
+            firstTextAt: status.reply?.purpose === "acknowledgement" ? timing.current.firstTextAt : status.reply?.firstTextAt ?? timing.current.firstTextAt, completedAt: status.reply?.purpose === "acknowledgement" ? timing.current.completedAt : status.reply?.completedAt ?? timing.current.completedAt });
           publishTiming();
         }
         // A canonical read may settle before this finite status request. Its
@@ -518,6 +532,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       <Button size="small" sx={{ minHeight: 44 }} aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={() => setExpanded(value => !value)}>Transcript &amp; typing</Button>
       {expanded && <Stack id={`${ownerId}-details`} spacing={2}>
         {latency && <Box component="details"><Box component="summary" sx={{cursor:"pointer"}}>Call timing</Box><Typography aria-label="Call timing" variant="caption">{latency}</Typography></Box>}
+        {acknowledgement && <Typography aria-label="Agent acknowledgement" sx={{ whiteSpace: "pre-wrap" }}>{acknowledgement}</Typography>}
         {provisionalReply && <Typography ref={replyElement} aria-label="Streaming reply" sx={{ whiteSpace: "pre-wrap" }}>{provisionalReply}</Typography>}
         <Box aria-label="Call transcript">{transcript.map(message => <Box key={message.id} sx={{ mb: 1 }}><Typography variant="caption">{message.role === "user" ? "You" : "Agent"}</Typography><Typography ref={renderReply?.canonicalId === message.id ? replyElement : undefined} sx={{ whiteSpace: "pre-wrap" }}>{message.document ? "Full message available in Chat." : message.text}</Typography></Box>)}</Box>
         <TextField label="Your next turn" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked} onChange={e => setText(e.target.value)} />

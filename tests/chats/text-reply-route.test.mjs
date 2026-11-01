@@ -23,3 +23,12 @@ test('peer drafts require the exact sole return recipient and never enter the hu
  for(const patch of [{recipientAgentIds:['other']},{recipientAgentIds:['sender','other']},{agentId:'other'},{replyIntent:'broadcast'}])assert.equal(matchesHumanTextReplyRoute(peer,{...draft,...patch},'receiver'),false);
  assert.equal(matchesHumanTextReplyRoute({...peer,coordinationRequests:[{id:'request'}]},draft,'receiver'),false);
 });
+
+test('explicit publication selects one exact document or mixed-route return',()=>{
+ const direct={...source,communicationIntent:'user_dm'};
+ const selected={...reply,replyIntent:undefined,publication:{kind:'message',intent:'direct_to_user',documentTitle:'Report',taskDelivery:'final'}};
+ assert.equal(matchesHumanTextReplyRoute(direct,selected),true);
+ assert.equal(matchesHumanTextReplyRoute(source,selected),false);
+ assert.equal(matchesHumanTextReplyRoute(direct,{...selected,purpose:'acknowledgement'}),false);
+ assert.equal(matchesHumanTextReplyRoute(direct,{...selected,publication:{...selected.publication,recipientAgentIds:['other']}}),false);
+});
