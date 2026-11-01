@@ -18,7 +18,7 @@ export function custodyLifecycleProof(db:Database.Database,source:CheckpointPack
   const execution=db.prepare('SELECT state FROM branch_executions WHERE id=?').get(source.intent.executionId) as {state:string}|undefined;
   if(execution&&!['completed','failed','canceled'].includes(execution.state))blockers.push('Source execution is not terminal');
   for(const id of source.agentIds){
-   if(db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1").get(id,id))blockers.push(`Source Agent ${id} has undrained runtime authority`);
+   if(db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','attached','retry_pending','outcome_unknown') LIMIT 1").get(id,id,id))blockers.push(`Source Agent ${id} has undrained runtime authority`);
    if(db.prepare("SELECT 1 FROM agent_creation_operation_members m JOIN agent_creation_operations o ON o.id=m.operation_id WHERE m.agent_id=? AND o.status NOT IN ('completed','rolled_back') LIMIT 1").get(id))blockers.push(`Source Agent ${id} has unresolved creation custody`);
   }
  }

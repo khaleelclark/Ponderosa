@@ -89,8 +89,10 @@ fresh CAS/drain checks and no unknown-write replay. See
 [lifecycle-reconciliation.md](lifecycle-reconciliation.md) for endpoints/DTOs and limits.
 Legacy memory holds without effect metadata remain held. Existing same-Chat reporting
 regrouping already has a canonical operator endpoint; cross-Chat/root relocation remains
-unsupported. Canonical staged admission/owner reference retirement is still being
-coordinated with Runtime and Features; the successor does not bypass existing pins.
+unsupported. Runtime staged-destination retirement is integrated with immutable
+tombstones, review CAS and independent identity/import refusals. Operator route wiring
+still requires Features current owner/reference and observed-drain authority; no
+ordinary operator assertion can replace that proof. Existing pins remain enforced.
 
 - Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
   consumers and atomic Runtime group destination API (no independent-loop substitute); changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child

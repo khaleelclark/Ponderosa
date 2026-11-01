@@ -21,3 +21,18 @@ test('custody reconciliation requires current reference/drain proof and preserve
   assert.throws(()=>lifecycle.reconcile(id,{...command,commandKey:'changed'}),/conflict/);
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
+
+// Deferred proof fixture; actual database/provider drain qualification remains separate.
+import {custodyLifecycleProof} from '../../apps/server/dist/custody-lifecycle-proof.js';
+test('custody proof includes unknown outcomes and queued destination authority',()=>{
+ let runtimeSql='',runtimeParameters=[];
+ const db={prepare(sql){return {all:()=>[],get(...parameters){
+  if(sql.includes('FROM scheduler_runs')){runtimeSql=sql;runtimeParameters=parameters;return {held:1};}
+  return undefined;
+ }}}};
+ const source={checkpointId:'checkpoint',agentIds:['agent'],intent:{executionId:'execution'}};
+ const proof=custodyLifecycleProof(db,source,'custody');
+ assert.match(runtimeSql,/outcome_unknown/);assert.match(runtimeSql,/agent_activations/);
+ assert.match(runtimeSql,/retry_pending/);assert.deepEqual(runtimeParameters,['agent','agent','agent']);
+ assert.equal(proof.blockers.includes('Source Agent agent has undrained runtime authority'),true);
+});
