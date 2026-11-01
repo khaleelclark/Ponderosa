@@ -1,6 +1,13 @@
 # Fixed schema metadata bound regression
 
-The runtime object ceiling remains **528**, introduced by the approved pause
+Historical boundary evidence below applies before explicit context-recovery receipts.
+The current ceiling is **536**: initialization has 531 objects, and the generation
+marker makes 532. The maintained test now pins 536 accepted, 537 refused, and the
+complete 532-object current-state contract. This explicit schema expansion leaves
+byte/row/work limits unchanged and requires independent review with the receipt
+migration. It does not qualify older populated-state upgrades.
+
+The prior runtime object ceiling was **528**, introduced by the approved pause
 lineage (`4f4622b9a516a52993898600d07b7820600357c8`) when the initialized
 canonical schema grew to 513 objects. Recovery receipts subsequently added
 one table and three SQLite autoindexes. At integration
@@ -9,7 +16,7 @@ the current-state generation marker brings a complete database to **518**.
 The existing ceiling therefore has ten objects of headroom. This correction
 changes no runtime budget, schema, admission or signature implementation.
 
-The maintained line-ending regression pins the boundary independently of the
+The historical maintained line-ending regression pinned the boundary independently of the
 runtime constant: 528 small real SQLite tables must produce a complete signature,
 while a 529th must be refused. It also retains the oversized declaration refusal,
 literal/identifier/comment line-ending checks, successful complete current-state

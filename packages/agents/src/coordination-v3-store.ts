@@ -1,3 +1,4 @@
+import { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
 import { requireAdmittedDatabase } from "./state-admission.js";
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
 import type Database from "better-sqlite3";
@@ -164,6 +165,7 @@ export class CoordinationV3Store {
   private readonly requestAuthority: CoordinationV3RequestAuthority;
   private readonly runLifecycleAuthority: CoordinationV3RunLifecycleAuthority;
   private readonly requiredReplyAuthority: CoordinationV3RequiredReplyAuthority;
+  readonly contextRecovery: CoordinationV3ContextRecoveryAuthority;
   private readonly contextRolloverAuthority: CoordinationV3ContextRolloverAuthority;
   private readonly communicationV4NextRunDeliveries: CommunicationV4NextRunDeliveryAuthority;
 
@@ -173,6 +175,7 @@ export class CoordinationV3Store {
   ) {
     requireAdmittedDatabase(sqlite);
     this.sqlite = sqlite;
+    this.contextRecovery = new CoordinationV3ContextRecoveryAuthority(sqlite);
     this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
     this.activationFactory = new CoordinationV3ActivationFactory(sqlite, options);
     this.requiredReplyAuthority = new CoordinationV3RequiredReplyAuthority(

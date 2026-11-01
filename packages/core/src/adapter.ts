@@ -1,3 +1,4 @@
+import type { ProviderContextRecoverySupport } from "./context-recovery.js";
 // The Adapter (engine) abstraction — SPEC §5. Every engine implements this one
 // interface. The agent stores canonical history; the adapter translates it into
 // a runtime session. Nothing outside packages/engines may know which engine it is
@@ -516,6 +517,8 @@ export interface ProviderUsageSnapshot {
  * Both methods return a live stream of normalized {@link AgentEvent}s.
  */
 export interface Adapter {
+  /** Static support only; reading it must not launch a provider or run a probe. */
+  readonly contextRecoverySupport?: Readonly<ProviderContextRecoverySupport>;
   /** Item-scoped response candidates; explicit host reply authorization remains required. */
   readonly supportsVoiceReplyStream?: boolean;
   id: EngineId; // "codex" | "claude"

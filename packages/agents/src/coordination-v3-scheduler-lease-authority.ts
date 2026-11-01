@@ -179,6 +179,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')
           AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
             AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'
               AND pause.recovery_activation_id=a.id))
@@ -222,6 +223,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.* FROM agent_activations a
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')
           AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
             AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'
               AND pause.recovery_activation_id=a.id))

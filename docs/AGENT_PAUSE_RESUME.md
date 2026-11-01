@@ -91,7 +91,8 @@ project scheduler-Run deletion cascades them.
 
 The unpublished migration has exact supported predecessor signatures (0029,
 0028 and 0027). Foreign and partial schemas remain refused. The metadata object
-ceiling remains 528; byte/row/work read ceilings are unchanged.
+ceiling is now 536 to include explicit context-recovery refusal receipts;
+byte/row/work read ceilings are unchanged.
 
 ## Qualification
 

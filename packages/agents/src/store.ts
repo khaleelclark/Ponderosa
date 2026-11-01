@@ -516,6 +516,23 @@ export class AgentStore extends AgentEventSessionFacade {
     return { sessionId: accepted.sessionId, executionId: boundaryExecutionId, ...(rolloverId ? { rolloverId } : {}) };
   }
 
+  /** Narrow recovery eligibility, independent of a completed boundary. This
+   * observes uncertainty; it never certifies occupancy or authorizes input. */
+  uncertainProviderContextRecoveryBoundary(agentId: string) {
+    const boundary = this.acceptedProviderSessionBoundary(agentId);
+    const accepted = this.resumeSessionState(agentId);
+    if (!boundary || !accepted?.toolContractHash || this.acceptedProviderSessionContextUsage(agentId) ||
+        this.acceptedProviderSessionInputEstimate(agentId)) return undefined;
+    const source = this.client.prepare(`SELECT id, status, provider_session_id, fencing_token, scope_key, project_id
+      FROM scheduler_runs WHERE agent_id=? AND prompt_injection_state<>'not_injected'
+      ORDER BY fencing_token DESC LIMIT 1`).get(agentId) as {
+        id:string;status:string;provider_session_id:string;fencing_token:number;scope_key:string;project_id:string;
+      } | undefined;
+    if (source?.status !== "outcome_unknown" || source.provider_session_id !== boundary.sessionId) return undefined;
+    return { agentId, projectId:source.project_id, providerSessionId:boundary.sessionId,
+      toolContractHash:accepted.toolContractHash, sourceRunId:source.id, sourceFence:source.fencing_token, scopeKey:source.scope_key };
+  }
+
   /** Exact policy packet attributed to the currently accepted session, never
    * a later, unverified replacement candidate. */
   acceptedProviderSessionInput(agentId: string): ProviderInputDto | undefined {

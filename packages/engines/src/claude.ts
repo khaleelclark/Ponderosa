@@ -1,3 +1,4 @@
+import { UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY } from "@ponderosa/core";
 // The Claude adapter (SPEC §5, the planned second engine). Drives the
 // already-authenticated `claude` CLI (Claude Code) in its configured subscription
 // or API-key mode; no direct provider HTTP client. Spawns `claude -p --output-format
@@ -125,6 +126,7 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude";
+  readonly contextRecoverySupport = UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY;
   readonly displayName = "Claude";
   readonly trustedSystemPromptChannel = "system" as const;
   readonly providerUsageCommand = {

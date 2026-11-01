@@ -179,3 +179,5 @@ export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./
 export {REQUEST_SOURCE_LINEAGE_CTE,requestSourceLineageBody} from "./coordination-v3-request-lineage.js";
 
 export {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchRunCounts,readBranchWorkingStepCount} from "./branch-run-status.js";
+
+export { ContextRecoveryConflictError } from "./coordination-v3-context-recovery-authority.js";

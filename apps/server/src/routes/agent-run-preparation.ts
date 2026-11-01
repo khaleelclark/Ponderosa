@@ -205,6 +205,9 @@ export async function prepareAgentRun(
     pendingTurn,
     requestedSourceChannel,
   } = input;
+  if (coordinationV3.contextRecovery.active(agent.id)) {
+    throw contextRecoveryRequired("An explicit context recovery hold is active; no provider input is authorized.");
+  }
 
   const project = store.getChatContext(agent.conversationId);
   if (!project || project.id !== storageProject.id) throw new Error("Agent has no active owning Chat context");

@@ -530,3 +530,112 @@ test('Claude root observation revokes immediately but generic settlement waits f
  const error=(await iterator.next()).value;assert.equal(error.category,'quota_exhausted');await session.close();await iterator.return();
  assert.equal(observations.at(-1).terminalEvent.category,'quota_exhausted');assert.equal(session.isAlive(),false);
 });
+
+import { ClaudeAdapter } from '../../packages/engines/dist/claude.js';
+import { ProviderContextRecoveryUnavailableError } from '@ponderosa/core';
+
+test('native adapters truthfully refuse immutable-normal-contract no-effects recovery without launching',()=>{
+ for(const adapter of [new CodexAdapter({bin:'DO_NOT_EXECUTE'}),new ClaudeAdapter({bin:'DO_NOT_EXECUTE'})]) {
+  assert.deepEqual(adapter.contextRecoverySupport,{status:'unsupported',missingOperation:'immutable_normal_contract_no_effects_recovery'});
+ }
+ assert.equal(new ProviderContextRecoveryUnavailableError().code,'provider_context_recovery_unsupported');
+});
+
+test('explicit unsupported recovery holds exact unknown context durably without any provider input or effects',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Unknown recovery'),agent=await f.createIdleAgent(chat,'Retained Agent');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Exact original uncertain task');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'accepted unknown generation');
+  const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
+  const accepted=store.resumeSessionState(agent.id),history=store.getAgent(agent.id);
+  const body={idempotencyKey:'explicit-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
+    expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  const before={turns:f.turns.length,commands:f.commands.length,steers:f.steers.length,probes:f.providerProbes.length};
+  const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`));
+  assert.equal(status.support.status,'unsupported');assert.equal(status.boundary.sourceRunId,boundary.sourceRunId);
+  const providerInputCount=store.sqlite.prepare('SELECT count(*) n FROM provider_inputs').get().n;
+  store.sqlite.exec("CREATE TEMP TRIGGER fail_recovery_insert AFTER INSERT ON provider_context_recovery_requests BEGIN SELECT RAISE(ABORT,'controlled receipt persistence failure'); END");
+  const failed=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(failed.status,503);assert.equal(failed.body.code,'context_recovery_persistence_unknown');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_context_recovery_requests').get().n,0);
+  store.sqlite.exec('DROP TRIGGER fail_recovery_insert');
+  const result=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(result.status,409,JSON.stringify(result.body));assert.equal(result.body.code,'provider_context_recovery_unsupported');
+  assert.equal(result.body.request.state,'unsupported_fenced');assert.equal(result.body.replayed,false);
+  const id=result.body.request.id;
+  const replay=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(replay.body.request.id,id);assert.equal(replay.body.replayed,true);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,expectedSessionId:'foreign'})).status,409);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,idempotencyKey:'another-key'})).status,409);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,seed:'hidden replacement'})).status,400);
+  assert.deepEqual(store.resumeSessionState(agent.id),accepted);assert.deepEqual(store.getAgent(agent.id),history);
+  await f.send(agent.id,'Queued future human instruction');
+  assert.equal(new CoordinationV3Store(store.sqlite).leaseNextRun({workerId:'refusal-test'}),undefined);
+  for(const endpoint of ['compact','provider-commands']) {
+   const r=await f.api('POST',`/api/agents/${agent.id}/${endpoint}`,endpoint==='compact'?{}:{name:'compact'});
+   assert.equal(r.status,409);assert.equal(r.body.code,'context_recovery_held');
+  }
+  const stale=f.sessions.get(agent.id);const toolResult=await stale.tool('ponderosa_message',{text:'Must not escape recovery hold'});
+  assert.equal(toolResult.success,false,'Old unknown Run must not regain reply/tool authority');
+  await f.reopen();
+  const retained=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries?idempotencyKey=explicit-recovery`));
+  assert.equal(retained.request.id,id);assert.equal(retained.request.state,'unsupported_fenced');
+  assert.equal(new CoordinationV3Store(store.sqlite).leaseNextRun({workerId:'after-restart'}),undefined);
+  assert.deepEqual({turns:f.turns.length,commands:f.commands.length,steers:f.steers.length,probes:f.providerProbes.length},before);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  assert.deepEqual(store.resumeSessionState(agent.id),accepted);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_inputs').get().n,providerInputCount);
+  assert.equal(store.readEvents(agent.id).filter(row=>row.event.type==='context_rollover_session_accepted').length,0);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${id}/dismiss`,{acknowledgeStillBlocked:false})).status,400);
+  const dismissed=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${id}/dismiss`,{acknowledgeStillBlocked:true}));
+  assert.equal(dismissed.recovered,false);assert.equal(dismissed.request.state,'dismissed');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND status='failed'").get(agent.id,boundary.sourceRunId),'original context guard after dismissal');
+  assert.equal(f.turns.length,before.turns,'Dismissal must not bypass unmeasurable context');
+  const again=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(again.body.request.id,id);assert.equal(again.body.request.state,'dismissed');assert.match(again.body.error,/dismissed without recovering context/);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_context_recovery_requests WHERE agent_id=?').get(agent.id).n,1);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true});
+});
+
+test('recovery refuses a completed or busy source rather than opening a proof turn',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery eligibility'),agent=await f.createAgent(chat,'Completed source');
+  const accepted=store.resumeSessionState(agent.id),run=store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=? ORDER BY fencing_token DESC LIMIT 1').get(agent.id);
+  const body={idempotencyKey:'not-eligible',expectedSessionId:accepted.sessionId,expectedSourceRunId:run.id,
+    expectedToolContractHash:accepted.toolContractHash,acknowledgeUnknownEffects:true};
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body)).status,409);
+  await f.hold(agent.id);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body)).status,409);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_context_recovery_requests').get().n,0);
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('recovery admission waits for an in-flight Agent native command before retaining its refusal hold',{timeout:30000},async t=>{
+ let store,releaseCommand,commandEntered=false;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery command boundary'),agent=await f.createIdleAgent(chat,'Unknown source');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Original uncertain task');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
+  f.capabilities.commands.push({name:'inspect',description:'Inert fixture command',source:'adapter-implemented',acceptsArguments:false,insertText:'/inspect',status:'available',invocation:'runtime'});
+  const first=f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'inspect'});
+  await until(()=>commandEntered,'inert command waiting');
+  try {
+   const body={idempotencyKey:'after-command',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
+    expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+   const busy=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+   assert.equal(busy.status,409);assert.match(busy.body.error,/active/);
+   const overlap=await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'inspect'});
+   assert.equal(overlap.status,409);assert.equal(f.commands.length,1);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_context_recovery_requests').get().n,0);
+   releaseCommand();assert.equal((await first).status,200);
+   const refused=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+   assert.equal(refused.body.code,'provider_context_recovery_unsupported');
+   assert.equal(refused.body.request.state,'unsupported_fenced');
+  } finally {releaseCommand?.();await first;}
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+   providerCommandResult:async()=>{commandEntered=true;await new Promise(resolve=>releaseCommand=resolve);return {message:'Inert read-only fixture response'};}});
+});
