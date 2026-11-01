@@ -166,3 +166,36 @@ or stale-review 409 errors preserve `accessSettingsReview` on the thrown
 Non-access errors do not acquire a fabricated review. No choice or permission is
 automatically adopted. Branch installation owns durable human review, per-target
 mapping, status/routes and retry decisions; those caller files are unchanged here.
+
+### Organization working-root bundles
+
+Full GET Agent export accepts `organizationWorkingFolders=true` (combine with
+`organization=true` for a subtree). Every included Agent declares an opaque
+`workingRootRef`. Resolved source root paths identify shared membership inside the
+export only; absolute source paths are not published. Each distinct root has one
+owner node containing its folder manifest and regular-file originals, including
+empty directories, ordinary modes/mtime and excluded-path disclosure. Other nodes
+reference the same identity without duplicating bytes. This includes child Separate
+Git changes absent from the destination repository's common snapshot. Existing
+selected-file and `wholeWorkingFolder=true` root-only export remain available.
+
+Import requires `workingRootDestinations: Record<workingRootRef, absoluteNewPath>`
+covering exactly every identity; legacy `workingFilesDestination` cannot be mixed.
+Destinations must be distinct and cannot nest. The existing new-only writer refuses
+existing paths and preserves partial or previously completed roots on failure. The
+durable operation records the entire mapping before its first folder write; errors
+name retained locations. JSON/staged import forwards and hashes the same mapping.
+Success returns `workingRoots: [{ref,destination,agentIds}]`, preserving the exact
+shared-source relationship using fresh destination Agent IDs. These are explicit
+retained-content destinations, not foreign execution authority.
+
+Live root assignment remains constrained by existing canonical services: Shared
+Agents use exactly `Project.hostPath`; Separate Git Agents require fresh managed
+worktree roots, branch receipts and cleanup ownership. Bundle destinations do not
+rebind these roots. Recreating modes from a destination Git snapshot does not copy
+source uncommitted/ignored work. Thus this transport closes omission of child folder
+bytes and records their memberships, but automatic live use of the restored folders
+is **not implemented**. It needs a destination Project/root creation or reviewed
+copy-into-fresh-worktree service that can preserve conflicting user content and
+mint native ownership locally. Credentials, Git/native/session ownership remain
+excluded; UI must disclose exclusions and the retained-content/live-root distinction.

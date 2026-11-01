@@ -156,6 +156,8 @@ export interface PortableAgentNodeDto {
   /** Setup intent only. Native ownership receipts are never portable. */
   workingCopyMode?: AgentWorkingCopyMode;
   sourceChat?: {ref:string;title:string};
+  /** Opaque package-local identity; equal refs share one exported folder. */
+  workingRootRef?: string;
   workingFiles?: Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;
   workingFolder?: {mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[]};
   history?: PortableAgentHistoryMessageDto[];
@@ -207,6 +209,7 @@ export interface ImportAgentPackageRequest {
   package: AgentPortablePackageDto;
   outputRoleReviewId?: string;
   workingFilesDestination?: string;
+  workingRootDestinations?: Record<string,string>;
   accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string};
   /** Human-selected destination folder mode; omitted retains source mode. */
   workingCopyMode?: AgentWorkingCopyMode;
@@ -223,6 +226,7 @@ export interface CopyAgentPackageRequest {
   accessSettingsResolution?: ImportAgentPackageRequest['accessSettingsResolution'];
   workingCopyMode?: AgentWorkingCopyMode;
   workingFilesDestination?: string;
+  workingRootDestinations?: Record<string,string>;
   /** Optional new name for the copied organization root; descendants retain their names. */
   rootTitle?: string;
   /** Template copies omit history and files. Defaults to full. */
@@ -233,6 +237,7 @@ export interface CopyAgentPackageRequest {
   acknowledgeElevatedManagementPermissions?: boolean;
 }
 export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; workingFilesDestination?:string;
+  workingRoots?:Array<{ref:string;destination:string;agentIds:string[]}>;
   accessSettingsToReview?:Array<{agentId:string;source:NonNullable<PortableAgentNodeDto["accessSettings"]>;conversationId:string}>;
 }
 export type AgentImportPhase =

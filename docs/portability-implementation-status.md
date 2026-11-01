@@ -47,3 +47,26 @@ forwards explicit reviewed choices and preserves structured review on 409.
 Organization regression source covers refusal payload, explicit forwarding and
 stale package hash. Branches-owned caller routes/service remain unchanged and must
 adopt the exported contract and persist human review. No tests/checks executed.
+
+### Organization folder continuation (source only)
+
+Implemented per-Agent `workingRootRef`, distinct-root deduplicated opt-in full
+organization export, exact explicit `workingRootDestinations` import mapping,
+new-only folder restoration, durable mapping/error retention and response mappings
+of restored roots to fresh Agent IDs. Shared roots carry one inventory/originals
+owner; child Separate Git roots are inventoried independently. Existing selected
+and root-only formats remain accepted. Files: core `dto/agents.ts`, server
+`routes/agent-packages.ts`, `portable-agent-package-validation.ts`,
+`agent-package-codec-worker.ts`; regression source
+`tests/organizations/portable-working-roots.test.mjs`; contract above in
+`combined-migration-contract.md`. UI owner has the exact controls/DTO contract.
+
+Remaining backend implementation: these restored NEW paths are content destinations,
+not live Agent roots. `packages/agents/src/working-copy.ts` requires Shared roots
+match Project.hostPath exactly and Separate Git roots have managed branch/ownership
+receipts. `agent-working-copy-service.ts` creates fresh destination-snapshot worktrees,
+which omit source uncommitted/ignored child files. No foreign ownership is adopted.
+A reviewed service to create destination Projects or safely populate fresh native
+worktrees is still needed to make restored folders live while retaining shared-root
+relationships. This increment does not claim full #8 completion. No tests, checks,
+build, types, runner preparation or execution were performed.

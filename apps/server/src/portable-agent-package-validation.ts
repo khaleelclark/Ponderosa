@@ -31,7 +31,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
   const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>();let totalArtifactBytes=0;
   for(const candidate of portable.agents as unknown[]){
     const node=validatedObject(candidate,'Agent package node');
-    exactObjectFields(node,['ref','title','engine','model','effort','speed','role','presetSnapshot','accessSettings','workingCopyMode','sourceChat','workingFiles','workingFolder','initialInstructions','managerRef','managementPermissions','history','artifacts'],'Agent package node');
+    exactObjectFields(node,['ref','title','engine','model','effort','speed','role','presetSnapshot','accessSettings','workingCopyMode','sourceChat','workingFiles','workingFolder','workingRootRef','initialInstructions','managerRef','managementPermissions','history','artifacts'],'Agent package node');
     if(typeof node.ref!=='string'||typeof node.title!=='string'||typeof node.engine!=='string'||!node.engine.trim()||(node.model!==undefined&&typeof node.model!=='string')||(node.effort!==undefined&&typeof node.effort!=='string')||(node.initialInstructions!==undefined&&typeof node.initialInstructions!=='string'))throw new Error('every imported Agent must declare valid identity and runtime fields');
     if(typeof node.initialInstructions==='string'&&!agentPackageTextIsWellFormed(node.initialInstructions))throw new Error('Agent initial instructions must contain well-formed Unicode');
     for (const field of ['speed','role'] as const) {
@@ -44,6 +44,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       for (const key of ['id','name','description','guidance','engine']) if (typeof preset[key] !== 'string' || !agentPackageTextIsWellFormed(preset[key] as string)) throw new Error('Agent preset snapshot has invalid text');
       for (const key of ['model','effort']) if (preset[key] !== undefined && typeof preset[key] !== 'string') throw new Error('Agent preset snapshot has invalid selection');
     }
+    if(node.workingRootRef!==undefined&&(portable.mode!=='full'||typeof node.workingRootRef!=='string'||!node.workingRootRef||node.workingRootRef.length>128))throw new Error('Invalid working-root identity');
     if(node.workingFiles!==undefined){
       if(portable.mode!=='full'||!Array.isArray(node.workingFiles)||node.workingFiles.length>10000)throw new Error('Selected working files require a bounded full package');
       const paths=new Set<string>();
@@ -100,5 +101,8 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       chats.add(snapshot.sourceChatId);for(const ref of Object.values(mapping))bound.add(ref as string);
     }
   }
+  const rootRefs=new Set(portable.agents.flatMap(node=>node.workingRootRef?[node.workingRootRef]:[]));
+  for(const ref of rootRefs){const members=portable.agents.filter(node=>node.workingRootRef===ref);if(members.filter(node=>node.workingFolder).length!==1||members.filter(node=>node.workingFiles?.length).length>1)throw new Error('A working root needs exactly one folder manifest and one originals owner');}
+  if(rootRefs.size&&portable.agents.some(node=>!node.workingRootRef))throw new Error('Organization folder bundles must identify every Agent root');
   return {package:portable,artifactBytes,totalArtifactBytes};
 }
