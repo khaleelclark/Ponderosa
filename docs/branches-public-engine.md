@@ -674,3 +674,5 @@ rollback during origin insertion, exact mapped historical question/live answer,
 and new member completion waking the mapped Join continuation. These files have
 not been executed. No tests, typechecks, builds, Node/native/browser/runner
 preparation or execution was performed for this source continuation.
+
+Migration integration: coordination restoration uses `0036_coordination_cut_restorations.sql`; Runtime owns `0035_provider_context_recovery_progress.sql`. Integration must preserve both registrations and Runtime context-recovery behavior. The Branch worktree does not copy or replace the Runtime migration.
