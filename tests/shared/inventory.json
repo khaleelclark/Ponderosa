@@ -1749,6 +1749,13 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, existing TypeScript and React; actual TSX with host hooks/UI leaves stubbed; no provider or browser"
+    },
+    {
+      "path": "tests/workspace-navigation/event-timing-observer.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
     }
   ],
   "retainedReleasePayload": [
@@ -2006,6 +2013,41 @@
       "lane": "manual",
       "moduleBase": "apps/server/package.json",
       "requirements": "Exact built web/server/packages, existing Chrome/playwright-core and AXE_CORE_PATH; owned loopback fixture; controlled response failure, no provider inference"
+    },
+    {
+      "path": "tests/shared/ui-load-fixture.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/shared/serve-ui-fixture.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/event-timing-observer.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/active-load-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/current-accessibility-matrix.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
     }
   ],
   "support": [
