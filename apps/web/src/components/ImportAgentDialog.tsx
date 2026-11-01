@@ -1,3 +1,4 @@
+import {LifecycleReview} from './lifecycle/LifecycleReview';
 import {PostImportAccessReview} from './PostImportAccessReview';
 import {validWorkingRootDestinations} from './workingRootDestinations';
 import type { PortableAgentPreview } from "./agent-package-preview.types";
@@ -88,8 +89,9 @@ export function ImportAgentForm({
   const [importResult,setImportResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
   const [roleOperation,setRoleOperation]=useState<import('@ponderosa/core').AgentImportOperationDto>();
   const [recoveryReview,setRecoveryReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
+  const [lifecycleOperationId,setLifecycleOperationId]=useState<string>();
   const operationQuery=useQuery({queryKey:['role-import-operation',projectId,roleOperation?.id],queryFn:()=>api.getAgentImportOperation(projectId,roleOperation!.id),enabled:Boolean(roleOperation),refetchInterval:q=>q.state.data?.status==='completed'||q.state.data?.status==='failed'?false:500});
-  useEffect(()=>{const current=operationQuery.data;if(!current)return;setRoleOperation(current);if(current.status==='completed'){setRoleOperation(undefined);if(current.result)setImportResult(current.result);else setError('Import completed without a result receipt.');}else if(current.status==='failed'){setRoleOperation(undefined);importRequestId.current=createClientId();setError(current.error??'Import failed');}else if(current.error)setError(current.error);},[operationQuery.dataUpdatedAt]);
+  useEffect(()=>{const current=operationQuery.data;if(!current)return;setLifecycleOperationId(current.id);setRoleOperation(current);if(current.status==='completed'){setRoleOperation(undefined);if(current.result)setImportResult(current.result);else setError('Import completed without a result receipt.');}else if(current.status==='failed'){setRoleOperation(undefined);importRequestId.current=createClientId();setError(current.error??'Import failed');}else if(current.error)setError(current.error);},[operationQuery.dataUpdatedAt]);
   const [roleReview,setRoleReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
   const [accessReview,setAccessReview]=useState<import('@ponderosa/core').AgentAccessImportReviewDto>();
   const [accessAction,setAccessAction]=useState<''|'keep_destination'|'use_source'>('');
@@ -225,6 +227,7 @@ export function ImportAgentForm({
     );},
     onSuccess: (operation) => {
       if(!operation)return;
+      setLifecycleOperationId(operation.id);
       if(operation.status==='pending'){setRoleOperation(operation);return;}
       if(operation.status==='completed'){if(!operation.result)throw new Error('Import completed without a result receipt.');setImportResult(operation.result);return;}
       if(operation.status==='failed')throw new Error(operation.error??'Import failed');
@@ -341,6 +344,7 @@ export function ImportAgentForm({
 
   if(importResult)return <PostImportAccessReview result={importResult} projectId={projectId} onDone={()=>{setImportResult(undefined);clearPackageDraft();(onSubmitted??onCancel)();}}/>;
   return <Stack spacing={2}>
+    {lifecycleOperationId&&<LifecycleReview key={lifecycleOperationId} kind="import" id={lifecycleOperationId}/>}
       <Alert severity="info">History stays private; credentials are excluded.</Alert>
       <Paper component="section" variant="outlined" aria-label="Import an external AI chat" sx={{ p: 1.5 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", sm: "center" }} justifyContent="space-between">

@@ -1,3 +1,4 @@
+import {LifecyclePanel} from './lifecycle/LifecyclePanel';
 import {AssistantSettings} from './AssistantSettings';
 import {TextSizeSetting} from './TextSizeSetting';
 import {GlobalMemoryTransfer} from './GlobalMemoryTransfer';
@@ -184,6 +185,7 @@ function GeneralSettingsSection({
       <Paper variant="outlined" sx={{p:2.5}}><Typography component="h2" variant="h6">Assistant</Typography><AssistantSettings/></Paper>
       <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
       <GlobalMemoryTransfer />
+      <LifecyclePanel />
       {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></Paper>}
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="h6" component="h2" fontWeight={800} sx={{ mb: 1.5 }}>

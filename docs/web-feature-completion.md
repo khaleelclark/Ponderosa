@@ -436,3 +436,77 @@ installs, new workers, backend writes, push, merge or deployment. Source integra
 executed native/browser speech qualification, cancellation/revocation races,
 accessibility/mobile and actual performance remain open. No whole UI/#8/#12/#32/
 Bible/Phase2 acceptance is claimed.
+
+## Operator lifecycle caller continuation
+
+Source-only successor of `2c7db556e20b6e9b0981cd7852f019d95dad8a14` in the same
+sole-writer UI branch. Requires Reliability's lifecycle chain through
+`1544fee9d4eb66f50028d1bb697a9f76a36c79fe` atop
+`c1d8316465dcfb064c98d010f6785bac1b815e8c`. Backend/core source is read, not copied
+into this web tree. Existing origin/operator boundaries remain unchanged.
+
+Settings now provides on-demand canonical checkpoint-custody and memory-hold
+inventories plus retained orphan staging metadata. Reviews show exact identity,
+current digest, file inventory, references, drain blockers and current backend
+readback metadata without importing package/backend bodies. Custody reconciliation
+preserves originals; memory reconciliation requires explicit external backend drain
+observations and preserves current backend state. That field is operator testimony,
+not a result-query guarantee. Legacy canReconcile:false holds remain disabled.
+Import forms retain the actual returned/polled operation ID, including a just-failed
+operation, and expose preserve_unresolved or eligible retire_mutation_free review.
+No manual lifecycle identity entry is introduced.
+
+A canonical Branch destination selection exposes destination retirement review.
+The exact returned source/destination/member/reference/hash evidence is available;
+permanent preserve-only retirement, source pins, completed destination deletion and
+global runtime quiescence are explicit. Approval and retirement are separate human
+confirmations with identical body/key/hash/pin disposition. Approval alone never
+retires. Pure receipt GET reconciles only the exact retained retirement choice.
+
+The returned destination reservation custody supplies the full original
+CheckpointPackageSource to Branch lifecycle review. Canonical owner references
+supply selectable exact checkpoint IDs/hashes and command keys. Initial and
+foreign-owner checkpoints are not selected. Explicit checkpoint retirement binds
+the current Branch revision and selected hashes. Capture abandonment first obtains
+the combined Branch/package review for the exact selected command, then confirms
+its opaque digest with preserveEvidence:true. Remaining references/blockers refuse
+abandonment; the backend independently validates supported unsealed capture cuts.
+All original package bytes and selected snapshot rows remain retained evidence.
+
+Every mutation persists its entire original command before POST. Lost responses,
+remounts and conflicts lock new inputs. Pure destination receipt lookup does not
+retry a mutation. Other assigned APIs provide exact-command replay but no pure
+command receipt lookup; the UI states this limitation and requires a fresh explicit
+confirmation to resend unchanged input. 409 clears review acknowledgement/selection
+and confirmation and refreshes canonical evidence without automatically resubmitting
+or treating a refreshed state as an exact command receipt. Interrupted filesystem/
+SQL dispositions remain held until their original command can be reconciled.
+
+Discovery review with Reliability is pending. At frozen1544, global deleted-owner
+import lists, destination admission lists and full capture-source discovery are
+not exposed by the documented lifecycle APIs. Current callers use canonical
+identities already returned by import/Branch destination flows; they do not infer
+missing source fields from custody hashes or accept pasted IDs. Destination review
+itself can refuse until destination deletion proof exists, limiting access to its
+returned source for Branch/capture review. Unsupported discovery must remain
+explicit rather than claiming these entries are globally reachable.
+
+Deferred source regressions: `tests/chats/lifecycle-command.test.mjs` exercises exact
+approval/retirement and memory/import/custody/capture/Branch receipt boundaries;
+`tests/chats/lifecycle-review-mounted.tsx` covers separate approval/retirement,
+identical retained choice across response loss/remount, pure receipt reconciliation,
+legacy-memory refusal and stale409 without automatic replay. Neither has run.
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, backend writes, workers, push, merge or deployment. Source integration
+and executed lifecycle/native/remote-backend/accessibility/mobile qualification
+remain open. No whole UI/lifecycle/#8/#12/#32/Bible/Phase2 pass is claimed.
+
+Ten named deliverables for this continuation: `apps/web/src/components/lifecycle/`
+`LifecyclePanel.tsx`, `LifecycleReview.tsx`, `BranchLifecycleReview.tsx`,
+`lifecycleCommand.ts`; existing mounts `WorkspaceSettingsView.tsx`,
+`ImportAgentDialog.tsx`, `branches/BranchDisclosureReview.tsx`;
+`tests/chats/lifecycle-command.test.mjs`, `lifecycle-review-mounted.tsx`; and this
+document. Corrupt/unreadable retained browser commands block new mutations rather
+than silently resetting an unknown outcome. Branch selection is bounded to 128
+exact owner checkpoints, matching the route's admission limit.

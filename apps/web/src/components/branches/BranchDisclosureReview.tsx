@@ -1,3 +1,4 @@
+import {LifecycleReview} from '../lifecycle/LifecycleReview';
 import {useRef,useState} from 'react';
 import {useInfiniteQuery,useMutation,useQuery} from '@tanstack/react-query';
 import {Alert,Button,Checkbox,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,MenuItem,Stack,TextField,Typography} from '@mui/material';
@@ -89,6 +90,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged}:
   <Dialog open={open} fullWidth maxWidth="md" disableEscapeKeyDown={busy} onClose={()=>{if(!busy){epoch.current++;setOpen(false);}}}>
    <DialogTitle>Fresh destination review</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     <Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Branch {branchId} · source Run {executionId}</Typography>
+    {target&&<LifecycleReview key={`retirement:${target.admissionId}`} kind="destination" id={target.admissionId} enabled={enabled}/> }
     <Alert severity="warning">Reconcile original external effects first. Unknown effects cannot be replayed.</Alert>
     {!enabled&&<Alert severity="warning">Refresh this Run before applying changes.</Alert>}
     {notice&&<Alert severity="warning">{notice}</Alert>}
