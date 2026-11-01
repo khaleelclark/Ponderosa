@@ -1,6 +1,6 @@
 # Current implementation coverage and backlog
 
-Source-only inventory includes Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
+Source-only inventory includes Branchc462d403 (two serial resources), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
 retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner2c7db556e,
 and lifecycle source through1544fee9d. Integration owns
 `phase2-implementation-integration` at
@@ -49,7 +49,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 29 | Shared Chat/output/Assistant/folder/navigation source assembled. | UI; blind panel/mobile/flicker judging deferred. |
 | 30 | Unified local-memory search/settings and portable memory source assembled. Exact effect-bearing failed holds have explicit reviewed preserve-current reconciliation; legacy/unknown cases stay held and no automatic reclamation exists. | Runtime/Reliability/Features; backend permission/search trials deferred. |
 | 31 | Runtime adds explicit document/mixed-route/attached-Request final generation through canonical publication, and native-receipt-qualified early voice acknowledgement. Separate UI acknowledgement/answer buffers and exact private Request previews are assembled with validated Request memory exposure; see runtime-publication-and-voice.md. | Runtime/UI; source only, native/UI execution and latency/recordings deferred. |
-| 32 | Parallel/control, persistent issued graph/tree/recapture, pre-opening resource rewind, bounded fresh issued-resource destination and review UI assembled. See exact scope and missing-code list below. | Features/Runtime/UI; framework equivalence and all execution deferred. |
+| 32 | Parallel/control, persistent issued graph/tree/recapture, pre-opening resource rewind, single-resource review UI and bounded exactly-two serial gen0 group operator consumer assembled. See exact scope and missing-code list below. | Features/Runtime/UI; framework equivalence and all execution deferred. |
 
 ## Current bounded issued-resource source
 
@@ -118,6 +118,26 @@ any-resource readiness fence remains integrated. See coordination-destination-gr
 Three deferred synthetic Runtime boundary fixtures are present, unexecuted; no actual
 owner-tree/provider or Branch group consumer qualification is implied.
 
+### Bounded two-resource group consumer
+
+Source now connects exact one-owner serial/two-generation-zero issued capture,
+per-resource actual custody, fresh Project/two owned Chats/full maps, sequential
+prepared imports, whole human fact/policy disclosure choice, nested finish wrappers
+around one Runtime group admit, both owner receipts, after-admission same-transaction
+checkpoint and exact no-byte replay. See `branches-two-resource-destination.md` for
+operator routes, current directory reuse and hard limits. Existing single resource
+and group holds preserved. Actual deferred SQLite/inert-package fixture source covers
+capture/retire/review/admit/readback, second-completion rollback, policy/revocation and
+tamper refusals. No fixture/check/build/typecheck/preparation executed. Trees, parallel
+resource groups, later-generation evidence-only partitions, broader package payloads,
+partial-group capture abandonment and group lifecycle remain incomplete.
+
+The fresh ordinary Project reuses the current owner Project directory and keeps its
+usual default Chat, plus two separately reserved Branch/execution-owned resource
+Chats. Canonical Chat creation validates the host-supplied Branch/execution owner
+and persists JSON plus SQL projection. Group operator routes exist; group UI does
+not. No separate filesystem workspace or imported native working root is activated.
+
 ## Actual missing implementation / owner requirements
 
 Lifecycle successor source adds operator package/import evidence reconciliation and
@@ -143,11 +163,11 @@ Source only; focused regression/crash execution deferred. Lifecycle migration re
 neither executed.
 
 - Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
-  consumers. Atomic Runtime group API is delivered; Branch still needs exhaustive
-  multi-resource capture, real current custody/per-fact disclosure/human review adapters,
-  held importer orchestration and one synchronous whole-group owner composer. Owner
-  checkpoints must follow Runtime admit within the same outer transaction; no loop of
-  independent singular admissions. Changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
+  consumers beyond the delivered EXACTLY TWO standalone serial generation-zero
+  resources. That bounded consumer now includes exact capture/custody, actual whole
+  human review, held imports, one composer and post-admit same-transaction checkpoint.
+  Trees, parallel groups, other resource counts, partial-group capture abandonment,
+  group lifecycle and group UI remain missing. Changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
   cancellation and cross-owner forwarded bundles. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
   approval/evidence recheck, immutable receipt/tombstone and optional proven-safe source-pin
@@ -250,18 +270,3 @@ source-boundary/concurrency, destination authorization/lifecycle, provider parit
 upgrade/reliability runs, all Build flows, desktop/mobile/accessibility and measured
 performance. Historical LCP failure remains unresolved. None of all32, #8, #12,
 #32, Build, full UI, Bible or Phase2 is accepted by this inventory.
-
-
-### Bounded two-resource group consumer
-
-Source now connects exact one-owner serial/two-generation-zero issued capture,
-per-resource actual custody, fresh Project/two owned Chats/full maps, sequential
-prepared imports, whole human fact/policy disclosure choice, nested finish wrappers
-around one Runtime group admit, both owner receipts, after-admission same-transaction
-checkpoint and exact no-byte replay. See `branches-two-resource-destination.md` for
-operator routes, current directory reuse and hard limits. Existing single resource
-and group holds preserved. Actual deferred SQLite/inert-package fixture source covers
-capture/retire/review/admit/readback, second-completion rollback, policy/revocation and
-tamper refusals. No fixture/check/build/typecheck/preparation executed. Trees, parallel
-resource groups, later-generation evidence-only partitions, broader package payloads,
-partial-group capture abandonment and group lifecycle remain incomplete.
