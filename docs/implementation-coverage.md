@@ -712,9 +712,9 @@ raw retired seal/retirement bytes. Backend is authoritative for eligibility,
 proof/package validation, attempt budget and one atomic current-only admission.
 
 The fixed attempt2of2 label is removed. Preview uses real variable budget metadata;
-status/discovery DTO still lacks consumedAttempts/maxAttempts. Status-only recovery
-explicitly marks budget unavailable, never fabricates it or substitutes a fresh
-preview. Extending that DTO remains a backend contract gap. Deferred2/3/32 helper
+the subsequent saved-budget backend integration below resolves the status/discovery
+DTO gap. The unchanged UI still explicitly marks status-only budget unavailable;
+adopting the new verified/unavailable budget evidence remains UI owner work. Deferred2/3/32 helper
 and mounted sources cover ordered proof/facts, budget bounds, saved CAS, lost-response
 GET-only recovery, canonical discovery and whole-list preparation receipt checks.
 No fixture was executed. ff40 audit identity/privacy, called-tree producer, original
@@ -730,3 +730,46 @@ mobile qualification and full Phase2/Bible acceptance remain open. No retention 
 reclamation writer. ZERO tests/checks/build/types/Node/native/browser/runner preparation
 or execution, migrations, push/deploy/newworkers; commit hooks disabled. Source and
 Git inspection only.
+
+
+### Saved capture retry budget status integration — source only
+
+Branch df05c945b is assembled as57eab4596 on42a1295d6. Exactly six required
+files are physically present and owner-byte-equal: server branch-resource-service,
+branch-generation-one-destination doc, agents branch-issued-resource-capture/index,
+core branches DTO, and historical-checkpoint-rewind deferred fixture. Only this
+coverage file is additional. Parentcbe266387 was already assembled; no ancestor
+replay, backend copies or duplicate equivalent changes.
+
+Status and bounded canonical discovery now return retryBudget verified with consumed
+attempt count, pinned maxAttempts and evidenceHash, or explicit unavailable with
+missing_saved_retry_proof. Verified values also populate optional top-level numbers;
+not_found has no budget. The shared DTO reaches existing SDK status/discovery methods.
+Reader uses saved review hash/snapshot/continuation, exact binding/configuration,
+hash-checked original version definition and exhaustive original retry replay. One
+selected original attempt must match resource generation+1 and the pinned retry
+policy; mutable active Branch configuration is irrelevant. evidenceHash binds the
+entire saved snapshot plus reviewHash. Existing journal read verifies retained
+checkpoint seal/source receipt before status. Missing legacy retry proof returns no
+numbers; present malformed proof refuses. No fresh preview, new mutation or budget
+reset is introduced.
+
+Backend status-budget contract gap is resolved in source. Current UI remains
+unchanged and still discards status budget fields when reconstructing selection,
+displays unavailable, and does not validate/display the new retryBudget evidenceHash.
+UI adoption of verified/unavailable evidence is pending; no claim that empty-browser
+UI budget presentation is complete. Saved-preview budget remains intact. Eligibility
+stays one standalone manual serial resource, ASYNC/SYNC generations1–32 with pinned
+maxAttempts<=33 and Runtime32-selection/32MiB bounds. No parallel/tree/EXIT/offset
+restoration or broader payload authority is added.
+
+Deferred existing2/3/32 ASYNC/SYNC fixture gains saved-key empty-client status,
+discovery equality, restart, mutable configuration independence, corrupted original
+attempt refusal and explicit legacy unavailable cases; source inspected, unexecuted.
+Current UI, historical proof/audit identity/privacy, called-tree producer, original
+owner fences and group/lifecycle preserved.0035–0040 physically present/registered
+once in order, untouched/unexecuted. Remaining eligibility/proof/payload/recovery and
+real package/custody/provider/native/runtime/end-to-end/accessibility/mobile/full
+Phase2 qualification limits above remain. No tests/checks/build/types/Node/native/
+browser/runner preparation or execution, migrations, push/deploy/newworkers. Commit
+hooks disabled; source/files/Git inspection only.
