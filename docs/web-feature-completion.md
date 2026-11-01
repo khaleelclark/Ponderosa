@@ -808,5 +808,91 @@ safe savepoint nesting when a transaction already exists. This resolves the sour
 dependency described by UI docs51704f458; no executed usability claim.
 
 The separate whole-group abandonment backend protocol is also assembled source only.
-Its fourth lifecycle collection and review/abandon calls have no dedicated UI here.
+Its fourth lifecycle collection and review/abandon UI are now assembled below.
 Retained/sealed groups and history/disk reclamation remain separate.
+
+
+## Unsealed whole-group capture abandonment continuation
+
+Source-only successor to UI `51704f458fb3f1e30905156a8fb8825bc46bb47a`.
+Required exact backend contract is composed `9bbdaad1bd8aa42b30a07cb8460d4a67eb8a092e`
+at `/tmp/ponderosa-group-capture-abandonment`; its actual shared DTOs, SDK methods,
+routes, host protocol, Branch receipt and docs were source-read. Its base is
+`e7d27801a3dc2e9605f261b246d5ce59deb9da69`, with successors
+`bdcd53812eded821a4f201eea8eafde3416dac21` (lifecycle discovery replay),
+`535301c242b960e9e3925e43e184b5f387db481b` (host protocol replay),
+`46ba3475ed9d61cd19f9a17c3770acced176ab7a` (canonical owner replay), and
+`9bbdaad1` composition/tightening. Preserve equivalent originals instead of duplicate
+replays. Integration owns backend/core assembly; this older UI checkout consumes
+backend-owned DTOs without copying their declarations or SDK. The separate capture-preview read-transaction correction f623c81ff is already
+assembled. This abandonment continuation does not qualify the capture/CAS producer.
+
+Settings lifecycle discovery now mounts a fourth independent canonical collection:
+GET `/api/lifecycle/checkpoint-capture-groups?limit=50&cursor=...`. It follows opaque
+cursors under one revision using explicit Load more, until absent. A malformed or
+changed/409 inventory clears the selected review and confirmations and requires
+explicit restart; the other three collections remain independent. Each row exposes
+its exact original execution ID, raw persisted `issued-group-capture:<hash>` key,
+all full sources, captured checkpoint IDs, current/retained-only owner label and
+evidence digest. Distinct 2–32 generation-zero sources/Chats/participants and captured
+membership are validated. The raw lifecycle key is different from the plaintext
+command used by the separate capture producer; it is neither guessed nor converted.
+No destination deletion/review gate, manual ID, inferred deletion or private payload
+is added. Retained-only labels supply audit identity, not deletion/drain authority.
+
+`GroupCaptureAbandonmentReview` uses POST
+`/api/lifecycle/checkpoint-capture-groups/abandonment-review` with only the discovered
+`{executionId,captureKey}`. It binds the complete returned source/package inventory,
+group/capture/Branch revisions, per-package file names/lengths/hashes, references,
+blockers and review digest. Any top-level or non-first-package hold blocks the whole
+group. Zero and partially captured groups are supported by the backend contract;
+fully retained/sealed groups require separate history protocols and are not offered
+here. Every captured and uncaptured member is shown, with explicit warnings that
+all bytes and uncaptured identities remain preserved, disk/history are not reclaimed,
+external effects are not replayed, and no member can use a singular fallback.
+
+Human review acknowledgement and a separate final confirmation create one stable
+original `{executionId,captureKey,commandKey,reviewSha256,preserveEvidence:true}`.
+The whole original entry, reviewed inventory and exact input are stored before
+POST `/api/lifecycle/checkpoint-capture-groups/abandon`. There are no automatic
+mutation retries, loops over singular abandonment or fresh-hash substitutions.
+Unknown responses, filesystem partial progress, SQL failures and409 keep original
+commands retained. Stale review/confirmation state clears. No partial package result
+is interpreted as canonical success or a subset pin release.
+
+This backend has no pure receipt GET for abandonment. Recovery is an explicit,
+separately confirmed unchanged POST, which the host verifies against immutable
+archives even after owner removal. A saved-command recovery section scans only this
+origin/product's own validated original command records. It can reopen the exact
+historical canonical identity after a committed intent vanishes from discovery,
+without requiring live source/destination review or inventing a new command. Corrupt
+saved input remains held and is not overwritten. Recovery-only views cannot create
+new choices. The receipt must match group ID, original key/review, every package
+identity/review/retained byte count and the whole Branch input/source/proof inventory
+before pending input is removed. Byte/hash verification itself remains authoritative
+in the host; the UI does not infer archive success from filesystem progress.
+
+Branch receipts include an original private capture snapshot for durable backend
+proof. The UI deliberately displays only disposition metadata, exact identities and
+package proofs; it does not stringify the raw Branch receipt/snapshot. Existing
+private payload boundaries and the 2–32 capture-preview/CAS flow remain unchanged.
+
+Seven deliverables: new `apps/web/src/components/lifecycle/`
+`GroupCaptureAbandonmentReview.tsx` and `groupCaptureAbandonment.ts`, updated
+`LifecycleDiscovery.tsx`; new `tests/chats/group-capture-abandonment.test.mjs` and
+`group-capture-abandonment-mounted.tsx`, updated
+`tests/chats/lifecycle-discovery-mounted.tsx`, and this document. The backend already
+exports the DTOs through core; no shared SDK/backend/store/route/migration writes.
+Deferred fixture source covers zero/partial capture metadata, non-first-member
+holds, every package proof, raw-key validation, missing/mismatched receipts, private
+snapshot suppression, corrupt storage, origin/product isolation, fourth inventory
+independence from destination refusal,51st record/opaque cursor409 reset, FS-success/
+SQL-failure held input, remount after owner/discovery removal, and explicit identical
+POST recovery. Existing lifecycle mounted fixture recognizes the added collection.
+
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+installs, backend writes, push/merge/deploy or new workers. Fixtures are unexecuted.
+Remaining: fully retained-group history/disk reclamation, unsupported/unknown schemas
+and outcomes, external writers, and separately authorized source integration and
+runtime/native/accessibility/mobile qualification. No whole UI/group/lifecycle/
+Bible/Phase2 acceptance is claimed.

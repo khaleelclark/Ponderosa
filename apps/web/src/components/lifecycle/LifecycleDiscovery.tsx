@@ -1,23 +1,25 @@
 import {useEffect,useState} from 'react';
 import {useInfiniteQuery} from '@tanstack/react-query';
 import {Alert,Button,MenuItem,Paper,Stack,TextField,Typography} from '@mui/material';
-import type {LifecycleDiscoveryPage,LifecycleImportEntry,LifecycleDestinationEntry,LifecycleCaptureEntry} from '@ponderosa/core';
+import type {LifecycleDiscoveryPage,LifecycleImportEntry,LifecycleDestinationEntry,LifecycleCaptureEntry,LifecycleGroupCaptureEntry} from '@ponderosa/core';
 import {currentProductScope} from '../../api/productScope';
 import {requestJson} from '../../api/real';
 import {LifecycleReview} from './LifecycleReview';
 import {BranchLifecycleReview} from './BranchLifecycleReview';
+import {GroupCaptureAbandonmentReview,RetainedGroupCaptureAbandonments} from './GroupCaptureAbandonmentReview';
+import {groupCaptureEntryValid} from './groupCaptureAbandonment';
 import {lifecycleDiscoveryPage} from './lifecycleDiscovery';
-type Kind='imports'|'destinations'|'captures';
-type Entry=LifecycleImportEntry|LifecycleDestinationEntry|LifecycleCaptureEntry;
-const routes={imports:'agent-imports',destinations:'destinations',captures:'checkpoint-captures'};
-const titles={imports:'Import operations',destinations:'Destination admissions',captures:'Source capture intents'};
-const identity=(entry:Entry)=>'operationId' in entry?entry.operationId:'admissionId' in entry?entry.admissionId:JSON.stringify([entry.captureKey,entry.source]);
-const label=(entry:Entry)=>'operationId' in entry?`${entry.operationId} · ${entry.owner.project}/${entry.owner.conversation} · ${entry.status}`:'admissionId' in entry?`${entry.group?'Group':'Singular'} ${entry.admissionId} · ${entry.sourceOwner} · ${entry.state}`:`${entry.captureKey} · ${entry.source.sourceChatId} · ${entry.sourceOwner}`;
+type Kind='imports'|'destinations'|'captures'|'groupCaptures';
+type Entry=LifecycleImportEntry|LifecycleDestinationEntry|LifecycleCaptureEntry|LifecycleGroupCaptureEntry;
+const routes={imports:'agent-imports',destinations:'destinations',captures:'checkpoint-captures',groupCaptures:'checkpoint-capture-groups'};
+const titles={imports:'Import operations',destinations:'Destination admissions',captures:'Source capture intents',groupCaptures:'Whole-group capture intents'};
+const identity=(entry:Entry)=>'sources' in entry?JSON.stringify([entry.executionId,entry.captureKey]):'operationId' in entry?entry.operationId:'admissionId' in entry?entry.admissionId:JSON.stringify([entry.captureKey,entry.source]);
+const label=(entry:Entry)=>'sources' in entry?`${entry.captureKey} · ${entry.executionId} · ${entry.sources.length} resources · ${entry.sourceOwner}`:'operationId' in entry?`${entry.operationId} · ${entry.owner.project}/${entry.owner.conversation} · ${entry.status}`:'admissionId' in entry?`${entry.group?'Group':'Singular'} ${entry.admissionId} · ${entry.sourceOwner} · ${entry.state}`:`${entry.captureKey} · ${entry.source.sourceChatId} · ${entry.sourceOwner}`;
 /** Each collection owns its cursor and selection; destination failure never blocks source discovery. */
 function Inventory({kind}:{kind:Kind}):JSX.Element {
  const [generation,setGeneration]=useState(0),[selected,setSelected]=useState('');
  const query=useInfiniteQuery({queryKey:['lifecycle-discovery',currentProductScope(),kind,generation],initialPageParam:undefined as {cursor:string;revision:string}|undefined,
-  queryFn:async({pageParam})=>lifecycleDiscoveryPage(await requestJson<LifecycleDiscoveryPage<Entry>>(`/api/lifecycle/${routes[kind]}?limit=50${pageParam?`&cursor=${encodeURIComponent(pageParam.cursor)}`:''}`,{cache:'no-store'}),pageParam?.revision),
+  queryFn:async({pageParam})=>{const page=lifecycleDiscoveryPage(await requestJson<LifecycleDiscoveryPage<Entry>>(`/api/lifecycle/${routes[kind]}?limit=50${pageParam?`&cursor=${encodeURIComponent(pageParam.cursor)}`:''}`,{cache:'no-store'}),pageParam?.revision);if(kind==='groupCaptures'&&!page.items.every(item=>groupCaptureEntryValid(item as LifecycleGroupCaptureEntry)))throw Error('Invalid whole-group source inventory; restart explicitly.');return page;},
   getNextPageParam:last=>last.nextCursor?{cursor:last.nextCursor,revision:last.revision}:undefined,
   retry:false,refetchOnWindowFocus:false,refetchOnReconnect:false,staleTime:Infinity,gcTime:0});
  useEffect(()=>{if(query.isError)setSelected('');},[query.isError]);
@@ -41,6 +43,10 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
     <Typography sx={{overflowWrap:'anywhere'}}>{target.group?'Whole group':'Singular'} admission {target.admissionId} · Branch {target.branchId} · source Run {target.sourceExecutionId} ({target.sourceOwner}) · checkpoint {target.checkpointId} · {target.checkpointHash} · {target.state}</Typography>
     {target.destinations.map((slot,index)=><Typography key={JSON.stringify([index,slot.conversationId,slot.resourceStepId])} sx={{overflowWrap:'anywhere'}}>Slot {index+1} · source Chat {slot.sourceChatId} · Project {slot.projectId} ({slot.project}) · Chat {slot.conversationId} ({slot.conversation}) · Run {slot.executionId} · Step {slot.resourceStepId}</Typography>)}
     <LifecycleReview kind={target.group?'group':'destination'} id={target.admissionId}/>
+   </>:'sources' in target?<>
+    <Typography sx={{overflowWrap:'anywhere'}}>Whole-group capture {target.captureKey} · source Run {target.executionId} · owner {target.sourceOwner} · {target.state}</Typography>
+    <details><summary>Full canonical group sources and captured checkpoint identities</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify({sources:target.sources,capturedCheckpointIds:target.capturedCheckpointIds},null,2)}</Typography></details>
+    <GroupCaptureAbandonmentReview entry={target}/>
    </>:<>
     <Typography sx={{overflowWrap:'anywhere'}}>Capture {target.captureKey} · source owner {target.sourceOwner} · Branch {target.branchId??'retained identity only'} · {target.state}</Typography>
     <details><summary>Full canonical capture source</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(target.source,null,2)}</Typography></details>
@@ -57,6 +63,8 @@ export function LifecycleDiscovery():JSX.Element {
   <Inventory kind="imports"/>
   <Inventory kind="destinations"/>
   <Inventory kind="captures"/>
-  <Alert severity="warning">Atomic multiple-package group capture abandonment remains unsupported. Source discovery never authorizes a loop of singular abandonment calls.</Alert>
+  <Inventory kind="groupCaptures"/>
+  <RetainedGroupCaptureAbandonments/>
+  <Alert severity="warning">Only reviewed unsealed whole-group captures can use group abandonment. Fully retained groups, unknown outcomes and history/disk reclamation stay held; no singular abandonment loop is authorized.</Alert>
  </Stack>;
 }
