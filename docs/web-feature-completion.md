@@ -1,6 +1,6 @@
 # Current web implementation coverage
 
-Source-only integration through `c38b209b395dcf53744702758addf1c74944d0b2`.
+Source-only integration through `54948e647` (including current native, state and lifecycle source).
 No execution, preparation or acceptance claim. [Historical detail](web-feature-completion-history.md)
 is archival; [current all32/Build coverage](implementation-coverage.md) and the
 [remaining implementation inventory](phase2-remaining-implementation.md) define current limits.
@@ -54,9 +54,8 @@ branch-owner-tree-group.test.mjs and branch-group-review-mounted.tsx; neither wa
 
 ## U5 — explicit Preserve unknown memory hold decision
 
-Source successor of `83e340a883480f4f8a45bbc4495b89cc9faaf403`, sole UI writer
-on `phase2/web-feature-completion` at
-`/home/phoenix/ponderosa-worktrees/phase2-web-feature-completion`.
+Integrated UI source `557dfcd75333efab8c4377998d87ba149c199226`; prior concise
+copy and current guide retained.
 Required backend/core: exact `06ce4b3c51c5a77a92e949996624e3203153e56a` at
 `/tmp/ponderosa-portability-recovery-inventory`, including exported shared DTOs,
 mutation hold inventory/disposition validation and separate preserve-unknown route.
