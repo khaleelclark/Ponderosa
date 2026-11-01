@@ -1,3 +1,4 @@
+import {insertBranchFrontier} from './branch-frontier-storage.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,childTreeLineage} from './branch-tree-continuation.js';
@@ -702,19 +703,9 @@ export class BranchStore {
       const next=this.accept(branchId,`historical-rewind:${randomUUID()}`,e.input_text,now),ids=new Map<string,string>();
       for(const id of branchContinuationIds(selected))ids.set(id,randomUUID());
       for(const item of selected.items!)ids.set(item.id,`${ids.get(item.map_invocation_id)}:${item.item_index}`);
-      const mapped=(id:string|null)=>id===null?null:ids.get(id)??(()=>{throw Error('Incomplete continuation ID map');})();
-      const restored=remapBranchFrontier(selected,Object.fromEntries(ids),executionId,next.id),path=restored.paths![0]!;
-      this.run(`INSERT INTO branch_paths(id,execution_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id)
-        VALUES(?,?,?,?,?,?,?,?,0,?)`,path.id,next.id,path.state,path.node_id,path.step_execution_id,path.input_text,path.result_json,path.traversals,path.last_result_id);
-      for(const step of selected.steps!)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),next.id,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
-      for(const a of selected.attempts!)this.run(`INSERT INTO branch_attempts(id,step_execution_id,number,state,fence,input_hash,result_json,error,created_at,updated_at,available_at,purpose)
-        VALUES(?,?,?,?,0,?,?,?,?,?,?,'step')`,mapped(a.id),mapped(a.step_execution_id),a.number,a.state,a.input_hash,a.result_json,a.error,now,now,a.available_at);
-      for(const r of selected.sealedResults!)this.run('INSERT INTO branch_sealed_results(id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash,created_at) VALUES(?,?,?,?,?,?,?,?)',mapped(r.id),next.id,mapped(r.path_id),mapped(r.step_execution_id),mapped(r.terminal_attempt_id),r.result_json,r.content_hash,now);
-      for(const g of selected.gates!){
-        this.run('INSERT INTO branch_gates(id,step_execution_id,state,proposal_text,choices_json,revision,response_json,purpose,attempt_id,prompt_text) VALUES(?,?,?,?,?,?,?,?,?,?)',mapped(g.id),mapped(g.step_execution_id),g.state,g.proposal_text,g.choices_json,g.revision,g.response_json,g.purpose,mapped(g.attempt_id),g.prompt_text);
-        if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",mapped(g.id),g.revision,next.id,g.prompt_text,g.purpose,now,now);
-      }
-      for(const r of selected.loops!)this.run('INSERT INTO branch_loop_counts(execution_id,path_id,edge_id,iterations) VALUES(?,?,?,?)',next.id,mapped(r.path_id),r.edge_id,r.iterations);
+      const restored=remapBranchFrontier(selected,Object.fromEntries(ids),executionId,next.id);
+      insertBranchFrontier(this.sqlite,next.id,restored,now);
+      for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,next.id,g.prompt_text,g.purpose,now,now);
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',e.traversals,e.loop_iterations,e.depth_ceiling,next.id);
       const lineage={schema:'ponderosa.branch.rewind-lineage.v1',sourceExecutionId:executionId,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,executionId:next.id,compatibility:c.compatibility,...(c.checkpoint?{sourceCheckpointInvocation:c.checkpoint.invocation}:{}),idMap:Object.fromEntries(ids)};
       const receipt=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(next.id,stableJson(lineage),payloadHash(lineage));
@@ -850,12 +841,8 @@ export class BranchStore {
         this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,e.state==='completed'?'completed':'queued',e.output_text,target);
       }
       const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target);
-      for(const p of restored.paths!)this.run('INSERT INTO branch_paths(id,execution_id,parent_path_id,fork_invocation_id,edge_id,state,node_id,step_execution_id,input_text,result_json,traversals,handling_limit,last_result_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',p.id,target,p.parent_path_id,p.fork_invocation_id,p.edge_id,p.state,p.node_id,p.step_execution_id,p.input_text,p.result_json,p.traversals,p.handling_limit,p.last_result_id);
-      for(const step of o.selected.steps)this.run('INSERT INTO branch_step_executions(id,execution_id,step_id,path_id,invocation,state,input_text,result_json) VALUES(?,?,?,?,?,?,?,?)',mapped(step.id),target,step.step_id,mapped(step.path_id),step.invocation,step.state,step.input_text,step.result_json);
-      for(const a of o.selected.attempts)this.run(`INSERT INTO branch_attempts(id,step_execution_id,number,state,fence,input_hash,result_json,error,created_at,updated_at,available_at,purpose) VALUES(?,?,?,?,0,?,?,?,?,?,?,'step')`,mapped(a.id),mapped(a.step_execution_id),a.number,a.state,a.input_hash,a.result_json,a.error,now,now,a.available_at);
-      for(const result of o.selected.sealedResults)this.run('INSERT INTO branch_sealed_results(id,execution_id,path_id,step_execution_id,terminal_attempt_id,result_json,content_hash,created_at) VALUES(?,?,?,?,?,?,?,?)',mapped(result.id),target,mapped(result.path_id),mapped(result.step_execution_id),mapped(result.terminal_attempt_id),result.result_json,result.content_hash,now);
+      insertBranchFrontier(this.sqlite,target,restored,now);
       for(const resource of o.selected.resources)this.run("INSERT INTO branch_resources(step_execution_id,execution_id,template_ref,state,requested_count,creation_key) VALUES(?,?,?,'reserved',?,?)",mapped(resource.step_execution_id),target,resource.template_ref,resource.requested_count,`branch-resource:${mapped(resource.step_execution_id)}`);
-      for(const loop of o.selected.loops)this.run('INSERT INTO branch_loop_counts(execution_id,path_id,edge_id,iterations) VALUES(?,?,?,?)',target,mapped(loop.path_id),loop.edge_id,loop.iterations);
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',e.traversals,e.loop_iterations,e.depth_ceiling,target);this.selectedWrite(target);
     }
     const line={schema:'ponderosa.branch.tree-rewind-lineage.v1',sourceExecutionId:executionId,executionId:next.id,checkpointId,checkpointHash:expectedHash,commandKey,commandHash,idMap:Object.fromEntries(ids)};

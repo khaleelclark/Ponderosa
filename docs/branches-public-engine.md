@@ -78,7 +78,7 @@ existing durability barriers. Script effects must have matching observed exit
 proof before a saved gate frontier is executable.
 
 Tree/subgraph and unstarted resource reservation rewind retain their existing
-separate supported frontier. General parallel/map continuations, provider/Agent
+separate supported frontier. General parallel/map continuations beyond the bounded standalone Script subset below, provider/Agent
 Request effects, created ephemeral resource histories, recovery gates and secret
 binding restoration are not encoded by this added human frontier. Those remain
 specific implementation gaps; this is not a claim of full LangGraph/LangChain
@@ -203,7 +203,7 @@ APIs for memory, saved-browser access and destination profile choices. No grant,
 profile, credential, old native ownership or session is automatically adopted.
 
 Content-only destinations remain the default. Explicit live activation now uses
-the portability service described below, requiring fresh local ownership. In-progress checkpoint resource/provider/parallel/map codecs and general
+the portability service described below, requiring fresh local ownership. In-progress checkpoint resource/provider codecs, parallel/map cases beyond the bounded standalone Script subset below, and general
 external-writer reconciliation likewise remain incomplete. No test execution or
 full portability/parity verdict accompanies these forwarding changes.
 
@@ -291,17 +291,49 @@ links, aliasing, cycles, foreign Join membership, changed item inventories or
 bundle bytes, Requests and live/unknown attempt states refuse. Attempts reset to
 zero fences; execution admission, resource custody and provider state are excluded.
 
-This is an incremental data-layer change, not parallel restore eligibility.
-`scriptDefinitionSupported`, `scriptFrontierSupported` and audit replay still
-reject Fork/Map frontiers; the new parallel rows are not admitted or installed by
-historical rewind yet. The next owner work is an audit-to-selected replay codec
-for Fork/Map start, per-path traversal, item dispatch, ordered Join resolution and
-nested completion, followed by transactional control-row insertion and restored
-prefix verification. Request/answer/Join immutable cuts with fresh admission,
-created-resource ownership, reviewed bindings and crash reconciliation also
-remain incomplete. Native historical provider snapshots remain unavailable;
-unknown effects are not replayed. No rollback or full #32 claim follows.
+### Standalone Script Fork/Map historical restoration (source only)
 
-Deferred `tests/branches/continuation-remap.test.mjs` covers the remapping and
-refusal cases. No tests, checks, types, build, native/browser/runner preparation
-or execution were performed.
+`branch-parallel-continuation.ts` now admits a bounded executable frontier:
+standalone Node Script graphs containing nested Fork/Map controls, successful
+`all` Joins and acyclic edges. It reconstructs the entire per-path inventory from
+the owned audit prefix, including Fork start, sealed Map extraction, indexed and
+concurrency-limited dispatch, Script preparation/lease/authorization/observed
+successful exit/settlement/sealing, arrival, Join input order and nested parent
+completion. Selected paths, traversal totals, Step invocations, attempts, sealed
+results, Forks, arrivals, Maps and item state must match the reconstruction exactly.
+A completed Script requires observed matching exit bytes and hash; manual result
+settlement without that proof does not qualify a parallel cut.
+
+The codec deliberately refuses `any`/quorum Joins, failures/unselected paths,
+loops, condition/route controls in a parallel graph, bundles, human/recovery gates,
+Branch Calls, Agent/Request/Action/resource dependencies and secrets. Single-path
+and child-tree support retains its separate previous eligibility. Parallel child
+owner trees are not enabled by this change. This limited subset is not full #32.
+
+Standalone rewind and child-tree restoration now use
+`branch-frontier-storage.ts`: one owner transaction inserts all ancestry-ordered
+paths and remapped control rows, followed by selected-column read-back comparison.
+Failures abort fresh acceptance, prefix, lineage and receipt together. Only owned
+column lists enter SQL; old process identities, Request bindings, leases and
+nonzero attempt fences cannot be inserted. Standalone lineage maps now inventory
+Fork/Map/item identities as well as Step/path/result identities. Subsequent
+checkpoints resolve the immutable source cut, remap its typed prefix, and replay
+the fresh audit suffix before they qualify for another rewind. Current pins,
+capability checks, fresh manual admission and durability barriers remain required.
+No old scheduler admission or lease becomes runtime authority.
+
+Deferred `tests/branches/parallel-continuation.test.mjs` covers actual Map and
+nested Fork/Map capture/restoration, sealed undispatched items, ordered Joins,
+reopen/idempotency, repeated historical selection, tampered audit/inventory,
+unknown Request/effect refusal and atomic control insertion failure. The earlier
+remapping regressions remain in `tests/branches/continuation-remap.test.mjs`.
+No tests, checks, types, build, native/browser/runner preparation or execution were
+performed, and no passing behavior is claimed.
+
+Remaining #32 work includes the excluded parallel frontiers above,
+Request/answer/Join immutable cuts with fresh authority, created-resource custody,
+reviewed recovery/secret bindings and broader crash reconciliation. No atomic
+historical Request/provider-cut serializer or native historical provider snapshot
+API is available in the retained runtime contract. Current Request/getJoin views,
+compact/resume and the Script codec cannot stand in for those mechanisms. Unknown
+native effects remain refused; this change does not roll back external effects.
