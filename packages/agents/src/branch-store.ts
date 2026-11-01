@@ -372,6 +372,14 @@ export class BranchStore {
   grantExecutions(branchId:string,input:import('@ponderosa/core').BranchExecutionBudgetGrant,now=new Date().toISOString()):import('@ponderosa/core').BranchExecutionBudgetDto {
     return this.unitTransaction(()=>this.executionBudgets.command(branchId,'grant',input,now)).immediate();
   }
+  /** Reserve a plan-owned identity inside its caller's publication transaction. */
+  reserveInstallationBranch(id:string,name:string):void {
+    branchKey(id);name=branchText(name).trim();if(!name||name.length>240)throw new Error('A Branch name is required');
+    const existing=this.row('SELECT * FROM branches WHERE id=?',id);
+    if(existing){if(existing.active_version_id||existing.binding_revision_id||existing.enabled||existing.name!==name)throw new Error('Installation Branch reservation conflict');return;}
+    const now=new Date().toISOString();
+    this.run("INSERT INTO branches(id,chat_id,name,active_version_id,binding_revision_id,enabled,created_at,updated_at) VALUES(?,'',?,'','',0,?,?)",id,name,now,now);
+  }
   create(name: string, idempotencyKey: string): BranchDto {
     branchKey(idempotencyKey); name=branchText(name).trim();
     if(!name || name.length>240)throw new Error('A Branch name is required');

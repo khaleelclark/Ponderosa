@@ -112,3 +112,10 @@ and the existing final writer; no new service, provider call, migration, new wor
 or UI edit is necessary. Until that change is complete, tree export refusal remains
 correct. Automatic standalone evidence preservation and held re-export from c0cc
 remain unchanged. This document does not designate tree support as optional.
+
+## Definition-only successor
+
+The subsequent [execution-free publication slice](branch-definition-tree-publication.md)
+implements the existing-plan/final-writer extension for ZERO execution owners.
+The earlier missing scalar seam remains accurate for execution-bearing trees;
+all-owner frontier allocation and real parent Call ancestry are still required.

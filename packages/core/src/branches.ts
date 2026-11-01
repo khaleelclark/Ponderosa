@@ -261,6 +261,21 @@ export interface InstalledBranchPackage {
  triggers?:BranchBindings['triggers'];engines?:BranchBindings['engines'];
  outputRoles?:Array<{chatRef:string;agentRef:string;output:boolean;speaker:boolean}>;
  runtimeData?:BranchPortableRuntimeData;
+ definitionTree?:BranchPortableDefinitionTree;
+}
+
+/** Full, execution-free dependency closure. Chat refs are unique across this inventory. */
+export interface BranchPortableDefinitionNode {
+ sourceBranchId:string;sourceVersionId:string;sourceBindingRevisionId:string;packageId:string;
+ definition:BranchDefinition;agentBindings:InstalledBranchPackage['agentBindings'];chatRefs:string[];
+ limits:BranchLimits;parameters?:Record<string,string|number|boolean>;triggers?:BranchBindings['triggers'];engines?:BranchBindings['engines'];
+ configuration:BranchConfiguration;dependencies:Record<string,string>;
+}
+export interface BranchPortableDefinitionTree {rootSourceBranchId:string;packageSha256:string;nodes:BranchPortableDefinitionNode[];sha256:string}
+export interface BranchDefinitionTreeReceipt {
+ manifestSha256:string;branchMap:Record<string,string>;chatMap:Record<string,string>;agentMap:Record<string,string>;
+ nodes:Record<string,{sourceVersionId:string;sourceBindingRevisionId:string;branchId:string;versionId:string;bindingRevisionId:string;definition:BranchDefinition;bindings:BranchBindings;configuration:BranchConfiguration;packageId:string;chatRefs:string[]}>;
+ executionOwners:0;currentAuthority:false;dispatched:false;workflowEnabled:false;
 }
 
 /** Private evidence bytes never carry dispatch, grants, leases or provider ownership. */
@@ -290,7 +305,7 @@ export interface BranchFullImportAgentReviewDto {
 }
 export interface BranchMemoryUpdateSelectionDto {newAgents:Array<{chatRef:string;agentRef:string}>;teamChats:string[]}
 export interface BranchMemoryUpdateReviewDto {selection:BranchMemoryUpdateSelectionDto;incoming:Array<{chatRef:string;agentRef:string;snapshot:import('./dto/agents.js').PortableChatMemorySnapshotDto}>;destination:import('./dto/agents.js').PortableChatMemorySnapshotDto[];excludedRows:number}
-export interface BranchInstallationPreviewDto {id:string;memoryUpdateReview?:BranchMemoryUpdateReviewDto;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];runtimeDataReview?:{manifestSha256:string;owners:number;facts:number;disposition:'held';currentAuthority:false};fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
+export interface BranchInstallationPreviewDto {id:string;definitionTreeReview?:{manifestSha256:string;reviewSha256:string;branches:number;bindings:Record<string,BranchBindings>};memoryUpdateReview?:BranchMemoryUpdateReviewDto;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];runtimeDataReview?:{manifestSha256:string;owners:number;facts:number;disposition:'held';currentAuthority:false};fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
 
 /** Scoped picker context comes from canonical membership, independent of search pagination. */
 export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTeam:boolean; chatTitle:string; managerTitle?:string };

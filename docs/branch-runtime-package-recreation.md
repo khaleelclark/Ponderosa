@@ -129,3 +129,8 @@ gaps, not approved exclusions or an assertion that all permutations are required
 The exact scalar-plan/ownership obstacle and smallest existing-writer resolution are
 recorded in `branch-runtime-tree-publication-contract.md`. That report adds no tree
 runtime support and is not an external blocker or an approved #8 exclusion.
+
+Execution-free multi-Branch definition/dependency/template-Chat publication now has
+an additive full-package caller contract; see
+[definition tree publication](branch-definition-tree-publication.md). This does not
+close runtime-owner-tree ancestry or foreign-checkpoint continuation.
