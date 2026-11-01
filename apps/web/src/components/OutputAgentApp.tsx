@@ -29,14 +29,15 @@ export function OutputAgentApp():JSX.Element{
  useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({initialize:true})}));},[assistant,status.data?.initialized]);
  return <WorkspaceConnectionProvider value={connection}><Box sx={{height:'100dvh',display:'flex',flexDirection:'column',minHeight:0}}>
   <Stack direction="row" alignItems="center" spacing={1} sx={{p:1,borderBottom:1,borderColor:'divider'}}>
-   <Typography variant="h6" sx={{flex:1}}>{app?.title??'Assistant'}</Typography><Button href="/home">Ponderosa</Button><Button onClick={()=>setSettings(true)}>Settings</Button>
+   <Typography variant="h6" sx={{flex:1,minWidth:0,overflowWrap:'anywhere'}}>{app?.title??'Assistant'}</Typography><Button href="/home">Ponderosa</Button><Button onClick={()=>setSettings(true)}>Settings</Button>
   </Stack>
-  {error&&<Alert severity="error">{error}</Alert>}
+  {error&&!settings&&<Alert severity="error">{error}</Alert>}
   {(status.isError||output.isError)&&<Alert severity="error">{((status.error??output.error) as Error)?.message??'Output app unavailable'}</Alert>}
   {!app&&assistant&&status.data?.initialized&&<Stack spacing={1} sx={{p:2}}><Typography>Assistant is disabled</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
   {!app&&!error&&!status.isError&&!output.isError&&!status.data?.initialized&&<Typography role="status" sx={{p:2}}>Loading…</Typography>}
   {app&&route&&<Box sx={{flex:1,minHeight:0,display:'flex'}}><BranchChats branchId={app.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} branchRoute={route} onNavigate={next=>{setStandaloneWorkspaceOwner(next.branchId&&next.chatId?{branchId:next.branchId,chatId:next.chatId}:undefined);setRoute(next);return true;}}/></Box>}
-  <Dialog open={settings} onClose={()=>setSettings(false)} fullWidth maxWidth="xs"><DialogTitle>Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
+  <Dialog open={settings} onClose={()=>setSettings(false)} aria-labelledby="output-app-settings-title" fullWidth maxWidth="xs"><DialogTitle id="output-app-settings-title">Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
+   {error&&<Alert severity="error">{error}</Alert>}
    {app&&<><FormControlLabel control={<Switch checked={automatic} onChange={(_,value)=>setAutomatic(value)}/>} label="Run automatically"/>
     <TextField label="Check every (minutes)" type="number" value={minutes} onChange={event=>setMinutes(Number(event.target.value))} inputProps={{min:1}}/>
     <Button disabled={busy} onClick={()=>void act(()=>requestJson(`/api/branches/output-apps/${app.agentId}/schedule`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({expectedVersionId:app.versionId,automatic,everyMs:minutes*60000})}))}>Save schedule</Button>

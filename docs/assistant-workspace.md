@@ -92,3 +92,14 @@ remain intentionally stable storage identities, not product terminology. Reviewe
 labels now use Inbox. One historical All Messages comment in
 `Composer.types.ts` remains pending the composer owner; it is not rendered UI. Generic **All Chats** and
 **All Agents** workspace nouns describe separate directory views and are unchanged.
+
+## Output settings feedback
+
+Assistant and standalone output apps share the named Settings dialog. Schedule
+and model save errors appear inside that dialog while it is open, so keyboard
+and screen-reader users can discover the actual failure without leaving Settings.
+Closing Settings keeps an unresolved error visible in the output app. Output
+titles wrap to leave the Ponderosa and Settings controls reachable on narrow screens.
+
+These source contracts and focused checks do not establish complete accessibility,
+performance or blind-panel acceptance; see [remaining UI acceptance](ui-acceptance-remaining.md).
