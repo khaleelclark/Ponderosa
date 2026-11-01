@@ -223,7 +223,7 @@ Agent-control refusals. Fixtures are source only and unexecuted.
 
 SOURCE ONLY: no tests/checks/build/types/Node/native/browser/provider or runner
 preparation/execution, installs, backend writes, push/merge/deploy or new workers.
-Remaining: backend/core assembly, shared-browser canonical recording publication,
+Backend/core `1e1d` and this UI are now assembled in integration. Remaining: shared-browser canonical recording publication (successor active with owner `f11661cc-2638-463b-a447-c615a5c9c3f0`),
 actual HTTP/download/native lifecycle qualification and separately authorized
 runtime/accessibility/mobile/keyboard/screen-reader validation. No whole #3/#19,
 native parity, whole UI or Phase2 acceptance claimed. Earlier UI/M4/lifecycle/

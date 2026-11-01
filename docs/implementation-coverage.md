@@ -51,7 +51,7 @@ G6 Codex validates files before plan settings and after acknowledgement, preserv
 
 G8 Claude accepted tasks/schedules retain the original Run until exact post-result idle with no pending obligations. Recurring crons may keep it open; crash receipt gaps remain unknown. Codex background list/terminate and Claude per-task stop remain internal implementation. [Lifetime contract](native-task-lifetimes.md).
 
-G7 Agent tools plus operator REST/SDK are source delivered: exact session/epoch-owned console and private Agent/Run recording start/stop/status/download. Dedicated UI is separately active; shared Chat/saved recording remains unavailable pending canonical Chat artifact provenance. [Exact contract](browser-observation-api.md); no encoded-video/audio requirement or native parity verdict.
+G7 Agent tools plus operator REST/SDK are source delivered: exact session/epoch-owned console and private Agent/Run recording start/stop/status/download. Dedicated operator console/private recording UI is source delivered; shared Chat/saved recording remains unavailable pending the canonical Chat artifact publication successor actively owned by `f11661cc-2638-463b-a447-c615a5c9c3f0`. [Exact contract](browser-observation-api.md); no encoded-video/audio requirement or native parity verdict.
 
 U1's eight named contracts and exact assignments are in the [remaining inventory](phase2-remaining-implementation.md#u1-native-capability-contracts); G5 bounded native history APIs and scheduler fork opening are source delivered; dedicated UI is queued. [Exact contract](native-file-checkpoint-fork.md).
 
