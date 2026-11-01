@@ -1750,6 +1750,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server/native workspaces, existing owned Chroma and offline model fixtures; no provider account",
       "origin": "Reviewed additive workflow memory: preserve destination, stale/selection/collision refusal, staged visibility, cancellation compensation and deterministic retry"
+    },
+    {
+      "path": "tests/branches/additive-mounted-ownership.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; owned loopback HTTP listener and controlled browser setup/teardown failures; no browser or provider",
+      "origin": "Additive mounted fixture setup and independent cleanup ownership regression"
     }
   ],
   "retainedReleasePayload": [
@@ -2010,6 +2018,11 @@
       "path": "tests/branches/additive-memory-mounted.browser.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/additive-mounted-ownership.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
     }
   ],
   "support": [

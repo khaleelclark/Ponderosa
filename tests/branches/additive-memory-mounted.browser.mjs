@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createRequire} from 'node:module';
-import {createServer} from 'node:http';
+import {withMountedCell} from './additive-mounted-ownership.mjs';
 import {readFile,mkdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {BranchStore} from '@ponderosa/agents';
@@ -17,10 +17,11 @@ test('additive memory production dialog and real install routes on desktop and e
  const browser=await chromium.launch({executablePath:process.env.PONDEROSA_CHROME_PATH||'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
  try{for(const mobile of [false,true])await t.test(mobile?'phone':'desktop',async t=>{
   const cell=mobile?'phone':'desktop',x=await setup(t),{f}=x,requests=[],errors=[];
-  let reviewError=true,reviewGate,releaseReview,lastPreview,blockPublication=false,statusError=false;
+  let reviewError=true,reviewGate,releaseReview,lastPreview,passed,blockPublication=false,statusError=false;
   const originalDeploy=BranchStore.prototype.deploy;
-  BranchStore.prototype.deploy=function(input,...args){if(blockPublication&&input.idempotencyKey?.startsWith('install:'))throw Error('Controlled publication unavailable');return originalDeploy.call(this,input,...args);};
-  const server=createServer(async(req,res)=>{try{
+  await withMountedCell({prototype:BranchStore.prototype,
+   deploy:function(input,...args){if(blockPublication&&input.idempotencyKey?.startsWith('install:'))throw Error('Controlled publication unavailable');return originalDeploy.call(this,input,...args);},
+   requestHandler:async(req,res)=>{try{
    const url=new URL(req.url,'http://localhost');
    if(url.pathname==='/fixture'){res.setHeader('content-type','application/json');res.end(JSON.stringify({pkg:x.pkg,branchId:x.branchId}));return;}
    if(url.pathname.startsWith('/api/')){
@@ -36,9 +37,16 @@ test('additive memory production dialog and real install routes on desktop and e
     res.writeHead(response.statusCode,{'content-type':'application/json'});res.end(response.body);return;
    }
    const file=url.pathname==='/'?'index.html':url.pathname.slice(1),target=path.resolve(build,file);assert(target.startsWith(path.resolve(build)+path.sep));res.setHeader('content-type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(await readFile(target));
-  }catch(error){res.writeHead(500);res.end(String(error));}});
-  await new Promise(r=>server.listen(0,'127.0.0.1',r));
-  const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:962},isMobile:mobile,hasTouch:mobile,recordVideo:{dir:out+'/'+cell+'-video'}}),page=await context.newPage();page.setDefaultTimeout(10000);page.on('pageerror',e=>errors.push(e.stack??e.message));
+  }catch(error){res.writeHead(500);res.end(String(error));}},
+   browser,contextOptions:{viewport:mobile?{width:390,height:844}:{width:1440,height:962},isMobile:mobile,hasTouch:mobile,recordVideo:{dir:out+'/'+cell+'-video'}},
+   releaseReview:()=>releaseReview?.(),
+   diagnose:page=>page.screenshot({path:out+'/'+cell+'-failure.png'}),
+   record:async({failed,primary,secondary})=>{
+    results.push(failed||secondary.length?{cell,status:'FAIL',error:primary?.stack??String(primary),secondary:secondary.map(({stage,error})=>({stage,error:error?.stack??String(error)})),errors,requests}:passed);
+    await writeFile(out+'/results.json',JSON.stringify(results,null,2)+'\n');
+   },
+   run:async({server,page})=>{
+  page.setDefaultTimeout(10000);page.on('pageerror',e=>errors.push(e.stack??e.message));
   const checkbox=name=>page.getByRole('checkbox',{name,exact:true}),button=name=>page.getByRole('button',{name,exact:true});
   const focusByTab=async locator=>{await locator.click({trial:true});for(let i=0;i<100;i++){if(await locator.evaluate(node=>node===document.activeElement))return;await page.keyboard.press('Tab');}assert.fail('Control is unreachable using Tab');};
   const activate=async name=>{await focusByTab(button(name));await page.keyboard.press('Enter');};
@@ -56,7 +64,6 @@ test('additive memory production dialog and real install routes on desktop and e
    assert(await button('Confirm update').isDisabled());await keyboardCheck(checkbox('I reviewed the selected incoming and existing destination memory.'));assert(await button('Confirm update').isDisabled());
    await keyboardCheck(checkbox('I reviewed the imported Agent context and files and want to continue with this full import.'));assert(await button('Confirm update').isEnabled());
   };
-  try{
    await page.goto('http://127.0.0.1:'+server.address().port);await choose();
    await activate('Review changes');await page.getByText('Controlled review service unavailable',{exact:true}).waitFor();assert(await checkbox('Team memory: Preserved Chat').isChecked());await x.unchanged();
    reviewGate=new Promise(resolve=>{releaseReview=resolve;});await activate('Review changes');
@@ -83,8 +90,8 @@ test('additive memory production dialog and real install routes on desktop and e
    await activate('Stop update');await page.getByText(/This update is canceled/).waitFor();assert.deepEqual(await rows(f,x.chat.id),edited,'Cancel compensates only staged additions');await x.authority();
    blockPublication=false;await activate('Review again');await review();await acknowledge();await activate('Confirm update');await page.getByText('Installed successfully',{exact:true}).waitFor();assert.equal(await page.getByRole('dialog').count(),0);
    preserve(edited,await rows(f,x.chat.id));await x.authority();assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE branch_id=? AND agent_ref='new' AND state='active'").get(x.branchId).n,1);
-   assert.deepEqual(errors,[]);results.push({cell,status:'PASS',errors,requests,checks:['real dialog/server/Chroma','keyboard selection/acknowledgements','existing private excluded','full incoming/destination snapshots','pending keyboard dismissal ignores late response','review failure/retry','Back/selection reset/fresh review','stale refusal/no mutation','status error/retry','staged cancellation/compensation','new review/success','destination permissions/policies/grants preserved']});
-  }catch(error){await page.screenshot({path:out+'/'+cell+'-failure.png'});results.push({cell,status:'FAIL',error:error.stack,errors,requests});throw error;}
-  finally{releaseReview?.();await context.close();server.closeAllConnections();await new Promise(r=>server.close(r));BranchStore.prototype.deploy=originalDeploy;await writeFile(out+'/results.json',JSON.stringify(results,null,2)+'\n');}
+   assert.deepEqual(errors,[]);passed={cell,status:'PASS',errors,requests,checks:['real dialog/server/Chroma','keyboard selection/acknowledgements','existing private excluded','full incoming/destination snapshots','pending keyboard dismissal ignores late response','review failure/retry','Back/selection reset/fresh review','stale refusal/no mutation','status error/retry','staged cancellation/compensation','new review/success','destination permissions/policies/grants preserved']};
+   }
+  });
  });}finally{await browser.close();}
 });
