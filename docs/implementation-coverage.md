@@ -427,3 +427,25 @@ restriction choices. All five owner deliverables are present and source-read.
 Branches grouped package assembly/ref remapping, fresh-ID binding/recovery and
 staged human decisions remain owner work. No UI completion or full #8 claim.
 No tests/checks/builds/types/native/browser/runner execution; no push/deploy.
+
+## Web continuation through explicit fresh live-root import
+
+UI `95ad75b90` and exact `e8dcaa76b5f799ce7f3f54f0d330dc7b179a7f0b`
+integrated conflict-free as `58d152c77` and `36d904236`. Earlier web chain was
+already present. All thirteen distinct changed deliverables physically present.
+Source adds shared human Chat and passive same-Chat peer authorized text previews,
+explicit singleton speaker move, mapped post-import memory/browser/profile human
+choices, complete async import receipts, fresh managed Chat creation and explicit
+actual-root live activation alongside separate recovery destinations. These
+supersede the corresponding missing Agent-import/stream-consumer inventory notes;
+no execution or acceptance verdict accompanies source coverage.
+
+Exact remaining web product work belongs to the sole UI owner: BranchPackageDialog
+workflow folder export/import controls, managed Chat creation/activation choices,
+workingRootReview actual-root confirmation, grouped Shared per-Agent choices and
+mapped post-install Settings; exact f446 recovery Stop/status/dismiss consumer.
+Branches backend grouped assembly/ref mapping/bindings/recovery remain its owner’s
+work. Integration does not take ownership of web surfaces. Early qualified voice
+acknowledgement is Runtime work. Broader generation coverage, accessibility/mobile
+judging and performance acceptance remain unresolved/unverified.
+No tests/builds/types/browser preparation or execution, push/deploy or full #8 claim.

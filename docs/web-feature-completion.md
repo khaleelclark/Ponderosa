@@ -96,8 +96,11 @@ Content-only import remains available by leaving activation off.
 restrictions and requires an explicit choice using the server digest/opaque refs.
 Changed review clears the choice. Success or error refreshes canonical status;
 delayed mutation results do not replace later Stop/terminal state. Background
-progress and Stop remain available. Branches bundle export/import, new Chat and
-live activation forwarding are owned by the Branches integration owner; this
+progress and Stop remain available. The UI and accessibility owner remains the sole web writer, including
+BranchPackageDialog. Workflow folder controls, newManagedChatFolderName and live
+activation choices, actual workingRootReview confirmation, grouped Shared caller
+choices and mapped post-install Settings remain that owner’s implementation work.
+Backend grouped assembly and binding/recovery remain Branches-owner work. This
 Agent-package form does not assert coverage of that separate installer.
 
 ## Backend integration and remaining limits
@@ -126,3 +129,7 @@ Deferred regression sources include `text-reply-route.test.mjs`,
 `import-live-root-mounted.tsx` under `tests/chats`, alongside prior live-text,
 recording-format, mounted-recorder, phrase-buffer and text-size regressions.
 No runner/configuration was added or executed.
+
+Integration ownership clarification: the exact f446 recovery Stop/status/dismiss
+consumer is also remaining UI-owner product work. Shared Chat/peer previews, Agent
+new-Chat/live activation and mapped Settings above are source coverage only.
