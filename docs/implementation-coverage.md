@@ -642,3 +642,40 @@ gaps and qualification limits above continue to apply. Deferred regression files
 branch-history-review.test.mjs and branch-history-review-mounted.tsx are present;
 no tests/checks/build/types/Node/native/browser/runner preparation or execution,
 push/deploy or full #32/Bible/Phase2 verdict.
+
+
+## Retained pre-opening resource consumer and inspection contract assembled
+
+Source-only consumer7a190fbe3, child correction1d6278349 and contractf482ecfc0
+are integrated in order as e7055ab87,42f126be0,a8c4af20e atopcf4ff5159.
+The broad dependency merge55ab6c75/7110930 was not replayed. Existing Runtime,
+custody, migrations and sole UI-owner graph caller41797eb8 remain preserved.
+The current script continuation keeps its prior removal of a duplicate gate loop.
+
+This supersedes prior blanket missing-resource-consumer statements: a nonsecret
+serial ephemeral-organization resource can capture the exact imported generation
+before its first opening Request, retain/finalize the immutable intent and bytes,
+retire, rewind and obtain fresh destination access review/import. Eligible child
+owners receive independent validation, retirement/release proof and mapped ancestor
+readback. Fresh Agent maps and current policy review remain required; historical
+provider authority is never restored. Lost-response lookup uses retained custody,
+not a recapture of newer source state.
+
+The operator API/SDK now supplies pure resource inspection with exact generation,
+destination availability, custody identity and canonical receipt digest; pure
+release-command readback; explicit current access choice; and identity-bound
+custody release carrying the original command key/generation/custody/receipt hash.
+Releasing or ambiguous outcomes stay explicit, completed commands are idempotent,
+and referenced custody refuses release. The older access-review GET still stages
+a journal; pure inspection is the reconciliation read. Resource inspection/release
+UI is separately assigned and remains open; no new web source is included here.
+
+All seventeen distinct owner deliverables across these three commits, plus this
+coverage inventory, are physically present, including both owner docs and two
+deferred regression sources. Issued-resource
+Request restoration, resource-local parallel paths, later captures, multiple
+resources within one owner, changed/secret bindings, broader reconciliation and
+owner-deletion/orphan custody reclamation remain open. Multiowner/parallel resource
+behavior is not qualified. All other source gaps above remain explicit. No tests,
+checks, builds, types, Node/native/browser/runner preparation or execution,
+push/deploy or full #32/Bible/Phase2 acceptance claim.
