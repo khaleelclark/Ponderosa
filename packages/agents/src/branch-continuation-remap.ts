@@ -53,9 +53,9 @@ export function remapBranchFrontier(selected:Selected,ids:Record<string,string>,
  for(const row of out.steps!){execution(row);row.id=ids[row.id];row.path_id=link(row.path_id,paths);row.input_text=text(row.input_text);row.result_json=result(row.result_json);}
  for(const row of out.attempts!){
   if(Object.keys(row).some(key=>!['id','step_execution_id','number','state','request_id','fence','input_hash','result_json','available_at','purpose','recovery_of_request_id','cancel_requested','runtime_outcome_json','error','created_at','updated_at'].includes(key)))throw Error('Attempt contains unselected runtime state');
-  if(row.request_id||row.recovery_of_request_id||row.runtime_outcome_json||row.cancel_requested||!['prepared','waiting','completed'].includes(row.state))throw Error('Runtime authority or uncertain effect cannot be remapped');
+  if(row.request_id||row.recovery_of_request_id||row.runtime_outcome_json||row.cancel_requested&&row.state!=='canceled'||!['prepared','waiting','completed','failed','canceled'].includes(row.state))throw Error('Runtime authority or uncertain effect cannot be remapped');
   const step=selected.steps!.find(step=>step.id===row.step_execution_id);if(!step||row.input_hash!==hash(step.input_text))throw Error('Attempt input integrity failure');
-  row.id=ids[row.id];row.step_execution_id=link(row.step_execution_id,steps);row.input_hash=hash(text(step.input_text));row.result_json=result(row.result_json);row.fence=0;
+  row.id=ids[row.id];row.step_execution_id=link(row.step_execution_id,steps);row.input_hash=hash(text(step.input_text));row.result_json=result(row.result_json);row.fence=0;row.cancel_requested=0;
  }
  for(const row of out.sealedResults!){
   execution(row);if(hash(row.result_json)!==row.content_hash)throw Error('Sealed result integrity failure');

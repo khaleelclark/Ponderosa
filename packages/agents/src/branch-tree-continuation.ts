@@ -1,3 +1,4 @@
+import {hasParallelControls} from './branch-parallel-continuation.js';
 import {branchContinuationIds} from './branch-continuation-remap.js';
 import type Database from 'better-sqlite3';
 import type {BranchDefinition} from '@ponderosa/core';
@@ -74,7 +75,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const descendant=o.executionId!==c.rootExecutionId,terminal=e.state==='completed';
     if(terminal?(!descendant||inv.state!=='terminal'||inv.primaryOutcome!=='completed'):!['running','waiting'].includes(e.state))return false;
     if(!descendant&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
-    if(!terminal&&(inv.mode==='exit'?inv.state!=='interrupted'||!inv.interruptionId:inv.state!=='active'))return false;
+    if(!terminal&&(inv.mode==='exit'?inv.state!=='interrupted'||!inv.interruptionId&&!o.selected.gates.some((g:Row)=>g.state==='waiting'):inv.state!=='active'))return false;
     if(descendant&&!terminal&&inv.mode==='exit'&&!encoding){
       // The ancestor cut cannot acknowledge a failed or missing child closing save.
       const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:false,invocationId:inv.id,mode:'exit',closing:true,selected:o.selected});
@@ -102,7 +103,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       while(current?.executionId!==c.rootExecutionId){if(!current||visited.has(current.executionId))return false;visited.add(current.executionId);current=owners.find(row=>row.executionId===current!.selected.execution[0].parent_execution_id);}
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
     const waiting=resourceFrontier||Object.values(children).some(child=>!child.completed);
-    if(!terminal&&(e.state!==(waiting?'waiting':'running')))return false;
+    if(!terminal&&!hasParallelControls(definition)&&(e.state!==(waiting?'waiting':'running')))return false;
     const context:ScriptOwnerContext={resourceFrontier,terminal,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state==='completed'};
     if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context))return false;
   }

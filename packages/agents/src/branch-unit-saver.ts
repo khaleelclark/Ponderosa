@@ -1,3 +1,4 @@
+import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {encodeScriptTreeContinuation} from './branch-tree-continuation.js';
 import {encodeScriptContinuation,type Selected} from './branch-script-continuation.js';
@@ -30,6 +31,7 @@ export class BranchUnitSaver {
     }
   }
   freeze(context:BranchUnitContext):Candidate[] {
+    if(!this.sqlite.inTransaction)return this.sqlite.transaction(()=>this.freeze(context)).deferred();
     return [...context.written].sort().map(executionId => {
       const row=this.sqlite.prepare('SELECT checkpoint_invocation_json FROM branch_executions WHERE id=?').get(executionId) as {checkpoint_invocation_json:string|null}|undefined;
       const invocation=row?.checkpoint_invocation_json?JSON.parse(row.checkpoint_invocation_json) as {id:string;mode:BranchCheckpointMode;state:string}:undefined;
@@ -38,7 +40,8 @@ export class BranchUnitSaver {
         const selected=selectBranchUnit(this.sqlite,executionId);
         // Fixed SQL/column inventory excludes secretBindings and operational authority.
         const continuation=encodeScriptContinuation(this.sqlite,executionId,selected as Selected)??encodeScriptTreeContinuation(this.sqlite,executionId,selected as Selected);
-        const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:!!continuation,...metadata,selected,...(continuation?{continuation}:{})});
+        const hostDependencies=captureBranchHostCut(this.sqlite,executionId,selected);
+        const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:!!continuation,...metadata,selected,...(continuation?{continuation}:{}),...(hostDependencies?{hostDependencies}:{})});
         return {executionId,...metadata,content,hash:createHash('sha256').update(content).digest('hex')};
       } catch(error) { return {executionId,...metadata,error}; }
     });
@@ -94,7 +97,13 @@ export class BranchUnitSaver {
     try {
       const row=this.sqlite.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? AND id=?').get(executionId,savedId) as {snapshot_json:string;content_hash:string}|undefined;
       const current=this.freeze({written:new Set([executionId])})[0];
-      return !!row&&current?.invocationId===invocationId&&current.content===row.snapshot_json&&current.hash===row.content_hash;
+      if(!row||current?.invocationId!==invocationId||!current.content||createHash('sha256').update(row.snapshot_json).digest('hex')!==row.content_hash)return false;
+      const saved=JSON.parse(row.snapshot_json),candidate=JSON.parse(current.content);
+      if(saved.hostDependencies&&!verifyBranchHostCut(saved.hostDependencies,executionId))return false;
+      // Host dependency evidence is observational at capture. Only the selected
+      // executable frontier participates in fresh dispatch coverage.
+      delete saved.hostDependencies;delete candidate.hostDependencies;
+      return stableJson(saved)===stableJson(candidate);
     } catch { return false; } // A failed verification is unknown coverage, never a saved acknowledgement.
   }
   ready(id:string,mode:BranchCheckpointMode):boolean {

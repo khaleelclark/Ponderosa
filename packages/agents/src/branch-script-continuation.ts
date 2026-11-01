@@ -12,7 +12,7 @@ export type Selected=Record<string,Row[]>;
 export const SCRIPT_CONTINUATION_COMPATIBILITY={format:'script-control-frontier.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false):boolean {
-  if(hasParallelControls(definition))return !resources&&parallelDefinitionSupported(definition);
+  if(hasParallelControls(definition))return !resources&&parallelDefinitionSupported(definition,calls);
   return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||!calls&&!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
@@ -20,7 +20,7 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
 export type ScriptOwnerContext={resourceFrontier?:boolean;terminal:boolean;waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean}>};
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext):boolean {
   try {
-    if(hasParallelControls(definition))return !context&&parallelFrontierSupported(selected,definition);
+    if(hasParallelControls(definition))return parallelFrontierSupported(selected,definition,context);
     const tables=['execution','paths','steps','attempts','forks','joins','loops','maps','items','sealedResults','bundles','gates','actions','resources'];
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
     const e=selected.execution![0],p=selected.paths![0],terminal=context?.terminal===true;
@@ -186,7 +186,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   try {
     if(!scriptFrontierSupported(selected,definition,context)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
-    const waitingGate=!context&&selected.gates!.some(g=>g.state==='waiting');
+    const waitingGate=(!context||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');
     const closing=checkpoint?.invocation;
     if(configuration.checkpointMode==='exit'&&!context?.terminal){
       if(!closing||stableJson(Object.keys(checkpoint!).sort())!==stableJson(['closing','invocation','invocationId','mode'])
@@ -202,7 +202,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     // A prefix must include every owned event through its boundary, not just its last ID.
     const owned=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
     if(stableJson(owned)!==stableJson(events))return false;
-    if(hasParallelControls(definition))return !context&&replayParallelCut(selected,definition,configuration,events,checkpoint,seed);
+    if(hasParallelControls(definition))return replayParallelCut(selected,definition,configuration,events,checkpoint,seed,context);
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let finished:Row|undefined,terminalObserved=false;
     const admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();

@@ -337,3 +337,87 @@ historical Request/provider-cut serializer or native historical provider snapsho
 API is available in the retained runtime contract. Current Request/getJoin views,
 compact/resume and the Script codec cannot stand in for those mechanisms. Unknown
 native effects remain refused; this change does not roll back external effects.
+
+### Expanded parallel host replay and immutable dependency capture (source only)
+
+This follow-through supersedes the narrow exclusions in the preceding standalone
+Script section for the cases described here. The parallel replay codec now
+reconstructs `all`/`any`/quorum thresholds, successful selection order at the
+actual resolution point, impossible thresholds, partial-result policy,
+failed/unselected arrivals, and both remainder policies. Cancellation is admitted
+only for work that has not launched and has no child-owner dependency; any live,
+unknown or previously authorized incomplete Script effect still refuses. A
+canceled unlaunched attempt stays canceled after remapping and never receives an
+old fence or operational cancellation obligation.
+
+Conditions and routes reproduce selected/failure edges and direct unselected
+conditional arms. Loops preserve per-path counts, global iteration evidence and
+invocation numbering. Owned oversized Join bundles verify original content bytes
+and hashes; remapping updates only owned pointers and derived hashes. Cross-owner
+bundle forwarding remains unsupported. Failed Script results must match the
+runtime's sanitized failure summary and an observed exit with matching stream
+hash, rather than turning raw stdout/stderr into a result or inventing an exit.
+Limit exhaustion, retry/recovery and unknown-native events remain ineligible.
+
+Ordinary human gates may coexist with parallel work. The codec checks the
+interpolated prompt, exact proposal, choices, response revision, explicit decision
+and edited output, including rejection/unselected behavior. Restored waiting gates
+receive fresh identities and pending notifications. Existing human decisions are
+retained only as data for already sealed prefixes. The existing child-tree codec
+now supplies parallel owners with exact parent/call identities, completed or
+unfinished child membership, descendant traversal/loop totals and owned source
+prefixes. Child admission and completion must match that context. Parallel tree
+restoration inserts all controls atomically; waiting tree reviews get fresh
+notifications. Failed children, cancellation of child-owned work, foreign bundles,
+provider calls and released resource transfers are not enabled by this extension.
+
+`branch-host-cut.ts` adds a separate observational dependency serializer, invoked
+by the checkpoint saver inside the same SQLite owner transaction. It starts only
+from exact Request/recovery bindings of the selected execution's own attempts,
+then captures canonical Request versions and payloads, updates (including
+question/answer links), late results, question suspension references, recovery
+predecessors/successors, ordered Join members, continuation identities and frozen
+Join outcome observations. It preserves original Project/Chat/participant and
+Communication scope. Original update-envelope hashes are retained as provenance;
+new per-row hashes bind the captured bytes without pretending the original hash
+was merely a hash of payload text. Artifact original identities, hashes and byte
+lengths are retained as references; artifact blob bytes are not embedded.
+
+The same host cut captures resource membership, per-generation original contexts,
+creation operation records already selected by the Branch, cleanup receipts and
+the binding revision/hash plus required logical secret refs. It never copies
+secret values/handles, reply authority, Run admission, leases, scheduler state,
+process identities, activation delivery state or outbox effects. Frozen Join
+observations exclude inherited reply authority and continuation instructions;
+they do not become new activations. The cut has explicit
+`fresh_admission_required` / `not_captured` authority/native-state markers.
+Missing retained references or gaps in the host update prefix are marked as
+incomplete coverage, not repaired from current UI views or silently treated as
+complete. Explicit Project/Chat escape or malformed canonical bytes refuses.
+The bounded capture refuses more than 512 connected Request/Join identities,
+more than 512 retained updates for a Request, or an aggregate cut above 8 MB.
+
+Dependency evidence is frozen at that capture boundary. It does not make an
+Agent/Request/resource frontier executable and is excluded from the comparison
+that grants dispatch coverage to an unchanged selected executable frontier.
+Current selected rows, continuation bytes and saved snapshot hashes still must
+match. This prevents unrelated later Request progress from stranding a sync
+execution behind an observational digest. The saver uses a read transaction for
+standalone coverage reads, so selected inventory and dependency bytes are never
+assembled from different SQLite views. Historical dependency verification uses
+saved row hashes, not mutable current Request projections.
+
+Deferred regression source extends `parallel-continuation.test.mjs` with
+threshold/remainder variants, failed exits, excluded conditional paths, route and
+loop state, bundles, fresh parallel human reviews, and unfinished parallel child
+owners. `host-cut.test.mjs` covers question/answer and Join lineage, preserved
+scopes, immutable capture under later progress, absence of operational authority,
+and observational-only checkpoint admission. These are source fixtures, not
+executed or passing results.
+
+Still incomplete: restoring historical Agent Requests under a newly reviewed
+admission, transferring released created-resource custody, rebinding changed or
+secret-dependent authority through an explicit review workflow, provider-native
+historical state and general crash reconciliation. Existing strict current-pin
+checks and retired-resource ownership checks are retained. Atomic SQLite restore
+rollback does not roll back external effects. No full #32 claim follows.
