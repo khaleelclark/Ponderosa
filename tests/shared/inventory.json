@@ -1758,6 +1758,35 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server/native workspaces, existing owned Chroma and offline model fixtures; no provider account",
       "origin": "Reviewed additive workflow memory: preserve destination, stale/selection/collision refusal, staged visibility, cancellation compensation and deterministic retry"
+    },
+    {
+      "path": "tests/branches/output-settings-feedback.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript and React; actual TSX with host hooks/UI leaves stubbed; no provider or browser"
+    },
+    {
+      "path": "tests/workspace-navigation/event-timing-observer.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
+    },
+    {
+      "path": "tests/workspace-navigation/ui-load-method.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
+    },
+    {
+      "path": "tests/chats/message-timestamp.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed web dependencies; no browser/provider",
+      "origin": "Source-mapped history timestamp construction regression; preserve native absolute labels"
     }
   ],
   "retainedReleasePayload": [
@@ -2008,6 +2037,62 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Built web/server and installed Chromium; actual organization and Branch dialogs on controlled disposable providers",
       "origin": "A21 collision dialog and role publication/restart browser qualification"
+    },
+    {
+      "path": "tests/branches/output-settings-accessibility.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Exact built web/server/packages, existing Chrome/playwright-core and AXE_CORE_PATH; owned loopback fixture; controlled response failure, no provider inference"
+    },
+    {
+      "path": "tests/shared/ui-load-fixture.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/shared/serve-ui-fixture.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/event-timing-observer.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/active-load-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/current-accessibility-matrix.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/timing-observer-smoke.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Existing Chrome; unloaded app, mobile4x CPU observer tooling proof only; not 10k/20-active acceptance"
+    },
+    {
+      "path": "tests/workspace-navigation/method-browser-proof.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Small owned loopback proof: existing outputs/Chrome, 10k seed, one actual controlled Run, two traced browser contexts; never heavy32"
     }
   ],
   "support": [

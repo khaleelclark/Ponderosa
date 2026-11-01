@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerValidatesResumeBeforeTurn = false } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -169,7 +169,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
         authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled diagnostic; no provider account' }),
         availabilityProbe: async () => { providerProbes.push({ engineId: 'claude' }); return { available: true }; },
       }] : [])],
-    communicationV3: { pollMs: 10, maxConcurrentRuns: 4 } };
+    communicationV3: { pollMs: 10, maxConcurrentRuns: schedulerMaxConcurrentRuns } };
   let app;
   const open = async () => { closingFixture = false; app = createServer({ ...options, ...(storeFactory ? { store: storeFactory(dataDir) } : {}) }); if (socketIdleTimeoutMs !== undefined) app.server.setTimeout(socketIdleTimeoutMs); await app.ready(); };
   const close = async () => { if (app) {

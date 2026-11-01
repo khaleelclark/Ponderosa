@@ -2,45 +2,7 @@ import { Box, Stack, Typography } from "@mui/material";
 import { useState } from "react";
 import type { PointerEvent, ReactNode } from "react";
 
-interface FormattedTimestamp {
-  dateTime: string;
-  label: string;
-  title: string;
-}
-
-interface TimestampFormatOptions {
-  locale?: string;
-  timeZone?: string;
-}
-
-/**
- * Keep chat time labels absolute: relative labels become inaccurate while an
- * open conversation is idle and obscure the calendar date at day boundaries.
- */
-function formatMessageTimestamp(
-  value: string,
-  options: TimestampFormatOptions = {},
-): FormattedTimestamp | undefined {
-  const instant = new Date(value);
-  if (!Number.isFinite(instant.getTime())) {
-    return undefined;
-  }
-
-  const commonOptions = options.timeZone ? { timeZone: options.timeZone } : {};
-  return {
-    dateTime: instant.toISOString(),
-    label: new Intl.DateTimeFormat(options.locale, {
-      ...commonOptions,
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(instant),
-    title: new Intl.DateTimeFormat(options.locale, {
-      ...commonOptions,
-      dateStyle: "full",
-      timeStyle: "long",
-    }).format(instant),
-  };
-}
+import { formatMessageTimestamp } from "../messageTimestamp";
 
 export function MessageTimestamp({
   value,

@@ -112,7 +112,7 @@ export function AgentWorkReceipt({
   return (
     <Box
       id={run ? telemetryElementId("runs", run.id) : "unscoped-work"}
-      component={inline ? "section" : "article"}
+      component="article"
       aria-label={run ? `${agentName} work details` : "Unscoped work details"}
       tabIndex={run?.id === focusId ? -1 : undefined}
       sx={{
