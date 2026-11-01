@@ -95,3 +95,6 @@ The generation-history preview/discovery and SDK are source-connected. See
 [the complete bound and deferred qualification](branch-generation-one-destination.md).
 This supersedes earlier generation-one-only serial limits in this document;
 parallel retry and called-tree atomic consumption remain refused. Nothing was run.
+
+
+Local-parallel history source extension: the current bounded contract in [branch-local-parallel-history.md](branch-local-parallel-history.md) supersedes the earlier serial-only limit for exactly one resource invocation with settled local siblings. It reuses the same generation-history producer, parallel replay, current-only cut and canonical single-owner admission; it does not enable arbitrary parallel or called-owner consumers. Source fixtures are deferred and unexecuted.

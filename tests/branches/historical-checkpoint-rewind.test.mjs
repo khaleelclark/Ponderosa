@@ -977,8 +977,8 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
  const teams=Array.from({length:count},(_,i)=>i?`team${i+1}`:'team');
  const resourceSteps=teams.map((id,i)=>({id,kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:i?'Additional inert local result':'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:typeof freshRetry==='number'?freshRetry:2,delayMs:0,freshContext:true}}:{})}));
  const arms=teams.map(id=>`${id}-arm`);
- const controls=parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[...arms,'side-arm']}]:[];
- const edges=parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},...teams.flatMap((id,i)=>[{id:arms[i],from:'fork',to:id,on:'selected'},{id:`${id}-join`,from:id,to:'join',on:'success'}]),{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...teams.map((id,i)=>({id:`${id}-next`,from:id,to:teams[i+1]??'suffix',on:'success'}))];
+ const controls=parallel==='map'?[{id:'fork',kind:'map',joinId:'join',workerId:'team',source:'lines',maxItems:1,maxConcurrentItems:1},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[]}]:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[...arms,'side-arm']}]:[];
+ const edges=parallel==='map'?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},...teams.flatMap((id,i)=>[{id:arms[i],from:'fork',to:id,on:'selected'},{id:`${id}-join`,from:id,to:'join',on:'success'}]),{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...teams.map((id,i)=>({id:`${id}-next`,from:id,to:teams[i+1]??'suffix',on:'success'}))];
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),...resourceSteps,script('suffix')],controls,edges,policy:{maxConcurrentExecutions:8,maxEphemeralAgents:Math.max(2,count),failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  let parent,root,source;
@@ -2210,9 +2210,9 @@ for(const mode of ['async','sync'])test(`called issued owner tree ${mode} captur
  await f.reopen();assert.equal(f.branches.issuedTreeCapture(f.root.id,'called-tree').checkpointHash,retained.checkpointHash);
 });
 
-// Deferred real serial chain source. No execution/qualification claim; provider/package handles remain inert.
-for(const mode of ['async','sync'])for(const generation of [2,3,32])test(`serial generation ${generation} ${mode} discloses every prior generation and preserves budget`,async t=>{
- const f=await reservationHistoryFixture(t,mode,false,false,generation+1),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+// Deferred real serial/local-parallel chain source. No execution/qualification claim; provider/package handles remain inert.
+for(const mode of ['async','sync'])for(const [parallel,generation] of [[false,2],[false,3],[false,32],[true,1],[true,2],[true,32],['map',1],['map',2],['map',32]])test(`${parallel?'local parallel':'serial'} ${parallel==='map'?'map':'fork'} generation ${generation} ${mode} discloses every prior generation and preserves budget`,async t=>{
+ const f=await reservationHistoryFixture(t,mode,false,parallel,generation+1),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
  const db=f.store.sqlite,coordination=new CoordinationV3Store(db),dir=f.branches.localConfiguration(f.branch.id).directories.root;
  const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
  const seals=[],requests=[],agents=[],chats=[];
@@ -2240,15 +2240,16 @@ for(const mode of ['async','sync'])for(const generation of [2,3,32])test(`serial
  assert.equal(preview.generation,generation);assert.equal(preview.consumedAttempts,generation+1);assert.equal(preview.maxAttempts,generation+1);
  assert.deepEqual(preview.historicalPartition.map(v=>v.generation),Array.from({length:generation},(_,i)=>i));
  assert.ok(preview.historicalPartition.every(v=>stableJson(v.discloseTo)===stableJson([current.agentId])));
- assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/requires current generation one/);
+ if(generation>1)assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/requires current generation one/);else assert.equal(f.branches.previewGenerationOneCapture(f.source.id).generation,1);
+ assert.equal(preview.historyKind,parallel?'local_parallel':'serial');
  // Every missing prior journal is refused independently, including the oldest retained generation.
  for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/retirement linkage/);throw Error('restore chain');})(),/restore chain/);
  for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-exit:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/prior-generation seal/);throw Error('restore seal');})(),/restore seal/);
  assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut','0'.repeat(64)),/preview/);
  const journal=f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut',preview.reviewHash);
  assert.deepEqual(journal.snapshot.hostDependencies.roots.map(r=>r.requestId),[current.requestId]);assert.equal(journal.snapshot.selected.attempts.find(a=>a.step_execution_id===current.stepId).number,generation+1);
- assert.equal(journal.snapshot.issuedContinuation.generationRetry.history.length,generation);
- for(const tamper of [v=>v.history.pop(),v=>v.history.reverse(),v=>{v.history[1].selection={...v.history[0].selection};},v=>{v.history[0].retirementSha256='0'.repeat(64);},v=>{v.originalSelected.attempts=v.originalSelected.attempts.filter(a=>a.step_execution_id!==current.stepId||a.number!==1);}]){
+ assert.equal((journal.snapshot.issuedContinuation.generationRetry.history??[journal.snapshot.issuedContinuation.generationRetry]).length,generation);
+ for(const tamper of [...(generation>1?[v=>v.history.pop(),v=>v.history.reverse(),v=>{v.history[1].selection={...v.history[0].selection};},v=>{v.history[0].retirementSha256='0'.repeat(64);}]:[v=>{v.retirementSha256='0'.repeat(64);}]),v=>{v.originalSelected.attempts=v.originalSelected.attempts.filter(a=>a.step_execution_id!==current.stepId||a.number!==1);},...(parallel?[v=>{v.originalSelected.steps.find(s=>s.id===current.stepId).path_id=v.originalSelected.paths.find(p=>p.parent_path_id===null).id;},v=>{v.originalSelected.steps.find(s=>s.id!==current.stepId).state='prepared';},v=>{v.originalSelected.paths.find(p=>p.parent_path_id===null).state='active';},v=>{v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===generation+1).request_id=v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===1).request_id;},v=>{v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===1).state='outcome_unknown';}]:[])]){
   const changed=structuredClone(journal.snapshot.issuedContinuation);tamper(changed.generationRetry);
   assert.equal(issuedResourceContinuationSupported(db,f.source.id,journal.snapshot.selected,journal.snapshot.hostDependencies,changed),false,'omitted/reordered/aliased/rehashed attempt history refuses');
  }
@@ -2262,7 +2263,7 @@ for(const mode of ['async','sync'])for(const generation of [2,3,32])test(`serial
  // Empty-client recovery uses only saved capture identity, never a new preview.
  const status=resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut'),budget=status.retryBudget;
  assert.equal(budget.state,'verified');assert.equal(status.consumedAttempts,generation+1);assert.equal(status.maxAttempts,generation+1);assert.match(budget.evidenceHash,/^[a-f0-9]{64}$/);
- assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);
+ assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);assert.equal(status.historyKind,preview.historyKind);
  assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run('{}',f.branch.id);assert.deepEqual(resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut').retryBudget,budget);throw Error('restore mutable policy');})(),/restore mutable policy/);
 
  const {issuedCaptureRetryBudget}=await import('../../packages/agents/dist/index.js');

@@ -815,3 +815,6 @@ custody/runtime/provider/native/end-to-end/accessibility/mobile and full Phase2/
 qualification remain open. ZERO tests/checks/build/types/Node/native/browser/runner
 preparation or execution, migrations, push/deploy/newworkers. Hooks disabled; source,
 files and Git inspection only.
+
+
+Local-parallel history source extension: the current bounded contract in [branch-local-parallel-history.md](branch-local-parallel-history.md) supersedes the earlier serial-only limit for exactly one resource invocation with settled local siblings. It reuses the same generation-history producer, parallel replay, current-only cut and canonical single-owner admission; it does not enable arbitrary parallel or called-owner consumers. Source fixtures are deferred and unexecuted.

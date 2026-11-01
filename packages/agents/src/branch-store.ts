@@ -1308,7 +1308,7 @@ export class BranchStore {
       const resource=value.selected.resources![0]!,step=value.selected.steps!.find(s=>s.id===resource.step_execution_id)!,policy=this.definition(e).steps.find(s=>s.id===step.step_id)!.failure;
       if(policy?.action!=='retry')throw Error('Configured retry budget required');
       const historicalPartition=generationHistoricalSelections(value.generationRetry);
-      return {reviewHash:payloadHash({...value,issuedContinuation}),historicalReviewHash:payloadHash(historicalPartition),historicalPartition,generation:resource.generation as number,consumedAttempts:resource.generation+1 as number,maxAttempts:policy.maxAttempts};
+      return {reviewHash:payloadHash({...value,issuedContinuation}),historicalReviewHash:payloadHash(historicalPartition),historicalPartition,historyKind:(value.selected.forks!.length?'local_parallel':'serial') as 'serial'|'local_parallel',generation:resource.generation as number,consumedAttempts:resource.generation+1 as number,maxAttempts:policy.maxAttempts};
     })();
   }
   reserveIssuedResourceCapture(executionId:string,stepId:string,generation:number,commandKey:string,expectedReviewHash?:string) {
