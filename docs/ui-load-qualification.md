@@ -230,3 +230,40 @@ capacity and actual20leased/per-Agent persisted-work continuity proof; full32
 predeclared ledger with current product/device population; resolve redLCP and
 isolate presentation costs before any performance True. Actual native reader/IME
 and broader#27 remain separately open; no additional UI matrix replay/install.
+
+## Source-attributed timestamp repair (bounded diagnostic)
+
+The pinned paced Core/10k-history diagnostic at `d1f5dc312` retains a production-
+optimized source-map build, CPU profile, trace, ResourceTiming, long tasks, all LCP
+candidates, DOM article-count transition, raw observer state and terminal cleanup.
+This single invocation returned exit 1 after its complete cell because the harness
+asserted an unexposed `f.failures` property. It is not an end-to-end pass. The
+harness now uses the fixture's existing `settled` API for controlled-Run failures;
+that browser correction has not been rerun. Trace/profile/context and browser/web/
+fixture finalization all completed even on this failing invocation.
+
+Observed: 100 articles at 7783.4ms; final eligible LCP 7892ms; canonical tail-readiness
+receipt 10777.5ms; first trusted-input cutoff 11140.8ms. The readiness receipt follows
+Playwright visibility and text extraction and is not the first article paint.
+Native interactionCount 41 with zero >=16ms EventTiming groups establishes a
+subfloor p75 for this finite unloaded capture, not invented zero-duration entries.
+Cold API requests also spent about 3.4s before completing; browser timing alone
+cannot distinguish backend projection, transport scheduling and fixture overhead.
+Profiler and trace overhead are included; no causal comparison with earlier red
+328ms/184ms/4344ms/7568ms results or performance acceptance follows.
+
+Source mapping identifies `MessageTimestamp`'s formatting function as the largest
+sampled application self-time location (274.917ms). It constructed two native date
+formatters on every message render. Reuse one lazily initialized pair for the tab's
+default locale/time zone. The actual helper regression checks 100 absolute labels,
+titles and ISO values against native formatting across a day boundary and requires
+only two constructions. Invalid dates remain omitted. Message actions, pagination,
+visibility and canonical state are unchanged. A browser reload adopts changed OS
+locale/time-zone defaults, as the pair is retained for the tab lifetime.
+
+Fresh final web types and production build passed after the repair. No second
+browser diagnostic was run, so no measured post-repair LCP/presentation improvement
+is claimed. Remaining: independently accepted METHOD; source attribution of the
+cold request delay and remaining rendering cost; contemporary browser-inclusive
+capacity receipt; accepted twenty-active continuity proof and explicit GO before
+32 sessions. This packet does not close #21/#27/#29 or Phase 2.
