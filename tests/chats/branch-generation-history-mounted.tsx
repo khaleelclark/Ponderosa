@@ -1,6 +1,7 @@
 // Deferred mounted source; not executed.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {BranchGenerationOne} from '../../apps/web/src/components/branches/BranchGenerationOne';
 import {BranchDisclosureReview} from '../../apps/web/src/components/branches/BranchDisclosureReview';
 const assert=(v:unknown,m:string)=>{if(!v)throw Error(m);};
 const settle=async()=>{for(let i=0;i<8;i++)await new Promise(r=>setTimeout(r,0));};
@@ -25,4 +26,18 @@ export async function generationHistoryDisclosureRegression():Promise<void>{
    (Array.from(document.querySelectorAll('input[type=checkbox]')).find(v=>v.closest('label')?.textContent?.includes('exact historical facts')) as HTMLInputElement).click();await settle();button('Approve disclosure').click();await settle();button('Approve exact disclosure').click();await settle();assert(sent?.reviewHash===hash(998)&&sent?.action==='approve','single whole-history choice binds final human hash');assert(localStorage.getItem(key),'unknown choice remains held');
   }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(old===null)localStorage.removeItem(key);else localStorage.setItem(key,old);}
  }
+}
+
+export async function generationHistorySavedBudgetRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),originalFetch=globalThis.fetch;
+ const key='branch-generation-one:branch:source:step',old=localStorage.getItem(key);localStorage.removeItem(key);
+ const hash=(i:number)=>i.toString(16).padStart(64,'0');let selected:any,conflict=true;const calls:string[]=[];
+ const row={generation:2,commandKey:'original/key',state:'retained',checkpointId:100,checkpointHash:hash(999),restoreSupported:false,reviewHash:hash(998),historicalReviewHash:hash(997),historicalPartition:[0,1].map(g=>({executionId:'source',stepId:'step',generation:g,checkpointId:g+1,checkpointHash:hash(g+1),envelopeSha256:hash(g+100),intakeFence:{identity:`fence${g}`,sha256:hash(g+200)},discloseTo:['current']})),consumedAttempts:3,maxAttempts:33,retryBudget:{state:'verified',consumedAttempts:3,maxAttempts:33,evidenceHash:hash(800)}};
+ globalThis.fetch=async(input,init)=>{const url=String(input);calls.push(url);assert(!init?.method||init.method==='GET','recovery is pure GET');const value=url.endsWith('/generation-history-captures')?[row]:url.endsWith('/issued-checkpoint?commandKey=original%2Fkey')?{...row,retryBudget:{...row.retryBudget,evidenceHash:hash(conflict?801:800)}}:undefined;assert(value,'no fresh preview or invented selector');return new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}});};
+ try{
+  root.render(<BranchGenerationOne branchId="branch" executionId="source" stepId="step" enabled onSelect={v=>{selected=v;}}/>);await settle();
+  button('Discover generation-history captures').click();await settle();assert(document.body.textContent?.includes('consumed attempts 3'),'verified discovery numbers visible');assert(document.body.textContent?.includes(hash(800)),'saved evidence hash visible');
+  button('Read exact capture for preparation').click();await settle();assert(!selected,'conflicting proof stays held');assert(!button('Read exact capture for preparation'),'stale inventory cleared');assert(calls.length===2,'no automatic retry');
+  conflict=false;button('Discover generation-history captures').click();await settle();button('Read exact capture for preparation').click();await settle();assert(selected?.preview.consumedAttempts===3&&selected?.preview.maxAttempts===33,'exact saved budget reaches preparation');assert(selected.preview.retryBudget.evidenceHash===hash(800),'exact proof retained');assert(selected.capture.checkpointId===100,'exact current checkpoint preserved');assert(calls.length===4,'only explicit GET recovery');
+ }finally{root.unmount();host.remove();globalThis.fetch=originalFetch;if(old===null)localStorage.removeItem(key);else localStorage.setItem(key,old);}
 }

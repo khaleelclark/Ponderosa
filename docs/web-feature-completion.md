@@ -1150,4 +1150,43 @@ native/provider/filesystem custody qualification, accessibility/mobile execution
 and all full UI/group/lifecycle/Bible/Phase2 acceptance. No retention writer,
 reclamation, budget reset or offset restore is added.
 
-Integration: required cbe266387 backend/core chain is already assembled as b5ed36c58 (coverage96ea1594e); no reference backend copies or ancestor replay. This successor supersedes the earlier UI generation-one-only and fixed attempt2of2 limitation. Status-only budget metadata remains a backend contract gap; no executed qualification is claimed.
+Integration: required cbe266387 backend/core chain is already assembled as b5ed36c58 (coverage96ea1594e); no reference backend copies or ancestor replay. This successor supersedes the earlier UI generation-one-only and fixed attempt2of2 limitation. The subsequent saved-budget backend/UI integrations below resolve the status-only contract/adoption gap in source; no executed qualification is claimed.
+
+
+### Saved generation-history retry budget successor (source only)
+
+UI successor to `7b28b68eb8a1a5d809676025226aeca2dcd1f32a` requires backend/core
+`df05c945bc97c40c1be1701d10da0927aa786da3` from
+`/tmp/ponderosa-branches-generation-chain`, including its shared DTO and saved-proof
+reader. This supersedes the earlier status-only missing-budget limitation above.
+The actual contract is `retryBudget: {state:'verified', consumedAttempts,
+maxAttempts, evidenceHash}` with identical top-level numbers, or
+`{state:'unavailable', reason:'missing_saved_retry_proof'}` without numbers.
+Legacy absent proof is honestly unavailable; malformed present proof or numbers
+without verified proof refuse. UI checks bounded generation/attempt counts and
+hash shape; backend verifies the saved snapshot, pinned definition and retained
+checkpoint seal. The hash is evidence, never source policy or action authority.
+
+Canonical discovery copies the exact generation, ordered historical selections,
+review/hash and saved budget evidence into pure original-command status recovery.
+A changed proof hash, cut, selection or conflicting saved preview budget stays
+held; the UI clears stale discovery and requires explicit rediscovery. No fresh
+preview substitutes for recovery, no POST retries, no retry reset or old-Agent
+import. Legacy status cannot downgrade previously verified discovery evidence.
+Original preview budget values remain intact when legacy status has no proof.
+Verified status budget/hash is visible and reaches preparation alongside the
+unchanged cut; legacy unavailable status shows no invented numbers.
+
+Deliverables: `apps/web/src/components/branches/branchGenerationOne.ts`,
+`BranchGenerationOne.tsx`, `tests/chats/branch-generation-history.test.mjs`,
+`branch-generation-history-mounted.tsx`, and this report. Deferred pure fixtures
+cover malformed/unavailable/verified budgets, missing/mismatched top-level values,
+proof/hash/budget conflicts, exact cuts/checkpoints and preserved legacy preview.
+Deferred mounted fixture covers empty-client discovery, changed-proof hold,
+explicit rediscovery and exact GET preparation recovery without fresh preview.
+No tests/checks/types/build/Node/native/browser/runner preparation or execution,
+backend writes, installs, push/merge/deploy or new workers. Backend assembly and
+separately authorized runtime/provider/native/filesystem/accessibility/mobile
+qualification remain; no Phase 2 acceptance claimed.
+
+Integration: df05c945 backend/core is already assembled as57eab4596 (coverage40f4472be). This UI successor adopts that exact DTO without SDK/backend writes, ancestor replay or reference-source copies. Source-only status budget adoption is delivered; real runtime and broader qualification remain open.

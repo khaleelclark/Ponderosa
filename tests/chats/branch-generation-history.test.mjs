@@ -2,7 +2,7 @@
 import '../shared/web-typescript-loader.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {generationHistoryPreviewMatches,generationOnePreviewMatches,generationSelectionMatches,generationOneCaptureMatches,generationOneReceiptProjection} from '../../apps/web/src/components/branches/branchGenerationOne.ts';
+import {generationCaptureEvidence,generationCaptureBudgetMatches,generationCaptureBudgetLabel,generationHistoryPreviewMatches,generationOnePreviewMatches,generationSelectionMatches,generationOneCaptureMatches,generationOneReceiptProjection} from '../../apps/web/src/components/branches/branchGenerationOne.ts';
 import {disclosureReviewMatches,historicalFactGeneration} from '../../apps/web/src/components/branches/branchDisclosureReview.ts';
 const hash=i=>i.toString(16).padStart(64,'0');
 export function historyFixture(generation){
@@ -37,4 +37,30 @@ for(const generation of [2,3,32])test(`generation ${generation} requires every o
  const missing=copy(target);missing.historicalPartition.pop();assert.equal(disclosureReviewMatches(review,missing,'branch','source'),false);
  const receipt={receipt:{historicalPartition:review.facts.map((f,i)=>({selection:preview.historicalPartition[i],sha256:f.sha256,historical:true,dispatchable:false,destinationAgentIds:f.destinationAgentIds,seal:{PRIVATE:'native'},retirement:{resultJson:'PRIVATE RETIREMENT'}}))}};
  const projected=JSON.stringify(generationOneReceiptProjection(receipt));assert.ok(!projected.includes('PRIVATE'));assert.ok(projected.includes(`fence${generation-1}`));
+});
+
+test('canonical saved budgets require proof, exact top-level values and unchanged cut/budget/hash',()=>{
+ const {preview,capture}=historyFixture(3);
+ const retryBudget={state:'verified',consumedAttempts:4,maxAttempts:33,evidenceHash:hash(700)};
+ const verified={...capture,consumedAttempts:4,maxAttempts:33,retryBudget};
+ assert.equal(generationCaptureBudgetMatches(verified),true);
+ const recovered=generationCaptureEvidence(verified);
+ assert.equal(recovered.consumedAttempts,4);assert.equal(recovered.maxAttempts,33);
+ assert.equal(recovered.retryBudget.evidenceHash,hash(700));
+ assert.equal(generationOneCaptureMatches(verified,recovered,'original'),true);
+ assert.ok(generationCaptureBudgetLabel(verified).includes(hash(700)));
+ for(const bad of [ {...verified,maxAttempts:32}, {...verified,consumedAttempts:1}, {...verified,retryBudget:{...retryBudget,evidenceHash:'bad'}}, {...verified,retryBudget:{...retryBudget,state:'unknown'}}, {...capture,maxAttempts:33}, {...verified,retryBudget:{state:'unavailable',reason:'missing_saved_retry_proof'}}, {...verified,retryBudget:null} ]){
+  assert.equal(generationCaptureBudgetMatches(bad),false);assert.throws(()=>generationCaptureEvidence(bad));
+ }
+ assert.equal(generationOneCaptureMatches({...verified,retryBudget:{...retryBudget,evidenceHash:hash(701)}},recovered,'original'),false);
+ assert.equal(generationOneCaptureMatches({...verified,reviewHash:hash(701)},recovered,'original'),false);
+ assert.equal(generationOneCaptureMatches({...verified,checkpointId:1},recovered,'original'),false);
+ assert.equal(generationOneCaptureMatches({...verified,checkpointId:1001},recovered,'original'),false);
+ assert.equal(generationOneCaptureMatches({...verified,checkpointHash:hash(702)},recovered,'original'),false);
+ assert.equal(generationOneCaptureMatches({...verified,maxAttempts:32,retryBudget:{...retryBudget,maxAttempts:32}},preview,'original'),false,'saved preview budget conflict stays held');
+ for(const legacy of [capture,{...capture,retryBudget:{state:'unavailable',reason:'missing_saved_retry_proof'}}]){
+  assert.equal(generationCaptureBudgetMatches(legacy),true);assert.equal(generationCaptureEvidence(legacy).maxAttempts,undefined);assert.ok(generationCaptureBudgetLabel(legacy).includes('unavailable'));
+  assert.equal(generationOneCaptureMatches(legacy,preview,'original'),true,'legacy original preview remains preserved');
+  assert.equal(generationOneCaptureMatches(legacy,recovered,'original'),false,'verified discovery cannot downgrade during status recovery');
+ }
 });
