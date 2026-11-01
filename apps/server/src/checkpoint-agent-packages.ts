@@ -1,7 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import path from 'node:path';
-import {promises as fs} from '@ponderosa/native-host/fs';
-import {AGENT_PACKAGE_MAX_BYTES,type AgentPortablePackageDto} from '@ponderosa/core';
+import syncFs,{promises as fs} from '@ponderosa/native-host/fs';
+import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_MAX_AGENTS,type AgentPortablePackageDto} from '@ponderosa/core';
 import {parsePortablePackageFile,portablePackageJsonChunks} from './agent-package-codec.js';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 
@@ -22,14 +22,18 @@ export type CheckpointPackageStatus=
   | {state:'missing'}
   | {state:'retained';receipt:CheckpointPackageReceipt}
   | {state:'capturing';source:CheckpointPackageSource;boundaryId:string}
+  | {state:'failed';source:CheckpointPackageSource;boundaryId:string;reason:string}
   | {state:'released';receipt:CheckpointPackageReceipt};
 /** Host-only custody. Source deletion and import-operation cleanup never own this directory. */
 export function checkpointPackageCustody(dataDir:string){
   const directory=path.join(dataDir,'checkpoint-package-custody');
+  syncFs.mkdirSync(directory,{recursive:true,mode:0o700});
+  const directoryStat=syncFs.lstatSync(directory);if(!directoryStat.isDirectory()||directoryStat.isSymbolicLink()||(directoryStat.mode&0o077))throw new Error('Checkpoint custody directory must be private');
+  if(process.platform!=='win32'){const parent=syncFs.openSync(dataDir,'r');try{syncFs.fsyncSync(parent);}finally{syncFs.closeSync(parent);}}
   let tail:Promise<unknown>=Promise.resolve();
   const serial=<T>(work:()=>Promise<T>):Promise<T>=>{const next=tail.then(work,work);tail=next.catch(()=>{});return next;};
   const key=(source:CheckpointPackageSource)=>{
-    if(!source.checkpointId||!source.sourceChatId||!source.agentIds.length||new Set(source.agentIds).size!==source.agentIds.length||source.agentIds.some(id=>!id))throw new Error('Checkpoint capture requires exact nonempty source membership');
+    if(!source.checkpointId||!source.sourceChatId||!source.agentIds.length||source.agentIds.length>AGENT_PACKAGE_MAX_AGENTS||new Set(source.agentIds).size!==source.agentIds.length||source.agentIds.some(id=>!id))throw new Error('Checkpoint capture requires bounded exact nonempty source membership');
     const intent=source.intent;
     if(!intent||!intent.executionId||!intent.resourceStepId||!Number.isSafeInteger(intent.resourceGeneration)||intent.resourceGeneration<0||[intent.frontierSha256,intent.bindingSha256,intent.configurationSha256].some(hash=>typeof hash!=='string'||!/^[a-f0-9]{64}$/.test(hash)))throw new Error('Checkpoint capture requires exact resource intent');
     return createHash('sha256').update(source.checkpointId).digest('hex');
@@ -40,6 +44,18 @@ export function checkpointPackageCustody(dataDir:string){
     const handle=await fs.open(temporary,'wx',0o600);
     try{await handle.writeFile(JSON.stringify(value));await handle.sync();}finally{await handle.close();}
     await fs.rename(temporary,path.join(directory,name));await syncDirectory();
+  };
+  const claimCapture=async(name:string,value:unknown)=>{
+    // Exclusive claim also protects two host instances racing the same intent.
+    const handle=await fs.open(path.join(directory,name),'wx',0o600);
+    try{await handle.writeFile(JSON.stringify(value));await handle.sync();}finally{await handle.close();}
+    await syncDirectory();
+  };
+  const publishReceipt=(id:string,value:CheckpointPackageReceipt)=>{
+    const temporary=path.join(directory,`${id}.${randomUUID()}.tmp`),fd=syncFs.openSync(temporary,'wx',0o600);
+    try{syncFs.writeFileSync(fd,JSON.stringify(value));syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}
+    syncFs.renameSync(temporary,path.join(directory,`${id}.json`));
+    if(process.platform!=='win32'){const directoryFd=syncFs.openSync(directory,'r');try{syncFs.fsyncSync(directoryFd);}finally{syncFs.closeSync(directoryFd);}}
   };
   const receiptAt=async(id:string):Promise<CheckpointPackageReceipt|undefined>=>{
     try{return JSON.parse(await fs.readFile(path.join(directory,`${id}.json`),'utf8')) as CheckpointPackageReceipt;}
@@ -71,12 +87,12 @@ export function checkpointPackageCustody(dataDir:string){
       if(released){if(!sameSource(released,source))throw new Error('Checkpoint capture intent conflict');return {state:'released',receipt:released};}
       const retained=await receiptAt(id);
       if(retained){if(!sameSource(retained,source))throw new Error('Checkpoint capture intent conflict');await verifiedRead(retained);return {state:'retained',receipt:retained};}
-      const pending=await readJson(`${id}.pending.json`) as CheckpointPackageSource&{boundaryId:string}|undefined;
-      if(pending){if(!sameSource(pending,source))throw new Error('Checkpoint capture intent conflict');return {state:'capturing',source,boundaryId:pending.boundaryId};}
+      const pending=await readJson(`${id}.pending.json`) as CheckpointPackageSource&{boundaryId:string;state:string;reason?:string}|undefined;
+      if(pending){if(!sameSource(pending,source))throw new Error('Checkpoint capture intent conflict');return pending.state==='failed'?{state:'failed',source,boundaryId:pending.boundaryId,reason:pending.reason??'capture_failed'}:{state:'capturing',source,boundaryId:pending.boundaryId};}
       return {state:'missing'};
     }),
     /** Caller must hold the common source boundary until this promise settles. */
-    capture:(source:CheckpointPackageSource,boundaryId:string,capture:()=>Promise<AgentPortablePackageDto>)=>serial(async()=>{
+    capture:(source:CheckpointPackageSource,boundaryId:string,capture:()=>Promise<AgentPortablePackageDto>,commit:(publish:()=>void)=>void=publish=>publish())=>serial(async()=>{
       const id=key(source);if(!boundaryId)throw new Error('Checkpoint source boundary required');
       await fs.mkdir(directory,{recursive:true,mode:0o700});
       const existing=await receiptAt(id);
@@ -85,14 +101,20 @@ export function checkpointPackageCustody(dataDir:string){
       try{await fs.access(path.join(directory,`${id}.released.json`));throw new Error('Checkpoint custody has been released');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       try{await fs.access(pending);throw new Error('Checkpoint capture was interrupted; choose a new checkpoint identity');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       // Pending evidence survives failure/restart. Never silently recapture a later source cut.
-      await writeJson(`${id}.pending.json`,{version:1,...source,boundaryId,state:'capturing'});
+      await claimCapture(`${id}.pending.json`,{version:1,...source,boundaryId,state:'capturing'});
+      try{
       const portable=validateMembership(validatePortableAgentPackage(await capture()).package,source);
       const temporary=path.join(directory,`${id}.${randomUUID()}.tmp`),handle=await fs.open(temporary,'wx',0o600),hash=createHash('sha256');let byteLength=0;
       try{for await(const part of portablePackageJsonChunks(portable)){const bytes=Buffer.from(part,'utf8');byteLength+=bytes.length;if(byteLength>AGENT_PACKAGE_MAX_BYTES)throw new Error('Checkpoint package exceeds package byte limit');hash.update(bytes);await handle.writeFile(bytes);}await handle.sync();}finally{await handle.close();}
       await fs.rename(temporary,path.join(directory,`${id}.payload`));await syncDirectory();
       const receipt:CheckpointPackageReceipt={version:1,custodyId:id,...source,agentIds:[...source.agentIds],intent:{...source.intent},boundaryId,sha256:hash.digest('hex'),byteLength};
-      await writeJson(`${id}.json`,receipt);
+      // Final source validation and receipt admission must share one synchronous turn.
+      commit(()=>publishReceipt(id,receipt));
       await fs.unlink(pending);await syncDirectory();return receipt;
+      }catch(error){
+        await writeJson(`${id}.pending.json`,{version:1,...source,boundaryId,state:'failed',reason:error instanceof Error&&error.name==='SourceCaptureChangedError'?'source_changed':'capture_failed'});
+        throw error;
+      }
     }),
     read:(receipt:CheckpointPackageReceipt)=>serial(()=>verifiedRead(receipt)),
     release:(receipt:CheckpointPackageReceipt)=>serial(async()=>{

@@ -1,4 +1,6 @@
 import {validateGlobalMemory,globalMemoryHash} from './portable-global-memory.js';
+import {withSourceMutation} from '@ponderosa/agents';
+import {memorySourceMutations} from './memory-source-mutations.js';
 import type {PortableGlobalMemorySnapshotDto} from '@ponderosa/core';
 import {withoutPortableSecrets} from './portable-secrets.js';
 import {createHash} from 'node:crypto';
@@ -12,13 +14,19 @@ type Frame={owner:AuthorityStorage;authority:MemoryAuthority;all:Map<string,Sour
 const context=new AsyncLocalStorage<Frame>();const key=(scope:string,id:string)=>JSON.stringify([scope,id]);
 const denied=()=>new Error('Memory source unavailable or unauthorized');
 const noGeneration={name:'local-memory-precomputed',generate:async():Promise<number[][]>=>{throw Error('Explicit embeddings required');}};
+const mutationBoundaries=new WeakMap<ChromaStorage,ReturnType<typeof memorySourceMutations>>();
+const mutate=<T>(raw:ChromaStorage,work:()=>Promise<T>)=>mutationBoundaries.get(raw)?.run(work)??withSourceMutation(work);
+function trackedCollection<T extends object>(raw:ChromaStorage,collection:T):T{
+ return new Proxy(collection,{get(target,key){const value=Reflect.get(target,key);if(typeof value!=='function')return value;return (...args:unknown[])=>['upsert','add','update','delete','modify'].includes(String(key))?mutate(raw,()=>Reflect.apply(value,target,args)):Reflect.apply(value,target,args);}});
+}
 export async function checkedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>,create=false):Promise<Awaited<ReturnType<ChromaStorage["client"]["getCollection"]>>>{
- await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(!create||!/not.?found|does not exist/i.test(String(e)))throw e;await guard();c=await raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384}});}await guard();
- if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Incompatible memory collection binding');return c;
+ await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(!create||!/not.?found|does not exist/i.test(String(e)))throw e;await guard();c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384}}));}await guard();
+ if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Incompatible memory collection binding');return trackedCollection(raw,c);
 }
 /** A per-call storage view, not persistence, a journal, a transaction or a recovery coordinator. */
 export class AuthorityStorage implements MemoryStorage{
- constructor(readonly raw:ChromaStorage,readonly principal:string,readonly inference:Inference){}
+ constructor(readonly raw:ChromaStorage,readonly principal:string,readonly inference:Inference,mutationDirectory?:string){if(mutationDirectory)mutationBoundaries.set(raw,memorySourceMutations(mutationDirectory));}
+ assertSourceSettled(){const boundary=mutationBoundaries.get(this.raw);if(!boundary)throw Error('Checkpoint memory source boundary unavailable');boundary.assertSettled();}
  packageVisible?:(operationId:string)=>boolean;
  onRead?:(authority:MemoryAuthority,row:Chunk)=>void;
  onMutation?:(scope:string,id:string)=>void;
@@ -220,7 +228,7 @@ export class AuthorityStorage implements MemoryStorage{
    }
    for(const {collection,log,ids}of selected){
     await guard();
-    if(!agentId){await this.raw.client.deleteCollection({name:collection.name});}
+    if(!agentId){await mutate(this.raw,()=>this.raw.client.deleteCollection({name:collection.name}));}
     else for(let i=0;i<ids.length;i+=100){await guard();await collection.delete({ids:ids.slice(i,i+100)});}
     if(!log)for(const id of ids)this.onMutation?.(scope,id);
     await guard();
@@ -234,5 +242,5 @@ export class AuthorityStorage implements MemoryStorage{
 /** Uses the public runtime/storage extension surface; no sealed-core mutation. */
 export class HostMemoryRuntime extends MemoryRuntime{
  declare readonly database:AuthorityStorage;
- constructor(options:ConstructorParameters<typeof MemoryRuntime>[0],principal:string|((signature:string)=>string)){super(options);const raw=this.database as unknown as ChromaStorage;this.database=new AuthorityStorage(raw,typeof principal==='function'?principal(this.inference.signature):principal,this.inference);}
+ constructor(options:ConstructorParameters<typeof MemoryRuntime>[0],principal:string|((signature:string)=>string),mutationDirectory?:string){super(options);const raw=this.database as unknown as ChromaStorage;this.database=new AuthorityStorage(raw,typeof principal==='function'?principal(this.inference.signature):principal,this.inference,mutationDirectory);}
 }

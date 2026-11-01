@@ -51,7 +51,7 @@ export class LocalMemoryService{
     if(policy.prepare('SELECT 1 FROM local_memory_chat_grants WHERE principal_id!=? OR revision<1 OR read_global NOT IN (0,1)').get(principal.principal_id))throw Error('Foreign memory policy grant');
     if(!fresh){policy.close();policy=new Database(file,{fileMustExist:true});}this.policy=policy;this.freshPolicy=fresh;return principal.principal_id;
    }catch(e){policy.close();throw e;}
-  });this.principalId=this.core.database.principal;
+  },path.join(directory,'source-mutation-holds'));this.principalId=this.core.database.principal;
    this.core.database.packageVisible=id=>this.ports.store.getAgentCreationOperation(id)?.status==='completed'&&!this.ports.store.sqlite.prepare("SELECT 1 FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.creation_operation_id=? AND p.state!='completed'").get(id);
    this.core.database.onRead=(a,row)=>this.noteSpeechRead(a,row);
    this.core.database.onMutation=(scope,id)=>{for(const entry of this.speech.values())if(entry.refs.has(JSON.stringify([scope,id])))this.invalidateSpeech(entry,scope==='global'?'global':'chat');};
@@ -177,6 +177,8 @@ export class LocalMemoryService{
   if(owner.executionId)throw new MemoryDenied('Temporary execution Chat memory is unsupported by the durable Chat lifetime policy');
   return {chat,owner};
  }
+ async checkpointSourceDatabases(){await this.ready();this.core.database.assertSourceSettled();return [this.policy];}
+ assertCheckpointSourceSettled(){this.core.database.assertSourceSettled();}
  ready(){return this.initialized??=this.initialize();}
  private async initialize(){
   this.live();await this.core.inference.embed('synthetic local-memory readiness');

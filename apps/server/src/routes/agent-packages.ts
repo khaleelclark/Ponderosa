@@ -1,5 +1,6 @@
 import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
 import {assertCheckpointMembership} from '../checkpoint-package-membership.js';
+import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPackageReceipt,type CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
@@ -35,6 +36,7 @@ import type {
   ModelOption,
 } from "@ponderosa/core";
 import {
+  beginSourceCapture,commitSourceCapture,releaseSourceCapture,
   publishManagedArtifactContentsAsync,
   readManagedArtifactContentsAsync,
   readManagedArtifactContent,
@@ -116,7 +118,6 @@ export interface BranchImportHooks {
 
 interface AgentPackageRoutesContext {
   dataDir: string;
-  withCheckpointSourceBoundary?<T>(source:CheckpointPackageSource,work:(boundaryId:string)=>Promise<T>):Promise<T>;
   workingCopies?: AgentWorkingCopyService;
   portableBrowserSettings?:(agent:AgentDto)=>{savedBrowserAllowed:boolean;browserMode:'disposable'|'trusted';sourceProfileName?:string};
   store: AgentStore;
@@ -2506,20 +2507,30 @@ export function registerAgentPackageRoutes(
       const status=await checkpointCustody.inspect(frozen);
       if(status.state==='retained')return status.receipt;
       if(status.state!=='missing')throw new Error(`Checkpoint custody ${status.state}; cannot recapture this intent`);
-      const boundary=context.withCheckpointSourceBoundary;
-      if(!boundary)throw new Error('Checkpoint source capture boundary unavailable');
-      return boundary(frozen,async boundaryId=>checkpointCustody.capture(frozen,boundaryId,async()=>{
+      const memory=localMemoryFor(app);
+      const memoryDatabases=memory?await memory.checkpointSourceDatabases():[];
+      const token=beginSourceCapture(store.sqlite,...memoryDatabases);
+      const admit=()=>{
         const chat=store.getConversation(frozen.sourceChatId);
-        if(!chat)throw new Error('Checkpoint source Chat unavailable');
+        if(!chat||!activeChatResourceOwner(store,'chat',chat.id))throw new Error('Checkpoint source Chat unavailable');
         assertCheckpointMembership(frozen.sourceChatId,frozen.agentIds,store.listAgents(chat.projectId,{includePendingCreation:true}));
+        for(const id of frozen.agentIds){const agent=store.getAgent(id);if(!agent||!activeChatResourceOwner(store,'agent',id)||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');}
+        memory?.assertCheckpointSourceSettled();
+      };
+      try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
+        admit();
         const inputs:AgentPackageCompositionInput[]=[];
+        let capturedBytes=0;
         for(const id of frozen.agentIds){
           const agent=store.getAgent(id);
           if(!agent||agent.conversationId!==frozen.sourceChatId||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');
-          inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:await buildPortablePackage(id,'full',false)});
+          const portable=await buildPortablePackage(id,'full',false);
+          capturedBytes+=agentPackageJsonUtf8Bytes(portable);
+          if(capturedBytes>AGENT_PACKAGE_MAX_BYTES)throw new Error('Checkpoint source packages exceed package byte limit');
+          inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:portable});
         }
         return (await composeAgentPackages(inputs)).package;
-      }));
+      },publish=>commitSourceCapture(token,()=>{admit();publish();}));}finally{releaseSourceCapture(token);}
     }),
     readCheckpoint:receipt=>checkpointCustody.read(receipt),
     releaseCheckpoint:receipt=>checkpointCustody.release(receipt),

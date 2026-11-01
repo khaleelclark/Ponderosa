@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
+import {randomUUID} from 'node:crypto';
 
 /** Optimistic source cut. Retain bytes first, validate synchronously, then publish.
  * This is not a provider checkpoint or a lock on user working folders. */
-export interface SourceCaptureToken { readonly kind: "source_capture" }
+export interface SourceCaptureToken { readonly kind: "source_capture";readonly boundaryId:string }
 type Stamp = { changes: bigint; data: bigint; schema: bigint };
 const cuts = new WeakMap<SourceCaptureToken, { epoch: bigint; databases: Array<{ db: Database.Database; stamp: Stamp }> }>();
 let epoch = 0n;
@@ -48,7 +49,7 @@ export function touchSourceMutation(): void { epoch++; }
 
 export function beginSourceCapture(...databases: Database.Database[]): SourceCaptureToken {
   if (!databases.length || writers.size || uncertain.size) throw new SourceCaptureChangedError();
-  const token: SourceCaptureToken = Object.freeze({ kind: "source_capture" });
+  const token: SourceCaptureToken = Object.freeze({ kind: "source_capture",boundaryId:randomUUID() });
   cuts.set(token, { epoch, databases: [...new Set(databases)].map(db => ({ db, stamp: stamp(db) })) });
   return token;
 }
@@ -60,29 +61,32 @@ export function assertSourceCapture(token: SourceCaptureToken): void {
   validate(token);
 }
 
-function validate(token: SourceCaptureToken, locked?: Database.Database): void {
+function validate(token: SourceCaptureToken, locked:ReadonlySet<Database.Database>=new Set()): void {
   const cut = cuts.get(token);
   if (!cut || writers.size || uncertain.size || cut.epoch !== epoch) throw new SourceCaptureChangedError();
   for (const { db, stamp: before } of cut.databases) {
-    const after = stamp(db, db === locked);
+    const after = stamp(db, locked.has(db));
     if (before.changes !== after.changes || before.data !== after.data || before.schema !== after.schema) throw new SourceCaptureChangedError();
   }
 }
 
-/** Serialize final validation and receipt insertion against other SQLite writers.
- * The first supplied connection is the receipt authority; publication is synchronous. */
+/** Lock every source database through synchronous final validation/publication. */
 export function commitSourceCapture<T>(token: SourceCaptureToken, publish: () => T): T {
-  const db = cuts.get(token)?.databases[0]?.db;
-  if (!db || db.inTransaction) throw new SourceCaptureChangedError();
+  const databases=cuts.get(token)?.databases.map(entry=>entry.db);
+  if (!databases?.length || databases.some(db=>db.inTransaction)) throw new SourceCaptureChangedError();
   try {
-    return db.transaction(() => {
-      validate(token, db);
+    const locked=new Set<Database.Database>();
+    const commit=(index:number):T=>{
+      const db=databases[index];
+      if(db)return db.transaction(()=>{locked.add(db);try{return commit(index+1);}finally{locked.delete(db);}}).immediate();
+      validate(token,locked);
       const result = publish();
       if (result && (typeof result === "object" || typeof result === "function") && "then" in result) {
         throw new Error("Source capture receipt publication must be synchronous");
       }
       return result;
-    }).immediate();
+    };
+    return commit(0);
   } finally { releaseSourceCapture(token); }
 }
 
