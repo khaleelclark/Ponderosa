@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {Alert,Box,Button,Checkbox,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,MenuItem,Select,Stack,Typography} from '@mui/material';
 import type {BrowserConsoleQuery,BrowserConsoleResult,BrowserOperatorRecordingResult,BrowserRecordingData,BrowserRecordingStatus,BrowserRecordingDestination,ConversationDto} from '@ponderosa/core';
 import {api} from '../../api';
@@ -9,11 +9,24 @@ import type {BrowserEndpointAdapter,BrowserSession} from './browserAdapters';
 import {consoleResultValid,recordingArtifactValid,recordingCommandValid,recordingDataValid,recordingStatusValid,recordingDestinationValid,type RecordingCommand} from './browserObservation';
 
 export function BrowserObservations({adapter,session,pageId,busy=false}:{adapter:BrowserEndpointAdapter<BrowserSession>;session?:BrowserSession;pageId?:string;busy?:boolean}) {
- const scope=JSON.stringify([window.location.origin,currentProductScope(),adapter.queryKey]);
+ const scope=JSON.stringify([window.location.origin,currentProductScope(),adapter.queryKey,...(adapter.sharedRecording?[adapter.sharedRecording.projectId,adapter.sharedRecording.conversationId??null]:[])]);
  return <ObservationControls key={scope} scope={scope} adapter={adapter} session={session} pageId={pageId} busy={busy}/>;
 }
 function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;adapter:BrowserEndpointAdapter<BrowserSession>;session?:BrowserSession;pageId?:string;busy:boolean}) {
- const storageKey=`browser-recording:${scope}`;
+ const [storageKey]=useState(()=>{
+  const key=`browser-recording:${scope}`;
+  if(!adapter.sharedRecording)return key;
+  // Retain pre-isolation commands in their original destination scope; never move or clear them on Project switch.
+  const legacy=`browser-recording:${JSON.stringify([window.location.origin,currentProductScope(),adapter.queryKey])}`;
+  try{
+   if(localStorage.getItem(key)!==null||localStorage.getItem(`${key}:destination`)!==null)return key;
+   const command=localStorage.getItem(legacy),binding=localStorage.getItem(`${legacy}:destination`);
+   const destination:unknown=binding?JSON.parse(binding):command?JSON.parse(command).destinationEvidence:undefined;
+   if(recordingDestinationValid(destination)&&destination.projectId===adapter.sharedRecording.projectId&&(!adapter.sharedRecording.conversationId||destination.conversationId===adapter.sharedRecording.conversationId))return legacy;
+   if(command&&(!recordingCommandValid(JSON.parse(command))||!recordingDestinationValid(destination)))return legacy;
+  }catch{return legacy;}
+  return key;
+ });
  const [restored]=useState(()=>{try{const bytes=localStorage.getItem(storageKey);if(!bytes)return {};const command:unknown=JSON.parse(bytes);return recordingCommandValid(command)?{command}:{error:'Saved recording command invalid · new attempts held'};}catch{return {error:'Saved recording command unavailable · new attempts held'};}});
  const destinationKey=`${storageKey}:destination`;
  const [binding]=useState(()=>{try{const raw=localStorage.getItem(destinationKey);if(!raw&&!restored.command?.destinationEvidence)return {};const value:unknown=raw?JSON.parse(raw):restored.command!.destinationEvidence;if(!recordingDestinationValid(value)||!adapter.sharedRecording||value.projectId!==adapter.sharedRecording.projectId||adapter.sharedRecording.conversationId&&value.conversationId!==adapter.sharedRecording.conversationId)throw Error();return {value};}catch{return {error:'Saved recording destination invalid · recording held'};}});
@@ -28,14 +41,14 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
  const [recording,setRecording]=useState<BrowserRecordingStatus>(),[artifact,setArtifact]=useState<BrowserOperatorRecordingResult>();
  const [checked,setChecked]=useState(false),[unknown,setUnknown]=useState(Boolean(restored.command)),[ack,setAck]=useState(false),[confirm,setConfirm]=useState<RecordingCommand>();
  const fence=useRef(false),live=useRef(''),mounted=useRef(true);
- const authority=session?JSON.stringify([session.id,session.controlEpoch,session.controlOwner,session.status,session.localPaused,session.manualControl,session.privateSignIn]):'';
+ const authority=session?JSON.stringify([scope,session.id,session.controlEpoch,session.controlOwner,session.status,session.localPaused,session.manualControl,session.privateSignIn]):'';
  live.current=authority;
  const consoleScope=useRef('');consoleScope.current=JSON.stringify([authority,pageId,level]);
  const readOnly=useWorkspaceReadOnly();
  const admitted=!!session&&session.status==='ready'&&session.controlOwner==='operator'&&!session.localPaused&&!session.privateSignIn&&(!session.manualControl||session.manualControl==='automation');
  const available=admitted&&!readOnly&&!busy&&!working&&!!adapter.observations;
  const selected=!!pageId&&!!session?.pages.some(page=>page.id===pageId);
- useEffect(()=>{mounted.current=true;return ()=>{mounted.current=false;};},[]);
+ useLayoutEffect(()=>{mounted.current=true;return ()=>{mounted.current=false;};},[]);
  useEffect(()=>{setConsolePage(undefined);},[authority,pageId,level]);
  useEffect(()=>{setChecked(false);setRecording(undefined);setArtifact(undefined);setConfirm(undefined);setAck(false);if(pending)setUnknown(true);},[authority]);
  const guarded=async(action:()=>Promise<void>,mutation=false)=>{
@@ -102,7 +115,7 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
     </Stack>
     {consolePage?<><Typography variant="caption">Cursor · {consolePage.next} · {consolePage.entries.length} entries</Typography>{consolePage.truncated?<Alert severity="warning">Earlier console entries evicted</Alert>:null}<Box component="ol" aria-label="Console entries" sx={{m:0,pl:3,maxHeight:240,overflow:'auto',overflowWrap:'anywhere'}}>{consolePage.entries.map(entry=><li key={entry.sequence}><Typography variant="caption">{entry.at} · {entry.level} · {entry.pageId}</Typography><Box component="pre" sx={{whiteSpace:'pre-wrap',m:0}}>{entry.text}</Box></li>)}</Box>{!consolePage.entries.length?<Typography role="status" variant="caption">No matching entries</Typography>:null}</>:null}
     {!adapter.recordingProjectId?<Alert severity="info">Recording destination unavailable</Alert>:<>
-     {shared?<><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Producer · Operator · destination {destination?`${destination.projectId} / ${destination.conversationId}`:'select a live Chat'}</Typography>{!shared.conversationId&&!bound?<Stack direction={{xs:'column',sm:'row'}} spacing={1}><Button disabled={!available||!!pending} onClick={()=>void guarded(async()=>{setChoices([]);setChoice('');setChecked(false);const chats=await api.listConversations(shared.projectId);setChoices(chats.filter(chat=>chat.projectId===shared.projectId&&!chat.deletedAt&&!chat.executionId));})}>Load destination Chats</Button><Select size="small" inputProps={{'aria-label':'Recording destination Chat'}} value={choice} disabled={working||!!pending} onChange={event=>{setChoice(event.target.value);setChecked(false);setRecording(undefined);setArtifact(undefined);}}><MenuItem value="">Choose Chat</MenuItem>{choices.map(chat=><MenuItem key={chat.id} value={chat.id}>{chat.title} · {chat.id}</MenuItem>)}</Select></Stack>:null}<Typography variant="caption">Current access and active Chat ownership revalidated by server · no Agent sharing</Typography></>:null}
+     {shared?<><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Producer · Operator · destination {destination?`${destination.projectId} / ${destination.conversationId}`:'select a live Chat'}</Typography>{!shared.conversationId&&!bound?<Stack direction={{xs:'column',sm:'row'}} spacing={1}><Button disabled={!available||!!pending} onClick={()=>void guarded(async()=>{setChoices([]);setChoice('');setChecked(false);const original=authority,chats=await api.listConversations(shared.projectId);if(!mounted.current||live.current!==original)return;setChoices(chats.filter(chat=>chat.projectId===shared.projectId&&!chat.deletedAt&&!chat.executionId));})}>Load destination Chats</Button><Select size="small" inputProps={{'aria-label':'Recording destination Chat'}} value={choice} disabled={working||!!pending} onChange={event=>{setChoice(event.target.value);setChecked(false);setRecording(undefined);setArtifact(undefined);}}><MenuItem value="">Choose Chat</MenuItem>{choices.map(chat=><MenuItem key={chat.id} value={chat.id}>{chat.title} · {chat.id}</MenuItem>)}</Select></Stack>:null}<Typography variant="caption">Current access and active Chat ownership revalidated by server · no Agent sharing</Typography></>:null}
      <Typography variant="caption">JPEG frames · 60 s / 120 frames / 8 MiB limit · no audio</Typography>
      <Stack direction={{xs:'column',sm:'row'}} spacing={1}>
       <Button disabled={!available||!destinationReady||!!storageError} onClick={inspect}>Inspect recording status</Button>
