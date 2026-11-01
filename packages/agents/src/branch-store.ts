@@ -290,7 +290,10 @@ export class BranchStore {
   }
   private functionalReady(executionId: string): boolean {
     return this.ancestors(executionId).every(owner => {
-      if(this.row("SELECT 1 FROM coordination_destination_admissions WHERE json_extract(reservation_json,'$.destination.executionId')=? AND state!='admitted'",owner.id))return false;
+      if(this.row(`SELECT 1 FROM coordination_destination_admissions admission WHERE admission.state!='admitted'
+        AND (json_extract(admission.reservation_json,'$.destination.executionId')=? OR EXISTS(
+          SELECT 1 FROM json_each(admission.reservation_json,'$.resources') resource
+          WHERE json_extract(resource.value,'$.destination.executionId')=?)) LIMIT 1`,owner.id,owner.id))return false;
       if(this.row("SELECT 1 FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id AND c.command_key='resource-capture:'||r.creation_key WHERE r.execution_id=? AND json_extract(c.result_json,'$.state')='capturing' LIMIT 1",owner.id))return false;
       const invocation=this.checkpointInvocationRow(owner.id);
       return (!invocation||invocation.state==='active')&&this.unitSaver.ready(owner.id,invocation?.mode??JSON.parse(owner.configuration_json).checkpointMode??'async');

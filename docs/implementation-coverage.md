@@ -101,6 +101,13 @@ precleanup immutable host closure, observed historical native drain and actual s
 package custody, plus serial/parallel failed-attempt settlement, retry scheduling,
 retirement and fresh-generation replay. Existing retention does not supply these.
 
+Branch aa6be267 adds a consumer readiness fence over singular destination and
+all `resources[*].destination.executionId` entries for every non-admitted admission.
+Matching owners and ancestors remain held, including repeated group slots; only
+whole admission releases this fence. Two deferred ASYNC/SYNC synthetic-row fixtures
+cover non-first/repeated destinations and reserved/staged holds versus admitted
+release. This is not group intake/composer implementation or executed group proof.
+
 ## Actual missing implementation / owner requirements
 
 Lifecycle successor source adds operator package/import evidence reconciliation and

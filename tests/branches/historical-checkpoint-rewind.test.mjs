@@ -1702,3 +1702,19 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
  const saved=f.store.sqlite.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(retained.execution_id,retained.command_key);
  assert.deepEqual(saved,retained);
 });
+
+
+// Deferred isolation fixture: the second group slot must hold Branch dispatch too.
+for(const mode of ['async','sync'])test(`group reservation ${mode} holds every destination execution until whole admission`,async t=>{
+ const f=fixture(t,mode),lease=await f.claim(),db=f.store.sqlite;
+ const checkpoint=db.prepare('SELECT id,snapshot_json FROM branch_unit_snapshots WHERE execution_id=? ORDER BY id DESC LIMIT 1').get(f.source.id);
+ const id=randomUUID(),now=new Date().toISOString();
+ const reservation={resources:[{destination:{executionId:randomUUID()}},{destination:{executionId:f.source.id}},{destination:{executionId:f.source.id}}]};
+ db.prepare(`INSERT INTO coordination_destination_admissions(id,branch_id,source_execution_id,checkpoint_id,command_key,reservation_hash,reservation_json,snapshot_json,project_id,conversation_id,state,created_at,updated_at)
+  VALUES(?,?,?,?,?,?,?,?,?,?,'reserved',?,?)`).run(id,f.branch.id,f.source.id,checkpoint.id,'group-dispatch-isolation',hash(stableJson(reservation)),stableJson(reservation),checkpoint.snapshot_json,randomUUID(),randomUUID(),now,now);
+ assert.equal(f.branches.checkpointDispatch(lease),'waiting');
+ db.prepare("UPDATE coordination_destination_admissions SET state='staged' WHERE id=?").run(id);
+ assert.equal(f.branches.checkpointDispatch(lease),'waiting');
+ db.prepare("UPDATE coordination_destination_admissions SET state='admitted' WHERE id=?").run(id);
+ assert.equal(f.branches.checkpointDispatch(lease),'ready');
+});
