@@ -4,137 +4,125 @@ Base: `f64f631b490dbfc8125f0f7a2f8c649b6c54d19f`. Writer: Phase 2 UI and accessi
 Branch: `phase2/web-feature-completion`. Worktree: `/home/phoenix/ponderosa-worktrees/phase2-web-feature-completion`.
 
 Implementation-first: no tests, suites, typechecks, builds, browser sessions,
-benchmarks, capacity checks, or acceptance packets executed in this work.
-Regression source is written for the later combined verification.
+benchmarks, capacity checks, or acceptance packets executed in this feature work.
+Regression source is written for later combined verification. This is source
+coverage, not a Bible verdict, portability qualification or release claim.
 
 | Requirement | Source coverage |
 | --- | --- |
-| #3, #26, #29; output frontends | `OutputAgentApp`, `BranchChats`, `AgentDetail.header` use focused output chat, everyday settings and More options; existing Chat/Branch folders retained. |
-| Build list Assistant/speaker | `AssistantSettings`, `AssistantEntry`, `OutputAgentDesignation`: visible disabled state, canonical explicit enable, refreshed status, serialized role changes; singleton authority remains server-owned. |
-| Build list attachments and voice messages | `VoiceMessageRecorder`, `voiceRecording`, `DictationControls`, `Composer`, `ComposerAttachment`, `ChatAttachments`: microphone recording/review, existing durable draft uploads, native audio preview/playback. Server audio admission is coordinated separately. |
-| #27 appearance/mobile | `TextSizeSetting`, `textSize`, root `index`, shared settings; standalone `useAppViewport` and font hook; relative prose line height, native audio labels and touch-sized attachment remove action. |
-| #31 streaming | `AgentResponseText` reaches Agent work/task receipts via `ResponseRow` and Branches live output directly. Existing Chat/Assistant/output streams reuse Agent detail. `useAgentStream` batches ordered text updates and closes exact-Run segments on terminal lifecycle. |
-| #31 calls | Existing voice reply association/memory checks retained; sentence stability threshold 300 ms / poll 100 ms; standalone phone call layout now actually wired. Actual early Agent acknowledgement remains runtime-owned. |
-| #21 source performance | Ordered 16 ms text batching, memoized stable rich Markdown, literal open segments. Accepted timestamp formatter reuse retained. Distributed mapped startup work did not justify speculative pagination/style rewrites. No measured improvement claimed. |
-| #18, #24 | Accepted notification/unread behavior and exact canonical figures retained. No cost estimates added; call timing details collapsed under an explicit disclosure. |
+| #3, #26, #29; output frontends | `OutputAgentApp`, `BranchChats`, `AgentDetail.header` use focused output Chat, everyday settings and More options; existing Chat/Branch folders retained. |
+| Build list Assistant/speaker | `AssistantSettings`, `AssistantEntry`, `OutputAgentDesignation`: visible disabled state, canonical explicit enable, refreshed status, serialized role changes and expected-speaker move with confirmation; singleton authority remains server-owned. |
+| Output settings | Model saves use existing `updateAgent(agentId,{activeEngine,model})` on the persistent workflow Agent. Schedule saves include both `expectedVersionId` and `expectedSettingsRevision`. |
+| Attachments and voice messages | `VoiceMessageRecorder`, `voiceRecording`, `DictationControls`, `Composer`, `ComposerAttachment`, `ChatAttachments`: microphone recording/review, existing durable draft uploads, native audio preview/playback. |
+| #27 appearance/mobile | `TextSizeSetting`, `textSize`, root `index`, shared settings; standalone `useAppViewport` and font hook; relative prose line height, native audio labels and touch-sized attachment removal. |
+| #31 streaming | `AgentResponseText` reaches Agent work/task receipts through `ResponseRow` and Branches live output. `useAgentStream` batches ordered text and closes exact-Run segments on terminal lifecycle. Shared human, private human and passive peer provisional text use explicit authorized routes. |
+| #31 calls | Existing voice reply association/memory checks retained; sentence stability threshold 300 ms / poll 100 ms; standalone phone layout wired. Actual early Agent acknowledgement remains runtime-owned. |
+| #21 source performance | Ordered 16 ms text batching, memoized stable rich Markdown, literal open segments; accepted timestamp reuse retained. No measured improvement claimed. Historical red evidence remains unchanged. |
+| #18, #24 | Accepted notification/unread behavior and exact canonical figures retained. No cost estimates; call timing details behind explicit disclosure. |
 | #22 onboarding | Existing provider-first New Chat flow and recovery retained; redundant creation-description blocks removed. No installation/timing claim. |
-| Inbox | Existing Inbox UI/code naming retained; no legacy user-facing label introduced. |
-| Imports | `ImportAgentDialog` role warning moved outside action row; role review invalidates on package/destination/provider-mapping changes. Branch package preview retains server-owned collision warning/confirmation. |
+| Inbox | Existing Inbox naming retained; no legacy user-facing label introduced. |
+| #8 import/export | Explicit file/root/organization-folder export, per-root recovery destinations, fresh managed destination creation and opt-in live activation; access restrictions reviewed before import, memory/browser suggestions separately reviewed after import. |
 
-The Branches owner confirmed that output model saves use the existing `realApi.updateAgent(agentId, {activeEngine, model})` contract: output workflows target that same persistent Agent, so no duplicate graph model or new endpoint is needed. Schedule saves send both `expectedVersionId` and the observed `expectedSettingsRevision`. Server/core validated audio formats were delivered in the joined owner handoff; source integration is required. A genuine early qualified Agent voice acknowledgement must originate in runtime/workflow, not canned browser text. Broader source audit and combined verification remain required; this document is coverage, not a True verdict or release claim.
+## Authorized text projections
 
-## Portability and authorized DM text continuation
+`DirectReplyPreview` consumes generic reply-stream status, including Assistant and
+output apps through shared Agent Chat. `textReplyRoute` checks explicit text
+presentation, source event/conversation, reply intent and recipients. Human
+broadcast previews appear under the latest broadcast in shared human Chat; human
+DM previews stay private. Same-Chat passive peer previews appear only in the
+receiving Agent audit view, matching source sender, sole return recipient and
+responder. Correlated Requests are excluded. No peer draft enters shared Chat.
 
-Full Agent export offers explicit relative working-file paths, passed through copy
-and download APIs as the JSON `workingFiles` selection. Import offers a new host
-folder destination and source/shared/separate Git mode; server validation remains
-authoritative. Source restrictions still need the portability owner's structured
-review preview for the existing asynchronous import operation. No source access
-settings are adopted by the browser.
+Existing exact Agent/Run/fence/stream/sequence and memory exposure/reset checks
+remain. Canonical replies replace provisional text in the same scope. SSE prompts
+authoritative reads and a sequential fallback covers reconnects. Voice consumers
+reject text presentation. The browser neither publishes Communication nor speaks
+text snapshots. Mixed routes, attachments/documents and correlated reports still
+use canonical publication; generation support for those is runtime-owned.
 
-`DirectReplyPreview` renders only host status snapshots with `presentation:text`
-under the latest explicit Direct Message's recipient, including Assistant and output
-apps through shared Agent Chat. It checks message/conversation/Agent/Run identity,
-fence/stream continuity, sequence and memory exposure, clears on invalidation, and
-yields to canonical Communication. SSE prompts authoritative status reads; a
-sequential 500 ms fallback covers reconnects. It never publishes Communication or
-speaks text. Both voice snapshot entry points reject text presentation. Other
-communication scopes remain runtime dependencies. No execution or qualification
-was performed; combined verification remains deferred.
+## Reviewed import and retained provenance
 
-## Joined API integration
+`ImportAgentDialog` previews source/destination restrictions using staged package
+upload, requires explicit keep/apply choice and forwards the server review digest.
+Package, destination, engine, instructions, folder map or activation changes
+invalidate review. Delayed reviews cannot replace newer drafts. Role collision
+review remains separate. Completed async imports retain their full result receipt;
+missing result receipts surface an error.
 
-Backend source dependencies: Branches `c7acbd864e01fd3becdc3ace733d5d25dbaa270e`,
-portability/audio `94f7bafc63f17c82ff231d0211b61b0cf2d0bace`, and runtime text
-`8d9dfaa84ac190aca5f60f5887d0680e319016df`. These must be integrated with this web
-branch; no backend cherry-pick or execution occurred here.
+`PostImportAccessReview` groups memory suggestions by exact mapped destination
+Chat, reads current grant/revision and applies only an explicit human choice via
+revision-checked Settings. The UI explains the Chat-wide effect. Browser choices
+use destination-local profiles and existing Settings APIs, never source profile
+IDs. Import/review alone changes no grants. Each action reports errors; Done
+protects unapplied choices. Returned recovery folders and actual `liveWorkingRoots`
+are displayed separately.
 
-- `ImportAgentDialog` now previews source/destination restrictions using the staged
-  upload endpoint, requires explicit keep/apply choice, and forwards the returned
-  digest. Package/destination/provider/folder/instructions changes invalidate it;
-  delayed previews cannot replace a newer draft. Failed imports require review again.
-- `AgentPackageDialogs`, `useAgentPackageActions`, and `realApi` forward explicit
-  whole-root-folder export through both copy/download. Selected files remain an
-  alternative; fixed newline splitting for multi-file entry. Existing new-folder
-  import control remains explicit and never rebinds an existing Chat.
-- `ImportedCommunications` is an on-demand owning-Agent technical-view reader,
-  with bounded/versioned pages, immutable source/audience and revision disclosure,
-  and only server-authorized original download links. It does not insert history
-  into live Chat or confer source authority.
-- Shared Agent Chat human broadcast and DM text previews use generic reply-stream
-  status. `textReplyRoute` rejects wrong intent, peer recipients, voice and foreign
-  source/conversation; existing exact Agent/Run/fence/memory checks remain.
-  `tests/chats/text-reply-route.test.mjs` is written, not executed.
-- Recorder MIME preferences match backend audio WebM/Opus, Ogg/Opus and MP4 admission;
-  backend preserves metadata/reload originals. Container admission is not playback
-  qualification, and integration has not been executed.
+`ImportedCommunications` is an on-demand owning-Agent technical reader with
+bounded/versioned pages, immutable provenance/audience, revisions and authorized
+original downloads. Imported history does not become live Chat or source authority.
 
-Remaining implementation gaps: same-Chat peer provisional text and the separate
-shared human Chat consumer still need expansion beyond the Agent Chat consumer;
-post-import mapped memory/browser suggestion review and explicit Settings actions,
-and a convenient new-root Chat creation flow remain unwired. Existing Chat creation
-and Settings remain available; source grants/profile IDs are never applied. Genuine
-early qualified voice acknowledgement remains runtime-owned. Full portability,
-performance, Bible and Phase 2 completion are not claimed. All tests, types, builds,
-browser runs and consolidated qualification remain deferred by direction.
+## Working files and fresh live destinations
 
-## Workflow installation access review
+Full export supports selected relative working files, whole root, or an explicit
+full-organization all-folders option. Copy/download forward the same options.
+Off-thread preview groups opaque workingRootRef values and all member Agents.
+Import requires one new absolute, distinct, nonnested recovery destination per
+root; the server validates canonical paths, existence and ownership. Selected/root
+packages retain the single new-folder control.
 
-`BranchPackageDialog` consumes Branches `7b655b210e674ced1680276413b362b903de0012`
-(with reliability `ec80fdea58` and ancestors). During applying, it shows the exact
-pending Chat/Agent's source restrictions and current destination restrictions,
-requires an explicit keep/apply choice and posts the server digest and opaque
-references to `/api/branches/installations/:id/access-review`. A changed pending
-review clears the choice. Success or failure refreshes canonical status; a mutation
-response never replaces a later Stop/terminal state. Stop and background progress
-remain available. This applies no memory/browser grant. No tests, checks, builds,
-types or browser execution accompanied this caller increment. Folder bundles and
-additional import Settings actions remain separate implementation work.
+The form offers explicit creation through `createChat({label,defaultEngine,
+createFolderName},idempotencyKey)`. It never registers an existing user path. The
+returned Chat and Project become the actual destination for name checks, access
+review, import operation reads, role recovery and result Settings. Creation remains
+retained if import is cancelled or fails; the UI says so.
 
+Live activation is off by default and offered only for full packages containing
+working originals. A newly created destination requires a second explicit
+confirmation of its exact returned workingDirectory. Both access-preview and
+import receive `workingFilesActivation:{sharedRoot}`. This also initializes the
+new Git baseline for fresh all-Separate imports. Existing Git destinations require
+an explicit Separate Git copy mode and send `workingFilesActivation:{}`. Existing
+Shared activation is unavailable. Source-root membership incompatibilities remain
+server refusals; no source ownership receipt is adopted.
 
-## Organization working-folder caller
+Recovery destinations remain required and separate from live roots. The server
+preserves displaced baseline bytes and recovery locations on failure. Source Git
+history, symlink topology, credentials and native ownership remain excluded.
+Content-only import remains available by leaving activation off.
 
-Consumes portability `dc73a5c33b44a3a432ac6209d75c7ecdfabd9c47` and ancestors.
-`AgentPackageDialogs` adds an explicit full-organization all-folders choice;
-copy/download and `realApi` forward `organizationWorkingFolders=true`, excluding
-selected/root-only options. The off-thread preview groups opaque `workingRootRef`
-values and lists every member Agent. `ImportAgentDialog` requires one new absolute
-path per root and forwards `workingRootDestinations` to both access-preview and
-import. Changed maps invalidate access review. UI refuses missing, equal and nested
-lexical destinations; the server validates canonical paths/existence and authority.
-Regression source in `tests/chats/working-root-destinations.test.mjs` is unexecuted.
+## Branches installation
 
-These controls close the Agent organization-folder transport caller gap, not live
-working-root restoration. Restored folders retain bytes and shared-source
-membership; they do not rebind Shared or Separate Git working-copy ownership.
-Fresh-worktree population/new-Project backend services, mapped memory/browser
-Settings actions, Branches folder forwarding and other previously listed UI gaps
-remain. No checks/tests/builds/types/browser execution or passing claim.
+`BranchPackageDialog` shows each pending Chat/Agent's source and destination
+restrictions and requires an explicit choice using the server digest/opaque refs.
+Changed review clears the choice. Success or error refreshes canonical status;
+delayed mutation results do not replace later Stop/terminal state. Background
+progress and Stop remain available. Branches bundle export/import, new Chat and
+live activation forwarding are owned by the Branches integration owner; this
+Agent-package form does not assert coverage of that separate installer.
 
-## Remaining UI continuation
+## Backend integration and remaining limits
 
-The shared human Chat main timeline now consumes generic authorized text previews
-under its latest broadcast source. The same consumer handles same-Chat passive
-peer previews only in the receiving Agent audit view, matching explicit source
-sender, sole return recipient and exact responder/Run. Correlated Requests are
-excluded. Canonical replies replace provisional text in the same scope; Run,
-fence, stream, sequence and memory continuity remain enforced. Voice consumers
-continue to reject text presentation. Route regression source now includes peer
-isolation and correlated-report refusal.
+Integrate these owners' source chains before combined execution:
 
-`ImportAgentDialog` retains completed async result receipts and opens
-`PostImportAccessReview`. Memory review groups exact destination Chat mappings,
-shows current grant/revision and source suggestions, and submits only an explicit
-human choice through the existing revision-checked Settings API. Browser review
-shows current destination access/profile, uses only destination-local profile IDs
-and existing Settings endpoints, and never adopts a source profile label or grant.
-Each action reports its own error; Done protects unapplied choices. No grants are
-changed merely by import or review. Deferred mounted regression source covers no
-automatic browser mutation and the exact destination Agent on explicit application.
+- Portability `f3a009bac31d1c6829f17da1136b802b66c2c042` and ancestors (including
+  dc73 organization bundles, access review DTOs, imported provenance, memory grant
+  contract and live working-root activation).
+- Runtime text `8d9dfaa84ac190aca5f60f5887d0680e319016df` and its final successor for
+  routed generation. Voice acknowledgement generation remains runtime-owned.
+- Branches `c7acbd864e01fd3becdc3ace733d5d25dbaa270e`, installation access-review
+  `7b655b210e674ced1680276413b362b903de0012` and successors.
+- Audio admission `94f7bafc63f17c82ff231d0211b61b0cf2d0bace` and reconciled runtime
+  audio changes. Recorder preferences match WebM/Opus, Ogg/Opus and MP4 admission;
+  container validation does not establish playback qualification.
 
-`OutputAgentDesignation` now offers the canonical expected-speaker move path with
-confirmation when another speaker exists; ordinary role removal still disables
-that speaker. The app keeps the previous Agent's history and server-owned singleton
-checks. New Project/live-root import setup awaits the portability owner's exact
-contract; no speculative root binding or folder overwrite is added. All execution
-remains deferred; source changes do not establish Bible/performance acceptance.
+No backend cherry-pick, push, merge or deployment occurred here. This isolated web
+branch intentionally depends on owners' newer core DTOs. Branches bundle controls,
+full generation coverage, early voice response, consolidated compatibility,
+accessibility/mobile judging and performance acceptance remain external or
+unexecuted gates. Full #8, Bible and Phase 2 completion are not claimed.
+
+Deferred regression sources include `text-reply-route.test.mjs`,
+`working-root-destinations.test.mjs`, `post-import-access-mounted.tsx` and
+`import-live-root-mounted.tsx` under `tests/chats`, alongside prior live-text,
+recording-format, mounted-recorder, phrase-buffer and text-size regressions.
+No runner/configuration was added or executed.

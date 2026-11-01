@@ -59,6 +59,7 @@ export function PostImportAccessReview({result,onDone,projectId}:{result:ImportA
  return <Stack spacing={2}><Typography variant="h6">Import complete</Typography>
   {result.workingFilesDestination&&<Typography>Restored folder: {result.workingFilesDestination}</Typography>}
   {result.workingRoots?.map(root=><Typography key={root.ref}>Restored folder: {root.destination} · {root.agentIds.length} Agents</Typography>)}
+  {result.liveWorkingRoots?.map(root=><Typography key={root.ref}>Live working folder: {root.path} · {root.agentIds.map(agentTitle).join(', ')}</Typography>)}
   {[...memory].map(([chatId,items])=><MemoryChoice key={chatId} chatId={chatId} suggestions={items} chatTitle={chats.data?.find(item=>item.id===chatId)?.title??'Destination Chat'} agentTitle={agentTitle} onStateChange={onStateChange}/>)}
   {suggestions.filter(item=>item.source.savedBrowserAllowed!==undefined||item.source.browserMode!==undefined).map(item=><BrowserChoice key={item.agentId} suggestion={item} title={agentTitle(item.agentId)} onStateChange={onStateChange}/>)}
   <Button variant="contained" disabled={busy} onClick={()=>dirty?setDiscard(true):onDone()}>Done</Button>

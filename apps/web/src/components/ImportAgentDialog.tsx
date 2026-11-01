@@ -46,9 +46,9 @@ const LARGE_PASTE_CHARACTERS = 256 * 1024;
 
 
 export function ImportAgentForm({
-  projectId,
+  projectId: sourceProjectId,
   engines,
-  conversations,
+  conversations: sourceConversations,
   initialConversationId,
   fixedConversationId,
   requireDestinationSelection = false,
@@ -69,6 +69,21 @@ export function ImportAgentForm({
   stickyActions?: boolean;
 }): JSX.Element {
   const notify = useMutationNotification();
+  const [createdChat,setCreatedChat]=useState<ConversationDto>();
+  const projectId=createdChat?.projectId??sourceProjectId;
+  const conversations=createdChat?[createdChat]:sourceConversations;
+  const [newChatLabel,setNewChatLabel]=useState('');
+  const [newFolderName,setNewFolderName]=useState('');
+  const [newChatEngine,setNewChatEngine]=useState('');
+  const createChatRequestId=useRef(createClientId());
+  const [activateWorkingFiles,setActivateWorkingFiles]=useState(false);
+  const [confirmSharedRoot,setConfirmSharedRoot]=useState(false);
+  const createDestination=useMutation({mutationFn:async()=>{
+    const engine=engines.find(item=>item.id===newChatEngine&&engineIsAvailable(item));
+    if(!engine||!newChatLabel.trim()||!newFolderName.trim())throw new Error('Choose a name, new managed folder name and available engine.');
+    return api.createChat({label:newChatLabel.trim(),createFolderName:newFolderName.trim(),defaultEngine:engine.id},createChatRequestId.current);
+  },onSuccess:chat=>{setError(undefined);setCreatedChat(chat);setConversationId(chat.id);setConfirmSharedRoot(false);},onError:cause=>setError((cause as Error).message),onSettled:()=>{pendingRef.current=false;onPendingChange?.(false);}});
+
   const [packageBlob, setPackageBlob] = useState<Blob>();
   const [importResult,setImportResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
   const [roleOperation,setRoleOperation]=useState<import('@ponderosa/core').AgentImportOperationDto>();
@@ -98,7 +113,7 @@ export function ImportAgentForm({
   const instructionsConflict = Boolean(sourceInstructions && destinationInstructions && sourceInstructions !== destinationInstructions);
   useEffect(() => { setInstructionsAction(""); importRequestId.current = createClientId(); }, [sourceInstructions, destinationInstructions, conversationId]);
   const [error, setError] = useState<string>();
-  useEffect(()=>{setAccessReview(undefined);setAccessAction('');importRequestId.current=createClientId();},[packageBlob,conversationId,engineMapping,workingFilesDestination,workingCopyMode,instructionsAction,workingRootDestinations]);
+  useEffect(()=>{setAccessReview(undefined);setAccessAction('');importRequestId.current=createClientId();},[packageBlob,projectId,conversationId,engineMapping,workingFilesDestination,workingCopyMode,instructionsAction,workingRootDestinations,activateWorkingFiles,confirmSharedRoot]);
   const destinationAgentsQuery = useQuery<AgentDto[]>({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -136,7 +151,7 @@ export function ImportAgentForm({
     setInspectionPhase(undefined);
     setFileName(undefined);
     setJsonText("");
-    setWorkingFilesDestination('');setWorkingCopyMode('');setWorkingRootDestinations({});
+    setWorkingFilesDestination('');setWorkingCopyMode('');setWorkingRootDestinations({});setActivateWorkingFiles(false);setConfirmSharedRoot(false);
     setEngineMapping({});
     setAcknowledgeElevatedPermissions(false);
     setError(undefined);
@@ -154,7 +169,7 @@ export function ImportAgentForm({
 
   useEffect(() => {
     setConversationId(current =>
-      fixedConversationId && conversations.some(conversation => conversation.id === fixedConversationId)
+      !createdChat && fixedConversationId && conversations.some(conversation => conversation.id === fixedConversationId)
         ? fixedConversationId
         : conversations.some(conversation => conversation.id === current)
         ? current
@@ -164,7 +179,7 @@ export function ImportAgentForm({
             ? ""
             : conversations[0]?.id ?? "",
     );
-  }, [conversations, fixedConversationId, initialConversationId, requireDestinationSelection]);
+  }, [sourceConversations, createdChat, fixedConversationId, initialConversationId, requireDestinationSelection]);
 
   const invalidPermissionShape = packagePreview?.invalidPermissionShape ?? false;
   const elevatedAgents = invalidPermissionShape
@@ -182,12 +197,15 @@ export function ImportAgentForm({
   const workingRoots=packagePreview?.workingRoots??[];
   const rootDestinations=Object.fromEntries(workingRoots.map(root=>[root.ref,workingRootDestinations[root.ref]?.trim()??'']));
   const validRootDestinations=validWorkingRootDestinations(workingRoots.map(root=>root.ref),rootDestinations);
+  const activationAllowed=!activateWorkingFiles||Boolean(packagePreview?.mode==='full'&&packagePreview.hasWorkingFiles&&(createdChat?confirmSharedRoot&&createdChat.workingDirectory:workingCopyMode==='separate_git'));
+  const workingFilesActivation=activateWorkingFiles?(createdChat?{sharedRoot:createdChat.workingDirectory}:{}):undefined;
   const importAgents = useMutation({
     mutationFn: async () => {
       setError(undefined);
       if(!validRootDestinations)throw new Error('Choose distinct, nonnested absolute folders for every working root.');
+      if(!activationAllowed)throw new Error('Confirm the new managed working folder, or select Separate Git copy for an existing Git workspace.');
       const reviewedRequestId=importRequestId.current;
-      if(!accessReview){const review=await api.previewAgentAccess(projectId,packageBlob!,{conversationId,engineMapping,...(workingRoots.length?{workingRootDestinations:rootDestinations}:workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),...(workingCopyMode?{workingCopyMode}:{})});if(importRequestId.current===reviewedRequestId)setAccessReview(review);return;}
+      if(!accessReview){const review=await api.previewAgentAccess(projectId,packageBlob!,{conversationId,engineMapping,...(workingFilesActivation?{workingFilesActivation}:{}),...(workingRoots.length?{workingRootDestinations:rootDestinations}:workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),...(workingCopyMode?{workingCopyMode}:{})});if(importRequestId.current===reviewedRequestId)setAccessReview(review);return;}
       if(!accessAction)throw new Error('Choose which capability restrictions to use.');
       if(packagePreview?.hasOutputRoles&&!roleReview){const review=await api.previewAgentOutputRoles(projectId,packageBlob!,{conversationId,engineMapping});if(importRequestId.current===reviewedRequestId)setRoleReview(review);return;}
       return api.startAgentPackageImport(
@@ -195,6 +213,7 @@ export function ImportAgentForm({
       packageBlob!,
       {
         conversationId, engineMapping,
+        ...(workingFilesActivation?{workingFilesActivation}:{}),
         accessSettingsResolution:{action:accessAction,reviewSha256:accessReview.reviewSha256},
         ...(workingRoots.length?{workingRootDestinations:rootDestinations}:workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),
         ...(workingCopyMode?{workingCopyMode}:{}),
@@ -207,7 +226,7 @@ export function ImportAgentForm({
     onSuccess: (operation) => {
       if(!operation)return;
       if(operation.status==='pending'){setRoleOperation(operation);return;}
-      if(operation.status==='completed'&&operation.result){setImportResult(operation.result);return;}
+      if(operation.status==='completed'){if(!operation.result)throw new Error('Import completed without a result receipt.');setImportResult(operation.result);return;}
       if(operation.status==='failed')throw new Error(operation.error??'Import failed');
       clearPackageDraft();
       notify({
@@ -406,7 +425,16 @@ export function ImportAgentForm({
       </Alert> : !inspecting && !error ? <Typography variant="body2" color="text.secondary">
         Choose or paste a Ponderosa Agent package. It can contain one Agent or an organization.
       </Typography> : null}
-      {conversations.length === 0 ? <Alert severity="warning">This workspace has no destination chats. Create a chat before importing, or choose another workspace.</Alert> : fixedConversationId || conversations.length === 1 ? <Typography variant="body2" color="text.secondary">
+      {!fixedConversationId&&!createdChat&&<Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
+        <Typography variant="subtitle1">Import into a new Chat and workspace</Typography>
+        <Typography variant="body2">Create a new empty managed folder. Creation is retained even if you cancel this import.</Typography>
+        <TextField disabled={createDestination.isPending} label="New Chat name" value={newChatLabel} onChange={event=>{setNewChatLabel(event.target.value);createChatRequestId.current=createClientId();}}/>
+        <TextField disabled={createDestination.isPending} label="New managed folder name" value={newFolderName} onChange={event=>{setNewFolderName(event.target.value);createChatRequestId.current=createClientId();}}/>
+        <TextField select disabled={createDestination.isPending} label="New Chat engine" value={newChatEngine} onChange={event=>{setNewChatEngine(event.target.value);createChatRequestId.current=createClientId();}}>{engines.map(engine=><MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</TextField>
+        <Button disabled={createDestination.isPending||importAgents.isPending||Boolean(roleOperation)||!newChatLabel.trim()||!newFolderName.trim()||!newChatEngine} onClick={()=>{if(pendingRef.current)return;pendingRef.current=true;onPendingChange?.(true);createDestination.mutate();}}>Create new destination</Button>
+      </Stack></Paper>}
+      {createdChat&&<Alert severity="info">New destination created: {createdChat.title} · {createdChat.workingDirectory}. This Chat and workspace remain available if import is cancelled.</Alert>}
+      {conversations.length === 0 ? <Alert severity="warning">This workspace has no destination chats. Create a destination above, or choose another workspace.</Alert> : fixedConversationId || conversations.length === 1 ? <Typography variant="body2" color="text.secondary">
         Destination chat: {conversations.find(conversation => conversation.id === fixedConversationId)?.title ?? conversations[0]!.title}
       </Typography> : <FormControl fullWidth>
         <InputLabel id="import-chat-label">Destination chat</InputLabel>
@@ -414,8 +442,11 @@ export function ImportAgentForm({
           {conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}
         </Select>
       </FormControl>}
-      {workingRoots.length>0?<><Typography>Restore each shared source folder once. These folders retain content; they do not change live Agent working folders.</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}))} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="If the package contains working files, choose a new absolute host folder. Existing folders are never overwritten."/>}
+      {workingRoots.length>0?<><Typography>Restore each shared source folder once to a new recovery folder. Live working folders are populated only when you explicitly enable activation below.</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}))} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="If the package contains working files, choose a new absolute host folder. Existing folders are never overwritten."/>}
       <TextField select label="Working folder mode" value={workingCopyMode} onChange={event=>{setWorkingCopyMode(event.target.value as typeof workingCopyMode);importRequestId.current=createClientId();}}><MenuItem value="">Keep source mode</MenuItem><MenuItem value="shared">Shared folder</MenuItem><MenuItem value="separate_git">Separate Git copy</MenuItem></TextField>
+      <FormControlLabel control={<Checkbox checked={activateWorkingFiles} disabled={packagePreview?.mode!=='full'||!packagePreview.hasWorkingFiles||importAgents.isPending||Boolean(roleOperation)} onChange={event=>setActivateWorkingFiles(event.target.checked)}/>} label="Use restored files in live Agent working folders"/>
+      {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>setConfirmSharedRoot(event.target.checked)}/>} label={`Confirm new workspace folder: ${createdChat.workingDirectory??'unavailable'}`}/>:<Alert severity="info">Existing workspaces support Separate Git copy activation only and must already contain a Git repository. Shared activation requires a new managed destination from the package import dialog.</Alert>)}
+      {activateWorkingFiles&&<Typography variant="body2">Recovery folders remain required and must be separate from the live folder. Source Git history, credentials and native ownership are excluded. The server refuses incompatible root membership and retains recovery locations on failure.</Typography>}
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
         value={instructionsAction} onChange={value => { setInstructionsAction(value); importRequestId.current = createClientId(); }} />
       {packagePreview && repeatedTitles.length ? <Alert severity="warning">
@@ -478,8 +509,8 @@ export function ImportAgentForm({
       }}>
       {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review output roles again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm output roles</Button></>}</>}
 
-      <Button disabled={importAgents.isPending} onClick={closeForm}>Cancel</Button>
-      <Button variant="contained" disabled={!validRootDestinations||Boolean(accessReview&&!accessAction)||Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
+      <Button disabled={createDestination.isPending||importAgents.isPending} onClick={closeForm}>Cancel</Button>
+      <Button variant="contained" disabled={!activationAllowed||createDestination.isPending||!validRootDestinations||Boolean(accessReview&&!accessAction)||Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
         const target = engines.find(engine => engine.id === engineMapping[source]);
         return !engineIsAvailable(target);
       }) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => {

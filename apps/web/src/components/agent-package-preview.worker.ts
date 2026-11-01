@@ -97,6 +97,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     const response: PreviewResponse = {
       id,
       preview: {
+        hasWorkingFiles: value.agents.some(node=>Boolean(node.workingFolder)||(Array.isArray(node.workingFiles)&&node.workingFiles.length>0)),
         hasOutputRoles: Array.isArray(value.outputRoles)&&value.outputRoles.length>0,
         sourceLabel: value.sourceLabel.slice(0, 240),
         ...(value.mode === "full" && typeof value.sourceProjectInstructions === "string"
