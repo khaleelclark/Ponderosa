@@ -46,7 +46,24 @@ export interface RuntimeEnvironmentFactsDto {
   reportOutputRoot?: string;
 }
 
+/** Non-secret native launch configuration. Run capability tokens and credential
+ * environments are deliberately excluded; callbacks always use live authority. */
+export interface RetainedNormalRuntimeContract {
+  version: 1;
+  contractHash: string;
+  engineId: string;
+  workingCopyId: string;
+  cwd: string;
+  model?: string;
+  effort?: string;
+  speed?: string;
+  expectedBillingMode?: "subscription" | "api";
+  dynamicTools: import("../adapter.js").RuntimeDynamicToolSpec[];
+  capabilityRestrictions?: import("../capability-policy.js").RuntimeCapabilityRestrictions;
+}
+
 export interface ProviderInputSourceManifestV3 {
+  normalRuntimeContract?: RetainedNormalRuntimeContract;
   /** Frozen authorization and selection evidence for this exact accepted packet. */
   historyContext?: {
     boundary?: { canonicalOrdinal: number; communicationEventId?: string };

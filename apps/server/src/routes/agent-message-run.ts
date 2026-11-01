@@ -958,6 +958,7 @@ export function registerAgentMessageRunRoute(
         v3ActivationPrompt,
         effectiveModel,
         effectiveEffort,
+        effectiveSpeed,
         messageAttachments,
         sourceConversationId,
         communicationEventId,

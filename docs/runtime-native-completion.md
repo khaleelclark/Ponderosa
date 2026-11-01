@@ -46,54 +46,72 @@ Agent events. The append-only event log remains canonical; the existing event
 index supplies this bounded one-row projection. Live snapshots and all existing
 scope, product, memory-exposure and Run checks remain in place.
 
-## Recovery prerequisite and scope
+## Retained contracts and managed recovery
 
-The uncertain-context recovery controller still does not execute recovery.
-Its refusal means no recovery operation is mapped for that exact uncertain
-boundary; it is not evidence that the native provider has no compaction API.
-Codex already has a real structured `thread/compact/start` command, whose
-adapter waits for matching acknowledgement, compaction item, completed turn and
-fresh session occupancy. That command changes context through managed
-compaction, which Bible 1 permits; requiring an unchanged-context diagnostic
-turn first is not a separate Bible requirement.
+Future provider-input V3 manifests retain `normalRuntimeContract`: exact engine,
+working-copy identity/path, model, effort, speed, human billing selection, tool
+schemas and native restriction configuration. The exact system text already lives
+in the same provider-input record. The existing accepted-session event selects
+that record; later rejected packets cannot become its contract. Capability tokens,
+credential environments and old callback closures are excluded. Speed is now part
+of the session hash. Legacy sessions without the full contract remain held.
 
-The remaining integration must durably reserve the exact source session/Run,
-reconcile and observe old process-group drain, reopen the same native session
-with its accepted normal tool/system contract, run that structured compaction,
-record its native completion and fresh occupancy, drain the command transport,
-then transactionally accept the exact recovery and resume the intended pending
-work once. An acknowledgement alone, stale usage or a prompt asking for no
-tools does not establish completion. Unknown outcomes stay fenced and must be
-reconciled, never blindly retried. The current normal command controller requires
-a completed source boundary and the cold command path cannot reconstruct the
-full accepted normal contract from its small model/effort hash. Simply bypassing
-those checks would turn missing source behavior into an unsafe success claim.
+Cold native commands can reopen the accepted session with that retained normal
+configuration instead of reconstructing a small model hash. Commands have no
+scheduler Run and cannot borrow an expired Run's host-tool or elicitation authority.
+Current human restrictions and billing selection must still match. Normal native
+capabilities are retained; no permission change or fresh task is used as recovery.
 
-The concrete missing adapter/controller contract is a retained-session command
-resume that confirms the accepted system/tool configuration without replacing
-it, followed by an idempotent or queryable compaction operation identity and
-matching complete-tail usage. Claude's mapped streaming-input transport has no
-structured equivalent in this checkout. No provider execution or downloaded
-schema was used to assume those semantics.
+Codex advertises `managed_compaction`, with `hold_without_native_query` crash
+reconciliation. The explicit recovery POST reserves its exact unknown source in
+SQLite, observes old process-group exit, reopens the same native thread with the
+retained contract, durably records `native_started`, invokes the existing structured
+`thread/compact/start` mapping, and requires matching compaction completion and
+fresh occupancy. It observes command-process exit before accepting those context
+measurements. The phases are `reserved`, `drained`, `native_started`,
+`context_accepted`, or `held`; every transition rechecks source Run/session/fence.
+The original storage hold state remains `unsupported_fenced` for the scheduler's
+existing admission check; `progress` and the response code describe executable
+recovery instead of treating the storage label as a success verdict.
 
-A feasible host replacement is managed compaction over an immutable full native
-transcript snapshot, retained alongside the complete canonical authored and
-execution journals. It must preserve the original native session/transcript,
-expose that compaction and all omitted-context retrieval links, keep uncertain
-old effects explicit, durably fence/drain before accepting a candidate and keep
-pending Request lineage. Canonical authored messages alone are not the full
-native transcript after unknown native work; the missing provider snapshot
-interface must return the exact session identity, complete transcript and
-completion/occupancy boundary. No bounded fresh prompt, hidden reset or
-fabricated successful recovery is substituted here.
+No native input is repeated after a crash or lost reply. The same key returns its
+saved phase; another key cannot repeat an uncertain native compaction of that same
+session. Cleanup retains working-folder use and admission barriers until observed
+exit, with visible diagnostic logs. Explicit Stop targets the exact recovery ID
+and aborts/drains its process; status is read through the existing GET. Shutdown
+and deletion fence the command before native input or acceptance. No startup worker
+replays a recovery. Unknown legacy or Claude sessions retain the refusal path;
+Claude exposes no mapped structured compaction operation.
 
-The recovery API now returns source custody reconstructed from durable stores:
-source Run/status/session, whether that session is still accepted, exact saved
-input/system hashes (not their contents), latest durable Agent event position,
-and attached Request IDs. Native-tail completeness and prior effects explicitly
-remain unknown. This is crash reconciliation and visible loss reporting, not
-recovery acceptance or permission to replay work. Exact-key receipt lookup,
-uncertain-write handling and the existing hold remain unchanged.
+`context_accepted` means that exact compaction completion and occupancy were
+persisted after process drain. It is not evidence that the original uncertain
+Run completed or had no effects, and is not a low-water/dispatch authorization.
+Original Runs, Requests, Joins, injections and authored history remain unchanged.
+The response explicitly reports `sourceWork: held_unknown`. The active hold remains until explicit dismissal. The acceptance references one
+canonical context-usage event, not a second telemetry store. After dismissal,
+independent new work may use that exact retained-session measurement if no newer
+injected Run or unmetered work invalidated it. Original unknown work is never
+requeued. Missing acceptance still leaves the original uncertainty guard intact.
+This supplies work-once custody by refusing blind reissue, rather than pretending
+to finish unknown original work.
+
+The exact remaining native seam is source-turn reconciliation: the mapped
+`ThreadResponse` from Codex `thread/resume` contains only `thread.id` and model,
+not a complete original turn/transcript/outcome boundary. `thread/compact/start`
+returns an empty acknowledgement and accepts only `threadId`; it has no mapped
+client operation key or lookup for a lost result. Thus the host cannot decide
+whether an original unknown turn or a crashed compaction completed, recover a
+complete unseen native tail, or resume original work exactly once from that fact.
+A native turn/outcome/full-transcript read bound to source session and turn ID,
+and a queryable compaction identity, would enable that reconciliation. This is
+separate from the host retention/reservation/drain/acceptance plumbing now present.
+No new provider call/schema is invented to fill that seam. A host replacement
+would need the immutable complete native transcript as input; authored Chat alone
+cannot reconstruct unseen native work without losing history.
+
+The recovery GET remains read-only and returns source custody, saved input/system
+hashes, durable event position, attached Request IDs and saved progress. Native-tail
+completeness and prior effects remain explicitly unknown. It never probes a provider.
 
 Browser Event Timing `terminalDelivery` belongs to deferred qualification
 instrumentation, not a provider/server terminal-delivery API. It is unchanged.
@@ -106,19 +124,20 @@ work or runner preparation were performed for this implementation slice.
 
 | Bible rows | Source in this slice | Remaining implementation |
 | --- | --- | --- |
-| 1, 2, 6, 13 | Existing identity/session/permission/steering paths are retained; this slice does not write them | Native uncertain-context recovery cannot be completed without the operation above; no context wipe or replacement task is substituted |
+| 1, 2, 6, 13 | Existing identity/session/permission/steering paths are retained; this slice does not write them | Future exact normal contracts and Codex managed-compaction custody are implemented; original unknown-turn reconciliation and Claude structured compaction remain missing |
 | 4, 31 backend | `claude-stream-events.ts`, `claude.ts`, `claude-stream-session.ts` supply native execution partials to existing server/SSE callers | Claude voice receipts and response items now feed the existing host publisher; explicit text publication now reuses the scoped host receipt path; mixed/absent routes and correlated reports retain their ordinary publisher |
 | 5 | Existing text budget reused for partial accumulation, with a visible pause notice | No new limit policy or required third-party service introduced |
 | 7, 20 | No network login, token gate, remote dependency or credential store added | Existing implementation is inherited; no fresh audit verdict implied |
-| 12, 14, 19 | `claude-stream-session.ts` discloses diagnostic loss; exact voice query reaches store facade/authority/projection and `routes/voice-replies.ts` | Source custody/crash reporting is implemented; executable recovery drain/compaction/acceptance remains unfinished |
-| 25 | `token-count.ts`, both Codex mappers, `claude-events.ts` retain exact counters and unavailable totals | Executing-process mode admission and frozen selection added; native atomic billed-turn/account identity remains unavailable |
+| 12, 14, 19 | `claude-stream-session.ts` discloses diagnostic loss; exact voice query reaches store facade/authority/projection and `routes/voice-replies.ts` | Durable reservation/drain/native-mutation/context-acceptance phases are implemented; unknown source effects remain held |
+| 25 | `token-count.ts`, both Codex mappers, `claude-events.ts` retain exact counters and unavailable totals | Both existing native harness modes and identity-preserving selection retained; executing-process admission added. External/native refresh races are a limitation, not a Bible prerequisite |
 | 30 | Memory authority and default permissions untouched | No new memory implementation credit; use existing local-memory owner’s changes with this runtime stream |
 | 31 browser delivery | No source change | `terminalDelivery` in Event Timing collector is qualification instrumentation, deferred by current direction |
 
 No all-commandment, harness-parity, successful-recovery, whole-UI streaming or
-performance-completion claim follows from this source slice. The concrete native
-recovery controller integration and native atomic account binding above are implementation gaps,
-not merely tests waiting to run. Real-account/device checks remain later manual
+performance-completion claim follows from this source slice. Original unknown-turn
+reconciliation and Claude structured compaction remain concrete implementation gaps.
+Atomic billed-account locking against external account changes is not a Bible 25
+requirement and does not block the implemented human mode switch. Real-account/device checks remain later manual
 qualification; they do not block these source changes.
 
 
@@ -183,15 +202,54 @@ snapshots existing environment selectors at process creation; API mode requires
 a sole configured API key, while subscription refuses API/proxy selectors.
 No key is collected, persisted, printed, exported or changed by this logic.
 
-These are real admission boundaries, not a native transaction. An external
-account change after the read but before native request acceptance, native
-credential refresh inside a running turn, subscription profile changes and
-provider-managed key helpers still need a native expected-account/mode parameter
-on turn/steer/refresh, or a provider-owned immutable account binding for the
-session. The current mapped interfaces do not expose that transaction. No
-successful atomic account-lock claim follows from these source changes.
+Both billing modes use the same native harness and keep Agent identity/history/settings
+intact. This meets the requested source behavior without an extra native atomic-lock
+prerequisite. Admission is not a transaction against external account changes or
+native credential refresh after the read. The mapped native interface has no
+immutable billed-account binding; that limitation remains visible and unqualified.
 
 Regression source extends native voice/publication, RPC boundaries and recovery
 fixtures. All execution, builds, typechecks, browser work and test preparation
 remain deferred under the implementation-first direction. UI consumer work is
 owned by the web lane; it was coordinated and is not changed in this worktree.
+
+
+## Recorded audio attachment backend
+
+The existing asset pipeline now preserves `audio/webm`, `audio/ogg` and `audio/mp4`
+for recorded voice attachments. Admission checks the extension, declared MIME
+(with codec parameters normalized), container signature and audio codec/handler.
+Ogg recognizes Opus/Vorbis identification packets; WebM recognizes its EBML signature,
+WebM document marker and Opus/Vorbis codec identity; MP4 walks standard sized
+moov/trak/mdia boxes to an audio handler. This is container admission, not full codec
+decoding. Unsupported/extended box layouts may be refused; browser playback owns
+decoding and may report malformed content. Original bytes and MIME follow existing
+staging, association, persistence and download authority. No transcoder, transcriber,
+provider HTTP path or new credential store is introduced. Tests are written in
+`tests/files-results/audio-attachments.test.mjs` and remain unexecuted.
+
+## Continuation source coverage
+
+| Requirement | Files | Behavior and remaining scope |
+| --- | --- | --- |
+| 1, 2, 12, 19 | `dto/provider-engine.ts`, `agent-run-preparation.ts`, `agent-message-run.ts` | Future exact non-secret normal contract retention; existing exact system record reused; legacy unknown packets remain held |
+| 1, 6, 12, 13, 14, 19 | `context-recovery.ts`, `coordination-v3-context-recovery-authority.ts`, migration `0035_provider_context_recovery_progress.sql`, `routes/context-recovery.ts`, `routes/provider-commands.ts`, `app-contracts.ts`, `codex.ts` | Durable one-shot mutation reservation, exact old/new process drain, explicit Stop, current-human-policy checks and measured context acceptance; unknown original source work remains held |
+| 4, 25 | `routes/provider-commands.ts`, inherited billing admission callers | Same native harness for both configured modes; cold commands retain normal model/system/tools/speed/restrictions. No atomic external-account-lock requirement added |
+| Build voice messages | `dto/artifacts.ts`, `assets.ts` | Durable audio MIME and container/extension agreement for existing browser recording/upload/playback callers; web is owned separately |
+| Deferred regressions | `provider-recovery.test.mjs`, `fixture.mjs`, `audio-attachments.test.mjs` | Source for exact reservation/restart/no replay/compaction/source-work hold and audio admission; no execution |
+
+All tests, builds, types, native execution, account/device checks, benchmarks and
+verification preparation remain deferred. No push, production merge or deployment.
+
+An explicit Stop also reconciles an interrupted reservation after restart by
+observing exact Agent process-group exit and recording `held`, without opening a
+provider. A saved `nativeInvoked` marker remains: clearing process custody cannot
+turn an unknown native compaction into permission to repeat it.
+
+Accepted context measurements reference their canonical `context_usage` event by
+sequence. Admission rechecks native session/contract, source fence, absence of a
+newer injected Run, and absence of subsequent unmetered work; later text is accounted
+for as a conservative tail estimate. The measurement is usable for an independent
+new instruction after explicit hold dismissal. It never marks the old Run completed
+or retries its original Activation/Request. This separation permits useful ongoing
+work without inventing certainty about past effects.

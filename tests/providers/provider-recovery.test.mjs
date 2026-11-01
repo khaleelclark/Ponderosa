@@ -534,10 +534,11 @@ test('Claude root observation revokes immediately but generic settlement waits f
 import { ClaudeAdapter } from '../../packages/engines/dist/claude.js';
 import { ProviderContextRecoveryUnavailableError } from '@ponderosa/core';
 
-test('native adapters truthfully refuse immutable-normal-contract no-effects recovery without launching',()=>{
- for(const adapter of [new CodexAdapter({bin:'DO_NOT_EXECUTE'}),new ClaudeAdapter({bin:'DO_NOT_EXECUTE'})]) {
-  assert.deepEqual(adapter.contextRecoverySupport,{status:'unsupported',missingOperation:'immutable_normal_contract_no_effects_recovery'});
- }
+test('native recovery support describes actual mapped compaction and its crash limitation',()=>{
+ assert.deepEqual(new CodexAdapter({bin:'DO_NOT_EXECUTE'}).contextRecoverySupport,
+  {status:'managed_compaction',crashReconciliation:'hold_without_native_query'});
+ assert.deepEqual(new ClaudeAdapter({bin:'DO_NOT_EXECUTE'}).contextRecoverySupport,
+  {status:'unsupported',missingOperation:'structured_retained_session_compaction'});
  assert.equal(new ProviderContextRecoveryUnavailableError().code,'provider_context_recovery_unsupported');
 });
 
@@ -644,4 +645,142 @@ test('recovery admission waits for an in-flight Agent native command before reta
   } finally {releaseCommand?.();await first;}
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
    providerCommandResult:async()=>{commandEntered=true;await new Promise(resolve=>releaseCommand=resolve);return {message:'Inert read-only fixture response'};}});
+});
+
+
+for (const outcome of ['completed','outcome_unknown']) test(`retained-contract recovery compacts once and preserves unknown source work (${outcome})`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Managed recovery'),agent=await f.createIdleAgent(chat,'Persistent recovery owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Unknown work must not be replayed');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
+  const packet=store.acceptedProviderSessionInput(agent.id);
+  const contract=packet.sourceManifest.normalRuntimeContract;
+  assert.equal(contract.contractHash,boundary.toolContractHash);
+  assert.equal(contract.engineId,'codex'); assert.ok(contract.dynamicTools.some(x=>x.name==='ponderosa_message'));
+  assert.equal(contract.speed,'standard'); assert.ok(packet.exactSystemPrompt);
+  assert.equal('environment' in contract,false,'Run tokens and credential selectors must not be retained');
+  const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
+  const turns=f.turns.length,commands=f.commands.length;
+  const body={idempotencyKey:'recover-once',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
+   expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  const result=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(result.body.request.progress.phase,outcome==='completed'?'context_accepted':'held',JSON.stringify(result.body));
+  assert.equal(result.body.request.progress.nativeInvoked,true);
+  assert.equal(result.body.sourceWork,'held_unknown');
+  assert.equal(f.turns.length,turns);assert.equal(f.commands.length,commands+1);
+  assert.equal(f.commands.at(-1).sessionId,boundary.providerSessionId);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  await f.reopen();
+  const replay=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(replay.body.replayed,true);assert.equal(f.commands.length,commands+1);assert.equal(f.turns.length,turns);
+  const authority=new CoordinationV3Store(store.sqlite).contextRecovery;
+  assert.equal(authority.reserveOperation(agent.id,result.body.request.id),false);
+  if(outcome==='completed') {
+   assert.equal(store.acceptedProviderSessionContextUsage(agent.id).usage.usedTokens,1000);
+   f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${result.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+   const before=(await f.detail(agent.id)).runs.map(x=>x.id);
+   await f.send(agent.id,'Independent new instruction; preserve uncertain original work');
+   await f.settled(agent.id,before);
+   assert.equal(f.turns.length,turns+1,'Only the independent new work may execute');
+   assert.equal(f.turns.at(-1).sessionId,boundary.providerSessionId,'New work must retain the native history');
+   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  } else {
+   f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${result.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+   const another=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,idempotencyKey:'cannot-replay-with-new-key'});
+   assert.equal(another.status,409);assert.equal(f.commands.length,commands+1);
+  }
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+   providerCommandResult:({sessionId})=>outcome==='completed'?{outcome,contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}}:{outcome,message:'Controlled uncertain native compaction'}});
+});
+
+test('recovery reservation crash never repeats a native command and explicit stop reconciles process custody',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery reservation'),agent=await f.createIdleAgent(chat,'Unknown owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Retain this exact task');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
+  const authority=new CoordinationV3Store(store.sqlite).contextRecovery;
+  const r=authority.request({...boundary,idempotencyKey:'reserved-before-crash'}).request;
+  assert.equal(authority.reserveOperation(agent.id,r.id),true);
+  authority.advanceOperation(agent.id,r.id,'reserved','drained');
+  authority.advanceOperation(agent.id,r.id,'drained','native_started');
+  assert.throws(()=>authority.advanceOperation(agent.id,r.id,'native_started','context_accepted',{usedTokens:NaN}));
+  await f.reopen();
+  const reopened=new CoordinationV3Store(store.sqlite).contextRecovery;
+  assert.equal(reopened.byKey(agent.id,'reserved-before-crash').progress.phase,'native_started');
+  assert.equal(reopened.reserveOperation(agent.id,r.id),false);
+  assert.throws(()=>reopened.dismiss(agent.id,r.id));
+  const stopped=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${r.id}/stop`,{}));
+  assert.equal(stopped.stopRequested,true);assert.equal(stopped.request.progress.phase,'held');
+  assert.equal(stopped.request.progress.nativeInvoked,true);assert.equal(f.commands.length,0);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true});
+});
+
+
+test('a legacy accepted packet without the retained contract cannot launch managed recovery',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Legacy recovery'),agent=await f.createIdleAgent(chat,'Legacy owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Do not reconstruct unknown native history');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
+  const packet=store.acceptedProviderSessionInput(agent.id),manifest={...packet.sourceManifest};
+  delete manifest.normalRuntimeContract;
+  store.sqlite.prepare('UPDATE provider_inputs SET source_manifest_json=? WHERE execution_id=?').run(JSON.stringify(manifest),packet.executionId);
+  const result=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{
+   idempotencyKey:'legacy-hold',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
+   expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true});
+  assert.equal(result.status,409);assert.equal(result.body.code,'provider_context_recovery_unsupported');
+  assert.equal(result.body.request.progress,undefined);assert.equal(f.commands.length,0);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'}});
+});
+
+
+test('cold Compact uses a future retained normal contract without task replay',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Cold native command'),agent=await f.createAgent(chat,'Retained command owner');
+  const packet=store.acceptedProviderSessionInput(agent.id),session=store.resumeSessionState(agent.id);
+  assert.equal(packet.sourceManifest.normalRuntimeContract.contractHash,session.toolContractHash);
+  f.capabilities.commands.push({name:'compact',description:'Controlled structured compaction',source:'adapter-implemented',acceptsArguments:false,insertText:'/compact',status:'available',invocation:'runtime'});
+  const turns=f.turns.length;
+  await f.reopen();
+  const result=f.ok(await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'compact'}));
+  assert.equal(result.outcome,'completed');assert.equal(f.commands.at(-1).sessionId,session.sessionId);
+  assert.equal(f.turns.length,turns);assert.equal(store.resumeSessionState(agent.id).sessionId,session.sessionId);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+   providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+});
+
+
+test('human Stop fences an in-flight recovery acceptance without replaying source work',{timeout:30000},async t=>{
+ let store,releaseCommand,entered=false;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Stop recovery'),agent=await f.createIdleAgent(chat,'Stoppable owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Unknown source remains preserved');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
+  const body={idempotencyKey:'stop-exact-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
+   expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  const recovery=f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  await until(()=>entered,'controlled compaction started');
+  try {
+   const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`));
+   assert.equal(status.request.progress.phase,'native_started');
+   assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries/foreign/stop`,{})).status,409);
+   assert.equal(f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${status.request.id}/stop`,{})).stopRequested,true);
+   releaseCommand();
+   const stopped=await recovery;
+   assert.equal(stopped.body.request.progress.phase,'held');assert.equal(stopped.body.recoveredContext,false);
+   assert.equal(store.acceptedProviderSessionContextUsage(agent.id),undefined);assert.equal(f.commands.length,1);
+  }finally{releaseCommand?.();await recovery;}
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+   providerCommandResult:async({sessionId})=>{entered=true;await new Promise(resolve=>releaseCommand=resolve);
+    return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
 });

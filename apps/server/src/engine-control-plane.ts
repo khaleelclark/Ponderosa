@@ -530,7 +530,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     // only an explicit refresh waits for the discovery already in flight.
     if (running) {
       if (!forceRefresh && cached) return Promise.resolve(cached.value);
-      return running.operation!;
+      // This keyed registry contains catalog discovery; the shared lifecycle
+      // authority also tracks command operations that do not return a catalog.
+      return running.operation as Promise<EngineCapabilities>;
     }
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
 

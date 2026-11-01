@@ -227,7 +227,7 @@ export interface CapabilityDiscoveryAuthority {
   key: string;
   controller: AbortController;
   processes: Set<CapabilityDiscoveryProcess>;
-  operation?: Promise<EngineCapabilities>;
+  operation?: Promise<unknown>;
   settled: boolean;
 }
 

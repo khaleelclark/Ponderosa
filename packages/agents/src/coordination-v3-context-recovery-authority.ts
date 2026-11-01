@@ -1,23 +1,24 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { ProviderContextRecoveryRequest } from "@ponderosa/core";
+import type { ProviderContextRecoveryProgress, ProviderContextRecoveryRequest } from "@ponderosa/core";
 
 export class ContextRecoveryConflictError extends Error {}
 
 interface Row {
   id: string; agent_id: string; project_id: string; source_run_id: string; scope_key: string;
   provider_session_id: string; tool_contract_hash: string; source_fence: number;
-  state: ProviderContextRecoveryRequest["state"]; created_at: string; dismissed_at: string | null;
+  progress_json: string | null; state: ProviderContextRecoveryRequest["state"]; created_at: string; dismissed_at: string | null;
 }
 function project(row: Row): ProviderContextRecoveryRequest {
   return { id: row.id, agentId: row.agent_id, projectId: row.project_id, sourceRunId: row.source_run_id,
     scopeKey: row.scope_key, providerSessionId: row.provider_session_id, toolContractHash: row.tool_contract_hash,
-    sourceFence: row.source_fence, state: row.state, code: "provider_context_recovery_unsupported",
+    sourceFence: row.source_fence, state: row.state, code: row.progress_json ? "provider_context_recovery_source_work_held" : "provider_context_recovery_unsupported",
+    ...(row.progress_json ? { progress: JSON.parse(row.progress_json) as ProviderContextRecoveryProgress } : {}),
     createdAt: row.created_at, ...(row.dismissed_at ? { dismissedAt: row.dismissed_at } : {}) };
 }
 
-/** No executable recovery states exist yet. A committed refusal deliberately
- * holds dispatch; dismissal removes only this hold, never the context guards. */
+/** SQLite owns recovery reservation and mutation custody. Neither accepting
+ * context nor dismissing a hold resolves an uncertain source Run's effects. */
 export class CoordinationV3ContextRecoveryAuthority {
   constructor(private readonly sqlite: Database.Database) {}
   active(agentId: string): ProviderContextRecoveryRequest | undefined {
@@ -66,12 +67,65 @@ export class CoordinationV3ContextRecoveryAuthority {
       return { request: this.active(input.agentId)!, replayed: false };
     })();
   }
+  /** A committed reservation is never replayed, including after daemon restart. */
+  reserveOperation(agentId: string, id: string): boolean {
+    return this.sqlite.transaction(() => {
+      const row = this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id, agentId) as Row | undefined;
+      if (!row || row.progress_json) return false;
+      this.assertSource(row);
+      if (this.sqlite.prepare(`SELECT 1 FROM provider_context_recovery_requests WHERE agent_id=? AND provider_session_id=?
+        AND json_extract(progress_json,'$.nativeInvoked')=1 AND json_extract(progress_json,'$.phase')<>'context_accepted' LIMIT 1`)
+        .get(agentId,row.provider_session_id)) throw new ContextRecoveryConflictError("Earlier native recovery outcome is unknown; a different key cannot replay compaction");
+      this.sqlite.prepare("UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?")
+        .run(JSON.stringify({phase:"reserved",updatedAt:new Date().toISOString(),sourceWork:"held_unknown"}),id);
+      return true;
+    })();
+  }
+  advanceOperation(agentId: string, id: string, expected: ProviderContextRecoveryProgress["phase"],
+    phase: ProviderContextRecoveryProgress["phase"], details: {usedTokens?:number;windowTokens?:number;message?:string;contextUsageEventSequence?:number} = {}): ProviderContextRecoveryRequest {
+    return this.sqlite.transaction(() => {
+      const row = this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id,agentId) as Row | undefined;
+      const progress = row?.progress_json ? JSON.parse(row.progress_json) as ProviderContextRecoveryProgress : undefined;
+      if (!row || progress?.phase !== expected) throw new ContextRecoveryConflictError("Recovery operation phase changed; never replay native input");
+      const allowed = phase === "held" || expected === "reserved" && phase === "drained" ||
+        expected === "drained" && phase === "native_started" || expected === "native_started" && phase === "context_accepted";
+      if (!allowed) throw new ContextRecoveryConflictError("Invalid recovery transition");
+      this.assertSource(row);
+      if (phase === "context_accepted" && (!Number.isSafeInteger(details.usedTokens) || details.usedTokens! < 0 ||
+          details.windowTokens !== undefined && (!Number.isSafeInteger(details.windowTokens) || details.windowTokens <= 0))) {
+        throw new ContextRecoveryConflictError("Recovery acceptance requires fresh exact native occupancy");
+      }
+      if (phase === "context_accepted" && !this.sqlite.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq=? AND type='context_usage'
+        AND json_extract(payload_json,'$.providerSessionId')=? AND json_extract(payload_json,'$.providerSessionGeneration')=?
+        AND json_extract(payload_json,'$.providerCommand.invocationId')=? AND json_extract(payload_json,'$.usedTokens')=?
+        AND json_extract(payload_json,'$.windowTokens') IS ?`)
+        .get(agentId,details.contextUsageEventSequence ?? -1,row.provider_session_id,row.provider_session_id,id,details.usedTokens,details.windowTokens ?? null)) {
+        throw new ContextRecoveryConflictError("Recovery acceptance requires its durable exact context-usage event");
+      }
+      this.sqlite.prepare("UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?")
+        .run(JSON.stringify({phase,updatedAt:new Date().toISOString(),sourceWork:"held_unknown",nativeInvoked:progress.nativeInvoked || phase === "native_started",...details}),id);
+      return project(this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=?").get(id) as Row);
+    })();
+  }
+  private assertSource(row: Row): void {
+    if (!this.sqlite.prepare(`SELECT 1 FROM agents a JOIN scheduler_runs r ON r.id=? AND r.agent_id=a.id
+      WHERE a.id=? AND a.active_session_id=? AND a.active_session_contract_hash=? AND a.project_id=? AND a.deleted_at IS NULL
+        AND r.scope_key=? AND r.project_id=a.project_id AND r.status='outcome_unknown' AND r.fencing_token=? AND r.provider_session_id=?
+        AND NOT EXISTS (SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=a.id
+          AND (newer.status IN ('leased','running') OR newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected'))`)
+      .get(row.source_run_id,row.agent_id,row.provider_session_id,row.tool_contract_hash,row.project_id,row.scope_key,row.source_fence,row.provider_session_id)) {
+      throw new ContextRecoveryConflictError("Recovery source authority changed");
+    }
+  }
   dismiss(agentId: string,id: string): ProviderContextRecoveryRequest {
     return this.sqlite.transaction(() => {
       const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND id=?").get(agentId,id) as Row | undefined;
       if (!row) throw new ContextRecoveryConflictError("Recovery request not found");
-      // These are refusal-only states: there is no native input to drain or
-      // ambiguous acceptance to reconcile. Never reuse this for executable states.
+      const progress = row.progress_json ? JSON.parse(row.progress_json) as ProviderContextRecoveryProgress : undefined;
+      if (progress && !["held", "context_accepted"].includes(progress.phase)) {
+        throw new ContextRecoveryConflictError("Recovery operation must settle or be reconciled before dismissal");
+      }
+      // Dismissal never clears source uncertainty or authorizes replay.
       this.sqlite.prepare("UPDATE provider_context_recovery_requests SET state='dismissed',dismissed_at=COALESCE(dismissed_at,?) WHERE id=? AND state='unsupported_fenced'").run(new Date().toISOString(),id);
       return project(this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=?").get(id) as Row);
     })();

@@ -1,12 +1,23 @@
-/** Recovery is not a task turn, a new Agent, or a permission change. No current
- * native adapter implements the required unchanged-contract no-effects phase. */
-export interface ProviderContextRecoverySupport {
+/** Managed compaction restores measurable context; it never resolves unknown prior effects. */
+export type ProviderContextRecoverySupport = {
   status: "unsupported";
-  missingOperation: "immutable_normal_contract_no_effects_recovery";
+  missingOperation: "structured_retained_session_compaction";
+} | { status: "managed_compaction"; crashReconciliation: "hold_without_native_query" };
+
+export interface ProviderContextRecoveryProgress {
+  phase: "reserved" | "drained" | "native_started" | "context_accepted" | "held";
+  updatedAt: string;
+  usedTokens?: number;
+  windowTokens?: number;
+  message?: string;
+  /** Unknown source work is never automatically replayed by context recovery. */
+  sourceWork: "held_unknown";
+  nativeInvoked?: boolean;
+  contextUsageEventSequence?: number;
 }
 export const UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY: Readonly<ProviderContextRecoverySupport> = Object.freeze({
   status: "unsupported",
-  missingOperation: "immutable_normal_contract_no_effects_recovery",
+  missingOperation: "structured_retained_session_compaction",
 });
 export class ProviderContextRecoveryUnavailableError extends Error {
   readonly code = "provider_context_recovery_unsupported";
@@ -24,9 +35,10 @@ export interface ProviderContextRecoveryRequest {
   toolContractHash: string;
   sourceFence: number;
   state: "unsupported_fenced" | "dismissed";
-  code: "provider_context_recovery_unsupported";
+  code: "provider_context_recovery_unsupported" | "provider_context_recovery_source_work_held";
   createdAt: string;
   dismissedAt?: string;
+  progress?: ProviderContextRecoveryProgress;
 }
 
 /** Durable source custody, not proof of native completion or absence of effects. */

@@ -636,6 +636,53 @@ export class AgentStore extends AgentEventSessionFacade {
       providerCommand: { name: "compact", executionId: boundary.executionId, fencingToken: boundary.fencingToken, invocationId } });
   }
 
+  /** The recovery controller calls this only after observed command-process exit.
+   * This telemetry event alone never clears a hold or resolves original work. */
+  recordProviderRecoveryContextUsage(agentId: string, recoveryId: string, usage: {
+    usedTokens:number;windowTokens?:number;
+  }): StoredLogEvent | undefined {
+    if(!Number.isSafeInteger(usage.usedTokens) || usage.usedTokens<0 ||
+       usage.windowTokens!==undefined && (!Number.isSafeInteger(usage.windowTokens) || usage.windowTokens<=0))return undefined;
+    const row=this.client.prepare(`SELECT source_run_id,source_fence,provider_session_id,tool_contract_hash
+      FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'
+        AND json_extract(progress_json,'$.phase')='native_started'`).get(recoveryId,agentId) as {
+          source_run_id:string;source_fence:number;provider_session_id:string;tool_contract_hash:string;
+        }|undefined;
+    const boundary=this.uncertainProviderContextRecoveryBoundary(agentId);
+    if(!row || boundary?.sourceRunId!==row.source_run_id || boundary.sourceFence!==row.source_fence ||
+       boundary.providerSessionId!==row.provider_session_id || boundary.toolContractHash!==row.tool_contract_hash) return undefined;
+    return this.appendEvent(agentId,{type:"context_usage",...usage,providerSessionId:row.provider_session_id,
+      providerSessionGeneration:row.provider_session_id,providerCommand:{name:"compact",executionId:row.source_run_id,
+        fencingToken:row.source_fence,invocationId:recoveryId}});
+  }
+
+  private acceptedProviderRecoveryContextUsage(agentId:string): {
+    usage:Extract<LogEvent,{type:"context_usage"}>;observedAt:string;executionId:string;postObservationUtf8Bytes:number;
+  } | undefined {
+    const accepted=this.resumeSessionState(agentId);
+    if(!accepted)return undefined;
+    const row=this.client.prepare(`SELECT recovery.id,recovery.source_run_id,event.payload_json,event.created_at,event.seq
+      FROM provider_context_recovery_requests recovery JOIN events event ON event.agent_id=recovery.agent_id
+        AND event.seq=json_extract(recovery.progress_json,'$.contextUsageEventSequence')
+      JOIN scheduler_runs source ON source.id=recovery.source_run_id
+      WHERE recovery.agent_id=? AND recovery.provider_session_id=? AND recovery.tool_contract_hash=?
+        AND json_extract(recovery.progress_json,'$.phase')='context_accepted' AND source.status='outcome_unknown'
+        AND source.provider_session_id=recovery.provider_session_id AND source.fencing_token=recovery.source_fence
+        AND NOT EXISTS(SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=recovery.agent_id
+          AND newer.fencing_token>source.fencing_token AND newer.prompt_injection_state<>'not_injected')
+      ORDER BY event.seq DESC LIMIT 1`).get(agentId,accepted.sessionId,accepted.toolContractHash) as {
+        id:string;source_run_id:string;payload_json:string;created_at:string;seq:number;
+      }|undefined;
+    if(!row)return undefined;
+    const usage=JSON.parse(row.payload_json) as Extract<LogEvent,{type:"context_usage"}>;
+    if(usage.type!=="context_usage" || usage.providerCommand?.invocationId!==row.id ||
+       usage.providerSessionId!==accepted.sessionId || usage.providerSessionGeneration!==accepted.sessionId)return undefined;
+    if(this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId,row.seq))return undefined;
+    const tail=this.client.prepare(`SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) bytes
+      FROM events WHERE agent_id=? AND seq>? AND type IN ('text','reasoning')`).get(agentId,row.seq) as {bytes:number};
+    return {usage,observedAt:row.created_at,executionId:row.source_run_id,postObservationUtf8Bytes:tail.bytes};
+  }
+
   /** Warm and cold resumes share this completed-Run proof. Native work and
    * uncertain steering after the checkpoint cannot be estimated as plain text. */
   acceptedProviderSessionContextUsage(agentId: string): {
@@ -643,7 +690,7 @@ export class AgentStore extends AgentEventSessionFacade {
     observedAt: string; executionId: string; postObservationUtf8Bytes: number;
   } | undefined {
     const proof = this.acceptedProviderSessionCompletedRun(agentId);
-    if (!proof) return undefined;
+    if (!proof) return this.acceptedProviderRecoveryContextUsage(agentId);
     const { sessionId, run, start, terminal } = proof;
     const row = this.client.prepare(`SELECT substr(payload_json,1,4096) AS payload_json,
         length(CAST(payload_json AS BLOB)) AS bytes, created_at, seq

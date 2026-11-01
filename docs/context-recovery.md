@@ -1,83 +1,115 @@
 # Explicit recovery of unmeasurable uncertain context
 
-Ordinary continuation still refuses unmeasurable retained context with
-`context_recovery_required`. Native Compact and Context Refresh still require
-their existing safe completed boundary. Neither is a way to replay an uncertain
-turn, recreate a failed Request/Join, erase history, or silently change tools.
+Ordinary continuation refuses unmeasurable retained context with
+`context_recovery_required`. Recovery never replays an uncertain turn, revives a
+terminal Request/Join, erases history, or changes human permissions.
 
-Codex app-server and Claude currently report **unsupported** for
-`immutable_normal_contract_no_effects_recovery`. They have no mapped native
-operation that can ingest/measure recovery context and produce trustworthy
-successful completion under the unchanged normal tool contract while preventing
-all task execution, tool calls, native shell/file/network/connector effects and
-outbound messages. Read-only sandbox labels, an instruction to avoid tools,
-removing Ponderosa tools or a fresh normal turn are not that operation.
+## Admission and inspection
 
-## Refusal and admission controller
+`GET /api/agents/:id/context-recoveries` returns native support, the exact eligible
+unknown boundary, source evidence and any active hold/progress. It never opens or
+probes a provider. Eligibility requires an accepted tracked native session, normal
+contract hash, latest injected Run terminal `outcome_unknown`, and no busy Run,
+pause or context transition. Source evidence includes input/system hashes, event
+position and attached Request IDs. Prior effects and native-tail completeness stay
+explicitly unknown.
 
-`GET /api/agents/:id/context-recoveries` returns static support, the exact narrow
-eligible boundary (or null), and any active explicit hold. It never probes or
-opens a provider. Eligibility is an accepted tracked session with its normal
-contract hash, no valid completed-tail measurement/estimate, and the latest
-injected Run of that session terminal `outcome_unknown`. Busy, paused, changing,
-untracked and completed sources are refused.
-
-An operator may POST that path with `idempotencyKey`, `expectedSessionId`,
+POST the same path with `idempotencyKey`, `expectedSessionId`,
 `expectedSourceRunId`, `expectedToolContractHash` and
-`acknowledgeUnknownEffects: true`. Arbitrary seed/context fields are rejected.
-The route atomically records an `unsupported_fenced` request in coordination
-SQLite and returns HTTP409 `provider_context_recovery_unsupported`, not202 or
-recovery success. The record binds original Agent, project, scope, session,
-contract and Run/fence. It contains no prompt, secret, replacement session,
-reply authority, candidate Run or provider invocation. Unknown effects, failed
-requests, joins and original source audit remain unchanged.
+`acknowledgeUnknownEffects: true`. Arbitrary seeds/context are refused. SQLite binds
+the original Agent/project/scope/session/Run/fence and retains an active dispatch
+hold. The historical storage state is named `unsupported_fenced`; executable
+progress and response code describe the actual recovery outcome.
 
-The explicit hold keeps future inputs queued across restart. Scheduler admission,
-Run preparation and Agent provider-command/refresh routes consult it. Original
-expired Run capabilities remain expired. No new effect capability is issued.
-The request never starts native recovery, invokes compaction, opens a diagnostic
-session, retires/drains the accepted runtime or writes an acceptance snapshot.
-This does not certify absence of prior native effects or completion of old
-cleanup. Thus there is no new candidate to clean up, no low-water receipt, and no
-cross-store acceptance transaction to imply. Existing runtime cleanup owners
-continue to own any old processes; this record is not an exit/drain receipt.
+Future input manifests retain the exact non-secret native launch contract: engine,
+working-copy identity/path, model/effort/speed, expected billing mode, tool schemas
+and native restrictions. Exact system text is retained in the same input ledger.
+The accepted-session event selects that record. Old capability tokens, credentials
+and callback closures are never stored in the retained contract. Legacy sessions
+without this record cannot be reconstructed from current settings or Chat.
 
-Retrying the same key returns the same record, including after dismissal, and
-cannot start work. A different boundary with that key conflicts. Inspect a key
-using GET with `?idempotencyKey=...`, including after an ambiguous HTTP/write
-failure; do not infer that a thrown write means it did not commit. Request/hold
-creation is one SQLite transaction with no asynchronous provider boundary:
-crash before commit leaves neither; crash after commit retains both. No startup
-worker replays recovery. Concurrent requests cannot create two active holds.
+## Codex managed compaction
 
-To remove just this refusal hold, POST
-`/api/agents/:id/context-recoveries/:recoveryId/dismiss` with
-`acknowledgeStillBlocked: true`. Dismissal is idempotent and returns
-`recovered: false`. It does not claim old processes drained and cannot accept,
-replace or measure context. Original uncertainty/completed-boundary guards
-remain in force. Only these non-executable refusal states may be dismissed this
-way. Agent deletion removes private recovery records through the existing
-cleanup/deletion ownership path.
+Codex support is `managed_compaction` with crash policy `hold_without_native_query`.
+For a future retained contract, recovery performs:
 
-## Missing native operation and remaining work
+1. Reserve the exact source once in SQLite (`reserved`).
+2. Observe retained/recovered process-group exit (`drained`).
+3. Reopen the same native session with its retained normal configuration. Current
+   human restrictions and billing selection must still match. There is no new Run,
+   no replayed task, and no expired host-tool/elicitation capability.
+4. Persist `native_started` before invoking the existing structured native Compact.
+5. Require matching native compaction completion and fresh exact session occupancy.
+6. Observe recovery-process exit, then persist `context_accepted` and the occupancy.
 
-Usable recovery remains blocked on a concrete adapter/native no-effects
-operation bound to the normal immutable session/contract, recovery generation
-and exact input, with acknowledged successful completion and complete-tail
-occupancy proof. It must mediate native effects before execution, not just host
-callbacks. Neither current adapter advertises this support; there is deliberately
-no executable or accepted recovery state and no fictitious fake-provider success
-path in this controller.
+A failure becomes `held` where it can be durably recorded. Cleanup errors preserve
+working-folder use and admission barriers until observed exit; diagnostics name
+the cause. Unknown native results are never repeated. Same-key retries return the
+record; different keys cannot replay an uncertain native compaction of that session.
+No startup worker replays recovery. A crash leaving `reserved`, `drained` or
+`native_started` requires reconciliation, not a fresh task turn.
 
-After that primitive is specified and implemented, recovery-linked durable
-old/candidate drain receipts, candidate-only proof reading, ordinary-snapshot
-suppression, and idempotent canonical acceptance/coordination reconciliation must
-be implemented and independently qualified before any fence release for recovered
-work. Those seams are not implemented by this refusal controller. Original work
-retry/reissue remains a distinct authorized operation with distinct identities;
-context recovery cannot revive a terminal Request/Join or replay unknown effects.
+`context_accepted` is context measurement acceptance only. It is not proof that
+unknown original work completed, had no effects, or has enough headroom for another
+turn. The response says `sourceWork: held_unknown`; original Runs, Requests, Joins,
+injections and history remain unchanged. The active hold prevents dispatch until explicit dismissal. Acceptance references
+the canonical context-usage event; after dismissal, independent new instructions
+may continue on the same native session with that measurement, provided no newer
+injection or unmetered native work invalidated it. Unknown original activations are
+never requeued. Without acceptance, the original uncertainty guard stays intact. Successful context recovery returns
+HTTP200 with `recoveredContext: true`; it never returns original-work success.
+Other recorded phases return409. Ambiguous failures return503 and require exact-key
+inspection before any further action.
 
-The receipt schema expands initialized metadata to 531 objects (532 including
-the current-state generation marker). Its fixed schema-object envelope is 536;
-the maintained regression pins 536 accepted and 537 refused, plus complete
-current-state admission. Ordinary byte/row/work budgets remain unchanged.
+POST `/api/agents/:id/context-recoveries/:recoveryId/stop` requests an exact live
+recovery stop and drains its process. `stopRequested` acknowledges the request;
+inspect GET for the settled phase. Shutdown and deletion also fence native input
+and acceptance. There is no generic Agent task cancellation manufactured for a
+command that owns no scheduler Run.
+
+## Unsupported and legacy sessions
+
+Claude has no mapped structured retained-session compaction command. Its support
+is `unsupported` with `missingOperation: structured_retained_session_compaction`.
+Legacy packets without a retained contract also stay on the refusal path. The POST
+records a hold and returns409 `provider_context_recovery_unsupported` without
+launching a provider, replacing a session, changing permissions or accepting context.
+Requiring an unchanged-context no-effects diagnostic turn is not a separate Bible
+requirement; the supported managed-compaction path intentionally changes context.
+
+POST `/api/agents/:id/context-recoveries/:recoveryId/dismiss` with
+`acknowledgeStillBlocked: true` removes only a settled hold and returns
+`recovered: false`. It never resolves prior effects or requeues original work. A successful accepted
+measurement permits independent future work; without it the original context guard
+remains. An in-progress/ambiguous native phase cannot be dismissed as settled.
+Deletion removes recovery records through existing fenced cleanup ownership.
+
+## Exact remaining reconciliation seam
+
+The mapped Codex `thread/resume` result contains `thread.id` and model, without a
+complete original turn/transcript/outcome boundary. `thread/compact/start` accepts
+only `threadId` and returns an empty acknowledgement; it has no mapped client
+operation key or result lookup after a crash. Completion and usage notifications
+can certify an observed invocation, but cannot reconstruct an unseen original tail
+or a lost invocation result. Original-work continuation exactly once therefore
+needs a native source-turn outcome/transcript read and queryable operation identity.
+Claude additionally needs a mapped structured compaction equivalent.
+
+A host replacement requires an immutable complete native transcript plus the
+canonical journals. Authored Chat alone is insufficient after unseen native work.
+These remain concrete missing interfaces; implemented retention/reservation/drain/
+acceptance plumbing is no longer classified as blocked on a hypothetical primitive.
+Tests/regressions are source only until the authorized combined execution phase.
+
+An explicit Stop also reconciles an interrupted reservation after restart by
+observing exact Agent process-group exit and recording `held`, without opening a
+provider. A saved `nativeInvoked` marker remains: clearing process custody cannot
+turn an unknown native compaction into permission to repeat it.
+
+Accepted context measurements reference their canonical `context_usage` event by
+sequence. Admission rechecks native session/contract, source fence, absence of a
+newer injected Run, and absence of subsequent unmetered work; later text is accounted
+for as a conservative tail estimate. The measurement is usable for an independent
+new instruction after explicit hold dismissal. It never marks the old Run completed
+or retries its original Activation/Request. This separation permits useful ongoing
+work without inventing certainty about past effects.

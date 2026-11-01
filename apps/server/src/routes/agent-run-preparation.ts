@@ -78,6 +78,7 @@ interface PrepareAgentRunInput {
   v3ActivationPrompt: string | undefined;
   effectiveModel: string | undefined;
   effectiveEffort: string | undefined;
+  effectiveSpeed: string | undefined;
   messageAttachments: AssetDto[];
   sourceConversationId: string | undefined;
   communicationEventId: string | undefined;
@@ -195,6 +196,7 @@ export async function prepareAgentRun(
     v3ActivationPrompt,
     effectiveModel,
     effectiveEffort,
+    effectiveSpeed,
     messageAttachments,
     sourceConversationId,
     communicationEventId,
@@ -402,6 +404,7 @@ export async function prepareAgentRun(
   const expectedBillingMode = workspacePreferences.providerBillingModes?.[runtimeEngineId];
   const effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
     runtimeSessionContractHash,
+    speed: effectiveSpeed,
     expectedBillingMode,
     ...(runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode ? { billingMode: runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode } : {}),
     systemPromptHash,
@@ -1329,6 +1332,16 @@ export async function prepareAgentRun(
   const effectiveFreshProviderInputManifest = recoveryManifest ?? freshProviderInputManifest;
   const effectiveExactProviderInput = recoveryProviderInput?.exactPrompt ?? exactProviderInput;
   const effectiveFreshExactProviderInput = recoveryProviderInput?.exactPrompt ?? freshExactProviderInput;
+  // Persist before injection; the accepted-session boundary selects this exact
+  // record later. Never reconstruct a missing legacy contract from current settings.
+  for (const manifest of [effectiveProviderInputManifest, effectiveFreshProviderInputManifest]) {
+    if (manifest.schemaVersion === 3 && !recoveryManifest) manifest.normalRuntimeContract = {
+      version: 1, contractHash: effectiveRuntimeSessionContractHash,
+      engineId: runtimeEngineId, workingCopyId: workingCopy.id, cwd: workingCopy.rootPath,
+      model: effectiveModel, effort: effectiveEffort, speed: effectiveSpeed,
+      expectedBillingMode, dynamicTools: availableRuntimeTools, capabilityRestrictions,
+    };
+  }
   const manifestArtifactIds = [...effectiveProviderInputManifest.artifactIds];
   return {
     routingConversationId,
