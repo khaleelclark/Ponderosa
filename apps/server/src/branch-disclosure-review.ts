@@ -47,11 +47,12 @@ export class BranchDisclosureReviewService {
   const e=this.db.prepare(`SELECT e.*,b.deleting,b.enabled,b.active_version_id,b.binding_revision_id current_binding,b.configuration_json current_configuration
    FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=? AND b.id=?`).get(reservation.sourceExecutionId,reservation.branchId) as Row|undefined;
   const r=this.db.prepare('SELECT * FROM branch_resources WHERE execution_id=? AND step_execution_id=?').get(reservation.sourceExecutionId,saved.custody.intent.resourceStepId) as Row|undefined;
+  const openingCapture=r&&this.branches.resourceCaptureJournal(r.step_execution_id);
   if(!e||e.deleting||!e.enabled||!['completed','failed','canceled'].includes(e.state)||e.active_version_id!==saved.continuation.versionId
    ||e.current_binding!==saved.continuation.bindingRevisionId||Object.keys(JSON.parse(e.current_configuration).secretBindings??{}).length
    ||hash(Object.fromEntries(Object.entries(JSON.parse(e.current_configuration)).filter(([k])=>k!=='secretBindings')))!==saved.custody.intent.configurationSha256
    ||!r||r.generation!==0||r.generation!==saved.custody.intent.resourceGeneration||r.chat_id!==saved.custody.sourceChatId
-   ||r.state!=='retired'||!this.branches.resourceHistoryCustodySettled(reservation.sourceExecutionId)||this.branches.resourceCaptureJournal(r.step_execution_id)?.state!=='retained')throw Error('Current disclosure custody/owner unavailable');
+   ||r.state!=='retired'||!this.branches.resourceHistoryCustodySettled(reservation.sourceExecutionId)||openingCapture&&openingCapture.state!=='retained')throw Error('Current disclosure custody/owner unavailable');
   const ids=(this.db.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(r.step_execution_id) as {agent_id:string}[]).map(m=>m.agent_id);
   if(stableJson(ids)!==stableJson([...saved.custody.agentIds].sort()))throw Error('Disclosure current resource membership changed');
   for(const id of ids)if(this.db.prepare(`SELECT 1 FROM agent_deletion_pending WHERE agent_id=? UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=?

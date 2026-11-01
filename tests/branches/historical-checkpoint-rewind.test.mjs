@@ -946,14 +946,14 @@ for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutab
 });
 
 // Resource replay stops before any external Chat/import release; suffix work uses fresh custody.
-async function reservationHistoryFixture(t,mode='async',childOwner=false){
+async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
  const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Inert resource history',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Owner'}),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
  const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:permissions}]};
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result'},script('suffix')],controls:[],edges:[{id:'to-team',from:'prefix',to:'team',on:'success'},{id:'to-suffix',from:'team',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result'},script('suffix')],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['team-arm','side-arm']}]:[],edges:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},{id:'to-suffix',from:'team',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  let parent,root,source;
  if(childOwner){
@@ -978,10 +978,12 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false){
   branches.observeResourceImportPlan(r.step_execution_id,token,operation.id);await branches.unitSaver.drain();branches.planResource(r.step_execution_id,[agentId],token);
   const agent=store.createAgent(p.id,{title:'Inert fixture identity',engine:'codex',conversationId:temporary.id},undefined,agentId),result={rootAgentId:agent.id,agentIds:[agent.id]};
   branches.unitTransaction(()=>{branches.completeResourceOperation(r.step_execution_id,'import',token,result);store.updateAgentCreationOperation(operation.id,{status:'completed',result});})();await branches.unitSaver.drain();
+  if(!parallel){
   const captureSource=branches.reserveResourceCapture(r.step_execution_id),captureReceipt={...captureSource,version:1,custodyId:hash(captureSource.checkpointId),boundaryId:'inert-capture-boundary',sha256:hash('inert-package'),byteLength:1};
   assert.throws(()=>branches.bindResource(r.step_execution_id,result),/retained|coverage/);
   branches.finishResourceCapture(captureSource,captureReceipt);await branches.unitSaver.drain();
   if(onCaptured)await onCaptured({source:captureSource,receipt:captureReceipt,result,stepId:r.step_execution_id});
+  }
   branches.bindResource(r.step_execution_id,result);
   const request=store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id;
   if(onOpening)await onOpening({stepId:r.step_execution_id,generation:r.generation,requestId:request});
@@ -1472,8 +1474,8 @@ test('disclosure API exposes exact human confirmation and rejects fabricated ide
 
 // Deferred composer regression: actual SQLite owner/runtime paths, inert package
 // and managed-folder adapters; no provider, Script or browser process is started.
-async function issuedDestinationFixture(t,mode='async'){
- const f=await reservationHistoryFixture(t,mode),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+async function issuedDestinationFixture(t,mode='async',parallel=false){
+ const f=await reservationHistoryFixture(t,mode,false,parallel),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
  let saved;
  await f.finish(f.source.id,undefined,undefined,async({stepId,generation})=>{
   const intent=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'composer-cut');
@@ -1578,4 +1580,28 @@ test('issued composer owner failure rolls back graph, import completion, readine
  assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'awaiting_disclosure');
  f.branches.composeIssuedDestination=original;
  assert.equal((await composer.admit(f.branch.id,f.source.id,x.input.commandKey,preview.reviewHash)).state,'admitted');
+});
+
+// Deferred: same real composer/Runtime owner path with local fork/join rows.
+for(const mode of ['async','sync'])test(`issued destination ${mode} preserves local parallel fork/join with one organization`,async t=>{
+ const x=await issuedDestinationFixture(t,mode,true),{composer,disclosure}=x.services(),f=x.f;
+ const {issuedResourceContinuationSupported}=await import('../../packages/agents/dist/index.js');
+ const selected=x.saved.snapshot.selected,host=x.saved.snapshot.hostDependencies,envelope=x.saved.snapshot.issuedContinuation;
+ assert.equal(f.branches.resourceCaptureJournal(selected.resources[0].step_execution_id),undefined,'independent issued custody does not require a serial pre-opening capture');
+ assert.equal(issuedResourceContinuationSupported(f.store.sqlite,f.source.id,selected,host,envelope),true);
+ const omitted=structuredClone(envelope);omitted.audit=omitted.audit.filter(event=>event.kind!=='resource_created');omitted.auditSha256=hash(stableJson(omitted.audit));
+ assert.equal(issuedResourceContinuationSupported(f.store.sqlite,f.source.id,selected,host,omitted),false,'rehashing cannot replace the complete owned prefix');
+ const wrongGeneration=structuredClone(selected);wrongGeneration.resources[0].generation++;
+ assert.equal(issuedResourceContinuationSupported(f.store.sqlite,f.source.id,wrongGeneration,host,envelope),false);
+ const prepared=await composer.prepare(f.branch.id,f.source.id,x.input);
+ const preview=await disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'parallel-human',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ const admitted=await composer.admit(f.branch.id,f.source.id,x.input.commandKey,preview.reviewHash);
+ assert.equal(admitted.state,'admitted');
+ const db=f.store.sqlite,destination=prepared.destination.executionId;
+ assert.ok(db.prepare('SELECT COUNT(*) n FROM branch_paths WHERE execution_id=?').get(destination).n>1);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(destination).n,1);
+ const sourceIds=db.prepare('SELECT id FROM branch_paths WHERE execution_id=?').all(f.source.id).map(r=>r.id);
+ assert.ok(db.prepare('SELECT id FROM branch_paths WHERE execution_id=?').all(destination).every(r=>!sourceIds.includes(r.id)));
+ x.setBytes(false);assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'admitted');
 });

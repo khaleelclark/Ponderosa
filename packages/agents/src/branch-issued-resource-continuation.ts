@@ -9,7 +9,7 @@ import {verifyHostProvenance} from './branch-host-provenance.js';
 import {validateBranchConfiguration} from './branch-parameters.js';
 type Row=Record<string,any>;
 
-/** Uses the existing serial Script/control replay; this envelope grants no admission. */
+/** Uses the existing Script/control/parallel replay; this envelope grants no admission. */
 export function encodeIssuedResourceContinuation(db:Database.Database,executionId:string,selected:Selected,host:BranchHostCut):Row {
  if(!db.inTransaction)throw Error('Issued continuation encoding requires the capture transaction');
  const owner=db.prepare(`SELECT e.configuration_json,v.definition_json,v.content_hash version_hash,b.content_hash binding_hash,b.bindings_json
@@ -46,7 +46,7 @@ export function issuedResourceContinuationSupported(db:Database.Database,executi
   const definition=JSON.parse(version.definition_json) as BranchDefinition;
   if(stableJson(validateBranchConfiguration(c.configuration,definition,true))!==stableJson(c.configuration))return false;
   verifyHostProvenance(host);
-  const resourceCleanup=e.state==='waiting'&&selected.paths?.[0]?.state==='completed';
+  const resourceCleanup=e.state==='waiting'&&selected.paths?.length===1&&selected.paths[0]?.state==='completed';
   if(resourceCleanup&&(e.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'||selected.resources[0]?.state!=='draining'))return false;
   const context:ScriptOwnerContext={resourceFrontier:true,issuedResource:true,resourceCleanup,terminal:e.state==='completed'||resourceCleanup,waiting:e.state==='waiting'&&!resourceCleanup,descendantTraversals:0,descendantLoops:0,children:{}};
   return replayScriptCut(db,executionId,selected,definition,c.configuration,c.audit,undefined,undefined,context,host);

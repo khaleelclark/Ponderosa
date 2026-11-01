@@ -17,7 +17,7 @@ export type Selected=Record<string,Row[]>;
 export const SCRIPT_CONTINUATION_COMPATIBILITY={format:'script-control-frontier.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false):boolean {
-  if(hasParallelControls(definition))return !resources&&parallelDefinitionSupported(definition,calls);
+  if(hasParallelControls(definition))return parallelDefinitionSupported(definition,calls,resources);
   return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||!calls&&!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }

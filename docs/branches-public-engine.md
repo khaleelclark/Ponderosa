@@ -1164,3 +1164,24 @@ Project audit-read requirement still applies. See
 contract and deferred fixture scope.
 
 Destination discovery includes the durable `disclosure` choice (`state`, CAS `revision`, and chosen `reviewHash`) independently of package bytes or current policy preview availability. This is persisted human choice, not a claim of current admission eligibility. It supplies the exact revoke inputs after preview becomes unavailable. Deferred regression covers discovery before and after revocation with package bytes unavailable.
+
+### Issued destination with local parallel paths
+
+The dedicated issued codec now opts into the existing parallel replay validator
+for one generation-zero ephemeral organization alongside local Script/control
+paths. Ordered immutable audit evidence must prove resource reservation, both
+completed operation receipts and the exact opening Request, plus all existing
+fork/join/map/result/counter transitions. Full path/control IDs are freshly mapped
+by the shared reconstruction and inserted by the existing one-owner admission
+transaction. Ordinary rewind does not opt into issued-resource authority.
+The independent issued package and exact host digest remain mandatory; a source
+without a pre-opening capture is valid only through that independent issued seal.
+If a pre-opening capture exists its retained state must still be valid.
+
+No called resource tree, multiple issued resources, later generation, recovery,
+unknown native outcome or completed parallel cleanup hold is accepted by this
+extension. Those remain implementation work. Deferred ASYNC/SYNC fixtures use the
+actual destination prepare/review/admit path, check fresh parallel path IDs and
+resource count, and check admitted no-byte readback; they have not run.
+See `branches-framework-capabilities.md` for the nine named capability inventory
+and new representative application source, including the missing comparator pins.

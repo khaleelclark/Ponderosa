@@ -34,10 +34,10 @@ export function reserveIssuedResourceCapture(db:Database.Database,executionId:st
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
  // No caller may convert an earlier pre-opening package into an issued checkpoint.
  if(!e||!r||!pins||pins.deleting||!pins.enabled||!['running','waiting','completed','failed','canceled'].includes(e.state)||e.parent_execution_id
-  ||selected.resources?.length!==1||selected.paths?.length!==1||selected.forks?.length||selected.maps?.length||r.step_execution_id!==stepId||r.generation!==generation||!r.chat_id||!['active','draining'].includes(r.state)
+  ||selected.resources?.length!==1||r.step_execution_id!==stepId||r.generation!==generation||!r.chat_id||!['active','draining'].includes(r.state)
   ||e.version_id!==pins.version_id||e.binding_revision_id!==pins.binding_revision_id||!configuration||stableJson(JSON.parse(configuration.configuration_json))!==stableJson(JSON.parse(pins.configuration_json))
   ||Object.keys(JSON.parse(configuration.configuration_json).secretBindings??{}).length||!selected.attempts?.some(a=>a.request_id)
-  ||selected.attempts.some(a=>a.recovery_of_request_id||a.state==='outcome_unknown'))throw Error('Issued capture requires one current nonsecret standalone serial resource generation');
+  ||selected.attempts.some(a=>a.recovery_of_request_id||a.state==='outcome_unknown'))throw Error('Issued capture requires one current nonsecret standalone replayable resource generation');
  const hostDependencies=captureBranchHostCut(db,executionId,selected);
  if(!hostDependencies?.coverage.complete||hostDependencies.bindingPin.requiredSecretRefs.length||hostDependencies.artifactRefs.length||hostDependencies.requests.some(({row})=>row.state==='outcome_unknown'||row.superseded_by_request_id))throw Error('Issued capture requires complete known Request evidence without runtime artifacts or recovery chains');
  const imported=JSON.parse(r.import_operation_json??'null'),agentIds=imported?.result?.agentIds as string[]|undefined;

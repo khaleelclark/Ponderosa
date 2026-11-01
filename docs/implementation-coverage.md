@@ -171,3 +171,19 @@ source-boundary/concurrency, destination authorization/lifecycle, provider parit
 upgrade/reliability runs, all Build flows, desktop/mobile/accessibility and measured
 performance. Historical LCP failure remains unresolved. None of all32, #8, #12,
 #32, Build, full UI, Bible or Phase2 is accepted by this inventory.
+
+## Branch family successor source delta
+
+The next isolated Features slice extends the dedicated issued-resource capture,
+shared parallel replay and existing destination admission path to one generation-zero
+organization with local fork/join/map/Script/control state. It retains the same
+custody, human disclosure, fresh maps and atomic owner transaction; no Runtime
+schema or alternate replay engine is added. Deferred ASYNC/SYNC source fixtures
+cover local fork/join composition. This source is unexecuted; broader multi-resource,
+called-tree, later-generation and recovery/reclamation consumers remain missing.
+The original serial-only summary above describes the integration base.
+
+`branches-framework-capabilities.md` inventories all nine source anchors and the
+new `examples/branches-capabilities/application.ts` research/critique/subgraph/human
+review application. Actual LangGraph/LangChain comparator version pins were not
+found in repository source and remain missing, with parity unclaimed.

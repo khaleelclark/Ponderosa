@@ -1,0 +1,24 @@
+# Research and human review application
+
+`application.ts` exports `createReviewApplication(client, input)`. Supply the
+existing local HTTP `BranchesClient`, a Chat, two existing authorized Agents and
+a stable deployment command key. Call `start(question, occurrenceKey)` and retain
+that occurrence key on an uncertain response. `inspect(executionId)` returns the
+canonical state, human actions and available checkpoints. `resolve` submits an
+explicit current gate choice; it does not choose for the human. `stream` requires
+an exact current execution/Agent/Run and forwards only matching authored output.
+No provider, worker, permission, memory store or second execution engine is added.
+
+The application deploys a research subgraph and a parent fork/join workflow that
+combines independent research and criticism before an editable human gate. Its
+bound Agents retain their existing tool and memory permissions. Instructions to
+use tools or memory are requests, not proof they are configured or accessible.
+Configure those integrations through the existing Agent settings first.
+
+This is representative source, not executed evidence or framework parity. It does
+not expose arbitrary rewind: issued cuts require the existing separate host review
+and reconciliation flow; the listed checkpoint's support flag remains authoritative.
+The existing `branches-engine-app/server.mjs` supplies a standalone HTTP process;
+this module supplies the previously missing concrete multi-capability workflow.
+See `docs/branches-framework-capabilities.md` for all nine dispositions and the
+missing external comparator pins. No build, typecheck or execution was performed.

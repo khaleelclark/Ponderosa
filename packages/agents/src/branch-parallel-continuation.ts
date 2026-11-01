@@ -14,20 +14,20 @@ const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const keys=['paths','steps','attempts','sealedResults','forks','joins','maps','items','loops','bundles','gates'] as const;
 export const hasParallelControls=(d:BranchDefinition)=>d.controls.some(c=>c.kind==='fork'||c.kind==='map');
 /** Only graph families with an exact host replay codec are admitted. */
-export function parallelDefinitionSupported(d:BranchDefinition,calls=false):boolean {
+export function parallelDefinitionSupported(d:BranchDefinition,calls=false,issuedResource=false):boolean {
  return hasParallelControls(d)&&d.policy.failure.action==='stop'
-  &&d.steps.every(s=>(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||s.kind==='human_gate'||calls&&s.kind==='branch_call')&&(!s.failure||s.failure.action==='stop'||s.kind==='script'&&s.failure.action==='retry'))
+  &&d.steps.every(s=>(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&('ref' in s.target||issuedResource&&s.target.kind==='ephemeral_organization')||s.kind==='human_gate'||calls&&s.kind==='branch_call')&&(!s.failure||s.failure.action==='stop'||s.kind==='script'&&s.failure.action==='retry'))
   &&d.controls.every(c=>['fork','map','join','condition','route'].includes(c.kind))
   &&!Object.values(d.parameters??{}).some(p=>p.type==='secret');
 }
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
-  if(!issuedRequestFrontierSupported(s,d,hostCut))return false;
+  if(!issuedRequestFrontierSupported(s,d,hostCut,context?.issuedResource))return false;
   const expected=['execution',...keys,'actions','resources'];
-  if(!parallelDefinitionSupported(d,!!context)||stableJson(Object.keys(s).sort())!==stableJson(expected.sort())||expected.some(k=>!Array.isArray(s[k])))return false;
+  if(!parallelDefinitionSupported(d,!!context,context?.issuedResource)||stableJson(Object.keys(s).sort())!==stableJson(expected.sort())||expected.some(k=>!Array.isArray(s[k])))return false;
   const e=s.execution![0],terminal=context?.terminal===true;
   if(s.execution!.length!==1||!e||!(terminal?e.state===(context?.terminalState??'completed'):['running','waiting'].includes(e.state))||e.admission_source!==(context?.parent?'call':'manual')||!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth)||e.cancel_requested||e.budget_exhausted||e.recovery_traversals||!terminal&&e.output_text!==null||e.merged_into!==null||e.requested_outcome!=='canceled')return false;
-  if(['actions','resources'].some(k=>s[k]!.length))return false;
+  if(s.actions!.length||(!context?.issuedResource&&s.resources!.length)||context?.resourceCleanup)return false;
   branchContinuationIds(s);
   if(s.paths!.filter(p=>p.parent_path_id===null).length!==1||!s.paths!.length)return false;
   if(s.paths!.some(p=>p.execution_id!==e.id||p.handling_limit||!['active','waiting','joining','arrived','completed','canceled','failed','skipped'].includes(p.state)||!Number.isSafeInteger(p.traversals)||p.traversals<0))return false;
@@ -75,6 +75,8 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
   const text=(v:string)=>interpolateBranchText(v,d,c);
   const boundRequests=new Set<string>();
   const pendingArrivals=new Set<string>(),sealedMaps=new Set<string>(),completedItems=new Set<string>(),authorized=new Set<string>(),exited=new Set<string>();
+  const resource=s.resources?.[0],resourceOperations=new Map<string,Row>();
+  let resourceReserved=false;
   let started=false,accepted=false,interruption:Row|undefined,invocation:Row|undefined,gateClosing:Row|undefined,terminalObserved=context?.restoredTerminal===true;
   const pendingLoops:{pathId:string;edgeId:string;iteration:number}[]=[],pendingOutcomes=new Map<string,string>(),gateDecisions=new Map<string,string>(),admitted=new Set<string>(),completedChildren=new Set<string>(),cancelledItems=new Set<string>(),cancelledGates=new Set<string>();
   if(seed){
@@ -128,6 +130,35 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      const srow=final('steps',v.stepExecutionId),p=find('paths',srow.path_id),a=s.attempts!.find(a=>a.step_execution_id===srow.id&&a.number===1)!;
      require(p.state==='active'&&!p.step_execution_id&&p.node_id===v.stepId&&srow.step_id===v.stepId&&srow.input_text===p.input_text&&srow.invocation===1+m.steps!.filter(row=>row.path_id===p.id&&row.step_id===srow.step_id).reduce((n,row)=>Math.max(n,row.invocation),0));
      m.steps!.push({...srow,state:'prepared',result_json:null});m.attempts!.push({...a,state:'prepared',request_id:null,fence:0,cancel_requested:0,result_json:null});p.step_execution_id=srow.id;p.traversals++;break;
+    }
+    case 'resource_reserved':{
+     require(context?.issuedResource&&resource&&!resourceReserved&&started&&!interruption);
+     const step=find('steps',resource.step_execution_id),p=find('paths',step.path_id);
+     require(step.state==='prepared'&&p.step_execution_id===step.id&&v.templateRef===resource.template_ref&&v.count===resource.requested_count&&key===`resource:${step.id}`);
+     resourceReserved=true;break;
+    }
+    case 'resource_operation':{
+     require(context?.issuedResource&&resourceReserved&&resource&&started&&!interruption);
+     const step=find('steps',resource.step_execution_id);
+     require(step.state==='prepared'&&v.schema==='branch-resource-operation.v1'&&['chat','import'].includes(v.phase)&&typeof v.token==='string'
+      &&key.startsWith(`resource-operation:${resource.creation_key}:${v.phase}:${v.token}:${v.state}:`)&&['running','completed'].includes(v.state));
+     const previous=resourceOperations.get(v.phase);
+     require(!previous?v.state==='running':previous.state==='running'&&previous.token===v.token);
+     require(v.phase!=='import'||resourceOperations.get('chat')?.state==='completed');
+     require(v.phase!=='chat'||v.releaseRequired===true&&v.generation===resource.generation);
+     require(v.state!=='completed'||stableJson(v)===resource[`${v.phase}_operation_json`]);
+     require(v.phase!=='import'||!previous?.creationOperationId||v.creationOperationId===previous.creationOperationId);
+     resourceOperations.set(v.phase,v);break;
+    }
+    case 'resource_created':{
+     require(context?.issuedResource&&resourceReserved&&resource&&started&&!interruption&&resourceOperations.get('import')?.state==='completed');
+     const step=find('steps',resource.step_execution_id),a=m.attempts!.find(a=>a.step_execution_id===step.id)!;
+     const captured=final('attempts',a.id),operation=JSON.parse(resource.import_operation_json),p=find('paths',step.path_id);
+     require(a.state==='prepared'&&step.state==='prepared'&&p.step_execution_id===step.id&&!boundRequests.has(a.id)
+      &&key===`resource-bound:${step.id}:${resource.generation}`&&captured.request_id
+      &&stableJson(v)===stableJson({...operation.result,requestId:captured.request_id,creationKey:resource.creation_key})
+      &&hostCut?.roots.some(root=>root.attemptId===a.id&&root.requestId===captured.request_id));
+     boundRequests.add(a.id);a.request_id=captured.request_id;a.state=step.state='waiting';p.state='active';break;
     }
     case 'request_bound':{
      const a=find('attempts',v.attemptId),captured=final('attempts',a.id),step=find('steps',a.step_execution_id),p=find('paths',step.path_id),node=d.steps.find(n=>n.id===step.step_id);
@@ -301,6 +332,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
     default:return false;
    }
   }
+  require(!context?.issuedResource||resourceReserved&&['chat','import'].every(phase=>resourceOperations.get(phase)?.state==='completed'));
   require(boundRequests.size===s.attempts!.filter(a=>a.request_id).length);
   require(started&&cancelledItems.size===0&&cancelledGates.size===0&&pendingLoops.length===0&&pendingArrivals.size===0&&authorized.size===exited.size);
   if(c.checkpointMode==='exit'&&!context?.terminal){const closing=checkpoint?.invocation;require(closing);if(m.gates!.some(g=>g.state==='waiting')&&closing.interruptionId===undefined)require(gateClosing&&gateClosing.invocationId===closing.id&&gateClosing.ordinal===closing.ordinal);else require(interruption&&closing.interruptionId===interruption.interruptionId&&closing.id===interruption.invocationId&&closing.ordinal===interruption.ordinal);}
