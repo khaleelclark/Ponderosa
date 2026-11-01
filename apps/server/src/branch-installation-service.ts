@@ -1,3 +1,4 @@
+import {composeBranchChat} from './branch-package-group.js';
 import {isAbsolute,resolve,sep} from 'node:path';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
 import {selectBranchMemory} from './branch-memory-update.js';
@@ -30,7 +31,7 @@ type InstallationJournal={chats:Array<ChatSnapshot&{applied?:ChatSnapshot}>;agen
 type AccessReview=import('@ponderosa/core').AgentAccessImportReviewDto;
 type AccessChoice=NonNullable<import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']>;
 type PendingWorkingRoot={chatRef:string;agentRef:string;chatId:string;sharedRoot:string};
-type PendingAccess={chatRef:string;agentRef:string;chatId:string;review:AccessReview};
+type PendingAccess={chatRef:string;agentRef:string;chatId:string;review:AccessReview;agentRefs?:string[]};
 /** Coordinates existing Chat/Agent lifecycle operations. It never creates provider Runs. */
 export class BranchInstallationService {
  private engine?:BranchPackageEngine;
@@ -270,7 +271,8 @@ export class BranchInstallationService {
    if(selection.workingFilesDestination&&selection.workingRootDestinations)throw new Error('Choose one folder destination format');
    if(selection.newManagedChatFolderName!==undefined){
     if(typeof selection.newManagedChatFolderName!=='string'||! /^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(selection.newManagedChatFolderName))throw new Error('Choose a safe NEW managed Chat folder name');
-    const [chatRef]=JSON.parse(key);if(pkg.chats.find(c=>c.ref===chatRef)!.agents.length!==1)throw new Error('Managed live activation currently requires one imported Agent per Chat');
+    const [chatRef,agentRef]=JSON.parse(key),group=pkg.chats.find(c=>c.ref===chatRef)!;
+    if(group.agents.length>1){const combined=composeBranchChat(group);if(combined.rootRef!==agentRef||Object.keys(fileSelections).some(k=>k!==key&&JSON.parse(k)[0]===chatRef))throw new Error('Choose grouped activation and recovery destinations on the organization root only');}
     if(selection.workingFilesActivation===undefined||selection.workingFilesActivation.sharedRoot!==undefined)throw new Error('Choose live activation, then confirm the actual created root in the staged review');
    }
    if(selection.workingFilesActivation!==undefined){
@@ -296,6 +298,7 @@ export class BranchInstallationService {
   if(pkg.chats.length&&!bindings.directories.workspace)throw new Error('Choose a default working directory for imported Chats');
   if(!this.engine)throw new Error('Package Engine unavailable');
   for(const chat of pkg.chats)for(const agent of chat.agents)this.engine.validateAgent(agent.definition,bindings.engines??pkg.engines??{});
+  for(const chat of pkg.chats)if(chat.agents.length>1&&chat.agents.some(a=>fileSelections[JSON.stringify([chat.ref,a.ref])]?.newManagedChatFolderName))this.engine.validateAgent(composeBranchChat(chat),bindings.engines??pkg.engines??{});
   if(branchId&&branch){for(const c of this.rows("SELECT id,project_id FROM conversations WHERE branch_id=? AND branch_execution_id IS NULL AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=conversations.id AND r.state!='active')",branchId)){this.identity(branchId,c.id);for(const a of this.store.listAgents(c.project_id))if(a.conversationId===c.id)this.identity(branchId,c.id,a.id);}}
   const existing=branchId?this.rows("SELECT * FROM branch_installation_resources WHERE branch_id=? AND state='active'",branchId):[];
   if(memorySelection!==undefined&&existing.some(r=>r.package_id!==pkg.packageId))throw new Error('Additive memory update requires the same installed package identity');
@@ -310,7 +313,7 @@ export class BranchInstallationService {
    const [chatRef,agentRef]=JSON.parse(key) as string[];
    if(selection.newManagedChatFolderName&&existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef))throw new Error('Choose a NEW installation Chat for managed live activation');
    if(existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef&&r.agent_ref===agentRef))throw new Error('Existing Agents retain their working roots; choose a new Agent for imported folder content');
-   operations.push({kind:'retain-content',resource:'Working folder',label:selection.workingFilesActivation!==undefined?'Retain NEW recovery copies and activate fresh locally owned working roots':'Retain NEW recovery copies only',after:{target:key,...selection}});
+   operations.push({kind:'retain-content',resource:'Working folder',label:selection.workingFilesActivation!==undefined?'Retain NEW recovery copies and activate fresh locally owned working roots':'Retain NEW recovery copies only',after:{target:key,...selection,...(selection.newManagedChatFolderName&&pkg.chats.find(c=>c.ref===chatRef)!.agents.length>1?{groupedAgentRefs:pkg.chats.find(c=>c.ref===chatRef)!.agents.map(a=>a.ref),workingRootRefs:[...new Set(composeBranchChat(pkg.chats.find(c=>c.ref===chatRef)!).agents.flatMap(a=>a.workingRootRef?[a.workingRootRef]:[]))]}:{})}});
   }
   const compare=(resource:string,label:string,before:unknown,after:unknown)=>{if(stableJson(before??null)!==stableJson(after??null))operations.push({kind:'change',resource,label,before:before??null,after:after??null});};
   for(const c of pkg.chats){for(const a of [{ref:'',title:c.title},...c.agents.map(a=>({ref:a.ref,title:a.definition.agents[0]!.title}))]){
@@ -359,7 +362,14 @@ export class BranchInstallationService {
   if(!pending||pending.chatRef!==chatRef||pending.agentRef!==agentRef)throw new Error('Installation access review changed');
   const pkg=this.validate(JSON.parse(plan.package_json)),agent=pkg.chats.find(c=>c.ref===chatRef)?.agents.find(a=>a.ref===agentRef);
   if(!agent)throw new Error('Installation Agent unavailable');
-  const review=await this.engine.reviewAccess(agent.definition,pending.chatId);
+  const group=pkg.chats.find(c=>c.ref===chatRef)!;
+  const definition=pending.agentRefs?composeBranchChat(group):agent.definition;
+  if(pending.agentRefs&&stableJson(pending.agentRefs)!==stableJson(definition.agents.map(a=>a.ref)))throw new Error('Grouped access review identity changed');
+  if(choice.agentActions!==undefined){
+   const required=definition.agents.filter(a=>a.accessSettings).map(a=>a.ref).sort();
+   if(!choice.agentActions||typeof choice.agentActions!=='object'||Array.isArray(choice.agentActions)||stableJson(Object.keys(choice.agentActions).sort())!==stableJson(required)||Object.values(choice.agentActions).some(action=>!['keep_destination','use_source'].includes(action)))throw new Error('Choose access settings for every reviewed source Agent');
+  }
+  const review=await this.engine.reviewAccess(definition,pending.chatId);
   this.store.sqlite.transaction(()=>{
    const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);
    if(!current||current.state!=='applying')throw new Error('Installation access review unavailable');
@@ -381,7 +391,7 @@ export class BranchInstallationService {
   this.ensureApplying(plan.id,plan.branch_id);
   const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!,state=this.rolePlan(current),choice=state.accessChoices?.[JSON.stringify([chatRef,agentRef])];
   if(choice?.reviewSha256===review.reviewSha256)return choice;
-  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,pendingAccess:{chatRef,agentRef,chatId,review}}),plan.id);
+  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,pendingAccess:{chatRef,agentRef,chatId,review,...(pkg.agents.length>1?{agentRefs:pkg.agents.map(a=>a.ref)}:{})}}),plan.id);
   throw new Error('Review imported Agent restrictions and destination access before continuing');
  }
  async cancel(id:string):Promise<{branchId?:string;state:string;error?:string}>{
@@ -513,7 +523,7 @@ export class BranchInstallationService {
     let chatResource=get(c.ref,''),chatId=chatResource?.local_id as string|undefined;
     if(!chatId){
      const first=c.agents[0]?.definition.agents[0];
-     const folderChoice=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!).fileSelections?.[JSON.stringify([c.ref,c.agents[0]?.ref])]?.newManagedChatFolderName;
+     const folderChoice=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!).fileSelections?.[JSON.stringify([c.ref,c.agents.find(a=>!a.managerRef)?.ref])]?.newManagedChatFolderName;
      const created=await this.createChat({label:c.title,...(folderChoice?{createFolderName:folderChoice}:{hostPath:interpolateBranchText(bindings.directories.workspace!,pkg.definition,configuration)}),
        defaultEngine:bindings.engines?.[first?.engine??'default']??first?.engine??bindings.engines?.default??'codex'},
        'branch-install-'+createHash('sha256').update(plan.id+':'+c.ref).digest('hex'),{branchId});
@@ -522,6 +532,43 @@ export class BranchInstallationService {
     }
     const chat=this.store.getConversation(chatId);if(!chat)throw new Error('Installed Chat unavailable');
     if(chatResource?.state!=='active')this.store.updateConversation(chatId,{title:c.title,instructions:c.instructions??''});
+    const groupState=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!),root=c.agents.find(a=>!a.managerRef),groupChoice=root&&groupState.fileSelections?.[JSON.stringify([c.ref,root.ref])];
+    const grouped=c.agents.length>1&&!!groupChoice?.newManagedChatFolderName;
+    if(grouped){
+     const combined=composeBranchChat(c),refs=combined.agents.map(a=>a.ref);
+     if(groupChoice!.workingFilesActivation?.sharedRoot===undefined){
+      const project=this.store.getProject(chat.projectId);if(!project)throw new Error('Created managed Project unavailable');
+      this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...groupState,pendingWorkingRoot:{chatRef:c.ref,agentRef:root!.ref,chatId,sharedRoot:project.hostPath}}),plan.id);return;
+     }
+     let resources=refs.map(ref=>get(c.ref,ref));
+     if(resources.some(Boolean)){
+      const receiptId=resources[0]?.creation_operation_id;
+      if(!receiptId||resources.some(r=>!r||r.state!=='staging'||r.creation_operation_id!==receiptId))throw new InstallationConflictError('Grouped import bindings require one complete staged creation receipt');
+      const receipt=this.row('SELECT status,result_json FROM agent_creation_operations WHERE id=? AND project_id=?',receiptId,chat.projectId);
+      if(!receipt)throw new InstallationConflictError('Grouped creation receipt unavailable');
+      if(receipt.status==='rolled_back'){
+       if(resources.some(r=>this.store.getAgent(r!.local_id)))throw new InstallationConflictError('Rolled-back group still owns live Agents');
+       this.store.sqlite.transaction(()=>{for(const ref of refs)this.run("DELETE FROM branch_installation_resources WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=? AND state='staging'",branchId,pkg.packageId,c.ref,ref);plan.attempt_count=(plan.attempt_count??0)+1;this.run('UPDATE branch_installation_plans SET attempt_count=? WHERE id=?',plan.attempt_count,plan.id);})();resources=[];
+      }else {
+       if(receipt.status!=='completed')throw new Error('Grouped import recovery is pending');
+       const members=this.rows('SELECT agent_id FROM agent_creation_operation_members WHERE operation_id=? ORDER BY position',receiptId).map(row=>row.agent_id);
+       const result=receipt.result_json?JSON.parse(receipt.result_json) as ImportAgentPackageResponse:undefined;
+       if(!result||stableJson(members)!==stableJson(result.agentIds))throw new InstallationConflictError('Grouped receipt membership mismatch');
+       if(!result||result.agentIds.length!==refs.length||refs.some((ref,i)=>resources[i]!.local_id!==result.agentIds[i]||!this.store.getAgent(result.agentIds[i]!))||result.rootAgentId!==get(c.ref,combined.rootRef)?.local_id)throw new InstallationConflictError('Grouped receipt identity mismatch');
+       await this.engine!.verifyStagedMemory(receiptId,combined);
+       for(const ref of refs)this.retainImportResult(plan.id,JSON.stringify([c.ref,ref]),result);
+      }
+     }
+     if(!resources.length||resources.every(r=>!r)){
+      const accessSettingsResolution=await this.importAccess(plan,c.ref,combined.rootRef,chatId,combined);
+      this.ensureApplying(plan.id,branchId);
+      const result=await this.engine!.importAgent(chat.projectId,chatId,combined,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':group',{signal:controller.signal,accessSettingsResolution,workingFilesDestination:groupChoice!.workingFilesDestination,workingRootDestinations:groupChoice!.workingRootDestinations,workingFilesActivation:groupChoice!.workingFilesActivation,branchHooks:{
+       plan:(ids,receiptId)=>{if(!receiptId||ids.length!==refs.length||new Set(ids).size!==ids.length)throw new Error('Grouped import identity plan mismatch');this.store.sqlite.transaction(()=>{refs.forEach((ref,i)=>bind(c.ref,ref,ids[i]!,receiptId));})();},
+       commit:result=>{if(result.agentIds.length!==refs.length||refs.some((ref,i)=>get(c.ref,ref)?.local_id!==result.agentIds[i])||get(c.ref,combined.rootRef)?.local_id!==result.rootAgentId)throw new Error('Grouped import commit identity mismatch');}
+      }});
+      this.ensureApplying(plan.id,branchId);for(const ref of refs)this.retainImportResult(plan.id,JSON.stringify([c.ref,ref]),result);
+     }
+    }
     for(const a of c.agents){
      const fileState=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!),fileChoice=fileState.fileSelections?.[JSON.stringify([c.ref,a.ref])];
      if(fileChoice?.newManagedChatFolderName&&fileChoice.workingFilesActivation?.sharedRoot===undefined){
@@ -529,13 +576,14 @@ export class BranchInstallationService {
       this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...fileState,pendingWorkingRoot:{chatRef:c.ref,agentRef:a.ref,chatId,sharedRoot:project.hostPath}}),plan.id);return;
      }
      let resource=get(c.ref,a.ref),id=resource?.local_id as string|undefined;
+     if(grouped&&(!id||!this.store.getAgent(id)))throw new InstallationConflictError('Grouped Agent identity disappeared; individual retry is not allowed');
      if(id&&!this.store.getAgent(id)){
       if(resource?.state==='active')throw new InstallationConflictError('An installed Agent is missing; review the package again');
       if(resource?.creation_operation_id){const receipt=this.row('SELECT status FROM agent_creation_operations WHERE id=?',resource.creation_operation_id);if(!receipt)throw new InstallationConflictError('A staged Agent import receipt is unavailable; review the package again');if(receipt.status!=='rolled_back'){if(receipt.status==='completed')throw new InstallationConflictError('A completed Agent import is missing its Agent; review the package again');throw new Error('The staged Agent import is still being recovered');}}
       plan.attempt_count=(plan.attempt_count??0)+1;this.run('UPDATE branch_installation_plans SET attempt_count=?,updated_at=? WHERE id=?',plan.attempt_count,new Date().toISOString(),plan.id);
       this.run("DELETE FROM branch_installation_resources WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=? AND state='staging'",branchId,pkg.packageId,c.ref,a.ref);resource=undefined;id=undefined;
      }
-     if(id&&resource?.state==='staging'){
+     if(id&&resource?.state==='staging'&&!grouped){
       if(!resource.creation_operation_id)throw new InstallationConflictError('A staged Agent has no durable import receipt; review the package again');
       const receipt=this.row('SELECT o.status,o.result_json FROM agent_creation_operations o JOIN agent_creation_operation_members m ON m.operation_id=o.id WHERE o.id=? AND o.project_id=? AND m.agent_id=?',resource.creation_operation_id,chat.projectId,id);
       if(!receipt)throw new InstallationConflictError('A staged Agent import receipt is unavailable; review the package again');

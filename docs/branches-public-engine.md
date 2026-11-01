@@ -243,9 +243,40 @@ fresh local working-copy receipts before population.
 
 Status `importResults` retains `liveWorkingRoots` along with recovery destinations
 and reviewed-grant suggestions, through receipt recovery and terminal compaction.
-Omission retains content-only behavior. Grouped Shared activation still requires
-a grouped importer call: workflow packages currently import one Agent at a time,
-so managed live activation refuses package Chats containing multiple Agents.
+Omission retains content-only behavior. Connected same-Chat organizations can now use the grouped importer call described
+below; disconnected forests still require an importer batch contract.
 Existing access/folder UI callers remain implemented; UI must additionally expose
 this new creation/activation choice and actual-root confirmation. No tests, build,
 types, browser or runner preparation were executed for this source change.
+
+
+### Connected organization activation (grouped review dependency 82cf46284)
+
+For a connected same-Chat organization, place the managed creation/activation and
+recovery selection on its authored root target only. The caller composes one
+organization package, keeps original parent refs, namespaces canonical artifact
+refs and their historical attachment/artifact bindings, consolidates compatible
+same-Chat memory, and collapses identical Shared manifests to one originals owner.
+Conflicting source bytes/manifests refuse with a fresh-export instruction. Separate
+root identities remain separate; differing source Chats do not acquire a shared
+root by composition. Preview operations expose `groupedAgentRefs` and canonical
+`workingRootRefs` when explicit per-root recovery mappings are needed.
+
+After actual-root confirmation the caller reviews the complete composed package
+against the actual destination Chat. `accessSettingsReview.agentRefs` identifies
+the group. The access-review endpoint accepts optional exhaustive `agentActions`
+for every source node with accessSettings, alongside action and the grouped
+reviewSha256. Individual-package digests cannot authorize the group. One import
+creates every Agent; planned IDs bind atomically to one creation receipt. Reopen
+checks the complete ordered receipt membership and result mapping, verifies staged
+memory once for the combined package, and retains group root/grant receipts on
+each target. Partial/missing groups cannot fall through to individual import.
+Cancellation uses the existing staged resource retirement and owned-copy cleanup.
+
+Multiple organization roots in a single Chat remain an explicit importer batch
+boundary: no synthetic manager is introduced. Grouping currently applies to fresh
+managed activation of the entire connected Chat, not regrouping existing Agents.
+Deferred regression source covers composition/reference invariants, conflicting
+Shared exports, staged actual-root confirmation, mixed per-Agent review choices,
+one receipt and two Agents sharing their actual fresh cwd. All execution deferred.
+In-progress checkpoint fork/map/provider/resource families remain incomplete.
