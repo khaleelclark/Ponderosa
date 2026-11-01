@@ -1,3 +1,4 @@
+import {CoordinationV3DestinationAdmissionAuthority} from '../../packages/agents/dist/coordination-v3-destination-admission-authority.js';
 import {commitDestinationHistoricalPartition,verifyDestinationHistoricalPartition} from '../../packages/agents/dist/coordination-v3-historical-partition.js';
 import {generationExitHeld} from '../../packages/agents/dist/index.js';
 import {encodeScriptContinuation} from '../../packages/agents/dist/branch-script-continuation.js';
@@ -1764,14 +1765,29 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
   assert.throws(()=>db.transaction(()=>readDestinationHistoricalPartition(db,historicalReservation,historicalStage,{requests:[sealed.envelope.hostDependencies.requests[0]]}))(),/executable root/);
   assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-exit:${stepId}:0`);assert.throws(readHistory,/sealed historical/);throw Error('restore journal');})(),/restore journal/);
   assert.throws(()=>db.transaction(()=>{
-   const entries=commitDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},'review-hash');
+   const retainedSnapshot={selected:sealed.envelope.selected,hostDependencies:sealed.envelope.hostDependencies};
+   const sourceReservation={...historicalReservation,checkpointHash:hash(stableJson(retainedSnapshot))};
+   const entries=commitDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},'review-hash');
+   // Retained source validation must preserve the REAL admission ID after original seal removal.
+   const auditSource=new CoordinationV3DestinationAdmissionAuthority(db,()=>{throw Error('Audit cannot deliver');},true);
+   const admissionRow={id:'partition-rollback',state:'admitted',reservation_json:stableJson(sourceReservation),reservation_hash:hash(stableJson(sourceReservation)),snapshot_json:stableJson(retainedSnapshot)};
    const evidenceReceipt={reviewHash:'review-hash',historicalPartition:entries};
-   verifyDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},evidenceReceipt);
-   evidenceReceipt.reviewHash='changed';assert.throws(()=>verifyDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},evidenceReceipt),/receipt differs/);evidenceReceipt.reviewHash='review-hash';
+   verifyDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},evidenceReceipt);
+   evidenceReceipt.reviewHash='changed';assert.throws(()=>verifyDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},evidenceReceipt),/receipt differs/);evidenceReceipt.reviewHash='review-hash';
    db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key IN (?,?)').run(f.source.id,`resource-generation-exit:${stepId}:0`,`resource-generation-retired:${stepId}:0`);
    db.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(sealed.checkpointId);
    assert.throws(readHistory,/sealed historical/);
-   verifyDestinationHistoricalPartition(db,'partition-rollback',historicalReservation,historicalStage,{requests:[]},evidenceReceipt);
+   verifyDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},evidenceReceipt);
+   const auditChanges=db.prepare('SELECT total_changes() n').get().n;
+   assert.deepEqual(auditSource.source(admissionRow,'audit').reservation,sourceReservation);
+   assert.equal(db.prepare('SELECT total_changes() n').get().n,auditChanges);
+   assert.throws(()=>auditSource.source(admissionRow),/Group Chat reservation map/);
+   assert.throws(()=>auditSource.source({...admissionRow,id:undefined},'audit'),/sealed historical/);
+   const immutable=db.prepare("SELECT receipt_sha256 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").get();
+   db.exec('DROP TRIGGER host_lifecycle_commit_immutable_update');
+   db.prepare("UPDATE host_lifecycle_commits SET receipt_sha256=? WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").run('0'.repeat(64));
+   assert.throws(()=>auditSource.source(admissionRow,'audit'),/Immutable historical evidence receipt differs/);
+   db.prepare("UPDATE host_lifecycle_commits SET receipt_sha256=? WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").run(immutable.receipt_sha256);
    throw Error('partition owner rollback');
   })(),/partition owner rollback/);
   assert.equal(db.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").get(),undefined);
@@ -2095,6 +2111,11 @@ test('operator group journal readback survives source owner loss without current
  const {groupJournalAudit}=await import('../../apps/server/dist/group-journal-audit.js');
  const audit=groupJournalAudit(db,new CoordinationV3Store(db)),changes=db.prepare('SELECT total_changes() n').get().n;
  const initial=audit.read(selection);assert.deepEqual(initial.receipt.requestMap,admitted.receipt.requestMap);assert.equal(initial.actionEligible,false);assert.equal(db.prepare('SELECT total_changes() n').get().n,changes);
+ db.prepare('DELETE FROM coordination_destination_group_chats WHERE admission_id=?').run(prepared.admissionId);
+ const slotChanges=db.prepare('SELECT total_changes() n').get().n;
+ assert.deepEqual(audit.read(selection).receipt,initial.receipt);
+ assert.equal(db.prepare('SELECT total_changes() n').get().n,slotChanges);
+ assert.throws(()=>new CoordinationV3DestinationAdmissionAuthority(db,()=>{},true).source(db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId)),/Group Chat reservation map/);
  db.pragma('foreign_keys = OFF');db.prepare('DELETE FROM branch_executions WHERE id=?').run(f.source.id);
  assert.throws(()=>s.captureStatus(f.branch.id,f.source.id,'two-resource-cut'),/owner unavailable/);
  const historical=audit.read(selection);assert.equal(historical.sourceOwnerPresent,false);assert.equal(historical.currentAuthority,false);assert.equal(historical.held,true);assert.deepEqual(historical.receipt.agentMap,admitted.receipt.agentMap);

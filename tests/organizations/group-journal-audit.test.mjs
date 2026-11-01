@@ -54,3 +54,21 @@ test('group admission audit binds exact reservation/full map and retains unknown
  assert.throws(()=>api.read({...selection,admissionId:'wrong'}),/reservation/);
  db.exec("INSERT INTO branch_executions VALUES('target','wrong-branch')");assert.throws(()=>api.read(selection),/owner identity/);
 });
+
+// Transport projection seam: canonical immutable validation is exercised by the Branch producer fixture.
+test('admitted historical partition audit suppresses all private retained envelopes and performs no writes',t=>{
+ const db=fixture(t),resources=[0,1].map(i=>({custody:{custodyId:`custody-${i}`,intent:{resourceStepId:`step-${i}`}},destination:{executionId:'target',resourceStepId:`fresh-${i}`}}));
+ const reservation={branchId:'branch',sourceExecutionId:'source',checkpointId:7,checkpointHash:'c'.repeat(64),resources},input={commandKey:'partition-command',checkpointId:7,expectedHash:reservation.checkpointHash};
+ const value={schema:'ponderosa.branch.issued-group-destination.v1',input,reservation,admissionId:'real-admission',reservationHash:hash(reservation),idMap:{'step-0':'fresh-0','step-1':'fresh-1'}};
+ const row={execution_id:'source',command_key:'issued-group-destination:'+hash(input.commandKey),input_hash:hash(input),result_json:stableJson(value)};
+ db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?)').run(...Object.values(row));
+ const selection={kind:'admissions',branchId:'branch',executionId:'source',journalKey:row.command_key,journalSha256:groupJournalDigest(row),custodySha256:hash(resources.map(r=>r.custody)),commandKey:input.commandKey,admissionId:value.admissionId,reservationHash:value.reservationHash};
+ const entry={historical:true,dispatchable:false,sha256:'d'.repeat(64),selection:{executionId:'old-execution',stepId:'old-step',generation:0,checkpointId:3,checkpointHash:'a'.repeat(64),envelopeSha256:'b'.repeat(64),intakeFence:{identity:'private-fence',sha256:'e'.repeat(64)},discloseTo:['private-source-ref']},destinationAgentIds:['private-destination'],retirement:{resultJson:'PRIVATE_RETIREMENT_BODY'},seal:{identity:{agentIds:['private-original']},envelope:{hostDependencies:{requests:[{payload:'PRIVATE_REQUEST_BODY'}],updates:[{payload:'PRIVATE_UPDATE_BODY'}],communications:[{payload:'PRIVATE_COMMUNICATION_BODY'}]},configuration:'PRIVATE_CONFIGURATION'}}};
+ const receipt={owners:[],historicalPartition:[entry]},before=db.prepare('SELECT total_changes() n').get().n;
+ const api=groupJournalAudit(db,{inspectCoordinationDestinationGroupAudit(id){assert.equal(id,'real-admission');return {reservation,reservationHash:value.reservationHash,state:'admitted',sourceIds:['step-0','step-1'],agentMap:{},imports:[],receipt,retirement:null,evidenceSha256:'f'.repeat(64)};}});
+ const result=api.read(selection),summary=result.receipt.historicalPartition[0],bytes=JSON.stringify(result);
+ assert.deepEqual(summary,{historical:true,dispatchable:false,sha256:entry.sha256,executionId:'old-execution',stepId:'old-step',generation:0,checkpointId:3,checkpointHash:'a'.repeat(64),envelopeSha256:'b'.repeat(64),originalAgentCount:1,destinationAgentCount:1,requestCount:1,updateCount:1,communicationCount:1});
+ for(const privateKey of ['PRIVATE_','private-source-ref','private-destination','private-original','private-fence','seal','retirementBody','discloseTo'])assert.equal(bytes.includes(privateKey),false,privateKey);
+ assert.equal(result.historical,true);assert.equal(result.currentAuthority,false);assert.equal(result.actionEligible,false);assert.equal(result.held,true);
+ assert.equal(db.prepare('SELECT total_changes() n').get().n,before);assert.equal(entry.seal.envelope.configuration,'PRIVATE_CONFIGURATION');
+});

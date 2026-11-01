@@ -49,7 +49,17 @@ export function groupJournalAudit(db:Database.Database,coordination:Pick<Coordin
    }
    owners.push({executionId:d.executionId,resourceStepId:d.resourceStepId,present:!!liveOwner,commandPresent:!!command});
   }
-  const evidence={...base,state:audit.state,reservationHash:audit.reservationHash,resources:r.resources,idMap:value.idMap,agentMap:audit.agentMap,imports:audit.imports,owners,receipt:audit.receipt,retirement:audit.retirement};
+  if(audit.receipt?.historicalPartition&&audit.receipt.historicalPartition.length>32)throw Error('Historical audit partition exceeds bound');
+  // Canonical readers validate full private seals; transport exposes only bounded metadata.
+  const receipt=audit.receipt?{...audit.receipt,historicalPartition:audit.receipt.historicalPartition?.map(entry=>{
+   const seal=entry.seal as Row,cut=seal.envelope.hostDependencies;
+   return {historical:true as const,dispatchable:false as const,sha256:entry.sha256,
+    executionId:entry.selection.executionId,stepId:entry.selection.stepId,generation:entry.selection.generation,
+    checkpointId:entry.selection.checkpointId,checkpointHash:entry.selection.checkpointHash,envelopeSha256:entry.selection.envelopeSha256,
+    originalAgentCount:seal.identity.agentIds.length,destinationAgentCount:entry.destinationAgentIds.length,
+    requestCount:cut.requests.length,updateCount:cut.updates.length,communicationCount:cut.communications.length};
+  })}:null;
+  const evidence={...base,state:audit.state,reservationHash:audit.reservationHash,resources:r.resources,idMap:value.idMap,agentMap:audit.agentMap,imports:audit.imports,owners,receipt,retirement:audit.retirement};
   return {...evidence,evidenceSha256:lifecycleHash({evidence,canonical:audit.evidenceSha256})};
  })();}};
 }

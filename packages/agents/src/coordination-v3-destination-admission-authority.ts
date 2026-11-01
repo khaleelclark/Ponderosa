@@ -84,13 +84,13 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(!row)throw Error('Destination admission unavailable');
   if(Boolean(JSON.parse(row.reservation_json).resources)!==this.group)throw Error('Use the exact singular or group admission API');return row;
  }
- private source(row:Row):{reservation:CoordinationDestinationReservation;cut:BranchHostCut} {
+ private source(row:Row,context:'current'|'audit'='current'):{reservation:CoordinationDestinationReservation;cut:BranchHostCut} {
   const reservation=JSON.parse(row.reservation_json) as CoordinationDestinationReservation,snapshot=JSON.parse(row.snapshot_json);
   if(stableJson(reservation)!==row.reservation_json||payloadHash(reservation)!==row.reservation_hash
     ||stableJson(snapshot)!==row.snapshot_json||payloadHash(snapshot)!==reservation.checkpointHash)throw Error('Destination retained evidence differs');
   const {cut}=retainedBranchHostGraph(snapshot,reservation.sourceExecutionId,true,true);
   if(!verifyBranchHostCut(cut,reservation.sourceExecutionId)||!cut.coverage.complete)throw Error('Destination retained cut is incomplete');
-  if(this.group&&row.id){
+  if(this.group&&row.id&&context==='current'){
    const chats=this.db.prepare('SELECT source_chat_id,source_execution_id,conversation_id FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(row.id);
    const expected=resourcesOf(reservation).map(r=>({source_chat_id:r.custody.sourceChatId,source_execution_id:r.custody.intent.executionId,conversation_id:r.destination.conversationId})).sort((a,b)=>a.source_chat_id<b.source_chat_id?-1:a.source_chat_id>b.source_chat_id?1:0);
    if(stableJson(chats)!==stableJson(expected))throw Error('Group Chat reservation map differs');
@@ -415,7 +415,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const archived=tombstone?JSON.parse(tombstone.evidence_json):undefined;
   const current=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(admissionId) as Row|undefined;
   const row=archived?.row??current;if(!row||current&&archived&&stableJson(current)!==stableJson(row))throw Error('Original group admission evidence unavailable or conflicting');
-  const {reservation,cut}=this.source({...row,id:undefined}),snapshot=JSON.parse(row.snapshot_json),resources=reservation.resources;
+  const {reservation,cut}=this.source(row,'audit'),snapshot=JSON.parse(row.snapshot_json),resources=reservation.resources;
   if(!resources||resources.length<2||resources.length>32||row.id!==admissionId||row.branch_id!==reservation.branchId||row.source_execution_id!==reservation.sourceExecutionId||row.checkpoint_id!==reservation.checkpointId
    ||row.project_id!==reservation.destination.projectId||row.conversation_id!==reservation.destination.conversationId||reservation.operatorId!=='local-operator'
    ||snapshot.selected?.execution?.[0]?.id!==reservation.sourceExecutionId||snapshot.selected.execution[0].branch_id!==reservation.branchId
@@ -434,14 +434,19 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(checkpoint&&(checkpoint.execution_id!==reservation.sourceExecutionId||checkpoint.content_hash!==reservation.checkpointHash||checkpoint.snapshot_json!==row.snapshot_json))throw Error('Original group checkpoint differs');
   const slots=(archived?.groupChats??this.db.prepare('SELECT admission_id,source_chat_id,source_execution_id,conversation_id,stage_json FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(admissionId)) as Row[];
   const expected=resources.map(r=>({admission_id:admissionId,source_chat_id:r.custody.sourceChatId,source_execution_id:r.custody.intent.executionId,conversation_id:r.destination.conversationId})).sort((a,b)=>a.source_chat_id<b.source_chat_id?-1:1);
-  if(stableJson(slots.map(({stage_json,...identity})=>identity))!==stableJson(expected))throw Error('Original group audit slots differ');
+  const slotIdentities=slots.map(({stage_json,...identity})=>identity);
+  if(row.state==='admitted'&&!archived){
+   if(new Set(slots.map(slot=>slot.source_chat_id)).size!==slots.length||slotIdentities.some(identity=>!expected.some(e=>stableJson(e)===stableJson(identity))))throw Error('Original group audit slots differ');
+  }else if(stableJson(slotIdentities)!==stableJson(expected))throw Error('Original group audit slots differ');
   const stage=row.stage_json?JSON.parse(row.stage_json):null,agentMap:Record<string,string>={},imports:{sourceChatId:string;operationId:string;status:string|'absent'}[]=[];
   for(const resource of resources){
-   const slot=slots.find(slot=>slot.source_chat_id===resource.custody.sourceChatId)!,local=slot.stage_json?JSON.parse(slot.stage_json):null;
+   const slot=slots.find(slot=>slot.source_chat_id===resource.custody.sourceChatId);
+   // Admitted audit uses the retained canonical stage when a live slot was removed.
+   const local=slot?(slot.stage_json?JSON.parse(slot.stage_json):null):stage&&row.state==='admitted'?resourceStage(resource,stage,cut):null;
    const chat=this.db.prepare('SELECT project_id,branch_id,execution_id FROM conversations WHERE id=?').get(resource.destination.conversationId) as Row|undefined;
    if(chat&&(chat.project_id!==resource.destination.projectId||chat.branch_id!==reservation.branchId||chat.execution_id!==resource.destination.executionId))throw Error('Original group audit Chat ownership differs');
    if(!local)continue;
-   if(stableJson(local)!==slot.stage_json||!exactKeys(local.agentMap,resource.custody.agentIds)||unique(Object.values(local.agentMap) as string[]).length!==resource.custody.agentIds.length
+   if((slot&&stableJson(local)!==slot.stage_json)||!exactKeys(local.agentMap,resource.custody.agentIds)||unique(Object.values(local.agentMap) as string[]).length!==resource.custody.agentIds.length
     ||local.importPlan?.projectId!==resource.destination.projectId||local.importPlan?.conversationId!==resource.destination.conversationId
     ||local.importPlan.agents.length!==resource.custody.agentIds.length||Object.values(local.agentMap).some(id=>resource.custody.agentIds.includes(id as string))
     ||stableJson(Object.fromEntries(local.importPlan.agents.map((a:Row)=>[a.sourceRef,a.agentId])))!==stableJson(local.agentMap)
@@ -474,7 +479,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
  private readInTransaction(admissionId:string,reservationHash:string,authority:CoordinationDestinationAuthority|undefined,expectedReviewHash?:string,audit=false):CoordinationDestinationReceipt {
   const row=this.row(admissionId);
   if(row.reservation_hash!==reservationHash||row.state!=='admitted'||!row.receipt_json)throw Error('Exact committed destination receipt unavailable');
-  const receipt=JSON.parse(row.receipt_json) as CoordinationDestinationReceipt,{reservation,cut}=this.source(row),stage=JSON.parse(row.stage_json) as CoordinationDestinationStage;
+  const receipt=JSON.parse(row.receipt_json) as CoordinationDestinationReceipt,{reservation,cut}=this.source(row,audit?'audit':'current'),stage=JSON.parse(row.stage_json) as CoordinationDestinationStage;
   if(audit&&(stableJson(receipt)!==row.receipt_json||stableJson(stage)!==row.stage_json))throw Error('Noncanonical retained group receipt/stage');
   if(expectedReviewHash&&expectedReviewHash!==receipt.reviewHash)throw Error('Destination admission replay review conflict');
   // Readback needs current disclosure permission, not surviving original objects or retained package bytes.

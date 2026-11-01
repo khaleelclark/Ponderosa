@@ -122,6 +122,12 @@ export interface GroupJournalAuditSelection {
  kind:'captures'|'admissions';branchId:string;executionId:string;journalKey:string;
  journalSha256:string;custodySha256:string;commandKey?:string;admissionId?:string;reservationHash?:string;
 }
+/** Verified historical evidence metadata only; private retained seals never cross audit transport. */
+export interface GroupJournalHistoricalPartitionSummary {
+ historical:true;dispatchable:false;sha256:string;
+ executionId:string;stepId:string;generation:number;checkpointId:number;checkpointHash:string;envelopeSha256:string;
+ originalAgentCount:number;destinationAgentCount:number;requestCount:number;updateCount:number;communicationCount:number;
+}
 export interface GroupJournalAuditReadback {
  historical:true;currentAuthority:false;actionEligible:false;held:true;
  selection:GroupJournalAuditSelection;sourceOwnerPresent:boolean;state:string;journalSha256:string;evidenceSha256:string;
@@ -129,6 +135,6 @@ export interface GroupJournalAuditReadback {
  reservationHash?:string;resources?:import('./coordination-destination.js').CoordinationDestinationGroupResource[];
  idMap?:Record<string,string>;agentMap?:Record<string,string>;imports?:{sourceChatId:string;operationId:string;status:string}[];
  owners?:{executionId:string;resourceStepId:string;present:boolean;commandPresent:boolean}[];
- receipt?:import('./coordination-destination.js').CoordinationDestinationGroupReceipt|null;
+ receipt?:(Omit<import('./coordination-destination.js').CoordinationDestinationGroupReceipt,'historicalPartition'>&{historicalPartition?:GroupJournalHistoricalPartitionSummary[]})|null;
  retirement?:import('./coordination-destination.js').CoordinationDestinationReconciliationReceipt|null;
 }
