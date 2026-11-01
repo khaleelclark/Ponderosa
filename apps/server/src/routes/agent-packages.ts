@@ -1,3 +1,4 @@
+import {destinationAdmissionHeld} from '@ponderosa/agents';
 import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
 import {assertCheckpointMembership} from '../checkpoint-package-membership.js';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
@@ -111,6 +112,12 @@ export interface BranchPackageImportError extends Error {
   accessSettingsReview?:AgentAccessImportReviewDto;
 }
 export interface BranchImportHooks {
+  /** Called inside import reservation, before async effects and Agent creation. */
+  stage?(plan:import('@ponderosa/core').CoordinationDestinationImportPlan):void;
+  /** May wait for durable human disclosure review, outside any SQLite transaction. */
+  beforeAdmit?(result:ImportAgentPackageResponse):void|Promise<void>;
+  /** Compose historical admission; invoke completeImport synchronously in the owner transaction. */
+  admit?(result:ImportAgentPackageResponse,completeImport:()=>void):void;
   plan(agentIds: string[], creationOperationId?: string): void | Promise<void>;
   transaction?(operation:()=>void):void;
   commit(result: ImportAgentPackageResponse): void;
@@ -1017,6 +1024,7 @@ export function registerAgentPackageRoutes(
   type RoleResult=ImportAgentPackageResponse&{outputRoleFinalization?:{reviewId:string;binding:string;mapping:Record<string,string>;done?:boolean}};
   const finishRoles=(operationId:string):ImportAgentPackageResponse=>{
     const operation=store.getAgentCreationOperation(operationId)!;const result=operation.result as RoleResult;
+    if(operation.agentIds.some(id=>destinationAdmissionHeld(store.sqlite,id)))throw new Error('Output roles remain held until destination admission commits');
     const intent=result.outputRoleFinalization;
     if(intent&&!intent.done){
       if(!outputApps)throw new Error('Output role service unavailable');
@@ -1593,6 +1601,13 @@ export function registerAgentPackageRoutes(
         store.updateAgentCreationOperation(creationOperationId!,{result:{phase:'prepared_memory',memoryPlan}});
       }
 
+      if(branchHooks?.stage){
+        if(!creationOperationId)throw new Error('Staged import requires its canonical creation operation');
+        const result:unknown=branchHooks.stage({creationOperationId,projectId:project.id,conversationId:conversation.id,
+          agents:importNodes.map((node,index)=>({sourceRef:node.ref,agentId:operationAgentIds[index]!})),
+          artifacts:plannedArtifacts.map(artifact=>({sourceRef:artifact.ref,destinationId:artifact.destinationId,sha256:artifact.sha256,byteLength:artifact.data.length}))});
+        if(result&&typeof result==='object'&&'then' in result)throw new Error('Import staging must be synchronous');
+      }
       })();
       await branchHooks?.plan(operationAgentIds, creationOperationId);
       signal?.throwIfAborted();
@@ -1792,6 +1807,8 @@ export function registerAgentPackageRoutes(
           }
         }
         signal?.throwIfAborted();
+        await branchHooks?.beforeAdmit?.(response);
+        signal?.throwIfAborted();
         if(roleIntent)outputApps!.checkImport(roleIntent.reviewId,roleIntent.binding,creationOperationId);
         const commit=()=>{
           if(reviewedDestinationPolicy!==undefined&&stableJson(new CapabilityPolicyStore(store.sqlite).resolveForChat(conversation.id))!==reviewedDestinationPolicy)throw new Error('Destination access changed; review the import again');
@@ -1799,10 +1816,14 @@ export function registerAgentPackageRoutes(
             const policies=new CapabilityPolicyStore(store.sqlite);
             for(const node of importNodes)if(node.accessSettings&&(body.accessSettingsResolution.agentActions?.[node.ref]??body.accessSettingsResolution.action)==='use_source')policies.put({scopeKind:'agent',scopeId:created.get(node.ref)!.id,expectedRevision:0,restrictedCapabilityIds:node.accessSettings.restrictedCapabilityIds,actor:'operator',reason:'Human-reviewed portable nonsecret access settings'});
           }
-          branchHooks?.commit(response);
-          store.updateAgentCreationOperation(creationOperationId!, {
+          const completeImport=()=>store.updateAgentCreationOperation(creationOperationId!, {
             status: "completed", result: branchHooks?{...response,memoryPlan:(store.getAgentCreationOperation(creationOperationId!)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan}:response, lastError: null,
           });
+          if(branchHooks?.admit){
+            const result:unknown=branchHooks.admit(response,completeImport);
+            if(result&&typeof result==='object'&&'then' in result)throw new Error('Historical admission must be synchronous');
+            if(store.getAgentCreationOperation(creationOperationId!)?.status!=='completed'||operationAgentIds.some(id=>destinationAdmissionHeld(store.sqlite,id)))throw new Error('Historical admission did not publish readiness and import completion');
+          }else{branchHooks?.commit(response);completeImport();}
         };
         if(branchHooks?.transaction)branchHooks.transaction(commit);else store.sqlite.transaction(commit)();
         for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);

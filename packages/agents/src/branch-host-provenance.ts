@@ -4,6 +4,28 @@ import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 type Row=Record<string,any>;
 export type HostProvenance={restorations:{row:Row;sha256:string}[];origins:{row:Row;sha256:string}[]};
+
+/** Structural destination identity only; historical actors/payloads remain original evidence. */
+export function restoredScopeValue(map:Row,key:string,value:unknown):unknown {
+ const destination=map.destination;
+ if(!destination)return value;
+ if(key==='project_id')return destination.projectId;
+ if(key==='conversation_id')return destination.conversationId;
+ if(['requester_agent_id','recipient_agent_id','owner_agent_id'].includes(key)){
+  if(value===null)return null;
+  const id=destination.agentMap?.[String(value)];if(typeof id!=='string'||!id)throw Error('Historical destination participant mapping unavailable');return id;
+ }
+ return value;
+}
+export function retainedRestorationSnapshot(db:Database.Database,receipt:Row):Row|undefined {
+ const saved=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(receipt.checkpoint_id,receipt.source_execution_id) as Row|undefined;
+ if(saved)return saved;
+ const destination=JSON.parse(receipt.receipt_json).destination;
+ if(!destination)return;
+ const row=db.prepare("SELECT snapshot_json,reservation_json FROM coordination_destination_admissions WHERE id=? AND state='admitted'").get(destination.admissionId) as Row|undefined;
+ if(row)return {snapshot_json:row.snapshot_json,content_hash:JSON.parse(row.reservation_json).checkpointHash};
+}
+
 const imported=(u:Row)=>u.kind==='historical_question'||u.kind==='historical_answer'||u.actor_kind==='system'&&u.actor_id==='host-cut-restoration';
 const evidence=(row:Row)=>({row,sha256:payloadHash(row)});
 
@@ -20,11 +42,14 @@ export function captureHostProvenance(db:Database.Database,requests:Row[],update
  if(!ids.size)return;
  const restorations=[...ids].sort().map(id=>{
   const receipt=db.prepare('SELECT * FROM coordination_cut_restorations WHERE id=?').get(id) as Row|undefined;
-  const saved=receipt&&db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(receipt.checkpoint_id,receipt.source_execution_id) as Row|undefined;
+  const saved=receipt&&retainedRestorationSnapshot(db,receipt) as Row|undefined;
   if(!receipt||!saved||saved.content_hash!==receipt.cut_hash)throw Error('Historical provenance source cut unavailable');
   const snapshot=JSON.parse(saved.snapshot_json);
   if(stableJson(snapshot)!==saved.snapshot_json||payloadHash(snapshot)!==receipt.cut_hash)throw Error('Historical provenance source cut differs');
-  return evidence({id,receipt,snapshot});
+  const destination=JSON.parse(receipt.receipt_json).destination;
+  const admission=destination?db.prepare("SELECT * FROM coordination_destination_admissions WHERE id=? AND state='admitted'").get(destination.admissionId):undefined;
+  if(destination&&!admission)throw Error('Historical destination admission receipt unavailable');
+  return evidence({id,receipt,snapshot,...(admission?{admission}:{})});
  });
  return {restorations,origins};
 }
@@ -45,10 +70,20 @@ class HostFacts {
   if(receipt.id!==id||snapshot.selected?.execution?.[0]?.id!==receipt.source_execution_id||snapshot.selected?.execution?.[0]?.branch_id!==receipt.branch_id
    ||payloadHash(snapshot)!==receipt.cut_hash||map.replayed!==false||map.restorationId!==id||map.checkpointId!==receipt.checkpoint_id||map.checkpointHash!==receipt.cut_hash)throw Error('Historical provenance receipt differs');
   let source=this.sources.get(id);
-  if(!source){source=retainedBranchHostGraph(snapshot,receipt.source_execution_id,false).cut;this.sources.set(id,source);}
+  if(!source){source=retainedBranchHostGraph(snapshot,receipt.source_execution_id,false,Boolean(map.destination)).cut;this.sources.set(id,source);}
   for(const [field,records] of [['requestMap',source.requests],['updateMap',source.updates],['joinMap',source.joins]] as const){
    const mapping=map[field],ids=records.map(e=>e.row.id).sort();
    if(!mapping||stableJson(Object.keys(mapping).sort())!==stableJson(ids)||new Set(Object.values(mapping)).size!==ids.length||Object.values(mapping).some(value=>typeof value!=='string'||!value||ids.includes(value)))throw Error('Historical provenance canonical map differs');
+  }
+  if(map.destination){
+   const admission=proof.row.admission,final=admission?.receipt_json&&JSON.parse(admission.receipt_json),reservation=admission?.reservation_json&&JSON.parse(admission.reservation_json),stage=admission?.stage_json&&JSON.parse(admission.stage_json);
+   if(!admission||admission.id!==map.destination.admissionId||admission.state!=='admitted'||!final||final.restorationId!==id
+    ||final.reservationHash!==admission.reservation_hash||payloadHash(reservation)!==admission.reservation_hash
+    ||final.stageHash!==payloadHash(stage)||final.checkpointHash!==receipt.cut_hash
+    ||stableJson(final.destination)!==stableJson(reservation.destination)
+    ||map.destination.projectId!==final.destination.projectId||map.destination.conversationId!==final.destination.conversationId
+    ||stableJson(map.destination.agentMap)!==stableJson(stage.agentMap)||stableJson(map.destination.artifactMap)!==stableJson(stage.artifactMap)
+    ||['requestMap','updateMap','joinMap'].some(k=>stableJson(map[k])!==stableJson(final[k])))throw Error('Historical destination admission proof differs');
   }
   this.verify(source);
   return {cut:source,receipt,map};
@@ -73,13 +108,13 @@ class HostFacts {
     const original=source.cut.joins.find(e=>source.map.joinMap[e.row.id]===j.id)?.row;if(!original)continue;
     const members=source.cut.members.filter(e=>e.row.join_id===original.id).sort((a,b)=>a.row.position-b.row.position).map(e=>({join_id:j.id,request_id:source.map.requestMap[e.row.request_id],position:e.row.position}));
     const continuations=JSON.parse(original.continuation_request_ids_json).map((id:string)=>source.map.requestMap[id]);
-    if(['project_id','conversation_id','owner_agent_id','mode','quorum','wake_policy','satisfying_outcomes_json','deadline_at'].some(k=>j[k]!==original[k])
+    if(['project_id','conversation_id','owner_agent_id','mode','quorum','wake_policy','satisfying_outcomes_json','deadline_at'].some(k=>j[k]!==restoredScopeValue(source.map,k,original[k]))
      ||j.continuation_request_ids_json!==stableJson(continuations)||stableJson(cut.members.filter(e=>e.row.join_id===j.id).map(e=>e.row).sort((a,b)=>a.position-b.position))!==stableJson(members)
      ||j.definition_hash!==payloadHash({restorationId:source.receipt.id,source:original.definition_hash,members:members.map(m=>m.request_id),continuations}))throw Error('Historical Join provenance differs');
    }
    for(const {row:s} of cut.suspensions){
     const original=source.cut.suspensions.find(e=>source.map.updateMap[e.row.question_update_id]===s.question_update_id)?.row;if(!original)continue;
-    if(s.request_id!==source.map.requestMap[original.request_id]||s.owner_agent_id!==original.owner_agent_id||s.dependency_kind!==original.dependency_kind||s.dependency_id!==source.map.joinMap[original.dependency_id])throw Error('Historical suspension provenance differs');
+    if(s.request_id!==source.map.requestMap[original.request_id]||s.owner_agent_id!==restoredScopeValue(source.map,'owner_agent_id',original.owner_agent_id)||s.dependency_kind!==original.dependency_kind||s.dependency_id!==source.map.joinMap[original.dependency_id])throw Error('Historical suspension provenance differs');
    }
   }
   this.active.delete(key);this.checked.add(cut);
@@ -93,7 +128,7 @@ class HostFacts {
   if(!origin||stableJson(payload)!==r.payload_json)throw Error('Historical Request provenance unavailable');
   const source=this.source(cut,origin.restorationId),old=source.cut.requests.find(e=>e.row.id===origin.sourceRequestId)?.row;
   if(!old||source.map.requestMap[old.id]!==r.id||stableJson(origin)!==stableJson({restorationId:source.receipt.id,sourceRequestId:old.id,historical:true})
-   ||['project_id','conversation_id','requester_agent_id','recipient_agent_id'].some(k=>r[k]!==old[k])||stableJson(payload.historicalPayload)!==old.payload_json)throw Error('Historical Request provenance differs');
+   ||['project_id','conversation_id','requester_agent_id','recipient_agent_id'].some(k=>r[k]!==restoredScopeValue(source.map,k,old[k]))||stableJson(payload.historicalPayload)!==old.payload_json)throw Error('Historical Request provenance differs');
   return this.request(source.cut,old);
  }
  update(cut:BranchHostCut,u:Row):{kind:string;payload:unknown;actor:{kind:string;id:string};row:Row} {

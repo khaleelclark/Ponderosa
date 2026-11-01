@@ -3,7 +3,8 @@ export type ProductScope='dev'|'branches';
 /** SQL aliases are internal constants, never request values. Ownership is
  * canonical Chat lineage; namespaces and folder membership grant no access. */
 export function activeChatOwnerSql(chat:string):string {
-  return `NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts removed_chat WHERE removed_chat.conversation_id=${chat}.id)
+  return `NOT EXISTS(SELECT 1 FROM coordination_destination_admissions staged_chat WHERE staged_chat.conversation_id=${chat}.id AND staged_chat.state!='admitted')
+    AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts removed_chat WHERE removed_chat.conversation_id=${chat}.id)
     AND NOT EXISTS(SELECT 1 FROM project_deletion_pending deleting_project WHERE deleting_project.project_id=${chat}.project_id)
     AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive_chat WHERE inactive_chat.local_id=${chat}.id AND inactive_chat.state!='active')
     AND (${chat}.branch_id IS NULL OR EXISTS(SELECT 1 FROM branches owner_branch WHERE owner_branch.id=${chat}.branch_id AND owner_branch.deleting=0))`;
@@ -16,6 +17,7 @@ export function activeChatProductSql(chat:string,product:ProductScope):string {
 }
 export function activeAgentOwnerSql(agent:string):string {
   return `${agent}.deleted_at IS NULL
+    AND NOT EXISTS(SELECT 1 FROM coordination_destination_admissions staged_identity WHERE staged_identity.state!='admitted' AND (staged_identity.conversation_id=${agent}.conversation_id OR EXISTS(SELECT 1 FROM coordination_destination_members staged_member WHERE staged_member.admission_id=staged_identity.id AND staged_member.agent_id=${agent}.id)))
     AND NOT EXISTS(SELECT 1 FROM agent_deletion_pending deleting_agent WHERE deleting_agent.agent_id=${agent}.id)
     AND NOT EXISTS(SELECT 1 FROM agent_creation_operation_members member JOIN agent_creation_operations operation ON operation.id=member.operation_id
       WHERE member.agent_id=${agent}.id AND operation.status IN ('preparing','canonical_committed','rolling_back'))

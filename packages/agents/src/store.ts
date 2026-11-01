@@ -1,3 +1,4 @@
+import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js';
 // AgentStore — the library that apps/server consumes. Authored communication and
 // execution telemetry remain event-log-owned and their SQLite views are
 // rebuildable. Communication V3 scheduler state is different: its requests,
@@ -1582,6 +1583,7 @@ export class AgentStore extends AgentEventSessionFacade {
     const agents = this.agentCatalog.listAgents(projectId);
     if (options.includePendingCreation) return agents;
     const pending = new Set(this.pendingAgentCreationIds(projectId));
+    for(const agent of agents)if(destinationAdmissionHeld(this.client,agent.id,agent.conversationId))pending.add(agent.id);
     return pending.size ? agents.filter((agent) => !pending.has(agent.id)) : agents;
   }
 
@@ -1598,6 +1600,7 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   agentCreationPending(agentId: string): boolean {
+    if(destinationAdmissionHeld(this.client,agentId))return true;
     return Boolean(this.client.prepare(`
       SELECT 1
       FROM agent_creation_operation_members AS members

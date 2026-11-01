@@ -1,4 +1,4 @@
-import {hostUpdateFact,hostRequestPayload} from './branch-host-provenance.js';
+import {hostUpdateFact,hostRequestPayload,retainedRestorationSnapshot} from './branch-host-provenance.js';
 import type {BranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {randomUUID} from 'node:crypto';
@@ -21,9 +21,9 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
   return payload;
  }
  const receipt=db.prepare('SELECT * FROM coordination_cut_restorations WHERE id=?').get(origin.restoration_id) as Row|undefined;
- const saved=receipt&&db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(receipt.checkpoint_id,receipt.source_execution_id) as Row|undefined;
+ const saved=receipt&&retainedRestorationSnapshot(db,receipt) as Row|undefined;
  if(!receipt||!saved||saved.content_hash!==receipt.cut_hash||payloadHash(JSON.parse(saved.snapshot_json))!==receipt.cut_hash)throw Error('Historical result retained cut unavailable');
- const {cut}=retainedBranchHostGraph(JSON.parse(saved.snapshot_json),receipt.source_execution_id);
+ const {cut}=retainedBranchHostGraph(JSON.parse(saved.snapshot_json),receipt.source_execution_id,true,Boolean(JSON.parse(receipt.receipt_json).destination));
  if(!verifyBranchHostCut(cut,receipt.source_execution_id)||!cut.coverage.complete)throw Error('Historical result retained cut integrity failure');
  const source=cut.updates.find(({row})=>row.id===origin.source_update_id)?.row,map=JSON.parse(receipt.receipt_json);
  if(!source||source.request_id!==origin.source_request_id||source.kind!==origin.source_kind||source.payload_hash!==origin.source_payload_hash
@@ -149,6 +149,60 @@ export class CoordinationV3CutRestorationAuthority {
    if(this.db.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending','attached') LIMIT 1").get(agent))throw Error('Participant has conflicting pending delivery');
    if(this.db.prepare("SELECT 1 FROM coordination_requests WHERE (requester_agent_id=? OR recipient_agent_id=?) AND state IN ('open','in_progress','waiting_dependency','awaiting_answer') LIMIT 1").get(agent,agent))throw Error('Participant has conflicting live graph ownership');
   }
+  validateRetainedCoordinationGraph(cut,now);
+  return writeRetainedCoordinationGraph(this.db,input=>this.deliver(input),branchId,executionId,input,cut,now);
+ }
+}
+
+export interface RetainedGraphDestination {
+ admissionId:string;projectId:string;conversationId:string;agentMap:Record<string,string>;artifactMap:Record<string,string>;
+}
+/** Shared final-projection writer; callers must validate cut, disclosure and destination first. */
+export function writeRetainedCoordinationGraph(db:Database.Database,deliver:(input:CreateActivationV3Input)=>string,branchId:string,executionId:string,input:BranchHostGraphRestoreInput,cut:BranchHostCut,now:string,destination?:RetainedGraphDestination):BranchHostGraphRestoreDto {
+ if(!db.inTransaction)throw Error('Historical graph requires one owner transaction');
+ const requests=cut.requests.map(e=>e.row),updates=cut.updates.map(e=>e.row),joins=cut.joins.map(e=>e.row);
+ const project=(id:string)=>destination?.projectId??id,chat=(id:string)=>destination?.conversationId??id;
+ const agent=(id:string|null):string|null=>{if(!id)return null;if(!destination)return id;const mapped=destination.agentMap[id];if(!mapped)throw Error('Historical participant map is incomplete');return mapped;};
+  const restorationId=randomUUID(),requestMap=Object.fromEntries(requests.map(r=>[r.id,randomUUID()])),updateMap=Object.fromEntries(updates.map(u=>[u.id,randomUUID()])),joinMap=Object.fromEntries(joins.map(j=>[j.id,randomUUID()]));
+  const receipt:BranchHostGraphRestoreDto={restorationId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,requestMap,updateMap,joinMap,replayed:false,...(destination?{destination}: {})};
+  db.prepare('INSERT INTO coordination_cut_restorations VALUES(?,?,?,?,?,?,?,?,?)').run(restorationId,branchId,executionId,input.checkpointId,input.expectedHash,input.commandKey,payloadHash(input),stableJson(receipt),now);
+  const origin=(r:Row,u?:Row)=>({restorationId,sourceRequestId:r.id,...(u?{sourceUpdateId:u.id,sourceKind:u.kind,sourcePayloadHash:u.payload_hash,sourceVersion:u.resulting_version}:{}),historical:true});
+  const evidence=(payload:string,r:Row,u?:Row)=>{const historicalPayload=JSON.parse(payload),original=u?hostUpdateFact(cut,u).payload:hostRequestPayload(cut,r);return {text:`[Imported historical ${u?.kind??'Request'}]\n${instruction}${typeof (original as Row)?.text==='string'?`\n\n${(original as Row).text}`:''}`,historicalOrigin:origin(r,u),historicalPayload,...(destination?{destinationAdmissionId:destination.admissionId,artifactBindings:Object.fromEntries(cut.artifactRefs.filter(e=>cut.updates.some(v=>v.row.request_id===r.id&&v.row.id===e.row.owner_id)).map(e=>[e.row.id,destination.artifactMap[e.row.id]]))}:{})};};
+  // Insert final projections directly. No intermediate live intake/update hooks run.
+  for(const request of requests)db.prepare(`INSERT INTO coordination_requests(id,project_id,conversation_id,requester_agent_id,recipient_agent_id,payload_json,state,version,lifetime_kind,deadline_at,open_question_update_id,created_at,updated_at,terminal_at)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestMap[request.id],project(request.project_id),chat(request.conversation_id),agent(request.requester_agent_id),agent(request.recipient_agent_id),stableJson(evidence(request.payload_json,request)),request.state,request.version,request.lifetime_kind,request.deadline_at,request.open_question_update_id?updateMap[request.open_question_update_id]:null,now,now,TERMINAL_REQUEST_STATES.has(request.state)?now:null);
+  for(const update of updates){
+   const request=requests.find(r=>r.id===update.request_id)!,payload=evidence(update.payload_json,request,update),kind=update.kind==='question'?'historical_question':update.kind==='answer'?'historical_answer':update.kind;
+   db.prepare('INSERT INTO coordination_request_updates(id,request_id,kind,actor_kind,actor_id,in_reply_to_update_id,payload_json,payload_hash,resulting_state,resulting_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(updateMap[update.id],requestMap[request.id],kind,'system','host-cut-restoration',update.in_reply_to_update_id?updateMap[update.in_reply_to_update_id]:null,stableJson(payload),payloadHash(payload),update.resulting_state,update.resulting_version,now);
+   db.prepare('INSERT INTO coordination_restored_update_origins VALUES(?,?,?,?,?,?,?,?)').run(updateMap[update.id],restorationId,request.id,update.id,update.kind,update.payload_hash,update.resulting_version,stableJson({kind:update.actor_kind,id:update.actor_id}));
+  }
+  for(const join of joins){
+   const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),continuations=JSON.parse(join.continuation_request_ids_json).map((id:string)=>requestMap[id]);
+   db.prepare(`INSERT INTO coordination_joins(id,project_id,conversation_id,owner_agent_id,mode,quorum,satisfying_outcomes_json,state,deadline_at,definition_hash,continuation_request_ids_json,wake_policy,created_at,updated_at,terminal_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(joinMap[join.id],project(join.project_id),chat(join.conversation_id),agent(join.owner_agent_id),join.mode,join.quorum,join.satisfying_outcomes_json,join.state,join.deadline_at,payloadHash({restorationId,source:join.definition_hash,members:members.map(m=>requestMap[m.request_id]),continuations}),stableJson(continuations),join.wake_policy,now,now,join.state==='open'?null:now);
+   for(const member of members)db.prepare('INSERT INTO coordination_join_members VALUES(?,?,?)').run(joinMap[join.id],requestMap[member.request_id],member.position);
+  }
+  for(const {row:s} of cut.suspensions)db.prepare('INSERT INTO coordination_question_suspensions VALUES(?,?,?,?,?,?,?,?,?)').run(updateMap[s.question_update_id],requestMap[s.request_id],agent(s.owner_agent_id),'join',joinMap[s.dependency_id],s.state,now,now,s.state==='open'?null:now);
+  // Only the final frontier is delivered. Suspended questions wait for their mapped Join.
+  for(const request of requests){
+   if(TERMINAL_REQUEST_STATES.has(request.state)||request.state==='waiting_dependency')continue;
+   const question=request.state==='awaiting_answer',update=question?updates.find(u=>u.id===request.open_question_update_id):updates.find(u=>u.request_id===request.id&&u.resulting_version===request.version);
+   if(question&&cut.suspensions.some(({row:s})=>s.question_update_id===request.open_question_update_id&&s.state==='open'&&joins.some(j=>j.id===s.dependency_id&&j.state==='open')))continue;
+   if(joins.some(j=>j.state!=='open'&&j.owner_agent_id===(question?request.requester_agent_id:request.recipient_agent_id)&&JSON.parse(j.continuation_request_ids_json).includes(request.id)))continue;
+   if(question&&!request.requester_agent_id)continue; // Operator reads the labelled question through the Request surface.
+   deliver({projectId:project(request.project_id),agentId:agent(question?request.requester_agent_id:request.recipient_agent_id)!,scopeKey:`conversation:${chat(request.conversation_id)}`,kind:question?'coordination_question':update&&['answer','historical_answer'].includes(update.kind)?'coordination_answer':'coordination_request',priority:question?90:60,dedupeKey:`restore:${restorationId}:request:${requestMap[request.id]}`,payload:{requestId:requestMap[request.id],request:evidence(request.payload_json,request),...(question?{inReplyToUpdateId:updateMap[update!.id]}:{}),...(update?{updateId:updateMap[update.id],update:evidence(update.payload_json,request,update)}:{}),historicalInstruction:instruction},sourceKind:update?'request_update':'request',sourceId:update?updateMap[update.id]!:requestMap[request.id]!,externalIntake:true,now});
+  }
+  for(const join of joins.filter(j=>j.state!=='open')){
+   const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),outcomes=members.map(m=>{const r=requests.find(r=>r.id===m.request_id)!,u=updates.find(u=>u.request_id===r.id&&u.resulting_version===r.version);return {requestId:requestMap[r.id],state:r.state,request:evidence(r.payload_json,r),...(u?{update:{id:updateMap[u.id],kind:u.kind==='question'?'historical_question':u.kind==='answer'?'historical_answer':u.kind,payload:evidence(u.payload_json,r,u),createdAt:now}}:{})};});
+   const continuations=(JSON.parse(join.continuation_request_ids_json) as string[]).map(id=>{const r=requests.find(r=>r.id===id)!;return {requestId:requestMap[id],state:r.state,direction:r.recipient_agent_id===join.owner_agent_id?'inbound':'outbound_question',request:evidence(r.payload_json,r),...(r.open_question_update_id?{inReplyToUpdateId:updateMap[r.open_question_update_id]}:{})};});
+   deliver({projectId:project(join.project_id),agentId:agent(join.owner_agent_id)!,scopeKey:`conversation:${chat(join.conversation_id)}`,kind:`coordination_join_${join.state}`,priority:60,dedupeKey:`join:${joinMap[join.id]}:terminal`,payload:{joinId:joinMap[join.id],state:join.state,wakePolicy:join.wake_policy,outcomes,continuations,progress:{terminal:outcomes.filter(o=>TERMINAL_REQUEST_STATES.has(o.state)).length,total:outcomes.length,remaining:outcomes.filter(o=>!TERMINAL_REQUEST_STATES.has(o.state)).length},historicalInstruction:instruction},sourceKind:'join',sourceId:joinMap[join.id]!,externalIntake:true,now});
+  }
+  return receipt;
+}
+
+export function validateRetainedCoordinationGraph(cut:BranchHostCut,now:string):void {
+ const requests=cut.requests.map(e=>e.row),updates=cut.updates.map(e=>e.row),joins=cut.joins.map(e=>e.row);
+ if(!cut.coverage.complete||requests.some(r=>r.state==='outcome_unknown'||r.superseded_by_request_id))throw Error('Incomplete graph, unknown effect or recovery chain requires reconciliation');
   for(const request of requests){
    validateHistoricalRequest(request,updates.filter(u=>u.request_id===request.id).sort((a,b)=>a.resulting_version-b.resulting_version),cut);
    if(request.deadline_at&&request.deadline_at<=now)throw Error('Expired historical lifetime needs an explicit fresh lifetime policy');
@@ -172,40 +226,4 @@ export class CoordinationV3CutRestorationAuthority {
    if(suspension.dependency_kind!=='join'||!joins.some(j=>j.id===suspension.dependency_id))throw Error('Decision suspension restoration is not admitted');
    if(suspension.state==='open'&&(request.state!=='awaiting_answer'||request.open_question_update_id!==question.id))throw Error('Open suspension is not the selected outstanding question');
   }
-  const restorationId=randomUUID(),requestMap=Object.fromEntries(requests.map(r=>[r.id,randomUUID()])),updateMap=Object.fromEntries(updates.map(u=>[u.id,randomUUID()])),joinMap=Object.fromEntries(joins.map(j=>[j.id,randomUUID()]));
-  const receipt:BranchHostGraphRestoreDto={restorationId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,requestMap,updateMap,joinMap,replayed:false};
-  this.db.prepare('INSERT INTO coordination_cut_restorations VALUES(?,?,?,?,?,?,?,?,?)').run(restorationId,branchId,executionId,input.checkpointId,input.expectedHash,input.commandKey,commandHash,stableJson(receipt),now);
-  const origin=(r:Row,u?:Row)=>({restorationId,sourceRequestId:r.id,...(u?{sourceUpdateId:u.id,sourceKind:u.kind,sourcePayloadHash:u.payload_hash,sourceVersion:u.resulting_version}:{}),historical:true});
-  const evidence=(payload:string,r:Row,u?:Row)=>{const historicalPayload=JSON.parse(payload),original=u?hostUpdateFact(cut,u).payload:hostRequestPayload(cut,r);return {text:`[Imported historical ${u?.kind??'Request'}]\n${instruction}${typeof (original as Row)?.text==='string'?`\n\n${(original as Row).text}`:''}`,historicalOrigin:origin(r,u),historicalPayload};};
-  // Insert final projections directly. No intermediate live intake/update hooks run.
-  for(const request of requests)this.db.prepare(`INSERT INTO coordination_requests(id,project_id,conversation_id,requester_agent_id,recipient_agent_id,payload_json,state,version,lifetime_kind,deadline_at,open_question_update_id,created_at,updated_at,terminal_at)
-   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestMap[request.id],request.project_id,request.conversation_id,request.requester_agent_id,request.recipient_agent_id,stableJson(evidence(request.payload_json,request)),request.state,request.version,request.lifetime_kind,request.deadline_at,request.open_question_update_id?updateMap[request.open_question_update_id]:null,now,now,TERMINAL_REQUEST_STATES.has(request.state)?now:null);
-  for(const update of updates){
-   const request=requests.find(r=>r.id===update.request_id)!,payload=evidence(update.payload_json,request,update),kind=update.kind==='question'?'historical_question':update.kind==='answer'?'historical_answer':update.kind;
-   this.db.prepare('INSERT INTO coordination_request_updates(id,request_id,kind,actor_kind,actor_id,in_reply_to_update_id,payload_json,payload_hash,resulting_state,resulting_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(updateMap[update.id],requestMap[request.id],kind,'system','host-cut-restoration',update.in_reply_to_update_id?updateMap[update.in_reply_to_update_id]:null,stableJson(payload),payloadHash(payload),update.resulting_state,update.resulting_version,now);
-   this.db.prepare('INSERT INTO coordination_restored_update_origins VALUES(?,?,?,?,?,?,?,?)').run(updateMap[update.id],restorationId,request.id,update.id,update.kind,update.payload_hash,update.resulting_version,stableJson({kind:update.actor_kind,id:update.actor_id}));
-  }
-  for(const join of joins){
-   const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),continuations=JSON.parse(join.continuation_request_ids_json).map((id:string)=>requestMap[id]);
-   this.db.prepare(`INSERT INTO coordination_joins(id,project_id,conversation_id,owner_agent_id,mode,quorum,satisfying_outcomes_json,state,deadline_at,definition_hash,continuation_request_ids_json,wake_policy,created_at,updated_at,terminal_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(joinMap[join.id],join.project_id,join.conversation_id,join.owner_agent_id,join.mode,join.quorum,join.satisfying_outcomes_json,join.state,join.deadline_at,payloadHash({restorationId,source:join.definition_hash,members:members.map(m=>requestMap[m.request_id]),continuations}),stableJson(continuations),join.wake_policy,now,now,join.state==='open'?null:now);
-   for(const member of members)this.db.prepare('INSERT INTO coordination_join_members VALUES(?,?,?)').run(joinMap[join.id],requestMap[member.request_id],member.position);
-  }
-  for(const {row:s} of cut.suspensions)this.db.prepare('INSERT INTO coordination_question_suspensions VALUES(?,?,?,?,?,?,?,?,?)').run(updateMap[s.question_update_id],requestMap[s.request_id],s.owner_agent_id,'join',joinMap[s.dependency_id],s.state,now,now,s.state==='open'?null:now);
-  // Only the final frontier is delivered. Suspended questions wait for their mapped Join.
-  for(const request of requests){
-   if(TERMINAL_REQUEST_STATES.has(request.state)||request.state==='waiting_dependency')continue;
-   const question=request.state==='awaiting_answer',update=question?updates.find(u=>u.id===request.open_question_update_id):updates.find(u=>u.request_id===request.id&&u.resulting_version===request.version);
-   if(question&&cut.suspensions.some(({row:s})=>s.question_update_id===request.open_question_update_id&&s.state==='open'&&joins.some(j=>j.id===s.dependency_id&&j.state==='open')))continue;
-   if(joins.some(j=>j.state!=='open'&&j.owner_agent_id===(question?request.requester_agent_id:request.recipient_agent_id)&&JSON.parse(j.continuation_request_ids_json).includes(request.id)))continue;
-   if(question&&!request.requester_agent_id)continue; // Operator reads the labelled question through the Request surface.
-   this.deliver({projectId:request.project_id,agentId:question?request.requester_agent_id:request.recipient_agent_id,scopeKey:`conversation:${request.conversation_id}`,kind:question?'coordination_question':update&&['answer','historical_answer'].includes(update.kind)?'coordination_answer':'coordination_request',priority:question?90:60,dedupeKey:`restore:${restorationId}:request:${requestMap[request.id]}`,payload:{requestId:requestMap[request.id],request:evidence(request.payload_json,request),...(question?{inReplyToUpdateId:updateMap[update!.id]}:{}),...(update?{updateId:updateMap[update.id],update:evidence(update.payload_json,request,update)}:{}),historicalInstruction:instruction},sourceKind:update?'request_update':'request',sourceId:update?updateMap[update.id]!:requestMap[request.id]!,externalIntake:true,now});
-  }
-  for(const join of joins.filter(j=>j.state!=='open')){
-   const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),outcomes=members.map(m=>{const r=requests.find(r=>r.id===m.request_id)!,u=updates.find(u=>u.request_id===r.id&&u.resulting_version===r.version);return {requestId:requestMap[r.id],state:r.state,request:evidence(r.payload_json,r),...(u?{update:{id:updateMap[u.id],kind:u.kind==='question'?'historical_question':u.kind==='answer'?'historical_answer':u.kind,payload:evidence(u.payload_json,r,u),createdAt:now}}:{})};});
-   const continuations=(JSON.parse(join.continuation_request_ids_json) as string[]).map(id=>{const r=requests.find(r=>r.id===id)!;return {requestId:requestMap[id],state:r.state,direction:r.recipient_agent_id===join.owner_agent_id?'inbound':'outbound_question',request:evidence(r.payload_json,r),...(r.open_question_update_id?{inReplyToUpdateId:updateMap[r.open_question_update_id]}:{})};});
-   this.deliver({projectId:join.project_id,agentId:join.owner_agent_id,scopeKey:`conversation:${join.conversation_id}`,kind:`coordination_join_${join.state}`,priority:60,dedupeKey:`join:${joinMap[join.id]}:terminal`,payload:{joinId:joinMap[join.id],state:join.state,wakePolicy:join.wake_policy,outcomes,continuations,progress:{terminal:outcomes.filter(o=>TERMINAL_REQUEST_STATES.has(o.state)).length,total:outcomes.length,remaining:outcomes.filter(o=>!TERMINAL_REQUEST_STATES.has(o.state)).length},historicalInstruction:instruction},sourceKind:'join',sourceId:joinMap[join.id]!,externalIntake:true,now});
-  }
-  return receipt;
- }
 }

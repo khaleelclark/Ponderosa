@@ -1,3 +1,4 @@
+import {CoordinationV3DestinationAdmissionAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
 import type {HostArtifactGrant} from './branch-host-adoption.js';
 import { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
@@ -148,6 +149,22 @@ export class CoordinationV3Store {
   }
   restoreHostCoordinationCut(branchId:string,executionId:string,input:import('@ponderosa/core').BranchHostGraphRestoreInput,grant:HostArtifactGrant,now:string):import('@ponderosa/core').BranchHostGraphRestoreDto {
     return new CoordinationV3CutRestorationAuthority(this.sqlite,input=>this.createActivation(input)).restore(branchId,executionId,input,grant,now);
+  }
+  /** Host-only destination admission; every mutation requires the caller's owner transaction. */
+  reserveCoordinationDestination(input:import('@ponderosa/core').CoordinationDestinationReservation,authority:CoordinationDestinationAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).reserve(input,authority,now);
+  }
+  stageCoordinationDestination(id:string,input:import('@ponderosa/core').CoordinationDestinationStage,now=new Date().toISOString()):void {
+    new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).stage(id,input,now);
+  }
+  reviewCoordinationDestination(id:string,authority:CoordinationDestinationAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).review(id,authority,now);
+  }
+  admitCoordinationDestination(id:string,reviewHash:string,authority:CoordinationDestinationAuthority,compose:(graph:import('@ponderosa/core').BranchHostGraphRestoreDto)=>import('@ponderosa/core').CoordinationDestinationOwnerReceipt,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).admit(id,reviewHash,authority,compose,now);
+  }
+  readCoordinationDestination(id:string,reservationHash:string,authority:CoordinationDestinationAuthority) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).read(id,reservationHash,authority);
   }
   private readonly sqlite: Database.Database;
   private readonly activationReadModel: CoordinationV3ActivationReadModel;

@@ -5,7 +5,7 @@ type Row=Record<string,any>;
 export type RetainedHostOwner={executionId:string;branchId:string;cut:BranchHostCut};
 
 /** Resolve only sealed server-retained owner cuts. Shared graph facts must agree byte for byte. */
-export function retainedBranchHostGraph(snapshot:Row,executionId:string,verifyProvenance=true):{cut:BranchHostCut;owners:RetainedHostOwner[]} {
+export function retainedBranchHostGraph(snapshot:Row,executionId:string,verifyProvenance=true,allowDestinationResources=false):{cut:BranchHostCut;owners:RetainedHostOwner[]} {
  const c=snapshot.continuation;
  if(c?.schema!=='ponderosa.branch.script-tree-continuation.v1'){
   const cut=snapshot.hostDependencies as BranchHostCut;
@@ -29,7 +29,7 @@ export function retainedBranchHostGraph(snapshot:Row,executionId:string,verifyPr
   if(!issued.length){if(cut||o.hostDependenciesHash)throw Error('Tree host cut has no owned Request');continue;}
   if(!cut||o.hostDependenciesHash!==payloadHash(cut)||!verifyBranchHostCut(cut,o.executionId)||!cut.coverage.complete
     ||cut.bindingPin.revisionId!==o.bindingRevisionId||cut.bindingPin.sha256!==o.bindingHash||cut.bindingPin.requiredSecretRefs.length
-    ||o.selected.resources.length||cut.resources.length||cut.roots.length!==issued.length
+    ||(allowDestinationResources?stableJson(o.selected.resources)!==stableJson(cut.resources.map(e=>e.row)):o.selected.resources.length||cut.resources.length)||cut.roots.length!==issued.length
     ||issued.some((a:Row)=>!cut.roots.some(r=>r.attemptId===a.id&&r.requestId===a.request_id&&r.recoveryOfRequestId===a.recovery_of_request_id)))throw Error('Tree per-owner host cut differs');
   owners.push({executionId:o.executionId,branchId:e.branch_id,cut});
  }
@@ -56,7 +56,7 @@ export function retainedBranchHostGraph(snapshot:Row,executionId:string,verifyPr
   requests:merge('requests',r=>r.id),updates:merge('updates',r=>r.id),lateResults:merge('lateResults',r=>r.id),joins:merge('joins',r=>r.id),
   members:merge('members',r=>stableJson([r.join_id,r.request_id])),suspensions:merge('suspensions',r=>stableJson([r.question_update_id,r.dependency_kind,r.dependency_id])),
   communications:merge('communications',r=>r.id),joinOutcomes:merge('joinOutcomes',r=>r.id),artifactRefs:merge('artifactRefs',r=>r.id),
-  resources:[],resourceMembers:[],resourceContexts:[],resourceReceipts:[],bindingPin:{revisionId:root.bindingRevisionId,sha256:root.bindingHash,requiredSecretRefs:[]}} as BranchHostCut;
+  resources:allowDestinationResources?merge('resources',r=>r.step_execution_id):[],resourceMembers:allowDestinationResources?merge('resourceMembers',r=>r.agent_id):[],resourceContexts:allowDestinationResources?merge('resourceContexts',r=>stableJson([r.step_execution_id,r.generation])):[],resourceReceipts:allowDestinationResources?merge('resourceReceipts',r=>stableJson(r)):[],bindingPin:{revisionId:root.bindingRevisionId,sha256:root.bindingHash,requiredSecretRefs:[]}} as BranchHostCut;
  if(!verifyBranchHostCut(cut,executionId)||Buffer.byteLength(stableJson(cut))>8_000_000)throw Error('Tree host graph exceeds retained integrity bound');
  if(verifyProvenance)verifyHostProvenance(cut);
  return {cut,owners};

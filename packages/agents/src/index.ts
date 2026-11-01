@@ -186,3 +186,7 @@ export { beginSourceCapture, assertSourceCapture, commitSourceCapture, releaseSo
 export type { SourceCaptureToken } from "./source-capture-boundary.js";
 
 export {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
+
+export type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
+export {destinationAdmissionHeld,requireDestinationAdmitted} from './coordination-v3-destination-staging.js';
+export {creationId as workspaceCreationId} from './store-workspace-catalog-authority.js';
