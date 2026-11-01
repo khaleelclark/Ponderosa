@@ -1,3 +1,4 @@
+import { codexTurnContent } from "./typed-input.js";
 import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
 import { codexTurnContent } from "./typed-input.js";
 import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
@@ -962,24 +963,30 @@ export class CodexAppServerSession implements RuntimeSession {
       throw new Error("Native compaction is still in progress; its completion is unconfirmed.");
     }
     if (input.nativeAction?.kind === "review") {
+      if (input.inputFiles?.length) throw new Error("Native review does not accept typed attachments; submit them in a separate turn");
       if (this.activeTurnId) throw new Error("Native review requires an idle session");
       const turnId = await startCodexReview(this.rpc, this.engineAgentId, input.nativeAction);
       this.activeTurnId = turnId;
       return { turnId };
     }
+    const prompt = this.seedHistory.length > 0
+      ? renderSeedPrompt(this.seedHistory, input.prompt)
+      : input.prompt;
+    // Verify admitted media before changing retained native plan settings.
+    let content = codexTurnContent(input, prompt);
     if (input.nativeAction?.kind === "plan") {
       const model = input.model || this.activeModel;
       if (!model) throw new Error("Native plan mode requires the selected provider model");
       await setCodexPlanMode(this.rpc, this.engineAgentId, input.nativeAction, model, input.effort);
+      input.assertCurrent?.();
+      content = codexTurnContent(input, prompt);
     }
     input.assertCurrent?.();
-    const prompt = this.seedHistory.length > 0
-      ? renderSeedPrompt(this.seedHistory.splice(0), input.prompt)
-      : input.prompt;
+    this.seedHistory.splice(0);
     const providerModelGeneration = this.providerModelGeneration;
     const response = await this.rpc.request<TurnResponse>("turn/start", {
       threadId: this.engineAgentId,
-      input: codexTurnContent(input, prompt),
+      input: content,
       ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       ...(input.model ? { model: input.model } : {}),
       serviceTier: serviceTierForSpeed(input.speed),
@@ -998,14 +1005,18 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
+    input.assertCurrent?.();
     await this.validateBillingMode();
+    input.assertCurrent?.();
     if (input.nativeAction) return { status: "not_steerable", reason: "Native actions require a new scheduler-owned turn" };
     if (!this.activeTurnId) return { status: "not_active" };
+    const content = codexTurnContent(input);
+    input.assertCurrent?.();
     try {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
         threadId: this.engineAgentId,
         expectedTurnId: this.activeTurnId,
-        input: codexTurnContent(input),
+        input: content,
         ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       });
       return { status: "accepted", turnId: response.turnId };
