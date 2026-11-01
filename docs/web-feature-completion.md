@@ -212,3 +212,46 @@ push, merge or deployment occurred.
 Grouped regression source extends branch-package-files.test.mjs for discovery,
 canonical-map replacement, child selection refusal, retained-Agent refusal,
 changed root identities and independent reporting roots. Execution remains deferred.
+
+## Reviewed saved Request and graph actions
+
+BranchHistoryReview mounts in ExecutionPanel's existing Run actions. Opening
+"Review saved work" loads retained checkpoints with explicit older-page loading.
+The operator selects one checkpoint and either one exact Request ID for fresh
+adoption, a graph restore, or a historical Run rewind with graphReview.
+Review reads never submit an adoption, restore or rewind. Exact branch/execution,
+checkpoint hash and Request identities are checked before displaying a review.
+
+One shared ConfirmDialog pattern displays saved Request state/version, original
+Project/Chat/requester/recipient, current state/version/binding revision/hash,
+changed workflow/bindings/configuration, restrictions and logical required secret
+names. Expandable saved payload/update/artifact evidence and current safe
+configuration remain explicit historical evidence. Graph review includes exact
+Joins/member/continuation identities. No original actor, grant, native ownership
+or completed effect is adopted as fresh authority.
+
+Request adoption requires a fresh instruction, explicit reconcile/independent
+choice, reconciled-effects acknowledgement and separate acknowledgements for
+changed pins and current secret requirements. Unknown outcomes only admit
+reconciliation. Graph restore and rewind require the whole opaque graph review
+hash and explicit effects reconciliation. Backend admission/refusal remains
+canonical; the UI does not widen unsupported graph families or grant secrets.
+
+409 clears prior confirmation and acknowledgements, refreshes the same review,
+and requires a fresh human choice. There is no automatic mutation retry.
+Before sending, the exact command/input is retained in browser localStorage;
+uncertain submissions lock new choices and can only reconcile the same input/key,
+including after remount. Confirmed responses and definitive 4xx clear that pending
+command. Run/Branch projections refresh after accepted changes or stale review.
+
+Consumes Branches contracts through6c4a9eb in the source integration tree;
+owner confirmed the preserved contract at7a190fbe. Graph restore/rewind controls
+require checkpoint restoreSupported and script_control_frontier eligibility;
+individual Request review/adoption remains separately admitted by the server.
+Later resource access-review/custody-release controls are not in this bounded
+caller increment and remain a concrete UI follow-up if assigned. Deferred source:
+branch-history-review.test.mjs and branch-history-review-mounted.tsx cover exact
+scope/hash checks, nonmutating review, stale409/fresh acknowledgement and ambiguous
+response reconciliation. No tests/checks/types/build/browser/runner preparation
+or execution, push, merge or deployment. Backend continuation/refusal families
+and qualification remain open; no #32/Bible/full-UI pass is claimed.
