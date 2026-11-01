@@ -263,6 +263,7 @@ export class BranchInstallationService {
  private async checkMemory(plan:Row){const update=this.rolePlan(plan).memoryUpdate;if(update&&createHash('sha256').update(stableJson(await this.memoryInventory(plan.branch_id))).digest('hex')!==update.hash)throw new InstallationConflictError('Destination memory changed; review a new additive preview');}
  async preview(value:unknown,bindings:BranchBindings,branchId?:string,memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto,fileSelections:import('@ponderosa/core').BranchImportFileSelections={}):Promise<BranchInstallationPreviewDto>{
   this.maintainPlans();
+  if(!this.engine)throw new Error('Package Engine unavailable');
   const pkg=this.validate(value);
   if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid working folder destinations');
   const targetKeys=new Set(pkg.chats.flatMap(c=>c.agents.map(a=>JSON.stringify([c.ref,a.ref])))),paths:string[]=[];
@@ -272,7 +273,7 @@ export class BranchInstallationService {
    if(selection.newManagedChatFolderName!==undefined){
     if(typeof selection.newManagedChatFolderName!=='string'||! /^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(selection.newManagedChatFolderName))throw new Error('Choose a safe NEW managed Chat folder name');
     const [chatRef,agentRef]=JSON.parse(key),group=pkg.chats.find(c=>c.ref===chatRef)!;
-    if(group.agents.length>1){const combined=composeBranchChat(group);if(combined.rootRef!==agentRef||Object.keys(fileSelections).some(k=>k!==key&&JSON.parse(k)[0]===chatRef))throw new Error('Choose grouped activation and recovery destinations on the organization root only');}
+    if(group.agents.length>1){const combined=await composeBranchChat(group,this.engine!);if(combined.rootRef!==agentRef||Object.keys(fileSelections).some(k=>k!==key&&JSON.parse(k)[0]===chatRef))throw new Error('Choose grouped activation and recovery destinations on the first authored reporting root only');}
     if(selection.workingFilesActivation===undefined||selection.workingFilesActivation.sharedRoot!==undefined)throw new Error('Choose live activation, then confirm the actual created root in the staged review');
    }
    if(selection.workingFilesActivation!==undefined){
@@ -296,9 +297,8 @@ export class BranchInstallationService {
   if(branchId&&this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')",branchId))throw new Error('Another update is still applying');
   for(const directory of Object.values(bindings.directories))if(!statSync(realpathSync(interpolateBranchText(directory,pkg.definition,this.configurationFor(pkg,branchId)))).isDirectory())throw new Error('Working directories must exist');
   if(pkg.chats.length&&!bindings.directories.workspace)throw new Error('Choose a default working directory for imported Chats');
-  if(!this.engine)throw new Error('Package Engine unavailable');
   for(const chat of pkg.chats)for(const agent of chat.agents)this.engine.validateAgent(agent.definition,bindings.engines??pkg.engines??{});
-  for(const chat of pkg.chats)if(chat.agents.length>1&&chat.agents.some(a=>fileSelections[JSON.stringify([chat.ref,a.ref])]?.newManagedChatFolderName))this.engine.validateAgent(composeBranchChat(chat),bindings.engines??pkg.engines??{});
+  for(const chat of pkg.chats)if(chat.agents.length>1&&chat.agents.some(a=>fileSelections[JSON.stringify([chat.ref,a.ref])]?.newManagedChatFolderName))this.engine.validateAgent(await composeBranchChat(chat,this.engine!),bindings.engines??pkg.engines??{});
   if(branchId&&branch){for(const c of this.rows("SELECT id,project_id FROM conversations WHERE branch_id=? AND branch_execution_id IS NULL AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=conversations.id AND r.state!='active')",branchId)){this.identity(branchId,c.id);for(const a of this.store.listAgents(c.project_id))if(a.conversationId===c.id)this.identity(branchId,c.id,a.id);}}
   const existing=branchId?this.rows("SELECT * FROM branch_installation_resources WHERE branch_id=? AND state='active'",branchId):[];
   if(memorySelection!==undefined&&existing.some(r=>r.package_id!==pkg.packageId))throw new Error('Additive memory update requires the same installed package identity');
@@ -313,7 +313,7 @@ export class BranchInstallationService {
    const [chatRef,agentRef]=JSON.parse(key) as string[];
    if(selection.newManagedChatFolderName&&existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef))throw new Error('Choose a NEW installation Chat for managed live activation');
    if(existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef&&r.agent_ref===agentRef))throw new Error('Existing Agents retain their working roots; choose a new Agent for imported folder content');
-   operations.push({kind:'retain-content',resource:'Working folder',label:selection.workingFilesActivation!==undefined?'Retain NEW recovery copies and activate fresh locally owned working roots':'Retain NEW recovery copies only',after:{target:key,...selection,...(selection.newManagedChatFolderName&&pkg.chats.find(c=>c.ref===chatRef)!.agents.length>1?{groupedAgentRefs:pkg.chats.find(c=>c.ref===chatRef)!.agents.map(a=>a.ref),workingRootRefs:[...new Set(composeBranchChat(pkg.chats.find(c=>c.ref===chatRef)!).agents.flatMap(a=>a.workingRootRef?[a.workingRootRef]:[]))]}:{})}});
+   operations.push({kind:'retain-content',resource:'Working folder',label:selection.workingFilesActivation!==undefined?'Retain NEW recovery copies and activate fresh locally owned working roots':'Retain NEW recovery copies only',after:{target:key,...selection,...(selection.newManagedChatFolderName&&pkg.chats.find(c=>c.ref===chatRef)!.agents.length>1?{groupedAgentRefs:pkg.chats.find(c=>c.ref===chatRef)!.agents.map(a=>a.ref),workingRootRefs:[...new Set((await composeBranchChat(pkg.chats.find(c=>c.ref===chatRef)!,this.engine!)).agents.flatMap(a=>a.workingRootRef?[a.workingRootRef]:[]))]}:{})}});
   }
   const compare=(resource:string,label:string,before:unknown,after:unknown)=>{if(stableJson(before??null)!==stableJson(after??null))operations.push({kind:'change',resource,label,before:before??null,after:after??null});};
   for(const c of pkg.chats){for(const a of [{ref:'',title:c.title},...c.agents.map(a=>({ref:a.ref,title:a.definition.agents[0]!.title}))]){
@@ -363,7 +363,7 @@ export class BranchInstallationService {
   const pkg=this.validate(JSON.parse(plan.package_json)),agent=pkg.chats.find(c=>c.ref===chatRef)?.agents.find(a=>a.ref===agentRef);
   if(!agent)throw new Error('Installation Agent unavailable');
   const group=pkg.chats.find(c=>c.ref===chatRef)!;
-  const definition=pending.agentRefs?composeBranchChat(group):agent.definition;
+  const definition=pending.agentRefs?await composeBranchChat(group,this.engine!):agent.definition;
   if(pending.agentRefs&&stableJson(pending.agentRefs)!==stableJson(definition.agents.map(a=>a.ref)))throw new Error('Grouped access review identity changed');
   if(choice.agentActions!==undefined){
    const required=definition.agents.filter(a=>a.accessSettings).map(a=>a.ref).sort();
@@ -535,7 +535,7 @@ export class BranchInstallationService {
     const groupState=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!),root=c.agents.find(a=>!a.managerRef),groupChoice=root&&groupState.fileSelections?.[JSON.stringify([c.ref,root.ref])];
     const grouped=c.agents.length>1&&!!groupChoice?.newManagedChatFolderName;
     if(grouped){
-     const combined=composeBranchChat(c),refs=combined.agents.map(a=>a.ref);
+     const combined=await composeBranchChat(c,this.engine!),refs=combined.agents.map(a=>a.ref);
      if(groupChoice!.workingFilesActivation?.sharedRoot===undefined){
       const project=this.store.getProject(chat.projectId);if(!project)throw new Error('Created managed Project unavailable');
       this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...groupState,pendingWorkingRoot:{chatRef:c.ref,agentRef:root!.ref,chatId,sharedRoot:project.hostPath}}),plan.id);return;
@@ -553,7 +553,7 @@ export class BranchInstallationService {
        if(receipt.status!=='completed')throw new Error('Grouped import recovery is pending');
        const members=this.rows('SELECT agent_id FROM agent_creation_operation_members WHERE operation_id=? ORDER BY position',receiptId).map(row=>row.agent_id);
        const result=receipt.result_json?JSON.parse(receipt.result_json) as ImportAgentPackageResponse:undefined;
-       if(!result||stableJson(members)!==stableJson(result.agentIds))throw new InstallationConflictError('Grouped receipt membership mismatch');
+       if(!result||refs.some((ref,i)=>result.agentRefs?.[ref]!==result.agentIds[i])||stableJson(members)!==stableJson(result.agentIds))throw new InstallationConflictError('Grouped receipt membership mismatch');
        if(!result||result.agentIds.length!==refs.length||refs.some((ref,i)=>resources[i]!.local_id!==result.agentIds[i]||!this.store.getAgent(result.agentIds[i]!))||result.rootAgentId!==get(c.ref,combined.rootRef)?.local_id)throw new InstallationConflictError('Grouped receipt identity mismatch');
        await this.engine!.verifyStagedMemory(receiptId,combined);
        for(const ref of refs)this.retainImportResult(plan.id,JSON.stringify([c.ref,ref]),result);
@@ -564,7 +564,7 @@ export class BranchInstallationService {
       this.ensureApplying(plan.id,branchId);
       const result=await this.engine!.importAgent(chat.projectId,chatId,combined,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':group',{signal:controller.signal,accessSettingsResolution,workingFilesDestination:groupChoice!.workingFilesDestination,workingRootDestinations:groupChoice!.workingRootDestinations,workingFilesActivation:groupChoice!.workingFilesActivation,branchHooks:{
        plan:(ids,receiptId)=>{if(!receiptId||ids.length!==refs.length||new Set(ids).size!==ids.length)throw new Error('Grouped import identity plan mismatch');this.store.sqlite.transaction(()=>{refs.forEach((ref,i)=>bind(c.ref,ref,ids[i]!,receiptId));})();},
-       commit:result=>{if(result.agentIds.length!==refs.length||refs.some((ref,i)=>get(c.ref,ref)?.local_id!==result.agentIds[i])||get(c.ref,combined.rootRef)?.local_id!==result.rootAgentId)throw new Error('Grouped import commit identity mismatch');}
+       commit:result=>{if(refs.some((ref,i)=>result.agentRefs?.[ref]!==result.agentIds[i])||result.agentIds.length!==refs.length||refs.some((ref,i)=>get(c.ref,ref)?.local_id!==result.agentIds[i])||get(c.ref,combined.rootRef)?.local_id!==result.rootAgentId)throw new Error('Grouped import commit identity mismatch');}
       }});
       this.ensureApplying(plan.id,branchId);for(const ref of refs)this.retainImportResult(plan.id,JSON.stringify([c.ref,ref]),result);
      }

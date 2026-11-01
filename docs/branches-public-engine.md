@@ -243,17 +243,16 @@ fresh local working-copy receipts before population.
 
 Status `importResults` retains `liveWorkingRoots` along with recovery destinations
 and reviewed-grant suggestions, through receipt recovery and terminal compaction.
-Omission retains content-only behavior. Connected same-Chat organizations can now use the grouped importer call described
-below; disconnected forests still require an importer batch contract.
+Omission retains content-only behavior. Same-Chat organizations and independent reporting roots use one grouped importer call described below (shared engine dependency d7ca2d196 atop 82cf46284).
 Existing access/folder UI callers remain implemented; UI must additionally expose
 this new creation/activation choice and actual-root confirmation. No tests, build,
 types, browser or runner preparation were executed for this source change.
 
 
-### Connected organization activation (grouped review dependency 82cf46284)
+### Grouped organization and forest activation (shared composer dependency d7ca2d196)
 
-For a connected same-Chat organization, place the managed creation/activation and
-recovery selection on its authored root target only. The caller composes one
+For a same-Chat organization or forest, place the managed creation/activation and
+recovery selection on its first authored reporting root target only. The caller delegates to `BranchPackageEngine.composeAgents` for one
 organization package, keeps original parent refs, namespaces canonical artifact
 refs and their historical attachment/artifact bindings, consolidates compatible
 same-Chat memory, and collapses identical Shared manifests to one originals owner.
@@ -273,9 +272,7 @@ memory once for the combined package, and retains group root/grant receipts on
 each target. Partial/missing groups cannot fall through to individual import.
 Cancellation uses the existing staged resource retirement and owned-copy cleanup.
 
-Multiple organization roots in a single Chat remain an explicit importer batch
-boundary: no synthetic manager is introduced. Grouping currently applies to fresh
-managed activation of the entire connected Chat, not regrouping existing Agents.
+Independent reporting roots remain explicit `rootRefs`; no synthetic manager is introduced. Grouping applies to fresh managed activation of the entire Chat. Existing-Agent regrouping remains unsupported. Shared identity comes from retained source Chat and working-copy mode, including whole-folder exports without preexisting `workingRootRef`. Preview uses the shared composer’s canonical root refs; submit a discovery preview then re-preview with exact NEW recovery mappings when needed.
 Deferred regression source covers composition/reference invariants, conflicting
 Shared exports, staged actual-root confirmation, mixed per-Agent review choices,
 one receipt and two Agents sharing their actual fresh cwd. All execution deferred.
