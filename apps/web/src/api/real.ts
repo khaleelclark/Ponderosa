@@ -321,6 +321,23 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
+  getContextRecovery(agentId:string,idempotencyKey?:string):Promise<{
+    support:import('@ponderosa/core').ProviderContextRecoverySupport;
+    boundary:Pick<import('@ponderosa/core').ProviderContextRecoveryRequest,'providerSessionId'|'sourceRunId'|'toolContractHash'|'sourceFence'>|null;
+    request:import('@ponderosa/core').ProviderContextRecoveryRequest|null;
+    sourceEvidence?:import('@ponderosa/core').ProviderContextRecoveryEvidence;
+  }>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries${toQuery({idempotencyKey})}`,{cache:'no-store'});
+  },
+  recoverContext(agentId:string,input:{idempotencyKey:string;expectedSessionId:string;expectedSourceRunId:string;expectedToolContractHash:string;acknowledgeUnknownEffects:true}):Promise<unknown>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries`,{method:'POST',body:JSON.stringify(input)});
+  },
+  stopContextRecovery(agentId:string,recoveryId:string):Promise<{stopRequested:boolean}>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries/${encodeURIComponent(recoveryId)}/stop`,{method:'POST'});
+  },
+  dismissContextRecovery(agentId:string,recoveryId:string):Promise<unknown>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries/${encodeURIComponent(recoveryId)}/dismiss`,{method:'POST',body:JSON.stringify({acknowledgeStillBlocked:true})});
+  },
   getVoiceReplyStatus(conversationId: string, messageId: string, agentId: string): Promise<import("@ponderosa/core").VoiceReplyStatus> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/voice-replies/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`, {cache:"no-store"});
   },

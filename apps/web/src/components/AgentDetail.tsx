@@ -1,3 +1,4 @@
+import {ContextRecoveryPanel} from './ContextRecoveryPanel';
 import {ImportedCommunications} from './ImportedCommunications';
 import { createClientId } from "../clientId";
 import {ResourceSettingsContext} from "./ResourceSettingsContext";
@@ -1035,6 +1036,7 @@ export function AgentDetail({
         onOpenArtifact={onOpenArtifact}
       />
 
+      {tab!=="chat"&&!auditOnly&&<ContextRecoveryPanel key={`recovery:${detail.agent.id}`} agentId={detail.agent.id}/>}
       {tab!=="chat"&&<ImportedCommunications key={detail.agent.id} agentId={detail.agent.id}/>}
 
       {auditOnly?<Alert severity="info" sx={{m:1}}>This Agent belongs to a workflow execution. Control its work from the execution view.</Alert>:<AgentDetailComposer

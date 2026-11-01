@@ -130,6 +130,31 @@ Deferred regression sources include `text-reply-route.test.mjs`,
 recording-format, mounted-recorder, phrase-buffer and text-size regressions.
 No runner/configuration was added or executed.
 
-Integration ownership clarification: the exact f446 recovery Stop/status/dismiss
-consumer is also remaining UI-owner product work. Shared Chat/peer previews, Agent
-new-Chat/live activation and mapped Settings above are source coverage only.
+Shared Chat/peer previews, Agent new-Chat/live activation and mapped Settings
+above are source coverage only.
+
+## Exact native-context recovery consumer
+
+Consumes runtime `f446d63e357e16c7cc1365bcf0c2d0c7dd8b028b` and its core types.
+`ContextRecoveryPanel`, mounted in the persistent Agent technical view, inspects
+status on demand without opening a provider. Recovery requires an explicit unknown
+effects acknowledgement and freshly rechecks the exact session/Run/contract/fence
+boundary before submission. The exact idempotency key is retained in browser
+storage before POST; failed/ambiguous requests are inspected by that key, never
+automatically retried or replaced with a new identity.
+
+Recorded phase, source evidence, unsupported-provider limitations, context-only
+acceptance and original-work uncertainty remain visible. Exact recovery Stop is
+available while the original POST is pending. Only a settled hold has a dismissal
+control, with a separate human acknowledgement; server authority still decides
+admission/cleanup. No recovery action manufactures a scheduler task, retries
+original work, changes access or marks it successful. The old fresh-session
+Settings action remains a separate explicit action. Source regression
+`tests/chats/context-recovery-mounted.tsx` covers acknowledgement, key custody,
+exact Stop during pending recovery and explicit dismissal without replay.
+No test/check/build/type/browser execution accompanied this increment.
+
+Branches delivered backend caller `d9fb504d766b24a3891a458657f58451e4a833ef`
+(no web edits), superseding earlier content-only backend limits. Its workflow
+package file-selection/live-activation controls still need a web caller; Agent
+package controls above do not close that separate surface.
