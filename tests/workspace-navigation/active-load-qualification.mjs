@@ -5,13 +5,14 @@ import {createLoadFixture} from '../shared/ui-load-fixture.mjs';import {serveFix
 const require=createRequire(new URL('../../apps/server/package.json',import.meta.url)),{chromium}=require('playwright-core');
 const out=process.env.PONDEROSA_LOAD_EVIDENCE;assert(out,'Owned evidence directory required');await mkdir(out,{recursive:true});
 const full=process.env.PONDEROSA_LOAD_MODE==='full';assert(!full||process.env.PONDEROSA_ACCEPTED_METHOD_RECEIPT,'Heavy run requires accepted method receipt path');
-const f=await createLoadFixture(out);let browser,web;const results=[];
+const results=[];for(const product of ['core','branches'])for(const mobile of [false,true])for(let session=0;session<(full?8:1);session++)results.push({id:`${product}-${mobile?'phone':'desktop'}-${session}`,product,mobile,session,status:'planned'});await writeFile(out+'/sessions.json',JSON.stringify({full,results},null,2));
+const f=await createLoadFixture(out);let browser,web;
 try{
  web=await serveFixture(f.f);browser=await chromium.launch({executablePath:'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox']});
  for(const product of ['core','branches']){
   await f.activate(product);
   for(const mobile of [false,true])for(let session=0;session<(full?8:1);session++){
-   const id=`${product}-${mobile?'phone':'desktop'}-${session}`,row={id,product,mobile,session,status:'started',profile:mobile?{width:360,height:640,dpr:1.75,cpu:4,mobile:true,touch:true}:{width:1365,height:768,dpr:1,cpu:1,mobile:false,touch:false}};results.push(row);
+   const id=`${product}-${mobile?'phone':'desktop'}-${session}`,row=Object.assign(results.find(r=>r.id===id),{status:'started',profile:mobile?{width:360,height:640,dpr:1.75,cpu:4,mobile:true,touch:true}:{width:1365,height:768,dpr:1,cpu:1,mobile:false,touch:false}});
    const context=await browser.newContext({viewport:{width:row.profile.width,height:row.profile.height},deviceScaleFactor:row.profile.dpr,isMobile:mobile,hasTouch:mobile,recordVideo:{dir:out+'/video'}});
    try{
     const page=await context.newPage();page.setDefaultTimeout(10000);row.errors=[];page.on('pageerror',e=>row.errors.push(e.message));
@@ -21,7 +22,7 @@ try{
     row.before=await f.snapshot(product);assert.ok(row.before.runs.every(r=>r.status==='running'&&r.alive));
     await page.goto(web.origin+f.products[product].route);const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();
     for(let repeat=0;repeat<2;repeat++){
-     await editor.click();await page.keyboard.type('Forty input characters for timing proof!!');await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
+     await editor.click();await page.keyboard.type('Forty input characters for timing proof!');await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
      await page.mouse.wheel(0,-500);await page.keyboard.press('Control+k');const search=page.getByRole('combobox',{name:'Search Ponderosa',exact:true});await search.waitFor();await page.keyboard.type('Qualification');await page.keyboard.press('Escape');
      if(full){
       await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();await page.getByRole('menuitem',{name:'Rename',exact:true}).click();const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();await name.press('Control+A');await name.pressSequentially(`Load ${product} ${session} ${repeat}`);await name.press('Enter');await name.waitFor({state:'hidden'});

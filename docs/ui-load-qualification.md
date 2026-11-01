@@ -71,3 +71,12 @@ IDs, focus targets and activity controls remain. Targeted replay can set
 PONDEROSA_A11Y_ZOOMS=1 and PONDEROSA_ASSERT_LANDMARK_REPAIR=1 to check all four
 surfaces/themes against those exact axe rules and one-main semantics; that
 eight-cell replay does not replace the retained native zoom matrix.
+
+The full ledger predeclares all32sessions as planned before fixture creation;
+capacity refusal leaves them planned, never zero-duration successes. The frozen
+typing phrase has40characters per repeat. The pending METHOD review must resolve
+zero-delay cadence and the browser API's minimum16ms event-duration observation
+threshold/missing-fast-interaction completeness before acceptance. Tooling smoke
+observed p75=328ms with zero active Agents: it is retained red performance evidence
+under that diagnostic cadence, not waived by successful capture. A profile/trace
+follow-up must explain it before any performance True verdict.
