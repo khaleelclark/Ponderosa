@@ -274,3 +274,24 @@ source/docs/examples are present in this tracked tree. Inspection used source
 reads and Git metadata only. No tests, builds, types, browser/benchmark, runner
 preparation, push, production merge or deployment occurred. Frozen roots, Bible,
 baseline and other owner worktrees were not modified.
+
+## Access-first workflow import successor
+
+Reliability `94f7bafc` then `ec80fdea` and Features `7b655b21` integrated
+conflict-free. Backend now exposes staged access preview, imported provenance,
+whole root-folder originals, nonsecret grant suggestions and canonical audio
+container admission. Shared `BranchPackageEngine` preserves structured review
+and explicit choices. Workflow installation durably stages destination Chats,
+waits for exact per-Agent human policy review, rechecks policy/hash/state after
+await, and excludes pending review from automatic scheduler retry. Public client
+provides installation status and resolveImportAccess; Stop cannot revive work.
+
+UI must still show both policies and submit explicit keep_destination/use_source
+with reviewSha256 via installation access-review. Whole-folder/newChat and grant
+wrappers remain separate; Reliability continues distinct per-Agent working-root
+bundles. The prior workflow forwarding backlog is now backend-implemented,
+while end-to-end human UI remains missing. No policy adoption default introduced.
+
+Runtime `8d9dfaa8` is received but held for the lane's next successor under
+manager direction; no Runtime integration/completion credit is assigned here.
+All implementation remains unvalidated; no tests/builds/types/browser/runner work.
