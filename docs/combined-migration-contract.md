@@ -262,3 +262,48 @@ single-Agent package hashes cannot be combined or reused. Destination policy is
 rechecked before atomic commit. Grouping and durable per-Agent human reviews,
 actual new-root confirmation, cancellation/staleness admission remain Branch caller
 responsibilities; there is no automatic blanket permission or live root adoption.
+
+### Branch grouped package composition
+
+`BranchPackageEngine.composeAgents(inputs)` is an async, mutation-free deterministic
+helper. Inputs are `readonly {ref:string,managerRef?:string,package:
+AgentPortablePackageDto}[]`, each a validated single-Agent package. Returns
+`{package,orderedRefs,artifactRefs,workingRootRefs}`. Output node refs are the exact
+caller logical refs; supplied managers are preserved. `rootRefs` explicitly lists
+independent same-Chat roots when necessary; no invented manager edge or cross-Chat
+reporting authority is introduced. `rootRef` remains the primary result root.
+Import processes every declared root and returns `agentRefs:Record<sourceRef,
+freshAgentId>`; `agentIds` and Branch hook planned IDs follow `orderedRefs` (input
+order). Existing hook plan receives one creation operation ID for the entire group.
+
+Artifacts get deterministic per-logical-Agent namespaced refs, including role/preset
+links, historical text/attachment/explicit artifact binding values and working-file
+links. Historical authored Communication IDs/scope are unchanged. Original history
+messages and uploaded originals stay with their source node, including duplicates.
+`artifactRefs[logicalRef]` exposes each old-to-composed artifact binding.
+
+Canonical Shared mode plus the same explicit source Chat identifies one Shared
+source root even if separate exports generated distinct opaque root refs. Its selected
+files/directories are unioned. Same relative path with different original bytes,
+modes or timestamps, or conflicting root/directory metadata, refuses and requires a
+coherent re-export. One owner holds the combined working manifest; originals needed
+from another node are copied with a distinct binding rather than stealing that
+node's historical attachment. `workingRootRefs[logicalRef]` supplies the final root
+identity for NEW recovery-path controls. Distinct Separate Git roots remain separate.
+Missing source Chat identity does not infer Shared sameness. Every distinct root
+has a manifest if folder transport is present, including empty roots.
+
+Compatible source Chat memory snapshots merge by original Chat/signature and
+source Agent mappings. Identical team rows deduplicate by exact row identity;
+conflicting rows or one source Agent bound to multiple logical Agents refuse.
+Private rows retain source audience/identity and their exact Agent bindings. Full
+validation reruns on the merged package, including aggregate byte/row limits.
+Different package modes, Chat instructions, source Chats or embedding signatures
+refuse rather than discard intent. Grouped staged memory verification now maps
+source refs using the receipt's complete ordered Agent IDs, instead of assigning all
+memory to a singleton Agent.
+
+Caller must compose BEFORE reviewing access; one complete-package review hash plus
+exhaustive `agentActions` holds independent human choices. Persist the composed
+package/mapping and ONE receipt; cancellation/staleness/actual-created-root review
+remain caller responsibilities. Do not reuse separate package review hashes.

@@ -119,3 +119,24 @@ one current complete-package digest. Core DTO and shared route validation/commit
 updated; wrapper forwards the existing resolution object unchanged. Branch grouping
 and staged per-Agent review/Stop/staleness remain owned by Branches. Deferred
 portability regression covers mixed choices and incomplete-map refusal. No execution.
+
+Composition continuation: new server compose-agent-packages.ts implements deterministic
+validated single-package composition for Branch logical refs, namespaced artifact
+bindings, unchanged authored history, source-root identity/Shared manifest unions,
+conflict refusal and compatible Chat/private memory merging. Shared engine exports
+composeAgents and composition types. Explicit package rootRefs preserves independent
+same-Chat roots without inventing reporting; topology validation/import traversal
+handle every root. Import response agentRefs supplies exact fresh bindings while
+ordered Agent IDs and one operation receipt remain stable. local-memory.ts grouped
+staged verification removes its singleton assumption. Existing no-foreign-authority,
+new managed root confirmation, cancellation and reviewed access rules remain.
+
+Files additionally touched: server artifact-refs.ts, local-memory.ts,
+portable-agent-package-validation.ts, shared route, core dto/agents.ts and new
+compose-agent-packages.ts. New deferred organizations/compose-agent-packages.test.mjs
+covers deterministic nonmutating composition, repeated artifact refs, independent
+roots, explicit parent edge, Shared dedup and conflicting originals. Branch caller
+assembly/durable grouped hooks still its owner. No tests/checks/build/types/browser,
+Node/module/runner preparation or execution; no passing/full#8 completion claim.
+Deferred composition regression additionally covers identical team-row deduplication,
+separate private source audiences and conflicting team snapshot refusal.

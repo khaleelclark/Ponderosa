@@ -195,6 +195,8 @@ export interface AgentPortablePackageDto {
   /** Full-copy Chat instructions; applying to an existing Chat requires an explicit conflict choice. */
   sourceProjectInstructions?: string;
   rootRef: string;
+  /** Explicit independent same-Chat roots for grouped imports; never synthesizes reporting edges. */
+  rootRefs?: string[];
   agents: PortableAgentNodeDto[];
   outputRoles?: PortableOutputRoleDto[];
   /** Full-mode selected Chat/team and included Agent private memory; grants are never transported. */
@@ -242,7 +244,7 @@ export interface CopyAgentPackageRequest {
   /** Required when any copied Agent receives autonomous destructive authority. */
   acknowledgeElevatedManagementPermissions?: boolean;
 }
-export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; workingFilesDestination?:string;
+export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; agentRefs?:Record<string,string>; workingFilesDestination?:string;
   liveWorkingRoots?:Array<{ref:string;path:string;agentIds:string[]}>;
   workingRoots?:Array<{ref:string;destination:string;agentIds:string[]}>;
   accessSettingsToReview?:Array<{agentId:string;source:NonNullable<PortableAgentNodeDto["accessSettings"]>;conversationId:string}>;

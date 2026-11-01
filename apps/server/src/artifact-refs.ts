@@ -97,7 +97,9 @@ function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): s
   }
 
   const roots = [...nodes].filter(([, node]) => node.managerRef === undefined).map(([ref]) => ref);
-  if (roots.length !== 1 || roots[0] !== portablePackage.rootRef) {
+  const declared=portablePackage.rootRefs??[portablePackage.rootRef];
+  if(!Array.isArray(declared)||declared.length===0||declared.some(ref=>typeof ref!=='string')||new Set(declared).size!==declared.length||declared[0]!==portablePackage.rootRef||declared.length!==roots.length||roots.some(ref=>!declared.includes(ref)))return 'Grouped rootRefs must exactly identify independent reporting roots';
+  if (portablePackage.rootRefs===undefined&&(roots.length !== 1 || roots[0] !== portablePackage.rootRef)) {
     return "Agent package rootRef must identify the unique organization root";
   }
   const children = new Map<string, string[]>();
@@ -108,7 +110,7 @@ function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): s
     children.set(node.managerRef, siblings);
   }
   const reachable = new Set<string>();
-  const pending = [portablePackage.rootRef];
+  const pending = [...declared];
   while (pending.length) {
     const ref = pending.pop()!;
     if (reachable.has(ref)) return "every imported Agent must be reachable exactly once from rootRef";

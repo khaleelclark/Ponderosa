@@ -1,3 +1,5 @@
+import {composeAgentPackages,type AgentPackageCompositionInput,type AgentPackageComposition} from '../compose-agent-packages.js';
+export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
 import {withoutPortableSecrets} from '../portable-secrets.js';
 import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder} from '../portable-working-files.js';
 import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
@@ -84,6 +86,7 @@ export interface BranchPackageImportOptions {
 }
 /** Shared packaging boundary; callers own durable human review and destination selection. */
 export interface BranchPackageEngine {
+  composeAgents(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>;
   setOutputApps(owner:OutputAgentApps):void;
   validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
   exportMemory(chatId:string,agentIds:string[]):Promise<import('@ponderosa/core').PortableChatMemorySnapshotDto>;
@@ -1732,7 +1735,7 @@ export function registerAgentPackageRoutes(
         siblings.push(node);
         childrenByManager.set(node.managerRef, siblings);
       }
-      const assignmentOrder = [importNodes.find(node => node.ref === portablePackage.rootRef)!];
+      const assignmentOrder = (portablePackage.rootRefs??[portablePackage.rootRef]).map(ref=>importNodes.find(node=>node.ref===ref)!);
       for (let index = 0; index < assignmentOrder.length; index++) {
         for (const child of childrenByManager.get(assignmentOrder[index]!.ref) ?? []) assignmentOrder.push(child);
       }
@@ -1754,6 +1757,7 @@ export function registerAgentPackageRoutes(
         );
       }
       const response: RoleResult = {
+        agentRefs:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id])),
         ...(body.workingFilesActivation?{liveWorkingRoots}:{}),
         ...(body.workingFilesDestination?{workingFilesDestination:body.workingFilesDestination}:{}),
         ...(roleIntent?{outputRoleFinalization:{...roleIntent,mapping:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id]))}}:{}),
@@ -2487,6 +2491,7 @@ export function registerAgentPackageRoutes(
     }
   });
   return {packageEngine:{
+    composeAgents:composeAgentPackages,
     reviewAccess,
     setOutputApps(owner:OutputAgentApps){outputApps=owner;},
     validateAgent(pkg,mapping) {

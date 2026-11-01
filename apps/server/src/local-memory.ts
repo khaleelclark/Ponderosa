@@ -317,9 +317,10 @@ export class LocalMemoryService{
   const pending=this.core.database.restorePackageMemory(entry.snapshot,op.conversationId,agents,namespace,guard,operationId);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
  async verifyStagedMemory(operationId:string,pkg:import('@ponderosa/core').AgentPortablePackageDto){
-  if(!pkg.memory?.length)return;const op=this.ports.store.getAgentCreationOperation(operationId);if(!op?.conversationId||op.agentIds.length!==1)throw new MemoryDenied('Exact staged memory receipt required');
+  if(!pkg.memory?.length)return;const op=this.ports.store.getAgentCreationOperation(operationId);if(!op?.conversationId||op.agentIds.length!==pkg.agents.length)throw new MemoryDenied('Exact staged memory receipt required');
   const guard=this.importMemoryGuard(operationId,Object.fromEntries(op.agentIds.map(id=>[id,id])),undefined,true);await guard();await this.ready();
-  for(const [index,entry] of pkg.memory.entries()){const mapping=Object.fromEntries(Object.keys(entry.agentRefs).map(id=>[id,op.agentIds[0]!]));const pending=this.core.database.restorePackageMemory(entry.snapshot,op.conversationId,mapping,operationId+':m:'+index,guard,operationId);this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}}
+  const destinations=new Map(pkg.agents.map((node,index)=>[node.ref,op.agentIds[index]!]));
+  for(const [index,entry] of pkg.memory.entries()){const mapping=Object.fromEntries(Object.entries(entry.agentRefs).map(([id,ref])=>{const destination=destinations.get(ref);if(!destination)throw new MemoryDenied('Missing staged memory Agent binding');return [id,destination];}));const pending=this.core.database.restorePackageMemory(entry.snapshot,op.conversationId,mapping,operationId+':m:'+index,guard,operationId);this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}}
  }
  async rollbackImportMemory(operationId:string){
   const store=this.ports.store,op=store.getAgentCreationOperation(operationId);const plan=(op?.result as {memoryPlan?:Array<{chatId:string;namespace:string;chunkIds:string[];conflictIds:string[]}>}|undefined)?.memoryPlan;
