@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import {stableJson,readIssuedGroupCaptureAudit,readGroupCaptureDisposition,type CoordinationV3Store} from '@ponderosa/agents';
+import {stableJson,readGroupAuditJournal,readIssuedGroupCaptureAudit,readGroupCaptureDisposition,type CoordinationV3Store} from '@ponderosa/agents';
 import type {GroupJournalAuditSelection,GroupJournalAuditReadback} from '@ponderosa/core';
 import {lifecycleHash} from './lifecycle-journal.js';
 type Row=Record<string,any>;
@@ -10,7 +10,7 @@ export function groupJournalAudit(db:Database.Database,coordination:Pick<Coordin
   const text=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=512;
   if(!['captures','admissions'].includes(selection.kind)||!text(selection.branchId)||!text(selection.executionId)||!text(selection.journalKey)
    ||![selection.journalSha256,selection.custodySha256].every(value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)))throw Error('Exact discovered group audit selection required');
-  const row=db.prepare('SELECT execution_id,command_key,input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(selection.executionId,selection.journalKey) as Row|undefined;
+  const row=readGroupAuditJournal(db,selection.executionId,selection.journalKey);
   if(!row||Buffer.byteLength(row.result_json)>16*1024*1024||groupJournalDigest(row)!==selection.journalSha256)throw Error('Original group journal unavailable or changed; rediscover');
   const value=JSON.parse(row.result_json);if(stableJson(value)!==row.result_json)throw Error('Original group journal is not canonical');
   const live=db.prepare('SELECT branch_id FROM branch_executions WHERE id=?').get(selection.executionId) as Row|undefined;
@@ -21,7 +21,7 @@ export function groupJournalAudit(db:Database.Database,coordination:Pick<Coordin
    const capture=readIssuedGroupCaptureAudit(db,selection.executionId,selection.journalKey);
    if(!capture||capture.snapshot.selected.execution[0].branch_id!==selection.branchId||capture.commandKey!==selection.commandKey
     ||lifecycleHash({sources:capture.sources,receipts:capture.receipts})!==selection.custodySha256)throw Error('Original group capture custody/command differs');
-   const disposition=readGroupCaptureDisposition(db,selection.executionId,selection.journalKey,row.result_json);
+   const disposition=readGroupCaptureDisposition(db,selection.executionId,selection.journalKey,row.result_json,true);
    const evidence={...base,state:disposition?'abandoned':capture.state,capture:{sources:capture.sources,receipts:capture.receipts,checkpointId:capture.checkpointId,checkpointHash:capture.checkpointHash,disposition:disposition?{state:disposition.state,commandKey:disposition.input.commandKey,packageRetirements:disposition.packageRetirements}:undefined}};
    return {...evidence,evidenceSha256:lifecycleHash(evidence)};
   }

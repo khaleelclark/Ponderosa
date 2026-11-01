@@ -217,3 +217,5 @@ export {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,r
 export {captureGenerationOneHost,generationOneEvidence,generationHistoricalSelections,MAX_RETAINED_RESOURCE_GENERATIONS,type GenerationOneProof} from './branch-resource-generation-one.js';
 
 export {issuedCaptureRetryBudget} from './branch-issued-resource-capture.js';
+
+export {readGroupAuditJournal,listGroupAuditJournals} from './branch-group-journal-retention.js';

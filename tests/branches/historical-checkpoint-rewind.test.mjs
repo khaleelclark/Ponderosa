@@ -2085,7 +2085,7 @@ test('group discovery pagination rejects changed inventory and finds partial exa
  const preview=s.previewCapture(f.branch.id,f.source.id);
  f.branches.reserveIssuedGroupCapture(f.source.id,'second-reviewed-intent',preview);
  const first=s.discover({kind:'captures',limit:1});assert.equal(first.items.length,1);assert.ok(first.nextCursor);
- const second=s.discover({kind:'captures',limit:1,cursor:first.nextCursor});assert.equal(second.items[0].commandKey,'second-reviewed-intent');assert.equal(second.nextCursor,undefined);
+ const second=s.discover({kind:'captures',limit:1,cursor:first.nextCursor});assert.deepEqual(new Set([...first.items,...second.items].map(item=>item.commandKey)),new Set(['two-resource-cut','second-reviewed-intent']));assert.equal(second.nextCursor,undefined);
  f.branches.reserveIssuedGroupCapture(f.source.id,'third-reviewed-intent',preview);
  assert.throws(()=>s.discover({kind:'captures',limit:1,cursor:first.nextCursor}),/stale/);
  await f.reopen();assert.equal(x.service().discover({kind:'captures'}).items.filter(i=>i.executionId===f.source.id).length,3);
@@ -2297,4 +2297,40 @@ for(const mode of ['async','sync'])for(const [parallel,generation] of [[false,2]
  const remaining=f.store.sqlite.prepare('SELECT a.number FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND s.id=?').all(prepared.destination.executionId,read.receipt.owner.resourceStepId);
  assert.deepEqual(remaining.map(a=>a.number),[generation+1]);
  assert.equal(f.store.sqlite.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(read.receipt.owner.resourceStepId).retry_draining,0);
+});
+
+// Deferred SOURCE: actual Branch deletion transaction; package proofs remain synthetic.
+test('canonical owner deletion preserves selectable group capture and disposition atomically',async t=>{
+ const x=await twoIssuedResources(t,'sync',2,false,[0],true),{f}=x,db=f.store.sqlite;
+ for(const item of x.issued)if(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(item.request).state!=='completed')x.complete(item);
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ const original=db.prepare("SELECT * FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id);
+ const review=f.branches.custodyLifecycle.inspectGroupCapture(f.source.id,original.command_key);
+ assert.equal(review.abandonmentAllowed,true);
+ f.branches.custodyLifecycle.abandonGroupCapture({executionId:f.source.id,captureKey:original.command_key,commandKey:'retain-audit-on-delete',captureSha256:review.captureSha256,expectedRevision:review.revision},()=>review.members.map(member=>({custodyId:member.custodyId,sourceSha256:member.sourceSha256,revision:'synthetic-durable-package-proof'})));
+ const selection=x.service().discover({kind:'captures'}).items.find(item=>item.executionId===f.source.id).auditSelection;
+ const {groupJournalAudit}=await import('../../apps/server/dist/group-journal-audit.js');
+ const audit=()=>groupJournalAudit(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));
+ assert.equal(audit().read(selection).state,'abandoned');
+ // Actual canonical Agent/Chat cleanup precedes the final Branch deletion; retention grants no drain proof.
+ for(const item of x.issued){
+  const preview=f.store.previewAgentDeletion([item.agentId]);
+  f.store.deleteAgentSubtrees([item.agentId],preview.previewHash,ids=>new CoordinationV3Store(db).handleAgentDeletion(ids));
+  const deletion=f.store.commitConversationDeletion(item.chatId);
+  f.store.finishConversationDeletionStorageCleanup(deletion);f.store.markConversationDeletionServerCleanupComplete(item.chatId);
+ }
+ f.branches.beginDeletion(f.branch.id);f.branches.publishAudit(()=>{});await f.branches.unitSaver.drain();
+ db.exec("CREATE TEMP TRIGGER reject_group_retention BEFORE INSERT ON host_lifecycle_commits WHEN NEW.kind='branch-group-journal-retention' BEGIN SELECT RAISE(ABORT,'retention failure'); END");
+ assert.throws(()=>f.branches.deleteBranch(f.branch.id),/retention failure/);
+ assert.deepEqual(db.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,original.command_key),original);
+ assert.ok(f.branches.getBranch(f.branch.id));
+ db.exec('DROP TRIGGER reject_group_retention');f.branches.deleteBranch(f.branch.id);
+ assert.ok(!f.branches.getBranch(f.branch.id));
+ assert.equal(db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=?').get(f.source.id),undefined);
+ const before=db.prepare('SELECT total_changes() n').get().n;
+ const retained=audit().read(selection);assert.equal(retained.sourceOwnerPresent,false);assert.equal(retained.state,'abandoned');assert.equal(retained.currentAuthority,false);assert.equal(retained.actionEligible,false);assert.equal(retained.held,true);
+ assert.deepEqual(x.service().discover({kind:'captures'}).items.find(item=>item.executionId===f.source.id).auditSelection,selection);
+ assert.equal(db.prepare('SELECT total_changes() n').get().n,before);
+ assert.throws(()=>x.service().captureStatus(f.branch.id,f.source.id,'two-resource-cut'),/owner unavailable/);
+ await f.reopen();assert.equal(audit().read(selection).state,'abandoned');
 });

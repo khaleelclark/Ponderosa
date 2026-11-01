@@ -995,3 +995,8 @@ All0035–0040 files physically present, registered once in order, unchanged/une
 Final task delta exactly ten paths. ZERO tests/checks/build/types/Node/native/browser/
 runner preparation or execution, migrations, push/deploy/newworkers. Hooks disabled;
 source/files/Git inspection only.
+
+
+### Prospective group audit journal retention (source only)
+
+Final canonical Branch owner deletion now publishes exact original selectable group capture/destination journals and abandonment dispositions into existing immutable host lifecycle receipts in the same transaction before command removal. Operator discovery/audit reads current or validated retained originals without reconstructing IDs/commands/owners or granting authority. Original key, input hash, private bytes and timestamp survive; conflicts, corruption, unknown evidence and bounds refuse. Live mutation/disclosure/admission and deletion readiness checks remain unchanged. Existing historical-partition audit projection stays metadata-only. Deferred source covers canonical deletion/rollback/reopen plus capture/destination readback, held imports and immutable conflicts; none ran. Earlier erased-selectable-journal statements remain true for pre-retention deletions, but prospective preservation is now implemented. No migration, package/sourcebytes/history reclamation, external-writer reconciliation or native/provider qualification is supplied.

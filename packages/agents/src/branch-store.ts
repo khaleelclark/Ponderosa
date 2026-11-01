@@ -1,3 +1,4 @@
+import {preserveBranchGroupJournals} from './branch-group-journal-retention.js';
 import {captureGenerationOneHost,generationOneEvidence,generationHistoricalSelections,type GenerationOneProof} from './branch-resource-generation-one.js';
 import {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';
 import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
@@ -2976,6 +2977,7 @@ export class BranchStore {
       if(this.row(`SELECT 1 FROM branch_gate_notifications n JOIN branch_executions e ON e.id=n.execution_id WHERE e.branch_id=? AND n.state!='resolved'`,id))throw new Error("Branch gate notification closure is still pending");
       // Final deletion follows observed runtime cleanup. Keep delivery evidence,
       // but retire checks whose workflow/reconciliation owner is now being removed.
+      preserveBranchGroupJournals(this.sqlite,id);
       const deletedAt = new Date().toISOString();
       this.run(`UPDATE trigger_occurrences SET state='cancelled',cancelled_at=?,updated_at=?,
         last_error='Workflow deleted after runtime cleanup; any unconfirmed delivery remains in the audit record.'

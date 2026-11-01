@@ -1,3 +1,4 @@
+import {readGroupAuditJournal} from './branch-group-journal-retention.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import type Database from 'better-sqlite3';
@@ -33,7 +34,7 @@ export function readIssuedGroup(db:Database.Database,executionId:string,checkpoi
 function readGroupCapture(db:Database.Database,executionId:string,commandKey:string,raw=false,audit=false):Row|undefined {
  if(typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Exact group capture command required');
  if(raw&&!/^issued-group-capture:[a-f0-9]{64}$/.test(commandKey))throw Error('Exact raw group capture key required');
- const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,raw?commandKey:key(commandKey)) as Row|undefined;
+ const row=audit?readGroupAuditJournal(db,executionId,raw?commandKey:key(commandKey)):db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,raw?commandKey:key(commandKey)) as Row|undefined;
  if(!row)return;
  const v=JSON.parse(row.result_json),snapshot=v.snapshot,resources=snapshot?.selected?.resources;
  if(v.commandKey!==undefined&&((raw?key(v.commandKey)!==commandKey:v.commandKey!==commandKey)||v.reviewHash!==payloadHash(snapshot)||v.versionId!==snapshot?.selected?.execution?.[0]?.version_id))throw Error('Group capture retained preview differs');

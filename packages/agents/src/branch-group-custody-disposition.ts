@@ -1,3 +1,4 @@
+import {readGroupAuditJournal} from './branch-group-journal-retention.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {CheckpointPackageSource,CheckpointPackageReceipt} from '@ponderosa/core';
@@ -16,8 +17,8 @@ export function exactGroupPackageProofs(sources:CheckpointPackageSource[],proofs
  });
 }
 /** Only a verified immutable disposition may remove a raw journal's executable pins. */
-export function readGroupCaptureDisposition(db:Database.Database,executionId:string,captureKey:string,bytes:string):Row|undefined {
- const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,groupAbandonKey(captureKey)) as Row|undefined;
+export function readGroupCaptureDisposition(db:Database.Database,executionId:string,captureKey:string,bytes:string,audit=false):Row|undefined {
+ const row=audit?readGroupAuditJournal(db,executionId,groupAbandonKey(captureKey)):db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,groupAbandonKey(captureKey)) as Row|undefined;
  if(!row)return;
  const v=JSON.parse(row.result_json),capture=JSON.parse(bytes);
  if(stableJson(v)!==row.result_json||stableJson(capture)!==bytes||v.schema!=='branch-group-custody-abandon.v1'||v.state!=='abandoned'||row.input_hash!==payloadHash(v.input)

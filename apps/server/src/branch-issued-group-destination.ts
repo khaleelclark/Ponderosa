@@ -1,7 +1,7 @@
 import {groupJournalDigest} from './group-journal-audit.js';
 import {sqliteCollectionGeneration} from './collection-page.js';
 import {createHash} from 'node:crypto';
-import {readIssuedGroup,stableJson,workspaceCreationId,type AgentStore,type BranchStore,type CoordinationV3Store,type CoordinationDestinationGroupAuthority} from '@ponderosa/agents';
+import {readIssuedGroup,listGroupAuditJournals,stableJson,workspaceCreationId,type AgentStore,type BranchStore,type CoordinationV3Store,type CoordinationDestinationGroupAuthority} from '@ponderosa/agents';
 import type {BranchIssuedDestinationInput,AgentPortablePackageDto} from '@ponderosa/core';
 import {BRANCH_DISCLOSURE_OPERATOR,BranchDisclosureReviewService} from './branch-disclosure-review.js';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
@@ -77,11 +77,10 @@ export class BranchIssuedGroupDestinationService {
  discover(input:{kind:'captures'|'admissions';limit?:number;cursor?:string}):import('@ponderosa/core').BranchGroupDiscoveryPage {
   const limit=input.limit??50;if(!Number.isSafeInteger(limit)||limit<1||limit>100)throw Error('Group discovery limit must be 1..100');
   if(!['captures','admissions'].includes(input.kind))throw Error('Group discovery kind required');
-  const prefix=input.kind==='captures'?'issued-group-capture:%':'issued-group-destination:%';
   const generation=hash({connection:sqliteCollectionGeneration(this.db),changes:this.db.prepare('SELECT total_changes() value').get(),external:this.db.pragma('data_version',{simple:true})});
-  let after=0;
-  if(input.cursor){if(input.cursor.length>4096)throw Error('Group cursor too long');const c=JSON.parse(Buffer.from(input.cursor,'base64url').toString('utf8'));if(c.kind!==input.kind||c.generation!==generation||!Number.isSafeInteger(c.after)||c.after<0)throw Error('Group discovery cursor stale or invalid');after=c.after;}
-  const rows=this.db.prepare('SELECT rowid,execution_id,command_key,input_hash,result_json FROM branch_commands WHERE command_key LIKE ? AND rowid>? ORDER BY rowid LIMIT ?').all(prefix,after,limit+1) as Row[];
+  let after='';
+  if(input.cursor){if(input.cursor.length>4096)throw Error('Group cursor too long');const c=JSON.parse(Buffer.from(input.cursor,'base64url').toString('utf8'));if(c.kind!==input.kind||c.generation!==generation||typeof c.after!=='string')throw Error('Group discovery cursor stale or invalid');after=c.after;}
+  const rows=listGroupAuditJournals(this.db,input.kind).filter(row=>stableJson([row.execution_id,row.command_key])>after).slice(0,limit+1);
   const items=rows.slice(0,limit).map(row=>{
    const v=JSON.parse(row.result_json);if(stableJson(v)!==row.result_json)throw Error('Noncanonical group journal');
    const capture=input.kind==='captures',e=capture?v.snapshot?.selected?.execution?.[0]:undefined;
@@ -97,7 +96,7 @@ export class BranchIssuedGroupDestinationService {
    if(retirement){const evidence=JSON.parse(retirement.evidence_json);if(evidence.row?.reservation_json!==stableJson(v.reservation)||hash(v.reservation)!==v.reservationHash)throw Error('Group retired discovery evidence differs');}
    return {auditSelection:{kind:input.kind,branchId,executionId,journalKey:row.command_key,journalSha256:groupJournalDigest(row),custodySha256:hash(capture?{sources:v.sources,receipts:v.receipts}:v.reservation.resources.map((r:Row)=>r.custody)),...(commandKey===undefined?{}:{commandKey}),...(capture?{}:{admissionId:v.admissionId,reservationHash:v.reservationHash})},branchId,executionId,kind:input.kind,commandKey,discovery:commandKey===undefined?'unsupported_legacy_key':'exact',state:capture?v.state:retirement?'retired':admission?.state??'unavailable',admissionId:capture?undefined:v.admissionId,checkpointId:capture?v.checkpointId:v.input.checkpointId,checkpointHash:capture?v.checkpointHash:v.input.expectedHash,reviewHash:capture?v.reviewHash:undefined,versionId:capture?v.versionId:undefined,resourceCount:capture?v.sources?.length:v.reservation.resources?.length,ownerPresent:this.branches.execution(executionId)?.branchId===branchId} as import('@ponderosa/core').BranchGroupDiscoveryItem;
   });
-  return {items,...(rows.length>limit?{nextCursor:Buffer.from(JSON.stringify({kind:input.kind,generation,after:rows[limit-1]!.rowid})).toString('base64url')}:{})};
+  return {items,...(rows.length>limit?{nextCursor:Buffer.from(JSON.stringify({kind:input.kind,generation,after:stableJson([rows[limit-1]!.execution_id,rows[limit-1]!.command_key])})).toString('base64url')}:{})};
  }
  captureStatus(branchId:string,executionId:string,commandKey:string){
   if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Group capture owner unavailable');

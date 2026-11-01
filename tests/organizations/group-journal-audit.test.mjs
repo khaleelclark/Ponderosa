@@ -1,15 +1,17 @@
+import {preserveBranchGroupJournals} from '../../packages/agents/dist/branch-group-journal-retention.js';
 // Deferred SOURCE: immutable audit selectors/readback, not provider/package qualification.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import {createHash} from 'node:crypto';
 import {groupJournalAudit,groupJournalDigest} from '../../apps/server/dist/group-journal-audit.js';
-import {stableJson,resourceCaptureFrontierHash} from '../../packages/agents/dist/index.js';
+import {stableJson,resourceCaptureFrontierHash,listGroupAuditJournals,readGroupAuditJournal} from '../../packages/agents/dist/index.js';
 const hash=v=>createHash('sha256').update(stableJson(v)).digest('hex');
 const custody=id=>createHash('sha256').update(id).digest('hex');
 function fixture(t){
  const db=new Database(':memory:');t.after(()=>db.close());
- db.exec(`CREATE TABLE branch_commands(execution_id TEXT,command_key TEXT,input_hash TEXT,result_json TEXT);
+ db.exec(`CREATE TABLE branch_commands(execution_id TEXT,command_key TEXT,input_hash TEXT,result_json TEXT,created_at TEXT DEFAULT 'original-time');
+ CREATE TABLE host_lifecycle_commits(kind TEXT,identity TEXT,input_json TEXT,receipt_json TEXT,receipt_sha256 TEXT,PRIMARY KEY(kind,identity));
  CREATE TABLE branch_executions(id TEXT,branch_id TEXT);CREATE TABLE branch_unit_snapshots(id INTEGER,execution_id TEXT,snapshot_json TEXT,content_hash TEXT);
  CREATE TABLE branch_versions(id TEXT,branch_id TEXT,definition_json TEXT,content_hash TEXT);CREATE TABLE branch_bindings(id TEXT,branch_id TEXT,bindings_json TEXT,content_hash TEXT);`);
  return db;
@@ -25,7 +27,7 @@ function captureFixture(db,retained){
  const sealed={...snapshot,issuedGroupCustody:receipts};
  const value={state:retained?'retained':'capturing',commandKey:'actual-original-key',reviewHash:hash(snapshot),versionId:'version',snapshot,sources,receipts,...(retained?{checkpointId:7,checkpointHash:hash(sealed)}:{})};
  const row={execution_id:'source',command_key:'issued-group-capture:'+hash(value.commandKey),input_hash:hash({commandKey:value.commandKey}),result_json:stableJson(value)};
- db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?)').run(...Object.values(row));
+ db.prepare('INSERT INTO branch_commands(execution_id,command_key,input_hash,result_json) VALUES(?,?,?,?)').run(...Object.values(row));
  const selection={kind:'captures',branchId:'branch',executionId:'source',journalKey:row.command_key,journalSha256:groupJournalDigest(row),custodySha256:hash({sources,receipts}),commandKey:value.commandKey};
  return {selection,value,sealed};
 }
@@ -47,10 +49,13 @@ test('group admission audit binds exact reservation/full map and retains unknown
  const db=fixture(t),resources=[0,1].map(i=>({custody:{custodyId:`custody-${i}`,checkpointId:`source-${i}`,intent:{resourceStepId:`step-${i}`}},destination:{executionId:'target',resourceStepId:`fresh-${i}`}}));
  const reservation={branchId:'branch',sourceExecutionId:'source',checkpointId:7,checkpointHash:'c'.repeat(64),resources},input={commandKey:'original-command',checkpointId:7,expectedHash:reservation.checkpointHash};
  const value={schema:'ponderosa.branch.issued-group-destination.v1',input,reservation,admissionId:'admission',reservationHash:hash(reservation),idMap:{'step-0':'fresh-0','step-1':'fresh-1'}};
- const row={execution_id:'source',command_key:'issued-group-destination:'+hash(input.commandKey),input_hash:hash(input),result_json:stableJson(value)};db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?)').run(...Object.values(row));
+ const row={execution_id:'source',command_key:'issued-group-destination:'+hash(input.commandKey),input_hash:hash(input),result_json:stableJson(value)};db.prepare('INSERT INTO branch_commands(execution_id,command_key,input_hash,result_json) VALUES(?,?,?,?)').run(...Object.values(row));
  const selection={kind:'admissions',branchId:'branch',executionId:'source',journalKey:row.command_key,journalSha256:groupJournalDigest(row),custodySha256:hash(resources.map(r=>r.custody)),commandKey:input.commandKey,admissionId:'admission',reservationHash:value.reservationHash};
  const api=groupJournalAudit(db,{inspectCoordinationDestinationGroupAudit(){return {reservation,reservationHash:value.reservationHash,state:'staged',sourceIds:['step-0','step-1'],agentMap:{},imports:[{operationId:'pending',status:'outcome_unknown'}],receipt:null,retirement:null,evidenceSha256:'d'.repeat(64)};}});
  const result=api.read(selection);assert.equal(result.imports[0].status,'outcome_unknown');assert.equal(result.actionEligible,false);assert.equal(result.held,true);
+ db.exec("INSERT INTO branch_executions VALUES('source','branch')");db.transaction(()=>preserveBranchGroupJournals(db,'branch'))();
+ const original=db.prepare('SELECT * FROM branch_commands').get();db.exec("DELETE FROM branch_commands;DELETE FROM branch_executions WHERE id='source'");
+ assert.deepEqual(listGroupAuditJournals(db,'admissions'),[original]);assert.equal(api.read(selection).imports[0].status,'outcome_unknown');assert.equal(api.read(selection).currentAuthority,false);
  assert.throws(()=>api.read({...selection,admissionId:'wrong'}),/reservation/);
  db.exec("INSERT INTO branch_executions VALUES('target','wrong-branch')");assert.throws(()=>api.read(selection),/owner identity/);
 });
@@ -61,7 +66,7 @@ test('admitted historical partition audit suppresses all private retained envelo
  const reservation={branchId:'branch',sourceExecutionId:'source',checkpointId:7,checkpointHash:'c'.repeat(64),resources},input={commandKey:'partition-command',checkpointId:7,expectedHash:reservation.checkpointHash};
  const value={schema:'ponderosa.branch.issued-group-destination.v1',input,reservation,admissionId:'real-admission',reservationHash:hash(reservation),idMap:{'step-0':'fresh-0','step-1':'fresh-1'}};
  const row={execution_id:'source',command_key:'issued-group-destination:'+hash(input.commandKey),input_hash:hash(input),result_json:stableJson(value)};
- db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?)').run(...Object.values(row));
+ db.prepare('INSERT INTO branch_commands(execution_id,command_key,input_hash,result_json) VALUES(?,?,?,?)').run(...Object.values(row));
  const selection={kind:'admissions',branchId:'branch',executionId:'source',journalKey:row.command_key,journalSha256:groupJournalDigest(row),custodySha256:hash(resources.map(r=>r.custody)),commandKey:input.commandKey,admissionId:value.admissionId,reservationHash:value.reservationHash};
  const entry={historical:true,dispatchable:false,sha256:'d'.repeat(64),selection:{executionId:'old-execution',stepId:'old-step',generation:0,checkpointId:3,checkpointHash:'a'.repeat(64),envelopeSha256:'b'.repeat(64),intakeFence:{identity:'private-fence',sha256:'e'.repeat(64)},discloseTo:['private-source-ref']},destinationAgentIds:['private-destination'],retirement:{resultJson:'PRIVATE_RETIREMENT_BODY'},seal:{identity:{agentIds:['private-original']},envelope:{hostDependencies:{requests:[{payload:'PRIVATE_REQUEST_BODY'}],updates:[{payload:'PRIVATE_UPDATE_BODY'}],communications:[{payload:'PRIVATE_COMMUNICATION_BODY'}]},configuration:'PRIVATE_CONFIGURATION'}}};
  const receipt={owners:[],historicalPartition:[entry]},before=db.prepare('SELECT total_changes() n').get().n;
@@ -71,4 +76,25 @@ test('admitted historical partition audit suppresses all private retained envelo
  for(const privateKey of ['PRIVATE_','private-source-ref','private-destination','private-original','private-fence','seal','retirementBody','discloseTo'])assert.equal(bytes.includes(privateKey),false,privateKey);
  assert.equal(result.historical,true);assert.equal(result.currentAuthority,false);assert.equal(result.actionEligible,false);assert.equal(result.held,true);
  assert.equal(db.prepare('SELECT total_changes() n').get().n,before);assert.equal(entry.seal.envelope.configuration,'PRIVATE_CONFIGURATION');
+});
+
+for(const retained of [false,true])test(`retention preserves exact ${retained?'sealed':'partial'} selectable journal bytes without reviving authority`,t=>{
+ const db=fixture(t),{selection}=captureFixture(db,retained),api=groupJournalAudit(db,{});
+ db.exec("INSERT INTO branch_executions VALUES('source','branch')");
+ const original=db.prepare('SELECT * FROM branch_commands').get();
+ assert.throws(()=>preserveBranchGroupJournals(db,'branch'),/transaction/);
+ assert.throws(()=>db.transaction(()=>{preserveBranchGroupJournals(db,'branch');throw Error('owner rollback');})(),/owner rollback/);
+ assert.equal(db.prepare('SELECT count(*) n FROM host_lifecycle_commits').get().n,0);
+ db.transaction(()=>preserveBranchGroupJournals(db,'branch'))();
+ assert.deepEqual(readGroupAuditJournal(db,'source',selection.journalKey),original);
+ db.prepare('UPDATE branch_commands SET created_at=?').run('conflicting-time');assert.throws(()=>api.read(selection),/conflict/);
+ db.prepare('UPDATE branch_commands SET created_at=?').run(original.created_at);
+ db.exec('DELETE FROM branch_commands;DELETE FROM branch_executions');
+ const before=db.prepare('SELECT total_changes() n').get().n;
+ assert.equal(api.read(selection).sourceOwnerPresent,false);assert.equal(api.read(selection).actionEligible,false);
+ assert.deepEqual(listGroupAuditJournals(db,'captures'),[original]);assert.equal(db.prepare('SELECT total_changes() n').get().n,before);
+ const receipt=db.prepare('SELECT * FROM host_lifecycle_commits').get();
+ db.prepare('UPDATE host_lifecycle_commits SET receipt_sha256=?').run('0'.repeat(64));assert.throws(()=>api.read(selection),/evidence differs/);
+ db.prepare('UPDATE host_lifecycle_commits SET receipt_sha256=?').run(receipt.receipt_sha256);
+ assert.deepEqual(readGroupAuditJournal(db,'source',selection.journalKey),original);
 });
