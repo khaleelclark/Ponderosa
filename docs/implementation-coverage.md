@@ -550,3 +550,30 @@ custody claim. Newer Branches a62ef through6c4a9eb source is not yet integrated 
 this tree; its implementation notices do not establish integration or acceptance.
 Other previously listed gaps remain open. No tests/checks/build/types/Node/native/
 browser/runner preparation or execution, push/deploy or qualification performed.
+
+## Retained checkpoint package API and shared memory boundary integrated
+
+Reliability chain43c571ab5,4f01fe953,6a93cd75a,6424afa34 integrated in order
+as3f5baaaf6,df916a390,80853b521,0c83c07ea atop6c1adfa39. Runtime-equivalent
+c0b0118dd was skipped because1d7805d18 already supplies the same resolved source.
+All26 distinct chain deliverables are physically present; API/caller/memory
+source, exact contract docs and all four deferred regression files source-read.
+Current final custody/memory/boundary source matches the owner handoff.
+
+This supersedes the preceding missing Reliability caller/hooks note. The shared
+engine exposes capture/inspect/read/release with exact immutable capture intent,
+ordered closed organization membership, independent private fsynced retained
+bytes, actual Runtime boundary identity, lost-response receipt lookup before
+source access, and durable release tombstones. Final synchronous receipt
+publication locks all supplied source SQL connections. Memory mutation views use
+the same registry and durable unsettled holds across restart; no automatic
+remote-write replay or hold reclamation. Read-only exports remain readers.
+
+For all32/Build-list #32 this is resource-custody API source coverage only.
+Branches capture-intent journal/finalization/readback/retention/rewind consumer
+and fresh destination policy review remain owner work. Newer Branches
+ a62ef-through6c4a9eb chain remains unintegrated in this tree. Old metadata-only
+cuts and arbitrary shell/user-folder/native-transcript/remote-bypass changes
+remain unsupported. No native snapshot, complete resource restoration, full
+#8/#32 or passing claim. No tests/checks/build/types/Node/native/browser/runner
+preparation or execution, push/deploy or qualification performed.
