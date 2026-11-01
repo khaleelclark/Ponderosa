@@ -403,11 +403,22 @@ terminal state of that same Request hides the draft; unrelated Chat messages do
 not settle it. Memory/session invalidation clears it and stream/fence/steering
 drift remains blocked even after a transient read failure.
 
-Contract issue found during implementation: frozen7bc Request status omits
-memoryExposure. The UI deliberately requires current valid/disabled exposure for
-Request drafts too; it does not fabricate or bypass memory authority. A tracked
-Runtime contract clarification/successor is pending before declaring that caller
-usable with the frozen backend alone.
+Contract issue resolved by Runtime successor
+`13bf724423bc97321f48c61c4f999b278fc261e4`, source-read at handoff. Apply that
+self-contained four-file backend commit after frozen7bc; it has no retirement
+dependency. The text status route now always returns memoryExposure. Request mode
+verifies the canonical packet/hash, submitted injection, exact Run/Agent/Project/
+Chat, current reset/memory validation and an attached packet activation whose
+canonical lineage names this exact Request. The existing UI valid/disabled gate
+therefore works unchanged; missing/pending/invalid exposure stays silent.
+Backend changes remain outside this UI branch.
+
+Runtime also confirmed the native acknowledgement stays streaming sequence1 after
+its exact successful receipt, with duplicate receipts unchanged and ordinary work
+continuing. It never completes on speech drain. The final answer starts a fresh
+stream sequence0 in the same current Run/fence/steering scope. Ending without an
+answer projects interrupted failure, never canonical acknowledgement completion.
+The separate buffers and held queue implement this lifecycle without a new API.
 
 Ten deliverables: `apps/web/src/components/speech/voiceReplyStream.ts`,
 `VoiceConversation.tsx`, `apps/web/src/components/chat/textReplyRoute.ts`,
