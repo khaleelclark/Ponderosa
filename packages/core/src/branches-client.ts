@@ -40,6 +40,11 @@ export class BranchesClient {
   if(total===null||limit===null||!Number.isSafeInteger(Number(total))||Number(total)<0||!Number.isSafeInteger(Number(limit))||Number(limit)<1||!['true','false'].includes(hasMore??''))throw new Error('Branches collection metadata is missing or invalid');
   return {items:await response.json() as BranchDto[],total:Number(total),limit:Number(limit),hasMore:hasMore==='true',...(response.headers.get('x-next-cursor')?{cursor:response.headers.get('x-next-cursor')!}:{})};
  }
+ /** Host operator lifecycle: callers retain the exact choice for explicit lost-response recovery. */
+ destinationGroupRetirementReview(admissionId:string,options?:BranchesRequestOptions){return this.json<import('./lifecycle-reconciliation.js').DestinationGroupRetirementReviewDto>(`/api/lifecycle/destination-groups/${part(admissionId)}/review`,'GET',undefined,options);}
+ approveDestinationGroupRetirement(admissionId:string,input:import('./lifecycle-reconciliation.js').DestinationGroupRetirementChoice,options?:BranchesRequestOptions){return this.json<import('./lifecycle-reconciliation.js').DestinationGroupRetirementApprovalDto>(`/api/lifecycle/destination-groups/${part(admissionId)}/approve`,'POST',input,options);}
+ retireDestinationGroup(admissionId:string,input:import('./lifecycle-reconciliation.js').DestinationGroupRetirementChoice,options?:BranchesRequestOptions){return this.json<import('./lifecycle-reconciliation.js').DestinationGroupRetirementReceipt>(`/api/lifecycle/destination-groups/${part(admissionId)}/retire`,'POST',input,options);}
+ destinationGroupRetirementReceipt(admissionId:string,options?:BranchesRequestOptions){return this.json<import('./lifecycle-reconciliation.js').DestinationGroupRetirementReceipt>(`/api/lifecycle/destination-groups/${part(admissionId)}/receipt`,'GET',undefined,options);}
  create(name:string,idempotencyKey:string,options?:BranchesRequestOptions){return this.json<BranchDto>('/api/branches','POST',{name,idempotencyKey},options);}
  get(id:string,options?:BranchesRequestOptions){return this.json<BranchDto>(`/api/branches/${part(id)}`,'GET',undefined,options);}
  version(id:string,versionId:string,options?:BranchesRequestOptions){return this.json<BranchVersionDto>(`/api/branches/${part(id)}/versions/${part(versionId)}`,'GET',undefined,options);}

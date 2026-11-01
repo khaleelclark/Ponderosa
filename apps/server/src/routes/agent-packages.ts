@@ -2384,8 +2384,9 @@ export function registerAgentPackageRoutes(
     },
   );
 
-  const destinationRetirement=destinationLifecycle({dataDir:context.dataDir,store,coordination:coordinationV3,owner:context.custodyOwner,runtimeIdle:context.destinationRuntimeIdle,creationLeases:agentCreationConversationLeases});
-  const retirementPath='/api/lifecycle/destinations/:id';
+  for(const group of [false,true]){
+  const destinationRetirement=destinationLifecycle({dataDir:context.dataDir,store,coordination:coordinationV3,owner:context.custodyOwner,runtimeIdle:context.destinationRuntimeIdle,creationLeases:agentCreationConversationLeases},group);
+  const retirementPath=group?'/api/lifecycle/destination-groups/:id':'/api/lifecycle/destinations/:id';
   app.get<{Params:{id:string}}>(retirementPath+'/review',async(request,reply)=>{
     try{await operationHydration;context.assertLifecycleEffectsSettled();return destinationRetirement.review(request.params.id);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
@@ -2396,6 +2397,7 @@ export function registerAgentPackageRoutes(
     try{await operationHydration;context.assertLifecycleEffectsSettled();const body=validatedObject(request.body,'Destination retirement choice');exactObjectFields(body,['commandKey','expectedReviewHash','releaseSourcePins','authorizeDeletedOwner'],'Destination retirement choice');return destinationRetirement[action](request.params.id,request.body);}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
   }));
+  }
   void operationHydration.then(() => {
     for (const operation of operationCache.values()) {
       if (operation.status === "pending") {

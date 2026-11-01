@@ -66,3 +66,11 @@ export interface DestinationRetirementApprovalDto {
 export interface DestinationRetirementReviewDto extends CoordinationDestinationReconciliationReview {
  preserveOnlyPermanent:true;globalRuntimeQuiescenceRequired:true;canReleaseSourcePins:boolean;
 }
+
+/** Whole-group commands use one admission and one immutable disposition for all resources. */
+export type DestinationGroupRetirementChoice=DestinationRetirementChoice;
+export type DestinationGroupRetirementApprovalDto=DestinationRetirementApprovalDto;
+export interface DestinationGroupRetirementReviewDto extends DestinationRetirementReviewDto {
+ reservation:DestinationRetirementReviewDto['reservation']&{resources:import('./coordination-destination.js').CoordinationDestinationGroupResource[]};
+}
+export type DestinationGroupRetirementReceipt=import('./coordination-destination.js').CoordinationDestinationReconciliationReceipt;

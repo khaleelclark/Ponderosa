@@ -165,8 +165,9 @@ to Branch disposition and independent immutable SQL commit receipt. Exact unchan
 replay verifies retained original bytes after owner deletion; missing/corrupt/conflicting
 proof and older unsealed filesystem receipts remain held. Source drain is not
 destination proof. Global runtime quiescence is deliberately conservative; pre-stage
-reservations lacking completed destination deletion receipts remain held. Group
-retirement stays refused and pinned; no preserve-only upgrade or cascading retirement.
+reservations lacking completed destination deletion receipts remain held. Singular retirement
+continues to refuse groups; the separate exhaustive group lifecycle source successor is
+described below. No preserve-only upgrade or cascading retirement is provided.
 Source only; focused regression/crash execution deferred. Lifecycle migration renamed
 `0040_lifecycle_reconciliation.sql` after existing Runtime0039; both registered once,
 neither executed.
@@ -197,9 +198,10 @@ This is scoped UI source, not broad discovery, group UI or executed lifecycle qu
   approval/evidence recheck, immutable receipt/tombstone and optional proven-safe source-pin
   release for unadmitted destinations only. Retired identities stay held; admitted
   provenance cannot retire. See coordination-destination-reconciliation.md.
-- Features + Reliability: exhaustive group lifecycle adapter/operator protocol remains
-  missing. Singular destination deletion/drain/reference/deleted-owner authority, durable
-  approval and combined abandoned-intent/package retirement source are now delivered.
+- Features + Reliability: exhaustive group lifecycle host protocol is included in the
+  source successor below; Runtime canonical retirement is a separate required dependency.
+  Singular destination deletion/drain/reference/deleted-owner authority, durable approval
+  and combined abandoned-intent/package retirement source are delivered.
   Other retained checkpoints/commands/admissions/package references still pin source
   custody; there is no cascading history retirement or preserve-only upgrade. Unknown
   effects and legacy unsealed receipts remain held; source-only protocols are unqualified.
@@ -294,3 +296,8 @@ source-boundary/concurrency, destination authorization/lifecycle, provider parit
 upgrade/reliability runs, all Build flows, desktop/mobile/accessibility and measured
 performance. Historical LCP failure remains unresolved. None of all32, #8, #12,
 #32, Build, full UI, Bible or Phase2 is accepted by this inventory.
+
+
+### Whole-group lifecycle source successor
+
+Group destination retirement host source reuses the singular per-resource observer across the exhaustive 2–32 resource inventory, aggregates one review/revision, privately fsyncs one exact approval and calls one Runtime-owned whole-group retirement. Separate review/approve/retire/receipt routes and BranchesClient methods are provided. Every Chat, mapped/additional deleted member, current/deleted Project, import rollback, owner subtree/native exit and cross-owner reference is observed; unknown or stale evidence refuses. Singular retirement remains group-refusing, preserve-only is permanent and admitted provenance/package bytes remain retained. Deferred two-resource injected-host fixtures are source only; Runtime's canonical SQL fixtures are separate. No tests/checks/build/types/Node/native/browser/runner preparation/execution/migration/push/deploy or acceptance claim. Global lifecycle discovery, group history/disk reclamation and external unknown recovery remain open.

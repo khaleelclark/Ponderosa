@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from '@ponderosa/native-host/fs';
 import {sourceMutationState,stableJson,type AgentStore,type BranchCustodyLifecycle,type CoordinationV3Store,type CoordinationDestinationReconciliationAuthority} from '@ponderosa/agents';
-import type {CoordinationDestinationStage,DestinationRetirementChoice,DestinationRetirementApprovalDto,DestinationRetirementReviewDto} from '@ponderosa/core';
+import type {CoordinationDestinationReservation,CoordinationDestinationStage,DestinationRetirementChoice,DestinationRetirementApprovalDto,DestinationRetirementReviewDto} from '@ponderosa/core';
 import {lifecycleHash,lifecycleJournal} from './lifecycle-journal.js';
 type Row=Record<string,any>;
 const OPERATOR='local-operator';
@@ -25,24 +25,33 @@ function metadata(directory:string):{name:string;sha256:string;value:Row}[]{
  return result;
 }
 const contains=(value:unknown,keys:string[])=>keys.some(key=>stableJson(value).includes(key));
-export function destinationLifecycle(context:{dataDir:string;store:AgentStore;coordination:CoordinationV3Store;owner:()=>BranchCustodyLifecycle;runtimeIdle:(ids:string[],projectId:string)=>boolean;creationLeases:ReadonlyMap<string,number>}){
- const db=context.store.sqlite,journal=lifecycleJournal(path.join(context.dataDir,'destination-lifecycle-approvals'),db);
- const authority=(id:string):CoordinationDestinationReconciliationAuthority=>({
-  inspect({operatorId,reservation,stage}){
+export function destinationLifecycle(context:{dataDir:string;store:AgentStore;coordination:CoordinationV3Store;owner:()=>BranchCustodyLifecycle;runtimeIdle:(ids:string[],projectId:string)=>boolean;creationLeases:ReadonlyMap<string,number>},group=false){
+ const db=context.store.sqlite,journal=lifecycleJournal(path.join(context.dataDir,group?'destination-group-lifecycle-approvals':'destination-lifecycle-approvals'),db);
+ const inspectResource=(id:string,operatorId:string,reservation:CoordinationDestinationReservation,stage:CoordinationDestinationStage|null,group=false)=>{
    if(operatorId!==OPERATOR||reservation.operatorId!==OPERATOR)throw Error('Current local operator ownership required');
    const row=db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(id) as Row|undefined;
-   if(!row||row.conversation_id!==reservation.destination.conversationId||row.project_id!==reservation.destination.projectId||stableJson(reservation)!==row.reservation_json)throw Error('Exact destination ownership differs');
+   if(!row||row.project_id!==reservation.destination.projectId)throw Error('Exact destination ownership differs');
+   const original=JSON.parse(row.reservation_json) as CoordinationDestinationReservation;
+   if(group){
+    const resource={custody:reservation.custody,destination:reservation.destination};
+    const slot=db.prepare('SELECT * FROM coordination_destination_group_chats WHERE admission_id=? AND source_chat_id=?').get(id,reservation.custody.sourceChatId) as Row|undefined;
+    if(!original.resources?.some(actual=>stableJson(actual)===stableJson(resource))||!slot||slot.conversation_id!==reservation.destination.conversationId||slot.source_execution_id!==reservation.custody.intent.executionId)throw Error('Exact group resource ownership differs');
+   }else if(row.conversation_id!==reservation.destination.conversationId||stableJson(reservation)!==row.reservation_json)throw Error('Exact destination ownership differs');
+   const conversationId=reservation.destination.conversationId;
    const project=context.store.getProject(row.project_id),deletedProject=db.prepare('SELECT * FROM project_deletion_receipts WHERE project_id=?').get(row.project_id) as Row|undefined;
    if(!project&&(!deletedProject||deletedProject.storage_cleanup_completed!==1||deletedProject.draft_cleanup_completed!==1||deletedProject.asset_authority_cleanup_completed!==1||!deletedProject.completed_at))throw Error('Current or completed deleted-Project operator authority required');
    if(project&&db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(row.project_id))throw Error('Project deletion is unsettled');
-   const chat=db.prepare('SELECT * FROM conversation_deletion_receipts WHERE conversation_id=?').get(row.conversation_id) as Row|undefined;
+   const chat=db.prepare('SELECT * FROM conversation_deletion_receipts WHERE conversation_id=?').get(conversationId) as Row|undefined;
    // Completed canonical deletion is durable host evidence, not an operator assertion of provider exit.
    if(!chat||chat.project_id!==row.project_id||chat.canonical_deletion_completed!==1||chat.storage_cleanup_completed!==1||chat.server_cleanup_completed!==1)throw Error('Destination Chat deletion/cleanup must be canonically observed');
-   const members=db.prepare('SELECT * FROM coordination_destination_members WHERE admission_id=? ORDER BY agent_id').all(id) as Row[];
-   const tombstones=db.prepare('SELECT * FROM agent_deletion_tombstones WHERE conversation_id=? ORDER BY agent_id').all(row.conversation_id) as Row[];
+   const allMembers=db.prepare('SELECT * FROM coordination_destination_members WHERE admission_id=? ORDER BY agent_id').all(id) as Row[];
+   const members=group?allMembers.filter(member=>reservation.custody.agentIds.includes(member.source_agent_id)):allMembers;
+   const tombstones=db.prepare('SELECT * FROM agent_deletion_tombstones WHERE conversation_id=? ORDER BY agent_id').all(conversationId) as Row[];
    const ids=[...new Set([...members.map(member=>member.agent_id),...tombstones.map(tombstone=>tombstone.agent_id)])].sort();
-   const plan=(stage as CoordinationDestinationStage|null)?.importPlan;
-   if(plan&&(plan.projectId!==row.project_id||plan.conversationId!==row.conversation_id||stableJson([...plan.agents.map(a=>a.agentId)].sort())!==stableJson(members.map(member=>member.agent_id).sort())))throw Error('Destination member inventory differs from staged import');
+   const plan=stage?.importPlan;
+   if(group&&members.length&&!plan)throw Error('Group mapped members require their exact staged import receipt');
+   if(plan&&(plan.projectId!==row.project_id||plan.conversationId!==conversationId||stableJson([...plan.agents.map(a=>a.agentId)].sort())!==stableJson(members.map(member=>member.agent_id).sort())))throw Error('Destination member inventory differs from staged import');
+   if(ids.length>4096)throw Error('Destination member inventory exceeds bound');
    const deletions:Row[]=[];
    for(const agentId of ids){
     const receipts=db.prepare('SELECT r.* FROM agent_deletion_receipts r,json_each(r.deleted_agent_ids_json) m WHERE m.value=? ORDER BY r.id').all(agentId) as Row[];
@@ -54,30 +63,39 @@ export function destinationLifecycle(context:{dataDir:string;store:AgentStore;co
      UNION ALL SELECT 1 FROM coordination_requests WHERE (requester_agent_id=? OR recipient_agent_id=?) AND state NOT IN (${terminalRequest}) LIMIT 1`).get(agentId,agentId,agentId,agentId,agentId,agentId))throw Error('Destination runtime or external request outcomes remain unresolved');
    }
    if(db.prepare(`SELECT 1 FROM coordination_requests WHERE conversation_id=? AND state NOT IN (${terminalRequest})
-    UNION ALL SELECT 1 FROM coordination_joins WHERE conversation_id=? AND state='open' LIMIT 1`).get(row.conversation_id,row.conversation_id))throw Error('Destination Chat request/join effects remain unresolved');
+    UNION ALL SELECT 1 FROM coordination_joins WHERE conversation_id=? AND state='open' LIMIT 1`).get(conversationId,conversationId))throw Error('Destination Chat request/join effects remain unresolved');
    const execution=db.prepare('SELECT * FROM branch_executions WHERE id=?').get(reservation.destination.executionId) as Row|undefined;
    if(execution&&!['completed','failed','canceled'].includes(execution.state))throw Error('Destination owner execution must settle');
    if(db.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
     SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id IN (SELECT id FROM owned)
      AND (a.state IN ('prepared','waiting','leased','running','outcome_unknown') OR a.process_identity_json IS NOT NULL AND NOT EXISTS(
       SELECT 1 FROM branch_checkpoints p WHERE p.execution_id=s.execution_id AND p.kind='script_process_exit' AND p.transition_key='process-exit:'||a.id||':'||a.fence)) LIMIT 1`).get(reservation.destination.executionId))throw Error('Destination native/effect outcome not observed');
-   const destinationCommands=db.prepare('SELECT command_key,result_json FROM branch_commands WHERE execution_id=? ORDER BY command_key').all(reservation.destination.executionId) as Row[];
+   const nativeAttempts=db.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
+    SELECT a.* FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id IN (SELECT id FROM owned) ORDER BY a.id LIMIT 4097`).all(reservation.destination.executionId);
+   const nativeExits=db.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
+    SELECT * FROM branch_checkpoints WHERE execution_id IN (SELECT id FROM owned) AND kind='script_process_exit' ORDER BY execution_id,transition_key LIMIT 4097`).all(reservation.destination.executionId);
+   if(nativeAttempts.length>4096||nativeExits.length>4096)throw Error('Destination native evidence exceeds bound');
+   const owners=db.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
+    SELECT e.* FROM branch_executions e WHERE e.id IN (SELECT id FROM owned) ORDER BY e.id`).all(reservation.destination.executionId) as Row[];
+   if(owners.some(owner=>!['completed','failed','canceled'].includes(owner.state)))throw Error('Destination owner subtree must settle');
+   const destinationCommands=db.prepare(`WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned p ON e.parent_execution_id=p.id)
+    SELECT execution_id,command_key,result_json FROM branch_commands WHERE execution_id IN (SELECT id FROM owned) ORDER BY execution_id,command_key`).all(reservation.destination.executionId) as Row[];
    for(const command of destinationCommands)if(command.command_key.startsWith('resource-operation:')&&['running','unknown'].includes(JSON.parse(command.result_json).state))throw Error('Destination resource effect remains unresolved');
-   if((context.creationLeases.get(row.conversation_id)??0)>0||!context.runtimeIdle(ids,row.project_id))throw Error('Destination live provider/import authority remains');
+   if((context.creationLeases.get(conversationId)??0)>0||!context.runtimeIdle(ids,row.project_id))throw Error('Destination live provider/import authority remains');
    const mutation=sourceMutationState();if(mutation.activeWriters||mutation.activeCaptures||mutation.uncertainWriters)throw Error('Host source/effect registry remains unsettled');
-   const operations=db.prepare('SELECT * FROM agent_creation_operations WHERE conversation_id=? ORDER BY id').all(row.conversation_id) as Row[];
+   const operations=db.prepare('SELECT * FROM agent_creation_operations WHERE conversation_id=? ORDER BY id').all(conversationId) as Row[];
    if(operations.some(op=>op.status!=='rolled_back')||plan&&!operations.some(op=>op.id===plan.creationOperationId))throw Error('Destination import outcomes must have exact rollback receipts');
    const imports=metadata(path.join(context.dataDir,'agent-import-operations'));
    for(const entry of imports){const operation=entry.value;
     if(/^[a-f0-9-]{36}\.json$/.test(entry.name)&&(operation.id!==entry.name.slice(0,-5)||typeof operation.conversationId!=='string'||!['pending','failed','completed'].includes(operation.status)))throw Error('Unrecognized background import record');
-    if(operation.conversationId!==row.conversation_id)continue;
+    if(operation.conversationId!==conversationId)continue;
     if(operation.status!=='failed'||operation.result||!operations.some(op=>op.idempotency_key===operation.requestId&&op.status==='rolled_back'))throw Error('Background destination import effects remain unresolved');
    }
    const source={checkpointId:reservation.custody.checkpointId,sourceChatId:reservation.custody.sourceChatId,agentIds:reservation.custody.agentIds,intent:reservation.custody.intent};
    const branch=context.owner().inspect(source),references=branch.references.filter(ref=>ref.kind!=='admission'||ref.key!==id).map(ref=>`${ref.kind}:${ref.ownerId}:${ref.key}:${ref.sha256}`);
    const packages=metadata(path.join(context.dataDir,'checkpoint-package-custody'));
-   for(const pkg of packages){if(contains(pkg.value,[row.conversation_id,...ids]))references.push(`package:${pkg.name}:${pkg.sha256}`);}
-   const needles=[reservation.custody.checkpointId,reservation.custody.custodyId,row.conversation_id,...ids];
+   for(const pkg of packages){if(contains(pkg.value,[conversationId,...ids]))references.push(`package:${pkg.name}:${pkg.sha256}`);}
+   const needles=[reservation.custody.checkpointId,reservation.custody.custodyId,conversationId,...ids];
    // Keep every cross-owner restore/command reference. Only the admission's own rows are excluded.
    for(const table of ['branch_commands','coordination_cut_restorations']){
     const columns=(db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).filter(c=>/TEXT/i.test(c.type)&&/json/.test(c.name));
@@ -88,14 +106,29 @@ export function destinationLifecycle(context:{dataDir:string;store:AgentStore;co
      const value=JSON.parse(bytes);if(contains(value,needles))references.push(`${table}:${candidate.rowid}:${column.name}:${lifecycleHash(value)}`);
     }
    }
-   return {revision:lifecycleHash({reservation,stage,project:project??null,deletedProject:deletedProject??null,chat,members,tombstones,deletions,operations,execution:execution??null,destinationCommands,branch,packages,imports,mutation}),references:[...new Set(references)].sort()};
+   return {revision:lifecycleHash({reservation,stage,project:project??null,deletedProject:deletedProject??null,chat,members,tombstones,deletions,operations,execution:execution??null,owners,nativeAttempts,nativeExits,destinationCommands,branch,packages,imports,mutation}),references:[...new Set(references)].sort()};
+ };
+ const authority=(id:string):CoordinationDestinationReconciliationAuthority=>({
+  inspect:({operatorId,reservation,stage})=>{
+   if(!group)return inspectResource(id,operatorId,reservation,stage as CoordinationDestinationStage|null);
+   const resources=reservation.resources;
+   if(!resources||resources.length<2||resources.length>32)throw Error('Bounded complete group resource inventory required');
+   const full=stage as CoordinationDestinationStage|null;
+   const evidence=resources.map(resource=>{
+    const slot=db.prepare('SELECT stage_json FROM coordination_destination_group_chats WHERE admission_id=? AND source_chat_id=?').get(id,resource.custody.sourceChatId) as Row|undefined;
+    const partial=slot?.stage_json?JSON.parse(slot.stage_json) as CoordinationDestinationStage:null;
+    const plan=full?.imports?.[resource.custody.sourceChatId];
+    const actual=plan?{importPlan:plan,agentMap:full!.agentMap,artifactMap:full!.artifactMap}:partial;
+    return inspectResource(id,operatorId,{...reservation,custody:resource.custody,destination:resource.destination},actual,true);
+   });
+   return {revision:lifecycleHash({reservation,stage,evidence}),references:[...new Set(evidence.flatMap(item=>item.references))].sort()};
   },
   requireApproval(input,review){const saved=journal.read(`approval:${id}:${input.commandKey}`);
    const exact={commandKey:input.commandKey,expectedReviewHash:input.expectedReviewHash,releaseSourcePins:input.releaseSourcePins,authorizeDeletedOwner:true};
    if(!saved||saved.admissionId!==id||saved.operatorId!==OPERATOR||stableJson(saved.choice)!==stableJson(exact)||saved.reviewHash!==review.reviewHash)throw Error('Durable exact human retirement approval required');
   },
  });
- const review=(id:string)=>context.coordination.reviewCoordinationDestinationReconciliation(id,OPERATOR,authority(id));
+ const review=(id:string)=>group?context.coordination.reviewCoordinationDestinationGroupReconciliation(id,OPERATOR,authority(id)):context.coordination.reviewCoordinationDestinationReconciliation(id,OPERATOR,authority(id));
  return {
   review(id:string):DestinationRetirementReviewDto{return db.transaction(()=>{const current=review(id);return {...current,preserveOnlyPermanent:true as const,globalRuntimeQuiescenceRequired:true as const,canReleaseSourcePins:current.references.length===0};})();},
   approve(id:string,choice:DestinationRetirementChoice):DestinationRetirementApprovalDto{return db.transaction(()=>{
@@ -107,8 +140,8 @@ export function destinationLifecycle(context:{dataDir:string;store:AgentStore;co
   retire(id:string,choice:DestinationRetirementChoice){return db.transaction(()=>{
    const input={admissionId:id,commandKey:choice.commandKey,operatorId:OPERATOR,expectedReviewHash:choice.expectedReviewHash,releaseSourcePins:choice.releaseSourcePins};
    if(choice.authorizeDeletedOwner!==true)throw Error('Explicit deleted-owner disposition required');
-   return context.coordination.retireCoordinationDestination(input,authority(id));
+   return group?context.coordination.retireCoordinationDestinationGroup(input,authority(id)):context.coordination.retireCoordinationDestination(input,authority(id));
   }).immediate();},
-  receipt:(id:string)=>context.coordination.readCoordinationDestinationRetirement(id),
+  receipt:(id:string)=>group?context.coordination.readCoordinationDestinationGroupRetirement(id):context.coordination.readCoordinationDestinationRetirement(id),
  };
 }

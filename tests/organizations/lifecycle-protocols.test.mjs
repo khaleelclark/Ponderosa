@@ -78,3 +78,55 @@ test('destination retirement binds observed destination cleanup and durable exac
  live=false;const receipt=api.retire('admission',choice);assert.equal(receipt.releasedSourcePins,true);assert.deepEqual(api.retire('admission',choice),receipt);
  assert.equal(db.prepare('SELECT count(*) n FROM coordination_destination_admissions').get().n,0);
 });
+
+// Inject only the canonical facade here; Runtime's separate fixtures own atomic tombstone/pin SQL.
+test('group host observes both resources, extra deleted members and stale approval before one canonical retirement',t=>{
+ const {dataDir,db}=fixture(t);
+ for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql','0039_coordination_destination_group_chats.sql'])db.exec(readFileSync(new URL('../../packages/agents/src/schema/'+name,import.meta.url),'utf8'));
+ const resources=[0,1].map(index=>({custody:{...source,checkpointId:`capture-${index}`,sourceChatId:`source-chat-${index}`,agentIds:[`source-agent-${index}`],intent:{...source.intent,executionId:`source-${index}`},custodyId:lifecycleHash(`capture-${index}`)},destination:{projectId:'project',conversationId:`destination-${index}`,executionId:`destination-owner-${index}`,resourceStepId:`step-${index}`,resourceGeneration:0}}));
+ const reservation={branchId:'branch',sourceExecutionId:'source-0',checkpointId:1,checkpointHash:'e'.repeat(64),commandKey:'reserve',operatorId:'local-operator',reconcileEffects:true,...resources[0],resources};
+ db.prepare('INSERT INTO coordination_destination_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('group','branch','source-0',1,'reserve',lifecycleHash(reservation),stableJson(reservation),'{}','project','destination-0','reserved',null,null,'now','now');
+ for(const resource of resources)db.prepare('INSERT INTO coordination_destination_group_chats VALUES(?,?,?,?,NULL)').run('group',resource.custody.sourceChatId,resource.custody.intent.executionId,resource.destination.conversationId);
+ const partial={importPlan:{creationOperationId:'partial-import',projectId:'project',conversationId:'destination-1',agents:[{sourceRef:'source-agent-1',agentId:'mapped'}],artifacts:[]},agentMap:{'source-agent-1':'mapped'},artifactMap:{}};
+ db.prepare("UPDATE coordination_destination_group_chats SET stage_json=? WHERE source_chat_id='source-chat-1'").run(stableJson(partial));
+ db.exec("INSERT INTO coordination_destination_members VALUES('group','source-agent-1','mapped');INSERT INTO agent_creation_operations VALUES('partial-import','destination-1','rolled_back','partial-request');INSERT INTO agents VALUES('mapped',NULL,'deleted');INSERT INTO agent_deletion_tombstones VALUES('mapped','destination-1')");
+ db.exec(`INSERT INTO agent_deletion_receipts VALUES('deleted-mapped','project','["mapped"]',1,1)`);
+ let project={id:'project',policyRevision:1},live=false,retireCalls=0,receipt;
+ const reviewed=authority=>{
+  const evidence=authority.inspect({operatorId:'local-operator',reservation,stage:null});
+  const value={admissionId:'group',reservation,state:'reserved',stage:null,evidenceRevision:evidence.revision,references:evidence.references};
+  return {...value,reviewHash:lifecycleHash(value)};
+ };
+ const coordination={
+  reviewCoordinationDestinationGroupReconciliation:(id,operator,authority)=>reviewed(authority),
+  retireCoordinationDestinationGroup(input,authority){
+   if(receipt)return receipt;
+   const current=reviewed(authority);if(current.reviewHash!==input.expectedReviewHash)throw Error('Group review changed');
+   authority.requireApproval(input,current);assert.equal(reviewed(authority).reviewHash,current.reviewHash);
+   if(input.releaseSourcePins&&current.references.length)throw Error('Group still referenced');
+   retireCalls++;return receipt={admissionId:'group',commandKey:input.commandKey,operatorId:'local-operator',reviewHash:current.reviewHash,releasedSourcePins:input.releaseSourcePins,retiredAt:'now'};
+  },readCoordinationDestinationGroupRetirement:()=>receipt??null,
+ };
+ let references=[];
+ const api=destinationLifecycle({dataDir,store:{sqlite:db,getProject:()=>project},coordination,owner:()=>({inspect:actual=>({revision:lifecycleHash(actual),references:actual.sourceChatId==='source-chat-1'?references:[],blockers:[]})}),runtimeIdle:()=>!live,creationLeases:new Map()},true);
+ db.exec("INSERT INTO conversation_deletion_receipts VALUES('destination-0','project',1,1,1)");
+ assert.throws(()=>api.review('group'),/Chat deletion/);assert.equal(retireCalls,0);
+ db.exec("INSERT INTO conversation_deletion_receipts VALUES('destination-1','project',1,1,1);INSERT INTO agent_deletion_tombstones VALUES('extra','destination-1')");
+ assert.throws(()=>api.review('group'),/Agent observed.*receipt missing/);
+ db.exec(`INSERT INTO agent_deletion_receipts VALUES('deleted-extra','project','["extra"]',1,1)`);
+ references=[{kind:'checkpoint',ownerId:'source-1',key:'7',sha256:'7'.repeat(64)}];
+ const pinned=api.review('group');assert.equal(pinned.canReleaseSourcePins,false);
+ assert.throws(()=>api.approve('group',{commandKey:'pins',expectedReviewHash:pinned.reviewHash,releaseSourcePins:true,authorizeDeletedOwner:true}),/pins remain referenced/);
+ references=[];
+ const first=api.review('group'),choice={commandKey:'first',expectedReviewHash:first.reviewHash,releaseSourcePins:true,authorizeDeletedOwner:true};
+ assert.throws(()=>api.retire('group',choice),/human retirement approval/);api.approve('group',choice);
+ project={...project,policyRevision:2};assert.throws(()=>api.retire('group',choice),/review changed/);
+ const current=api.review('group'),fresh={...choice,commandKey:'fresh',expectedReviewHash:current.reviewHash};api.approve('group',fresh);
+ live=true;assert.throws(()=>api.retire('group',fresh),/live provider/);live=false;
+ db.exec("INSERT INTO branch_step_executions VALUES('native-step','destination-owner-1');INSERT INTO branch_attempts VALUES('attempt','native-step','completed','process',2)");
+ assert.throws(()=>api.retire('group',fresh),/native\/effect/);assert.equal(retireCalls,0);
+ db.exec("INSERT INTO branch_checkpoints VALUES('destination-owner-1','script_process_exit','process-exit:attempt:2')");
+ assert.throws(()=>api.retire('group',fresh),/review changed/);
+ const settled=api.review('group'),settledChoice={...fresh,commandKey:'settled',expectedReviewHash:settled.reviewHash};api.approve('group',settledChoice);
+ const result=api.retire('group',settledChoice);assert.equal(retireCalls,1);assert.deepEqual(api.receipt('group'),result);assert.deepEqual(api.retire('group',settledChoice),result);
+});
