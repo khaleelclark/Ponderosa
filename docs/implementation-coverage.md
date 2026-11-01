@@ -449,3 +449,21 @@ work. Integration does not take ownership of web surfaces. Early qualified voice
 acknowledgement is Runtime work. Broader generation coverage, accessibility/mobile
 judging and performance acceptance remain unresolved/unverified.
 No tests/builds/types/browser preparation or execution, push/deploy or full #8 claim.
+
+## Exact recovery UI consumer integrated
+
+UI `21569c9229020e566beb83f630025b9551b3d541` is integrated after the complete
+web chain through e8dcaa76. Persistent Agent technical view now offers on-demand
+exact recovery status/evidence, fresh boundary acknowledgement, retained exact
+request-key lookup, Stop during pending recovery and separately acknowledged
+settled-hold dismissal. The earlier missing recovery UI inventory is superseded.
+Original work remains unresolved; no automatic recovery retry/replay or grant
+change is implied. All five changed deliverables physically present/source-read.
+Only conflict was documentation: removed superseded missing-recovery prose while
+retaining explicit UI ownership and source-only qualification.
+Remaining UI product work: BranchPackageDialog workflow folder selections,
+per-target recovery destinations/activation/new managed Chat/root confirmation,
+grouped Shared per-Agent choices and mapped post-install Settings. UI remains sole
+web writer; backend grouped composition/binding/recovery stays Branches-owned.
+No tests/checks/types/build/browser/native/runner preparation or execution, push,
+deploy, #8/#12/Bible/Phase2 completion claim.
