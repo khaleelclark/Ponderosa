@@ -621,3 +621,19 @@ read from fresh destination policy. Deferred actual producer->retry->capture->
 review->admit fixture includes policy drift and owner rollback; nothing executed.
 Parallel/later generations/called-tree admission and live native/provider/package
 qualification remain unsupported. See branch-generation-one-destination.md.
+
+Integration successor: generation-one consumer1fb4b4e is assembled alongside the
+called-tree producer and ff40 historical audit identity/privacy correction. Earlier
+blanket later-generation-consumer-missing notes are superseded ONLY for a manual
+standalone owner with one serial resource at generation one, ASYNC/SYNC, exact
+failed generation-zero evidence and automatic fresh-context retry maxAttempts=2.
+Current roots/maps exclude the old attempt; its full original evidence remains
+historical and nondispatchable. Original historical Project audit-read and no
+pending deletion are required at preparation/candidate/final authorization; only
+old/fresh Project equality is removed. No historical selection/review web UI,
+parallel/EXIT/gen>1/manual recovery/called-tree admission consumer is supplied.
+Erased original proof still prevents new admission; audit retains its bounded
+metadata-only projection and requires an original selectable group journal.
+Actual native/provider/package, accessibility/mobile and end-to-end qualification
+remain open. All deferred fixtures are source only. No tests/checks/build/types/
+Node/native/browser/preparation/execution/migrations/push/deploy/newworkers.
