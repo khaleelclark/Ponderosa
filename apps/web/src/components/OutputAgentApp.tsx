@@ -57,7 +57,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
  const saveSchedule=()=>{
   if(!app||!validInterval)return;
-  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,automatic,everyMs:interval*60000})}));
+  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedBindingRevisionId:app.bindingRevisionId,automatic,everyMs:interval*60000})}));
  };
  return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
@@ -67,6 +67,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
   </Stack>
   {error&&!settings&&<Alert severity="error">{error}</Alert>}
   {(status.isError||output.isError)&&<Alert severity="error" action={<Button onClick={()=>void refresh()}>Retry</Button>}>{((status.error??output.error) as Error)?.message??'Chat unavailable'}</Alert>}
+  {!app&&assistant&&status.data?.setupError&&<Alert severity="error">{status.data.setupError.message}</Alert>}
   {!app&&assistant&&status.data?.initialized&&<Stack spacing={1} sx={{p:2}}><Typography>Assistant is disabled</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
   {!app&&(assistant?status.isPending||busy:output.isPending)&&<Typography role="status" sx={{p:2}}>Loading…</Typography>}
   {app&&route&&<Box sx={{flex:1,minHeight:0,minWidth:0,display:'flex'}}><BranchChats standalone branchId={app.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} branchRoute={route} onNavigate={next=>{
