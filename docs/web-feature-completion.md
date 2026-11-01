@@ -328,3 +328,29 @@ rendered accessibility/mobile/keyboard/screen-reader validation. Current policy
 is not exposed as a read decision in this backend DTO; native lost-ACK and
 compatibility limits remain those of the frozen contract. No full native parity,
 #3/#19/#29, UI or Phase2 acceptance claimed.
+
+## Native task inventory and stop successor (source only)
+
+Agent Settings adds Native tasks using the exact human REST contract at backend/core
+`11619f93fb187e8fe5fc8f3c663ad1c9e9046552` (phase2/native-task-lifetimes).
+Inventory is explicit GET, showing exact Run/fence/session and opaque task/native
+identities. Known cron rows remain noncancellable. Confirmation sends one stop
+POST after the complete original command is persisted; each exact target retains
+its original key and cannot be resubmitted with a new key. Storage corruption or
+conflict holds new stops. Unknown responses and remount recover by explicit GET
+with the original key and full original boundary, including after source drift.
+No automatic retries or guessed IDs. Server still enforces current authority,
+canonical target uniqueness, lease/fence and latest complete inventory.
+
+Receipts show acknowledged/terminated/not_found/unknown exactly, always
+processDrainObserved:false. They do not complete the source Run or settle its
+effects. Existing Run Stop in the Agent header remains distinct. Concise controls,
+wrapped evidence and separate confirmation preserve narrow-screen source intent.
+
+Deliverables: AgentDetail.settings.tsx, NativeTaskControls.tsx, nativeTasks.ts,
+tests/chats/native-tasks-ui.test.mjs and native-tasks-ui-mounted.tsx, this report.
+Fixtures cover exact identities/receipts, lost response, saved-before-effect,
+remount GET, drift, cron refusal and no replay. All remain unexecuted. No checks,
+build/typecheck/Node/provider/native/browser preparation or execution authorized.
+Backend/runtime composition, actual provider qualification, HTTP recovery and
+rendered accessibility/mobile/keyboard/screen-reader validation remain pending.
