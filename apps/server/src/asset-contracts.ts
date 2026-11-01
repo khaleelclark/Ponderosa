@@ -146,6 +146,8 @@ export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedAr
   const extension = path.posix.extname(leaf).toLowerCase();
   const nameExtension = path.extname(artifact.summary).toLowerCase();
   const expectedMediaTypes = ({
+    ".webm": ["audio/webm", "application/octet-stream"], ".ogg": ["audio/ogg", "application/octet-stream"],
+    ".m4a": ["audio/mp4", "application/octet-stream"], ".mp4": ["audio/mp4", "application/octet-stream"],
     ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

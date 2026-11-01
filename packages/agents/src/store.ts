@@ -1582,7 +1582,7 @@ export class AgentStore extends AgentEventSessionFacade {
     this.agentCatalog.setImportedHistory(agentId, source, messages, initialInstructions);
   }
 
-  setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:Array<{path:string;artifactRef:string}>}): Promise<void> {
+  setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: Parameters<AgentCatalogAuthority['setImportedHistoryAsync']>[4]): Promise<void> {
     return this.agentCatalog.setImportedHistoryAsync(agentId, source, messages, initialInstructions, portableState);
   }
 

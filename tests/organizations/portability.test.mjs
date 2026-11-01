@@ -77,7 +77,7 @@ async function withPortability(t, run) {
       headers: { 'idempotency-key': key }, payload: { package: pkg, conversationId: destination.id, engineMapping: { codex: 'codex' }, ...extra } });
     const projection = id => store.sqlite.prepare('SELECT role, text, source_kind AS sourceKind, created_at AS createdAt FROM imported_history_messages WHERE agent_id = ? ORDER BY sequence').all(id);
     await run({ dataDir, project, chat, destination, a, b, outside, artifactId, guidance, bytes, collaboration, request, ok,
-      exportAgent, copy, copyRequest, importRequest, projection, get store() { return store; },
+      exportAgent, copy, copyRequest, importRequest, projection, get assets() { return assets; }, get store() { return store; },
       async restart() { await close(); open(); await app.ready(); } });
     passed = true;
   } finally {
@@ -440,4 +440,32 @@ test('selected working files copy to a new folder and never overwrite an existin
 test('foreign source Chat bindings are refused before an organization is silently collapsed',options,t=>withPortability(t,async f=>{
   const pkg=await f.exportAgent(f.a.id);pkg.agents[1].sourceChat.ref=randomUUID();
   const response=await f.request(f.importRequest(pkg));assert.equal(response.statusCode,400);assert.match(response.body,/source Chat bindings/i);
+}));
+
+test('staged access preview is mutation-free and imported provenance exposes only authorized remapped originals',options,t=>withPortability(t,async f=>{
+  const pkg=await f.exportAgent(f.a.id);
+  Object.assign(pkg.agents[0].accessSettings,{readGlobalMemory:true,savedBrowserAllowed:true,browserMode:'trusted',sourceProfileName:'Historical label only'});
+  const before=f.store.listAgents(f.project.id).map(a=>a.id).sort();
+  const preview=f.ok(await f.request({method:'POST',url:`/api/projects/${f.project.id}/agent-access-preview`,headers:{'content-type':'application/vnd.ponderosa.agent-import'},payload:Buffer.from(JSON.stringify({conversationId:f.destination.id,engineMapping:{codex:'codex'}})+'\n'+JSON.stringify(pkg))}));
+  assert.match(preview.reviewSha256,/^[a-f0-9]{64}$/);
+  assert.deepEqual(f.store.listAgents(f.project.id).map(a=>a.id).sort(),before);
+  const result=f.ok(await f.request(f.importRequest(pkg,randomUUID(),{accessSettingsResolution:{action:'keep_destination',reviewSha256:preview.reviewSha256}})));
+  assert.equal(result.accessSettingsToReview[0].agentId,result.rootAgentId);
+  assert.equal(result.accessSettingsToReview[0].source.savedBrowserAllowed,true);
+  const page=f.ok(await f.request({method:'GET',url:`/api/agents/${result.rootAgentId}/imported-communications?limit=20`}));
+  assert.ok(page.messages.some(m=>m.communication?.eventId===f.collaboration.eventId));
+  for(const artifact of page.artifacts){assert.match(artifact.downloadUrl,/^\/api\/projects\//);assert.equal(f.store.agentCanReadProjectArtifact(f.project.id,artifact.id,result.rootAgentId),true);}
+  assert.equal((await f.request({method:'GET',url:`/api/agents/${result.rootAgentId}/imported-communications?archiveVersion=stale`})).statusCode,409);
+  assert.equal((await f.request({method:'GET',url:`/api/agents/${randomUUID()}/imported-communications`})).statusCode,404);
+}));
+
+ test('recorded audio keeps canonical media type and immutable bytes across reload',options,t=>withPortability(t,async f=>{
+  const page=Buffer.alloc(28);page.write('OggS');page[26]=1;page[27]=19;
+  const packet=Buffer.alloc(19);packet.write('OpusHead');packet[8]=1;packet[9]=1;
+  const body=Buffer.concat([page,packet]);
+  const asset=await f.assets.stage({projectId:f.project.id,agentId:f.a.id,name:'recording.ogg',declaredType:'audio/ogg;codecs=opus',body});
+  await f.assets.associate(f.project.id,f.a.id,[asset.id]);
+  await f.restart();
+  const reloaded=await f.assets.content(f.project.id,f.a.id,asset.id,false);
+  assert.equal(reloaded.asset.mediaType,'audio/ogg');assert.deepEqual(reloaded.body,body);
 }));

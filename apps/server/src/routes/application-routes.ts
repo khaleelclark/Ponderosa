@@ -585,6 +585,11 @@ app.get<{ Params: { id: string; seq: string } }>(
 );
 
 const agentPackages=registerAgentPackageRoutes(app, {
+  portableBrowserSettings:(agent)=>{
+    const ownerId=chatBrowserOwnerId(agent.conversationId);
+    const preference=browserProfiles.preference(ownerId,agent.id);
+    return {savedBrowserAllowed:browserProfiles.hasSavedBrowserAccess(projectBrowserScope(ownerId).projectId,agent.id),browserMode:preference.mode,...(preference.profileName?{sourceProfileName:preference.profileName}:{})};
+  },
   workingCopies,
   dataDir: opts.dataDir,
   store,

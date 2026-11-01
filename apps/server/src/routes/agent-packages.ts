@@ -1,5 +1,5 @@
 import {withoutPortableSecrets} from '../portable-secrets.js';
-import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData} from '../portable-working-files.js';
+import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder} from '../portable-working-files.js';
 import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
 import {CapabilityPolicyStore} from '@ponderosa/agents';
 import {portableCommunicationVisible,portableCommunicationMessage} from '../portable-communication.js';
@@ -79,6 +79,7 @@ export interface BranchImportHooks {
 interface AgentPackageRoutesContext {
   dataDir: string;
   workingCopies?: AgentWorkingCopyService;
+  portableBrowserSettings?:(agent:AgentDto)=>{savedBrowserAllowed:boolean;browserMode:'disposable'|'trusted';sourceProfileName?:string};
   store: AgentStore;
   coordination: CoordinationV3Store;
   assets: AssetStore;
@@ -435,7 +436,7 @@ export function registerAgentPackageRoutes(
     });
   const stagedImportParser = (jsonEnvelope = false): FastifyContentTypeParser => (request, payload, done) => {
       void (async () => {
-        const allowedRoutes = jsonEnvelope ? ['/api/projects/:id/import-agents'] : ['/api/projects/:id/agent-import-operations','/api/projects/:id/import-agent-package','/api/projects/:id/agent-role-preview'];
+        const allowedRoutes = jsonEnvelope ? ['/api/projects/:id/import-agents'] : ['/api/projects/:id/agent-import-operations','/api/projects/:id/import-agent-package','/api/projects/:id/agent-role-preview','/api/projects/:id/agent-access-preview'];
         if(request.method!=='POST'||!allowedRoutes.includes(request.routeOptions.url??''))throw Object.assign(new Error('Agent package media is only accepted by upload routes'),{statusCode:415});
         await operationHydration;
         await fs.mkdir(importOperationDirectory, { recursive: true });
@@ -463,7 +464,7 @@ export function registerAgentPackageRoutes(
               headerParts.push(Buffer.from(bytes.subarray(0,separator<0?bytes.length:separator)));
               if(separator>=0){
                 const value=validatedObject(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(headerParts))),'Agent upload metadata');
-                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId'],'Agent upload metadata');
+                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId','accessSettingsResolution','workingCopyMode','workingFilesDestination'],'Agent upload metadata');
                 const projectId=(request.params as {id:string}).id,destination=typeof value.conversationId==='string'?store.getConversation(value.conversationId):undefined;
                 if(!destination||destination.projectId!==projectId||!resourceInProduct(store,'conversation',destination.id,requestProduct(request)))throw Object.assign(new Error('The destination Chat is unavailable in this product'),{statusCode:404});
                 metadata=value as unknown as StagedImportUpload['metadata'];
@@ -512,6 +513,7 @@ export function registerAgentPackageRoutes(
     requestedMode: AgentExportMode,
     organization: boolean,
     selectedWorkingFiles:readonly string[] = [],
+    wholeWorkingFolder=false,
   ): Promise<AgentPortablePackageDto> => {
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Select working files as an array of relative paths');
     if(selectedWorkingFiles.length&&requestedMode==='template')throw new AssetError(400,'Selected working files require a full export');
@@ -542,7 +544,7 @@ export function registerAgentPackageRoutes(
     type ImportedHistory = {
       messages: NonNullable<AgentPortablePackageDto["agents"][number]["history"]>;
       initialInstructions?: string;
-      portableState?: {workingFiles?:Array<{path:string;artifactRef:string}>};
+      portableState?: {workingFiles?:AgentPortablePackageDto['agents'][number]['workingFiles'];workingFolder?:AgentPortablePackageDto['agents'][number]['workingFolder']};
     };
     const importedHistories = new Map<string, ImportedHistory>();
     let retainedImportedBytes = 0;
@@ -729,8 +731,10 @@ export function registerAgentPackageRoutes(
         const archive=executionArchive(store,agent.id,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes);
         if(archive){reservedArtifactBytes+=portableBase64ByteLength(archive.dataBase64);artifacts.push(archive);}
       }
-      const workingFiles=agent.id===root.id&&selectedWorkingFiles.length
-        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedWorkingFiles,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes):undefined;
+      const folderInventory=agent.id===root.id&&wholeWorkingFolder?await inventoryWorkingFolder(agent.workingCopy.rootPath):undefined;
+      const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
+      const workingFiles=agent.id===root.id&&(selectedPaths.length||folderInventory)
+        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes):undefined;
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');artifacts.push(...workingFiles.artifacts);reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance
@@ -746,9 +750,12 @@ export function registerAgentPackageRoutes(
         ...(agent.presetSnapshot ? { presetSnapshot: agent.presetSnapshot } : {}),
         managementPermissions: agent.managementPermissions,
         workingCopyMode:agent.workingCopy.mode,
+        ...(folderInventory?{workingFolder:{mode:folderInventory.mode,mtime:folderInventory.mtime,directories:folderInventory.directories,excludedPaths:folderInventory.excludedPaths}}:mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFolder?{workingFolder:importedHistories.get(agent.id)!.portableState!.workingFolder}:{}),
         ...(workingFiles?{workingFiles:workingFiles.files}:mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFiles?{workingFiles:importedHistories.get(agent.id)!.portableState!.workingFiles}:{}),
         sourceChat:{ref:agent.conversationId,title:store.getConversation(agent.conversationId)?.title??agent.conversationId},
-        accessSettings:{restrictedCapabilityIds:new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds},
+        accessSettings:{restrictedCapabilityIds:new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds,
+          ...(localMemoryFor(app)?{readGlobalMemory:localMemoryFor(app)!.getGrant(agent.conversationId,store.getConversation(agent.conversationId)?.branchId?'branches':'dev').readGlobal}:{}),
+          ...context.portableBrowserSettings?.(agent)},
         ...(initialInstructions !== undefined ? { initialInstructions } : {}),
         ...(agent.managerAgentId && included.has(agent.managerAgentId)
           ? { managerRef: agent.managerAgentId }
@@ -850,6 +857,31 @@ export function registerAgentPackageRoutes(
     return installed;
   };
 
+  app.get<{Params:{id:string};Querystring:{offset?:string;limit?:string;archiveVersion?:string}}>('/api/agents/:id/imported-communications',async(request,reply)=>{
+    const agent=store.getAgent(request.params.id);
+    if(!agent||store.agentCreationPending(agent.id)||!resourceInProduct(store,'agent',agent.id,requestProduct(request)))return reply.code(404).send({error:'Agent unavailable'});
+    const offset=Number(request.query.offset??0),limit=Number(request.query.limit??10);
+    if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>20)return reply.code(400).send({error:'Use nonnegative offset and limit 1–20'});
+    const availability=store.getImportedHistoryAvailability(agent.id);
+    if(!availability.archiveVersion)return {source:'',importedAt:'',messages:[],artifacts:[],hasMore:false};
+    if(request.query.archiveVersion&&request.query.archiveVersion!==availability.archiveVersion)return reply.code(409).send({error:'Imported history changed; reload from the first page'});
+    const {portable:archiveData}=await parsePortablePackageFile(importedAgentHistoryPath(context.dataDir,agent.projectId,agent.id),{packageOnly:true});
+    if(!store.getAgent(agent.id)||deletingAgentIds.has(agent.id))return reply.code(404).send({error:'Agent unavailable'});
+    if(store.getImportedHistoryAvailability(agent.id).archiveVersion!==availability.archiveVersion)return reply.code(409).send({error:'Imported history changed; reload from the first page'});
+    const archive=archiveData as unknown as {source:string;importedAt:string;messages:AgentPortablePackageDto['agents'][number]['history']};
+    if(!archive?.messages)return reply.code(404).send({error:'Imported history unavailable'});
+    const messages=archive.messages.slice(offset,offset+limit);
+    const refs=new Set(messages.flatMap(message=>[...(message.attachmentRefs??[]),...Object.values(message.artifactRefs??{})]));
+    const artifacts=[...refs].flatMap(ref=>{
+      if(!store.agentCanReadProjectArtifact(agent.projectId,ref,agent.id)||!store.operatorCanReadProjectArtifact(agent.projectId,ref))return [];
+      const artifact=store.getProjectArtifact(agent.projectId,ref);
+      return artifact?[{...artifact,downloadUrl:`/api/projects/${encodeURIComponent(agent.projectId)}/artifacts/${encodeURIComponent(ref)}/download`}]:[];
+    });
+    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messages,artifacts,hasMore:offset+messages.length<archive.messages.length,nextOffset:offset+messages.length};
+    if(agentPackageJsonUtf8Bytes(result)>2*1024*1024)return reply.code(413).send({error:'History page exceeds 2 MiB; request fewer messages or use bounded history retrieval'});
+    return result;
+  });
+
   app.get<{
     Params: { id: string };
     Querystring: {
@@ -857,6 +889,7 @@ export function registerAgentPackageRoutes(
       organization?: string;
       download?: string;
       workingFiles?: string;
+      wholeWorkingFolder?: string;
     };
   }>("/api/agents/:id/export", async (request, reply) => withAgentImportAdmission(async () => {
     const requestedMode: AgentExportMode = ["template", "context", "full"]
@@ -871,6 +904,7 @@ export function registerAgentPackageRoutes(
       requestedMode,
       request.query.organization === "true",
       selectedWorkingFiles as string[],
+      request.query.wholeWorkingFolder==='true',
     );
     if (result.mode === "full") reply.header("x-ponderosa-export-warning", FULL_PACKAGE_EXPORT_WARNING);
     if (request.query.download === "1") {
@@ -1120,7 +1154,7 @@ export function registerAgentPackageRoutes(
         portablePackage = validated.package;
         importSourceLabel = portablePackage.sourceLabel.slice(0,240);
         const sourceChatRefs=new Set(portablePackage.agents.flatMap(node=>node.sourceChat?[node.sourceChat.ref]:[]));
-        if(sourceChatRefs.size>1)throw new Error('Cross-Chat reporting organizations require an ownership-model decision; source Chat bindings cannot be silently collapsed');
+        if(sourceChatRefs.size>1)throw new Error('Multiple source Chat bindings require separate organization packages; one export is one within-Chat reporting subtree');
         if(body.accessSettingsResolution||portablePackage.agents.some(node=>node.accessSettings?.restrictedCapabilityIds.length)){
           const destinationPolicy=new CapabilityPolicyStore(store.sqlite).resolveForChat(conversation.id);
           reviewedDestinationPolicy=stableJson(destinationPolicy);
@@ -1130,8 +1164,8 @@ export function registerAgentPackageRoutes(
             return reply.code(409).send({error:'Review source restrictions and destination access before importing',reviewSha256,source:portablePackage.agents.map(node=>({ref:node.ref,settings:node.accessSettings})),destination:destinationPolicy});
           }
         }
-        if(portablePackage.agents.some(node=>node.workingFiles?.length)&&!body.workingFilesDestination)throw new Error('Choose a new destination folder for selected working files');
-        if(body.workingFilesDestination&&portablePackage.agents.filter(node=>node.workingFiles?.length).length!==1)throw new Error('One selected working folder is required for this destination');
+        if(portablePackage.agents.some(node=>node.workingFiles?.length||node.workingFolder)&&!body.workingFilesDestination)throw new Error('Choose a new destination folder for selected working files');
+        if(body.workingFilesDestination&&portablePackage.agents.filter(node=>node.workingFiles?.length||node.workingFolder).length!==1)throw new Error('One selected working folder is required for this destination');
         if(portablePackage.agents.some(node=>(body.workingCopyMode??node.workingCopyMode)==='separate_git')&&!context.workingCopies)throw new Error('Separate Git copy import service is unavailable');
         if(portablePackage.outputRoles?.length&&!branchHooks){
           if(!outputApps||typeof body.outputRoleReviewId!=='string')throw new Error('Review imported output roles before confirming');
@@ -1510,9 +1544,10 @@ export function registerAgentPackageRoutes(
       }
 
       if(body.workingFilesDestination){
-        const files=importNodes.flatMap(node=>(node.workingFiles??[]).map(file=>{const artifact=node.artifacts.find(a=>a.destinationId===file.artifactRef)!;return {path:file.path,data:artifact.data,sha256:artifact.sha256};}));
+        const files=importNodes.flatMap(node=>(node.workingFiles??[]).map(file=>{const artifact=node.artifacts.find(a=>a.destinationId===file.artifactRef)!;return {path:file.path,data:artifact.data,sha256:artifact.sha256,mode:file.mode,mtime:file.mtime};}));
         store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),workingFilesDestination:body.workingFilesDestination}});
-        await importWorkingFiles(body.workingFilesDestination,files);
+        const folder=importNodes.find(node=>node.workingFolder)?.workingFolder;
+        await importWorkingFiles(body.workingFilesDestination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined);
         retainedWorkingFiles=true;
       }
       signal?.throwIfAborted();
@@ -1575,13 +1610,13 @@ export function registerAgentPackageRoutes(
 
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
-        if (node.history.length || node.initialInstructions !== undefined || node.workingFiles?.length) {
+        if (node.history.length || node.initialInstructions !== undefined || node.workingFiles?.length || node.workingFolder) {
           await store.setImportedHistoryAsync(
             agent.id,
             importSourceLabel,
             node.history,
             node.initialInstructions,
-            node.workingFiles?{workingFiles:node.workingFiles}:undefined,
+            node.workingFiles||node.workingFolder?{workingFiles:node.workingFiles,workingFolder:node.workingFolder}:undefined,
           );
         }
       }
@@ -1625,6 +1660,7 @@ export function registerAgentPackageRoutes(
       const response: RoleResult = {
         ...(body.workingFilesDestination?{workingFilesDestination:body.workingFilesDestination}:{}),
         ...(roleIntent?{outputRoleFinalization:{...roleIntent,mapping:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id]))}}:{}),
+        accessSettingsToReview:importNodes.filter(node=>node.accessSettings&&(node.accessSettings.readGlobalMemory!==undefined||node.accessSettings.savedBrowserAllowed!==undefined||node.accessSettings.browserMode!==undefined)).map(node=>({agentId:created.get(node.ref)!.id,source:node.accessSettings!,conversationId:conversation.id})),
         rootAgentId: created.get(portablePackage.rootRef)!.id,
         agentIds: [...created.values()].map((agent) => agent.id),
       };
@@ -1986,8 +2022,22 @@ export function registerAgentPackageRoutes(
       return finalized;
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-access-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload},async(request,reply)=>{
+    try{
+      if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
+      const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
+      validatePortableAgentPackage(portable);
+      const chat=store.getConversation(metadata.conversationId);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chat.id,requestProduct(request)))return reply.code(404).send({error:'Import destination unavailable'});
+      const destination=new CapabilityPolicyStore(store.sqlite).resolveForChat(chat.id);
+      const reviewSha256=await portableImportPayloadHash({package:portable,destination:chat.id,destinationPolicy:destination});
+      return {reviewSha256,source:portable.agents.map(node=>({ref:node.ref,settings:node.accessSettings})),destination};
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+    finally{await cleanupUpload(request.body);}
+  });
   app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-role-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload},async(request,reply)=>{
     try{
+      if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
       const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
       validatePortableAgentPackage(portable);
       const chat=store.getConversation(metadata.conversationId);

@@ -1,3 +1,4 @@
+import {recordingMediaType} from './audio-container.js';
 import { admitDataDirectory } from "@ponderosa/agents";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "@ponderosa/native-host/fs";
@@ -83,6 +84,8 @@ function normalizeName(value: unknown): string {
 }
 
 function detectType(body: Buffer, name?: string): AssetDto["mediaType"] | undefined {
+  const recording = recordingMediaType(body);
+  if (recording) return recording;
   if (isHeicContainer(body)) return "image/heic";
   if (validAvif(body, 4096)) return "image/avif";
   if (["GIF87a", "GIF89a"].includes(body.subarray(0, 6).toString("latin1"))) return "image/gif";
@@ -130,6 +133,7 @@ function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"])
 }
 
 const ASSET_EXTENSIONS: Readonly<Record<AssetDto["mediaType"], readonly string[]>> = {
+  "audio/webm": [".webm"], "audio/ogg": [".ogg"], "audio/mp4": [".m4a", ".mp4"],
   "image/heic": [".heic", ".heif"],
   "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"],
   "image/gif": [".gif"], "image/avif": [".avif"],
@@ -148,6 +152,14 @@ function extensionMatches(name: string, mediaType: AssetDto["mediaType"]): boole
   const extension = path.extname(name).toLocaleLowerCase();
   if (mediaType === "application/octet-stream") return !STRICT_ASSET_EXTENSIONS.has(extension);
   return !extension || assetExtensionsForMediaType(mediaType).includes(extension);
+}
+
+// Existing opaque originals remain downloadable; stricter audio admission applies to new uploads.
+function storedExtensionMatches(name:string,mediaType:AssetDto['mediaType']):boolean {
+  return extensionMatches(name,mediaType)||mediaType==='application/octet-stream'&&['.webm','.ogg','.m4a','.mp4'].includes(path.extname(name).toLowerCase());
+}
+function storedMediaTypeMatches(body:Buffer,asset:Pick<AssetDto,'name'|'mediaType'>):boolean {
+  return detectType(body,asset.name)===asset.mediaType||asset.mediaType==='application/octet-stream'&&['.webm','.ogg','.m4a','.mp4'].includes(path.extname(asset.name).toLowerCase());
 }
 
 function contentTypeMatches(declared: string | undefined, detected: AssetDto["mediaType"]): boolean {
@@ -377,7 +389,7 @@ function validateStoredAsset(value: unknown, projectId: string, agentId: string,
   if (asset.associatedAt !== undefined && (typeof asset.associatedAt !== "string" || !Number.isFinite(Date.parse(asset.associatedAt)))) return undefined;
   if ((asset.state === "associated") !== (asset.associatedAt !== undefined)) return undefined;
   if (!ASSET_LIMITS.acceptedMediaTypes.includes(asset.mediaType as AssetDto["mediaType"])) return undefined;
-  if (!extensionMatches(asset.name, asset.mediaType as AssetDto["mediaType"])) return undefined;
+  if (!storedExtensionMatches(asset.name, asset.mediaType as AssetDto["mediaType"])) return undefined;
   const preview = asset.previewFile !== undefined;
   const expected = assetUrls(agentId, id, preview, asset.conversationId);
   const expectedUrl = preview && !asset.conversationId
@@ -658,7 +670,7 @@ export class AssetStore {
       const relative = this.secureDirectory(projectId, agentId);
       const body = this.secureRead(relative, asset.originalFile, ASSET_LIMITS.maxFileBytes);
       if (!body || body.length !== asset.size || createHash("sha256").update(body).digest("hex") !== asset.sha256 ||
-          detectType(body, asset.name) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
+          !storedMediaTypeMatches(body, asset) || !storedExtensionMatches(asset.name, asset.mediaType) ||
           !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         const preview = this.secureRead(relative, asset.previewFile, MAX_PREVIEW_BYTES);
@@ -699,8 +711,8 @@ export class AssetStore {
       if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== asset.size || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
       const body = readFileSync(contentFd);
       const contentHash = createHash("sha256").update(body).digest("hex");
-      if (contentHash !== asset.sha256 || detectType(body, asset.name) !== asset.mediaType ||
-          !extensionMatches(asset.name, asset.mediaType) || !hasStrictImageContainer(body, asset.mediaType)) return undefined;
+      if (contentHash !== asset.sha256 || !storedMediaTypeMatches(body, asset) ||
+          !storedExtensionMatches(asset.name, asset.mediaType) || !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         previewFd = openSync(path.join(actual, asset.previewFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         const previewInfo = fstatSync(previewFd);

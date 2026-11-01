@@ -149,11 +149,15 @@ export interface PortableAgentNodeDto {
   managerRef?: string;
   managementPermissions: AgentManagementPermissionsDto;
   /** Source effective restrictions; destination application always requires human review. */
-  accessSettings?: { restrictedCapabilityIds: string[] };
+  accessSettings?: { restrictedCapabilityIds: string[];
+    /** Inert review suggestions; apply only through existing human Settings APIs. */
+    readGlobalMemory?:boolean; savedBrowserAllowed?:boolean; browserMode?:"disposable"|"trusted"; sourceProfileName?:string;
+  };
   /** Setup intent only. Native ownership receipts are never portable. */
   workingCopyMode?: AgentWorkingCopyMode;
   sourceChat?: {ref:string;title:string};
-  workingFiles?: Array<{path:string;artifactRef:string}>;
+  workingFiles?: Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;
+  workingFolder?: {mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[]};
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
 }
@@ -228,7 +232,9 @@ export interface CopyAgentPackageRequest {
   /** Required when any copied Agent receives autonomous destructive authority. */
   acknowledgeElevatedManagementPermissions?: boolean;
 }
-export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; workingFilesDestination?:string }
+export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; workingFilesDestination?:string;
+  accessSettingsToReview?:Array<{agentId:string;source:NonNullable<PortableAgentNodeDto["accessSettings"]>;conversationId:string}>;
+}
 export type AgentImportPhase =
   | "queued"
   | "creating_records"
@@ -604,4 +610,19 @@ export interface AgentHealthProjectionDto {
   scope: { type: "project" | "conversation"; id: string };
   generatedAt: string;
   agents: AgentHealthDto[];
+}
+
+/** Owning-Agent historical provenance only; source identities convey no destination authority. */
+export interface ImportedCommunicationsPageDto {
+  source:string; importedAt:string; archiveVersion?:string;
+  messages:PortableAgentHistoryMessageDto[];
+  artifacts:import('./artifacts.js').ArtifactDto[];
+  hasMore:boolean; nextOffset?:number;
+}
+
+/** Canonical-state mutation-free staged upload preview. Digest is rechecked by import. */
+export interface AgentAccessImportReviewDto {
+  reviewSha256:string;
+  source:Array<{ref:string;settings?:PortableAgentNodeDto['accessSettings']}>;
+  destination:import('../capability-policy.js').EffectiveCapabilityPolicy;
 }

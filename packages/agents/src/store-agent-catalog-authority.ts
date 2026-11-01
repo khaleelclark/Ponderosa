@@ -14,6 +14,7 @@ import type {
   CreateAgentRequest,
   MessageDto,
   PortableAgentHistoryMessageDto,
+  PortableAgentNodeDto,
   ProjectDto,
 } from "@ponderosa/core";
 import { isCommunicationEvent, allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
@@ -65,7 +66,7 @@ const agentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]
 
 type ImportedArchive = { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[];
   initialInstructions?: string; initialInstructionsSeparated?: boolean;
-  portableState?: {workingFiles?:Array<{path:string;artifactRef:string}>} };
+  portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']} };
 type ImportedIndex = { archive_version: string; integrity_key: string; imported_at: string; expected_messages: number;
   status: "preparing" | "ready" | "unavailable" };
 
@@ -680,7 +681,7 @@ export class AgentCatalogAuthority {
   }
 
   /** Creation-pending fencing keeps incomplete imports out of ordinary views. */
-  async setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:Array<{path:string;artifactRef:string}>}): Promise<void> {
+  async setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']}): Promise<void> {
     const agent = this.getAgent(agentId);
     if (!agent) throw new Error("agent not found");
     if (!this.client.prepare(`SELECT 1 FROM agent_creation_operation_members AS members
@@ -734,7 +735,7 @@ export class AgentCatalogAuthority {
     }
     if(imported.portableState!==undefined){
       const state=imported.portableState;
-      if(!state||typeof state!=='object'||Array.isArray(state)||Object.keys(state).some(key=>key!=='workingFiles')||!Array.isArray(state.workingFiles)||state.workingFiles.some(file=>!file||typeof file.path!=='string'||typeof file.artifactRef!=='string'))throw new Error('Invalid imported working-file manifest');
+      if(!state||typeof state!=='object'||Array.isArray(state)||Object.keys(state).some(key=>!['workingFiles','workingFolder'].includes(key))||state.workingFiles!==undefined&&(!Array.isArray(state.workingFiles)||state.workingFiles.some(file=>!file||typeof file.path!=='string'||typeof file.artifactRef!=='string')))throw new Error('Invalid imported working-file manifest');
     }
     for(const message of imported.messages){
       if(message.communication!==undefined&&!isCommunicationEvent(message.communication))throw new Error('Invalid imported historical Communication');

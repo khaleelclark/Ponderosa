@@ -61,3 +61,89 @@ To include external working-file content, select regular files relative to the e
 Cross-Chat reporting organizations remain a concrete model conflict: current creation and organization mutation require parents and every ancestor to belong to the same Chat. A package with distinct source Chat bindings refuses before allocating destination Agents, rather than collapsing private namespaces or rewriting those rules. Cross-Chat communication provenance is retained historically. Supporting a live cross-Chat reporting tree requires an explicit ownership-model decision and changes to canonical organization/deletion/context authority; a package flag cannot supply it.
 
 These are unexecuted implementation changes. UI controls and Branches installation review forwarding remain assigned to their owners. They do not establish a complete identical-organization roundtrip or a passing #8 verdict.
+
+### Structured review and historical presentation
+
+`POST /api/projects/:id/agent-access-preview` accepts the same bounded
+`application/vnd.ponderosa.agent-import` upload as the asynchronous import route:
+JSON metadata followed by a newline and the package JSON. It validates the owned
+upload and destination without creating canonical records, then returns
+`AgentAccessImportReviewDto`: `{reviewSha256, source, destination}`. Re-upload the
+same package with `accessSettingsResolution` to queue an import. Import recomputes
+the digest against the current destination policy and refuses stale choices.
+Temporary staging is removed after preview. Raw metadata admission now accepts the
+review, working-copy and destination-folder fields as well as role review.
+
+`GET /api/agents/:id/imported-communications?offset=0&limit=10` returns
+`ImportedCommunicationsPageDto`. It preserves source Communication and revisions,
+ordered remapped attachment refs, document bindings, and independently authorized
+artifact metadata with server-provided download URLs. Source IDs and scope remain
+historical, never live destination authority. Pagination is 1–20 messages, bounded
+to 2 MiB; use `archiveVersion` on subsequent pages to detect changes. Oversized
+pages return 413 rather than silently clipping; bounded imported-history retrieval
+remains available for large text. This is an owning-Agent view, not an unrestricted
+archive download.
+
+### Whole root working folder
+
+Full Agent export supports the explicit `wholeWorkingFolder=true` query. It
+inventories the selected root Agent's working folder, including empty directories,
+relative topology, regular file bytes, ordinary permission bits and modification
+times. Special ownership bits are never adopted. Whole-folder inventory is bounded
+to 10,000 entries and existing package/artifact byte budgets. Native ownership and
+known credential paths are omitted and listed in `workingFolder.excludedPaths`;
+text secret assignments, known private-key content and JSON secret fields refuse
+export. Symlinks, hardlinks and special files refuse rather than being dereferenced.
+There is no guarantee that arbitrary opaque user data contains no secret.
+
+Import uses the existing explicit `workingFilesDestination`, which must be a NEW
+canonical absolute folder. It never overwrites or deletes an existing user folder.
+Directory and file metadata are restored where the host supports them; errors are
+visible and partial bytes remain at the durable receipt's destination. Re-export
+retains imported folder intent and originals. Creating/rebinding a Chat to the new
+root remains an explicit human Chat creation/settings action. Independent Agent
+working copies are not silently combined into this root-folder transport.
+
+### Nonsecret access suggestions
+
+Exported `accessSettings` also retain optional `readGlobalMemory`,
+`savedBrowserAllowed`, `browserMode`, and `sourceProfileName`. These are inert
+suggestions. Capability restriction review applies only `restrictedCapabilityIds`;
+it does NOT grant memory or browser access. Import result `accessSettingsToReview`
+contains exact destination Agent/Chat mappings and source suggestions so the web
+caller can obtain a separate human choice through existing Settings APIs:
+
+- GET/PUT `/api/local-memory/grants/:chatId`: read the current destination revision,
+  show the Chat-wide effect, and submit `{readGlobal,expectedRevision}` only on
+  explicit confirmation.
+- PUT `/api/projects/:browserOwnerHandle/saved-browser-access/:agentId`: submit
+  `{allowed}` only after the human reviews access to the current saved browser.
+- Existing Agent browser-preference Settings: choose a DESTINATION trusted profile
+  or disposable mode; a source profile name is only a label and never a usable ID.
+
+Credentials, browser profile/session bytes and foreign grants remain excluded.
+Source suggestion transport and destination mapping exist in backend; the web
+owner must implement the actual review and Settings calls. Source restrictions
+cannot automatically elevate destination Chat policy.
+
+### Organization scope
+
+Organization export calls `listAgentSubtree(root.id)`. Canonical parent and ancestor
+invariants require one Chat, and one package topology has one root. Therefore a
+valid current organization export cannot contain multiple independent Chat roots.
+Import retains source Chat identity as historical provenance and binds that one
+within-Chat tree to the explicitly selected destination Chat. Multiple independent
+Chats require separate exports/imports and explicit destination Chat creation.
+No cross-Chat reporting, deletion, context authority, or scheduler ownership is
+introduced. Cross-Chat historical references remain historical source data.
+
+### Recorded audio originals
+
+The shared asset media union/admission now recognizes audio/webm (Opus, `.webm`),
+audio/ogg (Opus, `.ogg`) and audio/mp4 (audio MP4, `.m4a`/`.mp4`). Container signature,
+codec markers, extension and declared content type must agree. Ogg pages and MP4
+box lengths are bounded; WebM checks its document/Opus markers and rejects known
+video codec markers. This is container admission, not a full codec decoder or an
+audio-quality verdict. Existing size budgets, immutable hashes, ownership, staging,
+reload and export paths remain shared. Previously admitted opaque recording originals remain downloadable with their stored octet-stream media type; new audio admission does not orphan their bytes. No transcriber, provider HTTP client,
+auto-play or implicit execution is introduced.
