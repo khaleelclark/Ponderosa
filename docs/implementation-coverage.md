@@ -1,7 +1,7 @@
 # Current implementation coverage and backlog
 
-Source-only inventory after Branch chain d1e79d107 through6b7f18a4 and sole UI-owner
-00c62faa1, atop assembled base94ee6f16a. Integration owns
+Source-only inventory includes Branch8ccf446bb, Runtime publication7bc728008,
+retirement9edf00516 and memory exposure13bf72442, plus sole UI-owner2c7db556e. Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
 No tests/checks/build/types/Node/native/browser/runner preparation or execution,
@@ -33,7 +33,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 14 | Provider errors, explicit unconfirmed outcomes and recovery surfaces assembled. | Runtime/UI; backoff/failure delivery trials deferred. |
 | 15 | Marker-only unlink and nonrecursive tombstone cleanup preserve unexpected user content; private custody is independent. | Reliability; racing-file/deletion trials deferred. |
 | 16 | Trigger schedules/conditions/occurrence identity source assembled. | Features; timing/clock-change trials deferred. |
-| 17 | Exact additive predecessor fixtures and migrations0035/0036/0037 retained once each. | Runtime/Reliability; upgrade/reliability runs deferred. |
+| 17 | Exact additive predecessor fixtures and migrations0035/0036/0037/0038 retained once each. | Runtime/Reliability; upgrade/reliability runs deferred. |
 | 18 | Inbox/notification journal and Assistant cadence source assembled. | UI/Features; quiet-default/deduplication trials deferred. |
 | 19 | Authored communication, activity and execution evidence stay distinct; known secret-field redaction source retained. | Runtime/UI; redaction/diagnostic trials deferred. |
 | 20 | Host/origin operator authority has no general token gate; local-operator is server-owned. Native account login, scoped Run/internal/browser capabilities and human access remain domain authority. No further dedicated-auth deletion warranted by inspected source. | Runtime; secure-environment boundary trials deferred. |
@@ -47,7 +47,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 28 | Branches remains subject to all32; partial source slices confer no acceptance. | All; whole-product qualification deferred. |
 | 29 | Shared Chat/output/Assistant/folder/navigation source assembled. | UI; blind panel/mobile/flicker judging deferred. |
 | 30 | Unified local-memory search/settings and portable memory source assembled. Failed/unknown remote mutation holds have no automatic reconciliation/reclamation. | Runtime/Reliability/Features; backend permission/search trials deferred. |
-| 31 | Runtime adds explicit document/mixed-route/attached-Request final generation through canonical publication, and native-receipt-qualified early voice acknowledgement. Additive DTO/consumer contract in runtime-publication-and-voice.md; UI acknowledgement-buffer/Request-draft integration remains required. | Runtime/UI; source only, native/UI execution and latency/recordings deferred. |
+| 31 | Runtime adds explicit document/mixed-route/attached-Request final generation through canonical publication, and native-receipt-qualified early voice acknowledgement. Separate UI acknowledgement/answer buffers and exact private Request previews are assembled with validated Request memory exposure; see runtime-publication-and-voice.md. | Runtime/UI; source only, native/UI execution and latency/recordings deferred. |
 | 32 | Parallel/control, persistent issued graph/tree/recapture, pre-opening resource rewind, bounded fresh issued-resource destination and review UI assembled. See exact scope and missing-code list below. | Features/Runtime/UI; framework equivalence and all execution deferred. |
 
 ## Current bounded issued-resource source
@@ -55,7 +55,8 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 Seven actual Branch commits integrated in ancestry order: d1e79d107,ea3d6fa37,
 e5a6fee0f,778a001d3,fd8a55e63,d39f40f80,6b7f18a4a. UI00c62faa1 is the sole
 UI-owner successor to already integrateda1da73c5. No old dependency merge replay.
-Runtime71c staging/authority and migrations0035–0037/custody/current web retained.
+Branch8ccf446bb extends local parallel replay; UI2c7db556e adds publication/voice consumers.
+Runtime staging/authority, retirement and migrations0035–0038/custody retained.
 
 Actual source now seals independently retained package bytes, selected frontier,
 host digest and executable audit envelope; verifies issued custody; reserves exact
@@ -68,7 +69,8 @@ Exact command readback avoids package access/effect replay after committed admis
 UI exposes prepare, preview, approval, revocation, separate admission and retained-key
 inspection, with exact identity/hash/CAS checks and no automatic mutation retries.
 
-Supported: standalone serial nonsecret ASYNC/SYNC generation-zero organization,
+Supported: standalone nonsecret ASYNC/SYNC generation-zero single organization,
+serial or local fork/join/map/Script/control paths with complete owned audit replay,
 complete fresh participant map, settled/drained original effects and retirement
 proof, no runtime/package artifacts, memory, source restrictions, elevated automatic
 management grants or native working copies. Original Project audit scope must remain
@@ -76,12 +78,13 @@ available. Ordinary historical rewind still refuses issued-resource cuts; this i
 dedicated reviewed destination command. Pending summaries remain restoreSupported:false;
 only committed admitted receipts report true. This is assembled source, not observed
 end-to-end behavior. See branches-public-engine.md, coordination-destination-admission.md
-and web-feature-completion.md for ordering and limits.
+and web-feature-completion.md for ordering and limits. Completed parallel cleanup
+holds and called resource trees remain refused.
 
 ## Actual missing implementation / owner requirements
 
-- Features + Runtime: broader issued-resource/tree/multi-resource/local-parallel/later-generation
-  consumers; changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
+- Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
+  consumers and atomic Runtime group destination API (no independent-loop substitute); changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
   cancellation and cross-owner forwarded bundles. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
   approval/evidence recheck, immutable receipt/tombstone and optional proven-safe source-pin
@@ -98,12 +101,14 @@ and web-feature-completion.md for ordering and limits.
 - Runtime: native lost-outcome result-query/idempotency, Claude structured compaction,
   source-turn reconciliation remain external-contract gaps. Explicit selected
   document/mixed-route/Request generation and early native voice receipt source
-  now exist; UI consumer integration and execution remain open.
+  and UI consumers now exist; native/browser execution remains deferred.
 - Reliability + UI: existing-Agent regrouping; broader external-writer/remote-memory
   failed-hold reconciliation. Arbitrary shell/native/user-folder writers are outside the
   participating source-boundary guarantee.
-- Features: pinned framework checklist, representative examples and explicit capability
-  equivalence dispositions. No broad LangGraph/LangChain parity inferred from nine labels.
+- Features: comparator version pins and matched equivalence dispositions remain missing.
+  Nine capability source dispositions and a public-client research/critique/subgraph/human
+  review example now exist in branches-framework-capabilities.md and
+  examples/branches-capabilities; neither establishes LangGraph/LangChain parity.
 - Runtime/UI/Features: the Runtime auth disposition is recorded in
   runtime-publication-and-voice.md; remaining Build/native parity questions need
   concrete source dispositions before a missing-code or completion claim.
@@ -172,18 +177,3 @@ upgrade/reliability runs, all Build flows, desktop/mobile/accessibility and meas
 performance. Historical LCP failure remains unresolved. None of all32, #8, #12,
 #32, Build, full UI, Bible or Phase2 is accepted by this inventory.
 
-## Branch family successor source delta
-
-The next isolated Features slice extends the dedicated issued-resource capture,
-shared parallel replay and existing destination admission path to one generation-zero
-organization with local fork/join/map/Script/control state. It retains the same
-custody, human disclosure, fresh maps and atomic owner transaction; no Runtime
-schema or alternate replay engine is added. Deferred ASYNC/SYNC source fixtures
-cover local fork/join composition. This source is unexecuted; broader multi-resource,
-called-tree, later-generation and recovery/reclamation consumers remain missing.
-The original serial-only summary above describes the integration base.
-
-`branches-framework-capabilities.md` inventories all nine source anchors and the
-new `examples/branches-capabilities/application.ts` research/critique/subgraph/human
-review application. Actual LangGraph/LangChain comparator version pins were not
-found in repository source and remain missing, with parity unclaimed.
