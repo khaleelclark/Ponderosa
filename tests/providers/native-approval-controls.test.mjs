@@ -1,3 +1,5 @@
+import { ClaudeFileHistory } from '../../packages/engines/dist/claude-file-history.js';
+import { ClaudeTaskLifetime } from '../../packages/engines/dist/claude-task-lifetime.js';
 // Deferred source fixtures: no provider execution is needed for these contracts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -79,7 +81,7 @@ test('Claude session live methods dispatch structured controls, apply typed turn
       response:frame.request.subtype==='get_context_usage'?{totalTokens:123,rawMaxTokens:200000,model:'exact'}:{}}}));
   },()=> 'session');
   Object.assign(session,{engineAgentId:'session',opts:{resumeSessionId:'session',model:'old',handleElicitation:async()=>({action:'decline'})},
-    selectedModel:'old',controls,approvals:new Map(),seenApprovalIds:new Set(),seedHistory:[],
+    fileHistory:new ClaudeFileHistory('session',async()=>{}),taskLifetime:new ClaudeTaskLifetime('session'),selectedModel:'old',controls,approvals:new Map(),seenApprovalIds:new Set(),seedHistory:[],
     contextObservations:{beginTurn(){},endTurn(){},contextUsage:()=>({usedTokens:999})},
     writeInput:async(text,id)=>{frames.push({text,id});},close:async()=>{closed=true;}});
   await session.startTurn({prompt:'new work',kind:'user_message',model:'exact',clientMessageId:'turn'});
