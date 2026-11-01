@@ -123,3 +123,37 @@ modes. Broader dependency frontier restoration, external-writer protocols and
 full named capability parity remain implementation work. No builds, typechecks,
 tests, browser runs, benchmarks or acceptance verdicts accompany this change;
 regressions are written for the consolidated implementation run.
+
+## Reviewed restrictions during workflow installation
+
+The Branches installer uses the shared `BranchPackageEngine` contract from
+`routes/agent-packages.ts`. Integrate portability commit `ec80fdea58` before this
+caller; it supplies `reviewAccess`, reviewed-choice forwarding and typed conflicts.
+
+After confirming the ordinary installation preview, poll
+`GET /api/branches/installations/:id`. An `applying` installation can return
+`accessSettingsReview: {chatRef, agentRef, chatId, review}`. The review contains
+`reviewSha256`, exact source restrictions and current destination policy. New
+Chats must exist before this review; their staged resources stay hidden. No
+Agent is imported until its restriction choice is reviewed. Scheduler passes
+leave a pending human review alone; ordinary Stop remains available.
+
+Display the source and destination policy, then submit the human's choice to
+`POST /api/branches/installations/:id/access-review` with
+`{chatRef, agentRef, resolution: {action, reviewSha256}}`, where action is
+`keep_destination` or `use_source`. The choice is durable per package Agent.
+The endpoint rechecks the actual destination, durable pending review and applying
+state after asynchronous policy retrieval. A stale choice returns 409 with the
+current installation status/review; display it and ask again. A stopped or
+terminal installation cannot be revived. A successful response clears this
+pending review; the ordinary scheduler resumes installation. More Agents may
+require their own review. The shared importer rechecks the hash again before
+its writes. Existing Agents' destination access is preserved; this choice applies
+to newly imported Agents only, and grants no browser sessions or credentials.
+
+Deferred regression source covers keep-destination/use-source, missing and stale
+review refusal, no pre-review Agent creation, terminal refusal and Stop. The web
+review controls remain a separate owned caller. Working-folder bundles, new-Chat
+mapping and additional reviewed grant forwarding still need their own shared
+engine contract and callers; this access-first increment does not complete #8.
+No execution or passing claim accompanies this source.

@@ -1,3 +1,4 @@
+import type {BranchPackageEngine} from './routes/agent-packages.js';
 import {selectBranchMemory} from './branch-memory-update.js';
 import {validateOutputRoles} from './portable-output-roles.js';
 import type {OutputAgentApps} from './output-agent-apps.js';
@@ -25,22 +26,16 @@ class InstallationConflictError extends Error{}
 type ChatSnapshot={id:string;title:string;instructions?:string};
 type AgentSnapshot={id:string;title:string;handle:string;activeEngine:string;model:string|null;effort:string|null;speed:string|null;managementPermissions:unknown;managerAgentId:string|null};
 type InstallationJournal={chats:Array<ChatSnapshot&{applied?:ChatSnapshot}>;agents:Array<AgentSnapshot&{applied?:Omit<AgentSnapshot,'managerAgentId'>;appliedManager?:string|null;configurationRestored?:boolean}>};
-interface PackageEngine {
- setOutputApps(owner:OutputAgentApps):void;
- validateAgent(pkg:AgentPortablePackageDto,engines:Record<string,string>):void;
- exportMemory(chatId:string,agentIds:string[]):Promise<import('@ponderosa/core').PortableChatMemorySnapshotDto>;
- verifyStagedMemory(operationId:string,pkg:AgentPortablePackageDto):Promise<void>;
- rollbackStagedMemory(operationId:string):Promise<void>;
- exportAgent(id:string,mode:'template'|'full'):Promise<AgentPortablePackageDto>;
- importAgent(projectId:string,chatId:string,pkg:AgentPortablePackageDto,engines:Record<string,string>,key:string,options?:{signal?:AbortSignal;branchHooks?:{plan(agentIds:string[],creationOperationId?:string):void|Promise<void>;commit(result:ImportAgentPackageResponse):void;transaction?(operation:()=>void):void}}):Promise<ImportAgentPackageResponse>;
-}
+type AccessReview=import('@ponderosa/core').AgentAccessImportReviewDto;
+type AccessChoice=NonNullable<import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']>;
+type PendingAccess={chatRef:string;agentRef:string;chatId:string;review:AccessReview};
 /** Coordinates existing Chat/Agent lifecycle operations. It never creates provider Runs. */
 export class BranchInstallationService {
- private engine?:PackageEngine;
+ private engine?:BranchPackageEngine;
  private outputApps?:OutputAgentApps;
  setOutputApps(owner:OutputAgentApps){this.outputApps=owner;}
  private roleBinding(pkg:InstalledBranchPackage,bindings:BranchBindings,branchId?:string){return createHash('sha256').update(stableJson({package:pkg,bindings,destination:branchId??'new'})).digest('hex');}
- private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{}:value;}
+ private rolePlan(plan:Row):{review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
  private finishRoles(plan:Row){
   const state=this.rolePlan(plan);if(state.review){if(!this.outputApps)throw new Error('Output role service unavailable');this.outputApps.finalizeImport(state.review.id,state.binding!,plan.id,state.mapping!);}
   this.compactPlan(plan.id,'completed');
@@ -57,9 +52,9 @@ export class BranchInstallationService {
  private refreshRuntime?:()=>Promise<void>;
  private runtimeRefreshPending=false;
  setPublisher(publish:(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration)=>BranchDto,refreshRuntime?:()=>Promise<void>):void{this.publish=publish;this.refreshRuntime=refreshRuntime;}
- status(id:string):{branchId?:string;state:string;error?:string}|undefined{const p=this.row("SELECT branch_id,state,error FROM branch_installation_plans WHERE id=?",id);return p?{branchId:p.branch_id??undefined,state:p.state,error:p.error??undefined}:undefined;}
+ status(id:string):{branchId?:string;state:string;error?:string;accessSettingsReview?:PendingAccess}|undefined{const p=this.row("SELECT * FROM branch_installation_plans WHERE id=?",id);return p?{branchId:p.branch_id??undefined,state:p.state,error:p.error??undefined,...(this.rolePlan(p).pendingAccess?{accessSettingsReview:this.rolePlan(p).pendingAccess}:{})}:undefined;}
  constructor(private store:AgentStore,private branches:BranchStore,private deleteChat:(id:string)=>Promise<void>,private deleteAgent:(id:string)=>Promise<void>,private createChat:ChatCreator,private settleNotifications?:(branchId:string)=>void){}
- setEngine(engine:PackageEngine):void{this.engine=engine;}
+ setEngine(engine:BranchPackageEngine):void{this.engine=engine;}
  private rows(sql:string,...args:unknown[]):Row[]{return this.store.sqlite.prepare(sql).all(...args) as Row[];}
  private row(sql:string,...args:unknown[]):Row|undefined{return this.store.sqlite.prepare(sql).get(...args) as Row|undefined;}
  private run(sql:string,...args:unknown[]):void{this.store.sqlite.prepare(sql).run(...args);}
@@ -294,6 +289,39 @@ export class BranchInstallationService {
   if(branchId)this.run('UPDATE branch_installation_plans SET expected_resources_hash=? WHERE id=?',this.resourceRevision(branchId),id);
   return {id,operations,...(memoryUpdate?{memoryUpdateReview:memoryUpdate.review}:{}),...(outputRoleReview?{outputRoleReview}:{}),...(fullImportReview?{fullImportReview}:{})};
  }
+ async resolveAccess(id:string,chatRef:string,agentRef:string,choice:AccessChoice){
+  if(!choice||!['keep_destination','use_source'].includes(choice.action)||typeof choice.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(choice.reviewSha256))throw new Error('Invalid access settings review');
+  const plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);
+  if(!plan||plan.state!=='applying'||!this.engine)throw new Error('Installation access review unavailable');
+  const pending=this.rolePlan(plan).pendingAccess;
+  if(!pending||pending.chatRef!==chatRef||pending.agentRef!==agentRef)throw new Error('Installation access review changed');
+  const pkg=this.validate(JSON.parse(plan.package_json)),agent=pkg.chats.find(c=>c.ref===chatRef)?.agents.find(a=>a.ref===agentRef);
+  if(!agent)throw new Error('Installation Agent unavailable');
+  const review=await this.engine.reviewAccess(agent.definition,pending.chatId);
+  this.store.sqlite.transaction(()=>{
+   const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);
+   if(!current||current.state!=='applying')throw new Error('Installation access review unavailable');
+   const state=this.rolePlan(current);
+   if(stableJson(state.pendingAccess)!==stableJson(pending))throw new Error('Installation access review changed');
+   if(review.reviewSha256!==choice.reviewSha256||pending.review.reviewSha256!==choice.reviewSha256){
+    this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,pendingAccess:{...pending,review}}),id);return;
+   }
+   const {pendingAccess,...rest}=state;
+   this.run('UPDATE branch_installation_plans SET preview_json=?,error=NULL,next_attempt_at=NULL WHERE id=?',stableJson({...rest,accessChoices:{...state.accessChoices,[JSON.stringify([chatRef,agentRef])]:choice}}),id);
+  })();
+  const result=this.status(id)!;
+  if(result.accessSettingsReview)throw new Error('Access settings changed. Review the current source and destination again.');
+  return result;
+ }
+ private async importAccess(plan:Row,chatRef:string,agentRef:string,chatId:string,pkg:AgentPortablePackageDto):Promise<AccessChoice|undefined>{
+  if(!pkg.agents.some(node=>node.accessSettings?.restrictedCapabilityIds.length))return;
+  const review=await this.engine!.reviewAccess(pkg,chatId);
+  this.ensureApplying(plan.id,plan.branch_id);
+  const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!,state=this.rolePlan(current),choice=state.accessChoices?.[JSON.stringify([chatRef,agentRef])];
+  if(choice?.reviewSha256===review.reviewSha256)return choice;
+  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,pendingAccess:{chatRef,agentRef,chatId,review}}),plan.id);
+  throw new Error('Review imported Agent restrictions and destination access before continuing');
+ }
  async cancel(id:string):Promise<{branchId?:string;state:string;error?:string}>{
   let plan=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);
   if(!plan)throw new Error('Installation update unavailable');
@@ -374,8 +402,9 @@ export class BranchInstallationService {
    this.compensate(plan.id);
    if(plan.branch_id)this.stopStaging(plan.branch_id);
   }catch(error){this.run('UPDATE branch_installation_plans SET error=?,updated_at=? WHERE id=?','Restoring the prior resource state remains pending: '+(error as Error).message,new Date().toISOString(),plan.id);}
-  if(this.engine)for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='applying' AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1",now.toISOString()))try{await this.apply(plan);}catch(error){
+  if(this.engine)for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='applying' AND json_extract(preview_json,'$.pendingAccess') IS NULL AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1",now.toISOString()))try{await this.apply(plan);}catch(error){
    if(error instanceof InstallationStoppedError||this.planState(plan.id)!=='applying')continue;
+   if((error as import('./routes/agent-packages.js').BranchPackageImportError).accessSettingsReview){const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!;const state=this.rolePlan(current);this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,accessChoices:{}}),plan.id);}
    if(error instanceof InstallationConflictError){if(plan.branch_id)this.stopStaging(plan.branch_id);this.compactPlan(plan.id,'review_required',error.message);continue;}
    const attempt=(plan.attempt_count??0)+1,delay=Math.min(60_000,1000*2**Math.min(attempt-1,6));
    this.run('UPDATE branch_installation_plans SET error=?,attempt_count=?,next_attempt_at=?,updated_at=? WHERE id=?',(error as Error).message,attempt,new Date(now.getTime()+delay).toISOString(),now.toISOString(),plan.id);
@@ -447,7 +476,7 @@ export class BranchInstallationService {
       if(!result||result.rootAgentId!==id||result.agentIds.length!==1||result.agentIds[0]!==id)throw new InstallationConflictError('A staged Agent does not match its completed import receipt; review the package again');
       await this.engine!.verifyStagedMemory(resource.creation_operation_id,a.definition);
      }
-     if(!id){this.ensureApplying(plan.id,branchId);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
+     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
      const node=a.definition.agents[0]!;
      if(resource?.state!=='active')this.store.updateAgent(id,{title:node.title,activeEngine:bindings.engines?.[node.engine]??pkg.engines?.[node.engine]??node.engine,model:node.model??null,effort:node.effort??null,managementPermissions:node.managementPermissions});
     }
