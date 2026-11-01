@@ -66,8 +66,8 @@ Operator-only routes under `/api/branches/:id/executions/:executionId/destinatio
   Current disclosure revocation may deny receipt content; no revoked fact is exposed.
 
 The existing singular endpoint stays strict. The group readiness fence covers every
-resource slot/ancestor. Runtime group lifecycle pins stay held; no group retirement,
-abandonment, history release or unknown effect reconciliation is added here. A
+resource slot/ancestor. Separate whole-group destination retirement is integrated in lifecycle-reconciliation.md;
+this consumer adds no capture abandonment, history release or unknown effect reconciliation. A
 partial group capture has no abandonment command in this slice and remains held.
 
 `GET /capture?commandKey=...` reads the retained capture intent without trying to
@@ -79,8 +79,8 @@ Status readback verifies canonical journal bytes, complete unique source invento
 receipt bindings and, when retained, the exact saved checkpoint. There is no delete,
 release, synthetic retirement receipt or silent conversion to singular abandonment.
 Reliability has been notified of the exhaustive group abandonment adapter boundary;
-no new lifecycle hook or migration is added. Existing lifecycle 0040 source and group
-retirement refusal remain unchanged. `cleanupHeld:false` on a fully sealed capture
+no new lifecycle hook or migration is added. Existing lifecycle0040 schema is unchanged; singular retirement still refuses groups,
+while the separate whole-group destination protocol requires exhaustive proof. `cleanupHeld:false` on a fully sealed capture
 only describes that capture; it does not release destination or history custody pins.
 
 ## Deferred verification source
@@ -99,6 +99,6 @@ two-resource cases remain. These fixtures use real Branch/Runtime/Chat/Request/
 choice/transaction writers with inert package/import/provider adapters.
 
 No tests, checks, builds, typechecks, Node/native/browser processes, runner preparation
-or migrations were executed. No UI/client work, separate filesystem workspace, group
-lifecycle/abandonment or later-generation partition is implemented. Source capability
+or migrations were executed. No UI/client work, separate filesystem workspace, capture abandonment or later-generation partition is implemented in this consumer. Separate
+group destination retirement source is integrated, with execution still deferred. Source capability
 is not provider/native/runtime qualification, parity or Phase 2 acceptance.

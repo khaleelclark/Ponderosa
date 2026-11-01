@@ -1,8 +1,8 @@
 # Current implementation coverage and backlog
 
-Source-only inventory includes Branchc462d403 (two serial resources), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
+Source-only inventory includes Branch1aa09968 (2–32 serial/local-parallel resources; c462d403 predecessor), Branch72f46799/e7602fc15 (parallel8ccf446bb plus retention-only evidence/fixtures), Runtime publication7bc728008,
 retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner through91e8f8ad2/6ddf47dfa,
-and lifecycle source through1544fee9d. Integration owns
+and lifecycle source through393a02f5 (including Runtime713af3ad equivalent1e4d9e2). Integration owns
 `phase2-implementation-integration` at
 `/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
 No tests/checks/build/types/Node/native/browser/runner preparation or execution,
@@ -49,7 +49,7 @@ Owners: Runtime, Reliability, Features (Branches), UI, Integration; Cliff assign
 | 29 | Shared Chat/output/Assistant/folder/navigation source assembled. | UI; blind panel/mobile/flicker judging deferred. |
 | 30 | Unified local-memory search/settings and portable memory source assembled. Exact effect-bearing failed holds have explicit reviewed preserve-current reconciliation; legacy/unknown cases stay held and no automatic reclamation exists. | Runtime/Reliability/Features; backend permission/search trials deferred. |
 | 31 | Runtime adds explicit document/mixed-route/attached-Request final generation through canonical publication, and native-receipt-qualified early voice acknowledgement. Separate UI acknowledgement/answer buffers and exact private Request previews are assembled with validated Request memory exposure; see runtime-publication-and-voice.md. | Runtime/UI; source only, native/UI execution and latency/recordings deferred. |
-| 32 | Parallel/control, persistent issued graph/tree/recapture, pre-opening resource rewind, single-resource review UI and bounded exactly-two serial gen0 group operator consumer assembled. See exact scope and missing-code list below. | Features/Runtime/UI; framework equivalence and all execution deferred. |
+| 32 | Parallel/control, persistent issued graph/tree/recapture, pre-opening resource rewind, single-resource review UI and bounded 2–32 serial/local-parallel gen0 group operator consumer assembled. See exact scope and missing-code list below. | Features/Runtime/UI; framework equivalence and all execution deferred. |
 
 ## Current bounded issued-resource source
 
@@ -134,15 +134,15 @@ routes, directory reuse and scope. Current budgets/capability/pin/unknown fences
 
 A read-only group capture status route and shared DTO expose exact member seals,
 cleanup hold and unsupported abandonment. Partial captures retain every cleanup pin;
-no group retirement, package deletion or inferred disposition is enabled. Lifecycle
-0040 and existing Runtime group holds are unchanged. Source cases cover ASYNC/SYNC
+no capture abandonment, package deletion or inferred disposition is enabled. Separate
+whole-group destination retirement is integrated below; migration0040 is unchanged. Source cases cover ASYNC/SYNC
 serial/local-parallel count/order, upper/lower bounds, final-import rollback,
 non-first policy changes, tampering and partial capture restart. No fixture or
 check/build/typecheck/preparation was executed; inert adapters are not native proof.
 
 Called trees, later-generation evidence-only participants/resource retry/recovery,
-parallel cleanup-held frontiers, broader package payloads, partial-group abandonment
-and group lifecycle remain incomplete/refused. The fresh ordinary Project reuses
+parallel cleanup-held frontiers, broader package payloads and atomic multi-package
+group capture abandonment remain incomplete/refused. The fresh ordinary Project reuses
 the owner Project directory and its usual default Chat plus N separately reserved
 owned resource Chats. Group UI and separate filesystem workspace/imported native
 working roots remain absent. No qualification or acceptance claim.
@@ -177,7 +177,7 @@ staging evidence, actual import-operation review, canonical Branch destination r
 and source-bound checkpoint/capture review. Commands persist before POST; ambiguous
 outcomes retain exact input, stale409 refreshes without automatic replay, and destination
 approval/retirement require separate confirmations with identical choice/key/hash.
-Only destination retirement has a pure receipt GET; other recovery requires explicit
+Singular and group destination retirement have pure receipt GETs; other recovery requires explicit
 unchanged POST replay. Corrupt retained browser input blocks new mutations. Two deferred
 command/mounted fixture sources are present, unexecuted. See web-feature-completion.md.
 Global/deleted-owner import and destination inventories remain absent; scoped destination
@@ -187,19 +187,18 @@ refuse before deletion proof and limit Branch/capture reachability. Branch check
 retirement still depends on retained owner/source identity; no owner-independent journal.
 This is scoped UI source, not broad discovery, group UI or executed lifecycle qualification.
 
-- Features + Runtime: broader issued-resource/tree/multi-resource/later-generation
-  consumers beyond the delivered EXACTLY TWO standalone serial generation-zero
-  resources. That bounded consumer now includes exact capture/custody, actual whole
-  human review, held imports, one composer and post-admit same-transaction checkpoint.
-  Trees, parallel groups, other resource counts, partial-group capture abandonment,
-  group lifecycle and group UI remain missing. Changed/secret bindings; recovery/exhausted-budget frontiers; Agent/child
-  cancellation and cross-owner forwarded bundles. Keep unsupported families refused.
+- Features + Runtime: called resource trees, later-generation historical participants,
+  retry/recovery, parallel cleanup-held frontiers and broader package payloads remain
+  refused beyond the delivered 2–32 standalone generation-zero serial/local-parallel
+  consumer. Group UI and atomic multi-package group capture abandonment remain absent.
+  Changed/secret bindings, exhausted-budget frontiers, Agent/child cancellation and
+  cross-owner forwarded bundles remain open. Keep unsupported families refused.
 - Runtime staged retirement boundary is assembled: reviewed hash CAS, synchronous
   approval/evidence recheck, immutable receipt/tombstone and optional proven-safe source-pin
   release for unadmitted destinations only. Retired identities stay held; admitted
   provenance cannot retire. See coordination-destination-reconciliation.md.
 - Features + Reliability: exhaustive group lifecycle host protocol is included in the
-  source successor below; Runtime canonical retirement is composed in this isolated successor.
+  source successor below; Runtime canonical retirement and host callbacks are composed.
   Singular destination deletion/drain/reference/deleted-owner authority, durable approval
   and combined abandoned-intent/package retirement source are delivered.
   Other retained checkpoints/commands/admissions/package references still pin source
@@ -300,4 +299,4 @@ performance. Historical LCP failure remains unresolved. None of all32, #8, #12,
 
 ### Whole-group lifecycle source successor
 
-Group destination retirement host source reuses the singular per-resource observer across the exhaustive 2–32 resource inventory, aggregates one review/revision, privately fsyncs one exact approval and calls one Runtime-owned whole-group retirement. Separate review/approve/retire/receipt routes and BranchesClient methods are provided. Every Chat, mapped/additional deleted member, current/deleted Project, import rollback, owner subtree/native exit and cross-owner reference is observed; unknown or stale evidence refuses. Singular retirement remains group-refusing, preserve-only is permanent and admitted provenance/package bytes remain retained. Deferred two-resource host/canonical composition and separate Runtime SQL fixtures are source only. No tests/checks/build/types/Node/native/browser/runner preparation/execution/migration/push/deploy or acceptance claim. Global lifecycle discovery, group history/disk reclamation and external unknown recovery remain open.
+Group destination retirement host source reuses the singular per-resource observer across the exhaustive 2–32 resource inventory, aggregates one review/revision, privately fsyncs one exact approval and calls one Runtime-owned whole-group retirement. Separate review/approve/retire/receipt routes and BranchesClient methods are provided. Every Chat, mapped/additional deleted member, current/deleted Project, import rollback, owner subtree/native exit and cross-owner reference is observed; unknown or stale evidence refuses. Singular retirement remains group-refusing, preserve-only is permanent and admitted provenance/package bytes remain retained. Deferred two-resource host/canonical composition and separate Runtime SQL fixtures are source only. No tests/checks/build/types/Node/native/browser/runner preparation/execution/migration/push/deploy or acceptance claim. Global lifecycle discovery, atomic multi-package group capture abandonment, group history/disk reclamation and external unknown recovery remain open. Bounded global policy/history and native-exit inventories bind approval, conservatively invalidating it on unrelated policy changes; each source owner must also pass non-deletion drain inspection. No migration change was introduced.
