@@ -118,25 +118,34 @@ any-resource readiness fence remains integrated. See coordination-destination-gr
 Three deferred synthetic Runtime boundary fixtures are present, unexecuted; no actual
 owner-tree/provider or Branch group consumer qualification is implied.
 
-### Bounded two-resource group consumer
+### Bounded 2–32 resource group consumer
 
-Source now connects exact one-owner serial/two-generation-zero issued capture,
-per-resource actual custody, fresh Project/two owned Chats/full maps, sequential
-prepared imports, whole human fact/policy disclosure choice, nested finish wrappers
-around one Runtime group admit, both owner receipts, after-admission same-transaction
-checkpoint and exact no-byte replay. See `branches-two-resource-destination.md` for
-operator routes, current directory reuse and hard limits. Existing single resource
-and group holds preserved. Actual deferred SQLite/inert-package fixture source covers
-capture/retire/review/admit/readback, second-completion rollback, policy/revocation and
-tamper refusals. No fixture/check/build/typecheck/preparation executed. Trees, parallel
-resource groups, later-generation evidence-only partitions, broader package payloads,
-partial-group capture abandonment and group lifecycle remain incomplete.
+Source extends the one-owner group consumer to 2–32 distinct generation-zero
+resources in serial and local parallel flow. Each exact selected resource retains
+its own package bound to the same whole host/frontier/audit; all seals are required.
+Shared parallel replay now keys reservation/operation/opening proof by resource Step,
+with exhaustive whole-cut and per-resource member/context/import/Request checks.
+Fresh Project/per-resource owned Chats/full maps, sequential prepared imports,
+current whole human fact/policy choice, recursively nested finish wrappers around
+ONE Runtime admit, every owner receipt and after-admission same-transaction final
+checkpoint/readback are connected. Private package selection uses custody identity,
+not receipt-array position. See `branches-two-resource-destination.md` for exact
+routes, directory reuse and scope. Current budgets/capability/pin/unknown fences stay.
 
-The fresh ordinary Project reuses the current owner Project directory and keeps its
-usual default Chat, plus two separately reserved Branch/execution-owned resource
-Chats. Canonical Chat creation validates the host-supplied Branch/execution owner
-and persists JSON plus SQL projection. Group operator routes exist; group UI does
-not. No separate filesystem workspace or imported native working root is activated.
+A read-only group capture status route and shared DTO expose exact member seals,
+cleanup hold and unsupported abandonment. Partial captures retain every cleanup pin;
+no group retirement, package deletion or inferred disposition is enabled. Lifecycle
+0040 and existing Runtime group holds are unchanged. Source cases cover ASYNC/SYNC
+serial/local-parallel count/order, upper/lower bounds, final-import rollback,
+non-first policy changes, tampering and partial capture restart. No fixture or
+check/build/typecheck/preparation was executed; inert adapters are not native proof.
+
+Called trees, later-generation evidence-only participants/resource retry/recovery,
+parallel cleanup-held frontiers, broader package payloads, partial-group abandonment
+and group lifecycle remain incomplete/refused. The fresh ordinary Project reuses
+the owner Project directory and its usual default Chat plus N separately reserved
+owned resource Chats. Group UI and separate filesystem workspace/imported native
+working roots remain absent. No qualification or acceptance claim.
 
 ## Actual missing implementation / owner requirements
 

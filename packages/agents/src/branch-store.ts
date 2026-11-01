@@ -1,4 +1,4 @@
-import {readIssuedGroup,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
+import {readIssuedGroup,readIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
 import {readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
@@ -783,9 +783,9 @@ export class BranchStore {
       const key=`issued-group-destination:${payloadHash(input.commandKey)}`,old=this.row('SELECT input_hash FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
       if(old){if(old.input_hash!==payloadHash(input))throw Error('Group command conflict');return this.issuedGroupDestinationPlan(branchId,executionId,input.commandKey);}
       const saved=readIssuedGroup(this.sqlite,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.issuedContinuation;
-      if(scope.conversationIds.length!==2||new Set(scope.conversationIds).size!==2||!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
+      if(scope.conversationIds.length!==saved.selected.resources.length||new Set(scope.conversationIds).size!==scope.conversationIds.length||!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
        ||!branch?.enabled||branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration)
-       ||this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(source).steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current two-resource group owner unavailable');
+       ||this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(source).steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current group owner unavailable');
       const next=this.accept(branchId,`issued-group-destination:${randomUUID()}`,saved.selected.execution[0].input_text,now);
       if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Group execution budget unavailable');
       if(saved.issuedGroupCustody.reduce((n:number,r:Row)=>n+r.agentIds.length,0)>(this.definition(source).policy.maxEphemeralAgents??100))throw Error('Group Agent budget unavailable');
@@ -810,7 +810,7 @@ export class BranchStore {
     if(!this.sqlite.inTransaction)throw Error('Group composer requires same owner transaction');const r=plan.reservation;
     if(stableJson(plan)!==stableJson(this.issuedGroupDestinationPlan(r.branchId,r.sourceExecutionId,plan.input.commandKey)))throw Error('Group plan changed');
     const saved=readIssuedGroup(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash),stage=JSON.parse(this.row('SELECT stage_json FROM coordination_destination_admissions WHERE id=?',plan.admissionId)!.stage_json),e=this.execution(r.resources[0].destination.executionId),branch=this.getBranch(r.branchId);
-    if(!e||imports.length!==2||r.resources.some((x:Row)=>x.destination.executionId!==e.id)||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested||e.state!=='waiting'
+    if(!e||imports.length!==r.resources.length||r.resources.some((x:Row)=>x.destination.executionId!==e.id)||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested||e.state!=='waiting'
      ||!branch?.enabled||branch.versionId!==e.versionId||branch.bindingRevisionId!==e.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(e.configuration)
      ||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(branch.id,CAPABILITY_IDS.scripts)
      ||!this.hasRunnableCapacity(e.id)||!this.executionBudgets.admit(e.id,now))throw Error('Current group acceptance unavailable');
@@ -844,7 +844,7 @@ export class BranchStore {
     const cp=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,candidate.content,candidate.hash);
     const readiness={checkpointId:Number(cp.lastInsertRowid),checkpointHash:candidate.hash};
     this.run("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?) WHERE id=?",readiness.checkpointId,id);
-    for(let index=0;index<2;index++){
+    for(let index=0;index<plan.reservation.resources.length;index++){
       const key=`issued-group-destination-owner:${plan.admissionId}:${index}`,row=this.row('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?',id,key)!;
       this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...JSON.parse(row.result_json),readiness}),id,key);
     }
@@ -1294,6 +1294,11 @@ export class BranchStore {
   sealIssuedResourceCapture(executionId:string,stepId:string,commandKey:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt):void {
     const execution=this.execution(executionId);if(!execution||this.restricted(execution.branchId,CAPABILITY_IDS.managedAgentCreate))throw Error('Current issued capture authority restricted');
     sealIssuedResourceCapture(this.sqlite,executionId,stepId,commandKey,receipt);
+  }
+  issuedGroupCaptureStatus(executionId:string,commandKey:string):import('@ponderosa/core').BranchIssuedGroupCaptureStatus {
+    const v=readIssuedGroupCapture(this.sqlite,executionId,commandKey);
+    if(!v)throw Error('Group capture command unavailable');
+    return {state:v.state,cleanupHeld:v.state==='capturing',abandonment:'unsupported',sources:v.sources.map((source:Row)=>({checkpointId:source.checkpointId,resourceStepId:source.intent.resourceStepId,sourceChatId:source.sourceChatId,sealed:v.receipts.some((receipt:Row)=>receipt.checkpointId===source.checkpointId)})),...(v.state==='retained'?{checkpointId:v.checkpointId,checkpointHash:v.checkpointHash}:{})};
   }
   reserveIssuedGroupCapture(executionId:string,commandKey:string){
     const e=this.execution(executionId);if(!e||this.restricted(e.branchId,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(e.branchId,CAPABILITY_IDS.scripts))throw Error('Group capture restricted');

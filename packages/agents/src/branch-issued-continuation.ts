@@ -10,7 +10,14 @@ import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 export function issuedResourceFrontierSupported(selected:Selected,definition:BranchDefinition,cut?:BranchHostCut,group=false):boolean {
  try{
   if(group){
-   if(selected.resources!.length!==2||!cut||new Set(selected.resources!.map(r=>r.chat_id)).size!==2)return false;
+   const resources=selected.resources!,count=resources.length,chats=new Set(resources.map(r=>r.chat_id));
+   if(count<2||count>32||!cut||!verifyBranchHostCut(cut,selected.execution![0]!.id)||!cut.coverage.complete
+    ||chats.size!==count||chats.has(null)||chats.has(undefined)||new Set(resources.map(r=>r.step_execution_id)).size!==count
+    ||cut.resources.length!==count||cut.resources.some(x=>!resources.some(r=>stableJson(r)===stableJson(x.row)))
+    ||cut.requests.some(x=>!chats.has(x.row.conversation_id))||cut.joins.some(x=>!chats.has(x.row.conversation_id)))return false;
+   const agentIds=cut.resourceMembers.map(x=>x.row.agent_id),steps=new Set(resources.map(r=>r.step_execution_id));
+   if(new Set(agentIds).size!==agentIds.length||cut.resourceMembers.some(x=>!steps.has(x.row.step_execution_id))
+    ||cut.resourceContexts.some(x=>!steps.has(x.row.step_execution_id)))return false;
    return selected.resources!.every(resource=>{
     const attempts=selected.attempts!.filter(a=>a.step_execution_id===resource.step_execution_id);
     const local={...cut,resources:cut.resources.filter(x=>x.row.step_execution_id===resource.step_execution_id),resourceMembers:cut.resourceMembers.filter(x=>x.row.step_execution_id===resource.step_execution_id),resourceContexts:cut.resourceContexts.filter(x=>x.row.step_execution_id===resource.step_execution_id),requests:cut.requests.filter(x=>x.row.conversation_id===resource.chat_id),joins:cut.joins.filter(x=>x.row.conversation_id===resource.chat_id)};

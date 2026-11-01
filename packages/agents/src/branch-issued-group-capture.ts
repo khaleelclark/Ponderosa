@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import {randomUUID} from 'node:crypto';
 import type {CheckpointPackageSource,CheckpointPackageReceipt} from '@ponderosa/core';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {captureBranchHostCut} from './branch-host-cut.js';
+import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {resourceCaptureFrontierHash,receiptMatchesSource} from './branch-resource-capture.js';
 import {encodeIssuedResourceContinuation,issuedResourceContinuationSupported} from './branch-issued-resource-continuation.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
@@ -13,7 +13,7 @@ export function readIssuedGroup(db:Database.Database,executionId:string,checkpoi
  if(!row||row.content_hash!==expectedHash)throw Error('Issued group checkpoint unavailable');
  const s=JSON.parse(row.snapshot_json),e=s.selected?.execution?.[0];
  if(stableJson(s)!==row.snapshot_json||payloadHash(s)!==expectedHash||s.schema!=='branch-unit-selected.v2'||s.captureKind!=='issued_group'||s.issuedContinuation?.group!==true
-  ||s.selected.resources!.length!==2||s.selected.paths!.length!==1||e?.id!==executionId||!Array.isArray(s.issuedGroupCustody)||s.issuedGroupCustody.length!==2
+  ||s.selected.resources!.length<2||s.selected.resources!.length>32||e?.id!==executionId||!Array.isArray(s.issuedGroupCustody)||s.issuedGroupCustody.length!==s.selected.resources.length
   ||!issuedResourceContinuationSupported(db,executionId,s.selected,s.hostDependencies,s.issuedContinuation))throw Error('Issued group checkpoint integrity/replay unsupported');
  const seen=new Set<string>();
  for(const r of s.selected.resources){
@@ -27,13 +27,41 @@ export function readIssuedGroup(db:Database.Database,executionId:string,checkpoi
  }
  return s;
 }
+/** Read retained intent without recapturing a changed live frontier. Partial custody stays pinned. */
+export function readIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string):Row|undefined {
+ if(typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Exact group capture command required');
+ const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row|undefined;
+ if(!row)return;
+ const v=JSON.parse(row.result_json),snapshot=v.snapshot,resources=snapshot?.selected?.resources;
+ if(stableJson(v)!==row.result_json||row.input_hash!==payloadHash({commandKey})||!['capturing','retained'].includes(v.state)
+  ||snapshot?.schema!=='branch-unit-selected.v2'||snapshot.captureKind!=='issued_group'||snapshot.issuedContinuation?.group!==true
+  ||snapshot.selected.execution[0]?.id!==executionId||!verifyBranchHostCut(snapshot.hostDependencies,executionId)||!Array.isArray(resources)||resources.length<2||resources.length>32
+  ||!Array.isArray(v.sources)||v.sources.length!==resources.length||!Array.isArray(v.receipts)||v.receipts.length>v.sources.length
+  ||v.state==='capturing'&&v.receipts.length===v.sources.length
+  ||new Set(v.sources.map((source:Row)=>source.checkpointId)).size!==resources.length
+  ||new Set(v.sources.map((source:Row)=>source.intent.resourceStepId)).size!==resources.length
+  ||new Set(v.receipts.map((receipt:Row)=>receipt.checkpointId)).size!==v.receipts.length)throw Error('Group capture journal integrity failure');
+ for(const source of v.sources){
+  const r=resources.find((r:Row)=>r.step_execution_id===source.intent.resourceStepId);
+  if(!r||source.intent.executionId!==executionId||source.intent.resourceGeneration!==0||source.sourceChatId!==r.chat_id
+   ||source.intent.frontierSha256!==resourceCaptureFrontierHash(snapshot.selected)||source.intent.hostCutSha256!==payloadHash(snapshot.hostDependencies)
+   ||source.intent.bindingSha256!==snapshot.issuedContinuation.bindingHash||source.intent.configurationSha256!==payloadHash(snapshot.issuedContinuation.configuration)
+   ||stableJson(source.agentIds)!==stableJson(JSON.parse(r.import_operation_json).result.agentIds))throw Error('Group capture source differs');
+ }
+ if(v.receipts.some((receipt:CheckpointPackageReceipt)=>!v.sources.some((source:CheckpointPackageSource)=>receiptMatchesSource(receipt,source))))throw Error('Group capture partial receipt differs');
+ if(v.state==='retained'){
+  const saved=readIssuedGroup(db,executionId,v.checkpointId,v.checkpointHash);
+  if(v.receipts.length!==v.sources.length||stableJson(saved)!==stableJson({...snapshot,issuedGroupCustody:v.sources.map((source:Row)=>v.receipts.find((receipt:Row)=>receipt.checkpointId===source.checkpointId))}))throw Error('Group capture retained seal differs');
+ }
+ return v;
+}
 export function reserveIssuedGroupCapture(db:Database.Database,executionId:string,commandKey:string):Row {
  if(!db.inTransaction||typeof commandKey!=='string'||!commandKey.trim()||commandKey.length>200)throw Error('Group capture owner transaction/command required');
- const old=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row|undefined;
- if(old)return JSON.parse(old.result_json);
+ const old=readIssuedGroupCapture(db,executionId,commandKey);
+ if(old)return old;
  const selected=selectBranchUnit(db,executionId),host=captureBranchHostCut(db,executionId,selected),e=selected.execution![0]!;
- if(selected.resources!.length!==2||selected.paths!.length!==1||!host?.coverage.complete||host.artifactRefs.length||e.parent_execution_id
-  ||selected.resources!.some(r=>r.generation!==0||r.retry_draining||!['active','draining'].includes(r.state)))throw Error('Exactly two generation-zero serial issued resources required');
+ if(selected.resources!.length<2||selected.resources!.length>32||!host?.coverage.complete||host.artifactRefs.length||e.parent_execution_id
+  ||selected.resources!.some(r=>r.generation!==0||r.retry_draining||!['active','draining'].includes(r.state)))throw Error('Two to thirty-two generation-zero issued resources required');
  const branch=db.prepare('SELECT enabled,deleting,active_version_id,binding_revision_id,configuration_json FROM branches WHERE id=?').get(e.branch_id) as Row;
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row;
  if(!branch?.enabled||branch.deleting||branch.active_version_id!==e.version_id||branch.binding_revision_id!==e.binding_revision_id||branch.configuration_json!==configuration.configuration_json)throw Error('Current group owner pins unavailable');
@@ -41,7 +69,7 @@ export function reserveIssuedGroupCapture(db:Database.Database,executionId:strin
  const sources:CheckpointPackageSource[]=selected.resources!.map(r=>{
   const ids=JSON.parse(r.import_operation_json).result.agentIds as string[];
   for(const id of ids)if(!db.prepare('SELECT 1 FROM agents WHERE id=? AND conversation_id=? AND deleted_at IS NULL').get(id,r.chat_id)
-   ||db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1").get(id,id))throw Error('Group participants must survive with observed runtime drain');
+   ||db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM agent_deletion_pending WHERE agent_id=? LIMIT 1").get(id,id,id))throw Error('Group participants must survive with observed runtime drain');
   return {checkpointId:randomUUID(),sourceChatId:r.chat_id,agentIds:ids,intent:{executionId,resourceStepId:r.step_execution_id,resourceGeneration:0,frontierSha256:resourceCaptureFrontierHash(selected),hostCutSha256:payloadHash(host),bindingSha256:issuedContinuation.bindingHash,configurationSha256:payloadHash(issuedContinuation.configuration)}};
  });
  const value={state:'capturing',sources,receipts:[],snapshot:{schema:'branch-unit-selected.v2',captureKind:'issued_group',restore_supported:false,selected,hostDependencies:host,issuedContinuation}};
@@ -49,8 +77,8 @@ export function reserveIssuedGroupCapture(db:Database.Database,executionId:strin
 }
 export function sealIssuedGroupMember(db:Database.Database,executionId:string,commandKey:string,receipt:CheckpointPackageReceipt):void {
  if(!db.inTransaction)throw Error('Group seal requires capture owner transaction');
- const row=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,key(commandKey)) as Row;
- if(!row)throw Error('Group capture intent unavailable');const v=JSON.parse(row.result_json),source=v.sources.find((s:Row)=>s.checkpointId===receipt.checkpointId);
+ const v=readIssuedGroupCapture(db,executionId,commandKey);
+ if(!v)throw Error('Group capture intent unavailable');const source=v.sources.find((s:Row)=>s.checkpointId===receipt.checkpointId);
  if(!source||!receiptMatchesSource(receipt,source))throw Error('Group member custody differs');
  const prior=v.receipts.find((r:Row)=>r.checkpointId===receipt.checkpointId);
  if(prior){if(stableJson(prior)!==stableJson(receipt))throw Error('Group member custody conflict');return;}
@@ -63,7 +91,7 @@ export function sealIssuedGroupMember(db:Database.Database,executionId:string,co
  if(resourceCaptureFrontierHash(selected)!==source.intent.frontierSha256||payloadHash(host)!==source.intent.hostCutSha256
   ||stableJson(encodeIssuedResourceContinuation(db,executionId,selected,host!,true))!==stableJson(v.snapshot.issuedContinuation))throw Error('Group capture frontier changed');
  v.receipts.push(receipt);
- if(v.receipts.length===2){
+ if(v.receipts.length===v.sources.length){
   const snapshot={...v.snapshot,issuedGroupCustody:v.sources.map((s:Row)=>v.receipts.find((r:Row)=>r.checkpointId===s.checkpointId))},bytes=stableJson(snapshot);
   const saved=db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(executionId,bytes,payloadHash(snapshot));
   v.state='retained';v.checkpointId=Number(saved.lastInsertRowid);v.checkpointHash=payloadHash(snapshot);

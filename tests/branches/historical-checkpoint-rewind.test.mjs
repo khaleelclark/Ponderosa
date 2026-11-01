@@ -953,7 +953,13 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
  const project=store.createProject({label:'Inert resource history',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Owner'}),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
  const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:permissions}]};
  const script=id=>({id,kind:'script',runtime:'node',source:`// resource ${id} never executed`,cwdRef:'root',timeoutMs:5000});
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:2,delayMs:0,freshContext:true}}:{})},...(twoResources?[{id:'team2',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Second inert local result'}]:[]),script('suffix')],controls:parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['team-arm','side-arm']}]:[],edges:parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},{id:'team-arm',from:'fork',to:'team',on:'selected'},{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'team-join',from:'team',to:'join',on:'success'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...(twoResources?[{id:'team-team2',from:'team',to:'team2',on:'success'},{id:'team2-suffix',from:'team2',to:'suffix',on:'success'}]:[{id:'to-suffix',from:'team',to:'suffix',on:'success'}])],policy:{maxConcurrentExecutions:8,maxEphemeralAgents:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}}});
+ const count=typeof twoResources==='number'?twoResources:twoResources?2:1;
+ const teams=Array.from({length:count},(_,i)=>i?`team${i+1}`:'team');
+ const resourceSteps=teams.map((id,i)=>({id,kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:i?'Additional inert local result':'Inert local result',...(freshRetry?{failure:{action:'retry',maxAttempts:2,delayMs:0,freshContext:true}}:{})}));
+ const arms=teams.map(id=>`${id}-arm`);
+ const controls=parallel?[{id:'fork',kind:'fork',joinId:'join'},{id:'side',kind:'condition',predicate:{source:'input',equals:'known'},otherwise:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:[...arms,'side-arm']}]:[];
+ const edges=parallel?[{id:'to-fork',from:'prefix',to:'fork',on:'success'},...teams.flatMap((id,i)=>[{id:arms[i],from:'fork',to:id,on:'selected'},{id:`${id}-join`,from:id,to:'join',on:'success'}]),{id:'side-arm',from:'fork',to:'side',on:'selected'},{id:'side-join',from:'side',to:'join',on:'selected'},{id:'side-fallback',from:'side',to:'join',on:'failure'},{id:'join-suffix',from:'join',to:'suffix',on:'success'}]:[{id:'to-team',from:'prefix',to:'team',on:'success'},...teams.map((id,i)=>({id:`${id}-next`,from:id,to:teams[i+1]??'suffix',on:'success'}))];
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'resource-history',definition:{schema:'ponderosa.branch.v1',name:'Resource history',trigger:{kind:'manual'},entry:'prefix',templates:{team:template},steps:[script('prefix'),...resourceSteps,script('suffix')],controls,edges,policy:{maxConcurrentExecutions:8,maxEphemeralAgents:Math.max(2,count),failure:{action:'stop'}}},bindings:{agents:{},directories:{root:dir,workspace:dir},engines:{codex:'codex'}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  let parent,root,source;
  if(childOwner){
@@ -1721,8 +1727,8 @@ for(const mode of ['async','sync'])test(`group reservation ${mode} holds every d
 
 // Deferred complete host consumer source. Package bytes/import effects are inert
 // adapters; Branch/Runtime/Chat/Step/Request/disclosure/transaction writers are real.
-async function twoIssuedResources(t,mode){
- const f=await reservationHistoryFixture(t,mode,false,false,false,true),db=()=>f.store.sqlite,coord=()=>new CoordinationV3Store(db());
+async function twoIssuedResources(t,mode,count=2,parallel=false,completedIndices=parallel?[]:Array.from({length:count-1},(_,i)=>i),partialCapture=false){
+ const f=await reservationHistoryFixture(t,mode,false,parallel,false,count),db=()=>f.store.sqlite,coord=()=>new CoordinationV3Store(db());
  const prefix=await f.claim();f.settle(prefix);const issued=[];
  async function openResource(){
   let r;for(let n=0;n<30;n++){f.branches.advance();await f.branches.unitSaver.drain();r=db().prepare("SELECT * FROM branch_resources WHERE execution_id=? AND state='reserved' ORDER BY rowid DESC LIMIT 1").get(f.source.id);if(r)break;}assert.ok(r);
@@ -1742,12 +1748,14 @@ async function twoIssuedResources(t,mode){
   const request=db().prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(r.step_execution_id).request_id;
   const item={stepId:r.step_execution_id,request,chatId:chat.id,agentId:agent.id};issued.push(item);return item;
  }
- const first=await openResource();coord().updateRequest({requestId:first.request,updateId:'first-completed',kind:'completed',actor:{kind:'agent',id:first.agentId},payload:{text:'first evidence'}});
- const second=await openResource();let bytes=true,imports=0,failSecond=false;
- const custody=new Map();
+ const complete=item=>coord().updateRequest({requestId:item.request,updateId:`completed-${item.request}`,kind:'completed',actor:{kind:'agent',id:item.agentId},payload:{text:'selected evidence'}});
+ for(let i=0;i<count;i++){const item=await openResource();if(!parallel&&completedIndices.includes(i))complete(item);}
+ if(parallel)for(const index of completedIndices)complete(issued[index]);
+ let bytes=true,imports=0,failSecond=false;
+ const custody=new Map();let captures=0;
  const packageFor=receipt=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date(0).toISOString(),sourceLabel:'Inert group custody',rootRef:receipt.agentIds[0],agents:receipt.agentIds.map(ref=>({ref,title:'Retained group worker',engine:'codex',sourceChat:{ref:receipt.sourceChatId,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))});
  const engine={
-  captureCheckpoint:async(source,seal)=>{const receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-issued-group',sha256:hash(stableJson(source)),byteLength:1};custody.set(receipt.custodyId,receipt);db().transaction(()=>seal(receipt))();return receipt;},
+  captureCheckpoint:async(source,seal)=>{if(partialCapture&&++captures===count)throw Error('injected final capture failure');const receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-issued-group',sha256:hash(stableJson(source)),byteLength:1};custody.set(receipt.custodyId,receipt);db().transaction(()=>seal(receipt))();return receipt;},
   readCheckpoint:async receipt=>{assert.deepEqual(receipt,custody.get(receipt.custodyId));if(!bytes)throw Error('missing group bytes');return packageFor(receipt);},
   verifyCheckpointNow:receipt=>{assert.deepEqual(receipt,custody.get(receipt.custodyId));if(!bytes)throw Error('missing group bytes');return receipt.sha256;},validateAgent:()=>{},
   importAgent:async(projectId,chatId,pkg,engines,key,{branchHooks:hooks})=>{
@@ -1756,18 +1764,22 @@ async function twoIssuedResources(t,mode){
    for(const id of Object.values(map))f.store.createAgent(projectId,{title:'Fresh group worker',engine:'codex',conversationId:chatId},undefined,id);
    const result={rootAgentId:map[pkg.rootRef],agentIds:Object.values(map),agentRefs:map};hooks.transaction(()=>{f.store.updateAgentCreationOperation(op.id,{status:'canonical_committed',result:{...result,branchDestinationPrepared:true}});hooks.holdForDisclosure();});return result;
   },
-  finishDestinationImport:(id,compose)=>{const op=f.store.getAgentCreationOperation(id);assert.equal(op.status,'canonical_committed');compose(op.result,()=>{if(failSecond&&id===lastOperation())throw Error('injected second completion');f.store.updateAgentCreationOperation(id,{status:'completed'});});assert.equal(f.store.getAgentCreationOperation(id).status,'completed');},
+  finishDestinationImport:(id,compose)=>{const op=f.store.getAgentCreationOperation(id);assert.equal(op.status,'canonical_committed');compose(op.result,()=>{if(failSecond&&id===lastOperation())throw Error('injected final completion');f.store.updateAgentCreationOperation(id,{status:'completed'});});assert.equal(f.store.getAgentCreationOperation(id).status,'completed');},
  };
  const {BranchIssuedGroupDestinationService}=await import('../../apps/server/dist/branch-issued-group-destination.js');
  const service=()=>new BranchIssuedGroupDestinationService(f.store,f.branches,coord(),()=>engine);
+ if(partialCapture){
+  await assert.rejects(service().capture(f.branch.id,f.source.id,'two-resource-cut'),/injected final capture failure/);
+  return {f,service,issued};
+ }
  const captured=await service().capture(f.branch.id,f.source.id,'two-resource-cut');
- coord().updateRequest({requestId:second.request,updateId:'second-completed',kind:'completed',actor:{kind:'agent',id:second.agentId},payload:{text:'second evidence'}});
+ for(const [index,item] of issued.entries())if(!completedIndices.includes(index))complete(item);
  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
  for(const item of issued){const preview=f.store.previewAgentDeletion([item.agentId]);f.store.deleteAgentSubtrees([item.agentId],preview.previewHash,id=>coord().handleAgentDeletion(id));const receipt=f.store.commitConversationDeletion(item.chatId);f.store.finishConversationDeletionStorageCleanup(receipt);f.store.markConversationDeletionServerCleanupComplete(item.chatId);f.branches.resourceRetired(item.stepId);await f.branches.unitSaver.drain();}
  assert.equal(f.branches.execution(f.source.id).state,'completed');
  const input={commandKey:'restore-two-resource-cut',checkpointId:captured.checkpointId,expectedHash:captured.checkpointHash,reconcileEffects:true};
- function lastOperation(){const row=db().prepare('SELECT stage_json FROM coordination_destination_admissions WHERE command_key=?').get(input.commandKey);if(!row?.stage_json)return;const plan=f.branches.issuedGroupDestinationPlan(f.branch.id,f.source.id,input.commandKey);return JSON.parse(row.stage_json).imports[plan.reservation.resources[1].custody.sourceChatId].creationOperationId;}
- return {f,captured,input,service,get imports(){return imports},setBytes:v=>{bytes=v},setFailure:v=>{failSecond=v}};
+ function lastOperation(){const row=db().prepare('SELECT stage_json FROM coordination_destination_admissions WHERE command_key=?').get(input.commandKey);if(!row?.stage_json)return;const plan=f.branches.issuedGroupDestinationPlan(f.branch.id,f.source.id,input.commandKey);return JSON.parse(row.stage_json).imports[plan.reservation.resources.at(-1).custody.sourceChatId].creationOperationId;}
+ return {f,captured,input,service,issued,get imports(){return imports},setBytes:v=>{bytes=v},setFailure:v=>{failSecond=v}};
 }
 for(const mode of ['async','sync'])test(`two-resource ${mode} capture -> held imports -> whole human review -> admit -> no-byte restart readback`,async t=>{
  const x=await twoIssuedResources(t,mode),{f,input}=x,s=x.service(),prepared=await s.prepare(f.branch.id,f.source.id,input);
@@ -1787,7 +1799,7 @@ for(const mode of ['async','sync'])test(`two-resource ${mode} capture -> held im
 for(const mode of ['async','sync'])test(`two-resource ${mode} composer second-import failure rolls back all graph owners and receipts`,async t=>{
  const x=await twoIssuedResources(t,mode),{f,input}=x,s=x.service(),p=await s.prepare(f.branch.id,f.source.id,input),preview=await s.disclosures.prepare(f.branch.id,f.source.id,p.admissionId);
  await s.disclosures.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'approve',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
- x.setFailure(true);await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/injected second completion/);
+ x.setFailure(true);await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/injected final completion/);
  assert.equal(f.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(p.admissionId).state,'staged');
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(p.resources[0].destination.executionId).n,0);
  for(const item of p.resources){const slot=f.store.sqlite.prepare('SELECT stage_json FROM coordination_destination_group_chats WHERE admission_id=? AND source_chat_id=?').get(p.admissionId,item.custody.sourceChatId);assert.equal(f.store.getAgentCreationOperation(JSON.parse(slot.stage_json).importPlan.creationOperationId).status,'canonical_committed');}
@@ -1805,6 +1817,70 @@ test('two-resource saved host/custody omission or rehashed changed generation re
  const x=await twoIssuedResources(t,'async'),{f,input}=x,db=f.store.sqlite,row=db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(input.checkpointId),original=JSON.parse(row.snapshot_json);
  for(const mutate of [s=>s.issuedGroupCustody.pop(),s=>s.selected.resources[1].generation++,s=>s.issuedContinuation.audit.splice(s.issuedContinuation.audit.findIndex(e=>e.kind==='resource_created'),1)]){
   const value=structuredClone(original);mutate(value);if(value.issuedContinuation.audit)value.issuedContinuation.auditSha256=hash(stableJson(value.issuedContinuation.audit));
+  const changedHash=hash(stableJson(value));db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(stableJson(value),changedHash,input.checkpointId);
+  await assert.rejects(x.service().prepare(f.branch.id,f.source.id,{...input,expectedHash:changedHash}),/integrity|custody|unsupported/);assert.equal(x.imports,0);
+ }
+ db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,input.expectedHash,input.checkpointId);
+});
+
+// Deferred count/order extensions use the same complete canonical host fixture.
+for(const mode of ['async','sync'])for(const [count,parallel,completed] of [[3,false,[0,1]],[32,false,Array.from({length:31},(_,i)=>i)],[2,true,[]],[3,true,[2]],[4,true,[1,3]],[32,true,[31]]])test(`${count}-resource ${parallel?'parallel':'serial'} ${mode} whole-cut admission and exact restart`,async t=>{
+ const x=await twoIssuedResources(t,mode,count,parallel,completed),{f,input}=x,s=x.service(),prepared=await s.prepare(f.branch.id,f.source.id,input);
+ assert.equal(prepared.resources.length,count);assert.equal(x.imports,count);assert.equal(prepared.state,'awaiting_disclosure');
+ const preview=await s.disclosures.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ await s.disclosures.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'approve-count',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ const admitted=await s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash);
+ assert.equal(admitted.receipt.owners.length,count);assert.equal(admitted.receipt.owners.flatMap(o=>o.requestBindings).length,count);
+ assert.equal(new Set(admitted.receipt.owners.flatMap(o=>o.requestBindings).map(b=>b.sourceRequestId)).size,count);
+ assert.equal(admitted.receipt.activationIds.length,count-completed.length,'only selected open resource roots wake');
+ let wholeGraph;
+ for(const item of prepared.resources){
+  const owner=admitted.receipt.owners.find(o=>o.resourceStepId===item.destination.resourceStepId);assert.ok(owner);
+  const command=f.store.sqlite.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(owner.executionId,owner.receiptId);
+  const result=JSON.parse(command.result_json);wholeGraph??=result.coordinationDestination;assert.deepEqual(result.coordinationDestination,wholeGraph);
+  for(const key of ['restorationId','checkpointId','checkpointHash','requestMap','updateMap','joinMap'])assert.deepEqual(wholeGraph[key],admitted.receipt[key]);
+  assert.ok(result.readiness.checkpointHash);
+ }
+ const imports=x.imports;x.setBytes(false);await f.reopen();assert.deepEqual((await x.service().admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash)).receipt,admitted.receipt);assert.equal(x.imports,imports);
+});
+for(const parallel of [false,true])test(`three-resource ${parallel?'parallel':'serial'} last completion rollback and non-first policy invalidation`,async t=>{
+ const x=await twoIssuedResources(t,'sync',3,parallel),{f,input}=x,s=x.service(),p=await s.prepare(f.branch.id,f.source.id,input),preview=await s.disclosures.prepare(f.branch.id,f.source.id,p.admissionId);
+ await s.disclosures.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'approve-last',action:'approve',reviewHash:preview.reviewHash,expectedRevision:0});
+ x.setFailure(true);await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/injected final completion/);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(p.admissionId).state,'staged');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(p.resources[0].destination.executionId).n,0);
+ for(const item of p.resources){const row=f.store.sqlite.prepare('SELECT stage_json FROM coordination_destination_group_chats WHERE admission_id=? AND source_chat_id=?').get(p.admissionId,item.custody.sourceChatId);assert.equal(f.store.getAgentCreationOperation(JSON.parse(row.stage_json).importPlan.creationOperationId).status,'canonical_committed');}
+ x.setFailure(false);new CapabilityPolicyStore(f.store.sqlite).put({scopeKind:'chat',scopeId:p.resources.at(-1).destination.conversationId,expectedRevision:0,restrictedCapabilityIds:[]});
+ await assert.rejects(s.admit(f.branch.id,f.source.id,input.commandKey,preview.reviewHash),/approval/);
+ const current=await s.disclosures.prepare(f.branch.id,f.source.id,p.admissionId);
+ await s.disclosures.choose(f.branch.id,f.source.id,p.admissionId,{commandKey:'approve-new-policy',action:'approve',reviewHash:current.reviewHash,expectedRevision:1});
+ assert.equal((await s.admit(f.branch.id,f.source.id,input.commandKey,current.reviewHash)).state,'admitted');
+});
+
+for(const parallel of [false,true])test(`three-resource ${parallel?'parallel':'serial'} partial capture retains all pins and honest unsupported abandonment after reopen`,async t=>{
+ const x=await twoIssuedResources(t,'sync',3,parallel,parallel?[]:[0,1],true),{f}=x;
+ const status=x.service().captureStatus(f.branch.id,f.source.id,'two-resource-cut');
+ assert.equal(status.state,'capturing');assert.equal(status.cleanupHeld,true);assert.equal(status.abandonment,'unsupported');assert.equal(status.sources.filter(s=>s.sealed).length,2);
+ for(const source of status.sources)assert.equal(f.branches.issuedResourceCapturePending(source.resourceStepId),true);
+ await f.reopen();assert.deepEqual(x.service().captureStatus(f.branch.id,f.source.id,'two-resource-cut'),status);
+ assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.captureKind')='issued_group'").get(f.source.id).n,0);
+});
+for(const count of [1,33])test(`group capture refuses ${count} resources without issuing group packages`,async t=>{
+ await assert.rejects(twoIssuedResources(t,'async',count),/Two to thirty-two/);
+});
+
+test('parallel three-resource rehashed audit/custody/member tampering refuses before destination effects',async t=>{
+ const x=await twoIssuedResources(t,'async',3,true,[2]),{f,input}=x,db=f.store.sqlite,row=db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(input.checkpointId),original=JSON.parse(row.snapshot_json);
+ const mutations=[
+  s=>s.issuedGroupCustody.splice(1,1),
+  s=>s.hostDependencies.resourceMembers[1].row.agent_id=s.hostDependencies.resourceMembers[0].row.agent_id,
+  s=>{const openings=s.issuedContinuation.audit.filter(e=>e.kind==='resource_created');s.issuedContinuation.audit.splice(s.issuedContinuation.audit.indexOf(openings.at(-1)),1);},
+  s=>{const op=s.issuedContinuation.audit.find(e=>e.kind==='resource_operation'&&e.transition_key.includes(s.selected.resources.at(-1).creation_key));op.evidence_json=stableJson({...JSON.parse(op.evidence_json),token:'wrong-resource-token'});},
+ ];
+ for(const mutate of mutations){
+  const value=structuredClone(original);mutate(value);value.issuedContinuation.auditSha256=hash(stableJson(value.issuedContinuation.audit));
+  for(const member of value.hostDependencies.resourceMembers)member.sha256=hash(stableJson(member.row));
+  value.issuedContinuation.hostCutSha256=hash(stableJson(value.hostDependencies));
   const changedHash=hash(stableJson(value));db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(stableJson(value),changedHash,input.checkpointId);
   await assert.rejects(x.service().prepare(f.branch.id,f.source.id,{...input,expectedHash:changedHash}),/integrity|custody|unsupported/);assert.equal(x.imports,0);
  }

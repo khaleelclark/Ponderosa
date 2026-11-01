@@ -42,7 +42,7 @@ export class BranchDisclosureReviewService {
   for(const projectId of projects)if(!this.store.getProject(projectId)||this.db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw Error('Original Project operator audit-read unavailable');
  }
  requireCurrentGroupOwner(reservation:CoordinationDestinationReservation):string {
-  if(!this.db.inTransaction||reservation.resources?.length!==2)throw Error('Two-resource owner transaction required');
+  if(!this.db.inTransaction||!reservation.resources||reservation.resources.length<2||reservation.resources.length>32)throw Error('Bounded group owner transaction required');
   const saved=readIssuedGroup(this.db,reservation.sourceExecutionId,reservation.checkpointId,reservation.checkpointHash),c=saved.issuedContinuation;
   const e=this.db.prepare(`SELECT e.*,b.deleting,b.enabled,b.active_version_id,b.binding_revision_id current_binding,b.configuration_json current_configuration
    FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=? AND b.id=?`).get(reservation.sourceExecutionId,reservation.branchId) as Row;

@@ -22,7 +22,7 @@ export function parallelDefinitionSupported(d:BranchDefinition,calls=false,issue
 }
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
-  if(!issuedRequestFrontierSupported(s,d,hostCut,context?.issuedResource))return false;
+  if(!issuedRequestFrontierSupported(s,d,hostCut,context?.issuedResource,context?.issuedGroup))return false;
   const expected=['execution',...keys,'actions','resources'];
   if(!parallelDefinitionSupported(d,!!context,context?.issuedResource)||stableJson(Object.keys(s).sort())!==stableJson(expected.sort())||expected.some(k=>!Array.isArray(s[k])))return false;
   const e=s.execution![0],terminal=context?.terminal===true;
@@ -75,8 +75,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
   const text=(v:string)=>interpolateBranchText(v,d,c);
   const boundRequests=new Set<string>();
   const pendingArrivals=new Set<string>(),sealedMaps=new Set<string>(),completedItems=new Set<string>(),authorized=new Set<string>(),exited=new Set<string>();
-  const resource=s.resources?.[0],resourceOperations=new Map<string,Row>();
-  let resourceReserved=false;
+  const reservedResources=new Set<string>(),operationsByResource=new Map<string,Map<string,Row>>();
   let started=false,accepted=false,interruption:Row|undefined,invocation:Row|undefined,gateClosing:Row|undefined,terminalObserved=context?.restoredTerminal===true;
   const pendingLoops:{pathId:string;edgeId:string;iteration:number}[]=[],pendingOutcomes=new Map<string,string>(),gateDecisions=new Map<string,string>(),admitted=new Set<string>(),completedChildren=new Set<string>(),cancelledItems=new Set<string>(),cancelledGates=new Set<string>();
   if(seed){
@@ -132,13 +131,16 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      m.steps!.push({...srow,state:'prepared',result_json:null});m.attempts!.push({...a,state:'prepared',request_id:null,fence:0,cancel_requested:0,result_json:null});p.step_execution_id=srow.id;p.traversals++;break;
     }
     case 'resource_reserved':{
-     require(context?.issuedResource&&resource&&!resourceReserved&&started&&!interruption);
+     const resource=s.resources!.find(r=>key===`resource:${r.step_execution_id}`);
+     require(context?.issuedResource&&resource&&!reservedResources.has(resource.step_execution_id)&&started&&!interruption);
      const step=find('steps',resource.step_execution_id),p=find('paths',step.path_id);
      require(step.state==='prepared'&&p.step_execution_id===step.id&&v.templateRef===resource.template_ref&&v.count===resource.requested_count&&key===`resource:${step.id}`);
-     resourceReserved=true;break;
+     reservedResources.add(resource.step_execution_id);operationsByResource.set(resource.step_execution_id,new Map());break;
     }
     case 'resource_operation':{
-     require(context?.issuedResource&&resourceReserved&&resource&&started&&!interruption);
+     const resource=s.resources!.find(r=>key.startsWith(`resource-operation:${r.creation_key}:${v.phase}:`));
+     require(context?.issuedResource&&resource&&reservedResources.has(resource.step_execution_id)&&started&&!interruption);
+     const resourceOperations=operationsByResource.get(resource.step_execution_id)!;
      const step=find('steps',resource.step_execution_id);
      require(step.state==='prepared'&&v.schema==='branch-resource-operation.v1'&&['chat','import'].includes(v.phase)&&typeof v.token==='string'
       &&key.startsWith(`resource-operation:${resource.creation_key}:${v.phase}:${v.token}:${v.state}:`)&&['running','completed'].includes(v.state));
@@ -151,7 +153,8 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      resourceOperations.set(v.phase,v);break;
     }
     case 'resource_created':{
-     require(context?.issuedResource&&resourceReserved&&resource&&started&&!interruption&&resourceOperations.get('import')?.state==='completed');
+     const resource=s.resources!.find(r=>key===`resource-bound:${r.step_execution_id}:${r.generation}`);
+     require(context?.issuedResource&&resource&&reservedResources.has(resource.step_execution_id)&&started&&!interruption&&operationsByResource.get(resource.step_execution_id)?.get('import')?.state==='completed');
      const step=find('steps',resource.step_execution_id),a=m.attempts!.find(a=>a.step_execution_id===step.id)!;
      const captured=final('attempts',a.id),operation=JSON.parse(resource.import_operation_json),p=find('paths',step.path_id);
      require(a.state==='prepared'&&step.state==='prepared'&&p.step_execution_id===step.id&&!boundRequests.has(a.id)
@@ -332,7 +335,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
     default:return false;
    }
   }
-  require(!context?.issuedResource||resourceReserved&&['chat','import'].every(phase=>resourceOperations.get(phase)?.state==='completed'));
+  require(!context?.issuedResource||reservedResources.size===s.resources!.length&&s.resources!.every(resource=>['chat','import'].every(phase=>operationsByResource.get(resource.step_execution_id)?.get(phase)?.state==='completed')));
   require(boundRequests.size===s.attempts!.filter(a=>a.request_id).length);
   require(started&&cancelledItems.size===0&&cancelledGates.size===0&&pendingLoops.length===0&&pendingArrivals.size===0&&authorized.size===exited.size);
   if(c.checkpointMode==='exit'&&!context?.terminal){const closing=checkpoint?.invocation;require(closing);if(m.gates!.some(g=>g.state==='waiting')&&closing.interruptionId===undefined)require(gateClosing&&gateClosing.invocationId===closing.id&&gateClosing.ordinal===closing.ordinal);else require(interruption&&closing.interruptionId===interruption.interruptionId&&closing.id===interruption.invocationId&&closing.ordinal===interruption.ordinal);}

@@ -345,6 +345,12 @@ export interface BranchImportFileSelection {workingFilesDestination?:string;work
 export type BranchImportFileSelections=Record<string,BranchImportFileSelection>;
 export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:string[];wholeWorkingFolder?:boolean}>;
 
+/** Partial group capture cannot release any custody or cleanup pin. */
+export interface BranchIssuedGroupCaptureStatus {
+ state:'capturing'|'retained';cleanupHeld:boolean;abandonment:'unsupported';
+ sources:{checkpointId:string;resourceStepId:string;sourceChatId:string;sealed:boolean}[];
+ checkpointId?:number;checkpointHash?:string;
+}
 export interface CheckpointPackageSource {
   checkpointId:string;
   sourceChatId:string;

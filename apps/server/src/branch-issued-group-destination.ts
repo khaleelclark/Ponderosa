@@ -6,7 +6,7 @@ import type {BranchPackageEngine} from './routes/agent-packages.js';
 type Row=Record<string,any>;
 const hash=(v:unknown)=>createHash('sha256').update(stableJson(v)).digest('hex');
 
-/** Exact two-resource serial consumer; imports stay held through one human choice. */
+/** Bounded generation-zero resource consumer; imports stay held through one human choice. */
 export class BranchIssuedGroupDestinationService {
  private readonly preparing=new Set<string>();
  readonly disclosures:BranchDisclosureReviewService;
@@ -34,6 +34,10 @@ export class BranchIssuedGroupDestinationService {
    ||a.accessSettings?.restrictedCapabilityIds.length||a.managementPermissions.allowAutomaticDescendantDeletion||a.managementPermissions.allowAutomaticDescendantReorganization)
    ||stableJson(pkg.agents.map(a=>a.ref))!==stableJson(receipt.agentIds))throw Error('Group supports only artifact-free private organizations without memory, working roots, restrictions or elevated grants');
  }
+ captureStatus(branchId:string,executionId:string,commandKey:string){
+  if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Group capture owner unavailable');
+  return this.branches.issuedGroupCaptureStatus(executionId,commandKey);
+ }
  async capture(branchId:string,executionId:string,commandKey:string){
   if(this.branches.execution(executionId)?.branchId!==branchId)throw Error('Group capture owner unavailable');
   let journal=this.branches.reserveIssuedGroupCapture(executionId,commandKey);
@@ -60,7 +64,7 @@ export class BranchIssuedGroupDestinationService {
    return {...base,state:'admitted',restoreSupported:true,receipt};
   }
   const slots=this.db.prepare('SELECT stage_json FROM coordination_destination_group_chats WHERE admission_id=?').all(plan.admissionId) as Row[];
-  const prepared=slots.length===2&&slots.every(slot=>{if(!slot.stage_json)return false;const op=this.store.getAgentCreationOperation(JSON.parse(slot.stage_json).importPlan.creationOperationId);return op?.status==='canonical_committed'&&(op.result as Row)?.branchDestinationPrepared===true;});
+  const prepared=slots.length===plan.reservation.resources.length&&slots.every(slot=>{if(!slot.stage_json)return false;const op=this.store.getAgentCreationOperation(JSON.parse(slot.stage_json).importPlan.creationOperationId);return op?.status==='canonical_committed'&&(op.result as Row)?.branchDestinationPrepared===true;});
   return {...base,state:prepared?'awaiting_disclosure':slots.some(s=>s.stage_json)?'import_unknown':'reserved',restoreSupported:false};
  }
  async prepare(branchId:string,executionId:string,input:BranchIssuedDestinationInput){
@@ -69,24 +73,25 @@ export class BranchIssuedGroupDestinationService {
   try{
    const prior=this.db.prepare('SELECT input_hash FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`issued-group-destination:${hash(input.commandKey)}`) as Row|undefined;
    if(prior){if(prior.input_hash!==hash(input))throw Error('Group command input conflict');const status=this.inspect(branchId,executionId,input.commandKey);if(status.state==='admitted'||status.state==='awaiting_disclosure')return status;}
-   const saved=readIssuedGroup(this.db,executionId,input.checkpointId,input.expectedHash),pkgs:AgentPortablePackageDto[]=[];
+   const saved=readIssuedGroup(this.db,executionId,input.checkpointId,input.expectedHash),pkgs=new Map<string,AgentPortablePackageDto>();
    const bindings=this.branches.bindingRevision(branchId,saved.issuedContinuation.bindingRevisionId),engines=bindings?.engines??{};
-   for(const receipt of saved.issuedGroupCustody){const pkg=await this.packages().readCheckpoint(receipt);this.supported(pkg,receipt);this.packages().validateAgent(pkg,engines);pkgs.push(pkg);}
-   const creationKey=`issued-group-${lock}`,projectId=workspaceCreationId('project','workspace',creationKey),conversationIds=[0,1].map(i=>workspaceCreationId('conversation',projectId,`${creationKey}:chat:${i}`));
+   for(const receipt of saved.issuedGroupCustody){const pkg=await this.packages().readCheckpoint(receipt);this.supported(pkg,receipt);this.packages().validateAgent(pkg,engines);pkgs.set(receipt.custodyId,pkg);}
+   const creationKey=`issued-group-${lock}`,projectId=workspaceCreationId('project','workspace',creationKey),conversationIds=saved.selected.resources.map((_:Row,i:number)=>workspaceCreationId('conversation',projectId,`${creationKey}:chat:${i}`));
    const plan=this.branches.reserveIssuedGroupDestination(branchId,executionId,input,{projectId,conversationIds,creationKey,operatorId:BRANCH_DISCLOSURE_OPERATOR},this.authority());
    const existing=this.inspect(branchId,executionId,input.commandKey);if(existing.state==='admitted'||existing.state==='awaiting_disclosure')return existing;
    // Canonical Project/Chat writers publish exact pre-reserved identities. No imported working root is activated.
    const sourceBranch=this.branches.getBranch(branchId);
    if(!sourceBranch?.chatId)throw Error('Group source Chat owner unavailable');
    const sourceChat=this.store.getConversation(sourceBranch.chatId),sourceProject=sourceChat&&this.store.getProject(sourceChat.projectId);
-   const defaultEngine=engines[pkgs[0]!.agents.find(a=>a.ref===pkgs[0]!.rootRef)!.engine];
+   const firstPackage=pkgs.get(plan.reservation.resources[0].custody.custodyId)!;
+   const defaultEngine=engines[firstPackage.agents.find(a=>a.ref===firstPackage.rootRef)!.engine];
    if(!sourceProject||!defaultEngine)throw Error('Current group Project/Engine unavailable');
    this.db.transaction(()=>this.authority().requireGroupCustodyAndOwner(plan.reservation))();
    const identity={idempotencyKey:creationKey,payloadHash:hash({projectId,branchId,executionId:plan.reservation.destination.executionId})};
    const project=this.store.getProjectCreation(identity)??this.store.createProject({label:'Restored workflow group',hostPath:sourceProject.hostPath,defaultEngine},identity);
    if(project.id!==projectId)throw Error('Prospective group Project differs');
-   for(let index=0;index<2;index++){
-    const item=plan.reservation.resources[index],d=item.destination,pkg=pkgs[index]!;
+   for(let index=0;index<plan.reservation.resources.length;index++){
+    const item=plan.reservation.resources[index],d=item.destination,pkg=pkgs.get(item.custody.custodyId)!;
     this.db.transaction(()=>this.authority().requireGroupCustodyAndOwner(plan.reservation))();
     const chat=this.store.createConversation(projectId,{title:`Restored organization ${index+1}`,defaultEngine},{idempotencyKey:`${creationKey}:chat:${index}`,payloadHash:hash(item)},{branchId,executionId:d.executionId});
     if(chat.id!==d.conversationId||chat.branchId!==branchId||chat.executionId!==d.executionId)throw Error('Prospective group Chat differs');
@@ -117,13 +122,16 @@ export class BranchIssuedGroupDestinationService {
   this.branches.unitTransaction(()=>{
    const authority=this.authority(),review=this.coordination.reviewCoordinationDestinationGroup(plan.admissionId,authority);
    const operations=plan.reservation.resources.map((item:Row)=>stage.imports[item.custody.sourceChatId].creationOperationId);
-   this.packages().finishDestinationImport(operations[0],(result0,complete0)=>{
-    this.packages().finishDestinationImport(operations[1],(result1,complete1)=>{
-     this.coordination.admitCoordinationDestinationGroup(plan.admissionId,review.reviewHash,authority,graph=>this.branches.composeIssuedGroupDestination(plan,graph,[{result:result0,complete:complete0},{result:result1,complete:complete1}]));
-     // Final provenance exists now; snapshot is still inside the outer owner commit.
-     this.branches.checkpointIssuedGroupDestination(plan);
-    });
-   });
+   const imports:Parameters<BranchStore['composeIssuedGroupDestination']>[2]=[];
+   const finish=(index:number):void=>{
+    if(index===operations.length){
+     this.coordination.admitCoordinationDestinationGroup(plan.admissionId,review.reviewHash,authority,graph=>this.branches.composeIssuedGroupDestination(plan,graph,imports));
+     // Final provenance exists now; snapshot is still inside every import wrapper and the outer owner commit.
+     this.branches.checkpointIssuedGroupDestination(plan);return;
+    }
+    this.packages().finishDestinationImport(operations[index],(result,complete)=>{imports.push({result,complete});finish(index+1);});
+   };
+   finish(0);
    this.db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(executionId,key,inputHash,stableJson({admissionId:plan.admissionId,reviewHash}),new Date().toISOString());
   }).immediate();return this.inspect(branchId,executionId,commandKey);
  }
