@@ -7,21 +7,10 @@ import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runt
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { SchedulerLease } from "./coordination-v3-types.js";
 import {
-  publicActivationDeliveryError,
+  providerActivation,
+  type ProviderActivationRow as ActivationRow,
   providerSafeActivationPayload,
 } from "./coordination-v3-provider-failure-projection.js";
-
-interface ActivationRow {
-  id: string;
-  kind: string;
-  priority: number;
-  dispatch_policy: SchedulerLease["activations"][number]["dispatchPolicy"];
-  prompt_class: SchedulerLease["activations"][number]["promptClass"];
-  payload_json: string;
-  delivery_failures: number;
-  last_delivery_error: string | null;
-  provider_failure_category: string | null;
-}
 
 /** Recovers abandoned scheduler work and exclusively creates new Runs. */
 export class CoordinationV3SchedulerLeaseAuthority {
@@ -394,26 +383,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         leaseExpiresAt,
         injectionId,
         activationIds: activations.map((activation) => activation.id),
-        activations: activations.map((activation) => {
-          const lastDeliveryError = publicActivationDeliveryError({
-            lastDeliveryError: activation.last_delivery_error,
-            providerFailureCategory: activation.provider_failure_category,
-          });
-          return {
-            id: activation.id,
-            kind: activation.kind,
-            priority: activation.priority,
-            dispatchPolicy: activation.dispatch_policy,
-            promptClass: activation.prompt_class,
-            payload: providerSafeActivationPayload(
-              this.sqlite,
-              activation.id,
-              activation.payload_json,
-            ),
-            deliveryFailures: activation.delivery_failures,
-            ...(lastDeliveryError ? { lastDeliveryError } : {}),
-          };
-        }),
+        activations: activations.map((activation) => providerActivation(this.sqlite, activation)),
       };
     })();
   }

@@ -15,21 +15,9 @@ import type {
   SteeringRecoveryDecisionResult,
 } from "./coordination-v3-types.js";
 import {
-  publicActivationDeliveryError,
-  providerSafeActivationPayload,
+  providerActivation,
+  type ProviderActivationRow as ActivationRow,
 } from "./coordination-v3-provider-failure-projection.js";
-
-interface ActivationRow {
-  id: string;
-  kind: string;
-  priority: number;
-  dispatch_policy: SteeringLease["activations"][number]["dispatchPolicy"];
-  prompt_class: SteeringLease["activations"][number]["promptClass"];
-  payload_json: string;
-  delivery_failures: number;
-  last_delivery_error: string | null;
-  provider_failure_category: string | null;
-}
 
 type CancelAgentRunInput = {
   agentId: string;
@@ -282,26 +270,7 @@ export class CoordinationV3SteeringAuthority {
           ? { providerSessionId: candidate.provider_session_id }
           : {}),
         activationIds: activations.map((activation) => activation.id),
-        activations: activations.map((activation) => {
-          const lastDeliveryError = publicActivationDeliveryError({
-            lastDeliveryError: activation.last_delivery_error,
-            providerFailureCategory: activation.provider_failure_category,
-          });
-          return {
-            id: activation.id,
-            kind: activation.kind,
-            priority: activation.priority,
-            dispatchPolicy: activation.dispatch_policy,
-            promptClass: activation.prompt_class,
-            payload: providerSafeActivationPayload(
-              this.sqlite,
-              activation.id,
-              activation.payload_json,
-            ),
-            deliveryFailures: activation.delivery_failures,
-            ...(lastDeliveryError ? { lastDeliveryError } : {}),
-          };
-        }),
+        activations: activations.map((activation) => providerActivation(this.sqlite, activation)),
       };
     })();
   }
