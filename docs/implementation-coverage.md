@@ -202,3 +202,25 @@ local Settings, with no general reviewed portable mapping claimed.
 Cross-Chat reporting remains an ownership-model decision under the canonical
 same-Chat invariant. See the updated portability status and migration contract.
 Full #8 remains incomplete; all changes remain unexecuted.
+
+## Branches public engine and human frontier increment
+
+`c7acbd86` integrated conflict-free: public fetch/SSE client and independent
+`examples/branches-engine-app`, startup Assistant provisioning/error DTO, movable
+compare-and-set singleton speaker, output settings revision concurrency, trigger
+diagnostics, standalone Script human-gate checkpoint audit/remap/rewind.
+The integrated UI `expectedSettingsRevision`/`setupError` callers now have their
+core/backend contracts. Owner confirms ordinary Agent model changes govern
+subsequent workflow Runs. `docs/branches-public-engine.md` details the scope.
+
+The original minimal `examples/branches-client` remains a separate direct HTTP
+CLI; the new sample uses the public package client with gate/cancel/SSE support.
+Neither imports private runtime/store APIs; neither has been executed.
+
+Concrete #32 restoration gaps remain Features-owned: general parallel/map
+continuations, Agent/Request/provider effects, ephemeral resource histories,
+recovery/secret restoration, crash/external-writer atomicity and complete
+native/external-folder historical recreation. Standalone human gates do not
+close these gaps or establish framework parity. Features follow-up remains
+pending for shared export warning, exact predecessor fixture and explicit
+portability access-review forwarding. No whole-implementation completion claim.
