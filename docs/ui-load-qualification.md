@@ -27,8 +27,9 @@ installed Lighthouse version or native iOS claim is implied.
 
 Full mode would run eight fresh contexts per cell (32total), but must not run until
 independent METHOD review is integrated. Its env requires a method-receipt path;
-that alone is not approval. The current proof driver measures typing, scrolling
-and search; additional full acceptance interactions and observer completeness
+that alone is not approval. The proof driver measures typing, scrolling
+and search; full mode additionally selects an Agent, renames and sends a short
+message. That full interaction branch is unexecuted and observer completeness
 conditions must be reconciled with that review before treating full mode as ready.
 No full32pass or performance threshold pass follows from proof completion.
 

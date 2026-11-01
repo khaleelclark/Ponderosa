@@ -1,5 +1,6 @@
 // Proof defaults to one session/cell. The heavy 32-session mode requires explicit method acceptance.
 import assert from 'node:assert/strict';import {createRequire} from 'node:module';import {mkdir,writeFile} from 'node:fs/promises';
+import {until} from '../shared/fixture.mjs';
 import {createLoadFixture} from '../shared/ui-load-fixture.mjs';import {serveFixture} from '../shared/serve-ui-fixture.mjs';import {installTimingObserver,summarizeTimings} from './event-timing-observer.mjs';
 const require=createRequire(new URL('../../apps/server/package.json',import.meta.url)),{chromium}=require('playwright-core');
 const out=process.env.PONDEROSA_LOAD_EVIDENCE;assert(out,'Owned evidence directory required');await mkdir(out,{recursive:true});
@@ -22,10 +23,14 @@ try{
     for(let repeat=0;repeat<2;repeat++){
      await editor.click();await page.keyboard.type('Forty input characters for timing proof!!');await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
      await page.mouse.wheel(0,-500);await page.keyboard.press('Control+k');const search=page.getByRole('combobox',{name:'Search Ponderosa',exact:true});await search.waitFor();await page.keyboard.type('Qualification');await page.keyboard.press('Escape');
+     if(full){
+      await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();await page.getByRole('menuitem',{name:'Rename',exact:true}).click();const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();await name.press('Control+A');await name.pressSequentially(`Load ${product} ${session} ${repeat}`);await name.press('Enter');await name.waitFor({state:'hidden'});
+      await editor.click();await page.keyboard.type('#Working');await page.getByRole('option').filter({hasText:'Working'}).first().click();await page.keyboard.type('Timed short message');await page.getByRole('button',{name:'Send message',exact:true}).click();
+     }
     }
     // One frame and observer delivery task: observation flush only, never included as interaction latency.
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0))));
-    row.raw=await page.evaluate(()=>window.__uiTiming);row.after=await f.snapshot(product);
+    row.raw=await page.evaluate(()=>window.__uiTiming);await until(async()=>{row.after=await f.snapshot(product);return row.after.runs.every((r,i)=>r.status==='running'&&r.alive&&r.progress>row.before.runs[i].progress);},'twenty checkpoints advance across observation window');
     assert.ok(row.after.runs.every((r,i)=>r.status==='running'&&r.alive&&r.progress>row.before.runs[i].progress),'All twenty must keep progressing during session');
     row.summary=summarizeTimings([row.raw]);assert.deepEqual(row.errors,[]);await page.screenshot({path:out+'/'+id+'.png'});row.status='complete';
    }catch(error){row.status='failed';row.error=error.stack;throw error;}

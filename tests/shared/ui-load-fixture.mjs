@@ -45,7 +45,8 @@ export async function createLoadFixture(out,{messages=10000}={}){
    for(const agent of p.agents){progress.set(agent.id,0);work.set(agent.id,true);f.plans.set(agent.id,[{output:false,run:async session=>{
     while(!closing&&work.get(agent.id)&&session.isAlive()){
      const result=await session.tool('ponderosa_workspace_projects',{});assert.equal(result.success,true,result.text);
-     const n=(progress.get(agent.id)??0)+1;progress.set(agent.id,n);session.events.push({type:'text',delta:`Working checkpoint ${n}. `});record({event:'provider-work',product,agentId:agent.id,sessionId:session.engineAgentId,sequence:n,tool:'ponderosa_workspace_projects',success:result.success});
+     const detail=f.ok(await f.api('GET',`${p.prefix}/agents/${agent.id}`)),run=detail.runs.find(r=>r.status==='running');assert.ok(run,'Each progress tick requires its canonical running Run');
+     const n=(progress.get(agent.id)??0)+1;progress.set(agent.id,n);session.events.push({type:'text',delta:`Working checkpoint ${n}. `});record({event:'provider-work',product,agentId:agent.id,sessionId:session.engineAgentId,sequence:n,runId:run.id,runStatus:run.status,tool:'ponderosa_workspace_projects',success:result.success});
      await delay(2000);
     }
    }}]);await f.api('POST',`${p.prefix}/agents/${agent.id}/messages`,{text:'Continuously inspect granted workspace status and report short progress until qualification ends.',idempotencyKey:randomUUID()}).then(f.ok);}
