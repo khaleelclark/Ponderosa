@@ -26,7 +26,9 @@ for(const pathname of ['/assistant','/output/speaker']){
   const f=fixture(pathname);f.button('Settings').props.onClick();
   const d=f.dialog();assert.equal(d.props.open,true);const title=f.nodes().find(n=>n.type==='DialogTitle');assert.equal(d.props['aria-labelledby'],title.props.id);assert.equal(title.props.children,'Settings');
   for(const [action,message] of [['Save schedule','Workflow version changed'],['Save model','Model update refused']]){
-   await f.button(action).props.onClick();
+   f.button(action).props.onClick();
+   // The UI callback intentionally returns void while act awaits the mutation.
+   await new Promise(setImmediate);
    const alerts=f.nodes().filter(n=>n.type==='Alert'&&n.props.children===message);
    assert.equal(alerts.length,1,'One visible error, no hidden duplicate');
    const inside=[...function* walk(n){if(!n||typeof n!=='object')return;if(Array.isArray(n)){for(const c of n)yield* walk(c);}else if(n.props){yield n;yield* walk(n.props.children);}}(f.dialog())];
