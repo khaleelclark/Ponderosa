@@ -356,3 +356,16 @@ Backend Branches folder-forwarding gap is now implemented; UI selection/destinat
 controls and separate human Settings actions remain missing. Suggestions never
 adopt grants/profile identity. Live root binding and in-progress checkpoint codecs
 remain open. Regression source unexecuted; no completion or acceptance claim.
+
+## Explicit live-root backend activation
+
+Reliability `f3a009ba` integrated conflict-free. Optional workingFilesActivation
+now populates imported originals only after fresh local Chat/worktree ownership,
+with separate new recovery destinations and durable liveWorkingRoots receipts.
+Shared activation requires exact confirmed fresh managed empty Chat root;
+Separate-only existing Git uses fresh managed worktrees. Baseline originals and
+failure bytes remain retained; no source ownership/history is adopted.
+This supersedes the backend content-only limitation in prior inventory entries.
+UI/Branches explicit activation and new-Chat choices remain missing; omission
+continues content-only behavior. Full #8 remains incomplete/unverified.
+No tests/builds/types/Node/browser/runner work performed.
