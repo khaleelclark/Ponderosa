@@ -571,12 +571,14 @@ export interface Adapter {
 /** Reported by `/api/engines` (SPEC §8): an engine plus its live auth status. */
 export interface EngineAuthStatus {
   authenticated: boolean;
+  /** Native harness mode; presence does not prove paid-request access. */
+  billingMode?: "subscription" | "api";
   /** Sign-in was parsed, but its diagnostic process has not safely settled. */
   diagnosticFailure?: "cleanup_failed";
   /** False alone is not logout evidence when the read-only probe is unknown. */
   status?: "unknown";
   reason?: "timeout" | "spawn_failed" | "malformed" | "cleanup_failed" | "probe_failed" | "probe_pending";
-  source?: "cli_status" | "subscription_presence";
+  source?: "cli_status" | "subscription_presence" | "environment_presence";
   /** Optional human-readable detail (e.g. "logged in as ...", or why not). */
   detail?: string;
 }

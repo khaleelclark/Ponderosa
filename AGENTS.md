@@ -4,7 +4,7 @@ Rules for anyone working in this repository.
 
 ## Mission
 
-Ponderosa is a self-hosted interface for AI agents running through the user’s existing Codex or Claude subscriptions.
+Ponderosa is a self-hosted interface for AI agents running through the user’s existing Codex or Claude harness accounts.
 
 A casual user should experience a familiar Chat. Agent organizations, collaboration, execution details, and context boundaries remain available for advanced users without becoming required knowledge.
 
@@ -12,7 +12,7 @@ A casual user should experience a familiar Chat. Agent organizations, collaborat
 
 ### Engines and authentication
 
-- Use subscription-backed CLIs or SDKs only. Never add provider API-key integrations.
+- Use the existing Codex/Claude CLI or SDK harness in subscription or configured API-key mode (Behavior Bible 25). Never add direct provider HTTP integrations or a Ponderosa credential store.
 - All engines live behind the `Adapter` interface in `packages/engines`.
 - Normalize Codex and Claude events into shared `AgentEvent` types inside `packages/engines`. Do not add engine-specific branching elsewhere.
 
@@ -140,7 +140,7 @@ Ponderosa uses REST and SSE. Do not introduce SSR, Next.js, or WebSockets withou
 - Non-trivial logic must leave behind the smallest runnable check that would fail if the behavior regressed. Trivial one-line changes do not require a dedicated test. Typecheck, production builds, and focused live/manual qualification remain required in proportion to risk.
 - Persist commands, tool calls, file changes, failures, and lifecycle events in the audit trail.
 - Keep Chat and Agent history bounded by default. Retrieve older evidence explicitly.
-- Chat creation requires a validated host folder and subscription-backed engine.
+- Chat creation requires a validated host folder and configured native harness engine.
 - Deleting a Chat removes Ponderosa-owned state, never the user’s selected source folder.
 
 ## Ponytail engineering mode

@@ -459,6 +459,7 @@ export class WorkspaceStore {
         starredResourceIds: (preferences.starredResourceIds ?? []).filter(key => /^(?:project|conversation|agent|branch):/u.test(key)),
         starredProjectIds: preferences.starredProjectIds ?? [],
         providerAvailability: preferences.providerAvailability ?? {},
+        providerBillingModes: preferences.providerBillingModes ?? {},
         engineDefaults: preferences.engineDefaults ?? {},
         claudeModelOptions: normalizeClaudeModelOptions(preferences.claudeModelOptions),
         globalInstructions: preferences.globalInstructions ?? "",

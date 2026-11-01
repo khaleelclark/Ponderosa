@@ -398,6 +398,7 @@ export async function prepareAgentRun(
     ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id) : undefined;
   const effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
     runtimeSessionContractHash,
+    ...(runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode ? { billingMode: runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode } : {}),
     systemPromptHash,
     scopeKey: schedulerRunScopeKey,
   })).digest("hex");

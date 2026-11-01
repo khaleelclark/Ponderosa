@@ -261,7 +261,7 @@ for (const scenario of ['empty', 'malformed-first', 'malformed-later', 'malforme
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 });
 
-for (const auth of ['subscription', 'api-key', 'unknown']) test(`selected Codex model test enforces subscription auth and exact selection: ${auth}`, { timeout: 15000,
+for (const auth of ['subscription', 'api-key', 'unknown']) test(`selected Codex model test accepts configured harness auth and exact selection: ${auth}`, { timeout: 15000,
   skip: process.platform === 'win32' || /\s/u.test(process.execPath) ? 'Owned executable fixture requires a POSIX shebang' : false }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-model-check-')); const handles = [];
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
@@ -276,8 +276,8 @@ for (const auth of ['subscription', 'api-key', 'unknown']) test(`selected Codex 
       signal: new AbortController().signal, onRuntimeSpawned: handle => handles.push(handle) });
     const calls = (await readFile(path.join(root, 'calls'), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(result.valid, false);
-    assert.equal(calls.length, auth === 'subscription' ? 2 : 1, 'No inference under rejected authentication');
-    if (auth === 'subscription') { assert.ok(calls[1].includes('gpt-5.6-sol')); assert.match(result.error, /CLI needs an update/u); }
+    assert.equal(calls.length, auth !== 'unknown' ? 2 : 1, 'No inference under unknown authentication');
+    if (auth !== 'unknown') { assert.ok(calls[1].includes('gpt-5.6-sol')); assert.match(result.error, /CLI needs an update/u); }
     assert.ok(handles.every(handle => !handle.isAlive()));
   } finally { await Promise.all(handles.map(handle => handle.close())); }
 });

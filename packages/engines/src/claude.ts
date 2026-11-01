@@ -1,7 +1,6 @@
 // The Claude adapter (SPEC §5, the planned second engine). Drives the
-// already-authenticated `claude` CLI (Claude Code) as a subscription-backed engine
-// — Claude Pro/Max via the on-disk OAuth profile, NEVER the Anthropic API and
-// NEVER an API key (AGENTS.md invariant 1). Spawns `claude -p --output-format
+// already-authenticated `claude` CLI (Claude Code) in its configured subscription
+// or API-key mode; no direct provider HTTP client. Spawns `claude -p --output-format
 // stream-json` and resumes with `--resume <session-id>`. The choice of the CLI
 // (vs the Agent SDK library) is invisible outside this file (invariant 2).
 
@@ -130,7 +129,7 @@ export class ClaudeAdapter implements Adapter {
   readonly trustedSystemPromptChannel = "system" as const;
   readonly providerUsageCommand = {
     name: "usage",
-    description: "Show Claude subscription usage",
+    description: "Show Claude usage",
   };
 
   private readonly bin: string;

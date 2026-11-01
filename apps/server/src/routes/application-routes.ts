@@ -672,7 +672,7 @@ registerAttachmentRoutes(app, {
 });
 
 registerAgentMessageRunRoute(app, {
-  opts, store, workspace, coordinationV3, assets, drafts, engines, engineAvailability,
+  opts, store, workspace, coordinationV3, assets, drafts, engines, engineAvailability, engineAuthStatuses,
   contextCursors, activeRuns, agentMessageCapabilities, runtimeAuthorities,
   organizationEnvelopeStates, scheduledSessionRollovers, contextRolloverPending,
   engineModelCatalogCache, deletingProjectIds, deletingAgentIds,

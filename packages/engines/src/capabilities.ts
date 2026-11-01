@@ -404,7 +404,7 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     commands.set(name, {
       name,
       description: adapterImplemented
-        ? "Show Claude subscription usage"
+        ? "Show Claude usage"
         : string(advertised?.description) ?? "Claude-advertised command",
       source: adapterImplemented ? "adapter-implemented" : advertisedSource,
       acceptsArguments: adapterImplemented ? false : advertised?.accepts_arguments !== false,

@@ -190,7 +190,7 @@ export function ProviderUsageCard({
       {!reading && (state.refreshing || state.status === "loading") ? (
         <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", py: 2 }}>
           <CircularProgress size={20} />
-          <Typography variant="body2">Loading subscription usage…</Typography>
+          <Typography variant="body2">Loading provider usage…</Typography>
         </Stack>
       ) : !reading && failure ? (
         <Alert severity={failure.code === "usage_not_supported" ? "info" : "warning"} sx={{ mt: 1.25 }}>
