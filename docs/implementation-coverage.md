@@ -1139,3 +1139,16 @@ Real package/custody/provider/native/crash/runtime/end-to-end/accessibility/mobi
 Phase2/Bible qualification is open. ZERO tests/checks/build/types/Node/native/browser/
 runner preparation or execution, migrations, push/deploy/newworkers. Hooks disabled;
 source/files/Git inspection only.
+
+## Full Bible / Build remaining implementation reconciliation
+
+Current requirement-by-requirement disposition is now
+[phase2-remaining-implementation.md](phase2-remaining-implementation.md), against
+assembled391d682c0 and the full published Bible2. It accounts for32 commandments
+and all3 Build features with24 explicit Build behavior rows. Finite remaining
+inventory:6 concrete code/documentation items,6 unresolved contract/scope entries;
+1 separate deferred-fixture source repair. These are not12 proven required new
+features or a closed defect universe. Deferred verification is entirely separate.
+This pointer supersedes older blanket remaining-category counts; bounded source
+presence supplies no whole-Bible verdict. No product code or owner worktree changed;
+no tests/checks/build/types/Node/native/browser/preparation/execution/newworkers.
