@@ -238,3 +238,39 @@ without adding cross-Chat reporting authority. Reliability owns whole-folder /
 new-Chat mappings and reviewed nonsecret grant continuation; UI owns the related
 choices/provenance. Branches reviewed-choice forwarding still remains open.
 This supersedes the earlier pending cross-Chat model-decision wording.
+
+## Aggregate handoff snapshot
+
+All four original owner handoffs are consumed. Reliability, UI and Features
+increments and their received follow-ups are integrated without source conflicts.
+Runtime `5511e2bd` is deliberately **not integrated**, following Cliff's direction
+to integrate its eventual successor; its status doc was read from the committed
+source. Current UI direct-preview core field/endpoint therefore remains absent
+from this assembled tree. Do not treat this tree as buildable or complete.
+
+Remaining implementation ownership:
+
+- Runtime: authorized nonvoice publication (other Communication scopes too),
+  transactional account-at-launch/refresh binding, feasible native recovery and
+  crash reconciliation, audio admission and early qualified voice response.
+- Reliability: whole-folder/new destination Chat mapping preserving same-Chat
+  ancestry; explicit reviewed mappings for nonsecret grants.
+- UI: explicit permission-review choices and structured imported history/original
+  attachment presentation; combine final backend transport and preview contracts.
+- Features: workflow-install reviewed-choice forwarding; general parallel/map,
+  Agent/provider/Request and ephemeral-history rewind, recovery/secret bindings,
+  pinned framework checklist and representative equivalence applications.
+- Integration/Cliff: combine these successors and resolve concrete source conflicts
+  if any; full 32/Build implementation remains open.
+
+Existing behavior awaiting execution (not newly diagnosed missing code) includes
+durability/deletion/upgrade trials, triggers and singleton lifecycle, exact dual
+memory recall, native billing/device behavior, accessibility/polish/notification
+judging and performance thresholds. Current mapped performance failure remains
+unresolved; no measurements were taken in this source-only work.
+
+All 32 table rows, all Build-list rows, nine named #32 capabilities and required
+source/docs/examples are present in this tracked tree. Inspection used source
+reads and Git metadata only. No tests, builds, types, browser/benchmark, runner
+preparation, push, production merge or deployment occurred. Frozen roots, Bible,
+baseline and other owner worktrees were not modified.
