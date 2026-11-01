@@ -157,3 +157,74 @@ runner preparation or execution, installs, backend writes, push/merge/deploy or
 new workers. Backend/core is assembled; runtime/provider/native/filesystem/accessibility/mobile
 qualification remains open. No whole
 UI/group/lifecycle/Bible/Phase2 acceptance claimed.
+
+## Browser console and JPEG-frame recording operator controls
+
+Source successor of UI `6706540420065f45711e508205f4b872d4de3ab2`.
+Required backend/core: exact `1e1d1ccda5474ae3688fda4c3460c89877e27aae`
+(`/tmp/ponderosa-browser-operator-observation`), based on G7 integration
+`afc8e0286f941bc154ce700d704b45660207af03`, including exported shared
+`BrowserOperatorObservationClient`/DTOs, exact operator routes, managed immutable
+artifact registration and download authority. Actual API/DTO, operator route and
+serialized session/control/page admission implementation were source-read.
+No backend/core/SDK source is changed by this UI slice.
+
+Both existing browser surfaces mount the same concise observation dialog.
+Owned Chat/saved/private browser adapters use their existing REST base and
+explicit operator transport; no `/api/agent-browser`, Run token, inferred grant,
+control takeover, browser opening or alternate browser selection occurs.
+Console query is bounded to 50 entries and the inspected admitted page, with
+level filter, next cursor, timestamp/level/page evidence and visible eviction.
+Session/control/connection/page/filter changes clear stale console projection;
+late results from a different projection are ignored. Entries render as text.
+
+Recording is enabled only on the exact private Agent/Run endpoint. Shared Chat
+and saved browsers explicitly show recording unavailable: canonical Chat/operator
+artifact publication remains backend work. Native manual/private sign-in/paused
+connections require existing explicit resume; unsupported drivers fail visibly.
+Operator control, ready session, page admission and current active page are
+required. Recording start has a separate visible-sensitive-data confirmation;
+stop publishes only the exact original recording ID. Frame/time/byte limits are
+shown without inventing audio or MP4 output. The server remains authoritative
+for live Run, session, epoch, queued actual active page and lifecycle admission.
+
+Complete original start/stop input is stored before effect under origin/product/
+route identity. Storage failure/corruption holds new recording mutations.
+Mutation calls execute once; no effect runs on mount, no automatic retry or
+POST replay. Lost response/remount uses explicit read-only recording/status
+POST at the same session/epoch. Original start page plus prior recording ID,
+or original stop ID and recovered artifact, must match before clearing the
+pending command. Old receipts cannot substitute for a new start. Missing proof,
+wrong receipt, changed authority or publication failure remains unconfirmed.
+A separate acknowledgement of Project-artifact inspection permits a deliberate
+new attempt while explicitly retaining the prior outcome as unresolved; current
+status and a new explicit confirmation are still required. Status is in-memory,
+not crash-durable. Backend deliberate repeated-stop capability is not auto-used.
+
+Published receipts provide the exact ordinary Project managed download URL.
+Playback/download validate Project/artifact URL, artifact reference/path/media/
+frame count/reason; playback additionally binds recording/page/start/ended time,
+format, frame count, ordered bounded timestamps and bounded JPEG base64. Frames
+use only JPEG data URLs and actual atMs delays with play/pause/frame stepping.
+Downloads remain ordinary operator Project audit access, including after Run end;
+the live status API itself does not survive Run end. No remote playback images,
+HTML execution or synthesized media. Layout stacks controls on narrow screens;
+copy uses labels, structured evidence and concise consequential warnings.
+
+Eight deliverables: `apps/web/src/components/{AgentBrowserDialog.tsx,
+ProjectBrowserDialog.tsx}`; `apps/web/src/components/browser/{browserAdapters.ts,
+BrowserObservations.tsx,browserObservation.ts}`; `tests/chats/{browser-observation.test.mjs,
+browser-observation-mounted.tsx}`; this report. Deferred pure fixtures cover
+identity/format/bounds/filter/cursor/substituted proof. Deferred mounted fixture
+covers page query/eviction, separate confirmation, save-before-start/stop,
+lost response/remount, exact status recovery without replay, wrong recording,
+missing receipt/epoch/corrupt storage holds, managed download/playback and shared/
+Agent-control refusals. Fixtures are source only and unexecuted.
+
+SOURCE ONLY: no tests/checks/build/types/Node/native/browser/provider or runner
+preparation/execution, installs, backend writes, push/merge/deploy or new workers.
+Remaining: backend/core assembly, shared-browser canonical recording publication,
+actual HTTP/download/native lifecycle qualification and separately authorized
+runtime/accessibility/mobile/keyboard/screen-reader validation. No whole #3/#19,
+native parity, whole UI or Phase2 acceptance claimed. Earlier UI/M4/lifecycle/
+history/copy changes remain preserved.

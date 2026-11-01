@@ -7,6 +7,8 @@ import type {
   BrowserFrameMetadata,
   BrowserViewportSize,
 } from "@ponderosa/core";
+import { BrowserOperatorObservationClient } from "@ponderosa/core";
+import { requestJson } from "../../api/real";
 import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
 
@@ -28,6 +30,8 @@ export interface BrowserControlTarget {
 /** The browser UI depends on this narrow contract, never on URL construction. */
 export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   queryKey: readonly unknown[];
+  observations?: BrowserOperatorObservationClient;
+  recordingProjectId?: string;
   get(): Promise<Session>;
   open?(url?: string): Promise<Session>;
   navigate?(url: string): Promise<Session>;
@@ -48,6 +52,7 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
 export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
   return {
     queryKey: queryKeys.projectBrowser.project(projectId),
+    observations: operatorObservations(`/api/projects/${encodeURIComponent(projectId)}/browser`),
     get: () => api.getProjectBrowser(projectId),
     open: (url) => api.openProjectBrowser(projectId, url),
     navigate: (url) => api.navigateProjectBrowser(projectId, url),
@@ -81,6 +86,8 @@ export function agentBrowserAdapter(
 ): BrowserEndpointAdapter<BrowserSessionDto> {
   return {
     queryKey: queryKeys.agentBrowsers.session(projectId, agentId, runId),
+    observations: operatorObservations(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser`),
+    recordingProjectId: projectId,
     get: () => api.getBrowserSession(projectId, agentId, runId),
     open: () => api.openBrowserSession(projectId, agentId, runId),
     navigate: url => api.navigateAgentBrowser(projectId, agentId, runId, url),
@@ -107,4 +114,9 @@ export function agentBrowserAdapter(
     newPage: epoch => api.newBrowserPage(projectId, epoch, agentId, runId) as Promise<BrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch, agentId, runId),
   };
+}
+
+function operatorObservations(base: string): BrowserOperatorObservationClient {
+  return new BrowserOperatorObservationClient(<T,>(suffix: string, input: object) =>
+    requestJson<T>(`${base}/${suffix}`, {method: "POST", cache: "no-store", body: JSON.stringify(input)}));
 }

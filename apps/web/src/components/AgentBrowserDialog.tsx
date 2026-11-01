@@ -1,3 +1,4 @@
+import { BrowserObservations } from "./browser/BrowserObservations";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import {
   Alert,
@@ -147,6 +148,7 @@ export function AgentBrowserDialog({
                 : session?.title || session?.url || "Live browser for this Agent Run"}
             </Typography>
           </Stack>
+          <BrowserObservations adapter={adapter} session={session} pageId={browser.viewedPageId} busy={browser.inputPending || browser.navigate.isPending || browser.activatePage.isPending || browser.control.isPending}/>
         </DialogTitle>
         <DialogContent
           dividers
