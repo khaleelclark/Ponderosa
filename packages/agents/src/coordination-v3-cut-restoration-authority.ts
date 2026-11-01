@@ -1,3 +1,5 @@
+import {hostUpdateFact,hostRequestPayload} from './branch-host-provenance.js';
+import type {BranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {randomUUID} from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -36,17 +38,18 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
   ||stableJson(payload)!==update.payload_json||payloadHash(payload)!==update.payload_hash
   ||stableJson(payload?.historicalOrigin)!==stableJson({restorationId:receipt.id,sourceRequestId:source.request_id,sourceUpdateId:source.id,sourceKind:source.kind,sourcePayloadHash:source.payload_hash,sourceVersion:source.resulting_version,historical:true})
   ||stableJson(payload?.historicalPayload)!==source.payload_json)throw Error('Historical result provenance differs from its retained fact');
- return payload.historicalPayload;
+ return hostUpdateFact(cut,source).payload;
 }
 
 /** Dedicated import reducer. It validates facts without authorizing or publishing live updates. */
-export function validateHistoricalRequest(row:Row,updates:Row[]):void {
+export function validateHistoricalRequest(row:Row,updates:Row[],cut?:BranchHostCut):void {
  let state:CoordinationRequestSnapshot={state:'open',version:0};
  for(const update of updates){
   if(stableJson(JSON.parse(update.payload_json))!==update.payload_json||payloadHash(JSON.parse(update.payload_json))!==update.payload_hash)throw Error('Historical update payload hash differs');
-  if(!Object.hasOwn(REQUEST_UPDATE_AUTHORIZATION,update.kind))throw Error('Unsupported historical update kind');
+  const kind=cut?hostUpdateFact(cut,update).kind:update.kind;
+  if(!Object.hasOwn(REQUEST_UPDATE_AUTHORIZATION,kind))throw Error('Unsupported historical update kind');
   if(update.request_id!==row.id||update.resulting_version!==state.version+1)throw Error('Historical update prefix is not contiguous');
-  const transition={kind:update.kind as CoordinationRequestUpdateKind,updateId:update.id,...(update.in_reply_to_update_id?{inReplyToUpdateId:update.in_reply_to_update_id}:{})};
+  const transition={kind:kind as CoordinationRequestUpdateKind,updateId:update.id,...(update.in_reply_to_update_id?{inReplyToUpdateId:update.in_reply_to_update_id}:{})};
   // Historical ownership can change between progress transitions; both reducer cases are explicit.
   const candidates=[false,true].flatMap(ownsUnresolvedJoin=>{try{return [reduceCoordinationRequest({...state,ownsUnresolvedJoin},transition)];}catch{return [];}});
   const next=candidates.find(next=>next.state===update.resulting_state&&next.version===update.resulting_version);
@@ -106,8 +109,9 @@ export class CoordinationV3CutRestorationAuthority {
    const owners=cut.requests.filter(({row})=>artifact.owner_kind==='request_update'?row.id===update?.request_id:row.communication_event_id===artifact.owner_id);
    for(const {row:request} of owners)for(const agent of [request.requester_agent_id,request.recipient_agent_id].filter(Boolean))if(!grant(request.project_id,artifact.id,agent))throw Error('Historical artifact participant grant unavailable');
   }
+  const ancestryReviews=(cut.provenance?.restorations??[]).map(({row})=>this.review(row.receipt.branch_id,row.receipt.source_execution_id,{checkpointId:row.receipt.checkpoint_id,expectedHash:row.receipt.cut_hash},grant).reviewHash);
   const joins=cut.joins.map(({row})=>({id:row.id,ownerAgentId:row.owner_agent_id,state:row.state,mode:row.mode,quorum:row.quorum,memberRequestIds:cut.members.filter(({row:member})=>member.join_id===row.id).sort((a,b)=>a.row.position-b.row.position).map(({row})=>row.request_id),continuationRequestIds:JSON.parse(row.continuation_request_ids_json) as string[]}));
-  return {checkpointId:selection.checkpointId,checkpointHash:selection.expectedHash,requests,joins,reviewHash:payloadHash({requests,joins,cutHash:payloadHash(cut)})};
+  return {checkpointId:selection.checkpointId,checkpointHash:selection.expectedHash,requests,joins,reviewHash:payloadHash({requests,joins,ancestryReviews,cutHash:payloadHash(cut)})};
  }
  restore(branchId:string,executionId:string,input:BranchHostGraphRestoreInput,grant:HostArtifactGrant,now:string):BranchHostGraphRestoreDto {
   branchKey(input.commandKey);
@@ -121,7 +125,11 @@ export class CoordinationV3CutRestorationAuthority {
     const restored=this.db.prepare('SELECT project_id,conversation_id,requester_agent_id,recipient_agent_id FROM coordination_requests WHERE id=?').get(receipt.requestMap[original.source.requestId]) as Row|undefined;
     if(!restored||restored.project_id!==original.request.projectId||restored.conversation_id!==original.request.conversationId||restored.requester_agent_id!==(original.request.requesterAgentId??null)||restored.recipient_agent_id!==original.request.recipientAgentId)throw Error('Restored graph receipt scope unavailable');
    }
-   for(const [source,id] of Object.entries(receipt.updateMap))if(!this.db.prepare('SELECT 1 FROM coordination_restored_update_origins o JOIN coordination_request_updates u ON u.id=o.update_id WHERE o.update_id=? AND o.restoration_id=? AND o.source_update_id=?').get(id,receipt.restorationId,source))throw Error('Restored update provenance unavailable');
+   for(const [source,id] of Object.entries(receipt.updateMap)){
+    const update=this.db.prepare('SELECT u.* FROM coordination_restored_update_origins o JOIN coordination_request_updates u ON u.id=o.update_id WHERE o.update_id=? AND o.restoration_id=? AND o.source_update_id=?').get(id,receipt.restorationId,source) as Row|undefined;
+    if(!update)throw Error('Restored update provenance unavailable');
+    restoredRequestUpdatePayload(this.db,update);
+   }
    for(const join of review.joins){const fresh=this.db.prepare('SELECT owner_agent_id FROM coordination_joins WHERE id=?').get(receipt.joinMap[join.id]) as Row|undefined;if(!fresh||fresh.owner_agent_id!==join.ownerAgentId)throw Error('Restored Join receipt scope unavailable');}
    return {...receipt,replayed:true};
   }
@@ -142,7 +150,7 @@ export class CoordinationV3CutRestorationAuthority {
    if(this.db.prepare("SELECT 1 FROM coordination_requests WHERE (requester_agent_id=? OR recipient_agent_id=?) AND state IN ('open','in_progress','waiting_dependency','awaiting_answer') LIMIT 1").get(agent,agent))throw Error('Participant has conflicting live graph ownership');
   }
   for(const request of requests){
-   validateHistoricalRequest(request,updates.filter(u=>u.request_id===request.id).sort((a,b)=>a.resulting_version-b.resulting_version));
+   validateHistoricalRequest(request,updates.filter(u=>u.request_id===request.id).sort((a,b)=>a.resulting_version-b.resulting_version),cut);
    if(request.deadline_at&&request.deadline_at<=now)throw Error('Expired historical lifetime needs an explicit fresh lifetime policy');
    if(request.state==='waiting_dependency'&&!joins.some(j=>JSON.parse(j.continuation_request_ids_json).includes(request.id)))throw Error('Waiting historical Request lacks a captured Join continuation');
   }
@@ -160,7 +168,7 @@ export class CoordinationV3CutRestorationAuthority {
   }
   for(const {row:suspension} of cut.suspensions){
    const request=requests.find(r=>r.id===suspension.request_id),question=updates.find(u=>u.id===suspension.question_update_id);
-   if(!request||!question||question.request_id!==request.id||question.kind!=='question'||request.requester_agent_id!==suspension.owner_agent_id)throw Error('Historical question suspension lineage differs');
+   if(!request||!question||question.request_id!==request.id||!['question','historical_question'].includes(question.kind)||request.requester_agent_id!==suspension.owner_agent_id)throw Error('Historical question suspension lineage differs');
    if(suspension.dependency_kind!=='join'||!joins.some(j=>j.id===suspension.dependency_id))throw Error('Decision suspension restoration is not admitted');
    if(suspension.state==='open'&&(request.state!=='awaiting_answer'||request.open_question_update_id!==question.id))throw Error('Open suspension is not the selected outstanding question');
   }
@@ -168,7 +176,7 @@ export class CoordinationV3CutRestorationAuthority {
   const receipt:BranchHostGraphRestoreDto={restorationId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,requestMap,updateMap,joinMap,replayed:false};
   this.db.prepare('INSERT INTO coordination_cut_restorations VALUES(?,?,?,?,?,?,?,?,?)').run(restorationId,branchId,executionId,input.checkpointId,input.expectedHash,input.commandKey,commandHash,stableJson(receipt),now);
   const origin=(r:Row,u?:Row)=>({restorationId,sourceRequestId:r.id,...(u?{sourceUpdateId:u.id,sourceKind:u.kind,sourcePayloadHash:u.payload_hash,sourceVersion:u.resulting_version}:{}),historical:true});
-  const evidence=(payload:string,r:Row,u?:Row)=>{const historicalPayload=JSON.parse(payload);return {text:`[Imported historical ${u?.kind??'Request'}]\n${instruction}${typeof historicalPayload?.text==='string'?`\n\n${historicalPayload.text}`:''}`,historicalOrigin:origin(r,u),historicalPayload};};
+  const evidence=(payload:string,r:Row,u?:Row)=>{const historicalPayload=JSON.parse(payload),original=u?hostUpdateFact(cut,u).payload:hostRequestPayload(cut,r);return {text:`[Imported historical ${u?.kind??'Request'}]\n${instruction}${typeof (original as Row)?.text==='string'?`\n\n${(original as Row).text}`:''}`,historicalOrigin:origin(r,u),historicalPayload};};
   // Insert final projections directly. No intermediate live intake/update hooks run.
   for(const request of requests)this.db.prepare(`INSERT INTO coordination_requests(id,project_id,conversation_id,requester_agent_id,recipient_agent_id,payload_json,state,version,lifetime_kind,deadline_at,open_question_update_id,created_at,updated_at,terminal_at)
    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestMap[request.id],request.project_id,request.conversation_id,request.requester_agent_id,request.recipient_agent_id,stableJson(evidence(request.payload_json,request)),request.state,request.version,request.lifetime_kind,request.deadline_at,request.open_question_update_id?updateMap[request.open_question_update_id]:null,now,now,TERMINAL_REQUEST_STATES.has(request.state)?now:null);
@@ -191,7 +199,7 @@ export class CoordinationV3CutRestorationAuthority {
    if(question&&cut.suspensions.some(({row:s})=>s.question_update_id===request.open_question_update_id&&s.state==='open'&&joins.some(j=>j.id===s.dependency_id&&j.state==='open')))continue;
    if(joins.some(j=>j.state!=='open'&&j.owner_agent_id===(question?request.requester_agent_id:request.recipient_agent_id)&&JSON.parse(j.continuation_request_ids_json).includes(request.id)))continue;
    if(question&&!request.requester_agent_id)continue; // Operator reads the labelled question through the Request surface.
-   this.deliver({projectId:request.project_id,agentId:question?request.requester_agent_id:request.recipient_agent_id,scopeKey:`conversation:${request.conversation_id}`,kind:question?'coordination_question':update?.kind==='answer'?'coordination_answer':'coordination_request',priority:question?90:60,dedupeKey:`restore:${restorationId}:request:${requestMap[request.id]}`,payload:{requestId:requestMap[request.id],request:evidence(request.payload_json,request),...(question?{inReplyToUpdateId:updateMap[update!.id]}:{}),...(update?{updateId:updateMap[update.id],update:evidence(update.payload_json,request,update)}:{}),historicalInstruction:instruction},sourceKind:update?'request_update':'request',sourceId:update?updateMap[update.id]!:requestMap[request.id]!,externalIntake:true,now});
+   this.deliver({projectId:request.project_id,agentId:question?request.requester_agent_id:request.recipient_agent_id,scopeKey:`conversation:${request.conversation_id}`,kind:question?'coordination_question':update&&['answer','historical_answer'].includes(update.kind)?'coordination_answer':'coordination_request',priority:question?90:60,dedupeKey:`restore:${restorationId}:request:${requestMap[request.id]}`,payload:{requestId:requestMap[request.id],request:evidence(request.payload_json,request),...(question?{inReplyToUpdateId:updateMap[update!.id]}:{}),...(update?{updateId:updateMap[update.id],update:evidence(update.payload_json,request,update)}:{}),historicalInstruction:instruction},sourceKind:update?'request_update':'request',sourceId:update?updateMap[update.id]!:requestMap[request.id]!,externalIntake:true,now});
   }
   for(const join of joins.filter(j=>j.state!=='open')){
    const members=cut.members.filter(({row})=>row.join_id===join.id).map(({row})=>row).sort((a,b)=>a.position-b.position),outcomes=members.map(m=>{const r=requests.find(r=>r.id===m.request_id)!,u=updates.find(u=>u.request_id===r.id&&u.resulting_version===r.version);return {requestId:requestMap[r.id],state:r.state,request:evidence(r.payload_json,r),...(u?{update:{id:updateMap[u.id],kind:u.kind==='question'?'historical_question':u.kind==='answer'?'historical_answer':u.kind,payload:evidence(u.payload_json,r,u),createdAt:now}}:{})};});

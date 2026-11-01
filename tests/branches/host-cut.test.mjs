@@ -480,3 +480,95 @@ test('lost-response tree replay still checks child participant grants and curren
  const config=f.branches.configuration(f.leaf.id);f.branches.configure(f.leaf.id,{...config,limits:{...config.limits,maxTraversals:config.limits.maxTraversals+1}},0);assert.throws(()=>f.rewind(),/pins changed|configuration/);
  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);assert.ok(next.id);
 });
+
+// Deferred source only: repeated capture/selection/rewind of restored coordination.
+function retainRecaptured(f,id){
+ const candidate=f.branches.unitSaver.freeze({written:new Set([id])})[0];assert.ok(candidate.content);
+ const saved=JSON.parse(candidate.content);assert.equal(saved.restore_supported,true);
+ const checkpointId=Number(f.db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,candidate.content,candidate.hash).lastInsertRowid);
+ assert.equal(f.branches.historicalCheckpoints(f.branch.id,id).find(c=>c.id===checkpointId).restoreSupported,true);
+ return {saved,selection:{checkpointId,expectedHash:candidate.hash}};
+}
+function rewindRecaptured(f,id,selection,key){
+ const grant=()=>true,review=f.branches.reviewHostGraph(f.branch.id,id,selection,grant),graph={reviewHash:review.reviewHash,reconcileEffects:true,grant};
+ return ()=>f.branches.rewindHistorical(f.branch.id,id,selection.checkpointId,selection.expectedHash,key,undefined,graph);
+}
+async function settleRecaptured(f,id,text='Recaptured fresh output'){
+ for(const r of f.db.prepare('SELECT r.* FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN coordination_requests r ON r.id=a.request_id WHERE s.execution_id=?').all(id))if(r.state!=='completed')f.coordination.updateRequest({requestId:r.id,updateId:`recapture-complete:${r.id}`,kind:'completed',actor:{kind:'agent',id:r.recipient_agent_id},payload:{text}});
+ for(let n=0;n<40&&f.branches.execution(id).state!=='completed';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(id).state,'completed');
+ f.db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+}
+for(const terminal of [false,true])test(`restored ${terminal?'retained terminal':'live'} history can be captured, selected and rewound repeatedly`,async t=>{
+ const f=await issuedRewindFixture(t,{terminal,progress:!terminal}),{hostUpdateFact}=await import('../../packages/agents/dist/branch-host-provenance.js');
+ let current=f.rewind(),priorIds=new Set([f.root]);
+ for(let generation=0;generation<3;generation++){
+  const attempt=f.branches.detail(current.id).attempts[0];assert.ok(!priorIds.has(attempt.requestId));priorIds.add(attempt.requestId);
+  const {saved,selection}=retainRecaptured(f,current.id);assert.ok(saved.hostDependencies.provenance.restorations.length);
+  if(terminal){const u=saved.hostDependencies.updates.find(e=>e.row.resulting_state==='completed').row;assert.deepEqual(hostUpdateFact(saved.hostDependencies,u).payload,{text:'Retained terminal output'});assert.equal(hostUpdateFact(saved.hostDependencies,u).actor.id,f.agent.id);}
+  await settleRecaptured(f,current.id);
+  const rewind=rewindRecaptured(f,current.id,selection,`recapture-${generation}`),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,next=rewind();
+  assert.equal(rewind().id,next.id);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before+1);
+  if(generation===2){await settleRecaptured(f,next.id);assert.equal(f.branches.execution(next.id).output,terminal?'Retained terminal output':'Recaptured fresh output');assert.equal(rewind().id,next.id);}
+  current=next;
+ }
+});
+test('historical question and fresh answer survive another import and recapture with original actors',async t=>{
+ const f=await issuedRewindFixture(t,{questionJoin:true}),first=f.rewind();
+ const lineage=id=>JSON.parse(f.db.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.rewind-lineage.v1'").get(id).snapshot_json);
+ const map=lineage(first.id).coordination,child=map.requestMap[f.child.requestIds[0]],question=map.updateMap['rewind-child-question'];
+ f.coordination.updateRequest({requestId:child,updateId:'recaptured-live-answer',kind:'answer',actor:{kind:'user'},inReplyToUpdateId:question,payload:{text:'Use the original retained source'}});
+ const firstCapture=retainRecaptured(f,first.id);
+ f.coordination.updateRequest({requestId:child,updateId:'recaptured-child-completed',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Child reconciled'}});
+ await settleRecaptured(f,first.id);
+ const replay=rewindRecaptured(f,first.id,firstCapture.selection,'recapture-question-answer'),second=replay(),secondCapture=retainRecaptured(f,second.id);
+ const {hostUpdateFact}=await import('../../packages/agents/dist/branch-host-provenance.js'),cut=secondCapture.saved.hostDependencies;
+ const q=cut.updates.find(e=>e.row.kind==='historical_question').row,a=cut.updates.find(e=>e.row.kind==='historical_answer').row;
+ assert.equal(a.in_reply_to_update_id,q.id);assert.equal(hostUpdateFact(cut,q).actor.id,f.peer.id);assert.equal(hostUpdateFact(cut,a).actor.kind,'user');
+ assert.deepEqual(hostUpdateFact(cut,a).payload,{text:'Use the original retained source'});
+ assert.equal(replay().id,second.id);
+});
+for(const parallel of [false,true])test(`restored issued ${parallel?'parallel':'serial'} owner tree recaptures one shared canonical graph`,async t=>{
+ const f=await treeIssuedFixture(t,{parallel,shared:parallel}),first=f.rewind(),capture=retainRecaptured(f,first.id);
+ const {retainedBranchHostGraph}=await import('../../packages/agents/dist/branch-tree-host-cut.js'),graph=retainedBranchHostGraph(capture.saved,first.id);
+ assert.equal(graph.cut.provenance.restorations.length,1);
+ if(f.dependency){const line=JSON.parse(f.db.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").get(first.id).snapshot_json);f.coordination.updateRequest({requestId:line.coordination.requestMap[f.dependency.requestIds[0]],updateId:'recapture-tree-dependency',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Dependency reconciled'}});}
+ await f.finish(first.id);f.db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const rewind=rewindRecaptured(f,first.id,capture.selection,'recaptured-tree'),second=rewind();assert.equal(rewind().id,second.id);
+ retainRecaptured(f,second.id);
+});
+for(const tamper of ['origin','receipt','source-cut','missing-proof','kind','payload'])test(`recapture refuses ${tamper} provenance before another restoration`,async t=>{
+ const f=await issuedRewindFixture(t,{terminal:true}),next=f.rewind(),{saved}=retainRecaptured(f,next.id),{payloadHash,stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const cut=saved.hostDependencies;
+ if(tamper==='origin'){const e=cut.provenance.origins[0];e.row.source_actor_json=stableJson({kind:'agent',id:'forged-actor'});e.sha256=payloadHash(e.row);}
+ if(tamper==='receipt'){const e=cut.provenance.restorations[0];e.row.receipt.cut_hash='0'.repeat(64);e.sha256=payloadHash(e.row);}
+ if(tamper==='source-cut'){const e=cut.provenance.restorations[0];e.row.snapshot.hostDependencies.updates[0].row.payload_json=stableJson({text:'Substituted original'});e.sha256=payloadHash(e.row);}
+ if(tamper==='missing-proof')delete cut.provenance;
+ if(tamper==='kind'){const e=cut.updates[0];e.row.kind='historical_answer';e.sha256=payloadHash(e.row);}
+ if(tamper==='payload'){const e=cut.updates[0],payload=JSON.parse(e.row.payload_json);payload.historicalPayload={text:'Imported explanation substituted'};e.row.payload_json=stableJson(payload);e.row.payload_hash=payloadHash(payload);e.sha256=payloadHash(e.row);}
+ const hash=payloadHash(saved),id=Number(f.db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(next.id,stableJson(saved),hash).lastInsertRowid);
+ assert.equal(f.branches.historicalCheckpoints(f.branch.id,next.id).find(c=>c.id===id).restoreSupported,false);
+ const before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n;
+ assert.throws(()=>f.branches.reviewHostGraph(f.branch.id,next.id,{checkpointId:id,expectedHash:hash},()=>true),/provenance|integrity|receipt|historical/i);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);
+});
+test('recaptured rewind rollback and replay preserve original current participant grants',async t=>{
+ const f=await issuedRewindFixture(t,{terminal:true}),first=f.rewind(),{selection}=retainRecaptured(f,first.id);await settleRecaptured(f,first.id);
+ const rewind=rewindRecaptured(f,first.id,selection,'recapture-rollback'),tables=['coordination_requests','coordination_request_updates','coordination_restored_update_origins','coordination_cut_restorations','branch_executions','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
+ f.db.exec("CREATE TEMP TRIGGER fail_recaptured_suffix BEFORE INSERT ON branch_attempts WHEN NEW.request_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'recaptured suffix failure'); END");assert.throws(rewind,/recaptured suffix failure/);assert.deepEqual(counts(),before);
+ f.db.exec('DROP TRIGGER fail_recaptured_suffix');const second=rewind();assert.equal(rewind().id,second.id);
+ f.db.prepare('UPDATE agents SET conversation_id=NULL WHERE id=?').run(f.agent.id);assert.throws(rewind,/grant|unavailable/);
+});
+for(const shape of ['map','fork','mixed'])for(const mode of ['async','sync','exit'])test(`restored ${shape} ${mode} frontier can save and rewind another checkpoint`,async t=>{
+ const f=await parallelIssuedFixture(t,{shape,mode}),first=f.rewind(),capture=retainRecaptured(f,first.id);
+ await f.finish(first.id);f.db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
+ const rewind=rewindRecaptured(f,first.id,capture.selection,`recaptured-${shape}-${mode}`),second=rewind();assert.equal(rewind().id,second.id);
+ await f.finish(second.id);assert.equal(rewind().id,second.id);
+});
+test('recaptured tree union refuses conflicting immutable origin evidence across owners',async t=>{
+ const f=await treeIssuedFixture(t,{parallel:true,shared:true}),first=f.rewind(),capture=retainRecaptured(f,first.id),{payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js'),{retainedBranchHostGraph}=await import('../../packages/agents/dist/branch-tree-host-cut.js');
+ const owners=capture.saved.continuation.owners.filter(o=>o.hostDependencies?.provenance?.origins.length);
+ assert.ok(owners.length>=2);const shared=owners[0].hostDependencies.provenance.origins.find(e=>owners[1].hostDependencies.provenance.origins.some(other=>other.row.update_id===e.row.update_id));assert.ok(shared);
+ const changed=owners[1].hostDependencies.provenance.origins.find(e=>e.row.update_id===shared.row.update_id);changed.row.source_payload_hash='0'.repeat(64);changed.sha256=payloadHash(changed.row);owners[1].hostDependenciesHash=payloadHash(owners[1].hostDependencies);
+ assert.throws(()=>retainedBranchHostGraph(capture.saved,first.id),/Shared tree historical provenance differs/);
+});

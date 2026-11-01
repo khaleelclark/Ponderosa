@@ -1,3 +1,4 @@
+import {coordinationLineageSupported} from './branch-host-provenance.js';
 import {captureBranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {hasParallelControls} from './branch-parallel-continuation.js';
@@ -20,33 +21,7 @@ export function treeIdMapSupported(owners:Row[],map:Row,sourceRoot:string,target
 }
 export const childTreeLineage=(line:Row,lineageId:number,sourceId:string,targetId:string)=>({schema:'ponderosa.branch.child-tree-lineage.v1',rootLineageId:lineageId,sourceRootId:line.sourceExecutionId,sourceExecutionId:sourceId,executionId:targetId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash,...(line.coordination?{restorationId:line.coordination.restorationId}:{}),idMap:line.idMap});
 /** Bind tree replay to the one immutable canonical receipt, never to caller-supplied maps. */
-export function treeCoordinationLineageSupported(db:Database.Database,line:Row,snapshot:Row):boolean {
- try {
-  const issued=snapshot.continuation.owners.some((o:Row)=>o.selected.attempts.some((a:Row)=>a.request_id));
-  if(!issued)return !line.coordination&&!line.graphReviewHash;
-  const {cut}=retainedBranchHostGraph(snapshot,line.sourceExecutionId),canonical=line.coordination;
-  if(!canonical||typeof line.graphReviewHash!=='string')return false;
-  const receipt=db.prepare('SELECT * FROM coordination_cut_restorations WHERE id=?').get(canonical.restorationId) as Row|undefined;
-  if(!receipt||receipt.source_execution_id!==line.sourceExecutionId||receipt.checkpoint_id!==line.checkpointId||receipt.cut_hash!==line.checkpointHash
-    ||receipt.command_key!==`branch-tree-rewind:${payloadHash(line.commandKey)}`||receipt.receipt_json!==stableJson(canonical)
-    ||receipt.command_hash!==payloadHash({checkpointId:line.checkpointId,expectedHash:line.checkpointHash,commandKey:receipt.command_key,reviewHash:line.graphReviewHash,reconcileEffects:true}))return false;
-  for(const [field,records] of [['requestMap',cut.requests],['updateMap',cut.updates],['joinMap',cut.joins]] as const){
-   const map=canonical[field],sources=records.map(({row})=>row.id).sort();
-   if(!map||stableJson(Object.keys(map).sort())!==stableJson(sources)||new Set(Object.values(map)).size!==sources.length
-    ||Object.values(map).some(id=>typeof id!=='string'||!id||sources.includes(id)))return false;
-  }
-  for(const {row:r} of cut.requests){const fresh=db.prepare('SELECT * FROM coordination_requests WHERE id=?').get(canonical.requestMap[r.id]) as Row|undefined;if(!fresh||['project_id','conversation_id','requester_agent_id','recipient_agent_id'].some(k=>fresh[k]!==r[k]))return false;}
-  for(const {row:u} of cut.updates)if(!db.prepare('SELECT 1 FROM coordination_restored_update_origins o JOIN coordination_request_updates u ON u.id=o.update_id WHERE o.update_id=? AND o.restoration_id=? AND o.source_update_id=? AND o.source_request_id=? AND u.request_id=? AND u.resulting_version=?').get(canonical.updateMap[u.id],canonical.restorationId,u.id,u.request_id,canonical.requestMap[u.request_id],u.resulting_version))return false;
-  for(const {row:j} of cut.joins){
-   const fresh=db.prepare('SELECT * FROM coordination_joins WHERE id=?').get(canonical.joinMap[j.id]) as Row|undefined;
-   const members=db.prepare('SELECT request_id,position FROM coordination_join_members WHERE join_id=? ORDER BY position').all(canonical.joinMap[j.id]);
-   const expected=cut.members.filter(({row})=>row.join_id===j.id).map(({row})=>({request_id:canonical.requestMap[row.request_id],position:row.position})).sort((a,b)=>a.position-b.position);
-   if(!fresh||['project_id','conversation_id','owner_agent_id','mode','quorum','wake_policy','satisfying_outcomes_json'].some(k=>fresh[k]!==j[k])
-    ||fresh.continuation_request_ids_json!==stableJson(JSON.parse(j.continuation_request_ids_json).map((id:string)=>canonical.requestMap[id]))||stableJson(members)!==stableJson(expected))return false;
-  }
-  return true;
- }catch{return false;}
-}
+export const treeCoordinationLineageSupported=coordinationLineageSupported;
 const audit=(db:Database.Database,id:string)=>db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(id);
 function read(db:Database.Database,id:number,owner:string):{value:Row;hash:string}|undefined {
   if(!Number.isSafeInteger(id)||id<1||typeof owner!=='string')return;
@@ -81,7 +56,7 @@ export function encodeScriptTreeContinuation(db:Database.Database,id:string,sele
     const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[]};
     const provenance=compose(db,c,true);return provenance?{...c,provenance}:undefined;
 }
-function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>}>,encoding=false):boolean {
+function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>,encoding=false):boolean {
   const owners=c.owners as Row[];
   if(!Array.isArray(owners)||owners.length<1||new Set(owners.map(o=>o.executionId)).size!==owners.length||stableJson(c.compatibility)!==stableJson(TREE_COMPATIBILITY))return false;
   const root=owners.find(o=>o.executionId===c.rootExecutionId);if(!root)return false;
@@ -143,7 +118,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
 }
 function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
   try {
-    const frames:{c:Row;seeds?:Map<string,{selected:Selected;idMap:Record<string,string>}>;ref?:Row}[]=[],seen=new Set<string>();
+    const frames:{c:Row;seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>;ref?:Row}[]=[],seen=new Set<string>();
     let current=c;
     for(;;){
       if(current.schema!==TREE_SCHEMA||seen.has(current.rootExecutionId))return;seen.add(current.rootExecutionId);
@@ -163,7 +138,7 @@ function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
       if(!receipt||receipt.input_hash!==line.commandHash||receipt.result_json!==stableJson({executionId:current.rootExecutionId,lineageId:evidence.lineageId}))return;
       const map=line.idMap;
       if(!treeIdMapSupported(old.owners,map,old.rootExecutionId,current.rootExecutionId))return;
-      const seeds=new Map<string,{selected:Selected;idMap:Record<string,string>}>();
+      const seeds=new Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>();
       for(const previous of old.owners){
         const target=current.owners.find((o:Row)=>o.executionId===map[previous.executionId]);if(!target)return;
         if(['versionId','versionHash','bindingRevisionId','bindingHash'].some(key=>target[key]!==previous[key])||stableJson(target.configuration)!==stableJson(previous.configuration))return;
@@ -174,7 +149,7 @@ function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
         const value=JSON.parse(origin[0].evidence_json),expected={sourceRootId:line.sourceExecutionId,sourceExecutionId:previous.executionId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash,commandKey:line.commandKey,lineageId:evidence.lineageId,...(previous.executionId!==old.rootExecutionId?{childLineageId:value.childLineageId}:{})};
         if(stableJson(value)!==stableJson(expected)||prefix[0].evidence_json!==stableJson(expected))return;
         if(previous.executionId!==old.rootExecutionId){const child=read(db,value.childLineageId,target.executionId);if(!child||stableJson(child.value)!==stableJson(childTreeLineage(line,evidence.lineageId,previous.executionId,target.executionId)))return;}
-        seeds.set(target.executionId,{selected:previous.selected,idMap:map});
+        seeds.set(target.executionId,{selected:previous.selected,idMap:map,requestMap:line.coordination?.requestMap});
       }
       for(const o of current.owners)if(!seeds.has(o.executionId)&&o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind)))return;
       frame.seeds=seeds;frame.ref={executionId:current.rootExecutionId,sourceExecutionId:line.sourceExecutionId,lineageId:evidence.lineageId,lineageHash:stored.hash,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash};current=old;

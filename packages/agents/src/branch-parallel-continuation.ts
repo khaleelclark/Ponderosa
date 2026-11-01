@@ -64,7 +64,7 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
 }
 
 /** Replay graph transitions, not scheduler timing. Unknown observations never supply authority. */
-export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfiguration,events:Row[],checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
+export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfiguration,events:Row[],checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
   if(!parallelFrontierSupported(s,d,context,hostCut))return false;
   const e=s.execution![0]!,root=s.paths!.find(p=>p.parent_path_id===null)!;
@@ -79,8 +79,9 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
   const pendingLoops:{pathId:string;edgeId:string;iteration:number}[]=[],pendingOutcomes=new Map<string,string>(),gateDecisions=new Map<string,string>(),admitted=new Set<string>(),completedChildren=new Set<string>(),cancelledItems=new Set<string>(),cancelledGates=new Set<string>();
   if(seed){
    const old=seed.selected,source=old.execution![0]!.id;
-   const mapped=remapBranchFrontier(old,Object.fromEntries(branchContinuationIds(old).map(id=>[id,seed.idMap[id]!])),source,e.id);
+   const mapped=remapBranchFrontier(old,Object.fromEntries(branchContinuationIds(old).map(id=>[id,seed.idMap[id]!])),source,e.id,seed.requestMap);
    for(const k of keys)m[k]=mapped[k]!;
+   for(const a of m.attempts!)if(a.request_id)boundRequests.add(a.id);
    for(const map of m.maps!)sealedMaps.add(map.id);
    for(const item of m.items!)if(['arrived','canceled'].includes(find('paths',item.path_id).state))completedItems.add(item.id);
    for(const gate of m.gates!)if(gate.state==='resolved')gateDecisions.set(gate.id,JSON.parse(gate.response_json).decision);

@@ -1,10 +1,11 @@
+import {captureHostProvenance,verifyHostProvenance,type HostProvenance} from './branch-host-provenance.js';
 import type Database from 'better-sqlite3';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import type {Selected} from './branch-script-continuation.js';
 type Row=Record<string,any>;
 type Evidence={row:Row;sha256:string};
 export interface BranchHostCut {
- schema:'ponderosa.branch.host-dependencies.v1';executionId:string;
+ schema:'ponderosa.branch.host-dependencies.v1';executionId:string;provenance?:HostProvenance;
  restoreAuthority:'fresh_admission_required';nativeState:'not_captured';artifactStorage:'references_only';
  roots:{attemptId:string;requestId:string|null;recoveryOfRequestId:string|null}[];
  coverage:{complete:boolean;missingReferences:{kind:string;id:string}[];requestVersions:{requestId:string;version:number;updatePrefixComplete:boolean}[]};
@@ -48,12 +49,12 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
    const history=db.prepare(`SELECT id,request_id,kind,actor_kind,actor_id,in_reply_to_update_id,payload_json,payload_hash,resulting_state,resulting_version,created_at FROM coordination_request_updates WHERE request_id=? ORDER BY resulting_version,id LIMIT 513`).all(row.id) as Row[];
    if(history.length>512)throw Error('Request update capture exceeds 512 records');
    let version=0,updatePrefixComplete=true;
-   for(const update of history){if(update.kind==='historical_question'||update.kind==='historical_answer')missingReferences.push({kind:'historical_restoration_provenance',id:update.id});parse(update.payload_json);if(update.resulting_version!==++version)updatePrefixComplete=false;updates.set(update.id,update);}
+   for(const update of history){parse(update.payload_json);if(update.resulting_version!==++version)updatePrefixComplete=false;updates.set(update.id,update);}
    updatePrefixComplete&&=version===row.version&&(!history.length||history.at(-1)!.resulting_state===row.state);requestVersions.push({requestId:row.id,version:row.version,updatePrefixComplete});
-   if(row.open_question_update_id&&!history.some(update=>update.id===row.open_question_update_id&&update.kind==='question'))missingReferences.push({kind:'open_question',id:row.open_question_update_id});
+   if(row.open_question_update_id&&!history.some(update=>update.id===row.open_question_update_id&&['question','historical_question'].includes(update.kind)))missingReferences.push({kind:'open_question',id:row.open_question_update_id});
    for(const result of db.prepare('SELECT id,request_id,kind,actor_agent_id,payload_json,payload_hash,created_at FROM coordination_request_late_results WHERE request_id=? ORDER BY id').all(row.id) as Row[]){parse(result.payload_json);lateResults.set(result.id,result);}
    for(const suspension of db.prepare('SELECT question_update_id,request_id,owner_agent_id,dependency_kind,dependency_id,state,created_at,updated_at,terminal_at FROM coordination_question_suspensions WHERE request_id=? ORDER BY question_update_id,dependency_kind,dependency_id').all(row.id) as Row[]){
-    if(!history.some(update=>update.id===suspension.question_update_id&&update.kind==='question'))throw Error('Question suspension lacks its immutable question');
+    if(!history.some(update=>update.id===suspension.question_update_id&&['question','historical_question'].includes(update.kind)))throw Error('Question suspension lacks its immutable question');
     suspensions.set(stableJson([suspension.question_update_id,suspension.dependency_kind,suspension.dependency_id]),suspension);if(suspension.dependency_kind==='join')pendingJoins.add(suspension.dependency_id);
    }
    for(const related of db.prepare(`SELECT DISTINCT j.id FROM coordination_joins j LEFT JOIN coordination_join_members m ON m.join_id=j.id WHERE m.request_id=? OR EXISTS(SELECT 1 FROM json_each(j.continuation_request_ids_json) WHERE value=?)`).all(row.id,row.id) as Row[])pendingJoins.add(related.id);
@@ -79,7 +80,7 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
    }
   }
  }
- for(const update of updates.values())if(update.in_reply_to_update_id){const question=updates.get(update.in_reply_to_update_id);if(!question){missingReferences.push({kind:'question',id:update.in_reply_to_update_id});continue;}if(question.request_id!==update.request_id||question.kind!=='question'||question.resulting_version>=update.resulting_version)throw Error('Answer lineage escapes its question');}
+ for(const update of updates.values())if(update.in_reply_to_update_id){const question=updates.get(update.in_reply_to_update_id);if(!question){missingReferences.push({kind:'question',id:update.in_reply_to_update_id});continue;}if(question.request_id!==update.request_id||!['question','historical_question'].includes(question.kind)||question.resulting_version>=update.resulting_version)throw Error('Answer lineage escapes its question');}
  for(const join of joins.values())for(const ref of JSON.parse(join.continuation_request_ids_json)){const request=requests.get(ref);if(request&&request.conversation_id!==join.conversation_id)throw Error('Join continuation escapes its Chat');}
  for(const member of members.values()){const join=joins.get(member.join_id)!,request=requests.get(member.request_id)!;if(request&&(join.conversation_id!==request.conversation_id||![request.requester_agent_id,request.recipient_agent_id].includes(join.owner_agent_id)))throw Error('Join member escapes its Chat or owner participant scope');}
  for(const [kind,owners] of [['request_update',updates],['communication',communications]] as const)for(const owner of owners.values()){
@@ -93,6 +94,9 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
  }
  const rows=(map:Map<string,Row>)=>[...map].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([,row])=>envelope(row));
  const cut:BranchHostCut={schema:'ponderosa.branch.host-dependencies.v1',executionId:id,restoreAuthority:'fresh_admission_required',nativeState:'not_captured',artifactStorage:'references_only',roots,coverage:{complete:missingReferences.length===0&&requestVersions.every(row=>row.updatePrefixComplete),missingReferences,requestVersions},requests:rows(requests),updates:rows(updates),lateResults:rows(lateResults),joins:rows(joins),members:[...members.values()].sort((a,b)=>a.join_id===b.join_id?a.position-b.position:a.join_id<b.join_id?-1:1).map(envelope),suspensions:rows(suspensions),communications:rows(communications),joinOutcomes:rows(joinOutcomes),artifactRefs:rows(artifactRefs),resources,resourceMembers,resourceContexts,resourceReceipts,bindingPin:{revisionId:pin.binding_revision_id,sha256:pin.content_hash,requiredSecretRefs:Object.keys(JSON.parse(pin.configuration_json).secretBindings??{}).sort()}};
+ const provenance=captureHostProvenance(db,[...requests.values()],[...updates.values()]);
+ if(provenance)cut.provenance=provenance;
+ verifyHostProvenance(cut);
  if(Buffer.byteLength(stableJson(cut))>8_000_000)throw Error('Host dependency cut exceeds 8 MB');
  return cut;
 }

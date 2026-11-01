@@ -690,8 +690,8 @@ terminal facts are consumed as data; waiting attempts observe only the mapped
 fresh Request. No old Run, reply, lease, session or effect is relaunched.
 
 Issued-Request resource, failed/cancelled/uncertain or recovery attempts, changed
-or secret pins and restored-history recapture remain refused. Released resource
-custody, graph binding/secret remapping, Agent/child cancellation, forwarded-bundle
+or secret pins remain refused. Restored-history recapture is described below.
+Released resource custody, graph binding/secret remapping, Agent/child cancellation, forwarded-bundle
 pointer/hash transfer, recovery/exhausted-budget codecs and broader crash
 reconciliation remain outside this increment. This is a supported internal path,
 not full #32 acceptance.
@@ -815,9 +815,8 @@ checks the canonical receipt before using its tree lineage. Existing fresh exit
 child holds remain in effect; this change never acknowledges an undrained Request
 or an unknown native effect.
 
-Restored-history recapture still requires its separate provenance codec and is
-refused. Cross-owner forwarded bundles, resource custody, secret/recovery/budget
-frontiers, cancellation and broader crash reconciliation remain outside this
+Restored-history recapture uses the provenance codec described below.
+Cross-owner forwarded bundles, resource custody, secret/recovery/budget frontiers, cancellation and broader crash reconciliation remain outside this
 slice. This source implementation does not establish #32 acceptance.
 
 Deferred regression source covers serial/parallel issued trees, retained terminal
@@ -829,7 +828,7 @@ No tests, checks, typechecks, builds, Node/native/browser/runner preparation or
 execution were performed.
 
 
-### Restored-history provenance prerequisite (partial source)
+### Restored-history provenance prerequisite (earlier partial source)
 
 The retained-result reader now verifies the complete import origin envelope
 against its immutable origin row, retained fact and exact restoration receipt
@@ -840,11 +839,50 @@ when their actor fields have been changed. Ordinary authored payloads retain
 their existing interpretation. Deferred regression source covers these cases;
 no execution checks were run.
 
-This is a prerequisite, not the restored-history recapture codec. Capture still
-marks historical question/answer provenance incomplete, and no refusal guard
-has been relaxed. Remaining work is to retain bounded immutable origin/receipt
-chains in the sealed cut, validate those facts during tree union and historical
-reduction, preserve ultimate original payloads and actors without granting them
-fresh authorship, and connect repeated capture/selection/rewind plus lost-response
-readback to the same owner transaction. Unknown or incomplete provenance remains
-refused. No resource, secret, cancellation or recovery case is widened.
+That earlier increment did not admit recapture. The complete bounded source path
+below supersedes that limitation. Resource, secret, cancellation and recovery
+cases remain outside this feature.
+
+
+### Restored-history recapture
+
+A supported restored suffix can now save/select another checkpoint and rewind
+again through the existing standalone, Fork/Map and child-owner tree paths. The
+host cut retains immutable update origins, canonical restoration receipts and
+their hash-verified source snapshots inside the same owner transaction as its
+selected frontier. Source snapshots retain earlier chains; provenance is bounded
+to 32 nested cuts and 128 verified cuts per traversal, within the existing 8 MB
+host-cut limit. Invalid, missing, conflicting or over-limit chains are refused.
+No native state or old Run/reply/lease/session authority is imported.
+
+The shared codec verifies every retained link: source snapshot hash, receipt
+identity/checkpoint/hash, fresh Request/update maps, source actor/kind/version/state
+and payload hashes, canonical import envelope and mapped question/answer links.
+Historical question/answer kinds enter the historical reducer only after that
+proof, using their original transition kinds and current mapped update IDs. Live
+update authorization is unchanged. Result extraction and binding/task/input checks
+use the ultimate original payload; import explanations remain labelled evidence.
+Original actor evidence is retained without forging fresh Agent authorship.
+
+Tree union deduplicates identical receipt/origin facts and refuses disagreements.
+Standalone and tree prefix composition use the same canonical receipt validator,
+then seed inherited attempts with its exact fresh Request map. Newly issued suffix
+Requests still require their own original request_bound audit events. Canonical
+restoration, Branch frontier insertion, notification writes and receipt creation
+remain in the existing immediate owner transaction. Lost-response readback
+revalidates source chains, fresh lineage and imported results before returning
+the existing suffix; it creates no second delivery. Current grants and owner pins
+are checked through each original source review, including original artifact
+grants that may not be attached to the later imported updates.
+
+Deferred regression source covers repeated live/terminal capture/select/rewind,
+original result and actor extraction, historical question plus fresh answer
+recapture, shared serial/parallel owner trees, origin/receipt/source-cut/kind/payload
+tampering, missing chains, rollback and replay with revoked participant grants.
+These cases were not executed. No tests, checks, typechecks, builds, Node/native/
+browser/runner preparation or execution were performed.
+
+This completes the bounded recapture source path, not runtime qualification or
+#32 acceptance. Existing resource custody, changed/secret binding, cancellation,
+forwarded-bundle, recovery/exhausted-budget and broader crash-reconciliation
+boundaries remain unchanged. Unknown native effects remain refused.

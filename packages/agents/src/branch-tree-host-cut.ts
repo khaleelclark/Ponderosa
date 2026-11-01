@@ -1,14 +1,16 @@
+import {verifyHostProvenance} from './branch-host-provenance.js';
 import {verifyBranchHostCut,type BranchHostCut} from './branch-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 type Row=Record<string,any>;
 export type RetainedHostOwner={executionId:string;branchId:string;cut:BranchHostCut};
 
 /** Resolve only sealed server-retained owner cuts. Shared graph facts must agree byte for byte. */
-export function retainedBranchHostGraph(snapshot:Row,executionId:string):{cut:BranchHostCut;owners:RetainedHostOwner[]} {
+export function retainedBranchHostGraph(snapshot:Row,executionId:string,verifyProvenance=true):{cut:BranchHostCut;owners:RetainedHostOwner[]} {
  const c=snapshot.continuation;
  if(c?.schema!=='ponderosa.branch.script-tree-continuation.v1'){
   const cut=snapshot.hostDependencies as BranchHostCut;
   if(!cut||!verifyBranchHostCut(cut,executionId)||!cut.coverage.complete)throw Error('Retained host cut integrity failure');
+  if(verifyProvenance)verifyHostProvenance(cut);
   return {cut,owners:[{executionId,branchId:snapshot.selected.execution[0].branch_id,cut}]};
  }
  if(c.rootExecutionId!==executionId||!Array.isArray(c.owners)||!c.owners.length||new Set(c.owners.map((o:Row)=>o.executionId)).size!==c.owners.length)throw Error('Tree host owner inventory differs');
@@ -43,11 +45,19 @@ export function retainedBranchHostGraph(snapshot:Row,executionId:string):{cut:Br
  if(new Set(roots.map(r=>r.attemptId)).size!==roots.length||new Set(roots.map(r=>r.requestId)).size!==roots.length)throw Error('Tree Request roots alias');
  const versions=new Map<string,BranchHostCut['coverage']['requestVersions'][number]>();
  for(const o of owners)for(const v of o.cut.coverage.requestVersions){if(versions.has(v.requestId)&&stableJson(versions.get(v.requestId))!==stableJson(v))throw Error('Shared tree Request version differs');versions.set(v.requestId,v);}
- const cut={...base,executionId,roots,coverage:{complete:true,missingReferences:[],requestVersions:[...versions.values()].sort((a,b)=>a.requestId<b.requestId?-1:a.requestId>b.requestId?1:0)},
+ const provenance=owners.some(o=>o.cut.provenance)?{
+  restorations:mergeProvenance('restorations'),origins:mergeProvenance('origins')}:undefined;
+ function mergeProvenance(key:'restorations'|'origins'){
+  const records=new Map<string,any>();
+  for(const o of owners)for(const e of o.cut.provenance?.[key]??[]){const id=e.row.id??e.row.update_id,prior=records.get(id);if(prior&&stableJson(prior)!==stableJson(e))throw Error('Shared tree historical provenance differs');records.set(id,e);}
+  return [...records].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([,e])=>e);
+ }
+ const cut={...base,...(provenance?{provenance}:{}),executionId,roots,coverage:{complete:true,missingReferences:[],requestVersions:[...versions.values()].sort((a,b)=>a.requestId<b.requestId?-1:a.requestId>b.requestId?1:0)},
   requests:merge('requests',r=>r.id),updates:merge('updates',r=>r.id),lateResults:merge('lateResults',r=>r.id),joins:merge('joins',r=>r.id),
   members:merge('members',r=>stableJson([r.join_id,r.request_id])),suspensions:merge('suspensions',r=>stableJson([r.question_update_id,r.dependency_kind,r.dependency_id])),
   communications:merge('communications',r=>r.id),joinOutcomes:merge('joinOutcomes',r=>r.id),artifactRefs:merge('artifactRefs',r=>r.id),
   resources:[],resourceMembers:[],resourceContexts:[],resourceReceipts:[],bindingPin:{revisionId:root.bindingRevisionId,sha256:root.bindingHash,requiredSecretRefs:[]}} as BranchHostCut;
  if(!verifyBranchHostCut(cut,executionId)||Buffer.byteLength(stableJson(cut))>8_000_000)throw Error('Tree host graph exceeds retained integrity bound');
+ if(verifyProvenance)verifyHostProvenance(cut);
  return {cut,owners};
 }
