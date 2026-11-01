@@ -138,7 +138,7 @@ mapped child attempt IDs before final parent frontier creation;
 `ancestry:'committed'` also checks actual parent FKs. No fabricated placeholder
 Steps/Requests or private snapshot export. Legacy plans missing evidence return
 `unavailable/legacy_missing_saved_evidence`; malformed present evidence refuses.
-UI rendering remains the UI owner's work; no web files changed.
+Current integrated UI successor `6706540420065f45711e508205f4b872d4de3ab2` validates and renders the saved evidence, labels prospective versus committed ancestry and unavailable legacy proof, and accepts published retry policies through100 independently of generation32. M4 source gap is resolved; rendered/runtime qualification remains open.
 
 Deferred source regression now covers actual ASYNC/SYNC serial and fork scheduler
 writes, two leases observing the same revision, reverse-order completion, malformed

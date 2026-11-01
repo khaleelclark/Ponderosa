@@ -1,6 +1,6 @@
 # Current web implementation coverage
 
-Source-only integration through `54948e647` (including current native, state and lifecycle source).
+Source-only integration through `5df7f0a04` (including current native, state and lifecycle source).
 No execution, preparation or acceptance claim. [Historical detail](web-feature-completion-history.md)
 is archival; [current all32/Build coverage](implementation-coverage.md) and the
 [remaining implementation inventory](phase2-remaining-implementation.md) define current limits.
@@ -36,8 +36,8 @@ per-owner hashes/Chats, all returned private facts/current policies and both adm
 Unknown outcomes recover by original-key GET only; stale selections require rediscovery.
 
 Tree DTO now supplies saved hash-bound ancestry, idMap/counters and numeric fresh owner
-budget receipts. UI rendering remains M4; existing controls label undisplayed fields
-unavailable/server-verified pending that adoption.
+budget receipts. M4 UI validates and renders that exact saved proof with prospective
+versus committed ancestry; absent legacy proof stays unavailable and malformed proof refuses.
 No larger/parallel/later-generation tree or multi-item retry history is implied.
 Original Project and Request audit scope, current policy and human full-facts choice stay
 separate. Review does not replay original effects or create a separate working copy.
@@ -154,6 +154,6 @@ generation33 stay refused; changed saved maximum stays held.
 
 SOURCE ONLY: fixtures unexecuted. No tests/checks/types/build/Node/native/browser/
 runner preparation or execution, installs, backend writes, push/merge/deploy or
-new workers. Remaining: backend/core source assembly and separately authorized
-runtime/provider/native/filesystem/accessibility/mobile qualification. No whole
+new workers. Backend/core is assembled; runtime/provider/native/filesystem/accessibility/mobile
+qualification remains open. No whole
 UI/group/lifecycle/Bible/Phase2 acceptance claimed.

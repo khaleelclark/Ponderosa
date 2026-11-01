@@ -1,6 +1,6 @@
 # Phase 2 remaining implementation inventory
 
-Source snapshot: `22beeb783`, integration worktree.
+Source snapshot: `5df7f0a04`, integration worktree.
 Includes bounded called-owner-tree UI, correlated Claude native command recovery,
 original host-effect reconciliation and bounded in-root link/preserve-unknown transport;
 M1, M5 and M6 are resolved in source, with runtime qualification deferred.
@@ -10,8 +10,8 @@ No owner worktrees changed, no workers created, no execution or preparation.
 
 **No: the earlier four categories were not four final tasks.** This inventory
 accounts for all 35 top-level requirements (32 commandments + 3 Build features),
-with 24 explicit Build behavior rows below. It identifies **9 tracked source
-work/disposition entries: 3 tracked M items (external M2, partially delivered M3, M4 UI rendering) and 6
+with 24 explicit Build behavior rows below. It identifies **8 tracked source
+work/disposition entries: 2 tracked M items (external M2, partially delivered M3) and 6
 U entries (U1 native contracts, classified U2, partial U3, recorded U4, U5 backend/UI disposition delivered with external evidence limits, minimal U6 state delivered)**, plus **1 separate deferred-fixture source repair**.
 These are finite inventory counts, not acceptance percentages or a promise that
 future verification cannot discover another defect. Unresolved does not mean code
@@ -27,7 +27,6 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 | --- | --- | --- | --- | --- |
 | M2 — externally blocked contract | #1, #4, #12 crash survival | Recover a compaction whose native identities/result were never retained without repeating mutation. Existing host recovery reservation, caller key, native-start fence and durable-event reconciliation already exist; Codex reads stored completion only with exact observed turn/item IDs. | Runtime | Pinned public protocols establish no durable no-ID compact-key result lookup. See [native operation contract](native-operation-key-contract.md). External exact-session key/result semantics are required before an internal binding can safely be added; M2 is not completed by another host journal. |
 | M3 — host source delivered; external evidence unresolved | #12 work survives restart; #13 unfinished work retained; #17 reliability | Exact original outcome_unknown Run/fence and drained custody now support host-receipt GET inventory, hash/fence/key-bound POST reconciliation and exact-key GET receipt recovery. Communication, Request version, coordinate, artifact import and queued-information commits are identified; telemetry remains unknown. | Reliability + Runtime | [Host reconciliation](original-source-effect-reconciliation.md) is implemented in source. Unreceipted native/external effects still require exact external evidence. No scheduler/source Run/Request mutation, original replay or source settlement; sourceWork remains held_unknown. |
-| M4 — backend implemented; UI pending | #2/#3/#24/#28/#32 review evidence | Existing group prepare/inspect/admit now returns saved hash-bound idMap/ownerMap; each original/fresh parent execution/attempt, global/path/loop/invocation counters, pinned limits/policy and fresh acceptance kind/time/source plus actual numeric budget receipt. Legacy explicitly unavailable; present corruption refuses. | Features backend source complete; UI rendering owner | Shared BranchGroupClient DTO; detail in branch-finite-contract-dispositions.md. No web edits or runtime qualification. |
 | U1 — eight named implementation/disposition contracts | #4 **every** native harness capability | G1–G8 below identify native surfaces requiring implementation or an explicit source disposition; they are not eight proven missing features. G7 console query and explicit bounded JPEG-frame JSON recording tools/API/SDK are now delivered in source; native tools/discovery and correlated compact paths do not establish universal parity. | Assigned owners below; G5/G6/G8 pending assignment | Pinned native-surface mapping and exact contracts; compatibility execution remains separate. |
 | U2 — classified; unjustified cap removed | #5/#6/#32 limits | Removed maxAttempts<=33 restriction unrelated to retained proof size; original validated policies through100 preserve consumed attempts and remaining budget. Generation32/group32/byte/parser/scheduler bounds retained for documented stability; human budgets and access/proof boundaries distinguished. | Features source disposition | Exact bounds/purposes in branch-finite-contract-dispositions.md; not a universal core-limit audit or approved exception. |
 | U3 — explicit field/topology disposition; concrete limits remain | #8 everything needed to recreate Agent/org/workflow, excluding known secrets | [Complete current package-field/native/file inventory](portability-recreation-inventory.md): in-root relative/dangling symlinks and complete hardlink sets now travel through the existing new/live-root importer and Shared composer. Full installation export also omits runtime executions/private checkpoint journals/execution-owned Chats; fresh-instance runtime recreation remains a concrete #8 gap. Git user history/refs/index, nonsecret native-directory configuration, cross-root/absolute/cyclic links and required special-node/extended metadata remain explicitly unsupported, not approved exclusions. | Reliability + Features; Cliff scope | Implement required Git/nonsecret native data formats and exact filesystem semantics where needed; no raw foreign ownership adoption or invented cross-Chat relocation. Fresh-machine/platform qualification unrun. |
@@ -40,7 +39,7 @@ occupancy control; provider/runtime compatibility remains unqualified. M2 remain
 different observable behaviors: compaction does not resolve lost identity or source effects.
 M5 concise copy/evidence-row cleanup is resolved in source; see phase2-ui-copy-census.md.
 Rendered wrapping/accessibility/mobile and whole #29 judging remain deferred.
-M4 backend saved review evidence is delivered; exact UI rendering remains pending. M6 (current documentation correction) is resolved by the current coverage/framework/guide rewrite; historical snapshots are separate. M4 does not broaden backend eligibility. U2/U4 prevent turning every documented
+M4 backend saved review evidence and exact UI validation/rendering are resolved in source; prospective/committed ancestry, maps, counters, capacity and original numeric acceptance receipts are shown. Legacy absence stays unavailable and malformed present proof refuses. No runtime or rendered verdict follows. M6 (current documentation correction) is resolved by the current coverage/framework/guide rewrite; historical snapshots are separate. M4 does not broaden backend eligibility. U2/U4 prevent turning every documented
 unsupported permutation into invented scope. Unknown proof remains held visibly.
 
 ## U1 native capability contracts
@@ -52,8 +51,8 @@ Owner assignments are retained exactly; pending assignment remains explicit.
 | ID | Native surface / required contract disposition | Responsible owner | Boundary / dependency |
 | --- | --- | --- | --- |
 | G1 | Native approval and permission callbacks | Runtime (`20bdfe98-a4fa-48e3-b84c-46b7f52e12f1`) | Establish exact native callback handling and host authority correspondence. |
-| G2 | Codex goal operations and budgets | `db32cd86-3743-42b2-8b58-de9972791ef1` | Establish native goal/budget operations and retained host projection contract. |
-| G3 | Retained plan/review/schema structured projections | `db32cd86-3743-42b2-8b58-de9972791ef1` | Exact plan/schema retrieval contract pending; no guessed 404/absence contract. |
+| G2 — partial source delivered | Codex goal operations and budgets | `db32cd86-3743-42b2-8b58-de9972791ef1` | Exact live accepted-session get/pause/edit/clear, native accounting and explicit paused human-origin editing delivered. Active/resume/default-active creation and automatic continuations still require scheduler Run/lease/fence/budget/recovery binding; separately assigned, not closed. |
+| G3 — bounded source delivered | Retained plan/review/schema structured projections | `db32cd86-3743-42b2-8b58-de9972791ef1` | Pinned experimental plan settings schema retrieved; exact immutable human Communication selects scheduler-bound plan/review/outputSchema actions with current Run checks, retained-session inline review and typed plan/diff/review Activity receipts. Individual Agent intake only; Team/coalesced/artifact-backed command scope and installed-version/runtime equivalence remain open. [Exact contract](codex-native-goals-plan-review.md). |
 | G4 | Claude correlated interrupt, live model and permission controls | Runtime (`20bdfe98-a4fa-48e3-b84c-46b7f52e12f1`) | Establish exact native control correlation and host session/authority handling. |
 | G5 | Native FILE-ONLY checkpoint/rewind and transcript fork | Pending assignment | Establish file-only versus transcript semantics and safe host binding. |
 | G6 | Direct typed modality input versus text-only turn frames | Pending assignment | Establish native typed-input transport and supported modality disposition. |
@@ -77,7 +76,7 @@ criteria, a complete audit may still find concrete missing code.
 | --- | --- | --- |
 | 1 | M2/M3 | `packages/agents/src/coordination-v3-context-recovery-authority.ts`, `packages/engines/src/codex-app-server.ts`, `packages/engines/src/claude.ts`; Claude correlated native compact/fresh usage and durable known-event recovery exist; lost native identities/source effects remain unknown. |
 | 2 | S | Canonical admission/context authority modules and adjacent docs; whole mechanism/run-history correspondence still unverified. |
-| 3 | S + M4 | Shared `OutputAgentApp.tsx`, `BranchGroupReview.tsx`, `BranchGenerationOne.tsx`; desktop/mobile comparative quality is verification. |
+| 3 | S | Shared `OutputAgentApp.tsx`, `BranchGroupReview.tsx`, `BranchGenerationOne.tsx`; desktop/mobile comparative quality is verification. |
 | 4 | M2 + U1 | Native adapters include Claude native compact with fresh usage and Codex exact known-ID reads; `runtime-native-recovery-contract.md`; complete parity U1 remains unestablished. |
 | 5 | S + U2 | `server-request-hooks.ts` separates capacity admission from authority; explicit codec/byte limits need complete purpose classification. |
 | 6 | S + U2 | `capability-policy-store.ts`, `runtime-capability-policy.ts`, human import/disclosure review; read-only audit did not establish another automatic grant change. |
@@ -106,7 +105,7 @@ criteria, a complete audit may still find concrete missing code.
 | 29 | S | M5 concise copy/evidence-row successor integrated; exact content and consequential consent retained. Blind panel, rendered layout and flicker/overlap evidence remain separate. |
 | 30 | S + U5 | `local-memory-catalog.ts` explicitly defaults search across authorized chat/global; `local-memory.ts` preserves human settings. Seeded recall/log misuse trials deferred. |
 | 31 | S | `reply-stream-publication.ts`, `voice-reply-stream.ts`, `speech/voiceReplyStream.ts`, `BranchLiveOutput.tsx`, shared Request/Chat streams; early acknowledgement/answer separation exists. All-surface recording and <1s average/never>2s call result unqualified. |
-| 32 | S + M4/U2/U4/U6 | Public graph/HITL/tools/memory/subgraph/multi-agent source and representative application/comparator present. Broader feature contract remains unresolved; no parity verdict. |
+| 32 | S + U2/U4/U6 | Public graph/HITL/tools/memory/subgraph/multi-agent source and representative application/comparator present. Broader feature contract remains unresolved; no parity verdict. |
 
 ## Every Build behavior accounted for
 
