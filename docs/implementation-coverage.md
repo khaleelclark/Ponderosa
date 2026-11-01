@@ -140,7 +140,8 @@ Output/Assistant chat and call controls, microphone recording/review/playback,
 Integration also connects `PackageExportDisclosure` to core's shared warning;
 its deferred regression retains an explicit mocked shared-constant binding.
 
-UI follow-up `944a6e00` integrated: schedule sends `expectedBindingRevisionId`
+UI follow-up `944a6e00` integrated; corrected by `e2bf2275`: schedule sends
+`expectedSettingsRevision: app.settingsRevision` (covers same-version trigger edits)
 and no-app Assistant renders `setupError.message`; corresponding Branches DTOs
 remain pending integration. Owner confirms existing `updateAgent` model changes
 already reach subsequent workflow Runs, resolving the model API question.
@@ -172,3 +173,11 @@ Selected relative working-file copy/download controls and import destination
 folder/working-copy controls are integrated pending Reliability's transport
 successor. Permission adoption remains blocked on its structured preview contract;
 no adoption defaults were introduced. No new test execution or preparation.
+
+Portability owner reports its continuation is not yet committed: structured
+communication and working-file modules, imported-history envelope and a
+`workingCopies` package-route context binding. Await exact committed handoff;
+no edits copied from its active tree. Cross-Chat organization reporting bindings
+remain a model decision because canonical organizations are same-Chat-only;
+owner refuses unsupported multi-Chat imports before writes. No silent widening
+of that invariant or completed-portability claim.
