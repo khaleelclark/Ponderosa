@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import test from 'node:test';
 import {AgentStore,CoordinationV3Store,BranchStore} from '../../packages/agents/dist/index.js';
 
-function fixture(t,{parameters}={}) {
+function fixture(t,{parameters,graph}={}) {
  const dir=mkdtempSync(join(tmpdir(),'branch-initial-rewind-'));
  let store,branches;
  const open=()=>{store=new AgentStore(dir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));};open();
@@ -15,6 +15,7 @@ function fixture(t,{parameters}={}) {
  const definition={schema:'ponderosa.branch.v1',name:'Checkpoint',trigger:{kind:'manual'},entry:'work',
   steps:[{id:'work',kind:'script',runtime:'node',source:'console.log("fixture only")',cwdRef:'root',timeoutMs:5000}],
   controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}},...(parameters?{parameters}:{})};
+ if(graph)Object.assign(definition,graph);
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{},directories:{root:dir}}});
  return {get store(){return store},get branches(){return branches},branch,definition,
   accept(){return branches.accept(branch.id,'original','canonical input')},
@@ -129,4 +130,19 @@ test('actual HTTP checkpoint/rewind routes enforce owner scope and exact command
  const result=await app.inject(request);assert.equal(result.statusCode,200,result.body);assert.equal(result.json().state,'queued');
  assert.equal((await app.inject(request)).json().id,result.json().id);assert.equal(notifications,2);
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_attempts').get().n,0);
+});
+
+// Deferred with the implementation-first batch; no provider processes are started.
+for(const kind of ['parallel','map','human_gate'])test('INITIAL rewind admits a fresh '+kind+' frontier with no copied runtime authority',t=>{
+ const script=id=>({id,kind:'script',runtime:'node',source:'console.log("owned fixture")',cwdRef:'root',timeoutMs:5000});
+ const edge=(id,from,to,on='success')=>({id,from,to,on});
+ const graph=kind==='parallel'?{entry:'fork',steps:[script('a'),script('b')],controls:[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['a-arm','b-arm']}],edges:[edge('a-arm','fork','a','selected'),edge('b-arm','fork','b','selected'),edge('a-in','a','join'),edge('b-in','b','join')]}:
+  kind==='map'?{entry:'map',steps:[script('worker')],controls:[{id:'map',kind:'map',joinId:'join',workerId:'worker',source:'list',maxItems:4,maxConcurrentItems:2},{id:'join',kind:'join',forkId:'map',mode:'all',remainder:'finish',inputOrder:[]}],edges:[edge('worker-end','worker','join')]}:
+  {entry:'review',steps:[{id:'review',kind:'human_gate',prompt:'Review fresh invocation',editable:true}],controls:[],edges:[]};
+ const f=fixture(t,{graph}),{source,checkpoint}=canceled(f);assert.equal(checkpoint.restoreSupported,true);f.reopen();
+ const next=f.branches.rewindInitial(f.branch.id,source.id,checkpoint.id,checkpoint.contentHash,'general-before-entry');
+ assert.equal(next.state,'queued');assert.notEqual(next.id,source.id);assert.equal(next.input,source.input);
+ for(const table of ['branch_paths','branch_step_executions','branch_attempts','branch_resources'])assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM '+table).get().n,0);
+ f.reopen();assert.equal(f.branches.rewindInitial(f.branch.id,source.id,checkpoint.id,checkpoint.contentHash,'general-before-entry').id,next.id);
+ assert.equal(f.branches.execution(source.id).state,'canceled');
 });

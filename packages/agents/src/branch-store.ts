@@ -569,9 +569,7 @@ export class BranchStore {
       const definition=JSON.parse(version.definition_json) as BranchDefinition;
       if(payloadHash(definition)!==version.content_hash||payloadHash(JSON.parse(binding.bindings_json))!==binding.content_hash)throw new Error('Initial checkpoint owned pins failed verification');
       const continuationSupported=!Object.keys(secretBindings??{}).length
-        && !Object.values(definition.parameters??{}).some(p=>p.type==='secret')
-        && definition.steps.every(step=>step.kind==='script'&&step.failure?.action!=='recover')
-        && definition.policy.failure.action!=='recover';
+        && !Object.values(definition.parameters??{}).some(p=>p.type==='secret');
       const snapshot={continuationSupported,schema:'ponderosa.branch.initial.v1',executionId:execution.id,branchId,versionId:version.id,
         versionHash:version.content_hash,bindingRevisionId:binding.id,bindingHash:binding.content_hash,
         input:execution.input,inputHash:execution.inputHash,configuration,secretBindingsOmitted:Boolean(Object.keys(secretBindings??{}).length),
@@ -630,10 +628,9 @@ export class BranchStore {
       const definition=JSON.parse(version.definition_json) as BranchDefinition;
       if(stableJson(validateBranchConfiguration(snapshot.configuration,definition,true))!==stableJson(snapshot.configuration)
         ||Object.hasOwn(snapshot.configuration,'secretBindings')||snapshot.configuration.limits.maxCallDepth!==snapshot.depthCeiling)throw new Error('Initial checkpoint configuration integrity failure');
-      // ponytail: only an untouched manual Script frontier; expand after continuation/authority reconciliation exists.
-      if(snapshot.secretBindingsOmitted||Object.values(definition.parameters??{}).some(p=>p.type==='secret')
-        ||definition.steps.some(step=>step.kind!=='script'||step.failure?.action==='recover')
-        ||definition.policy.failure.action==='recover')throw new Error('Initial rewind continuation is unsupported for these bindings or Steps');
+      // Before entry there are no paths, Requests, resources or effects to restore.
+      // Every node is admitted afresh by the ordinary scheduler using unchanged pins.
+      if(snapshot.secretBindingsOmitted||Object.values(definition.parameters??{}).some(p=>p.type==='secret'))throw new Error('Initial rewind continuation is unsupported for secret bindings');
       if(branch.versionId!==snapshot.versionId||branch.bindingRevisionId!==snapshot.bindingRevisionId
         ||stableJson(this.configuration(branchId))!==stableJson(snapshot.configuration))throw new Error('Initial rewind pins changed; current authority must be reconciled');
       const next=this.accept(branchId,`rewind:${randomUUID()}`,snapshot.input,now);

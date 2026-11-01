@@ -157,3 +157,20 @@ review controls remain a separate owned caller. Working-folder bundles, new-Chat
 mapping and additional reviewed grant forwarding still need their own shared
 engine contract and callers; this access-first increment does not complete #8.
 No execution or passing claim accompanies this source.
+
+## General before-entry rewind
+
+Explicit initial checkpoints now cover every validated graph node family when the
+manual source was canceled before admission: parallel/map controls, human gates,
+Agent/tool/memory nodes, ephemeral organizations and subgraph calls. Source must
+have no admission time, paths or Step records. Rewind retains exact owned version,
+binding, configuration, input and immutable checkpoint hash; it creates a queued
+execution and durable idempotent lineage in the same SQLite transaction. The
+ordinary scheduler admits all work anew, using current access/provider/resource
+checks. No Request, lease, process, created resource or external effect is copied.
+Secret-bearing configuration remains refused rather than restoring omitted values.
+This removes the former Script-only initial-frontier restriction; in-progress
+parallel/map/provider/resource cuts still require separate full continuation codecs
+and cannot be inferred from this before-entry case. Deferred regressions cover
+parallel/map/human-gate initial rewind, reopen/idempotency and empty runtime rows.
+No consolidated execution has run.
