@@ -767,6 +767,7 @@ export function registerAgentPackageRoutes(
     const artifactOwner = new Map<string, string>();
     if (mode !== "template") {
       for (const artifact of projectArtifacts) {
+        if (artifact.origin?.kind === "operator") continue;
         if (artifact.originAgentId && included.has(artifact.originAgentId)) {
           artifactOwner.set(artifact.id, artifact.originAgentId);
           continue;

@@ -91,12 +91,15 @@ export interface ArtifactDto {
   id: string;
   /** Owning Project for stable cross-Agent retrieval. */
   projectId?: string;
+  /** Agent producer, or the canonical Chat storage owner for an operator-origin document. */
   agentId: string;
+  /** Present only for direct operator publication; no Agent/Run is attributed. */
+  origin?: {kind: "operator"; conversationId: string};
   /** Agent that created the artifact; retained after that Agent is deleted. */
   originAgentId?: string;
   executionId?: string;
   kind: ArtifactKind;
-  /** Relative path under the agent's `artifacts/` dir. */
+  /** Logical relative result path; managed result bytes belong to the Project. */
   path: string;
   summary?: string;
   createdAt: string;

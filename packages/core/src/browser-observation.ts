@@ -30,7 +30,10 @@ export interface BrowserRecordingData extends BrowserRecordingStatus {
   reason: 'explicit_stop' | 'duration_limit' | 'frame_limit' | 'byte_limit' | 'page_closed';
   frames: { atMs: number; jpeg: string }[];
 }
+export interface BrowserRecordingDestination {projectId: string; conversationId: string}
 export interface BrowserRecordingArtifact {
+  /** Only shared operator recordings have a Chat destination, without an originating Agent/Run. */
+  destination?: BrowserRecordingDestination;
   artifactId: string;
   artifactRef: string;
   path: string;
@@ -49,6 +52,8 @@ export class BrowserObservationClient {
 
 /** Operator observations use existing browser-route ownership, never a Run capability. */
 export interface BrowserOperatorObservationContext {
+  /** Required for saved-browser recording start/stop/status; Chat browsers reject a different Chat. */
+  destination?: {conversationId: string};
   sessionId: string;
   expectedControlEpoch: number;
 }
@@ -66,6 +71,7 @@ export interface BrowserOperatorRecordingResult extends BrowserRecordingArtifact
   downloadUrl: string;
 }
 export interface BrowserOperatorRecordingState {
+  destination?: BrowserRecordingDestination;
   recording?: BrowserRecordingStatus;
   artifact?: BrowserRecordingArtifact;
 }

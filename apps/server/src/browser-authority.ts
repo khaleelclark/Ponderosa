@@ -1,10 +1,11 @@
 import { browserOwnerFromId, browserOwnerId, chatBrowserOwnerId } from "@ponderosa/core";
 import type { AgentEvent, BrowserSessionDto, ProjectBrowserSessionDto } from "@ponderosa/core";
-import { openManagedArtifactContent, AgentStore, type LogEvent, type StoredLogEvent } from "@ponderosa/agents";
+import { activeChatOwnerSql, openManagedArtifactContent, AgentStore, type LogEvent, type StoredLogEvent } from "@ponderosa/agents";
 import {
   BrowserSessionError,
   BrowserSessionManager,
   type BrowserScope,
+  type BrowserOperatorRecordingAuthority,
 } from "./browser-session-manager.js";
 import { playwrightBrowserDriverFactory, type BrowserDriverFactory } from "./chrome-cdp-driver.js";
 import type { ActiveRun } from "./app-contracts.js";
@@ -170,6 +171,27 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
   const sharedFactory: BrowserDriverFactory = service
     ? (id, _console, spawned, event, launch) => service.driver(id, event, launch, false, spawned)
     : browserFactory;
+  const operatorRecordingAuthority: BrowserOperatorRecordingAuthority = {
+    destination(scope, requestedConversationId) {
+      const bound = scope.owner?.kind === "chat" ? scope.owner.conversationId : undefined;
+      if (bound && requestedConversationId !== undefined && requestedConversationId !== bound) throw new BrowserSessionError("Recording destination must be this browser's exact Chat.", 403);
+      const conversationId = bound ?? requestedConversationId;
+      if (typeof conversationId !== "string" || !conversationId) throw new BrowserSessionError("Choose an explicit destination Chat for this saved-browser recording.", 400, "recording_destination_required");
+      const chat = store.getConversation(conversationId);
+      if (!chat || chat.deletedAt || chat.executionId || (bound && chat.projectId !== scope.projectId) || !store.sqlite.prepare(
+        `SELECT 1 FROM conversations chat WHERE chat.id=? AND chat.project_id=? AND ${activeChatOwnerSql('chat')}`,
+      ).get(chat.id, chat.projectId)) throw new BrowserSessionError("The recording destination Chat is unavailable for operator publication.", 409);
+      return {projectId: chat.projectId, conversationId: chat.id};
+    },
+    publish(scope, destination, artifact) {
+      const current = this.destination(scope, destination.conversationId);
+      if (current.projectId !== destination.projectId) throw new BrowserSessionError("Recording destination ownership changed.", 409);
+      store.recordOperatorChatArtifact({id: artifact.id, projectId: current.projectId, agentId: current.conversationId,
+        origin: {kind: "operator", conversationId: current.conversationId}, kind: "document", path: artifact.path,
+        summary: "Browser recording (timestamped JPEG frames)", createdAt: artifact.createdAt, mediaType: "application/json",
+        size: artifact.size, sha256: artifact.sha256, visibility: "project", pinned: false});
+    },
+  };
   const projectBrowserSessions = new BrowserSessionManager(
     dataDir,
     sharedFactory,
@@ -220,6 +242,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserProfiles,
     browserAdmissionAllowed,
     Boolean(service),
+    operatorRecordingAuthority,
   );
 
   function browserScopeForRun(agentId: string, run: Pick<ActiveRun, "runId" | "conversationId">): BrowserScope | undefined {

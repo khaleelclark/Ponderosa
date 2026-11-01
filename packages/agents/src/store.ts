@@ -2072,6 +2072,14 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.getProjectContextArtifacts(projectId, limit, conversationId);
   }
 
+  purgeOperatorChatArtifacts(projectId: string, conversationId: string): void {
+    this.artifactCatalog.purgeOperatorChatArtifacts(projectId, conversationId);
+  }
+
+  recordOperatorChatArtifact(artifact: ArtifactDto & {projectId: string; origin: {kind: "operator"; conversationId: string}}): void {
+    this.artifactCatalog.recordOperatorChatArtifact(artifact);
+  }
+
   recordProjectArtifact(
     artifact: ArtifactDto & { projectId: string; originAgentId: string },
     access?: ManagedArtifactAccess,

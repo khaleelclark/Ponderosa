@@ -19,7 +19,11 @@ export function artifactAgentProductSql(agent:string,product:'dev'|'branches'):s
  * authorities. Filter them before pagination without replaying authored logs. */
 export function managedArtifactProductSql(artifact:string,product:'dev'|'branches'):string {
   const scope=product==='branches'?'IS NOT NULL':'IS NULL';
-  return `(EXISTS(SELECT 1 FROM agents artifact_agent
+  return `(( ${artifact}.owner_kind='operator_chat' AND json_extract(${artifact}.artifact_json,'$.origin.kind')='operator'
+      AND EXISTS(SELECT 1 FROM conversations operator_chat WHERE operator_chat.id=${artifact}.owner_id
+        AND operator_chat.id=json_extract(${artifact}.artifact_json,'$.origin.conversationId') AND operator_chat.project_id=${artifact}.project_id
+        AND operator_chat.branch_execution_id IS NULL AND operator_chat.branch_id ${scope} AND ${activeChatOwnerSql('operator_chat')}))
+    OR EXISTS(SELECT 1 FROM agents artifact_agent
       WHERE artifact_agent.id=COALESCE(${artifact}.sender_agent_id,json_extract(${artifact}.artifact_json,'$.originAgentId'))
         AND artifact_agent.project_id=${artifact}.project_id AND ${artifactAgentProductSql('artifact_agent',product)})
     OR (${artifact}.owner_kind='communication' AND ${artifact}.sender_agent_id IS NULL AND EXISTS(

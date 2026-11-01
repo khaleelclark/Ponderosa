@@ -80,14 +80,16 @@ export interface ProjectJson {
 }
 
 export interface ManagedArtifactAccess {
-  ownerKind: "project" | "communication" | "request_update";
+  ownerKind: "project" | "communication" | "request_update" | "operator_chat";
   ownerId: string;
   audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
   senderAgentId?: string;
 }
 
+export type ManagedProjectArtifact = ArtifactDto & {projectId: string; originAgentId?: string};
+
 export type ManagedArtifactEvent =
-  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
+  | { type: "created"; artifact: ManagedProjectArtifact; access?: ManagedArtifactAccess }
   | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
   | { type: "deleted"; artifactId: string; at: string; reason: string };
 

@@ -731,8 +731,9 @@ export function restoreContent(options: ContentRestoreOptions): Record<string, u
     const seenArtifacts = new Set<string>();
     const publish = (artifact: ArtifactDto & {
       projectId: string;
-      originAgentId: string;
+      originAgentId?: string;
     }, access: ManagedArtifactAccess, bytes?: Uint8Array, from?: string) => {
+      requireValue(!artifact.origin && artifact.originAgentId, "legacy content restore requires its recorded Agent provenance");
       safeId(artifact.id);
       requireValue(!seenArtifacts.has(artifact.id), "artifact identity collision");
       seenArtifacts.add(artifact.id);

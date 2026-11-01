@@ -126,6 +126,7 @@ export function createConversationDeletionAuthority(context: {
     }
     try {
       await context.assets.purgeConversationAssets(receipt.projectId, receipt.conversationId);
+      context.store.purgeOperatorChatArtifacts(receipt.projectId, receipt.conversationId);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "Chat attachment cleanup failed");
     }

@@ -918,10 +918,9 @@ export function registerBrowserRoutes(
       reply.header("cache-control", "private, no-store");
       if (projectScoped) { const blocked = projectMutationGuard(request.params.projectId, reply); if (blocked) return blocked; }
       try {
-        if (projectScoped) throw new BrowserSessionError("Operator recording publication is unavailable for Chat and saved browsers.", 409, "operator_recording_unavailable");
         const browserScope = scope(request.params);
         const state = await manager.operatorRecordingStatus(browserScope, request.body);
-        return {...state, ...(state.artifact ? {artifact: {...state.artifact, downloadUrl: `/api/projects/${encodeURIComponent(browserScope.projectId)}/artifacts/${encodeURIComponent(state.artifact.artifactId)}/download`}} : {})};
+        return {...state, ...(state.artifact ? {artifact: {...state.artifact, downloadUrl: `/api/projects/${encodeURIComponent(state.artifact.destination?.projectId ?? browserScope.projectId)}/artifacts/${encodeURIComponent(state.artifact.artifactId)}/download`}} : {})};
       } catch (error) { return browserRouteError(reply, error); }
     });
     app.post<{Params: BrowserRouteParams; Body: BrowserOperatorRecordingStartRequest}>(`${route}/observations/recording/start`, async (request, reply) => {
@@ -935,10 +934,9 @@ export function registerBrowserRoutes(
       reply.header("cache-control", "private, no-store");
       if (projectScoped) { const blocked = projectMutationGuard(request.params.projectId, reply); if (blocked) return blocked; }
       try {
-        if (projectScoped) throw new BrowserSessionError("Operator recording publication is unavailable for Chat and saved browsers.", 409, "operator_recording_unavailable");
         const browserScope = scope(request.params);
         const artifact = await manager.operatorRecordingStop(browserScope, request.body, request.body?.recordingId);
-        const result: BrowserOperatorRecordingResult = {...artifact, downloadUrl: `/api/projects/${encodeURIComponent(browserScope.projectId)}/artifacts/${encodeURIComponent(artifact.artifactId)}/download`};
+        const result: BrowserOperatorRecordingResult = {...artifact, downloadUrl: `/api/projects/${encodeURIComponent(artifact.destination?.projectId ?? browserScope.projectId)}/artifacts/${encodeURIComponent(artifact.artifactId)}/download`};
         return result;
       } catch (error) { return browserRouteError(reply, error); }
     });

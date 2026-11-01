@@ -123,10 +123,8 @@ export function registerArtifactRoutes(
       );
       if (
         !artifact ||
-        !store.projectArtifactIsOrganizationVisible(
-          request.params.projectId,
-          request.params.aid,
-        )
+        !(store.projectArtifactIsOrganizationVisible(request.params.projectId, request.params.aid)
+          || (artifact.origin?.kind === "operator" && store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)))
       ) {
         return reply.code(404).send({ error: "project file not found" });
       }
