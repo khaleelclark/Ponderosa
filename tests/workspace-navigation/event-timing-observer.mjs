@@ -1,6 +1,6 @@
 // Inject before navigation. Raw entries remain evidence, including zero-ID noninteractions.
 export function installTimingObserver(){
- const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable',trustedInputs:[],eventCounts:null,window:{start:0,end:null,timeOrigin:performance.timeOrigin},lifecycle:[{type:'init',time:performance.now(),visibility:document.visibilityState}],health:{registered:false,callbacks:0,droppedEntries:null,drained:false}};
+ const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable',trustedInputs:[],eventCounts:null,window:{start:0,end:null,lastPresentation:null,timeOrigin:performance.timeOrigin},lifecycle:[{type:'init',time:performance.now(),visibility:document.visibilityState}],health:{registered:false,callbacks:0,droppedEntries:null,drained:false}};
  const occurrence=e=>e.timeStamp>performance.timeOrigin?e.timeStamp-performance.timeOrigin:e.timeStamp;
  const events=entries=>{for(const e of entries)state.events.push({name:e.name,startTime:e.startTime,duration:e.duration,processingStart:e.processingStart,processingEnd:e.processingEnd,interactionId:e.interactionId,target:e.target?.getAttribute('aria-label')??e.target?.tagName});};
  const paints=entries=>{for(const e of entries)state.lcp.push({startTime:e.startTime,renderTime:e.renderTime,loadTime:e.loadTime,size:e.size,id:e.id,element:e.element?.tagName});};
@@ -13,11 +13,11 @@ export function installTimingObserver(){
  for(const type of ['pointerdown','keydown'])addEventListener(type,e=>{if(e.isTrusted)cutoff('first-trusted-input',e);},{capture:true});
  addEventListener('visibilitychange',()=>{state.lifecycle.push({type:'visibilitychange',time:performance.now(),visibility:document.visibilityState});if(document.visibilityState==='hidden')cutoff('hidden');});addEventListener('pagehide',()=>{state.lifecycle.push({type:'pagehide',time:performance.now(),visibility:document.visibilityState});cutoff('pagehide');});
  window.__finalizeUiTiming=async()=>{
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve,0))));flush();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(time=>{state.window.lastPresentation=time;setTimeout(resolve,0);})));flush();
   if(!state.cutoff)cutoff('explicit-finalize');
   // Only an independently supplied browser count can establish subfloor groups; never infer them from key presses.
   if(Number.isInteger(performance.interactionCount)&&performance.interactionCount>=0){state.totalInteractions=performance.interactionCount;state.countSupport='performance.interactionCount';}
-  state.health.drained=true;state.window.end=performance.now();state.eventCounts=performance.eventCounts?Object.fromEntries(performance.eventCounts):null;state.nativeCountProperty=('interactionCount' in performance);state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
+  state.health.drained=true;state.window.end=state.window.lastPresentation;state.health.flushCompletedAt=performance.now();state.eventCounts=performance.eventCounts?Object.fromEntries(performance.eventCounts):null;state.nativeCountProperty=('interactionCount' in performance);state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
  };
 }
 export function summarizeTimings(sessions){
@@ -34,8 +34,11 @@ export function summarizeTimings(sessions){
   const window=session.window,cutoff=session.cutoff;
   const lifecycle=Array.isArray(session.lifecycle)&&session.lifecycle.length>0&&session.lifecycle[0].type==='init'&&session.lifecycle.every(e=>e.visibility==='visible'&&e.type!=='pagehide'&&Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end);
   const health=session.health?.registered===true&&session.health.drained===true&&session.health.droppedEntries===0&&session.health.callbacks>0&&session.eventCounts&&Array.isArray(session.trustedInputs)&&session.trustedInputs.length>0&&session.trustedInputs.every(e=>Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end)&&['keydown','click'].every(type=>(session.eventCounts[type]??0)>=session.trustedInputs.filter(e=>e.type===type).length);
-  const bounded=window&&Number.isFinite(window.start)&&Number.isFinite(window.end)&&Number.isFinite(window.timeOrigin)&&window.start===0&&window.end>window.start&&cutoff&&Number.isFinite(cutoff.time)&&cutoff.time>=window.start&&cutoff.time<=window.end&&cutoff.validOccurrence===true&&Number.isFinite(cutoff.handlerObservedAt)&&cutoff.handlerObservedAt>=cutoff.time;
-  const supported=Boolean(identity&&bounded&&lifecycle&&health&&session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length);
+  const bounded=window&&Number.isFinite(window.start)&&Number.isFinite(window.end)&&Number.isFinite(window.timeOrigin)&&window.start===0&&window.end>window.start&&window.lastPresentation===window.end&&cutoff&&Number.isFinite(cutoff.time)&&cutoff.time>=window.start&&cutoff.time<=window.end&&cutoff.validOccurrence===true&&Number.isFinite(cutoff.handlerObservedAt)&&cutoff.handlerObservedAt>=cutoff.time&&cutoff.handlerObservedAt<=window.end;
+  const firstInput=session.trustedInputs?.filter(e=>['pointerdown','keydown'].includes(e.type)).reduce((time,e)=>Math.min(time,e.time),Infinity);
+  const occurrenceMatches=Number.isFinite(firstInput)&&cutoff?.reason==='first-trusted-input'&&cutoff.time===firstInput;
+  const eventWindow=Array.isArray(session.events)&&session.events.every(e=>!Number.isFinite(e.startTime)||(e.startTime>=window?.start&&e.startTime<=window?.end));
+  const supported=Boolean(occurrenceMatches&&eventWindow&&identity&&bounded&&lifecycle&&health&&session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length);
   if(!grouped.size&&!(Number.isInteger(session.totalInteractions)&&session.totalInteractions>0))throw Error('Missing qualified discrete interactions, never substitute zero');
   complete&&=supported;if(supported){total+=session.totalInteractions;censored+=session.totalInteractions-values.length;}
   return {namespace,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
