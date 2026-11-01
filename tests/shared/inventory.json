@@ -1756,6 +1756,13 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
+    },
+    {
+      "path": "tests/workspace-navigation/ui-load-method.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
     }
   ],
   "retainedReleasePayload": [

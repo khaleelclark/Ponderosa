@@ -30,8 +30,8 @@ try{
     const cdp=await context.newCDPSession(page);await cdp.send('Emulation.setCPUThrottlingRate',{rate:row.profile.cpu});
     row.before=await f.snapshot(product);assert.ok(row.before.runs.every(r=>r.status==='running'&&r.alive));
     row.navigation={url:web.origin+f.products[product].route,startedAt:Date.now(),seed:f.products[product].seed,profile:row.profile,primaryProfile};await cdp.send('Network.setCacheDisabled',{cacheDisabled:true});await page.goto(row.navigation.url);const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();
-    const seed=f.products[product].seed;await page.locator(`[id=${JSON.stringify(seed.lastId)}]`).waitFor({state:'visible'});
-    row.loadedHistory=await page.locator('article.chat-message').evaluateAll(nodes=>nodes.map(n=>({id:n.id,text:n.textContent})));assert(row.loadedHistory.some(n=>n.id===seed.lastId),'Canonical 10k seed tail must actually render, not just editor shell');
+    const seed=f.products[product].seed;await page.locator(`[id=${JSON.stringify(`master-message-${seed.lastId}`)}]`).waitFor({state:'visible'});
+    row.loadedHistory=await page.locator('article.chat-message').evaluateAll(nodes=>nodes.map(n=>({id:n.id,text:n.textContent})));assert(row.loadedHistory.some(n=>n.id===`master-message-${seed.lastId}`),'Canonical 10k seed tail must actually render, not just editor shell');
     row.historyPolicy='10k canonical backing history, bounded initial rendered page; no claim all10k DOM nodes loaded';await page.evaluate(()=>window.__uiTiming.marks.push({name:'editor-ready',time:performance.now()}));
     for(let repeat=0;repeat<2;repeat++){
      await editor.click();await page.keyboard.type('Forty input characters for timing proof!',{delay:75});await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
