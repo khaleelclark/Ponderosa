@@ -303,3 +303,66 @@ the backend contract; retained commands cannot be reconciled through a deleted
 owner. Wider resource admission/refusal families, integrated qualification,
 accessibility/mobile judging and performance gates remain open. No full
 UI/#32/Bible/Phase2 pass is claimed.
+
+## Issued destination composer and human disclosure (source only)
+
+The bounded successor to a1da73c5 mounts `BranchDisclosureReview` in the existing
+ExecutionPanel action surface. Required backend/core source is Branches
+6b7f18a4a10afdb378c60f38a7699be03cbda022 atop
+d39f40f80ee447d4d08ebc03366b0133de80ac4e and
+fd8a55e638420bbe006bfa241f2e1c2af728eb13, source-read in
+`/tmp/ponderosa-branches-issued-resource`. No backend files were edited or copied
+into the sole web branch. These committed discovery contracts resolve the prior
+missing-admission-ID blocker.
+
+Canonical destination discovery supplies actual admission/command/checkpoint,
+Project/Chat/Run/resource Step/generation and lifecycle. The latest 50 summaries
+are shown; exact retained command inspection remains separate. No manual IDs,
+map construction or browser-generated authority. Saved checkpoint selection is
+paginated and exact; ordinary original-scope restoreSupported is deliberately not
+treated as issued-destination eligibility. The server owns supported-cut admission.
+Explicit effects reconciliation plus shared confirmation precede preparation,
+which creates held fresh participants rather than approving or activating them.
+
+On-demand disclosure preview verifies exact source/checkpoint/admission and all
+destination identity fields. It shows original fact content/hashes/actors/audiences,
+fresh recipients, custody and explicit maps, host-cut digest and current policy.
+Human acknowledgement and shared confirmation precede hash/CAS-bound approval.
+Fresh current active approval, matching canonical persisted revision/hash and a
+separate confirmation are required for final admission. Persisted choice alone,
+old command receipts and equal policy content never stand in for current preview.
+Approval creates no activation; admission may release eligible final work.
+
+Revocation uses the exact canonical persisted choice revision/hash from discovery,
+remaining available when package bytes or current-policy preview fail. It does
+not infer current choice from an old approval receipt. Receipt state and current
+active are displayed separately; an inactive historic approval never revives
+permission. Already disclosed facts are not erased by revocation.
+
+All command inputs persist before POST in owner-scoped browser localStorage.
+Ambiguous prepare/choice/admit responses and remounts offer pure exact-key receipt
+inspection; there is no automatic mutation retry. Choice receipts must match exact
+admission/key/action/hash/next revision/state. Preparation/admission readback checks
+canonical key and source/admission identity and does not import/activate again.
+Stale409 clears review/acknowledgement/confirmation and refreshes discovery without
+resubmitting; choice/admit input clears on definitive409. Preparation can have a
+durable reservation even on409, so it retains its command. Reserved/import_unknown
+or unresolved preparation stays held; no automatic reset, new generation selection,
+abandonment reclamation or unknown-effect recovery is supplied by this UI.
+
+Six named deliverables: `apps/web/src/components/branches/BranchDisclosureReview.tsx`,
+`branchDisclosureReview.ts`, `ExecutionPanel.tsx`,
+`tests/chats/branch-disclosure-review.test.mjs`,
+`tests/chats/branch-disclosure-review-mounted.tsx`, and this document. Deferred
+regression source covers exact source/destination identity, canonical persisted
+revocation without preview bytes, inactive old approval receipt, stale409/fresh
+acknowledgement, lost-response/remount choice lookup, separate admission/readback,
+and preparation from an exact checkpoint followed by pure inspection. Not run.
+
+No tests/checks/types/build/Node/browser/native/runner preparation or execution,
+installs, workers, push, merge or deployment. Source integration and authorized
+executed qualification remain required. Backend limits include standalone serial
+nonsecret generation-zero supported cuts, no broader issued/multi-resource/native
+unknown-effect recovery, and no abandoned-stage/deleted-owner reclamation. Actual
+accessibility/mobile/performance qualification remains open. No whole UI/#32/Bible/
+Phase2 pass is claimed.
