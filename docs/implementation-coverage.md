@@ -681,11 +681,52 @@ source bound, maxAttempts<=33, with complete prior proof and consumed attempt nu
 The Runtime32-selection/32MiB evidence bounds still apply. No parallel/tree consumer
 or retry-offset restoration is established; a fresh destination starts generation0
 while retaining consumed attempt number, and further offset retry restoration remains
-held. Existing generation-one web controls are preserved, not widened to history.
-Source composition limitation: their literal "attempt 2 of 2" label does not reflect
-a generation-one backend policy whose newly accepted maxAttempts exceeds2. Broader
-history UI and accurate variable-budget presentation remain owner work; no UI/full-
-feature qualification is claimed. Deferred generation2/3/32 ASYNC/SYNC fixture source
+held. The subsequent bounded history UI integration below supersedes the earlier
+generation-one-only UI and fixed attempt2of2 limitation; no UI/full-feature
+qualification is claimed. Deferred generation2/3/32 ASYNC/SYNC fixture source
 is present but unexecuted, including rollback/readback and no replenished budget.
 No tests/checks/build/types/Node/native/browser/preparation/execution/migrations/
 push/deploy/newworkers.
+
+
+### Bounded serial history UI integration — source only
+
+UI7b28b68eb is assembled as db634aa16 on96ea1594e, with only its ten
+required files plus this coverage update. Nine files are owner-byte-equal; the
+web report retains prior integration notes and records already assembled cbe266387
+backend/core. No ancestor replay or backend/reference copy. Current writer is
+Integration on phase2-implementation-integration.
+
+Generation-history preview requires every ordered prior selection0..g-1 for source
+generations1–32, distinct checkpoint/envelope/fence identities, exact hashes and
+current package refs. It displays actual consumedAttempts=g+1 and pinned maxAttempts
+through33, retaining the complete preview and expectedGeneration/reviewHash before
+one capture POST. Original-key status GET, bounded100 canonical discovery and exact
+whole-selection/hash matching feed preparation; legacy saved gen1 evidence remains
+inspectable without mutation replay. All history persists beside preparation and
+only server historicalReviewHash enters the wire command. Missing/reordered facts,
+seal identities, participant/current recipient mappings or differing receipt lists
+hold review. Every original package/fact/actor/audience remains available to explicit
+human all-facts review; approve and admit remain separate. Receipt projection omits
+raw retired seal/retirement bytes. Backend is authoritative for eligibility,
+proof/package validation, attempt budget and one atomic current-only admission.
+
+The fixed attempt2of2 label is removed. Preview uses real variable budget metadata;
+status/discovery DTO still lacks consumedAttempts/maxAttempts. Status-only recovery
+explicitly marks budget unavailable, never fabricates it or substitutes a fresh
+preview. Extending that DTO remains a backend contract gap. Deferred2/3/32 helper
+and mounted sources cover ordered proof/facts, budget bounds, saved CAS, lost-response
+GET-only recovery, canonical discovery and whole-list preparation receipt checks.
+No fixture was executed. ff40 audit identity/privacy, called-tree producer, original
+owner/deletion fences, current group/lifecycle/UI/client and0035–0040 preserved;
+schema files exist and are each registered once in order, never executed.
+
+Remaining: parallel/EXIT/called-tree admission consumer, generations>32/maxAttempts>33,
+offset retry restoration/manual recovery, unknown or broader payload/native/provider/
+secret/artifact/external-effect families, missing/preupgrade/erased proof and erased
+selectable-journal recovery remain held. Runtime owner-tree dependency/Branch Join
+is separate. Real package/custody/provider/native/runtime/end-to-end/accessibility/
+mobile qualification and full Phase2/Bible acceptance remain open. No retention or
+reclamation writer. ZERO tests/checks/build/types/Node/native/browser/runner preparation
+or execution, migrations, push/deploy/newworkers; commit hooks disabled. Source and
+Git inspection only.
