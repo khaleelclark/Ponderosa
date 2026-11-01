@@ -23,7 +23,7 @@ if(full)await stage('accepted-inputs',async()=>{
  const required=['tests/workspace-navigation/event-timing-observer.mjs','tests/workspace-navigation/active-load-qualification.mjs','tests/workspace-navigation/qualification-ledger.mjs','tests/shared/ui-load-fixture.mjs','tests/shared/fixture.mjs','tests/shared/serve-ui-fixture.mjs','apps/web/rsbuild.config.ts','pnpm-lock.yaml','tests/workspace-navigation/lighthouse-13.6.0/profile.json'];
  for(const root of ['apps/web/src','apps/server/src','packages/core/src','packages/agents/src','packages/engines/src','packages/native-host/src','apps/web/dist','apps/server/dist','packages/core/dist','packages/agents/dist','packages/engines/dist','packages/native-host/dist'])for(const entry of await readdir(root,{recursive:true,withFileTypes:true}))if(entry.isFile())required.push(entry.parentPath+'/'+entry.name);
  required.push(primaryProfile.source);for(const record of primaryProfile.records??[])required.push('tests/workspace-navigation/lighthouse-13.6.0/'+record.path);
- ledger.acceptedMethod=await verifyAcceptedMethod(process.env.PONDEROSA_ACCEPTED_METHOD_RECEIPT,process.env.PONDEROSA_ACCEPTED_METHOD_SHA256,required);
+ ledger.acceptedMethod=await verifyAcceptedMethod(process.env.PONDEROSA_ACCEPTED_METHOD_RECEIPT,process.env.PONDEROSA_ACCEPTED_METHOD_SHA256,required,process.env.PONDEROSA_REVIEWED_METHOD_HEAD);
 });
  chromium=await stage('installed-browser-tooling',async()=>createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core').chromium);
  ({createLoadFixture}=await stage('fixture-module',()=>import('../shared/ui-load-fixture.mjs')));
@@ -46,12 +46,14 @@ if(full)await stage('accepted-inputs',async()=>{
     row.loadedHistory=await page.locator('article.chat-message').evaluateAll(nodes=>nodes.map(n=>({id:n.id,text:n.textContent})));assert(row.loadedHistory.some(n=>n.id===`master-message-${seed.lastId}`&&n.text.includes(seed.lastText.split(':')[0]+':')),'Canonical 10k seed tail must actually render, not just editor shell');
     row.historyPolicy='10k canonical backing history, bounded initial rendered page; no claim all10k DOM nodes loaded';await page.evaluate(()=>window.__uiTiming.marks.push({name:'editor-ready',time:performance.now()}));
     for(let repeat=0;repeat<2;repeat++){
+     await page.evaluate(({id,count})=>window.__beginUiTask(id,{pointerdown:1,pointerup:1,click:1,keydown:count,keyup:count}),{id:`repeat-${repeat}`,count:'Forty input characters for timing proof!'.length+'Qualification'.length+4});
      await editor.click();await page.keyboard.type('Forty input characters for timing proof!',{delay:75});await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
      await page.mouse.wheel(0,-500);await page.keyboard.press('Control+k');const search=page.getByRole('combobox',{name:'Search Ponderosa',exact:true});await search.waitFor();await page.keyboard.type('Qualification');await page.keyboard.press('Escape');
      if(full){
       await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();await page.getByRole('menuitem',{name:'Rename',exact:true}).click();const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();await name.press('Control+A');await name.pressSequentially(`Load ${product} ${session} ${repeat}`);await name.press('Enter');await name.waitFor({state:'hidden'});
       await editor.click();await page.keyboard.type('#Working');await page.getByRole('option').filter({hasText:'Working'}).first().click();await page.keyboard.type('Timed short message');await page.getByRole('button',{name:'Send message',exact:true}).click();
      }
+     await page.evaluate(id=>window.__endUiTask(id),`repeat-${repeat}`);
     }
     // One frame and observer delivery task: observation flush only, never included as interaction latency.
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0))));

@@ -1,7 +1,8 @@
 import {runInNewContext} from 'node:vm';
 import test from 'node:test';import assert from 'node:assert/strict';import {summarizeTimings,latencyBreakdown,installTimingObserver} from './event-timing-observer.mjs';
 let sequence=0;
-const session=(events,totalInteractions)=>{const documentId='document-'+(++sequence);return {documentId,namespace:'test/'+documentId,window:{start:0,end:2500,lastPresentation:2500,timeOrigin:1700000000000},lifecycle:[{type:'init',time:0,visibility:'visible'}],health:{registered:true,drained:true,callbacks:1,droppedEntries:0},eventCounts:{keydown:1},trustedInputs:[{type:'keydown',time:1500}],events,lcp:[{startTime:1000},{startTime:2000}],cutoff:{time:1500,handlerObservedAt:1510,validOccurrence:true,reason:'first-trusted-input'},threshold:16,finalized:true,visibility:'visible',countSupport:'performance.interactionCount',totalInteractions,supported:['event','largest-contentful-paint'],errors:[]};};
+// Synthetic terminal-contract receipts exercise arithmetic only; no installed-browser contract is asserted.
+const session=(events,totalInteractions)=>{const documentId='document-'+(++sequence),n=totalInteractions??1;return {documentId,namespace:'test/'+documentId,window:{start:0,end:4000,lastPresentation:4000,timeOrigin:1700000000000+sequence},lifecycle:[{type:'init',time:0,visibility:'visible'}],health:{registered:true,drained:true,callbacks:1,droppedEntries:0,terminalDelivery:{supported:true,basis:'independently-reviewed-browser-delivery-contract',coversThrough:4000,observedAt:4001}},tasks:[{id:'synthetic',start:1400,end:3900,complete:true,nativeStart:0,nativeEnd:totalInteractions,expectedTrustedCounts:{pointerdown:0,pointerup:0,click:0,keydown:n,keyup:n}}],eventCounts:{keydown:n,keyup:n},trustedInputs:Array.from({length:n},(_,i)=>[{type:'keydown',time:1500+i*.1},{type:'keyup',time:1500+i*.1+.05}]).flat(),events:events.map(e=>({name:'keydown',startTime:1500,processingStart:1501,processingEnd:1502,...e})),lcp:[{startTime:1000},{startTime:2000}],cutoff:{time:1500,handlerObservedAt:1510,validOccurrence:true,reason:'first-trusted-input'},threshold:16,finalized:true,visibility:'visible',countSupport:'performance.interactionCount',totalInteractions,supported:['event','largest-contentful-paint'],errors:[]};};
 test('unavailable independent counts stay diagnostic and cannot become an exact p75',()=>{
  const value=summarizeTimings([session([{interactionId:1,duration:32}],undefined)]);assert.equal(value.p75,null);assert.equal(value.qualifiedPopulation,false);assert.equal(value.observedP75,32);assert.equal(value.sessions[0].lcp,1000);
 });
@@ -35,4 +36,17 @@ test('actual collector uses event occurrence and excludes LCP between delayed in
  for(const fn of listeners.pointerdown)fn({isTrusted:true,timeStamp:100,type:'pointerdown'});
  const cutoff=context.window.__uiTiming.cutoff;assert.equal(cutoff.time,100);assert.equal(cutoff.handlerObservedAt,120);
  const row=session([{interactionId:1,duration:32}],1);row.cutoff=cutoff;row.lcp=[{startTime:90},{startTime:110}];assert.equal(summarizeTimings([row]).sessions[0].lcp,90);
+});
+
+test('early no-drop callback does not establish final delivery coverage',()=>{
+ const row=session([],41);row.health.terminalDelivery={supported:false};assert.equal(summarizeTimings([row]).qualifiedPopulation,false);row.health.terminalDelivery={supported:true,basis:'independently-reviewed-browser-delivery-contract',coversThrough:3999,observedAt:4001};assert.equal(summarizeTimings([row]).qualifiedPopulation,false);
+});
+test('finite entry ordering and conservative quantized completion must fit window',()=>{
+ const row=session([{interactionId:1,duration:32}],1);for(const change of [{startTime:undefined},{duration:NaN},{processingStart:1499},{processingEnd:1500},{startTime:3990,processingStart:3991,processingEnd:3992},{duration:0,processingEnd:1520}])assert.equal(summarizeTimings([{...row,events:[{...row.events[0],...change}]}]).qualifiedPopulation,false);
+});
+test('document identity and time origin cannot be reused under another namespace',()=>{
+ const a=session([],1),b=session([],1);assert.throws(()=>summarizeTimings([a,{...a,namespace:'other/'+a.documentId}]),/Duplicate document identity/);assert.throws(()=>summarizeTimings([a,{...b,window:{...b.window,timeOrigin:a.window.timeOrigin}}]),/Duplicate document time origin/);
+});
+test('incomplete task, keyup counter and native-boundary disagreement stay diagnostic',()=>{
+ const row=session([],1);for(const change of [{tasks:[{...row.tasks[0],complete:false}]},{tasks:[{...row.tasks[0],nativeEnd:0}]},{eventCounts:{keydown:1,keyup:0}},{tasks:[{...row.tasks[0],expectedTrustedCounts:{...row.tasks[0].expectedTrustedCounts,keyup:2}}]}])assert.equal(summarizeTimings([{...row,...change}]).qualifiedPopulation,false);
 });

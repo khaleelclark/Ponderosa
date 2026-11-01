@@ -7,7 +7,7 @@ import {fixture,until} from './fixture.mjs';
 import {AgentStore} from '../../packages/agents/dist/index.js';
 import {sampleLinuxResources,RESOURCE_ADMISSION_DEFAULTS} from '../../apps/server/dist/resource-admission.js';
 export async function createLoadFixture(out,{messages=10000}={}){
- let store,closing=false,monitor;const work=new Map(),progress=new Map(),lastProgress=new Map(),lastCanonicalProgress=new Map(),continuityFailures=[],pending=new Set(),identities=new Map(),canonicalReceipts=[],providerReceipts=new Map();
+ let store,closing=false,monitor;const work=new Map(),progress=new Map(),lastProgress=new Map(),lastCanonicalProgress=new Map(),continuityFailures=[],pending=new Set(),identities=new Map(),canonicalReceipts=[],providerReceipts=new Map(),activatedAgents=new Set();
  const record=value=>appendFileSync(out+'/lifecycle.jsonl',JSON.stringify({time:Date.now(),...value})+'\n');
  const sample=await sampleLinuxResources();record({event:'preflight',sample,admissionDefaults:RESOURCE_ADMISSION_DEFAULTS});
  assert.ok(sample.availableBytes>=RESOURCE_ADMISSION_DEFAULTS.reserveBytes+20*RESOURCE_ADMISSION_DEFAULTS.startupBytes,'Real effective headroom must admit twenty, without a guard override');
@@ -45,7 +45,7 @@ export async function createLoadFixture(out,{messages=10000}={}){
   }
   async function activate(product){
    const p=products[product];
-   for(const agent of p.agents){progress.set(agent.id,0);work.set(agent.id,true);f.plans.set(agent.id,[{output:false,run:async session=>{
+   for(const agent of p.agents){activatedAgents.add(agent.id);progress.set(agent.id,0);work.set(agent.id,true);f.plans.set(agent.id,[{output:false,run:async session=>{
     while(!closing&&work.get(agent.id)&&session.isAlive()){
      const result=await session.tool('ponderosa_workspace_projects',{});assert.equal(result.success,true,result.text);
      const detail=f.ok(await f.api('GET',`${p.prefix}/agents/${agent.id}`)),run=detail.runs.find(r=>r.status==='running');assert.ok(run,'Each progress tick requires its canonical running Run');
@@ -61,12 +61,13 @@ export async function createLoadFixture(out,{messages=10000}={}){
    clearInterval(monitor);await Promise.all(pending);
    for(const agent of products[product].agents)work.set(agent.id,false);
    await until(async()=>{for(const a of products[product].agents){const d=f.ok(await f.api('GET',`${products[product].prefix}/agents/${a.id}`));if(d.runs.some(r=>['running','preparing'].includes(r.status)))return false;}return true;},'controlled work completes',30000);
-   for(const agent of products[product].agents)await f.sessions.get(agent.id)?.close();
+   await settleLoadAgents(f,products[product].agents,record);
+   for(const agent of products[product].agents)activatedAgents.delete(agent.id);
    assertContinuity();record({event:'deactivated',product});
   }
   function assertContinuity(){assert.deepEqual(continuityFailures,[],'Per-Agent continuity failure; no active-work credit');}
   writeFileSync(out+'/seed.json',JSON.stringify({root:f.root,products},null,2));
-  return {f,products,activate,deactivate,snapshot,assertContinuity,async drain(){await Promise.all([...pending]);assertContinuity();},assertWindow(product,start,end){return assertProgressWindow(products[product].agents.map(a=>a.id),canonicalReceipts,start,end);},async close(){closing=true;clearInterval(monitor);await Promise.all(pending);record({event:'closing'});await f.dispose(false);record({event:'fixture-closed-owned-roots-observed-exited'});assertContinuity();}};
+  return {f,products,activate,deactivate,snapshot,assertContinuity,async drain(){await Promise.all([...pending]);assertContinuity();},assertWindow(product,start,end){return assertProgressWindow(products[product].agents.map(a=>a.id),canonicalReceipts,start,end);},async close(){closing=true;clearInterval(monitor);await Promise.all(pending);record({event:'closing'});try{await settleLoadAgents(f,[...activatedAgents].map(id=>({id})),record);assertContinuity();}finally{await f.dispose(false);record({event:'fixture-closed-owned-roots-observed-exited'});}}};
  }catch(error){closing=true;record({event:'setup-failed',error:error.stack});await f.dispose(false);throw error;}
 }
 
@@ -121,4 +122,15 @@ export function assertProgressWindow(agentIds,receipts,start,end,maxGapMs=10000)
   const times=[start,...rows.map(r=>r.observedAt),end];for(let i=1;i<times.length;i++)assert(times[i]-times[i-1]<=maxGapMs,'In-window canonical progress gap');
   return {agentId,start,end,receipts:rows};
  });
+}
+
+// Monitor completion does not waive retained provider errors or terminal Run failure.
+export async function settleLoadAgents(f,agents,record=()=>{}){
+ const errors=[];
+ for(const agent of agents){
+  try{const detail=await f.settled(agent.id);assert(detail.runs.length>0&&detail.runs.every(r=>r.status==='completed'),'Every controlled Run must complete successfully');record({event:'provider-settled',agentId:agent.id,runs:detail.runs});}
+  catch(error){errors.push(error);record({event:'provider-settlement-failed',agentId:agent.id,error:String(error)});}
+  finally{try{await f.sessions.get(agent.id)?.close();}catch(error){errors.push(error);record({event:'session-close-failed',agentId:agent.id,error:String(error)});}}
+ }
+ if(errors.length)throw new AggregateError(errors,'Provider terminal settlement failed');
 }
