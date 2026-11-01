@@ -18,7 +18,7 @@ function fixture(t,{nested=false,mode='async',transform}={}){
  const definition={schema:'ponderosa.branch.v1',name:'Parallel continuation',trigger:{kind:'manual'},entry:nested?'fork':'map',steps:[script('worker'),script('tail'),...(nested?[script('sibling')]:[])],
   controls:[{id:'map',kind:'map',joinId:'mapped',workerId:'worker',source:'list',maxItems:4,maxConcurrentItems:1},{id:'mapped',kind:'join',forkId:'map',mode:'all',remainder:'finish',inputOrder:[]},...(nested?[{id:'fork',kind:'fork',joinId:'joined'},{id:'joined',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['right','left']}]:[])],
   edges:[edge('item','map','worker','selected'),edge('return','worker','mapped'),edge('after-map','mapped',nested?'joined':'tail'),...(nested?[edge('left','fork','map','selected',{input:{kind:'literal',text:'["one","two"]'}}),edge('right','fork','sibling','selected'),edge('sibling-return','sibling','joined'),edge('tail-edge','joined','tail')]:[])],policy:{maxConcurrentExecutions:8,maxPathInstances:20,maxStepInvocations:20,failure:{action:'stop'}}};
- const extraBindings=transform?.(definition,{branches,chat,dir})??{};
+ const extraBindings=transform?.(definition,{branches,store,project,chat,dir})??{};
  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{},directories:{root:dir},...extraBindings}});
  branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  const source=branches.accept(branch.id,'source','["one","two"]');
@@ -194,4 +194,31 @@ test('a settled failed child remains historical data while a parallel Map suffix
  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='script_authorized'").get(freshId).n,0);
  await f.finish(next.id);assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
  assert.ok(f.points(next.id).some(cp=>cp.snapshot.continuation.schema==='ponderosa.branch.script-tree-continuation.v1'&&cp.snapshot.continuation.owners.some(o=>o.selected.execution[0].state==='failed')),'restored failed prefix is verified on a later selection');
+});
+
+// Deferred: no issued Request is restored, including within a concurrency-limited Map.
+test('Map Agent frontier re-admits fresh Requests and routes their results through the restored Join',async t=>{
+ let worker;const f=fixture(t,{transform(d,{store,project,chat}){
+  worker=store.createAgent(project.id,{title:'Map worker',engine:'codex',conversationId:chat.id});
+  d.steps[0]={id:'worker',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Process this item'};
+  return {agents:{worker:worker.id}};
+ }});
+ const coordination=new CoordinationV3Store(f.store.sqlite);let cut;
+ const finish=async id=>{
+  const requests=new Set();
+  for(let n=0;n<150&&f.branches.execution(id).state!=='completed';n++){
+   await f.tick();const lease=f.branches.claimScript('inert');if(lease)f.settle(lease);
+   for(const attempt of f.branches.detail(id).attempts)if(attempt.requestId&&!requests.has(attempt.requestId)){
+    requests.add(attempt.requestId);coordination.updateRequest({requestId:attempt.requestId,updateId:`done:${attempt.requestId}`,kind:'completed',actor:{kind:'agent',id:worker.id},payload:{text:'item result'}});
+   }
+   await f.branches.unitSaver.drain();
+  }
+  assert.equal(f.branches.execution(id).state,'completed');return requests;
+ };
+ for(let n=0;n<30&&!cut;n++){await f.tick();cut=f.points(f.source.id).find(cp=>cp.snapshot.selected.steps.some(step=>step.step_id==='worker')&&cp.snapshot.selected.attempts.every(a=>!a.request_id));}
+ assert.ok(cut);const old=await finish(f.source.id);assert.equal(old.size,2);
+ const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'map-agent');
+ assert.ok(f.branches.detail(next.id).attempts.every(a=>!a.requestId&&a.fence===0));
+ const fresh=await finish(next.id);assert.equal(fresh.size,2);assert.ok([...fresh].every(id=>!old.has(id)));
+ assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
 });

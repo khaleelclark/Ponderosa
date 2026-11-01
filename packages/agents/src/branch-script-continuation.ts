@@ -14,7 +14,7 @@ export const SCRIPT_CONTINUATION_COMPATIBILITY={format:'script-control-frontier.
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false):boolean {
   if(hasParallelControls(definition))return !resources&&parallelDefinitionSupported(definition,calls);
-  return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||!calls&&!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
+  return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||!calls&&!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop')&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
@@ -43,6 +43,8 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     for(const s of selected.steps!){
       if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed',...(context?['failed']:[]),...(waiting?['waiting']:[])].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
       const attempts=selected.attempts!.filter(a=>a.step_execution_id===s.id),a=attempts[0];
+      // Only the before-Request frontier is admitted; issued Agent effects need a dependency codec.
+      if(definition.steps.find(step=>step.id===s.step_id)?.kind==='agent'&&(s.state!=='prepared'||a?.fence!==0))return false;
       if(attempts.length!==1||!a||a.error||a.number!==1||a.state!==s.state||a.purpose!=='step'||a.request_id||a.recovery_of_request_id||a.cancel_requested||a.runtime_outcome_json||a.input_hash!==hash(s.input_text))return false;
       const sealed=selected.sealedResults!.filter(r=>r.step_execution_id===s.id);
       if(s.state==='prepared'||s.state==='waiting'){
@@ -269,6 +271,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           const attemptId=event.kind==='script_process_exit'?event.transition_key.slice('process-exit:'.length).replace(/:[0-9]+$/u,''):v.attemptId;
           const a=selected.attempts!.find(a=>a.id===attemptId);
           const step=selected.steps!.find(s=>s.id===a?.step_execution_id);
+          if(definition.steps.find(node=>node.id===step?.step_id)?.kind!=='script')return false;
           if(!a||!step||!seen.has(step.id)||!['completed',...(context?['failed']:[])].includes(step.state))return false;
           if(!['script_cleanup_observed','script_process_exit'].includes(event.kind)&&current?.id!==step.id)return false;
           if(interruption&&['script_leased','script_authorized'].includes(event.kind))return false;

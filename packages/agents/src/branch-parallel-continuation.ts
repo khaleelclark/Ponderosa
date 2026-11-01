@@ -14,7 +14,7 @@ export const hasParallelControls=(d:BranchDefinition)=>d.controls.some(c=>c.kind
 /** Only graph families with an exact host replay codec are admitted. */
 export function parallelDefinitionSupported(d:BranchDefinition,calls=false):boolean {
  return hasParallelControls(d)&&d.policy.failure.action==='stop'
-  &&d.steps.every(s=>(s.kind==='script'&&s.runtime==='node'||s.kind==='human_gate'||calls&&s.kind==='branch_call')&&(!s.failure||s.failure.action==='stop'))
+  &&d.steps.every(s=>(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||s.kind==='human_gate'||calls&&s.kind==='branch_call')&&(!s.failure||s.failure.action==='stop'))
   &&d.controls.every(c=>['fork','map','join','condition','route'].includes(c.kind))
   &&!Object.values(d.parameters??{}).some(p=>p.type==='secret');
 }
@@ -34,6 +34,7 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
    const a=s.attempts!.filter(a=>a.step_execution_id===step.id),r=s.sealedResults!.filter(r=>r.step_execution_id===step.id);
    if(step.execution_id!==e.id||!d.steps.some(node=>node.id===step.step_id)||!['prepared','waiting','completed','failed','canceled'].includes(step.state)||a.length!==1)return false;
    const attempt=a[0]!;
+   if(d.steps.find(node=>node.id===step.step_id)?.kind==='agent'&&(step.state!=='prepared'||attempt.fence!==0))return false;
    if(Object.keys(attempt).some(key=>!['id','step_execution_id','number','state','request_id','fence','input_hash','result_json','available_at','purpose','recovery_of_request_id','cancel_requested','runtime_outcome_json','error','created_at','updated_at'].includes(key)))return false;
    if(attempt.number!==1||attempt.state!==step.state||attempt.purpose!=='step'||attempt.error||attempt.request_id||attempt.recovery_of_request_id||attempt.runtime_outcome_json||attempt.cancel_requested&&step.state!=='canceled'||attempt.input_hash!==hash(step.input_text)||attempt.result_json!==step.result_json||!Number.isSafeInteger(attempt.fence)||attempt.fence<0)return false;
    if(step.state==='prepared'||step.state==='waiting'||step.state==='canceled'){

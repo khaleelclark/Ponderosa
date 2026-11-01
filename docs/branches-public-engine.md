@@ -520,3 +520,21 @@ between intake and receipt, stale and secret-dependent review, changed Chat or
 participant custody, artifact revocation/hash change and settled failed-child
 restoration/reselection. No tests, typechecks, builds, Node, native process,
 browser or runner execution/preparation occurred. No full #32 acceptance follows.
+
+
+The executable graph codec also accepts persistent-Agent nodes before their first
+Request is issued. This includes Agent items in an otherwise supported Fork/Map
+graph and persistent-Agent suffixes of supported child-owner trees. Selected
+Agent attempts must still be prepared, at fence zero, with no Request, recovery
+reference, result or runtime outcome. Every issued, completed or uncertain Agent
+Request remains outside this codec. Exact audit replay and the full owned
+frontier remain required; a fabricated Script observation cannot certify an
+Agent node. Rewind rechecks each persistent target in its current owning Chat
+before accepting fresh graph rows. Normal admission then creates a new Request
+and the ordinary Request reducer routes its new result through that restored
+Step and Join. This restores a before-effect graph frontier; it does not restore
+an unresolved historical question/answer/Join closure.
+
+Deferred regression source covers standalone async/sync Agent cuts, fresh
+Request identities/results, lost-response rewind replay, and concurrency-limited
+Map Agent items feeding a restored Join. These regressions have not been run.

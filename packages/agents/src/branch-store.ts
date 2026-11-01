@@ -707,6 +707,7 @@ export class BranchStore {
       if(!['completed','failed','canceled'].includes(source.state)||source.parentExecutionId||this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND a.state IN ('leased','running','outcome_unknown')",executionId))throw Error('Historical rewind requires a settled standalone source');
       if(branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Historical rewind pins changed; current authority must be reconciled');
       if(definition.steps.some(step=>step.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');
+      this.historicalAgentTargets(branchId,definition,JSON.parse(binding.bindings_json));
       // Fresh acceptance, admission and leases own authority; no old lease/process/secret is restored.
       const next=this.accept(branchId,`historical-rewind:${randomUUID()}`,e.input_text,now),ids=new Map<string,string>();
       for(const id of branchContinuationIds(selected))ids.set(id,randomUUID());
@@ -730,6 +731,12 @@ export class BranchStore {
       this.selectedWrite(next.id);
       return this.execution(next.id)!;
     }).immediate();
+  }
+  /** Recheck persistent targets before accepting a graph with an unlaunched Agent suffix. */
+  private historicalAgentTargets(branchId:string,definition:BranchDefinition,bindings:BranchBindings):void {
+    const branch=this.getBranch(branchId)!;
+    for(const step of definition.steps)if(step.kind==='agent'&&'ref' in step.target)
+      this.agent(bindings.agents[step.target.ref]??'',branch.chatId,undefined,branchId);
   }
   private resourceOperationAuditMatches(r:Row,phase:'chat'|'import',operation:Row|undefined):boolean {
     const prefix=`resource-operation:${r.creation_key}:${phase}:`,event=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='resource_operation' AND substr(transition_key,1,?)=? ORDER BY id DESC LIMIT 1",r.execution_id,prefix.length,prefix);
@@ -831,6 +838,7 @@ export class BranchStore {
       if(!branch?.enabled||this.row('SELECT deleting FROM branches WHERE id=?',e.branch_id)?.deleting)throw Error('Tree Branch unavailable');
       if(branch.chatId)this.chat(branch.chatId);
       if(branch.versionId!==o.versionId||branch.bindingRevisionId!==o.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(o.configuration))throw Error('Tree current pins changed');
+      this.historicalAgentTargets(branch.id,JSON.parse(this.row('SELECT definition_json FROM branch_versions WHERE id=?',o.versionId)!.definition_json),JSON.parse(this.row('SELECT bindings_json FROM branch_bindings WHERE id=?',o.bindingRevisionId)!.bindings_json));
       if(this.restricted(branch.id,CAPABILITY_IDS.scripts)||this.restricted(branch.id,CAPABILITY_IDS.branchCalls)||o.selected.resources.length&&this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate))throw Error('Tree current authority is restricted');
     }
     const ids=new Map<string,string>(treeIds(c.owners).map(id=>[id,randomUUID()]));

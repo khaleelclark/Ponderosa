@@ -6,12 +6,14 @@ import {join} from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
 import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
 import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
-function fixture(t,{secret=false}={}){
+function fixture(t,{secret=false,mode}={}){
  const dir=mkdtempSync(join(tmpdir(),'host-cut-')),store=new AgentStore(dir),coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
  const project=store.createProject({label:'Host cut',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Host cut'}),agent=store.createAgent(project.id,{title:'Worker',engine:'codex',conversationId:chat.id}),peer=store.createAgent(project.id,{title:'Peer',engine:'codex',conversationId:chat.id});
  const definition={schema:'ponderosa.branch.v1',name:'Host cut',trigger:{kind:'manual'},...(secret?{parameters:{token:{type:'secret'}}}:{}),entry:'agent',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Do the retained task'}],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}}};
- const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{}}}),source=branches.accept(branch.id,'source','input');
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'deploy',definition,bindings:{agents:{worker:agent.id},directories:{}}});
+ if(mode)branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
+ const source=branches.accept(branch.id,'source','input');
  const capture=()=>store.sqlite.transaction(()=>captureBranchHostCut(store.sqlite,source.id,selectBranchUnit(store.sqlite,source.id))).deferred();
  return {store,coordination,branches,project,chat,agent,peer,branch,source,capture};
 }
@@ -31,11 +33,11 @@ test('host Request/question/answer/Join history freezes original scope and order
  const selected=selectBranchUnit(f.store.sqlite,f.source.id);assert.throws(()=>captureBranchHostCut(f.store.sqlite,f.source.id,selected),/owner transaction/);
 });
 
-test('checkpoint saver captures host dependencies but never marks an Agent frontier executable',async t=>{
+test('checkpoint saver captures issued Request evidence without enabling effect replay',async t=>{
  const f=fixture(t);for(let n=0;n<20&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}
  const row=f.store.sqlite.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_type(snapshot_json,'$.hostDependencies')='object' ORDER BY id DESC LIMIT 1").get(f.source.id);assert.ok(row);
  const snapshot=JSON.parse(row.snapshot_json);assert.equal(snapshot.restore_supported,false);assert.ok(verifyBranchHostCut(snapshot.hostDependencies,f.source.id));
- const owners=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n;assert.ok(f.branches.historicalCheckpoints(f.branch.id,f.source.id).every(cp=>!cp.restoreSupported));assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,owners);
+ const owners=f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n;for(const cp of f.branches.historicalCheckpoints(f.branch.id,f.source.id)){const saved=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);if(saved.selected.attempts.some(a=>a.request_id))assert.equal(cp.restoreSupported,false);}assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,owners);
 });
 
 // Deferred: manager/roster visibility never grants private dependency capture.
@@ -107,4 +109,30 @@ test('artifact owner/hash and current grants are rechecked before historical rea
  const input={...selection,reviewHash:review.reviewHash,commandKey:'artifact',instruction:'Inspect retained artifact evidence.',mode:'reconcile'};
  assert.throws(()=>f.branches.adoptHostRequest(f.branch.id,f.source.id,input,()=>false),/artifact current grant/);
  db.prepare('UPDATE runtime_artifacts SET blob_hash=? WHERE id=?').run('b'.repeat(64),'retained-artifact');assert.throws(()=>f.branches.reviewHostRequest(f.branch.id,f.source.id,selection,()=>true),/artifact current grant/);
+});
+
+// Deferred: execute only after the source-only restriction is lifted.
+for(const mode of ['async','sync'])test(`before-Request ${mode} Agent graph cut admits a fresh obligation and consumes its result`,async t=>{
+ const f=fixture(t,{mode});
+ let cut,oldRequest;
+ for(let n=0;n<30&&!oldRequest;n++){
+  f.branches.advance();await f.branches.unitSaver.drain();
+  cut??=f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(cp=>{
+   if(!cp.restoreSupported)return false;
+   const s=JSON.parse(f.store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(cp.id).snapshot_json);
+   return s.selected.steps.length===1&&s.selected.attempts.every(a=>a.state==='prepared'&&!a.request_id);
+  });
+  oldRequest=f.branches.detail(f.source.id).attempts[0]?.requestId;
+ }
+ assert.ok(cut);assert.ok(oldRequest);
+ f.coordination.updateRequest({requestId:oldRequest,updateId:`original-${mode}`,kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'original'}});
+ for(let n=0;n<20&&f.branches.execution(f.source.id).state!=='completed';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'agent-graph');
+ assert.equal(f.branches.detail(next.id).attempts[0].requestId,undefined);
+ let fresh;for(let n=0;n<30&&!fresh;n++){f.branches.advance();await f.branches.unitSaver.drain();fresh=f.branches.detail(next.id).attempts[0]?.requestId;}
+ assert.ok(fresh);assert.notEqual(fresh,oldRequest);assert.equal(f.coordination.getRequest(oldRequest).state,'completed');
+ f.coordination.updateRequest({requestId:fresh,updateId:`fresh-${mode}`,kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'fresh result'}});
+ for(let n=0;n<20&&f.branches.execution(next.id).state!=='completed';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(next.id).state,'completed');assert.equal(f.branches.execution(next.id).output,'fresh result');
+ assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'agent-graph').id,next.id);
 });
