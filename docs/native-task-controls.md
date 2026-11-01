@@ -2,7 +2,7 @@
 
 This source successor extends the frozen G8 `a10b3b353dc0392e760bf815b2187e5c59423c3e`
 in the same isolated `phase2/native-task-lifetimes` worktree. It adds native
-list/stop backends and a human REST contract. UI wiring and every execution,
+list/stop backends and a human REST contract. The bounded Settings UI successor `5ec1d8c1d8368da2e536953a5cf692dc1cef0c9d` is now integrated in source alongside RuntimeControls and HistoryControls: exact inventory, saved-before-POST original command, unique-target hold and original-key GET recovery after drift, with processDrainObserved:false and no effect settlement. Every execution,
 build, typecheck and provider qualification are deferred. There is no whole-G8
 or Bible acceptance claim.
 
@@ -34,7 +34,7 @@ receipt. Do not automatically retry mutations. Offer the existing exact Run
 stop as fallback. Source effects and original Run completion are separate from
 these per-task receipts. Backend controls do not yet declare Claude's
 `perTaskStopAffordance`: that declaration must wait for the actual human UI.
-The manager queues UI work from this contract; no UI files change here.
+The integrated UI consumes this contract; this original backend slice changed no UI files.
 
 ## Host authority and durability
 
@@ -137,7 +137,7 @@ exact stop inputs, true/false/unknown semantics, no retry, Claude correlation an
 unchanged lifecycle ownership, Codex terminal hold/removal, descriptor accessors,
 canonical fence/lease/cancel/discovery changes, and durable duplicate command
 behavior. The existing Codex compact prototype fixture receives only its new
-identity-map member; its assertions remain unchanged. They have not run. UI integration, actual composed provider controls,
+identity-map member; its assertions remain unchanged. They have not run. Actual composed provider controls,
 installed producer qualification, and whole-implementation testing remain work.
 The original receipt-before-host-append gap, orphaned outcome_unknown recovery,
 M2 lost-compaction/noIDs block, and unsupported cross-restart schedule discovery

@@ -384,3 +384,19 @@ artifact identity, saved-before-effect, lost start/stop, remount, wrong destinat
 and Operator rendering. No execution/checks/build/typechecks/Node/native/browser or
 provider preparation. Actual HTTP/download/lifecycle qualification, current-scope
 refusals and rendered accessibility/mobile/keyboard/screen-reader validation remain.
+
+
+## Current G7/G8 integration composition (source only)
+
+Only task UI `5ec1d8c1d8368da2e536953a5cf692dc1cef0c9d`, then shared recording UI
+`1636a80d2921290f3bf1cffb4c6d1d6a12f7a280`, are integrated onto the current
+c0cc-based integration. Settings retains RuntimeControls, HistoryControls and
+TaskControls together. Shared backend/core contracts were already assembled;
+no backend, provider, schema, portability or state implementation changes here.
+The later owner commit `68319a2620a9039976355ee70ff734a080a7d156` is excluded.
+All six task and nine recording deliverables were physically inventoried/read;
+fixtures remain unexecuted. Source delivery does not qualify HTTP recovery, native
+producer compatibility, browser lifecycle/download, accessibility/mobile, or full
+Bible/Build acceptance. G2 external continuation admission, G6 envelope/maximum-media
+qualification, native receipt/restart unknowns and remaining Branch tree/foreign
+continuation/portability contracts remain explicit. No whole parity verdict.
