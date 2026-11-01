@@ -1,3 +1,4 @@
+import { selectNativeCommand } from "../native-command-selection.js";
 import { parseNativeTurnCommand } from "@ponderosa/core";
 import { AgentEventPersistenceError } from "@ponderosa/agents";
 import { createHash, randomUUID } from "node:crypto";
@@ -149,7 +150,7 @@ export type AgentMessageRunContext =
   Pick<ServerReadModels,
     "canonicalConversationContext" | "publishCoordinationV3Changed" |
     "publishMessageDeliveryChanged" | "observeRuntimeStalls"> &
-  Pick<CommunicationDocumentAuthority, "agentCanReadRuntimeArtifact"> &
+  Pick<CommunicationDocumentAuthority, "agentCanReadRuntimeArtifact" | "authoritativeCommunicationDocument"> &
   Pick<OperationalNotifications,
     "createOperationalNotification" | "resolveOperationalNotification"> & {
     engineAuthStatuses: Pick<import("../engine-auth-cache.js").EngineAuthStatusCache, "snapshot">;
@@ -953,6 +954,38 @@ export function registerAgentMessageRunRoute(
         return reply.code(409).send({ error: "agent already has an active run", retryable: true });
       }
 
+      const sourceActivations = internalV3Dispatch
+        ? coordinationV3.activationPayloads(agent.id,
+            coordinationV3.activationIdsForInjection(v3InjectionId!, v3SchedulerRunId!), v3SchedulerRunId)
+        : [];
+      const sourceIds = internalV3Dispatch
+        ? sourceActivations.flatMap(({ payload }) => {
+            const source = payload && typeof payload === "object"
+              ? (payload as { communication?: { eventId?: unknown } }).communication : undefined;
+            return typeof source?.eventId === "string" ? [source.eventId] : [];
+          })
+        : communicationEventId ? [communicationEventId] : [];
+      let nativeAction: import("@ponderosa/core").NativeTurnAction | undefined;
+      try {
+        nativeAction = selectNativeCommand({
+          projectId: project.id, agentId: agent.id, conversationId: agent.conversationId,
+          communicationIds: sourceIds,
+          read: id => store.getCommunicationEvent(project.id, id),
+          documentText: event => {
+            const found = event.document && runContext.authoritativeCommunicationDocument(project.id, event.document.id);
+            return found && found.event.eventId === event.eventId ? found.document.content : undefined;
+          },
+        });
+      } catch (error) {
+        return reply.code(422).send({ error: error instanceof Error ? error.message : "Invalid canonical native command" });
+      }
+      if (nativeAction?.kind === "review" && sourceActivations.length > 1) {
+        return reply.code(422).send({ error: "Native review cannot consume coalesced sources; submit it as a separate Run" });
+      }
+      if (nativeAction && !engine.adapter.nativeTurnActions?.includes(nativeAction.kind)) {
+        return reply.code(422).send({ error: "Native action is unsupported by the selected provider" });
+      }
+
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
       const preparedRun = await prepareAgentRun(runContext, {
         agent,
@@ -1030,9 +1063,6 @@ export function registerAgentMessageRunRoute(
         runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
 
-      const nativeSource = communicationEventId ? store.getCommunicationEvent(project.id, communicationEventId) : undefined;
-      const nativeAction = nativeSource?.sender.kind === "user" && !nativeSource.document
-        ? parseNativeTurnCommand(nativeSource.text) : undefined;
       if (nativeAction) {
         if (!engine.adapter.nativeTurnActions?.includes(nativeAction.kind)) throw new Error("Native action is unsupported by the selected provider");
         if (nativeAction.kind === "review" && !resumeSessionId) throw new Error("Native review requires this Agent’s accepted retained session");

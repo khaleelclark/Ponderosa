@@ -429,6 +429,7 @@ registerConversationDeliveryRoutes(app, {
 });
 
 registerQueuedMessageRoutes(app, {
+  authoritativeCommunicationDocument,
   deliveryReceiptsForCommunications,
   store,
   coordinationV3,
@@ -705,7 +706,7 @@ registerAgentMessageRunRoute(app, {
   communicationArtifactAccess, prepareUserCommunicationText,
   projectCommunicationArtifact, runtimeArtifactMetadata, projectCommunicationToAgentAudit,
   publish, publishCoordinationV3Changed, publishMessageDeliveryChanged, observeRuntimeStalls,
-  canonicalConversationContext, agentCanReadRuntimeArtifact,
+  canonicalConversationContext, agentCanReadRuntimeArtifact, authoritativeCommunicationDocument,
   createOperationalNotification, resolveOperationalNotification, reconcileProjectWorkspace,
   drainDeploymentIdleAuthorities, publishWorkspaceSince, runtimeElicitations,
   ownsActiveRun, cancelRuntimeIdleClose, reconcileAgentRuntimeAuthority,

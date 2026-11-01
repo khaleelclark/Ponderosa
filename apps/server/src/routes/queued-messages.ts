@@ -1,3 +1,5 @@
+import { selectNativeCommand } from "../native-command-selection.js";
+import type { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -77,6 +79,7 @@ type RuntimeArtifactInput = NonNullable<
 
 export interface QueuedMessageRouteDependencies {
   deliveryReceiptsForCommunications: CoordinationV3Store["deliveryReceiptsForCommunications"];
+  authoritativeCommunicationDocument: ReturnType<typeof createCommunicationDocumentAuthority>["authoritativeCommunicationDocument"];
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -525,6 +528,20 @@ export function registerQueuedMessageRoutes(
     if (agent.projectId !== activation.projectId || activation.dispatchPolicy !== "next_run" ||
         (activation.state !== "pending" && activation.state !== "retry_pending")) {
       return reply.code(404).send({ error: "queued message not found" });
+    }
+    try {
+      const native = selectNativeCommand({
+        projectId: agent.projectId, agentId: agent.id, conversationId: agent.conversationId,
+        communicationIds: [payload.communication.eventId],
+        read: id => store.getCommunicationEvent(agent.projectId, id),
+        documentText: event => {
+          const found = event.document && dependencies.authoritativeCommunicationDocument(agent.projectId, event.document.id);
+          return found && found.event.eventId === event.eventId ? found.document.content : undefined;
+        },
+      });
+      if (native) return reply.code(409).send({ error: "Native actions require a new scheduler-owned turn and cannot be steered" });
+    } catch (error) {
+      return reply.code(422).send({ error: error instanceof Error ? error.message : "Invalid canonical native command" });
     }
     const conversationId = payload.communication.conversationId ?? agent.conversationId;
     const conversation = conversationId ? store.getConversation(conversationId) : undefined;

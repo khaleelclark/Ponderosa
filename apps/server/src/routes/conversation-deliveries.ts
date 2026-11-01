@@ -1,3 +1,4 @@
+import { parseNativeTurnCommand } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -249,7 +250,7 @@ export function registerConversationDeliveryRoutes(
     const requestedAssets = request.body?.attachments ?? [];
     const requestedRecipientAgentMentions: unknown = request.body?.recipientAgentMentions;
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
-    const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+    let activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
     const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
     if (!runtimeSelection) {
       return reply.code(400).send({ error: "engine, model, effort, and speed must be strings of at most 200 characters" });
@@ -259,6 +260,11 @@ export function registerConversationDeliveryRoutes(
     }
     if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
       return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+    }
+    try {
+      if (parseNativeTurnCommand(rawText)) activeRunDelivery = "queue";
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid native command" });
     }
     if (requestedRecipientAgentMentions !== undefined &&
         (!Array.isArray(requestedRecipientAgentMentions) ||
@@ -656,13 +662,18 @@ export function registerConversationDeliveryRoutes(
         return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
       }
       const idempotencyKey = request.body.idempotencyKey.trim();
-      const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+      let activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
       if (!runtimeSelection) {
         return reply.code(400).send({ error: "engine, model, effort, and speed must be strings of at most 200 characters" });
       }
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+      }
+      try {
+        if (parseNativeTurnCommand(rawText)) activeRunDelivery = "queue";
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid native command" });
       }
       if (!rawText.trim()) return reply.code(400).send({ error: "text is required" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
