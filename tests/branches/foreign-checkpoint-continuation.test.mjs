@@ -8,8 +8,8 @@ import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore,stableJ
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {createServer} from '../../apps/server/dist/app.js';
 async function fixture(t,{unknown=false}={}){
- const root=mkdtempSync(path.join(tmpdir(),'foreign-script-cut-')),state=path.join(root,'state'),destination=path.join(root,'destination');mkdirSync(destination);
- let store=new AgentStore(state),app;
+ const root=mkdtempSync(path.join(tmpdir(),'foreign-script-cut-')),state=path.join(root,'state'),sourceState=path.join(root,'source-state'),destination=path.join(root,'destination');mkdirSync(destination);
+ let activeState=sourceState,store=new AgentStore(activeState),app;
  const source=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
  const definition={schema:'ponderosa.branch.v1',name:'Foreign Script cut',trigger:{kind:'manual'},entry:'prefix',steps:['prefix','suffix'].map(id=>({id,kind:'script',runtime:'node',source:'// inert '+id,cwdRef:'work',timeoutMs:5000})),controls:[],edges:[{id:'next',from:'prefix',to:'suffix',on:'success'}],policy:{maxConcurrentExecutions:4,failure:{action:'stop'}}};
  const branch=source.deploy({chatId:'',idempotencyKey:'foreign-source',definition,bindings:{agents:{},directories:{work:root}}});
@@ -20,11 +20,17 @@ async function fixture(t,{unknown=false}={}){
  source.advance();await source.unitSaver.drain();
  if(unknown){assert.ok(source.claimScript('unknown-source'));await source.unitSaver.drain();}
  const inert=async function*(){throw Error('No provider execution')},adapter={id:'codex',displayName:'Inert fixture',trustedSystemPromptChannel:'developer',listModels:()=>[{id:'fixture',label:'Fixture'}],listEfforts:()=>[{id:'medium',label:'Medium'}],defaultModel:()=>'fixture',defaultEffort:()=>'medium',seed:inert,continue:inert};
- const open=()=>{app=createServer({dataDir:state,store,logger:false,engines:[{adapter,authStatus:async()=>({authenticated:true})}]});};open();
+ const open=()=>{app=createServer({dataDir:activeState,store,logger:false,startDrained:true,engines:[{adapter,authStatus:async()=>({authenticated:true})}]});};open();
  const close=async()=>{app.prepareForShutdown();await app.close();store.close();};t.after(async()=>{await close();rmSync(root,{recursive:true,force:true});});
  const call=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
  const api=async(method,url,payload)=>{const r=await call(method,url,payload);assert.equal(r.statusCode,200,r.body);return r.json();};
  const pkg=await api('GET',`/api/branches/${branch.id}/package?mode=full&includeValues=true`);
+ const exported=JSON.parse(pkg.runtimeData.owners[0].facts.find(f=>f.kind==='frontier').json);
+ assert.equal(pkg.runtimeData.owners[0].facts.filter(f=>f.kind==='transition').some(f=>JSON.parse(f.json).kind==='script_authorized'),false);
+ if(!unknown){assert.ok(exported.steps.some(s=>s.step_id==='prefix'&&s.state==='completed'));assert.equal(exported.attempts.some(a=>['leased','running','outcome_unknown'].includes(a.state)||a.request_id||a.recovery_of_request_id||a.runtime_outcome_json),false);assert.equal(exported.resources.length,0);assert.equal(exported.actions.length,0);}
+ // Export under drained admission; the receiving server owns no original runnable suffix.
+ await close();activeState=state;store=new AgentStore(activeState);open();
+ assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,0);
  const preview=await api('POST','/api/branches/install-preview',{package:pkg,bindings:{agents:{},directories:{work:destination}}});
  let done=await api('POST',`/api/branches/installations/${preview.id}/confirm`,{acknowledgeFullImport:true,acknowledgeRuntimeDataSha256:pkg.runtimeData.sha256});
  for(let i=0;i<12&&done.state==='applying';i++)done=await api('POST',`/api/branches/installations/${preview.id}/confirm`,{});
@@ -37,7 +43,7 @@ async function fixture(t,{unknown=false}={}){
  const settings=await api('GET',`/api/branches/${done.branchId}/settings`);
  await api('PUT',`/api/branches/${done.branchId}/settings`,{revision:settings.revision,configuration:{...settings.configuration,checkpointMode:'sync'}});
  await api('PUT',`/api/branches/${done.branchId}/availability`,{enabled:true});
- return {api,call,url,selection,done,saved,original,imported,destination,get store(){return store},async reopen(){await close();store=new AgentStore(state);open();},async review(){return api('POST',url+'/review',selection);},async confirm(review,key='continue'){return api('POST',url,{...selection,commandKey:key,reviewSha256:review.reviewSha256,acceptCurrentAuthority:true});}};
+ return {api,call,url,selection,done,saved,original,imported,destination,get store(){return store},async reopen(){await close();store=new AgentStore(activeState);open();},async review(){return api('POST',url+'/review',selection);},async confirm(review,key='continue'){return api('POST',url,{...selection,commandKey:key,reviewSha256:review.reviewSha256,acceptCurrentAuthority:true});}};
 }
 test('import -> human review -> fresh acceptance/admission -> selected suffix -> original-key receipt/replay/restart',async t=>{
  const f=await fixture(t),before=f.store.sqlite.prepare('SELECT * FROM branch_executions WHERE id=?').get(f.imported),review=await f.review();
@@ -50,7 +56,7 @@ test('import -> human review -> fresh acceptance/admission -> selected suffix ->
  const prefix=f.store.sqlite.prepare("SELECT s.*,a.fence,a.request_id FROM branch_step_executions s JOIN branch_attempts a ON a.step_execution_id=s.id WHERE s.execution_id=? AND s.step_id='prefix'").get(receipt.executionId);assert.equal(prefix.state,'completed');assert.equal(prefix.fence,0);assert.equal(prefix.request_id,null);assert.equal(JSON.parse(prefix.result_json).output,'retained-prefix');
  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='script_leased'").get(receipt.executionId).n,0);
  assert.deepEqual(await f.api('GET',f.url+'?commandKey=continue'),receipt);await f.reopen();assert.deepEqual(await f.confirm(review),receipt);
- const driver=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));driver.setEnabled(f.original.branchId,false);driver.advance();await driver.unitSaver.drain();const suffix=driver.claimScript('inert-suffix');assert.equal(suffix.executionId,receipt.executionId);assert.equal(suffix.cwd,f.destination);assert.equal(f.store.sqlite.prepare('SELECT step_id FROM branch_step_executions WHERE id=(SELECT step_execution_id FROM branch_attempts WHERE id=?)').get(suffix.attemptId).step_id,'suffix');
+ const driver=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));assert.equal(driver.getBranch(f.original.branchId),undefined);driver.advance();await driver.unitSaver.drain();const suffix=driver.claimScript('inert-suffix');assert.equal(suffix.executionId,receipt.executionId);assert.equal(suffix.cwd,f.destination);assert.equal(f.store.sqlite.prepare('SELECT step_id FROM branch_step_executions WHERE id=(SELECT step_execution_id FROM branch_attempts WHERE id=?)').get(suffix.attemptId).step_id,'suffix');
  driver.settleScript(suffix,{failed:false,output:'continued-suffix'});driver.advance();await driver.unitSaver.drain();assert.equal(driver.execution(receipt.executionId).state,'completed');assert.deepEqual(await f.api('GET',f.url+'?commandKey=continue'),receipt);
 });
 test('stale current budget, policy and directory choices refuse without acceptance',async t=>{
