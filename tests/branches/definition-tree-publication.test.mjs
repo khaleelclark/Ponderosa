@@ -13,7 +13,7 @@ async function fixture(t){
  let store,app;
  const inert=async function*(){throw Error('No provider execution belongs to definition publication')};
  const adapter={id:'codex',displayName:'Inert definition fixture',trustedSystemPromptChannel:'developer',listModels:()=>[{id:'fixture',label:'Fixture'}],listEfforts:()=>[{id:'medium',label:'Medium'}],defaultModel:()=>'fixture',defaultEffort:()=>'medium',seed:inert,continue:inert};
- const open=()=>{store=new AgentStore(path.join(root,'state'));app=createServer({dataDir:path.join(root,'state'),store,logger:false,engines:[{adapter,authStatus:async()=>({authenticated:true})}]});};open();
+ const open=()=>{store=new AgentStore(path.join(root,'state'));app=createServer({dataDir:path.join(root,'state'),store,logger:false,startDrained:true,engines:[{adapter,authStatus:async()=>({authenticated:true})}]});};open();
  const close=async()=>{app.prepareForShutdown();await app.close();store.close();};
  t.after(async()=>{await close();rmSync(root,{recursive:true,force:true});});
  const api=async(method,url,payload)=>{const r=await app.inject({method,url,...(payload!==undefined?{payload}:{})});assert.equal(r.statusCode,200,r.body);return r.json();};

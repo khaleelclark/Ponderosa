@@ -32,3 +32,11 @@ Canonical `recoverScript` changes an original leased attempt with no process ide
 The tree exporter now closes its source server after its first actual root HTTP export, opens an empty receiving database, and imports the returned package through the existing real composer. Later held re-exports stay in the receiving database. The helper asserts every original owner is absent before advancing. The strict global undefined-claim assertion and exhaustive per-imported-owner absent admission/lease/Request assertions remain intact. No source cancellation, effect settlement, production recovery change, or relaxed held eligibility is introduced. No original database rows are copied or manufactured in the receiver.
 
 Only the tree fixture and this report change in this successor. No local execution validation was performed; the exact successor still requires the manager-owned focused rerun.
+
+## Definition socket fixture drained-start successor
+
+The manager-owned Chrome fetch/loopback socket run against frozen `2f7751c35db0bb669b4f062341a0f9b22a239709` reports 12 backend tests, 11 passing and one definition negative/inventory failure. After the fixture accepts source work, its full-package GET correctly refuses with `Runtime source changed during export; review again`: unlike the tree and standalone fixtures, the definition fixture still allowed implicit scheduler dispatch. Evidence: `socket2f-browser-v2.log` and its receipt in `/tmp/ponderosa-portability-validation-evidence`.
+
+The definition fixture now uses existing `startDrained:true` on every server open, including restart. Source authorization and explicit inert progression remain unchanged; no actual provider execution is authorized. This one-option fixture repair preserves the production export-race refusal and all assertions. No production source or separate foreign-tree continuation is included.
+
+Only the definition caller fixture and this report change from frozen 2f. No tests, builds, typechecks, Node/native execution, browser, installs, migrations or new workers were run here. The manager owns the targeted rerun and its result; this successor has no local runtime qualification claim.
