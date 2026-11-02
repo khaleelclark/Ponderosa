@@ -407,3 +407,45 @@ needed for unchanged source. No installs/upgrades/lock changes, new workers, liv
 data/migrations, provider/model/imported Script processes, deployment or push.
 Accepted recording remains closed. Remaining failed gates require explicit owner
 follow-through; this compiler-repair tranche is complete, not overall readiness.
+
+
+Web compiler closure (2026-11-02): frozen cumulative
+`a819de7de2992ade92d166059dd69c947147c130`, direct `e692a3310` parent, is now
+composed as `2f7c0180f`. Independent Quality supports this bounded 11-file Web
+source delta; no repair-scope blocker found. This corrects the diagnostic count to
+18 diagnostics in 11 files. All 11 deliverables physically matched the frozen
+manifest before/after composition; every tracked integration file matches the
+executed frozen successor byte-for-byte except this existing tracker. No
+Portability standalone component/helper/test/docs, ExecutionPanel, recording,
+Core/lock or moving `b71606cd` source was changed.
+
+| Gate | Final bounded result |
+| --- | --- |
+| Full non-fail-fast workspace types | PASS, all nine participating packages at clean frozen `a819de7de`; supersedes the prior Web-only type failure for this exact product source. |
+| Web production build | PASS at clean frozen `a819de7de`. Prior six dependency-order build passes remain bound to `e692a3310`; backend product source unchanged. Native addon/dependencies reused. |
+| Focused existing UI helper fixtures | PASS 30/30 via external TypeScript transpile/extension resolver. Covers disclosure/history/group evidence, resource identity/release, lifecycle and reply-route helpers; does not execute the changed mounted access-choice handler. |
+| Preserved failed attempts | Intermediate declaration-order type attempt FAIL, corrected before frozen commit. Initial native-loader helper attempt FAIL: 12 pass / four failed imports; its audio helper rows passed. Corrected 30-test run omits the audio file. |
+| Remaining semantic and full-flow gates | Backend broad 193 = 121 pass / 72 fail; guards 34 = 31 pass / three fail remain unresolved. Group reconciliation/readback/rollback and new missing-map negative assertion remain UNQUALIFIED. Only the exact destination historical-payload-hash setup failure is baseline-confirmed. No browser/full-flow/accessibility/provider/portability/Phase 2 acceptance. |
+
+Resource access now checks each requested choice and the no-ref action before
+fencing or mutation, preserving the refs-path keep_destination action and exact
+agentActions. Missing historical disclosure facts refuse. Literal evidence key
+tuples preserve all checks; storage/original-command/release and disabled paths
+remain. Audio preserves valid-URL download-then-preview precedence; a degenerate
+empty-string download with nonempty preview now falls through rather than mounting
+the former empty-src player. This edge change is disclosed, not exact equivalence
+for all string inputs.
+
+Immutable Web packet `/tmp/ponderosa-web-compiler-evidence-a819de7de.tar.gz`,
+SHA256 `c5ffc1737b0e37ca2e36748daa9941f80ff5495c12c307e7d555a192bbb94535`;
+`/tmp/ponderosa-compiler-evidence/web-summary.json`, `web-source-manifest.json`,
+`web-source.patch` and `web-frozen-{types,build,helpers-v2}` contain exact
+preexecution source/lock/module/copied harness bindings, commands/UTC/exits and
+verified output/log hashes. Composition identity receipt:
+`/tmp/ponderosa-web-integration-composition.json`. Integration performed static
+whole-source identity verification, not an additional composed-head execution;
+unchanged frozen product results retain their exact source attribution. Delivery
+owns tracker/composition; Cliff must scope remaining valid semantic fixtures and
+runtime-owner follow-through without weakening evidence/refusal guards. No new
+workers, installs/lock edits, live database/provider/model/imported Script
+processes, deployment or push. Portability has the immutable source/receipt handoff.
