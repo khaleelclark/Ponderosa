@@ -60,3 +60,10 @@ test('definition-only saved receipt is exhaustive and cannot silently substitute
  for(const patch of [{manifestSha256:sha},{branchMap:{}},{nodes:{}},{workflowEnabled:true},{currentAuthority:true}])assert.equal(definitionReceiptMatches({...saved,...patch},{...treePkg,executionTree:undefined},'fresh-root'),false);
  assert.equal(definitionReceiptMatches({...saved,nodes:{...saved.nodes,'source-branch':{...saved.nodes['source-branch'],definition:{name:'substituted'}}}},{...treePkg,executionTree:undefined},'fresh-root'),false);
 });
+
+test('definition receipt normalizes only omitted versus empty secret bindings',()=>{
+ const source={...treePkg,executionTree:undefined,definitionTree:{...definitionTree,nodes:definitionTree.nodes.map(n=>({...n,configuration:{...n.configuration,secretBindings:{}}}))}};
+ const receipt={manifestSha256:definitionTree.sha256,branchMap:treeReceipt.branchMap,chatMap:{'chat-ref':'new-chat'},agentMap:{},nodes:Object.fromEntries(definitionTree.nodes.map(n=>[n.sourceBranchId,{...n,branchId:treeReceipt.branchMap[n.sourceBranchId],versionId:'new-version',bindingRevisionId:'new-binding'}])),executionOwners:0,currentAuthority:false,dispatched:false,workflowEnabled:false};
+ assert.ok(definitionReceiptMatches(receipt,source,'fresh-root'));
+ for(const configuration of [{limits:{different:true}},{limits:{},secretBindings:{unexpected:'secret-ref'}}]){const nodes={...receipt.nodes,'source-branch':{...receipt.nodes['source-branch'],configuration}};assert.equal(definitionReceiptMatches({...receipt,nodes},source,'fresh-root'),false)}
+});
