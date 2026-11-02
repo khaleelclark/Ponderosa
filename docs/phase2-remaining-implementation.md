@@ -870,3 +870,77 @@ all prior lifecycle/cleanup/UI/recording acceptance retains its own source scope
 Dependencies/native reused; no fresh native/dependency qualification, real
 providers/imported Script, broad runtime/historical/portability/Phase2 acceptance,
 new workers, lock/schema changes, liveDB, unrelated edits, deploy or push.
+
+
+### Historical repair — complete-file CLOSED/PASS (2026-11-02)
+
+This successor closes the exact complete historical-file fixture gate that the
+preceding FAILED/OPEN entry left open. That original92005 result remains372pass/
+43fail; it is not retroactively passed. All43 baseline failed occurrences have
+proved dispositions in completion-repair-ledger.json and final-source focused
+PASS with exact original test identity. Original415 registrations, including
+repeated names, remain. Fixture corrections and relocated consumer checks are
+explicitly documented; no assertion-deletion or blanket runtime claim follows.
+
+Frozen candidate da66ba84654a21cdc0db290b7fbbda40e2d1a067 completed the genuine
+pristine unfiltered historical-checkpoint-rewind.test.mjs, concurrency1:
+**415/415 PASS,0 failed/skipped/cancelled/todo,exit0**,2481613.025119ms
+(41m21.613s), within the independently reviewed6900s finite deadline. All415
+ordered synchronous lifecycle starts/ends, including hooks, match the original
+inventory; zero lifecycle errors. Source1544 files/module2232 outputs remain
+unchanged before/after and physically verified. Owned fixture group absent after
+normal parent exit and subsequent Delivery verification; Quality checked recorded
+termination evidence, not a fresh process census.
+
+Final-source focused43/43, affected24-file294/294 and generation-neighbor6/6 PASS
+with exact source/module/output/lifecycle bindings and fixture shutdown. Sequential
+Agents/Server builds/types PASS on exact final precommit source; no postcommit
+build rerun or fresh native/dependency qualification is implied. Plan415 explicit
+rows use49 current measurements and366 honestly attributed baseline observations,
+5477s pooled weights plus15%=6298.55s with6900s cap; reserves are not mathematical
+bounds. First final-run attempt was interrupted with no complete receipt/summary;
+its incomplete evidence is preserved, with no pass credit. Keeping the execution-
+owning turn active enabled the distinct normal complete attempt at identical
+source/plan/command. Exact external interruption signal origin is unproven. All
+prior timeouts, pilot/build/focused failures remain preserved.
+
+Repairs retain checkpoint-after-admission atomicity, invocation:index item IDs,
+generationZERO/canonical ordinary reservation versus sealed retry codec, complete
+canonical pin equality, exact cleanup/host/audit boundaries, owned opening-Request
+replay with complete immutable coordinate payload, and original custody receipt/
+source replay with new-conflict refusal. No fake Runs/exits, dropped members or
+receipts, saver error suppression, legacy backfill, or weakened custody/lifecycle.
+
+Independent Quality final ACCEPT and composition SUPPORT:
+`auto:75374591b6d114a55040c1894083222b09f50d33dcd3b8cbcded151e3beae5ff`.
+Preexecution SUPPORT:
+`auto:f541badb08104332c060d0d26796b49ce3caebafabb2343ad0fb712f36970125`.
+Final Portability source-impact confirmation:
+`auto:fb1eb917c1e269561d64dba40f970cb502a4b2fc148a240c10e78f613fbebdfb`.
+No affected six-row rendered rerun required by this exact delta; those six
+acceptances remain ONLY1d98-attributed. Shared Script-module overlap exists but
+changed resource-context branches are absent from those pure Script fixtures.
+
+Delivery composed exact accepted commits into integration081f6015c,2a5de8d47,
+4f360b881,6ffc20d26. Physical comparison verifies1543/1544 source files identical
+to tested candidate, with only this tracker history differing; all11 changed
+product/test/config files match. git diff --check PASS. This is source-byte
+composition evidence, not an integrated-source runtime rerun. No deploy or push.
+
+[Immutable repair evidence archive](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_6404556dddb3a35835de0b75e29fe2f8fc61a46e70b79dd2/download),
+SHA2562f49fb889109413a3ff12bc5b0f0d50002af79df574be436554cfc8840283dd9.
+[Final corrected assessment](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_e061d3518adba9eff521e5c8daf0902996949f412c86fcb8/download),
+SHA2560e34b0a6910c8c68d98c15f40a5ae152c5853aa526b9a28990afe0f99c59430d.
+Archive includes1242 publication-bound evidence files, the1238-file Quality-reviewed
+manifest, original reports, interrupted/failed attempts and exact source manifests.
+Old391 bindings use preserved pre-Quality assessment;1167 preexecution bindings
+use preserved pre-final-run assessment;1238 final-review bindings use preserved
+pre-final-Quality assessment. Current revised report bytes are not claimed equal
+to those earlier report hashes.
+
+Closed scope is this complete historical file at disposable/inert fixture scope.
+Prior lifecycle/cleanup/UI/recording acceptances keep their own attribution.
+Real providers/imported Script, fresh native/dependency/platform qualification,
+whole app/browser/auth/a11y, broader runtime/cleanup/portability and Phase2 remain
+unqualified. No new workers/install/upgrade/lock/schema/liveDB or unrelated Web/
+recording/b716 changes.
