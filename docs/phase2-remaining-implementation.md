@@ -746,3 +746,61 @@ source attribution. Both rendered access choices keep_destination; controlled
 loss occurs after completed response, not socket/host-crash durability. Settings/
 callback is not routed navigation/mobile usability/auth/a11y qualification. No
 broader portability/Phase2 acceptance. No runtime rerun for this tracker update.
+
+
+Historical localized diagnostic follow-up (2026-11-02): Quality review COMPLETE /
+ACCEPT at bounded case-level scopes; full historical remains OPEN/UNQUALIFIED.
+At unchanged tracked1d98fa37ced6c9d0045c06ed4f14ee79302bbd43, corrected anchored
+line345 `exit interruption and historical continuation are usable through
+exact-shape HTTP commands` PASS1/1, total1745.651ms under60s. The earlier line123
+HTTP diagnostic remains a different case. Sequential registration ordinals40–60
+PASS21/21, total17631.440ms, with selected original assertions and body/after-hook
+completion preserved. Registration inventory415 is not execution credit; spec
+reporter buffering does not identify the original unfiltered stalled body.
+
+Sequential tail301–415 reached its finite300s deadline: TIMEOUT/incomplete, no
+final115-test summary. Trace records58 ended bodies/hooks followed by body359
+`32-resource serial sync whole-cut admission and exact restart` without end.
+Read-only disposable-database observations show destination progress after source
+retirement. This localizes that diagnostic attempt, not the original480s timeout.
+Recorded termination evidence reports its owned group absent; read-only snapshot
+backup follows termination. It is not a present-time global process census.
+
+Separately, instrumented exact359 PASS1/1 under1200s: body252905.451ms,
+total253462.879ms, zero failures/skips/cancellations. Original ownership/map/
+activation and exact receipt replay after reopen with bytes unavailable/no new
+imports remain intact. Capture43.233s, destination preparation172.044s,
+disclosure2.423s, admission12.791s; stages include nested work and must not be
+summed as independent phases. Body and after-hook finish; teardown about23ms.
+No app.close/drain stall reproduced. Three read-only reader probes preserve the
+same canonical32-resource digest at647.016/623.964/615.846ms. Static repeated pure
+hashing and these timings are not CPU attribution or an established semantic
+defect. No speculative optimization, product repair or guard weakening follows.
+Aggregate complete-file runtime/order behavior remains undetermined; no repeated
+unfiltered run with merely a larger deadline was performed or promised.
+
+Quality canonical verdict
+`auto:e63e2a1165da6dcff4c34c7842fa63fe040d022686b2a5e840056c8f82f8e51f`,
+completed review request
+`v3-request-f9e04f0e8cd3dac34eb9cdc0ddb19619321da03f370c6a8eea6a4eaa7643567d`,
+2026-11-02T02:51:32.933Z. Quality verified diagnostic patch reconstruction,
+restored2521-line pristine test, all1544 source and2232 reused module bindings,
+receipt outputs, original31 plus localized103 integrity hashes, and archive.
+Delivery physically reverified required test identity in isolated/integration/
+pristine copies, all31+103 evidence hashes and archive before this tracker-only
+update. Diagnostic instrumentation was restored byte-for-byte; tracked source
+clean, ten existing untracked dependency symlinks disclosed. No product/test
+commit, new build/typecheck, install or fresh native rebuild in this assignment.
+
+Evidence /tmp/ponderosa-historical-complete-evidence, including
+localized-diagnosis.json, localized-integrity.json, empty localized-source.patch,
+retained harness/pristine/wrapper, command packets, body/hook/stage traces and
+read-only tail-timeout-disposable-snapshot.db. Original timeout packets and failed
+attempts remain unchanged. Immutable localized archive SHA256
+b6ac728045302a9c882eca415240de5081b2382e55d59204cb59bb9d16be840b:
+[Localized diagnostic archive](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_fcd4cfc52b927d57e624dcd68287caab1ef7f290e348b569/download).
+Next full-file acceptance requires a justified finite runtime plan or targeted
+remaining-heavy-case/profiling evidence. Existing lifecycle/cleanup/six-row/UI/
+recording acceptance retains its own attribution. No broader runtime/historical/
+Phase2/provider/imported Script/native-platform qualification, new workers,
+lock/schema changes, liveDB, unrelated edits, deploy or push.
