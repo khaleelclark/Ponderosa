@@ -555,3 +555,57 @@ Accepted653c and c3c executed rows retain their exact source attribution; combin
 integration checks are separately recorded above. Runtime24aa lifecycle witness,
 capture/custody and shutdown failures stay OPEN; full historical semantics remain
 unqualified. No additional runtime execution was needed for this report correction.
+
+
+Reviewed completed-workflow repair composition (2026-11-02):
+Delivery composed frozen ebbc7ac0073a278d90f63114ca74ca2324af7749 as
+299e5206b, directly after565983d4b. All FOUR required physical deliverables
+(append-jsonl.ts, branch-host-cut.ts, resource-admission.test.mjs and
+source-capture-boundary.test.mjs) were nonempty and hash/commit exact before
+composition, and verified exact again in integration. This paragraph supersedes
+only the completed-workflow unresolved capture/custody and fixture-shutdown
+statements above; original failures remain historical evidence.
+
+Capture diagnosis: repair-enabled communication revision reads invalidated the
+source epoch even for absent/empty/valid JSONL. Mutation marking now happens
+immediately before actual newline repair or torn-tail truncation writes; existing
+SQL/global/unknown-source guards remain. After that fix, completed retirement
+exposed a separate shutdown saver refusal because the owned Chat was correctly
+deleted. Observational audit capture now permits only an absent Chat with a
+terminal root Request, exact execution/Branch and retired resource/context Chat,
+canonical deletion receipt/project and original recipient membership. It grants
+no new replay, admission, deletion or lifecycle authority. Executed rollback
+adversaries cover missing canonical-completion flag, foreign receipt project,
+missing original recipient and active resource; missing receipt row/nonterminal
+Request refusal remain static guards, not separately executed new adversaries.
+
+Independent Quality SUPPORTS composition and ACCEPTS final-byte host-cut/resource-
+checkpoint/source-boundary108/108 and original completed-workflow1/1, including
+normal fixture shutdown/reopen. The latter performs TWO separate completed
+executions, not two retry generations of one execution. Agents/Server builds PASS;
+all9 workspace types PASS. Five successful candidate packets bind frozen source
+bytes before commit-only freeze; these are not fresh postcommit/composed-head
+reruns. Historical baseline/intermediate failures and diagnostic patches remain.
+Existing locked dependencies/native addon reused; output overlap disclosed, no
+fresh native build. No extra execution was required for identity-only composition.
+
+Retry remains OPEN/UNCHANGED: strict Complete exact Run inventory required,
+original members1Run/1registration and0/0, generation0/retry_draining. There is no
+valid absence-as-exit inference. Proposed product contract requires permanent
+member/generation/Chat fences at EVERY process-start admission, durable in-flight
+claims BEFORE adapter awaits, drain of all pre-fence/late openings with unknown
+outcomes held, and a transactional distinct immutable fenced-never-started receipt
+only after exact original membership and no claims/registrations/Run evidence.
+A versioned reader must cover every original member with observed exit or that
+receipt and reject later activity. Existing registration-only checks do not prove
+physical no-start; readiness/context-recovery/non-Run starts need coverage.
+Requester contract decision remains unresolved; no dependent lifecycle edits made.
+Alternative is retain strict v1 and require actual per-member registered execution
+by product design. No fabricated Runs, dropped members or relaxed readers.
+
+Evidence: /tmp/ponderosa-runtime-cleanup-evidence and immutable archive
+/tmp/ponderosa-runtime-cleanup-ebbc7ac00.tar.gz, SHA256
+bbc8b11ec2c63ba2f979566cf6f6b1e5fc1a9a2ca1c9f058a245d7d3f3816771.
+No broad runtime/historical semantics, other cleanup modes, whole-app/browser/
+portability, real providers/imported Script or Phase2 acceptance. No new workers,
+install/lock/schema/Web/recording/b716/live-data/deploy/push changes.
