@@ -36,7 +36,7 @@ export class ProviderProcessAuthority {
     readonly workerId: string,
   ) {}
 
-  register(handle: RuntimeProcessHandle, scope: ProviderProcessScope, ownerIdentity?: object): void {
+  register(handle: RuntimeProcessHandle, scope: ProviderProcessScope, ownerIdentity?: object): string | undefined {
     if (process.platform === "win32") {
       for (const [key, owned] of this.nativeHandles) if (!owned.handle.isAlive()) { this.observeExit(owned.id,"os-not-alive"); this.nativeHandles.delete(key); }
       // Readiness and returned Session facades can wrap the same native Job.
@@ -49,7 +49,7 @@ export class ProviderProcessAuthority {
       this.nativeHandles.set(key, { id, handle: retained, scope: { ...scope } });
       try { this.registerEvidence(id,{kind:"native-job",lifetimeId:id},scope); }
       catch(error) { void retained.close().catch(()=>undefined); throw error; }
-      return;
+      return id;
     }
     const identity = handle.processIdentity;
     if (!identity) {
@@ -79,6 +79,7 @@ export class ProviderProcessAuthority {
       );
       const row=this.sqlite.prepare("SELECT id FROM provider_process_authority WHERE worker_id=? AND pid=? AND birth_marker=?").get(this.workerId,identity.pid,identity.birthMarker) as {id:string};
       this.registerEvidence(row.id,{kind:"posix",identity},scope);
+      return row.id;
     } catch (error) {
       // Admission cannot continue without durable restart authority. Begin
       // teardown immediately; the caller's in-memory authority retains the

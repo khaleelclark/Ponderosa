@@ -22,8 +22,12 @@ export interface ProviderProcessExitReceipt {
   observedAt:string;
   registrations:Array<{identity:string;sha256:string;registration:ProviderProcessRegistration}>;
 }
-export interface ProviderExitEvidence {
-  schema:'provider-exit-evidence.v1';
+export interface ProviderNeverStartedReceipt {
+  schema:'provider-never-started.v1';
+  agentId:string;projectId:string;conversationId:string;executionId:string;stepExecutionId:string;generation:number;
+  fence:{identity:string;sha256:string};coverage:{identity:string;sha256:string};drain:{identity:string;sha256:string};
+}
+interface ProviderExitEvidenceBody {
   projectId:string;
   conversationId:string;
   participants:Array<{agentId:string;runIds:string[]}>;
@@ -31,3 +35,5 @@ export interface ProviderExitEvidence {
   receipts:Array<{identity:string;sha256:string;receipt:ProviderProcessExitReceipt}>;
   revision:string;
 }
+
+export type ProviderExitEvidence = ProviderExitEvidenceBody & ({schema:'provider-exit-evidence.v1'} | {schema:'provider-exit-evidence.v2';neverStarted:Array<{identity:string;sha256:string;receipt:ProviderNeverStartedReceipt}>});

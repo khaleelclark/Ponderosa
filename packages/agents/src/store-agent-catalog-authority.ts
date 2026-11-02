@@ -1,3 +1,4 @@
+import {recordProviderStartCoverage} from './provider-start-journal.js';
 import { withSourceMutation } from "./source-capture-boundary.js";
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -435,6 +436,7 @@ export class AgentCatalogAuthority {
         workingCopyJson: JSON.stringify(workingCopy),
       })
       .run();
+      recordProviderStartCoverage(this.client,{agentId:id,projectId,conversationId:input.conversationId});
       this.db.insert(agentConversationMemberships).values({
         agentId: id,
         conversationId: input.conversationId,

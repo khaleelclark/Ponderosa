@@ -1,3 +1,5 @@
+import {sealProviderNeverStarted} from '@ponderosa/agents';
+import {ProviderStartAuthority} from './provider-start-authority.js';
 import {registerAgentWorkspaceActions} from './routes/agent-workspace.js';
 import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
 import {BranchScriptService} from "./branch-script-service.js";
@@ -240,6 +242,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   } = createCommunicationArtifactAuthority({ dataDir: opts.dataDir, assets, store });
   const coordinationV3WorkerId = `server:${randomUUID()}`;
   const providerProcessAuthority = new ProviderProcessAuthority(store.sqlite, coordinationV3WorkerId);
+  const providerStarts = new ProviderStartAuthority(store.sqlite,coordinationV3WorkerId,providerProcessAuthority);
   const runtimeElicitations = new RuntimeElicitationBroker();
   // Startup recovery terminates any surviving prior-boot provider group before
   // readiness. Retire prompts whose sensitive live half cannot cross the boot.
@@ -304,7 +307,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       void operation.then(() => diagnosticOperations.delete(operation), () => diagnosticOperations.delete(operation));
       return operation;
     };
-    return [engine.adapter.id, { ...engine,
+    return [engine.adapter.id, { ...engine, adapter:providerStarts.wrap(engine.adapter),
       ...(engine.authStatus ? { authStatus: diagnostic("authentication", options => engine.authStatus!(options)) } : {}),
       ...(engine.availabilityProbe ? { availabilityProbe: diagnostic("availability", options => engine.availabilityProbe!(options)) } : {}),
     }];
@@ -1371,6 +1374,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
   const branchResources=new BranchResourceService(branches,store,deleteBranchAgents,application.createChat,id=>deleteBranchChat(id,[]));
   branchResources.setGenerationExitDrain(async agentIds=>{
     const selected=new Set(agentIds),reason='Branch precleanup generation evidence capture';
+    await providerStarts.drain(agentIds);
     await drainProviderRuntimeAuthority(reason,selected);
     await providerProcessAuthority.terminateAgents(selected,reason);
     for(const agentId of agentIds){
@@ -1378,6 +1382,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       if(activeRuns.has(agentId)||providerProcessAuthority.count({agentId})||authority&&(pendingRuntimeAuthorityCount(authority)>0||authority.retryTimer||authority.retryInProgress||authority.retryAttempt!==0))throw Error('Original generation runtime exit remains unconfirmed');
       const agent=store.getAgent(agentId);if(!agent?.conversationId)throw Error('Original generation identity unavailable before cleanup');
     }
+    sealProviderNeverStarted(store.sqlite,coordinationV3WorkerId,agentIds);
     const first=store.getAgent(agentIds[0]!);if(!first?.conversationId)throw Error('Original generation Chat unavailable');
     const participants=agentIds.map(agentId=>({agentId,runIds:(store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=? ORDER BY id').all(agentId) as {id:string}[]).map(r=>r.id)}));
     providerProcessAuthority.readExitEvidence({projectId:first.projectId,conversationId:first.conversationId,participants});

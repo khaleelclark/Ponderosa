@@ -1,3 +1,4 @@
+import {readGenerationExitCapture} from './branch-generation-exit-capture.js';
 import {captureHostProvenance,verifyHostProvenance,type HostProvenance} from './branch-host-provenance.js';
 import type Database from 'better-sqlite3';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
@@ -31,13 +32,14 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
   const row=db.prepare('SELECT requester_agent_id,recipient_agent_id,project_id,conversation_id,state FROM coordination_requests WHERE id=?').get(ref) as Row|undefined;
   if(row){const chat=db.prepare('SELECT project_id,branch_id FROM conversations WHERE id=?').get(row.conversation_id) as Row|undefined;
    // Completed cleanup removes the Chat; exact owner context and its deletion receipt retain audit scope.
-   const retired=!chat&&['completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded','outcome_unknown'].includes(row.state)&&db.prepare(`SELECT 1 FROM branch_ephemeral_contexts context
+   const retiredContext=!chat&&['completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded','outcome_unknown'].includes(row.state)&&db.prepare(`SELECT context.*,resource.state AS resource_state,resource.generation AS current_generation FROM branch_ephemeral_contexts context
     JOIN branch_resources resource ON resource.step_execution_id=context.step_execution_id
     JOIN branch_executions execution ON execution.id=resource.execution_id
     JOIN conversation_deletion_receipts receipt ON receipt.conversation_id=context.chat_id
-    WHERE execution.id=? AND execution.branch_id=? AND resource.state='retired'
+    WHERE execution.id=? AND execution.branch_id=?
     AND context.chat_id=? AND receipt.project_id=? AND receipt.canonical_deletion_completed=1
-    AND EXISTS(SELECT 1 FROM json_each(context.agent_ids_json) member WHERE member.value=?)`).get(id,pin.branch_id,row.conversation_id,row.project_id,row.recipient_agent_id);
+    AND EXISTS(SELECT 1 FROM json_each(context.agent_ids_json) member WHERE member.value=?)`).get(id,pin.branch_id,row.conversation_id,row.project_id,row.recipient_agent_id) as Row|undefined;
+   const retired=retiredContext&&(retiredContext.generation===retiredContext.current_generation?retiredContext.resource_state==='retired':retiredContext.generation<retiredContext.current_generation&&retainedGenerationScope(db,id,retiredContext));
    if(!retired&&(!chat||chat.project_id!==row.project_id||chat.branch_id!==pin.branch_id&&row.conversation_id!==pin.chat_id))throw Error('Host root lacks its owned Chat scope');
    scopes.add(stableJson([row.project_id,row.conversation_id]));for(const agent of [row.requester_agent_id,row.recipient_agent_id])if(agent)participants.add(agent);
   }
@@ -126,4 +128,13 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
 export function verifyBranchHostCut(cut:BranchHostCut,executionId:string):boolean {
  try{return cut.schema==='ponderosa.branch.host-dependencies.v1'&&cut.executionId===executionId&&cut.restoreAuthority==='fresh_admission_required'&&cut.nativeState==='not_captured'&&cut.artifactStorage==='references_only'
   &&['requests','updates','lateResults','joins','members','suspensions','communications','joinOutcomes','artifactRefs','resources','resourceMembers','resourceContexts','resourceReceipts'].every(key=>(cut[key as keyof BranchHostCut] as Evidence[]).every(record=>payloadHash(record.row)===record.sha256));}catch{return false;}
+}
+
+/** Audit-only scope for an exactly sealed/deleted prior retry generation. */
+function retainedGenerationScope(db:Database.Database,executionId:string,context:Row):boolean {
+ const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`resource-generation-retired:${context.step_execution_id}:${context.generation}`) as Row|undefined;
+ if(!row||Buffer.byteLength(row.result_json)>32*1024*1024)return false;
+ const r=JSON.parse(row.result_json),seal=readGenerationExitCapture(db,executionId,context.step_execution_id,context.generation);
+ if(!seal||seal.state!=='sealed'||stableJson(r)!==row.result_json||payloadHash(r)!==row.input_hash||r.schema!=='branch-resource-generation-retired.v1'||r.resource.execution_id!==executionId||r.resource.step_execution_id!==context.step_execution_id||r.resource.generation!==context.generation||r.resource.chat_id!==context.chat_id||r.priorGeneration.checkpointId!==seal.checkpointId||r.priorGeneration.checkpointHash!==seal.checkpointHash||r.priorGeneration.envelopeSha256!==seal.envelopeSha256||seal.identity.chatId!==context.chat_id||stableJson(r.context)!==stableJson(Object.fromEntries(Object.entries(context).filter(([k])=>!['resource_state','current_generation'].includes(k)))))return false;
+ return true;
 }

@@ -1,3 +1,4 @@
+import {readProviderNeverStarted,verifyProviderNeverStarted,requireProviderStartsDrained} from './provider-start-journal.js';
 import type Database from 'better-sqlite3';
 import type {ProviderExitEvidence,ProviderProcessExitReceipt,ProviderProcessRegistration} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
@@ -21,9 +22,16 @@ export function readProviderExitEvidence(db:Database.Database,input:{projectId:s
   if(!chat||chat.project_id!==input.projectId||stableJson(members.map(m=>m.id).sort())!==stableJson(participants.map(p=>p.agentId).sort()))throw Error('Complete live precleanup Chat member inventory required');
   const exits=new Map<string,ProviderExitEvidence['receipts'][number]>();
   const terminalRuns:ProviderExitEvidence['runs']=[];
+  const neverStarted:Array<ReturnType<typeof readProviderNeverStarted>>=[];
   let totalRows=0,totalBytes=0;
   for(const participant of participants){
-   if(!participant.agentId||!participant.runIds.length||participant.runIds.length>4096||new Set(participant.runIds).size!==participant.runIds.length)throw Error('Complete exact Run inventory required');
+   if(!participant.agentId||participant.runIds.length>4096||new Set(participant.runIds).size!==participant.runIds.length)throw Error('Complete exact Run inventory required');
+   requireProviderStartsDrained(db,participant.agentId);
+   if(!participant.runIds.length){
+    const item=readProviderNeverStarted(db,participant.agentId);
+    if(item.receipt.projectId!==input.projectId||item.receipt.conversationId!==input.conversationId)throw Error('Never-started participant scope mismatch');
+    neverStarted.push(item);continue;
+   }
    const runs=db.prepare('SELECT id,status,fencing_token FROM scheduler_runs WHERE agent_id=? ORDER BY id LIMIT 4097').all(participant.agentId) as Array<{id:string;status:string;fencing_token:number}>;
    if(runs.length>4096||stableJson(runs.map(r=>r.id).sort())!==stableJson(participant.runIds))throw Error('Complete original participant Run inventory required');
    for(const run of runs){if(!['completed','failed','cancelled'].includes(run.status)||!Number.isSafeInteger(run.fencing_token)||run.fencing_token<1)throw Error('Provider Run remains live or unknown');terminalRuns.push({runId:run.id,agentId:participant.agentId,fence:run.fencing_token,status:run.status as 'completed'|'failed'|'cancelled'});}
@@ -51,7 +59,7 @@ export function readProviderExitEvidence(db:Database.Database,input:{projectId:s
    }
    if(participant.runIds.some(id=>!covered.has(id)))throw Error('Run lacks actual registered process exit evidence');
   }
-  const evidence={schema:'provider-exit-evidence.v1' as const,projectId:input.projectId,conversationId:input.conversationId,participants,runs:terminalRuns,receipts:[...exits.values()].sort((a,b)=>a.identity.localeCompare(b.identity))};
+  const evidence={...(neverStarted.length?{schema:'provider-exit-evidence.v2' as const,neverStarted}:{schema:'provider-exit-evidence.v1' as const}),projectId:input.projectId,conversationId:input.conversationId,participants,runs:terminalRuns,receipts:[...exits.values()].sort((a,b)=>a.identity.localeCompare(b.identity))};
   if(Buffer.byteLength(stableJson(evidence))>16*1024*1024)throw Error('Provider exit evidence exceeds bound');
   const revision=payloadHash(evidence);
   if(input.expectedRevision&&input.expectedRevision!==revision)throw Error('Provider exit evidence revision changed');
@@ -64,10 +72,18 @@ export function readProviderExitEvidence(db:Database.Database,input:{projectId:s
 export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence:ProviderExitEvidence):void {
  if(Buffer.byteLength(stableJson(evidence))>16*1024*1024)throw Error('Retained provider evidence exceeds bound');
  const {revision,...body}=evidence;
- if(body.schema!=='provider-exit-evidence.v1'||payloadHash(body)!==revision||!body.receipts.length)throw Error('Retained provider exit evidence hash mismatch');
- if(!body.participants.length||body.participants.length>256||body.participants.some(p=>!p.runIds.length||p.runIds.length>4096)||body.runs.length>4096||body.receipts.length>4096)throw Error('Retained provider inventory exceeds bound');
+ if(!['provider-exit-evidence.v1','provider-exit-evidence.v2'].includes(body.schema)||payloadHash(body)!==revision||(body.schema==='provider-exit-evidence.v1'&&!body.receipts.length))throw Error('Retained provider exit evidence hash mismatch');
+ const neverStarted=body.schema==='provider-exit-evidence.v2'?body.neverStarted:[];
+ if(!Array.isArray(neverStarted)||neverStarted.length>256||new Set(neverStarted.map(n=>n.identity)).size!==neverStarted.length||(body.schema==='provider-exit-evidence.v2'&&!neverStarted.length))throw Error('Retained never-started inventory invalid');
+ for(const item of neverStarted){
+  const p=body.participants.find(p=>p.agentId===item.identity);
+  if(!p||p.runIds.length||item.identity!==item.receipt.agentId||item.sha256!==payloadHash(item.receipt)||item.receipt.projectId!==body.projectId||item.receipt.conversationId!==body.conversationId)throw Error('Retained never-started participant mismatch');
+  verifyProviderNeverStarted(db,item.receipt);
+ }
+ for(const p of body.participants)requireProviderStartsDrained(db,p.agentId);
+ if(!body.participants.length||body.participants.length>256||body.participants.some(p=>(!p.runIds.length&&!neverStarted.some(n=>n.identity===p.agentId))||p.runIds.length>4096)||body.runs.length>4096||body.receipts.length>4096)throw Error('Retained provider inventory exceeds bound');
  const expected=new Map(body.participants.flatMap(p=>p.runIds.map(id=>[id,p.agentId] as const)));
- if(!expected.size||expected.size!==body.participants.reduce((n,p)=>n+p.runIds.length,0)||new Set(body.participants.map(p=>p.agentId)).size!==body.participants.length||body.runs.length!==expected.size)throw Error('Retained provider Run/member inventory mismatch');
+ if((!expected.size&&!neverStarted.length)||expected.size!==body.participants.reduce((n,p)=>n+p.runIds.length,0)||new Set(body.participants.map(p=>p.agentId)).size!==body.participants.length||body.runs.length!==expected.size)throw Error('Retained provider Run/member inventory mismatch');
  const runs=new Map(body.runs.map(run=>[run.runId,run]));
  if(runs.size!==expected.size)throw Error('Retained provider Run inventory mismatch');
  for(const [id,agent] of expected){const run=runs.get(id);if(!run||run.agentId!==agent||!Number.isSafeInteger(run.fence)||run.fence<1||!['completed','failed','cancelled'].includes(run.status))throw Error('Retained terminal Run evidence mismatch');}
@@ -82,7 +98,7 @@ export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence
    if(registrationIds.has(registration.identity)||registrationIds.size>=4096)throw Error('Retained provider registration inventory mismatch');
    registrationIds.add(registration.identity);
    const r=registration.registration,run=r.runId?runs.get(r.runId):undefined;
-   if(r.schema!=='provider-process-registration.v1'||r.authorityId!==item.identity||r.projectId!==body.projectId||r.conversationId!==body.conversationId||!body.participants.some(p=>p.agentId===r.agentId)||registration.identity!==`${item.identity}:${payloadHash(r)}`||registration.sha256!==payloadHash(r))throw Error('Retained provider registration scope mismatch');
+   if(r.schema!=='provider-process-registration.v1'||r.authorityId!==item.identity||r.projectId!==body.projectId||r.conversationId!==body.conversationId||!body.participants.some(p=>p.agentId===r.agentId&&p.runIds.length)||registration.identity!==`${item.identity}:${payloadHash(r)}`||registration.sha256!==payloadHash(r))throw Error('Retained provider registration scope mismatch');
    if(r.process.kind==='posix'){const p=r.process.identity;if(!Number.isSafeInteger(p.pid)||p.pid<1||!Number.isSafeInteger(p.pgid)||p.pgid<1||!p.birthMarker)throw Error('Retained POSIX identity missing');}
    else if(r.process.kind!=='native-job'||r.process.lifetimeId!==item.identity)throw Error('Retained native lifetime missing');
    if(r.runId){if(!run||run.agentId!==r.agentId||!Number.isSafeInteger(r.runFence)||(r.runFence??0)<1||(r.runFence??Infinity)>run.fence)throw Error('Retained provider Run fence mismatch');covered.add(r.runId);}
@@ -90,6 +106,10 @@ export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence
    const source=db.prepare(`SELECT identity,input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND identity=?`).get(registration.identity) as Commit|undefined;
    if(!source||source.receipt_sha256!==registration.sha256||stableJson(read(source))!==stableJson(registration.registration))throw Error('Retained provider registration mismatch');
   }
+ }
+ for(const p of body.participants){
+  const rows=db.prepare("SELECT identity FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.agentId')=? AND json_extract(receipt_json,'$.conversationId')=? LIMIT 4097").all(p.agentId,body.conversationId) as Array<{identity:string}>;
+  if(rows.length>4096||rows.some(r=>!registrationIds.has(r.identity)))throw Error('Retained provider registration inventory changed');
  }
  if([...expected.keys()].some(id=>!covered.has(id)))throw Error('Retained provider Run coverage incomplete');
 }

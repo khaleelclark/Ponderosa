@@ -3,7 +3,7 @@ import test from 'node:test';
 import {mkdtempSync,rmSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
+import {AgentStore,BranchStore,CoordinationV3Store,verifyRetainedProviderExitEvidence} from '@ponderosa/agents';
 import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
 import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
@@ -117,6 +117,21 @@ test('fresh-context retry deletes the previous generation Chat before resetting 
   assert.equal(injected,true);assert.equal(branches.execution(execution.id).state,'completed');
   const contexts=store.sqlite.prepare('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=? ORDER BY generation').all(resource.step_execution_id);assert.equal(contexts.length,2);assert.notEqual(contexts[0].chat_id,contexts[1].chat_id);
   for(const context of contexts){assert.equal(store.getConversation(context.chat_id),undefined);const receipt=store.getConversationDeletionReceipt(context.chat_id);assert.equal(receipt.storageCleanupCompleted,true);assert.equal(receipt.serverCleanupCompleted,true)}
+  const prior=JSON.parse(store.sqlite.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(execution.id,`resource-generation-exit:${resource.step_execution_id}:0`).result_json);
+  assert.equal(prior.state,'sealed');assert.equal(prior.envelope.providerExitEvidence.schema,'provider-exit-evidence.v2');
+  assert.equal(prior.envelope.providerExitEvidence.neverStarted.length,1);assert.equal(prior.envelope.providerExitEvidence.runs.length,1);
+  verifyRetainedProviderExitEvidence(store.sqlite,prior.envelope.providerExitEvidence);
+  // Retirement audit capture requires the exact historical seal/link, even after replacement retires.
+  const capture=()=>store.sqlite.transaction(()=>captureBranchHostCut(store.sqlite,execution.id,selectBranchUnit(store.sqlite,execution.id)))();
+  assert.ok(capture());
+  for(const kind of ['retirement','seal','nonterminal']){
+   assert.throws(()=>store.sqlite.transaction(()=>{
+    if(kind==='nonterminal')store.sqlite.prepare("UPDATE coordination_requests SET state='open' WHERE id=(SELECT request_id FROM branch_attempts WHERE step_execution_id=? AND number=1)").run(resource.step_execution_id);
+    else store.sqlite.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(execution.id,`resource-generation-${kind==='seal'?'exit':'retired'}:${resource.step_execution_id}:0`);
+    assert.throws(capture,/owned Chat scope/);
+    throw Error('rollback historical audit adversary');
+   })(),/rollback historical audit adversary/);
+  }
  },{storeFactory:root=>(store=new AgentStore(root))});
 });
 

@@ -1818,6 +1818,22 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Deferred whole-implementation authorization; built workspaces and SQLite; inert Fastify injection only; no provider account",
       "origin": "G8 canonical live Run/fence/session task controls and durable no-replay receipt"
+    },
+    {
+      "path": "tests/organizations/provider-start-fencing.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/agents/core and existing SQLite addon; synthetic process handles and owned inert roots, disposable canonical stores; no provider account",
+      "origin": "Fenced-never-started lifecycle contract: creation coverage, admission/drain races, immutable receipts, legacy and restart holds"
+    },
+    {
+      "path": "tests/organizations/provider-exit-evidence.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/agents/core and existing SQLite addon; synthetic process handles and owned inert roots, disposable canonical stores; no provider account",
+      "origin": "Provider observed-exit evidence: exact Run/member/lifetime inventories, immutable receipts and failed-close holds"
     }
   ],
   "retainedReleasePayload": [
