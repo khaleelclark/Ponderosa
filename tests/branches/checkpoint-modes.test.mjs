@@ -55,6 +55,8 @@ test('mixed C/P/G written group waits only sync ancestor watermark, invalidates 
  await f.branches.unitSaver.drain();
  f.store.sqlite.prepare('UPDATE branch_executions SET parent_execution_id=? WHERE id=?').run(ids.G,ids.P);
  for(const name of ['C','D'])f.store.sqlite.prepare('UPDATE branch_executions SET parent_execution_id=? WHERE id=?').run(ids.P,ids[name]);
+ assert.equal(f.branches.functionalReady(ids.D),false,'old sync watermark cannot cover changed parent ownership');
+ f.branches.unitTransaction(()=>f.branches.selectedWrite(ids.C))();await f.branches.unitSaver.drain();
  assert.equal(f.branches.functionalReady(ids.D),true);
  let release;const held=new Promise(resolve=>{release=resolve});f.branches.unitSaver.lanes.set(ids.P,held);
  const before=rows(f).length;

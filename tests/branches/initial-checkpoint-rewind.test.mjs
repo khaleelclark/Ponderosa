@@ -66,8 +66,10 @@ test('owner mismatch, noncanceled and started sources cannot rewind',async t=>{
  assert.throws(()=>f.branches.rewindInitial(f.branch.id,source.id,checkpoint.id+1,checkpoint.contentHash,'rewind'),/not found/);
  const active=f.branches.accept(f.branch.id,'active','active');
  assert.throws(()=>f.branches.saveInitialCheckpoint(f.branch.id,active.id),/never started/);
- f.store.sqlite.prepare("UPDATE branch_executions SET state='queued',cancel_requested=0 WHERE id=?").run(source.id);
- await f.branches.unitSaver.drain();f.branches.advance();f.branches.cancel(source.id);
+ // Reopen this adversarial source with a real fresh invocation; a terminal canceled invocation cannot dispatch.
+ f.branches.unitTransaction(()=>{f.store.sqlite.prepare("UPDATE branch_executions SET state='queued',cancel_requested=0,checkpoint_invocation_json=NULL WHERE id=?").run(source.id);f.branches.ensureCheckpointInvocation(source.id);f.branches.selectedWrite(source.id);})();
+ for(let n=0;n<16&&!f.branches.execution(source.id).admittedAt;n++){await f.branches.unitSaver.drain();f.branches.advance();}
+ assert.ok(f.branches.execution(source.id).admittedAt);assert.ok(f.store.sqlite.prepare('SELECT 1 FROM branch_paths WHERE execution_id=?').get(source.id));f.branches.cancel(source.id);
  assert.throws(()=>f.branches.rewindInitial(f.branch.id,source.id,checkpoint.id,checkpoint.contentHash,'rewind'),/never started/);
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_initial_rewinds').get().n,0);
 });
@@ -137,7 +139,7 @@ for(const kind of ['parallel','map','human_gate'])test('INITIAL rewind admits a 
  const script=id=>({id,kind:'script',runtime:'node',source:'console.log("owned fixture")',cwdRef:'root',timeoutMs:5000});
  const edge=(id,from,to,on='success')=>({id,from,to,on});
  const graph=kind==='parallel'?{entry:'fork',steps:[script('a'),script('b')],controls:[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['a-arm','b-arm']}],edges:[edge('a-arm','fork','a','selected'),edge('b-arm','fork','b','selected'),edge('a-in','a','join'),edge('b-in','b','join')]}:
-  kind==='map'?{entry:'map',steps:[script('worker')],controls:[{id:'map',kind:'map',joinId:'join',workerId:'worker',source:'list',maxItems:4,maxConcurrentItems:2},{id:'join',kind:'join',forkId:'map',mode:'all',remainder:'finish',inputOrder:[]}],edges:[edge('worker-end','worker','join')]}:
+  kind==='map'?{entry:'map',steps:[script('worker')],controls:[{id:'map',kind:'map',joinId:'join',workerId:'worker',source:'list',maxItems:4,maxConcurrentItems:2},{id:'join',kind:'join',forkId:'map',mode:'all',remainder:'finish',inputOrder:[]}],edges:[edge('map-worker','map','worker','selected'),edge('worker-end','worker','join')]}:
   {entry:'review',steps:[{id:'review',kind:'human_gate',prompt:'Review fresh invocation',editable:true}],controls:[],edges:[]};
  const f=fixture(t,{graph}),{source,checkpoint}=canceled(f);assert.equal(checkpoint.restoreSupported,true);f.reopen();
  const next=f.branches.rewindInitial(f.branch.id,source.id,checkpoint.id,checkpoint.contentHash,'general-before-entry');

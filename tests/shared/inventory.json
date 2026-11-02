@@ -1834,6 +1834,22 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server/agents/core and existing SQLite addon; synthetic process handles and owned inert roots, disposable canonical stores; no provider account",
       "origin": "Provider observed-exit evidence: exact Run/member/lifetime inventories, immutable receipts and failed-close holds"
+    },
+    {
+      "path": "tests/branches/foreign-checkpoint-continuation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; locked existing dependencies; inert private fixtures, no provider account",
+      "origin": "Register existing deferred fixture with the owned workspace resolver"
+    },
+    {
+      "path": "tests/organizations/group-capture-abandonment.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; locked existing dependencies; inert private fixtures, no provider account",
+      "origin": "Register existing deferred fixture with the owned workspace resolver"
     }
   ],
   "retainedReleasePayload": [
