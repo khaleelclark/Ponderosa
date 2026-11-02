@@ -14,7 +14,7 @@ function currentOwners(db:Database.Database,c:Row):void {
  for(const o of c.owners){
   const e=o.selected.execution[0],row=db.prepare(`SELECT b.enabled,b.deleting,b.active_version_id,b.binding_revision_id,b.configuration_json current_configuration,e.configuration_json
    FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=?`).get(o.executionId) as Row|undefined;
-  if(!row?.enabled||row.deleting||row.active_version_id!==o.versionId||row.binding_revision_id!==o.bindingRevisionId||row.current_configuration!==row.configuration_json)throw Error('Current tree owner pins unavailable');
+  if(!row?.enabled||row.deleting||row.active_version_id!==o.versionId||row.binding_revision_id!==o.bindingRevisionId||stableJson(JSON.parse(row.current_configuration))!==stableJson(JSON.parse(row.configuration_json)))throw Error('Current tree owner pins unavailable');
   const r=o.selected.resources[0],ids=JSON.parse(r.import_operation_json).result.agentIds;
   if(!db.prepare('SELECT 1 FROM conversations WHERE id=? AND branch_id=?').get(r.chat_id,e.branch_id))throw Error('Tree resource Chat owner differs');
   for(const id of ids)if(!db.prepare('SELECT 1 FROM agents WHERE id=? AND conversation_id=? AND deleted_at IS NULL').get(id,r.chat_id)

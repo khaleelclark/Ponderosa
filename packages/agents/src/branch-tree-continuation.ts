@@ -132,7 +132,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       const visited=new Set<string>();let current:Row|undefined=o;
       while(current?.executionId!==c.rootExecutionId){if(!current||visited.has(current.executionId))return false;visited.add(current.executionId);current=owners.find(row=>row.executionId===current!.selected.execution[0].parent_execution_id);}
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
-    const waiting=resourceFrontier||Object.values(children).some(child=>!child.completed);
+    const waiting=resourceFrontier&&!issuedResource||Object.values(children).some(child=>!child.completed);
     if(!terminal&&!hasParallelControls(definition)&&(e.state!==(waiting?'waiting':'running')))return false;
     const context:ScriptOwnerContext={resourceFrontier,...(issuedResource?{issuedResource:true,issuedOwnerTree:true}:{}),terminal,terminalState:terminal?e.state:undefined,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state===e.state};
     if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context,o.hostDependencies))return false;

@@ -36,7 +36,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
     const e=selected.execution![0],p=selected.paths![0],terminal=context?.terminal===true;
     if(context?.resourceCleanup&&(!context.issuedResource||!context.resourceFrontier||!terminal
-      ||selected.resources![0]?.state!=='draining'||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
+      ||!['active','draining'].includes(selected.resources![0]?.state)||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
     const waitingGate=!context&&selected.gates!.some(g=>g.state==='waiting');
     const waiting=context?.waiting||waitingGate;
     if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':'manual')
@@ -88,10 +88,10 @@ export function resourceReservationSupported(selected:Selected,definition:Branch
   const step=selected.steps?.find(s=>s.id===p?.step_execution_id),agent=definition.steps.find(s=>s.id===step?.step_id);
   return selected.resources?.length===1&&!!e&&!!r&&!!step&&agent?.kind==='agent'&&agent.target.kind==='ephemeral_organization'
     &&definition.steps.filter(s=>s.kind==='agent').length===1&&!definition.steps.some(s=>s.kind==='branch_call')
-    &&r.execution_id===e.id&&r.step_execution_id===step.id&&step.state==='prepared'&&r.state==='reserved'&&Number.isSafeInteger(r.generation)&&r.generation>=0&&r.retry_draining===0
+    &&r.execution_id===e.id&&r.step_execution_id===step.id&&step.state==='prepared'&&r.state==='reserved'&&r.generation===0&&r.retry_draining===0
     &&r.error===null&&(r.root_agent_id===null&&r.chat_id===null&&r.chat_operation_json===null&&r.import_operation_json===null||!!retainedResourceCapture(selected))
     &&r.template_ref===agent.target.templateRef&&r.requested_count===definition.templates?.[r.template_ref]?.agents.length
-    &&r.requested_count<=(definition.policy.maxEphemeralAgents??100)&&(r.creation_key===`branch-resource:${step.id}`||r.creation_key===`branch-resource:${step.id}:${r.generation}`);
+    &&r.requested_count<=(definition.policy.maxEphemeralAgents??100)&&r.creation_key===`branch-resource:${step.id}`;
 }
 export function encodeScriptContinuation(db:Database.Database,executionId:string,selected:Selected,hostCut?:BranchHostCut):Row|undefined {
   const owner=db.prepare(`SELECT e.configuration_json,v.definition_json,v.content_hash version_hash,b.content_hash binding_hash,b.bindings_json

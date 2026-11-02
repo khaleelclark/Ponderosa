@@ -49,7 +49,7 @@ export function issuedResourceContinuationSupported(db:Database.Database,executi
   verifyHostProvenance(host);
   if(!selected.resources)return false;
   const resourceCleanup=e.state==='waiting'&&selected.paths?.length===1&&selected.paths[0]?.state==='completed';
-  if(resourceCleanup&&(e.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'||selected.resources[0]?.state!=='draining'))return false;
+  if(resourceCleanup&&(e.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'||!['active','draining'].includes(selected.resources[0]?.state)))return false;
   const retry=c.generationRetry?generationOneReplay(db,selected,host,c.generationRetry):undefined;
   if(selected.resources[0]?.generation>0&&!retry||retry&&c.group)return false;
   const context:ScriptOwnerContext={...(retry?{resourceRetry:retry}:{}),resourceFrontier:true,issuedResource:true,...(c.group===true?{issuedGroup:true}:{}),resourceCleanup,terminal:e.state==='completed'||resourceCleanup,waiting:e.state==='waiting'&&!resourceCleanup,descendantTraversals:0,descendantLoops:0,children:{}};

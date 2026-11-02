@@ -11,6 +11,13 @@ import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore,stableJson,readIssuedResourceContinuation,reconstructIssuedResourceContinuation,issuedResourceContinuationSupported,readDestinationHistoricalPartition,destinationHistoricalFacts} from '../../packages/agents/dist/index.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
+// Raw delete/reinsert models storage corruption while retaining the UPDATE immutability guard.
+function corruptCheckpoint(db,id,bytes,digest){
+ const row=db.prepare('SELECT * FROM branch_unit_snapshots WHERE id=?').get(id);assert.ok(row);
+ assert.throws(()=>db.prepare('UPDATE branch_unit_snapshots SET content_hash=? WHERE id=?').run(digest,id),/immutable/);
+ db.transaction(()=>{db.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(id);db.prepare('INSERT INTO branch_unit_snapshots(id,execution_id,snapshot_json,content_hash) VALUES(?,?,?,?)').run(id,row.execution_id,bytes,digest);})();
+}
+
 function fixture(t,mode='async',loop=false,secret=false,exitHistory=false,chainHistory=false,sharedState=false){
  const dir=mkdtempSync(join(tmpdir(),'historical-rewind-'));let store,branches;
  const open=()=>{store=new AgentStore(dir);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));};open();
@@ -1028,7 +1035,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
   if(onIssued)await onIssued({stepId:r.step_execution_id,generation:r.generation,agentId:agent.id,chatId:temporary.id});
   const preview=store.previewAgentDeletion([agent.id]);store.deleteAgentSubtrees([agent.id],preview.previewHash,x=>coordination.handleAgentDeletion(x));
   const receipt=store.commitConversationDeletion(temporary.id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(temporary.id);branches.resourceRetired(r.step_execution_id);await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');
-  return {chatId:temporary.id,agentId,chatToken,token};
+  return {chatId:temporary.id,agentId,chatToken,token,deletionPreviewHash:preview.previewHash};
  };
  return {get store(){return store},get branches(){return branches},branch,parent,root,source,claim,settle,reservation,advance,capture,resume,finish,async reopen(){await branches.unitSaver.drain();store.close();open();}};
 }
@@ -1043,6 +1050,12 @@ for(const mode of ['async','sync','exit'])test(`resource reservation ${mode} exe
  for(const a of f.branches.detail(first.id).attempts){assert.equal(a.fence,0);const row=f.store.sqlite.prepare('SELECT lease_owner,lease_until,process_identity_json FROM branch_attempts WHERE id=?').get(a.id);assert.deepEqual(row,{lease_owner:null,lease_until:null,process_identity_json:null});}
  f.resume(first.id);const firstEffects=await f.finish(first.id);assert.notEqual(firstEffects.agentId,sourceEffects.agentId);assert.notEqual(firstEffects.chatId,sourceEffects.chatId);assert.notEqual(firstEffects.token,sourceEffects.token);
  const second=f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'resource-B');await f.advance(second.id);const secondEffects=await f.finish(second.id);assert.notEqual(secondEffects.token,firstEffects.token);assert.notEqual(secondEffects.agentId,firstEffects.agentId);await f.reopen();const counts=allocationCounts(f);assert.equal(f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'resource-B').id,second.id);assert.deepEqual(allocationCounts(f),counts);
+ const db=f.store.sqlite,target=f.reservation(second.id),attempt=db.prepare('SELECT * FROM branch_attempts WHERE step_execution_id=?').get(target.step_execution_id),request=db.prepare('SELECT * FROM coordination_requests WHERE id=?').get(attempt.request_id);
+ for(const corrupt of [
+  ()=>db.prepare('UPDATE branch_attempts SET request_id=? WHERE id=?').run('foreign-opening',attempt.id),
+  ()=>db.prepare("DELETE FROM branch_checkpoints WHERE execution_id=? AND transition_key=?").run(second.id,`resource-bound:${target.step_execution_id}:${target.generation}`),
+  ()=>db.prepare("UPDATE coordination_idempotency SET result_json=? WHERE project_id=? AND actor_scope=? AND operation='coordinate' AND idempotency_key=?").run(stableJson({requestIds:['foreign-opening']}),request.project_id,`branch:${second.id}`,attempt.id),
+ ])assert.throws(()=>db.transaction(()=>{corrupt();assert.throws(()=>f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'resource-B'),/Tree mapped attempt ownership failure/);assert.deepEqual(allocationCounts(f),counts);throw Error('restore opening proof');})(),/restore opening proof/);
  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_step_executions WHERE execution_id=? AND step_id='prefix'").get(second.id).n,1);assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
 });
 async function completedReservationHistory(t,mode='async'){
@@ -1065,6 +1078,10 @@ for(const kind of ['count','generation','foreignStep','resourceAudit','missingAu
  if(kind==='count')r.requested_count++;if(kind==='generation')r.generation++;if(kind==='foreignStep')r.step_execution_id='foreign-step';if(kind==='resourceAudit'){const audit=o.audit.find(a=>a.kind==='resource_reserved');audit.evidence_json=JSON.stringify({count:99,templateRef:r.template_ref});}if(kind==='missingAudit')o.audit=o.audit.filter(a=>a.kind!=='resource_reserved');if(kind==='lease')o.selected.attempts.find(a=>a.state==='prepared').fence=1;if(kind==='result')o.selected.sealedResults[0].content_hash='bad';if(kind==='counter')o.selected.execution[0].traversals++;
  cp.selected=o.selected;const {stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js'),bytes=stableJson(cp),id=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,hash(bytes)).lastInsertRowid),before=allocationCounts(f);
  assert.equal(f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(c=>c.id===id).restoreSupported,false);assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash(bytes),'bad-resource-prefix'),/integrity unsupported/);assert.deepEqual(allocationCounts(f),before);
+ if(kind==='generation'){
+  r.creation_key=`branch-resource:${r.step_execution_id}:${r.generation}`;const forged=stableJson(cp),forgedId=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,forged,hash(forged)).lastInsertRowid),unchanged=allocationCounts(f);
+  assert.equal(f.branches.historicalCheckpoints(f.branch.id,f.source.id).find(c=>c.id===forgedId).restoreSupported,false);assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,forgedId,hash(forged),'bad-generation-and-key'),/integrity unsupported/);assert.deepEqual(allocationCounts(f),unchanged);
+ }
 });
 for(const mode of ['async','sync','exit'])test(`resource reservation ${mode} unknown released Chat keeps custody and cannot rewind`,async t=>{
  const {f,a}=await completedReservationHistory(t,mode),next=f.branches.rewindHistorical(f.branch.id,f.source.id,a.id,a.contentHash,'resource-unknown');await f.advance(next.id);const b=await f.capture(next.id);assert.ok(b);f.resume(next.id);await f.branches.unitSaver.drain();const r=f.reservation(next.id),token=f.branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');assert.ok(token);await f.branches.unitSaver.drain();assert.equal(f.branches.releaseResourceChat(r.step_execution_id,r.creation_key,token),true);
@@ -1236,10 +1253,11 @@ for(const mode of ['async','sync','exit'])test(`prospective imported resource ${
  assert.deepEqual(journal.receipt,retained.receipt);assert.equal(journal.rootRef,retained.result.rootAgentId);
  assert.equal(resource.chat_id,null);assert.equal(resource.root_agent_id,null);assert.notEqual(resource.step_execution_id,retained.stepId);
  assert.equal(f.store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=?').get(resource.step_execution_id).request_id,null);
- const before=allocationCounts(f);await f.reopen();assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'retained-resource').id,fresh.id);assert.deepEqual(allocationCounts(f),before);
- assert.throws(()=>f.branches.resourceCaptureRelease(retained.stepId,'releasing'),/referenced/);
+ await f.branches.unitSaver.drain();const before=allocationCounts(f);await f.reopen();assert.equal(f.branches.rewindHistorical(f.branch.id,f.source.id,checkpoint.id,checkpoint.contentHash,'retained-resource').id,fresh.id);assert.deepEqual(allocationCounts(f),before);
+ assert.ok(f.branches.custodyLifecycle.references(retained.source).some(ref=>ref.kind==='checkpoint'||ref.key.startsWith('resource-restore:')));
+ assert.throws(()=>f.branches.resourceCaptureRelease(retained.stepId,'releasing'),/^Error: Checkpoint custody retains history\/admission references or unconfirmed owner cleanup$/);
  const inspection=f.branches.resourceInspection(retained.stepId);
- assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{commandKey:'referenced-release',expectedGeneration:inspection.generation,expectedCustodyId:inspection.custody.custodyId,expectedReceiptSha256:inspection.custody.receiptSha256}),/referenced/);
+ assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{commandKey:'referenced-release',expectedGeneration:inspection.generation,expectedCustodyId:inspection.custody.custodyId,expectedReceiptSha256:inspection.custody.receiptSha256}),/^Error: Checkpoint custody retains history\/admission references or unconfirmed owner cleanup$/);assert.deepEqual(allocationCounts(f),before);
 });
 
 // Deferred: source-only child custody, owner transaction rollback and restart readback.
@@ -1271,16 +1289,22 @@ for(const mode of ['async','sync'])test(`retained resource in ${mode} child owne
  assert.deepEqual(allocationCounts(f),allocated);
  for(let n=0;n<20&&f.branches.resourceRelease(resource.step_execution_id)!=='ready';n++){f.branches.advance();await f.branches.unitSaver.drain();}
  assert.equal(f.branches.resourceRelease(resource.step_execution_id),'ready','child release validates the mapped root receipt');
+ await f.branches.unitSaver.drain();const readyCounts=allocationCounts(f);
  f.store.sqlite.prepare('UPDATE conversation_deletion_receipts SET storage_cleanup_completed=0 WHERE conversation_id=?').run(retained.source.sourceChatId);
  assert.equal(f.branches.resourceRelease(resource.step_execution_id),'fenced','ancestor readback checks child source cleanup');
  assert.throws(()=>f.branches.rewindHistorical(f.parent.id,f.root.id,checkpoint.id,checkpoint.contentHash,'child-new-command'),/custody/);
- assert.deepEqual(allocationCounts(f),allocated);
+ assert.deepEqual(allocationCounts(f),readyCounts);
 });
 
 // Deferred public custody command invariants: no bytes are actually deleted by this mock engine.
 test('resource custody release command survives response loss and never selects a later generation',async t=>{
  const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
- let retained;await f.finish(f.source.id,async c=>{retained=c;});
+ let retained;const effects=await f.finish(f.source.id,async c=>{retained=c;});
+ const cleanup=f.store.getAgentDeletionReceiptByPreviewHash(effects.deletionPreviewHash);assert.ok(cleanup);f.store.finishAgentDeletionStorageCleanup(cleanup);f.store.markAgentDeletionServerCleanupComplete(cleanup.id);
+ const lifecycle=f.branches.custodyLifecycle,held=lifecycle.inspect(retained.source);assert.equal(held.releaseAllowed,false);
+ const checkpoints=held.references.filter(ref=>ref.kind==='checkpoint').map(ref=>({id:Number(ref.key),sha256:ref.sha256}));assert.ok(checkpoints.length);
+ lifecycle.retireCheckpoints(retained.source,{commandKey:'retire-opening-history-before-release',expectedRevision:held.revision,checkpoints});
+ assert.equal(lifecycle.inspect(retained.source).references.filter(ref=>ref.kind!=='command'||!ref.key.startsWith('resource-capture:')).length,0);
  const before=f.store.sqlite.prepare('SELECT * FROM branch_commands ORDER BY execution_id,command_key').all();
  const inspection=f.branches.resourceInspection(retained.stepId);
  assert.equal(inspection.generation,retained.source.intent.resourceGeneration);
@@ -1301,6 +1325,9 @@ test('resource custody release command survives response loss and never selects 
  assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM branch_commands ORDER BY execution_id,command_key').all(),statusBefore,'command inspection does not retry deletion');
  assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{...input,expectedGeneration:inspection.generation+1}),/conflict/);
  await f.reopen();
+ const pinKey='adversarial-new-original-custody-pin',pin=stableJson({receipt:retained.receipt});f.store.sqlite.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(f.source.id,pinKey,hash(pin),pin,new Date().toISOString());
+ const pinned=allocationCounts(f);assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,input),/^Error: Original resource custody release acquired conflicting references$/);assert.equal(calls,1);assert.deepEqual(allocationCounts(f),pinned);
+ f.store.sqlite.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,pinKey);
  // A later generation must not redirect an existing command's byte ownership.
  f.store.sqlite.prepare('UPDATE branch_resources SET generation=generation+1,creation_key=? WHERE step_execution_id=?').run('later-generation',retained.stepId);
  const recovered=create();recovered.setPackageEngine({releaseCheckpoint:async receipt=>{calls++;assert.deepEqual(receipt,retained.receipt);}});
@@ -1359,13 +1386,13 @@ test('issued resource seal binds later host facts and keeps ordinary rewind refu
   const sealedRow=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(saved.checkpointId);
   const changed=structuredClone(snapshot);changed.issuedResourceCustody.intent.hostCutSha256='a'.repeat(64);
   const substituted=stableJson(changed);
-  db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(substituted,hash(substituted),saved.checkpointId);
+  corruptCheckpoint(db,saved.checkpointId,substituted,hash(substituted));
   service.setPackageEngine({readCheckpoint:async()=>assert.fail('mismatched host digest must refuse before package access')});
   await assert.rejects(service.verifyHistoricalCustody(f.source.id,saved.checkpointId,hash(substituted)),/exact retained host graph/);
-  db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(sealedRow.snapshot_json,sealedRow.content_hash,saved.checkpointId);
-  service.setPackageEngine({readCheckpoint:async()=>{db.prepare('UPDATE branch_unit_snapshots SET content_hash=? WHERE id=?').run('f'.repeat(64),saved.checkpointId);return {};}});
+  corruptCheckpoint(db,saved.checkpointId,sealedRow.snapshot_json,sealedRow.content_hash);
+  service.setPackageEngine({readCheckpoint:async()=>{corruptCheckpoint(db,saved.checkpointId,sealedRow.snapshot_json,'f'.repeat(64));return {};}});
   await assert.rejects(service.verifyHistoricalCustody(f.source.id,saved.checkpointId,saved.checkpointHash),/changed during custody verification/);
-  db.prepare('UPDATE branch_unit_snapshots SET content_hash=? WHERE id=?').run(sealedRow.content_hash,saved.checkpointId);
+  corruptCheckpoint(db,saved.checkpointId,sealedRow.snapshot_json,sealedRow.content_hash);
   assert.equal(f.branches.issuedResourceCapturePending(stepId),false);
   assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,saved.checkpointId,saved.checkpointHash,'not-admitted'),/unsupported|continuation|settled/);
  });
@@ -1740,7 +1767,10 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
   assert.throws(()=>f.branches.generationExitCapture(f.source.id,stepId,0),/fence receipt differs/);
   db.prepare('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?').run(fenceJournal.result_json,f.source.id,fenceKey);
   assert.equal(f.branches.resourceCanRetire(stepId,ids),false);
-  assert.throws(()=>f.branches.reserveGenerationExit(f.source.id,stepId,0),/coverage|Run inventory|fence unavailable/);
+  const heldBefore=allocationCounts(f),heldJournal=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,fenceKey).result_json;
+  assert.ok(db.prepare("SELECT 1 FROM agent_activations WHERE agent_id IN (SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?) AND state IN ('pending','attached','retry_pending','outcome_unknown')").get(stepId));
+  assert.throws(()=>f.branches.reserveGenerationExit(f.source.id,stepId,0),/^Error: Generation participant effects remain unresolved$/);
+  assert.deepEqual(allocationCounts(f),heldBefore);assert.equal(db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,fenceKey).result_json,heldJournal);
   const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
   const authority=new ProviderProcessAuthority(db,'inert-generation-provider');const handles=new Map();authority.recover=identity=>handles.get(identity.pid);
   for(const [index,agentId] of ids.entries()){
@@ -1799,8 +1829,8 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
    const sourceReservation={...historicalReservation,checkpointHash:hash(stableJson(retainedSnapshot))};
    const entries=commitDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},'review-hash');
    // Retained source validation must preserve the REAL admission ID after original seal removal.
-   const auditSource=new CoordinationV3DestinationAdmissionAuthority(db,()=>{throw Error('Audit cannot deliver');},true);
-   const admissionRow={id:'partition-rollback',state:'admitted',reservation_json:stableJson(sourceReservation),reservation_hash:hash(stableJson(sourceReservation)),snapshot_json:stableJson(retainedSnapshot)};
+   // This partition-only fixture has no issued current owner; consumer source checks run on the genuine generation-one admission below.
+   const auditPartition=()=>readDestinationHistoricalPartition(db,sourceReservation,historicalStage,{requests:[]},'partition-rollback');
    const evidenceReceipt={reviewHash:'review-hash',historicalPartition:entries};
    verifyDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},evidenceReceipt);
    evidenceReceipt.reviewHash='changed';assert.throws(()=>verifyDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},evidenceReceipt),/receipt differs/);evidenceReceipt.reviewHash='review-hash';
@@ -1809,14 +1839,13 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
    assert.throws(readHistory,/sealed historical/);
    verifyDestinationHistoricalPartition(db,'partition-rollback',sourceReservation,historicalStage,{requests:[]},evidenceReceipt);
    const auditChanges=db.prepare('SELECT total_changes() n').get().n;
-   assert.deepEqual(auditSource.source(admissionRow,'audit').reservation,sourceReservation);
+   assert.deepEqual(auditPartition()[0].seal,sealed);
    assert.equal(db.prepare('SELECT total_changes() n').get().n,auditChanges);
-   assert.throws(()=>auditSource.source(admissionRow),/Group Chat reservation map/);
-   assert.throws(()=>auditSource.source({...admissionRow,id:undefined},'audit'),/sealed historical/);
+   assert.throws(()=>readDestinationHistoricalPartition(db,sourceReservation,historicalStage,{requests:[]}),/sealed historical/);
    const immutable=db.prepare("SELECT receipt_sha256 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").get();
    db.exec('DROP TRIGGER host_lifecycle_commit_immutable_update');
    db.prepare("UPDATE host_lifecycle_commits SET receipt_sha256=? WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").run('0'.repeat(64));
-   assert.throws(()=>auditSource.source(admissionRow,'audit'),/Immutable historical evidence receipt differs/);
+   assert.throws(auditPartition,/Immutable historical evidence receipt differs/);
    db.prepare("UPDATE host_lifecycle_commits SET receipt_sha256=? WHERE kind='coordination-historical-partition' AND identity='partition-rollback'").run(immutable.receipt_sha256);
    throw Error('partition owner rollback');
   })(),/partition owner rollback/);
@@ -1824,7 +1853,7 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
   // Exact sealed evidence survives original cleanup; owner deletion is atomic.
   const branchId=sealed.identity.branchId;
   const beforeOwner=db.prepare('SELECT * FROM branches WHERE id=?').get(branchId);
-  assert.throws(()=>db.transaction(()=>{
+  assert.throws(()=>f.branches.unitTransaction(()=>{
    f.branches.beginDeletion(branchId);
    // Model already-drained unrelated owner metadata in this rollback-only fixture.
    db.prepare('UPDATE conversations SET branch_id=NULL,branch_execution_id=NULL WHERE branch_id=?').run(branchId);
@@ -1913,6 +1942,17 @@ for(const mode of ['async','sync'])test(`group reservation ${mode} holds every d
  db.prepare("UPDATE coordination_destination_admissions SET state='admitted' WHERE id=?").run(id);
  assert.equal(f.branches.checkpointDispatch(lease),'ready');
 });
+
+// These inert Requests never have a scheduler consumer; cancel their pending activations canonically.
+function cancelInertGroupActivations(f,issued){
+ const db=f.store.sqlite,coordination=new CoordinationV3Store(db);
+ for(const item of issued){
+  const agent=f.store.getAgent(item.agentId);assert.ok(agent);
+  assert.equal(db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown')").get(agent.id),undefined);
+  for(const a of db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(agent.id))coordination.cancelPendingActivation({activationId:a.id,projectId:agent.projectId,idempotencyKey:`inert-group-drain:${a.id}`});
+  assert.equal(db.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','attached','retry_pending','outcome_unknown')").get(agent.id),undefined);
+ }
+}
 
 // Deferred complete host consumer source. Package bytes/import effects are inert
 // adapters; Branch/Runtime/Chat/Step/Request/disclosure/transaction writers are real.
@@ -2021,10 +2061,10 @@ test('two-resource saved host/custody omission or rehashed changed generation re
  const x=await twoIssuedResources(t,'async'),{f,input}=x,db=f.store.sqlite,row=db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(input.checkpointId),original=JSON.parse(row.snapshot_json);
  for(const mutate of [s=>s.issuedGroupCustody.pop(),s=>s.selected.resources[1].generation++,s=>s.issuedContinuation.audit.splice(s.issuedContinuation.audit.findIndex(e=>e.kind==='resource_created'),1)]){
   const value=structuredClone(original);mutate(value);if(value.issuedContinuation.audit)value.issuedContinuation.auditSha256=hash(stableJson(value.issuedContinuation.audit));
-  const changedHash=hash(stableJson(value));db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(stableJson(value),changedHash,input.checkpointId);
+  const changedHash=hash(stableJson(value));corruptCheckpoint(db,input.checkpointId,stableJson(value),changedHash);
   await assert.rejects(x.service().prepare(f.branch.id,f.source.id,{...input,expectedHash:changedHash}),/integrity|custody|unsupported/);assert.equal(x.imports,0);
  }
- db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,input.expectedHash,input.checkpointId);
+ corruptCheckpoint(db,input.checkpointId,row.snapshot_json,input.expectedHash);
 });
 
 // Deferred count/order extensions use the same complete canonical host fixture.
@@ -2085,10 +2125,10 @@ test('parallel three-resource rehashed audit/custody/member tampering refuses be
   const value=structuredClone(original);mutate(value);value.issuedContinuation.auditSha256=hash(stableJson(value.issuedContinuation.audit));
   for(const member of value.hostDependencies.resourceMembers)member.sha256=hash(stableJson(member.row));
   value.issuedContinuation.hostCutSha256=hash(stableJson(value.hostDependencies));
-  const changedHash=hash(stableJson(value));db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(stableJson(value),changedHash,input.checkpointId);
+  const changedHash=hash(stableJson(value));corruptCheckpoint(db,input.checkpointId,stableJson(value),changedHash);
   await assert.rejects(x.service().prepare(f.branch.id,f.source.id,{...input,expectedHash:changedHash}),/integrity|custody|unsupported/);assert.equal(x.imports,0);
  }
- db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,input.expectedHash,input.checkpointId);
+ corruptCheckpoint(db,input.checkpointId,row.snapshot_json,input.expectedHash);
 });
 
 for(const parallel of [false,true])test(`group ${parallel?'parallel':'serial'} discovery validates keys and legacy capture disposition`,async t=>{
@@ -2122,7 +2162,7 @@ test('group discovery pagination rejects changed inventory and finds partial exa
 for(const parallel of [false,true])test(`partial group ${parallel?'parallel':'serial'} abandonment commits one disposition and fences revival`,async t=>{
  const x=await twoIssuedResources(t,'sync',3,parallel,parallel?[]:[0,1],true),{f}=x,db=f.store.sqlite;
  for(const item of x.issued)if(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(item.request).state!=='completed')x.complete(item);
- f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();cancelInertGroupActivations(f,x.issued);
  const row=db.prepare("SELECT command_key,result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id),l=f.branches.custodyLifecycle;
  const originalSources=JSON.parse(row.result_json).sources,nonFirst=originalSources[1].intent.resourceStepId;
  db.prepare('UPDATE branch_resources SET generation=generation+1 WHERE step_execution_id=?').run(nonFirst);
@@ -2147,7 +2187,7 @@ for(const parallel of [false,true])test(`partial group ${parallel?'parallel':'se
 test('whole-group host filesystem success and SQL failure retain all canonical Branch pins',async t=>{
  const x=await twoIssuedResources(t,'sync',3,false,[0,1],true),{f}=x,db=f.store.sqlite;
  for(const item of x.issued)if(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(item.request).state!=='completed')x.complete(item);
- f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();cancelInertGroupActivations(f,x.issued);
  const row=db.prepare("SELECT * FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id),capture=JSON.parse(row.result_json);
  const payload='inert original package bytes';
  capture.receipts=capture.receipts.map(receipt=>({...receipt,sha256:hash(payload),byteLength:Buffer.byteLength(payload)}));
@@ -2231,9 +2271,9 @@ for(const mode of ['async','sync'])test(`called issued owner tree ${mode} captur
  assert.equal(maps.actionEligible,false);assert.throws(()=>f.branches.beginDeletion(f.parent.id),/custody holds/);assert.throws(()=>f.branches.deleteBranch(f.branch.id),/custody holds/);
  assert.throws(()=>f.branches.rewindHistorical(f.parent.id,f.root.id,retained.checkpointId,retained.checkpointHash,'called-no-admission'),/unsupported|continuation|settled/);
  const row=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(retained.checkpointId);
- db.prepare('UPDATE branch_unit_snapshots SET content_hash=? WHERE id=?').run('f'.repeat(64),retained.checkpointId);
+ corruptCheckpoint(db,retained.checkpointId,row.snapshot_json,'f'.repeat(64));
  assert.throws(()=>f.branches.issuedTreeCapture(f.root.id,'called-tree'),/sealed checkpoint/);
- db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(row.snapshot_json,row.content_hash,retained.checkpointId);
+ corruptCheckpoint(db,retained.checkpointId,row.snapshot_json,row.content_hash);
  await f.reopen();assert.equal(f.branches.issuedTreeCapture(f.root.id,'called-tree').checkpointHash,retained.checkpointHash);
 });
 
@@ -2319,6 +2359,20 @@ for(const mode of ['async','sync'])for(const [parallel,generation,budgetOverride
  const destinationAttempts=db.prepare('SELECT a.* FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND s.id=?').all(prepared.destination.executionId,admitted.receipt.owner.resourceStepId);
  assert.deepEqual(destinationAttempts.map(a=>a.number),[generation+1]);
  assert.ok(requests.every(id=>!Object.hasOwn(admitted.receipt.requestMap,id)));assert.ok(agents.every(id=>!Object.hasOwn(admitted.receipt.agentMap,id)));
+ if(generation===1||!parallel){
+  // Real issued owner/custody and admission receipt exercise historical fallback without fabricated current pins.
+  const row=db.prepare('SELECT * FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId),sourceAudit=new CoordinationV3DestinationAdmissionAuthority(db,()=>assert.fail('audit cannot deliver'));
+  assert.throws(()=>db.transaction(()=>{
+   for(const seal of seals){db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key IN (?,?)').run(f.source.id,`resource-generation-exit:${seal.identity.stepId}:${seal.identity.generation}`,`resource-generation-retired:${seal.identity.stepId}:${seal.identity.generation}`);db.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(seal.checkpointId);}
+   const changes=db.prepare('SELECT total_changes() n').get().n;
+   assert.deepEqual(sourceAudit.source(row,'audit').reservation,JSON.parse(row.reservation_json));assert.equal(db.prepare('SELECT total_changes() n').get().n,changes);
+   assert.throws(()=>sourceAudit.source({...row,id:undefined},'audit'),/sealed historical/);assert.throws(()=>sourceAudit.source({...row,id:'foreign-admission'},'audit'),/^Error: Committed historical evidence receipt unavailable$/);
+   const immutable=db.prepare("SELECT receipt_sha256 FROM host_lifecycle_commits WHERE kind='coordination-historical-partition' AND identity=?").get(prepared.admissionId);
+   db.exec('DROP TRIGGER host_lifecycle_commit_immutable_update');db.prepare("UPDATE host_lifecycle_commits SET receipt_sha256=? WHERE kind='coordination-historical-partition' AND identity=?").run('0'.repeat(64),prepared.admissionId);
+   assert.throws(()=>sourceAudit.source(row,'audit'),/Immutable historical evidence receipt differs/);db.prepare("UPDATE host_lifecycle_commits SET receipt_sha256=? WHERE kind='coordination-historical-partition' AND identity=?").run(immutable.receipt_sha256,prepared.admissionId);
+   throw Error('restore genuine historical source');
+  })(),/restore genuine historical source/);
+ }
  await f.reopen();const read=await x.services().composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash);assert.deepEqual(read.receipt,admitted.receipt);
  const restartedResources=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));assert.deepEqual(restartedResources.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);
  // Original remaining budget is preserved, including policies above the evidence count bound.
@@ -2333,7 +2387,7 @@ for(const mode of ['async','sync'])for(const [parallel,generation,budgetOverride
 test('canonical owner deletion preserves selectable group capture and disposition atomically',async t=>{
  const x=await twoIssuedResources(t,'sync',2,false,[0],true),{f}=x,db=f.store.sqlite;
  for(const item of x.issued)if(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(item.request).state!=='completed')x.complete(item);
- f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();cancelInertGroupActivations(f,x.issued);
  const original=db.prepare("SELECT * FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-group-capture:%'").get(f.source.id);
  const review=f.branches.custodyLifecycle.inspectGroupCapture(f.source.id,original.command_key);
  assert.equal(review.abandonmentAllowed,true);
@@ -2348,7 +2402,10 @@ test('canonical owner deletion preserves selectable group capture and dispositio
   f.store.deleteAgentSubtrees([item.agentId],preview.previewHash,ids=>new CoordinationV3Store(db).handleAgentDeletion(ids));
   const deletion=f.store.commitConversationDeletion(item.chatId);
   f.store.finishConversationDeletionStorageCleanup(deletion);f.store.markConversationDeletionServerCleanupComplete(item.chatId);
+  f.branches.resourceRetired(item.stepId);await f.branches.unitSaver.drain();
  }
+ for(let n=0;n<20&&f.branches.execution(f.source.id).state!=='canceled';n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ assert.equal(f.branches.execution(f.source.id).state,'canceled');
  f.branches.beginDeletion(f.branch.id);f.branches.publishAudit(()=>{});await f.branches.unitSaver.drain();
  db.exec("CREATE TEMP TRIGGER reject_group_retention BEFORE INSERT ON host_lifecycle_commits WHEN NEW.kind='branch-group-journal-retention' BEGIN SELECT RAISE(ABORT,'retention failure'); END");
  assert.throws(()=>f.branches.deleteBranch(f.branch.id),/retention failure/);
@@ -2407,7 +2464,7 @@ async function calledTreeDestinationFixture(t,mode){
  for(const r of receipts){
   for(let n=0;n<8;n++){f.branches.advance();await f.branches.unitSaver.drain();}
   const deletion=f.store.previewAgentDeletion(r.agentIds);f.store.deleteAgentSubtrees(r.agentIds,deletion.previewHash,id=>coord().handleAgentDeletion(id));
-  const chat=f.store.commitConversationDeletion(r.sourceChatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(chat);f.branches.resourceRetired(r.intent.resourceStepId);await f.branches.unitSaver.drain();
+  const chat=f.store.commitConversationDeletion(r.sourceChatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(r.sourceChatId);f.branches.resourceRetired(r.intent.resourceStepId);await f.branches.unitSaver.drain();
  }
  for(let n=0;n<8;n++){f.branches.advance();await f.branches.unitSaver.drain();}
  assert.equal(f.branches.execution(f.root.id).state,'completed');assert.equal(f.branches.execution(f.source.id).state,'completed');
@@ -2418,9 +2475,9 @@ for(const mode of ['async','sync'])test(`called owner tree ${mode} retains exact
  const cp=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=?').get(input.checkpointId),forged=JSON.parse(cp.snapshot_json);
  const rootProof=forged.continuation.owners.find(o=>o.executionId===f.root.id),childProof=forged.continuation.owners.find(o=>o.executionId===f.source.id);
  childProof.bindingHash=rootProof.bindingHash;const forgedHash=hash(stableJson(forged));
- db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(stableJson(forged),forgedHash,input.checkpointId);
+ corruptCheckpoint(db,input.checkpointId,stableJson(forged),forgedHash);
  const {readIssuedGroup}=await import('../../packages/agents/dist/index.js');assert.throws(()=>readIssuedGroup(db,f.root.id,input.checkpointId,forgedHash),/integrity|replay|custody|differs/);
- db.prepare('UPDATE branch_unit_snapshots SET snapshot_json=?,content_hash=? WHERE id=?').run(cp.snapshot_json,cp.content_hash,input.checkpointId);
+ corruptCheckpoint(db,input.checkpointId,cp.snapshot_json,cp.content_hash);
  const accepted=db.prepare('SELECT count(*) n FROM branch_executions').get().n;
  db.prepare('UPDATE branches SET enabled=0 WHERE id=?').run(f.branch.id);
  await assert.rejects(s.prepare(f.parent.id,f.root.id,input),/owner unavailable/);assert.equal(db.prepare('SELECT count(*) n FROM branch_executions').get().n,accepted);

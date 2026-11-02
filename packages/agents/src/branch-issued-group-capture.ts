@@ -90,7 +90,7 @@ export function previewIssuedGroupCapture(db:Database.Database,executionId:strin
   ||selected.resources!.some(r=>r.generation!==0||r.retry_draining||!['active','draining'].includes(r.state)))throw Error('Two to thirty-two generation-zero issued resources required');
  const branch=db.prepare('SELECT enabled,deleting,active_version_id,binding_revision_id,configuration_json FROM branches WHERE id=?').get(e.branch_id) as Row;
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row;
- if(!branch?.enabled||branch.deleting||branch.active_version_id!==e.version_id||branch.binding_revision_id!==e.binding_revision_id||branch.configuration_json!==configuration.configuration_json)throw Error('Current group owner pins unavailable');
+ if(!branch?.enabled||branch.deleting||branch.active_version_id!==e.version_id||branch.binding_revision_id!==e.binding_revision_id||stableJson(JSON.parse(branch.configuration_json))!==stableJson(JSON.parse(configuration.configuration_json)))throw Error('Current group owner pins unavailable');
  const issuedContinuation=encodeIssuedResourceContinuation(db,executionId,selected,host,true);
  const sources=selected.resources!.map(r=>{
   const ids=JSON.parse(r.import_operation_json).result.agentIds as string[];
@@ -127,7 +127,7 @@ export function sealIssuedGroupMember(db:Database.Database,executionId:string,co
  const selected=selectBranchUnit(db,executionId),host=captureBranchHostCut(db,executionId,selected);
  const e=selected.execution![0]!,branch=db.prepare('SELECT enabled,deleting,active_version_id,binding_revision_id,configuration_json FROM branches WHERE id=?').get(e.branch_id) as Row;
  const config=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row;
- if(!branch?.enabled||branch.deleting||branch.active_version_id!==e.version_id||branch.binding_revision_id!==e.binding_revision_id||branch.configuration_json!==config.configuration_json)throw Error('Current group sealing pins changed');
+ if(!branch?.enabled||branch.deleting||branch.active_version_id!==e.version_id||branch.binding_revision_id!==e.binding_revision_id||stableJson(JSON.parse(branch.configuration_json))!==stableJson(JSON.parse(config.configuration_json)))throw Error('Current group sealing pins changed');
  for(const memberSource of v.sources)for(const id of memberSource.agentIds)if(!db.prepare('SELECT 1 FROM agents WHERE id=? AND conversation_id=? AND deleted_at IS NULL').get(id,memberSource.sourceChatId)
   ||db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? UNION ALL SELECT 1 FROM agent_deletion_pending WHERE agent_id=? LIMIT 1").get(id,id,id))throw Error('Group sealing participant drain changed');
  if(resourceCaptureFrontierHash(selected)!==source.intent.frontierSha256||payloadHash(host)!==source.intent.hostCutSha256

@@ -1,3 +1,4 @@
+import {verifyHostProvenance} from './branch-host-provenance.js';
 import {insertBranchExecutionTree,readBranchExecutionTree} from './branch-runtime-tree-package.js';
 import {validateBranchRuntimeData} from './branch-runtime-package.js';
 import {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';
@@ -15,7 +16,8 @@ import type {CoordinationDestinationAuthority} from './coordination-v3-destinati
 import {issuedResourceCapture,reserveIssuedResourceCapture,sealIssuedResourceCapture} from './branch-issued-resource-capture.js';
 import {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
 import {insertBranchFrontier} from './branch-frontier-storage.js';
-import {restoredRequestUpdatePayload} from './coordination-v3-cut-restoration-authority.js';
+import {restoredRequestUpdatePayload,validateHistoricalRequest} from './coordination-v3-cut-restoration-authority.js';
+import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
@@ -1283,7 +1285,7 @@ export class BranchStore {
         const map=line.idMap,remapped=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,map[id]])),o.executionId,target,canonical?.requestMap);
         for(const p of o.selected.paths){const row=this.row('SELECT execution_id FROM branch_paths WHERE id=?',map[p.id]);if(row?.execution_id!==target)throw Error('Tree mapped path ownership failure');}
         for(const step of remapped.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=?',step.id);if(!row||row.execution_id!==target||row.path_id!==step.path_id||['step_id','invocation','input_text'].some(key=>row[key]!==step[key]))throw Error('Tree mapped Step ownership failure');}
-        for(const a of remapped.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',a.id);if(!row||row.step_execution_id!==a.step_execution_id||row.number!==a.number||row.input_hash!==a.input_hash||row.request_id!==(a.request_id??null))throw Error('Tree mapped attempt ownership failure');}
+        for(const a of remapped.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',a.id);if(!row||row.step_execution_id!==a.step_execution_id||row.number!==a.number||row.input_hash!==a.input_hash||row.request_id!==(a.request_id??null)&&!(o.selected.resources.some((resource:Row)=>map[resource.step_execution_id]===a.step_execution_id)&&this.restoredResourceRequestOwned(target,a,row)))throw Error('Tree mapped attempt ownership failure');}
         for(const r of remapped.sealedResults!){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=?',r.id);if(!row||row.execution_id!==target||row.path_id!==r.path_id||row.step_execution_id!==r.step_execution_id||row.terminal_attempt_id!==r.terminal_attempt_id||row.result_json!==r.result_json||row.content_hash!==r.content_hash)throw Error('Tree mapped result ownership failure');}
         for(const resource of o.selected.resources){const row=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',map[resource.step_execution_id]);if(!row||row.execution_id!==target||row.template_ref!==resource.template_ref||row.requested_count!==resource.requested_count||row.creation_key!==`branch-resource:${map[resource.step_execution_id]}`)throw Error('Tree mapped resource ownership failure');const custody=retainedResourceCapture(o.selected),journal=this.resourceRestoreJournal(map[resource.step_execution_id]);if(custody&&(stableJson(journal?.receipt)!==stableJson(custody.receipt)||journal?.rootRef!==resource.root_agent_id||journal?.sourceStepId!==resource.step_execution_id))throw Error('Tree resource custody lineage differs');}
         if(o.executionId!==executionId){const child=this.row('SELECT * FROM branch_unit_snapshots WHERE id=? AND execution_id=?',evidence.childLineageId,target);
@@ -1351,6 +1353,23 @@ export class BranchStore {
     if(canonical)for(const o of ordered)if(!this.hasRunnableCapacity(mapped(o.executionId)!,true))throw Error('Restored tree graph capacity unavailable');
     this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,key,commandHash,stableJson({executionId:next.id,lineageId}),now);
     return this.execution(next.id)!;
+  }
+  /** A restored unbound resource may acquire its own opening Request after the immutable prefix. */
+  private restoredResourceRequestOwned(executionId:string,original:Row,current:Row):boolean {
+    if(original.request_id||original.state!=='prepared'||current.request_id!==`branch:${original.id}`)return false;
+    const resource=this.row('SELECT * FROM branch_resources WHERE execution_id=? AND step_execution_id=?',executionId,original.step_execution_id);
+    if(!resource)return false;
+    const operation=this.resourceOperation(resource.step_execution_id,'import'),request=this.row('SELECT * FROM coordination_requests WHERE id=?',current.request_id);
+    const bound=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='resource_created' AND transition_key=?",executionId,`resource-bound:${resource.step_execution_id}:${resource.generation}`);
+    const receipt=request&&this.row("SELECT result_json FROM coordination_idempotency WHERE project_id=? AND actor_scope=? AND operation='coordinate' AND idempotency_key=?",request.project_id,`branch:${executionId}`,original.id);
+    if(operation?.state!=='completed'||!request||request.requester_agent_id!==null||request.communication_event_id!==null||request.recipient_agent_id!==resource.root_agent_id||request.conversation_id!==resource.chat_id
+      ||!bound||bound.evidence_json!==stableJson({...operation.result,requestId:request.id,creationKey:resource.creation_key})
+      ||!receipt||stableJson(JSON.parse(receipt.result_json).requestIds)!==stableJson([request.id]))return false;
+    const host=captureBranchHostCut(this.sqlite,executionId,selectBranchUnit(this.sqlite,executionId));
+    if(!host?.coverage.complete||!verifyBranchHostCut(host,executionId)||!host.roots.some(root=>root.attemptId===original.id&&root.requestId===request.id))return false;
+    verifyHostProvenance(host);
+    validateHistoricalRequest(request,host.updates.filter(update=>update.row.request_id===request.id).map(update=>update.row).sort((a,b)=>a.resulting_version-b.resulting_version),host);
+    return true;
   }
   private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call"): BranchExecutionDto {
     return this.unitTransaction(() => {
@@ -1487,7 +1506,11 @@ export class BranchStore {
       const prior=this.resourceCustodyReleaseCommand(stepExecutionId,input.commandKey);
       if(prior){
         if(stableJson(prior.input)!==stableJson(input))throw Error('Resource custody release idempotency conflict');
-        if(prior.result.state!=='released')this.resourceCaptureRelease(stepExecutionId,'releasing');
+        if(prior.result.state!=='released'){
+          const original=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',prior.receipt.intent.executionId,prior.captureKey),capture=original&&JSON.parse(original.result_json);
+          if(!capture||original.input_hash!==payloadHash(capture.source)||!['releasing','released'].includes(capture.state)||stableJson(capture.receipt)!==stableJson(prior.receipt))throw Error('Original resource custody release intent unavailable');
+          if(this.custodyLifecycle.references(capture.source).some(ref=>ref.kind!=='command'||ref.ownerId!==prior.receipt.intent.executionId||ref.key!==prior.captureKey))throw Error('Original resource custody release acquired conflicting references');
+        }
         return {receipt:prior.receipt,result:prior.result};
       }
       const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),capture=this.resourceCaptureJournal(stepExecutionId);
