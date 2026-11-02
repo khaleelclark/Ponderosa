@@ -2,8 +2,9 @@ import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import type {PortableArtifactDto,PortableWorkingLinkDto} from '@ponderosa/core';
+import type {PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection} from '@ponderosa/core';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
+import {exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH} from './portable-reviewed-user-data.js';
 
 export function portableWorkingPath(value:unknown):string {
   if(typeof value!=='string'||!value||value.includes('\\')||value.includes('\0')||value.includes(':')||value.startsWith('/')||value.split('/').some(p=>!p||p==='.'||p==='..'))throw new Error('Select relative regular-file paths inside the working folder');
@@ -63,9 +64,9 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
 }
 
 /** Explicit selection only; no implicit traversal of user folders or native profiles. */
-export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[]):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
+export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
   const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
-  validateWorkingTopology(selected.map(path=>({path})),[],links);
+  validateWorkingTopology([...selected.map(path=>({path})),...(reviewedSelection?[{path:REVIEWED_USER_DATA_PATH}]:[])],[],links);
   const verifyLinks=async()=>{for(const link of links){
     const name=path.join(root,link.path);
     if(await fs.realpath(path.dirname(name))!==path.dirname(name))throw new Error('Working-link parent changed');
@@ -99,12 +100,22 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     artifacts.push({ref,kind:'document',path:relative,summary:relative,createdAt:new Date().toISOString(),mediaType:'application/octet-stream',dataBase64:data.toString('base64')});
   }
   await verifyLinks();
+  if(reviewedSelection){
+    const data=Buffer.from(JSON.stringify(await exportReviewedUserData(root,reviewedSelection)));
+    parseReviewedUserData(data);
+    bytes+=data.length;if(bytes>maxBytes)throw new Error('Reviewed Git/provider data exceeds the portable artifact limit');
+    const ref=randomUUID();files.push({path:REVIEWED_USER_DATA_PATH,artifactRef:ref,mode:0o600});
+    artifacts.push({ref,kind:'document',path:REVIEWED_USER_DATA_PATH,summary:'Inert Git and provider configuration review',createdAt:new Date().toISOString(),mediaType:'application/json',dataBase64:data.toString('base64')});
+  }
   return {files,artifacts,bytes};
 }
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
 export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[]):Promise<void>{
   validateWorkingTopology(files,directories,links);
+  const reviewedFile=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
+  if(reviewedFile&&createHash('sha256').update(reviewedFile.data).digest('hex')!==reviewedFile.sha256)throw new Error('Reviewed user-data identity changed');
+  const reviewedData=reviewedFile?parseReviewedUserData(reviewedFile.data):undefined;
   for(const link of links.filter(link=>link.kind==='hardlink'))validateWorkingFileData(link.path,files.find(file=>file.path===link.target)!.data);
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination)throw new Error('Choose an absolute new working-files destination');
   const parent=await fs.realpath(path.dirname(destination));
@@ -166,6 +177,20 @@ export async function importWorkingFiles(destination:string,files:readonly {path
         if(link.mtime)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
       }
     }
+    if(reviewedData){
+      // Separate repository only: never overwrite this working root's native-owned .git or provider settings.
+      if(reviewedData.git)await recreateReviewedGit(path.join(destination,'.ponderosa-portable-review','git-repository'),reviewedData.git);
+      if(reviewedData.providerFiles.length){
+        const folder=path.join(destination,'.ponderosa-portable-review','provider-files');await fs.mkdir(folder,{mode:0o700});
+        const manifest=[];
+        for(const [index,file] of reviewedData.providerFiles.entries()){
+          const reviewFile=`${index}.review`;
+          await fs.writeFile(path.join(folder,reviewFile),Buffer.from(file.dataBase64,'base64'),{flag:'wx',mode:0o600});
+          manifest.push({path:file.path,reviewFile,removedSecretFields:file.removedSecretFields});
+        }
+        await fs.writeFile(path.join(folder,'manifest.json'),JSON.stringify({activation:'inert_review_only',files:manifest},null,2),{flag:'wx',mode:0o600});
+      }
+    }
     for(const folder of [...directories].sort((a,b)=>b.path.split('/').length-a.path.split('/').length)){
       const target=path.join(destination,portableWorkingPath(folder.path));
       if(await fs.realpath(target)!==target)throw new Error('Destination directory changed');
@@ -187,6 +212,7 @@ export async function inventoryWorkingFolder(rootPath:string):Promise<{mode:numb
     for(const entry of (await fs.readdir(directory,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>10000)throw new Error('Whole working folder exceeds 10000 entries');
       const name=relative?`${relative}/${entry.name}`:entry.name;
+      if(name==='.ponderosa-portable-review')throw new Error('Existing imported review data requires explicit re-export selection; preserve it instead of replacing its originals');
       try{portableWorkingPath(name);}catch{excludedPaths.push(name);continue;}
       const stat=await fs.lstat(path.join(root,name),{bigint:true});
       if(stat.isSymbolicLink()){const link:PortableWorkingLinkDto={path:name,kind:'symlink',target:await fs.readlink(path.join(root,name)),mtime:stat.mtime.toISOString()};portableLinkTarget(link);links.push(link);continue;}

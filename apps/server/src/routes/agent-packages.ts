@@ -13,6 +13,7 @@ import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPac
 export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
 import {withoutPortableSecrets} from '../portable-secrets.js';
+import {validateReviewedUserDataSelection} from '../portable-reviewed-user-data.js';
 import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder} from '../portable-working-files.js';
 import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
 import {CapabilityPolicyStore} from '@ponderosa/agents';
@@ -88,6 +89,7 @@ export interface BranchPackageExportOptions {
   selectedWorkingFiles?:readonly string[];
   wholeWorkingFolder?:boolean;
   organizationWorkingFolders?:boolean;
+  reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection;
 }
 export interface BranchPackageImportOptions {
   signal?:AbortSignal;
@@ -678,9 +680,11 @@ export function registerAgentPackageRoutes(
     selectedWorkingFiles:readonly string[] = [],
     wholeWorkingFolder=false,
     organizationWorkingFolders=false,
+    reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,
   ): Promise<AgentPortablePackageDto> => {
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Select working files as an array of relative paths');
     if(selectedWorkingFiles.length&&requestedMode==='template')throw new AssetError(400,'Selected working files require a full export');
+    if(reviewedUserData){validateReviewedUserDataSelection(reviewedUserData);if(requestedMode==='template'||!wholeWorkingFolder&&!organizationWorkingFolders)throw new AssetError(400,'Git/settings review data requires full export and explicit working-folder selection');}
     const root = store.getAgent(agentId);
     if (!root || store.agentCreationPending(agentId)) throw new AssetError(404, "agent not found");
     // Context packages were an early V3.3 spelling of a full portable Agent.
@@ -904,7 +908,7 @@ export function registerAgentPackageRoutes(
       const folderInventory=firstRoot||agent.id===root.id&&wholeWorkingFolder?await inventoryWorkingFolder(sourceRoot):undefined;
       const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
       const workingFiles=(firstRoot||agent.id===root.id)&&(selectedPaths.length||folderInventory)
-        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links):undefined;
+        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?reviewedUserData:undefined):undefined;
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');artifacts.push(...workingFiles.artifacts);reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance
@@ -1062,6 +1066,7 @@ export function registerAgentPackageRoutes(
       workingFiles?: string;
       wholeWorkingFolder?: string;
       organizationWorkingFolders?:string;
+      reviewedUserData?:string;
     };
   }>("/api/agents/:id/export", async (request, reply) => withAgentImportAdmission(async () => {
     const requestedMode: AgentExportMode = ["template", "context", "full"]
@@ -1071,6 +1076,8 @@ export function registerAgentPackageRoutes(
     let selectedWorkingFiles:unknown=[];
     try{if(request.query.workingFiles)selectedWorkingFiles=JSON.parse(request.query.workingFiles);}catch{throw new AssetError(400,'Selected working files must be a JSON array');}
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Selected working files must be relative paths');
+    let reviewedUserData:import('@ponderosa/core').ReviewedUserDataSelection|undefined;
+    if(request.query.reviewedUserData!==undefined){try{const value:unknown=JSON.parse(request.query.reviewedUserData);validateReviewedUserDataSelection(value);reviewedUserData=value;}catch{throw new AssetError(400,'Choose explicit Git/settings review data');}}
     const result = await buildPortablePackage(
       request.params.id,
       requestedMode,
@@ -1078,6 +1085,7 @@ export function registerAgentPackageRoutes(
       selectedWorkingFiles as string[],
       request.query.wholeWorkingFolder==='true',
       request.query.organizationWorkingFolders==='true',
+      reviewedUserData,
     );
     if (result.mode === "full") reply.header("x-ponderosa-export-warning", FULL_PACKAGE_EXPORT_WARNING);
     if (request.query.download === "1") {
@@ -2711,7 +2719,7 @@ export function registerAgentPackageRoutes(
     exportMemory:async(chatId,agentIds)=>{const memory=localMemoryFor(app);if(!memory)throw new Error('Configure destination local memory before reviewing memory updates');return memory.exportPackageMemory(chatId,agentIds);},
     verifyStagedMemory:async(id,pkg)=>{if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for staged import verification');await memory.verifyStagedMemory(id,pkg);}},
     rollbackStagedMemory:async id=>{const memory=localMemoryFor(app);const plan=(store.getAgentCreationOperation(id)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan;if(plan?.length){if(!memory)throw new Error('Local memory configuration required for staged import cleanup');await memory.rollbackImportMemory(id);}},
-    exportAgent:(id,mode,options)=>withAgentImportAdmission(()=>buildPortablePackage(id,mode,options?.organization??false,options?.selectedWorkingFiles??[],options?.wholeWorkingFolder??false,options?.organizationWorkingFolders??false)),
+    exportAgent:(id,mode,options)=>withAgentImportAdmission(()=>buildPortablePackage(id,mode,options?.organization??false,options?.selectedWorkingFiles??[],options?.wholeWorkingFolder??false,options?.organizationWorkingFolders??false,options?.reviewedUserData)),
     importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
       let status=200,body:unknown;
       const response={code(value:number){status=value;return this;},send(value:unknown){body=value;return value;}} as unknown as FastifyReply;
