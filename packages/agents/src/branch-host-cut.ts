@@ -3,7 +3,8 @@ import type Database from 'better-sqlite3';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import type {Selected} from './branch-script-continuation.js';
 type Row=Record<string,any>;
-type Evidence={row:Row;sha256:string};
+export type Evidence={row:Row;sha256:string};
+export type HostEvidenceKey={ [K in keyof BranchHostCut]: BranchHostCut[K] extends Evidence[] ? K : never }[keyof BranchHostCut] & string;
 export interface BranchHostCut {
  schema:'ponderosa.branch.host-dependencies.v1';executionId:string;provenance?:HostProvenance;
  restoreAuthority:'fresh_admission_required';nativeState:'not_captured';artifactStorage:'references_only';

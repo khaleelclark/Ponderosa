@@ -144,7 +144,9 @@ export class BranchIssuedGroupDestinationService {
    const receipt=this.coordination.readCoordinationDestinationGroup(plan.admissionId,plan.reservationHash,this.authority());
    const saved=readIssuedGroup(this.db,executionId,plan.input.checkpointId,plan.input.expectedHash);
    for(const o of issuedGroupOwners(saved)){
-    const original=o.selected.execution[0],id=plan.ownerMap?.[o.executionId]??receipt.owners[0].executionId,e=this.branches.execution(id);
+    const original=o.selected.execution[0],id=plan.ownerMap?.[o.executionId]??receipt.owners[0]?.executionId;
+    if(!id)throw Error('Exact group owner receipt required');
+    const e=this.branches.execution(id);
     if(!e||e.branchId!==original.branch_id||(e.parentExecutionId??null)!==(original.parent_execution_id?plan.ownerMap[original.parent_execution_id]:null)||(e.parentAttemptId??null)!==(original.parent_attempt_id?plan.idMap[original.parent_attempt_id]:null))throw Error('Exact group owner ancestry readback differs');
    }
    for(const owner of receipt.owners){

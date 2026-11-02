@@ -142,13 +142,13 @@ export class BranchDisclosureReviewService {
   if(hash(after)!==hash(historical))throw Error('Historical custody changed during review');
   return this.db.transaction(()=>this.candidate(this.admission(branchId,executionId,id)))();
  }
- private active(row:Row,current:Row):boolean {
+ private active(current:Row):boolean {
   if(current.state!=='approved')return false;
   try{this.authorizeDisclosure(current.review);return true;}catch{return false;}
  }
  private receipt(row:Row,command:Row):BranchDisclosureReceipt {
   const current=this.state(row);
-  return {...command,active:command.revision===current.revision&&this.active(row,current)} as BranchDisclosureReceipt;
+  return {...command,active:command.revision===current.revision&&this.active(current)} as BranchDisclosureReceipt;
  }
  readCommand(branchId:string,executionId:string,id:string,key:string):BranchDisclosureReceipt {
   if(!keyValid(key))throw Error('Disclosure command key required');

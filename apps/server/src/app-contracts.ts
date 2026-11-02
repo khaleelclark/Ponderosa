@@ -3,7 +3,6 @@ import type WebSocket from "ws";
 import type {
   AgentEvent,
   EngineRegistration,
-  EngineCapabilities,
   ReadinessDto,
   RuntimeProcessHandle,
   RuntimeSession,

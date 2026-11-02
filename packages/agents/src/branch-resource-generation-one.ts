@@ -1,3 +1,4 @@
+import type {Evidence,HostEvidenceKey} from './branch-host-cut.js';
 import type Database from 'better-sqlite3';
 import type {CoordinationHistoricalGenerationSelection} from '@ponderosa/core';
 import {readGenerationExitCapture} from './branch-generation-exit-capture.js';
@@ -95,11 +96,11 @@ export function generationOneReplay(db:Database.Database,selected:Selected,host:
  if(stableJson(proof.selected)!==stableJson(selected)||stableJson(value)!==stableJson(expected))throw Error('Generation retry selected evidence differs');
  const frames=[...proof.generations.map(g=>g.seal.envelope.hostDependencies as BranchHostCut),host];
  if(host.roots.length!==1||host.roots[0]?.attemptId!==proof.current.id||host.roots[0]?.requestId!==proof.current.request_id||host.requests.some(q=>frames.slice(0,-1).some(old=>old.requests.some(p=>p.row.id===q.row.id))))throw Error('Current and retired roots differ');
- const merge=(key:keyof BranchHostCut)=>{
-  const map=new Map<string,Row>();for(const frame of frames)for(const record of frame[key] as Row[]){const row=record.row,id=row.id??(key==='members'?stableJson([row.join_id,row.request_id]):key==='suspensions'?stableJson([row.question_update_id,row.dependency_kind,row.dependency_id]):stableJson(row)),prior=map.get(id);if(prior&&stableJson(prior)!==stableJson(record))throw Error('Retry host evidence differs');map.set(id,record);}return [...map.values()];
+ const merge=(key:HostEvidenceKey)=>{
+  const map=new Map<string,Evidence>();for(const frame of frames)for(const record of frame[key]){const row=record.row,id=row.id??(key==='members'?stableJson([row.join_id,row.request_id]):key==='suspensions'?stableJson([row.question_update_id,row.dependency_kind,row.dependency_id]):stableJson(row)),prior=map.get(id);if(prior&&stableJson(prior)!==stableJson(record))throw Error('Retry host evidence differs');map.set(id,record);}return [...map.values()];
  };
  const replayHost={...host,roots:frames.flatMap(f=>f.roots),coverage:{complete:true,missingReferences:[],requestVersions:frames.flatMap(f=>f.coverage.requestVersions)},
-  requests:merge('requests'),updates:merge('updates'),lateResults:merge('lateResults'),joins:merge('joins'),members:merge('members'),suspensions:merge('suspensions'),communications:merge('communications'),joinOutcomes:merge('joinOutcomes'),artifactRefs:[]} as BranchHostCut;
+  requests:merge('requests'),updates:merge('updates'),lateResults:merge('lateResults'),joins:merge('joins'),members:merge('members'),suspensions:merge('suspensions'),communications:merge('communications'),joinOutcomes:merge('joinOutcomes'),artifactRefs:[]} satisfies BranchHostCut;
  verifyHostProvenance(host);
  return {...proof,replayHost,currentHost:host};
 }

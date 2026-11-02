@@ -177,7 +177,7 @@ export class LocalMemoryService{
   if(owner.executionId)throw new MemoryDenied('Temporary execution Chat memory is unsupported by the durable Chat lifetime policy');
   return {chat,owner};
  }
- async checkpointSourceDatabases(){await this.ready();this.core.database.assertSourceSettled();return [this.policy];}
+ async checkpointSourceDatabases():Promise<Database.Database[]>{await this.ready();this.core.database.assertSourceSettled();return [this.policy];}
  assertCheckpointSourceSettled(){this.core.database.assertSourceSettled();}
  ready(){return this.initialized??=this.initialize();}
  private async initialize(){

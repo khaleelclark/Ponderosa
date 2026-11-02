@@ -47,6 +47,7 @@ export function issuedResourceContinuationSupported(db:Database.Database,executi
   const definition=JSON.parse(version.definition_json) as BranchDefinition;
   if(stableJson(validateBranchConfiguration(c.configuration,definition,true))!==stableJson(c.configuration))return false;
   verifyHostProvenance(host);
+  if(!selected.resources)return false;
   const resourceCleanup=e.state==='waiting'&&selected.paths?.length===1&&selected.paths[0]?.state==='completed';
   if(resourceCleanup&&(e.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'||selected.resources[0]?.state!=='draining'))return false;
   const retry=c.generationRetry?generationOneReplay(db,selected,host,c.generationRetry):undefined;
@@ -75,7 +76,7 @@ export function readIssuedResourceContinuation(db:Database.Database,executionId:
 export function reconstructIssuedResourceContinuation(db:Database.Database,executionId:string,checkpointId:number,expectedHash:string,
  destination:{executionId:string;conversationId:string;resourceGeneration:number},
  maps:{idMap:Record<string,string>;requestMap:Record<string,string>;agentMap:Record<string,string>}) {
- const saved=readIssuedResourceContinuation(db,executionId,checkpointId,expectedHash),source=saved.selected.resources[0]!,ids=saved.custody.agentIds;
+ const saved=readIssuedResourceContinuation(db,executionId,checkpointId,expectedHash),source=saved.selected.resources![0]!,ids=saved.custody.agentIds;
  if(!destination.executionId||destination.executionId===executionId||!destination.conversationId||destination.conversationId===source.chat_id||destination.resourceGeneration!==0
   ||stableJson(Object.keys(maps.agentMap).sort())!==stableJson([...ids].sort())||new Set(Object.values(maps.agentMap)).size!==ids.length
   ||Object.values(maps.agentMap).some(id=>typeof id!=='string'||!id||ids.includes(id)))throw Error('Fresh complete destination resource mapping required');
@@ -87,9 +88,12 @@ export function reconstructIssuedResourceContinuation(db:Database.Database,execu
  const resource={step_execution_id:stepId,execution_id:destination.executionId,template_ref:source.template_ref,state:source.state,
   requested_count:ids.length,root_agent_id:maps.agentMap[source.root_agent_id],chat_id:destination.conversationId,generation:0,retry_draining:0,error:null,
   creation_key:`branch-resource:${stepId}`};
- const requestBindings=saved.hostDependencies.roots.map(root=>({sourceRequestId:root.requestId!,requestId:maps.requestMap[root.requestId!],
-  stepExecutionId:maps.idMap[saved.selected.attempts.find(a=>a.id===root.attemptId)!.step_execution_id]!}));
- const execution=saved.selected.execution[0]!;
+ const requestBindings=saved.hostDependencies.roots.map(root=>{
+  const requestId=root.requestId&&maps.requestMap[root.requestId],attempt=saved.selected.attempts!.find(a=>a.id===root.attemptId),stepExecutionId=attempt&&maps.idMap[attempt.step_execution_id];
+  if(!root.requestId||!requestId||!stepExecutionId)throw Error('Fresh complete destination Request binding required');
+  return {sourceRequestId:root.requestId,requestId,stepExecutionId};
+ });
+ const execution=saved.selected.execution![0]!;
  return {frontier,resource,agentIds:ids.map(id=>maps.agentMap[id]!),requestBindings,executionState:execution.state,
   executionCounters:{traversals:execution.traversals,loopIterations:execution.loop_iterations,depthCeiling:execution.depth_ceiling},
   sourceCheckpoint:{executionId,checkpointId,expectedHash},continuation:saved.continuation};

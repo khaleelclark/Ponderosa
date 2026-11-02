@@ -294,7 +294,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
  private facts(cut:BranchHostCut,stage:CoordinationDestinationStage):CoordinationDestinationReview['facts'] {
   const facts:CoordinationDestinationReview['facts']=[];
   const add=(kind:CoordinationDestinationReview['facts'][number]['kind'],id:string,sha256:string,originalAgentIds:string[],originalAudience:unknown={kind:'request_participants',agentIds:originalAgentIds.filter(Boolean)},originalActor?:unknown,additionalOriginalRecipients:string[]=[])=>{
-   const originals=unique(originalAgentIds.filter(Boolean)),destinations=unique([...originals,...additionalOriginalRecipients]).map(id=>stage.agentMap[id]);
+   const originals=unique(originalAgentIds.filter(Boolean)),destinations=unique([...originals,...additionalOriginalRecipients]).map(id=>{const mapped=stage.agentMap[id];if(!mapped)throw Error('Private fact audience lacks a destination mapping');return mapped;});
    if(destinations.some(id=>!id))throw Error('Private fact audience lacks a destination mapping');
    facts.push({kind,id,sha256,originalAgentIds:originals,destinationAgentIds:destinations,originalAudience,...(originalActor?{originalActor}:{})});
   };
@@ -340,7 +340,8 @@ export class CoordinationV3DestinationAdmissionAuthority {
    if(!request)throw Error('Artifact owner is outside the retained Request graph');
    const resource=resourcesOf(reservation).find(r=>r.custody.sourceChatId===request.conversation_id);if(!resource)throw Error('Artifact resource mapping unavailable');
    const plan=stage.imports?.[resource.custody.sourceChatId]??stage.importPlan;
-   const artifact=synchronous(authority.resolveArtifact({source,destinationId:stage.artifactMap[source.id],importArtifactId:plan.artifacts.find(a=>a.sourceRef===source.id)!.destinationId,projectId:resource.destination.projectId,agentIds:this.facts(cut,stage).find(f=>f.kind==='update'&&f.id===source.owner_id)!.destinationAgentIds}));
+   const destinationId=stage.artifactMap[source.id];if(!destinationId)throw Error('Destination artifact mapping unavailable');
+   const artifact=synchronous(authority.resolveArtifact({source,destinationId,importArtifactId:plan.artifacts.find(a=>a.sourceRef===source.id)!.destinationId,projectId:resource.destination.projectId,agentIds:this.facts(cut,stage).find(f=>f.kind==='update'&&f.id===source.owner_id)!.destinationAgentIds}));
    if(!runtimeArtifactMetadataIsValid(artifact)||artifact.id!==stage.artifactMap[source.id]||artifact.id===source.id||artifact.blobHash!==source.blob_hash||artifact.byteLength!==source.byte_length||artifact.role!==source.role||artifact.originAgentId||artifact.executionId)throw Error('Destination artifact lacks fresh authorized immutable content');
    if(this.db.prepare('SELECT 1 FROM runtime_artifacts WHERE id=?').get(artifact.id))throw Error('Destination artifact already has canonical ownership');
    return artifact;
@@ -369,7 +370,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   // Composer completes the real import and Branch owner-tree references before readiness/wakes.
   const composed=synchronous(compose(graph)),owners=Array.isArray(composed)?composed:[composed],resources=resourcesOf(reservation);
   if(Array.isArray(composed)!==this.group||owners.length!==resources.length||unique(owners.map(o=>o.resourceStepId)).length!==resources.length)throw Error('Exhaustive group owner receipts required');
-  this.verifyOwners(owners,reservation,stage,cut,graph);
+  this.verifyOwners(owners,reservation,stage,cut,graph,admissionId);
   if(payloadHash(policySnapshot())!==beforePolicy||synchronous(authority.authorizeDisclosure({admissionId,reservation,stage,facts:review.facts}))!==review.disclosureRevision)throw Error('Composer changed reviewed policy or disclosure authority');
   if(stableJson(destinationHistoricalFacts(readDestinationHistoricalPartition(this.db,reservation,stage,cut)))!==stableJson(review.facts.filter(f=>f.kind==='historical_generation')))throw Error('Composer changed reviewed historical evidence');
   const historicalPartition=commitDestinationHistoricalPartition(this.db,admissionId,reservation,stage,cut,reviewHash);
@@ -380,7 +381,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   this.db.prepare('UPDATE coordination_destination_admissions SET receipt_json=? WHERE id=?').run(stableJson(receipt),admissionId);
   return receipt;
  }
- private verifyOwners(owners:CoordinationDestinationOwnerReceipt[],reservation:CoordinationDestinationReservation,stage:CoordinationDestinationStage,cut:BranchHostCut,graph:import('@ponderosa/core').BranchHostGraphRestoreDto,audit=false):void {
+ private verifyOwners(owners:CoordinationDestinationOwnerReceipt[],reservation:CoordinationDestinationReservation,stage:CoordinationDestinationStage,cut:BranchHostCut,graph:import('@ponderosa/core').BranchHostGraphRestoreDto,admissionId:string,audit=false):void {
   const resources=resourcesOf(reservation);
   if(owners.length!==resources.length||unique(owners.map(o=>o.resourceStepId)).length!==resources.length||owners.some(o=>!Array.isArray(o.requestBindings)))throw Error('Exact resource owner inventory required');
   const allBindings=owners.flatMap(o=>o.requestBindings);
@@ -389,7 +390,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const d=resourceInput.destination,owner=owners.find(o=>o.resourceStepId===d.resourceStepId);
   if(this.group){
   const sourceOwner=cut.resources.find(e=>e.row.step_execution_id===resourceInput.custody.intent.resourceStepId)?.row.execution_id;
-  const retained=JSON.parse((this.db.prepare('SELECT snapshot_json FROM coordination_destination_admissions WHERE id=?').get(graph.destination!.admissionId) as Row).snapshot_json);
+  const retained=JSON.parse((this.db.prepare('SELECT snapshot_json FROM coordination_destination_admissions WHERE id=?').get(admissionId) as Row).snapshot_json);
   const branch=retainedBranchHostGraph(retained,reservation.sourceExecutionId,true,true).owners.find(o=>o.executionId===sourceOwner)?.branchId;
   const chat=this.db.prepare('SELECT project_id,branch_id,branch_execution_id AS execution_id FROM conversations WHERE id=?').get(d.conversationId) as Row|undefined;
   const execution=this.db.prepare('SELECT branch_id FROM branch_executions WHERE id=?').get(d.executionId) as Row|undefined;
@@ -528,7 +529,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(this.group&&(stableJson((receipt as import('@ponderosa/core').CoordinationDestinationGroupReceipt).resources)!==stableJson(reservation.resources)
     ||stableJson(graph.destination.conversationMap)!==stableJson(Object.fromEntries(resourcesOf(reservation).map(r=>[r.custody.sourceChatId,r.destination.conversationId])))))throw Error('Destination group receipt inventory differs');
   const owners=receipt.owners??[receipt.owner];
-  this.verifyOwners(owners,reservation,stage,cut,graph,audit);
+  this.verifyOwners(owners,reservation,stage,cut,graph,admissionId,audit);
   if(stableJson(receipt.owner)!==stableJson(owners.find(o=>o.resourceStepId===reservation.destination.resourceStepId)))throw Error('Anchored owner receipt differs');
   for(const id of receipt.activationIds){
    const activation=this.db.prepare('SELECT * FROM agent_activations WHERE id=?').get(id) as Row|undefined;

@@ -138,7 +138,7 @@ export class CoordinationV3CutRestorationAuthority {
   if(review.requests.some(r=>r.current.requiredSecretRefs.length))throw Error('Secret-dependent graph prefix remapping is not admitted');
   const execution=this.db.prepare('SELECT e.state,b.enabled FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=?').get(executionId) as Row;
   if(!execution.enabled||!['completed','failed','canceled'].includes(execution.state))throw Error('Historical graph source must settle');
-  const {cut}=this.graph(branchId,executionId,input.checkpointId,input.expectedHash),requests=cut.requests.map(({row})=>row),updates=cut.updates.map(({row})=>row),joins=cut.joins.map(({row})=>row);
+  const {cut}=this.graph(branchId,executionId,input.checkpointId,input.expectedHash),requests=cut.requests.map(({row})=>row),joins=cut.joins.map(({row})=>row);
   if(requests.some(r=>r.state==='outcome_unknown'||r.superseded_by_request_id))throw Error('Unknown outcomes or recovery chains require a separate disposition');
   if(review.requests.some(r=>!TERMINAL_REQUEST_STATES.has(r.current.requestState as any)))throw Error('Original graph must settle before fresh admission');
   const participants=[...new Set([...requests.flatMap(r=>[r.requester_agent_id,r.recipient_agent_id]),...joins.map(j=>j.owner_agent_id)].filter(Boolean))];

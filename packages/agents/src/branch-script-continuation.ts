@@ -36,7 +36,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     if(stableJson(Object.keys(selected).sort())!==stableJson(tables.sort())||tables.some(key=>!Array.isArray(selected[key])))return false;
     const e=selected.execution![0],p=selected.paths![0],terminal=context?.terminal===true;
     if(context?.resourceCleanup&&(!context.issuedResource||!context.resourceFrontier||!terminal
-      ||selected.resources[0]?.state!=='draining'||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
+      ||selected.resources![0]?.state!=='draining'||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
     const waitingGate=!context&&selected.gates!.some(g=>g.state==='waiting');
     const waiting=context?.waiting||waitingGate;
     if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':'manual')
@@ -314,9 +314,9 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           invocations.set(node!,s.invocation);seen.add(s.id);current=s;settled=false;traversals++;break;
         }
         case 'resource_created':{
-          const r=activeResource(current?.id),a=selected.attempts.find(a=>a.step_execution_id===r?.step_execution_id&&(!retry||a.id===(retry.generations[retryIndex]?.prior.id??retry.current.id)));
+          const r=activeResource(current?.id),a=selected.attempts!.find(a=>a.step_execution_id===r?.step_execution_id&&(!retry||a.id===(retry.generations[retryIndex]?.prior.id??retry.current.id)));
           const operation=r&&JSON.parse(r.import_operation_json);
-          if(!context?.issuedResource||!resourceReserved||!started||!current||current.id!==r?.step_execution_id||!a||!a.request_id
+          if(!context?.issuedResource||!resourceReserved||!started||!current||!r||current.id!==r.step_execution_id||!a||!a.request_id
             ||resourceOperations.get('import')?.state!=='completed'||boundRequests.has(a.id)
             ||event.transition_key!==`resource-bound:${current.id}:${r.generation}`
             ||stableJson(v)!==stableJson({...operation.result,requestId:a.request_id,creationKey:r.creation_key})
@@ -408,7 +408,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         }
         case 'resource_operation':{
           const r=activeResource(current?.id),c=r&&retainedResourceCapture(selected);
-          if(!context?.resourceFrontier||!resourceReserved||!current||r?.step_execution_id!==current.id||!c&&!context.issuedResource
+          if(!context?.resourceFrontier||!resourceReserved||!current||!r||r.step_execution_id!==current.id||!c&&!context.issuedResource
             ||v.schema!=='branch-resource-operation.v1'||!['chat','import'].includes(v.phase)||typeof v.token!=='string'
             ||!event.transition_key.startsWith(`resource-operation:${r.creation_key}:${v.phase}:${v.token}:${v.state}:`)
             ||!['running','completed'].includes(v.state))return false;
@@ -431,7 +431,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(context?.resourceCleanup||event.kind!==(context?.terminalState??'completed')||!context?.terminal||!finished||terminalObserved||v.output!==e.output_text)return false;terminalObserved=true;break;
         case 'step_settled':{
           const a=selected.attempts!.find(a=>a.id===v.attemptId);
-          if(retry&&a?.id===retry.generations[retryIndex]?.prior.id){
+          if(retry&&a&&a.id===retry.generations[retryIndex]?.prior.id){
             if(retrySettled||retryScheduled||!current||current.id!==a.step_execution_id||!boundRequests.has(a.id)||stableJson(v.result)!==a.result_json)return false;
             retrySettled=true;break;
           }

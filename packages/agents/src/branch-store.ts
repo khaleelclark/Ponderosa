@@ -992,7 +992,11 @@ export class BranchStore {
        this.state(next.id,'waiting',now,'Waiting for whole-group disclosure review');this.selectedWrite(next.id);
       }
       if(saved.captureKind==='issued_tree_group'&&!treeIdMapSupported(owners,{...idMap,...ownerMap},executionId,ownerMap[executionId]!))throw Error('Exact fresh owner tree map required');
-      const resources=allResources.map((resource:Row,index:number)=>({custody:saved.issuedGroupCustody.find((c:Row)=>c.intent.resourceStepId===resource.step_execution_id),destination:{projectId:scope.projectId,conversationId:scope.conversationIds[index],executionId:ownerMap[resource.execution_id],resourceStepId:idMap[resource.step_execution_id],resourceGeneration:0}}));
+      const resources=allResources.map((resource:Row,index:number)=>{
+       const conversationId=scope.conversationIds[index],destinationExecutionId=ownerMap[resource.execution_id],resourceStepId=idMap[resource.step_execution_id];
+       if(!conversationId||!destinationExecutionId||!resourceStepId)throw Error('Exact destination resource mapping required');
+       return {custody:saved.issuedGroupCustody.find((c:Row)=>c.intent.resourceStepId===resource.step_execution_id),destination:{projectId:scope.projectId,conversationId,executionId:destinationExecutionId,resourceStepId,resourceGeneration:0}};
+      });
       const inputReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,commandKey:input.commandKey,operatorId:scope.operatorId,reconcileEffects:true as const,resources};
       const reserved=this.coordination.reserveCoordinationDestinationGroup(inputReservation,authority,now);
       const reservation=JSON.parse(this.row('SELECT reservation_json FROM coordination_destination_admissions WHERE id=?',reserved.admissionId)!.reservation_json);
@@ -1600,7 +1604,7 @@ export class BranchStore {
   }
   resourceCaptureEligible(stepExecutionId:string):boolean {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),e=r&&this.execution(r.execution_id);
-    if(!e||Object.keys(e.configuration.secretBindings??{}).length||!scriptDefinitionSupported(this.definition(e),false,true)||this.definition(e).steps.filter(s=>s.kind==='agent').length!==1)return false;
+    if(!e||!e.configuration||Object.keys(e.configuration.secretBindings??{}).length||!scriptDefinitionSupported(this.definition(e),false,true)||this.definition(e).steps.filter(s=>s.kind==='agent').length!==1)return false;
     const selected=selectBranchUnit(this.sqlite,e.id);
     return selected.resources!.length===1&&selected.paths!.length===1&&!selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id);
   }
@@ -1618,7 +1622,7 @@ export class BranchStore {
       if(previous&&this.resourceCaptureAbandoned(stepExecutionId))throw Error('Resource capture was explicitly abandoned');
       if(previous)return previous.source;
       const execution=this.execution(r.execution_id)!,branch=this.getBranch(execution.branchId),selected=selectBranchUnit(this.sqlite,r.execution_id),imported=this.resourceOperation(stepExecutionId,'import');
-      if(!branch?.enabled||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration)
+      if(!execution.configuration||!branch?.enabled||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration)
         ||Object.keys(execution.configuration.secretBindings??{}).length||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)
         ||r.state!=='reserved'||!r.chat_id||imported?.state!=='completed'||!imported.creationOperationId
         ||selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.cancel_requested)||selected.resources!.length!==1)throw Error('Resource capture requires a current unissued imported generation');
@@ -1789,7 +1793,7 @@ export class BranchStore {
       if (!members.includes(result.rootAgentId) || members.length !== result.agentIds.length || result.agentIds.some(id=>!members.includes(id))) throw new Error("Tracked resource identities do not match reservation");
       const execution = this.execution(r.execution_id)!, chat = this.chat(r.chat_id);
       const capture=this.resourceCaptureJournal(stepExecutionId);
-      if(capture){const branch=this.getBranch(execution.branchId);if(!branch?.enabled||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration))throw Error('Current resource opening pins or authority changed');}
+      if(capture){const branch=this.getBranch(execution.branchId);if(!execution.configuration||!branch?.enabled||branch.versionId!==execution.versionId||branch.bindingRevisionId!==execution.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(execution.configuration))throw Error('Current resource opening pins or authority changed');}
       const attempt = this.row("SELECT a.*,s.step_id,s.input_text FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.id=? ORDER BY a.number DESC LIMIT 1", stepExecutionId)!;
       if (attempt.state !== "prepared" || attempt.cancel_requested) throw new Error("Branch resource opening is fenced");
       const step = this.definition(execution).steps.find(s=>s.id===attempt.step_id)!;

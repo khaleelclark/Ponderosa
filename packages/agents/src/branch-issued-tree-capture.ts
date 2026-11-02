@@ -86,7 +86,7 @@ export function reserveIssuedTreeCapture(db:Database.Database,executionId:string
 export function sealIssuedTreeMember(db:Database.Database,executionId:string,command:string,receipt:CheckpointPackageReceipt):void {
  if(!db.inTransaction)throw Error('Tree seal requires same owner transaction');
  const v=readIssuedTreeCapture(db,executionId,command);if(!v)throw Error('Tree capture intent unavailable');
- const source=v.sources.find((s:Row)=>receiptMatchesSource(receipt,s));if(!source)throw Error('Tree receipt differs');
+ const source=v.sources.find((s:CheckpointPackageSource)=>receiptMatchesSource(receipt,s));if(!source)throw Error('Tree receipt differs');
  const old=v.receipts.find((r:Row)=>r.checkpointId===receipt.checkpointId);
  if(old){if(stableJson(old)!==stableJson(receipt))throw Error('Tree receipt conflict');return;}
  const live=previewIssuedTreeCapture(db,executionId);

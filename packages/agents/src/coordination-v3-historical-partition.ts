@@ -52,7 +52,7 @@ export function readDestinationHistoricalPartition(db:Database.Database,r:Coordi
    if(currentCut?.requests.some(e=>e.row.id===q.row.id))throw Error('Historical Request cannot become an executable root');
   }
   if(currentCut?.requests.some(q=>seal.identity.agentIds.includes(q.row.requester_agent_id)||seal.identity.agentIds.includes(q.row.recipient_agent_id)))throw Error('Historical Agent cannot be an executable participant');
-  const destinationAgentIds=stage?selection.discloseTo.map(id=>stage.agentMap[id]):[];
+  const destinationAgentIds=stage?selection.discloseTo.map(id=>{const mapped=stage.agentMap[id];if(!mapped)throw Error('Historical disclosure must select exact current import refs');return mapped;}):[];
   if(stage&&destinationAgentIds.some(id=>!id))throw Error('Historical disclosure must select exact current import refs');
   const retirementReceipt={inputHash:retired.input_hash,resultJson:retired.result_json};
   return {sha256:payloadHash({seal,retirement:retirementReceipt}),selection,seal,retirement:retirementReceipt,destinationAgentIds:[...destinationAgentIds].sort(),historical:true as const,dispatchable:false as const};

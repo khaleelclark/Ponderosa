@@ -68,7 +68,7 @@ function envelope(db:Database.Database,journal:Row,expectedRevision?:string){
  const branch=db.prepare('SELECT * FROM branches WHERE id=?').get(scope.branchId) as Row|undefined;
  if(!branch?.enabled||branch.deleting||branch.active_version_id!==scope.versionId||branch.binding_revision_id!==scope.bindingRevisionId||payloadHash(JSON.parse(branch.configuration_json))!==scope.configurationSha256||Object.keys(JSON.parse(branch.configuration_json).secretBindings??{}).length)throw Error('Generation exit current owner pins changed');
  const selected=selectBranchUnit(db,scope.executionId);
- if(selected.resources.length<1||selected.resources.length>32)throw Error('Bounded local resource owner required');
+ if(!selected.resources||selected.resources.length<1||selected.resources.length>32)throw Error('Bounded local resource owner required');
  const retry=scope.generation>0?captureGenerationOneHost(db,selected,true):undefined;
  const hostDependencies=retry?.host??captureBranchHostCut(db,scope.executionId,selected);
  if(!hostDependencies?.coverage.complete||hostDependencies.artifactRefs.length||hostDependencies.bindingPin.requiredSecretRefs.length||hostDependencies.requests.some(({row})=>!['completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded'].includes(row.state))||hostDependencies.joins.some(({row})=>row.state==='open')||hostDependencies.suspensions.some(({row})=>row.state==='open'||row.dependency_kind!=='join'))throw Error('Complete settled historical Request/Join/effect closure required');

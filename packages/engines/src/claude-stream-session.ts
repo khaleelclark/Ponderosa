@@ -202,23 +202,25 @@ export class ClaudeStreamSession implements RuntimeSession {
     output.on("error", () => undefined);
     this.events = { [Symbol.asyncIterator]: () =>
       output.iterator({ destroyOnReturn: false }) as AsyncIterator<AgentEvent> };
-    void (async () => {
-      try {
-        for await (const event of this.eventStream()) {
-          if (!output.write(event)) await once(output, "drain");
-        }
-        output.end();
-      } catch (error) {
-        output.destroy(error instanceof Error ? error : new Error("Claude stream failed"));
-        void this.close().catch(() => undefined);
-      } finally {
-        this.fileHistory.close();
-        this.nativeCommand?.fail();
-        this.controls.close();
-        this.cancelApprovals();
-        this.initializationReady();
+    void this.readEvents(output);
+  }
+
+  private async readEvents(output: PassThrough): Promise<void> {
+    try {
+      for await (const event of this.eventStream()) {
+        if (!output.write(event)) await once(output, "drain");
       }
-    })();
+      output.end();
+    } catch (error) {
+      output.destroy(error instanceof Error ? error : new Error("Claude stream failed"));
+      void this.close().catch(() => undefined);
+    } finally {
+      this.fileHistory.close();
+      this.nativeCommand?.fail();
+      this.controls.close();
+      this.cancelApprovals();
+      this.initializationReady();
+    }
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
