@@ -45,6 +45,25 @@ exports, unknown fields or invalid selections. Existing definition-tree export
 forwards each Agent's selection to the shared package engine without broadening it.
 The folder and settings review/import behavior is unchanged by these controls.
 
+### Bounded TOML syntax
+
+The same `assertSupportedReviewToml` guard runs before export sanitization and
+before import accepts `.codex/config.toml`. Table headers must be consumed in
+full: `[bare.path]` or `[[bare.path]]`, with matching single/double brackets,
+ASCII bare segments (`A-Z`, `a-z`, digits, `_`, `-`), optional whitespace around
+segments/dots/brackets and an optional trailing comment. Every segment is checked
+for a known-secret field, including array-table paths. Quoted/escaped headers
+refuse before segment extraction. Unmatched, partial or otherwise unsupported
+bracket-leading lines refuse instead of falling through to text inspection.
+This also excludes bracket-leading array continuation lines that are not headers.
+
+Dotted assignments, inline-table syntax, escaped assignment keys and multiline
+strings remain unsupported and refuse. Ordinary single-key assignments retain
+the existing simple string credential-removal rule and known-secret text scan.
+This is a deliberately limited transport reader, not general TOML validation.
+No TOML dependency is added. The conservative quote/backslash check covers the
+entire header line, so those characters in a trailing comment also refuse.
+
 Harness selection means the listed project-root configuration families below;
 it never reads the host home profile. Unsupported global/native settings are
 outside that selection. Missing listed files are absent, not invented defaults.

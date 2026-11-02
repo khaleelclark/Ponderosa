@@ -50,9 +50,12 @@ function assertSupportedReviewToml(value:string):void {
     if(/^\s*(?:#|$)/.test(line))continue;
     // This bounded reader cannot safely inspect nested assignments or decode escaped keys.
     if(line.includes('{')||/^\s*["'][^=]*\\/.test(line)||/^\s*(?:"[^"\\]*"|'[^']*'|[A-Za-z0-9_-]+)\s*\./.test(line))throw new Error('Dotted keys, inline tables or escaped TOML keys require a structured format reader');
-    if(/^\s*\[/.test(line)&&/["'\\]/.test(line))throw new Error('Quoted or escaped TOML table paths require a structured format reader');
-    const table=/^\s*\[\[?([^\]]+)\]\]?/.exec(line);
-    if(table&&table[1]!.split('.').some(part=>isPortableSecretField(part.trim().replace(/^["']|["']$/g,''))))throw new Error('Credential TOML tables require a structured format reader');
+    if(/^\s*\[/.test(line)){
+      if(/["'\\]/.test(line))throw new Error('Quoted or escaped TOML table paths require a structured format reader');
+      const table=/^\s*(\[\[?)\s*([A-Za-z0-9_-]+(?:\s*\.\s*[A-Za-z0-9_-]+)*)\s*(\]\]?)\s*(?:#.*)?$/.exec(line);
+      if(!table||table[1]!.length!==table[3]!.length)throw new Error('Unsupported or incomplete TOML table header requires a structured format reader');
+      if(table[2]!.split('.').some(part=>isPortableSecretField(part.trim())))throw new Error('Credential TOML tables require a structured format reader');
+    }
   }
 }
 async function regularOriginal(target:string):Promise<{data:Buffer;mode:number}> {
