@@ -22,3 +22,13 @@ The standalone fixture exports from a separate source database, closes that sour
 The tree no-dispatch helper reopens `AgentStore` after server shutdown (shutdown itself closes storage) before constructing its explicit held driver. It still enables destinations, advances/claims, verifies no admission/lease/Request for every imported owner, disables destinations, drains checkpoint writes, and reopens the drained HTTP server.
 
 These are deferred fixture repairs only. Runtime eligibility, fresh acceptance/admission, unknown/custody refusal and publication code are unchanged in this successor. No execution validation performed here; manager-owned focused rerun remains required.
+
+## Tree receiver isolation successor
+
+The manager-owned rerun of `4d9d5b9312f8c97df36b5dfd3a882c1a495a5e8b` reports 16 passes and one unknown-source tree failure. All standalone continuation, refusal and rollback cases pass. The remaining global inert claim returned a fence-3 attempt while source and imported owners still shared one database.
+
+Canonical `recoverScript` changes an original leased attempt with no process identity back to prepared and increments its fence. The next claim increments the fence again. This source recovery remains valid during drained server ticks; drained admission prevents dispatch, not recovery. Imported recreated attempts instead start at fence zero, and the unsupported imported leaf has no native frontier. The fixture must isolate original runnable work rather than assume a global claim scans only receipt owners.
+
+The tree exporter now closes its source server after its first actual root HTTP export, opens an empty receiving database, and imports the returned package through the existing real composer. Later held re-exports stay in the receiving database. The helper asserts every original owner is absent before advancing. The strict global undefined-claim assertion and exhaustive per-imported-owner absent admission/lease/Request assertions remain intact. No source cancellation, effect settlement, production recovery change, or relaxed held eligibility is introduced. No original database rows are copied or manufactured in the receiver.
+
+Only the tree fixture and this report change in this successor. No local execution validation was performed; the exact successor still requires the manager-owned focused rerun.
