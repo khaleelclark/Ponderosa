@@ -301,3 +301,42 @@ remains blocked until that rerun and independent classification. Current integra
 portability code must not execute as a side effect; prior frozen packets stay
 immutable with their original source heads. Existing broad compiler diagnostics,
 full workspace shell and manual/screen-reader evidence remain separate limits.
+
+Corrected recording disposition (2026-11-02; supersedes the pending rerun above):
+Delivery composed the narrow saved-promotion response guard as `b77c1055c`,
+source-identical in `apps/server/src/product-scope.ts` to frozen `4103418b0`.
+The canonical Chat-owner UI fix remains integrated as `f0d8aef9b`. Independent
+Quality accepts the composed **bounded recording flow**, including normal
+Chat/saved recording publication/readback, product/origin/owner refusals,
+catalog/download JPEG equality, same-process lost start/stop and promotion-result
+inspection without mutation replay, native pause/resume with session identity,
+frame navigation/automatic progression, Escape closure/opener focus return, and
+settled late-status exclusion after switching Projects. This is not full-slice or
+Phase 2 acceptance.
+
+Immutable evidence, all executed at recording source `4103418b0`:
+
+| Packet | Result and scope |
+| --- | --- |
+| `/tmp/ponderosa-recording-followon/application-20261101T235923Z` and `guard-20261102T000009Z` | Exit 0; normal promotion 200 preserves original saved session/owner, real Chat/saved two-frame recording and readback, ten focused guard assertions. |
+| `/tmp/ponderosa-recording-recovery-app/application-20261102T000405Z` | Exit 0; committed promotion response deliberately lost, client failure observed, saved GET recovers original result/profile with exactly one promotion POST; explicit dialog closure/focus return. |
+| `/tmp/ponderosa-recording-settled-response/application-20261102T000855Z` | Exit 0, UTC 00:08:55.707482–00:09:07.704960; original A response observed before release, awaited response completion/full-body equality, then timer/two animation frames/timer before B identity/destination and absent A recording/playback assertions. Release 00:09:03.881, body complete 00:09:03.886, rendering settlement 00:09:03.912. |
+
+Quality physically verified all 1,974 preexecution bindings in each corrected
+packet, receipt/source identity and managed-download hashes. Final settled-row
+classification is ACCEPT; browser/render settlement qualifies the executed
+scenario, not a universal scheduler guarantee. Evidence archives are published:
+[normal/guard](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_14f5aac57f3e29d0e2aa1abcab5b42786f22991d85ae27c6/download),
+[recovery/dialog](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_840d28597c8c49282f5b9f5cd03ff933d89b2a6ef4797811/download),
+[settled response](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_d55b4243e453639a4447ea44109254d4e618ae755ab7debd/download).
+
+Remaining unavailable: actual-transport elapsed timing accuracy and pause-during-
+play effect; shipped full shell, exhaustive authentication, manual/screen-reader
+qualification; green broad compiler/build; restart/unknown broker-handoff recovery;
+in-process fallback shutdown and independent process-drain proof. Automatic frame
+progression does not establish those timing/pause claims. Prior mocked 29-frame
+timing stays separate. Earlier zero-frame/guard/application-7/application-8 failures
+remain failed immutable attempts. No additional recording blocker remains within
+the accepted bounded scope; broader qualification requires its own authorized work.
+Portability/tree-continuation source and validation remain separate and unexecuted
+by this recording workflow.
