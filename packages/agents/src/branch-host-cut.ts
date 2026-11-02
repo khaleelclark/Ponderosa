@@ -28,9 +28,17 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
  // A dependency edge cannot grant access to another participant's private Requests.
  const participants=new Set<string>(),scopes=new Set<string>();
  for(const root of roots)for(const ref of [root.requestId,root.recoveryOfRequestId])if(ref){
-  const row=db.prepare('SELECT requester_agent_id,recipient_agent_id,project_id,conversation_id FROM coordination_requests WHERE id=?').get(ref) as Row|undefined;
+  const row=db.prepare('SELECT requester_agent_id,recipient_agent_id,project_id,conversation_id,state FROM coordination_requests WHERE id=?').get(ref) as Row|undefined;
   if(row){const chat=db.prepare('SELECT project_id,branch_id FROM conversations WHERE id=?').get(row.conversation_id) as Row|undefined;
-   if(!chat||chat.project_id!==row.project_id||chat.branch_id!==pin.branch_id&&row.conversation_id!==pin.chat_id)throw Error('Host root lacks its owned Chat scope');
+   // Completed cleanup removes the Chat; exact owner context and its deletion receipt retain audit scope.
+   const retired=!chat&&['completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded','outcome_unknown'].includes(row.state)&&db.prepare(`SELECT 1 FROM branch_ephemeral_contexts context
+    JOIN branch_resources resource ON resource.step_execution_id=context.step_execution_id
+    JOIN branch_executions execution ON execution.id=resource.execution_id
+    JOIN conversation_deletion_receipts receipt ON receipt.conversation_id=context.chat_id
+    WHERE execution.id=? AND execution.branch_id=? AND resource.state='retired'
+    AND context.chat_id=? AND receipt.project_id=? AND receipt.canonical_deletion_completed=1
+    AND EXISTS(SELECT 1 FROM json_each(context.agent_ids_json) member WHERE member.value=?)`).get(id,pin.branch_id,row.conversation_id,row.project_id,row.recipient_agent_id);
+   if(!retired&&(!chat||chat.project_id!==row.project_id||chat.branch_id!==pin.branch_id&&row.conversation_id!==pin.chat_id))throw Error('Host root lacks its owned Chat scope');
    scopes.add(stableJson([row.project_id,row.conversation_id]));for(const agent of [row.requester_agent_id,row.recipient_agent_id])if(agent)participants.add(agent);
   }
  }

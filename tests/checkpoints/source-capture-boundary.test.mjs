@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'node:fs';
+import {createRequire} from 'node:module';
+const Database=createRequire(new URL('../../apps/server/package.json',import.meta.url))('better-sqlite3');
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beginSourceCapture, assertSourceCapture, releaseSourceCapture,
   beginSourceMutation, withSourceMutation, touchSourceMutation, commitSourceCapture,
   SourceCaptureChangedError } from '../../packages/agents/dist/source-capture-boundary.js';
 
-// Deferred source regression: no execution under the implementation-only direction.
+import {readRepairableJsonl} from '../../packages/agents/dist/append-jsonl.js';
 test('source cut refuses any SQL/file overlap and validates only retained stable reads', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'source-cut-'));
   const db = new Database(join(dir, 'source.sqlite'));
@@ -49,6 +50,19 @@ test('source cut refuses any SQL/file overlap and validates only retained stable
     cut = beginSourceCapture(db);
     assert.throws(() => commitSourceCapture(cut, () => { db.exec("INSERT INTO history VALUES(3,'rollback receipt')"); throw Error('receipt failed'); }), /receipt failed/);
     assert.equal(db.prepare('SELECT count(*) n FROM history WHERE id=3').get().n, 0);
+    const log=join(dir,'repairable.jsonl');
+    for(const bytes of [undefined,'','{"valid":true}\n']){
+      if(bytes!==undefined)writeFileSync(log,bytes);
+      cut=beginSourceCapture(db);
+      assert.deepEqual(readRepairableJsonl(log,'capture read',true),bytes?.trim()?[{valid:true}]:[]);
+      assertSourceCapture(cut);releaseSourceCapture(cut);
+    }
+    for(const bytes of ['{"valid":true}','{"valid":true}\n{"torn":']){
+      writeFileSync(log,bytes);cut=beginSourceCapture(db);
+      assert.deepEqual(readRepairableJsonl(log,'repair',true),[{valid:true}]);
+      assert.throws(()=>assertSourceCapture(cut),SourceCaptureChangedError);releaseSourceCapture(cut);
+      assert.equal(readFileSync(log,'utf8'),'{"valid":true}\n');
+    }
     const unknown = beginSourceMutation();
     unknown('remote memory write outcome unknown');
     assert.throws(() => beginSourceCapture(db), SourceCaptureChangedError);

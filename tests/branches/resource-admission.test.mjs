@@ -4,6 +4,8 @@ import {mkdtempSync,rmSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
+import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
+import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 
@@ -129,6 +131,18 @@ test('completed template workflows retire their exact Chats through tracked dele
    const execution=branches.accept(branch.id,'cleanup-'+index,'Review');
    const resource=await until(()=>{const row=store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(execution.id);return row?.state==='retired'&&row},'temporary resource retirement');
    assert.equal(branches.execution(execution.id).state,'completed');assert.ok(resource.chat_id);chats.push(resource.chat_id);
+   const capture=()=>store.sqlite.transaction(()=>captureBranchHostCut(store.sqlite,execution.id,selectBranchUnit(store.sqlite,execution.id)))();
+   assert.ok(verifyBranchHostCut(capture(),execution.id));
+   for(const [sql,args] of [
+    ["UPDATE conversation_deletion_receipts SET canonical_deletion_completed=0 WHERE conversation_id=?",[resource.chat_id]],
+    ["UPDATE conversation_deletion_receipts SET project_id='foreign' WHERE conversation_id=?",[resource.chat_id]],
+    ["UPDATE branch_ephemeral_contexts SET agent_ids_json='[]' WHERE chat_id=?",[resource.chat_id]],
+    ["UPDATE branch_resources SET state='active' WHERE step_execution_id=?",[resource.step_execution_id]],
+   ]){
+    const rollback=Error('rollback adversarial deletion proof');
+    assert.throws(()=>store.sqlite.transaction(()=>{store.sqlite.prepare(sql).run(...args);assert.throws(capture,/owned Chat scope/);throw rollback})(),error=>error===rollback);
+   }
+
    assert.equal(store.getConversation(resource.chat_id),undefined);
    const receipt=store.getConversationDeletionReceipt(resource.chat_id);assert.equal(receipt.canonicalDeletionCompleted,true);assert.equal(receipt.storageCleanupCompleted,true);assert.equal(receipt.serverCleanupCompleted,true);
    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM agents WHERE deleted_at IS NULL AND conversation_id=?').get(resource.chat_id).n,0);

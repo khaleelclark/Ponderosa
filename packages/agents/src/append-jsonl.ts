@@ -41,7 +41,6 @@ function writeAll(fd: number, bytes: Buffer, errorMessage: string): void {
 }
 
 export function readRepairableJsonl<T>(file: string, label: string, repair = false): T[] {
-  if (repair) touchSourceMutation();
   if (!existsSync(file)) return [];
   const fd = openSync(file, repair ? "r+" : "r");
   try {
@@ -59,6 +58,7 @@ export function readRepairableJsonl<T>(file: string, label: string, repair = fal
         records.push(JSON.parse(line) as T);
         validBytes += Buffer.byteLength(line) + (index < lines.length - 1 ? 1 : 0);
         if (repair && index === count - 1 && !text.endsWith("\n")) {
+          touchSourceMutation();
           writeSync(fd, "\n");
           fsyncSync(fd);
         }
@@ -66,6 +66,7 @@ export function readRepairableJsonl<T>(file: string, label: string, repair = fal
         const tornTail = index === count - 1 && !text.endsWith("\n");
         if (!tornTail) throw new Error(`${label} contains non-tail corruption`, { cause: error });
         if (repair) {
+          touchSourceMutation();
           ftruncateSync(fd, validBytes);
           fsyncSync(fd);
         }
