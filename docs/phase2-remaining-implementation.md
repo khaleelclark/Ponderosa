@@ -375,3 +375,35 @@ frozen validation does not imply an executed composed-head build or runtime pass
 Remaining whole-build and whole-rendered-flow gates require separately scoped
 follow-through. See `portability-validation-fix-632f.md` for immutable source-stage
 history; its historical pending-execution statements describe those earlier stages.
+
+
+Compiler-repair closure (2026-11-02): independent Quality supports source-only
+composition of frozen `e692a3310f841ec7423c2352cb06ebc84779a3ee`, direct parent
+`df96a69735d184290c45cdb97540088354b718c9`. Delivery fast-forwarded the clean
+integration branch to that exact reviewed commit; all 18 source/test deliverables
+were physically verified against the immutable manifest and commit before and
+after composition. The following results supersede the earlier broad-build failure
+row only for this exact successor; they do not expand portability or recording
+acceptance. No Web/Core/lock/recording or moving `b71606cd` source was changed.
+
+| Gate | Actual frozen successor result and remaining action |
+| --- | --- |
+| Dependency-order package builds | PASS: Core, native TypeScript, Engines, Agents, Server and Web, six clean-source exit-0 receipts. Existing native addon reused; no fresh addon build. |
+| Non-fail-fast workspace types | FAIL: eight packages pass, Web has 18 diagnostics across 11 files. Agents/Server/Engines source-applicable compiler diagnostics repaired. Portability owns its Web continuation work; Cliff must assign remaining Web compiler scope. No Web edits in this tranche. |
+| Broad focused semantic regressions | FAIL: 193 tests, 121 pass / 72 fail. Failures include fixture syntax/resolution/setup, retained-host-cut checks and lifecycle/resource expectations. They are not all proven preexisting. Delivery/affected runtime owners need separately scoped valid fixture and semantic follow-through. |
+| Corrected-resolver focused guards | FAIL: 34 tests, 31 pass / 3 fail. All three group reconciliation cases stop at retained-host-cut integrity; downstream reconciliation/readback/rollback assertions remain UNQUALIFIED. Preserve refusal guards while investigating. |
+| Actual changed Claude stream reader | PASS: one synthetic local fake-CLI test. No real provider/model qualification. |
+| Destination baseline and new negative test | The same historical-update payload-hash setup failure is reproduced with untouched frozen `6ea29ed` production modules. This proves only that setup blocker predates the repair. The new missing-participant-map negative assertion is NOT reached and remains UNQUALIFIED pending a valid fixture. |
+
+Exact commands, UTC/exits, copied preexecution harness/source/lock/module bindings,
+output/log hashes and preserved failed attempts: `/tmp/ponderosa-compiler-evidence/summary.json`
+and adjacent packets. Immutable archive `/tmp/ponderosa-compiler-evidence-e692a3310.tar.gz`,
+SHA256 `39bdd02736961c23131b13926e4e0a6f43e58cc2e341a770c374f9bbd7ab4000`.
+Quality found no exact repair-scope source blocker; its support is composition-only,
+not broad semantic, workspace type, full portability or Phase 2 acceptance.
+Integration composition is an exact fast-forward to the executed frozen product
+source, followed only by this tracker update; no additional runtime execution was
+needed for unchanged source. No installs/upgrades/lock changes, new workers, live
+data/migrations, provider/model/imported Script processes, deployment or push.
+Accepted recording remains closed. Remaining failed gates require explicit owner
+follow-through; this compiler-repair tranche is complete, not overall readiness.
