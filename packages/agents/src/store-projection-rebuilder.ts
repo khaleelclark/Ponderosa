@@ -188,13 +188,25 @@ export class AgentProjectionRebuilder {
           if (!isBoundedRecordId(conversationId) || m.id !== conversationId || m.projectId !== projectId) {
             throw new Error(`Chat record ${m.id} does not match its containing Project and directory`);
           }
+          // Final Branch publication owns these links in SQLite, not staging Chat metadata.
+          const installed = this.client.prepare(`SELECT r.branch_id, e.id execution_id
+            FROM branch_installation_resources r
+            LEFT JOIN branch_resource_references ref ON ref.chat_id=r.local_id
+            LEFT JOIN branch_executions e ON e.id=ref.execution_id
+              AND json_extract(e.provenance_json,'$.source')='portable_runtime_data'
+            WHERE r.local_id=? AND r.agent_ref='' AND r.state='active'
+            ORDER BY e.id`).all(m.id) as {branch_id:string;execution_id:string|null}[];
+          const branches = new Set(installed.map(r=>r.branch_id));
+          const owners = new Set(installed.map(r=>r.execution_id).filter((id):id is string=>id!==null));
+          if(branches.size>1||owners.size>1)throw new Error('Published Branch Chat ownership aliases');
+          const installedBranch=installed[0]?.branch_id,installedExecution=[...owners][0];
           this.db
             .insert(conversations)
             .values({
               id: m.id,
               projectId: m.projectId,
-              branchId: m.branchId ?? null,
-              executionId: m.executionId ?? null,
+              branchId: installedBranch ?? m.branchId ?? null,
+              executionId: installedBranch ? installedExecution ?? null : m.executionId ?? null,
               title: m.title,
               defaultEngine: m.defaultEngine ?? null,
               defaultModel: m.defaultModel ?? null,

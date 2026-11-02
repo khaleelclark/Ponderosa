@@ -56,7 +56,7 @@ export function validateBranchExecutionTree(value:unknown,depth=0):BranchPortabl
    if(e.depth_ceiling!==Math.min(pe.depth_ceiling,e.call_depth+configuration.limits.maxCallDepth)||step.state!==(completed?ce.state:'waiting')||completed&&(JSON.parse(step.result_json).failed!==(ce.state==='failed')||JSON.parse(step.result_json).output!==(ce.output_text??undefined)))throw Error('Original Call state/output/counter ceiling differs');
    attempts.add(a.id);
    const seen=new Set<string>();let cursor:BranchPortableRuntimeOwner|undefined=o;
-   while(cursor){if(seen.has(cursor.sourceExecutionId))throw Error('Execution ancestry cycle');seen.add(cursor.sourceExecutionId);const id=fact(cursor,'frontier').execution[0].parent_execution_id;cursor=id?byId.get(id):undefined;if(id&&!cursor)throw Error('Owned execution parent omitted');}
+   while(cursor){if(seen.has(cursor.sourceExecutionId))throw Error('Execution ancestry cycle');seen.add(cursor.sourceExecutionId);const id:string|null=fact(cursor,'frontier').execution[0].parent_execution_id;cursor=id?byId.get(id):undefined;if(id&&!cursor)throw Error('Owned execution parent omitted');}
   }else if(e.admission_source==='call')throw Error('Call owner lost its parent');
  }
  return d;
@@ -76,7 +76,7 @@ export function planBranchExecutionTree(value:BranchPortableExecutionTree,defini
   const definition=definitions.nodes.find(n=>n.sourceBranchId===o.sourceBranchId);if(!definition)throw Error('Runtime owner Branch is absent from publication inventory');
   const recreate=payloadHash(definition.definition)===payloadHash(fact(o,'definition'))&&supported(d,o);
   if(!recreate&&all.some(c=>fact(c,'frontier').execution[0].parent_execution_id===o.sourceExecutionId))throw Error('Parent Call frontier cannot be recreated without inventing ancestry; runtime tree refuses before staging');
-  const s=fact(o,'frontier') as Selected,ids=Object.fromEntries(branchContinuationIds(s).map(id=>[id,randomUUID()]));for(const item of s.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;reservedFrontiers[o.sourceExecutionId]=ids;
+  const s=fact(o,'frontier') as Selected,ids:Record<string,string>=Object.fromEntries(branchContinuationIds(s).map(id=>[id,randomUUID()]));for(const item of s.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;reservedFrontiers[o.sourceExecutionId]=ids;
   if(recreate){remapBranchFrontier(s,ids,o.sourceExecutionId,executionMap[o.sourceExecutionId]!);frontiers[o.sourceExecutionId]={disposition:'recreated_held',idMap:ids};}
   else frontiers[o.sourceExecutionId]={disposition:'evidence_only',idMap:{},reason:'Unsupported/unknown/secret/historical leaf retains complete private facts; no native frontier was recreated'};
  }

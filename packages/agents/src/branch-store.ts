@@ -614,13 +614,15 @@ export class BranchStore {
         const selected=JSON.parse(owner.facts.find(f=>f.kind==='frontier')!.json) as Selected,definition=JSON.parse(owner.facts.find(f=>f.kind==='definition')!.json),configuration=JSON.parse(owner.facts.find(f=>f.kind==='configuration')!.json);
         const noEffects=!selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))&&!selected.resources!.length&&!selected.actions!.length;
         const context=['completed','failed'].includes(e.state)?{terminal:true,terminalState:e.state as 'completed'|'failed',descendantTraversals:0,descendantLoops:0,children:{}}:undefined;
-        if(noEffects&&!configuration.requiredSecretRefs.length&&payloadHash(definition)===payloadHash(this.version(branchId,branch.versionId)!.definition)&&scriptFrontierSupported(selected,definition,context)){
-          const ids=Object.fromEntries(branchContinuationIds(selected).map(source=>[source,randomUUID()]));for(const item of selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
+        const sameDefinition=payloadHash(definition)===payloadHash(this.version(branchId,branch.versionId)!.definition);
+        const supportedFrontier=scriptFrontierSupported(selected,definition,context);
+        if(noEffects&&!configuration.requiredSecretRefs.length&&sameDefinition&&supportedFrontier){
+          const ids:Record<string,string>=Object.fromEntries(branchContinuationIds(selected).map(source=>[source,randomUUID()]));for(const item of selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
           const restored=remapBranchFrontier(selected,ids,owner.sourceExecutionId,id);
           insertBranchFrontier(this.sqlite,id,restored,now);
           this.run('UPDATE branch_executions SET configuration_json=?,traversals=?,loop_iterations=?,recovery_traversals=?,depth_ceiling=? WHERE id=?',stableJson(validateBranchConfiguration(configuration.configuration,definition,true)),e.traversals,e.loop_iterations,e.recovery_traversals,e.depth_ceiling,id);
           frontiers[owner.sourceExecutionId]={disposition:'recreated_held',idMap:ids};
-        }else frontiers[owner.sourceExecutionId]={disposition:'evidence_only',idMap:{},reason:'Source has effects, unknown/native state, secret references, changed definition or a frontier outside the shared codec; exact facts remain held'};
+        }else frontiers[owner.sourceExecutionId]={disposition:'evidence_only',idMap:{},reason:!noEffects?'Source has effects or unknown/native state; exact facts remain held':configuration.requiredSecretRefs.length?'Source requires secret reentry; exact facts remain held':!sameDefinition?'Source definition differs from current destination; exact facts remain held':'Source frontier is outside the shared codec; exact facts remain held'};
 
         for(const ref of owner.chatRefs){const source=Object.keys(data.identities.chats).find(k=>data.identities.chats[k]===ref)!;this.run('UPDATE conversations SET branch_execution_id=? WHERE id=? AND branch_id=? AND branch_execution_id IS NULL',id,chatMap[source],branchId);this.run('INSERT INTO branch_resource_references VALUES(?,?)',id,chatMap[source]);}
       }
@@ -660,7 +662,7 @@ export class BranchStore {
     if(!saved)throw Error('Standalone imported manifest required; tree continuation is unsupported');
     const owner=saved.data.owners.find(o=>o.sourceExecutionId===selection.sourceExecutionId),importedId=saved.receipt.executionMap[selection.sourceExecutionId];
     if(!owner||!importedId)throw Error('Imported source owner unavailable');
-    if(saved.receipt.frontiers[selection.sourceExecutionId]?.disposition!=='recreated_held')throw Error('Current imported frontier is evidence-only; unknown or unsupported data stays held');
+    if(saved.receipt.frontiers[selection.sourceExecutionId]?.disposition!=='recreated_held')throw Error('Current imported frontier is evidence-only; unknown or unsupported data stays held: '+(saved.receipt.frontiers[selection.sourceExecutionId]?.reason??'missing frontier disposition'));
     const held=this.row('SELECT state,cancel_requested FROM branch_executions WHERE id=?',importedId);
     if(!held||held.state!=='waiting'||held.cancel_requested)throw Error('Imported owner is no longer in its unchanged held state');
     const fact=owner.facts.find(f=>f.kind==='checkpoint'&&f.key===selection.checkpointKey&&f.sha256===selection.checkpointSha256);

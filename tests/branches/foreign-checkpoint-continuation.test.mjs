@@ -30,6 +30,7 @@ async function fixture(t,{unknown=false}={}){
  for(let i=0;i<12&&done.state==='applying';i++)done=await api('POST',`/api/branches/installations/${preview.id}/confirm`,{});
  assert.equal(done.state,'completed',done.error);
  const saved=await api('GET',`/api/branches/installations/${preview.id}/runtime-data?branchId=${done.branchId}`),imported=saved.receipt.executionMap[original.id];
+ if(!unknown)assert.equal(saved.receipt.frontiers[original.id].disposition,'recreated_held',saved.receipt.frontiers[original.id].reason);
  const fact=saved.data.owners[0].facts.filter(f=>f.kind==='checkpoint').reverse().find(f=>{const c=JSON.parse(f.json);return c.restore_supported===true&&c.selected?.steps.some(s=>s.step_id==='prefix'&&s.state==='completed');});assert.ok(fact);
  const selection={planId:preview.id,sourceExecutionId:original.id,checkpointKey:fact.key,checkpointSha256:fact.sha256};
  const url=`/api/branches/${done.branchId}/executions/${imported}/foreign-continuation`;

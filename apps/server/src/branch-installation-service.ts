@@ -403,7 +403,7 @@ export class BranchInstallationService {
     if(n.definition.trigger.kind!=='manual'&&!destination.triggers?.[n.definition.trigger.configRef])throw new Error('Review current trigger configuration for each automatic Branch');
     const logical=Object.fromEntries(Object.keys(n.agentBindings).map(ref=>[ref,'pending-'+ref]));
     reviewed[n.sourceBranchId]=validateBranchBindings({...destination,agents:logical,branches:n.dependencies},n.definition);
-    reviewed[n.sourceBranchId].agents={};
+    reviewed[n.sourceBranchId]!.agents={};
     const config=validateBranchConfiguration(n.configuration,n.definition);
     for(const step of n.definition.steps)if(step.kind==='script'&&!destination.directories[step.cwdRef])throw new Error('Choose every Branch Script directory');
     for(const path of Object.values(destination.directories))if(!statSync(realpathSync(interpolateBranchText(path,n.definition,config))).isDirectory())throw new Error('Every Branch directory must exist');
@@ -604,7 +604,7 @@ export class BranchInstallationService {
    if(plan.branch_id&&this.row('SELECT 1 FROM branches WHERE id=? AND deleting=1',plan.branch_id))throw new Error('Branch deletion is pending');
    if(plan.branch_id&&plan.expected_resources_hash!==this.resourceRevision(plan.branch_id))throw new Error('Chats or Agent settings changed; review a new preview');
    if(plan.branch_id){const b=this.branches.getBranch(plan.branch_id);if(!b||b.versionId!==plan.expected_version_id||this.row('SELECT configuration_revision FROM branches WHERE id=?',plan.branch_id)!.configuration_revision!==plan.expected_configuration_revision)throw new Error('Branch changed; review a new preview');}
-   else {const pkg=JSON.parse(plan.package_json),tree=this.rolePlan(plan).tree;if(tree){const fresh=tree.branchMap[pkg.definitionTree.rootSourceBranchId];this.branches.reserveInstallationBranch(fresh,pkg.definition.name);plan.branch_id=fresh;}else plan.branch_id=this.branches.create(pkg.definition.name,`installation-${id}`).id;this.run('UPDATE branch_installation_plans SET branch_id=? WHERE id=?',plan.branch_id,id);}
+   else {const pkg=JSON.parse(plan.package_json),tree=this.rolePlan(plan).tree;if(tree){const fresh=tree.branchMap[pkg.definitionTree.rootSourceBranchId]!;this.branches.reserveInstallationBranch(fresh,pkg.definition.name);plan.branch_id=fresh;}else plan.branch_id=this.branches.create(pkg.definition.name,`installation-${id}`).id;this.run('UPDATE branch_installation_plans SET branch_id=? WHERE id=?',plan.branch_id,id);}
    if(this.store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',error=NULL,next_attempt_at=NULL,updated_at=? WHERE id=? AND state='preview'").run(new Date().toISOString(),id).changes!==1)throw new Error('Update preview is no longer available; review the package again');
   })();
   await this.tick();const next=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id)!;return {branchId:next.branch_id,state:next.state,runtimeTreeReceipt:this.status(id)?.runtimeTreeReceipt,definitionTreeReceipt:this.status(id)?.definitionTreeReceipt,runtimeDataReceipt:this.status(id)?.runtimeDataReceipt,...(next.error?{error:next.error}:{})};
@@ -720,7 +720,7 @@ export class BranchInstallationService {
        const members=this.rows('SELECT agent_id FROM agent_creation_operation_members WHERE operation_id=? ORDER BY position',receiptId).map(row=>row.agent_id);
        const result=receipt.result_json?JSON.parse(receipt.result_json) as ImportAgentPackageResponse:undefined;
        if(!result||refs.some((ref,i)=>result.agentRefs?.[ref]!==result.agentIds[i])||stableJson(members)!==stableJson(result.agentIds))throw new InstallationConflictError('Grouped receipt membership mismatch');
-       if(!result||result.agentIds.length!==refs.length||refs.some((ref,i)=>resources[i]!.local_id!==result.agentIds[i]||!this.store.getAgent(result.agentIds[i]!))||result.rootAgentId!==get(c.ref,combined.rootRef)?.local_id)throw new InstallationConflictError('Grouped receipt identity mismatch');
+       if(!result||result.agentIds.length!==refs.length||refs.some((_,i)=>resources[i]!.local_id!==result.agentIds[i]||!this.store.getAgent(result.agentIds[i]!))||result.rootAgentId!==get(c.ref,combined.rootRef)?.local_id)throw new InstallationConflictError('Grouped receipt identity mismatch');
        await this.engine!.verifyStagedMemory(receiptId,combined);
        for(const ref of refs)this.retainImportResult(plan.id,JSON.stringify([c.ref,ref]),result);
       }
@@ -832,7 +832,7 @@ export class BranchInstallationService {
      }
      const targetKeys=new Set(pkg.chats.flatMap(c=>['',...c.agents.map(a=>a.ref)].map(a=>stableJson([pkg.packageId,c.ref,a]))));
      for(const r of this.rows("SELECT * FROM branch_installation_resources WHERE branch_id=? AND state IN ('active','staging')",branchId)){
-      const state=keys.has(stableJson([r.package_id,r.chat_ref,r.agent_ref]))?'active':'retiring';
+      const state=targetKeys.has(stableJson([r.package_id,r.chat_ref,r.agent_ref]))?'active':'retiring';
       if(state==='retiring'&&r.agent_ref){const chat=this.row("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=''",branchId,r.package_id,r.chat_ref);this.run("INSERT OR IGNORE INTO branch_retirement_references SELECT ?,ref.execution_id FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=? AND e.state IN ('queued','running','waiting')",r.local_id,chat?.local_id??'');}
       this.run("UPDATE branch_installation_resources SET state=?,staging_plan_id=CASE WHEN ?='active' THEN NULL ELSE staging_plan_id END WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=?",state,state,branchId,r.package_id,r.chat_ref,r.agent_ref);
      }
