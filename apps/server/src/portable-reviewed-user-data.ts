@@ -44,6 +44,17 @@ function safeText(value:string,label:string):void {
   assertPortableSecretsAbsent(value,label);
   if(redactPortableDiagnostic(value)!==value||/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value)||/(?:^|\n)\s*(?:export\s+)?(?:[A-Z0-9_]+_)?(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)\s*=/m.test(value))throw new Error(`${label} contains recognizable credentials; preserve source and remove secrets explicitly`);
 }
+function assertSupportedReviewToml(value:string):void {
+  if(/'''|"""/.test(value))throw new Error('Multiline provider TOML requires a structured format reader');
+  for(const line of value.split('\n')){
+    if(/^\s*(?:#|$)/.test(line))continue;
+    // This bounded reader cannot safely inspect nested assignments or decode escaped keys.
+    if(line.includes('{')||/^\s*["'][^=]*\\/.test(line)||/^\s*(?:"[^"\\]*"|'[^']*'|[A-Za-z0-9_-]+)\s*\./.test(line))throw new Error('Dotted keys, inline tables or escaped TOML keys require a structured format reader');
+    const table=/^\s*\[\[?([^\]]+)\]\]?/.exec(line);
+    if(table&&line.includes('\\'))throw new Error('Escaped TOML table keys require a structured format reader');
+    if(table&&table[1]!.split('.').some(part=>isPortableSecretField(part.trim().replace(/^["']|["']$/g,''))))throw new Error('Credential TOML tables require a structured format reader');
+  }
+}
 async function regularOriginal(target:string):Promise<{data:Buffer;mode:number}> {
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');
   const observed=await fs.lstat(target,{bigint:true});
@@ -86,6 +97,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     if(typeof file.path!=='string'||!providerPath(file.path)||file.path.split('/').some(part=>!part||part==='.'||part==='..')||credentialPath(file.path)||file.path.includes('\\')||file.path.includes('\0')||typeof file.dataBase64!=='string'||typeof file.removedSecretFields!=='boolean'||paths.has(file.path))throw new Error('Invalid reviewed provider original');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
+    if(file.path==='.codex/config.toml')assertSupportedReviewToml(text(data));
     safeText(text(data),'Reviewed provider configuration');
     if(file.path.endsWith('.json'))assertPortableSecretsAbsent(JSON.parse(text(data)),'Reviewed provider configuration');
     paths.add(file.path);
@@ -263,12 +275,8 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
       const original=text(data);let safe=original,removedSecretFields=false;
       if(relative.endsWith('.json')){const parsed=JSON.parse(original),scrubbed=withoutPortableSecrets(parsed);removedSecretFields=JSON.stringify(parsed)!==JSON.stringify(scrubbed);safe=JSON.stringify(scrubbed,null,2);}
       else if(relative==='.codex/config.toml'){
-        // Refuse multiline TOML credentials rather than misparse continuation bytes.
-        if(/'''|"""/.test(original))throw new Error('Multiline provider TOML requires a structured format reader');
+        assertSupportedReviewToml(original);
         safe=original.split('\n').filter(line=>{
-          if(/^\s*["'][^=]*\\/.test(line))throw new Error('Escaped TOML keys require a structured format reader');
-          const table=/^\s*\[([^\]]+)\]/.exec(line);
-          if(table&&table[1]!.split('.').some(part=>isPortableSecretField(part.trim().replace(/^["']|["']$/g,''))))throw new Error('Credential TOML tables require a structured format reader');
           const key=/^\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*=/.exec(line);
           if(!key||!isPortableSecretField((key[1]??key[2]??key[3])!))return true;
           const scalar=line.slice(key[0].length).trim();
