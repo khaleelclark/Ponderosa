@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
+import { REQUEST_SOURCE_LINEAGE_CTE, currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 
 export class CoordinationV3RunContextReadModel {
   constructor(private readonly sqlite: Database.Database) {}
@@ -22,6 +22,7 @@ export class CoordinationV3RunContextReadModel {
         ON lineage.activation_id = attached.activation_id
       JOIN coordination_requests request ON request.id = lineage.request_id
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND ${currentRequestAttachmentSql("attached")}
         AND (
           lineage.source_kind IN ('request', 'request_update')
           OR (
@@ -80,6 +81,7 @@ export class CoordinationV3RunContextReadModel {
       JOIN coordination_requests request
         ON source.source_kind = 'request' AND request.id = source.source_id
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND ${currentRequestAttachmentSql("attached")}
         AND request.recipient_agent_id = ? AND activation.kind = 'coordination_request'
       LIMIT 1
     `).get(runId, agentId, agentId) as { matched: number } | undefined;

@@ -1,3 +1,4 @@
+import { currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 import type Database from "better-sqlite3";
 import {
   TERMINAL_REQUEST_STATES,
@@ -203,7 +204,8 @@ export class CoordinationV3RequestAuthority {
               LEFT JOIN coordination_request_updates request_update
                 ON source.source_kind = 'request_update'
                 AND request_update.id = source.source_id
-              WHERE attached.run_id = run.id AND (
+              WHERE attached.run_id = run.id
+                AND ${currentRequestAttachmentSql("attached")} AND (
                 (
                   source.source_kind = 'request'
                   AND source.source_id = ?

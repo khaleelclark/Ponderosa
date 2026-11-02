@@ -1,3 +1,4 @@
+import { currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 import { requireBranchScheduleInjectionEligible } from "./coordination-v3-branch-schedule.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -1331,6 +1332,7 @@ export class CoordinationV3RunLifecycleAuthority {
           THEN update_record.request_id
       END
       WHERE attached.run_id = ?
+        AND ${normalCompletion ? currentRequestAttachmentSql("attached") : "1"}
         AND request.recipient_agent_id = run.agent_id
         AND request.state IN (${placeholders})
     `).all(runId, ...directEligibleStates) as Array<{ id: string }>;
@@ -1351,6 +1353,7 @@ export class CoordinationV3RunLifecycleAuthority {
       ) continuation
       JOIN coordination_requests request ON request.id = continuation.value
       WHERE attached.run_id = ?
+        AND ${normalCompletion ? currentRequestAttachmentSql("attached") : "1"}
         AND request.recipient_agent_id = run.agent_id
         AND request.state IN (${continuationPlaceholders})
         AND (? OR NOT EXISTS (

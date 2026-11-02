@@ -1,6 +1,6 @@
 import type { RuntimeInputFile } from "@ponderosa/core";
 import {payloadHash} from './coordination-v3-canonical-json.js';
-import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
+import { REQUEST_SOURCE_LINEAGE_CTE, currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 import {CoordinationV3DestinationReconciliation,groupReconciliationAuthority,type CoordinationDestinationGroupReconciliationAuthority,type CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
 import {CoordinationV3DestinationAdmissionAuthority,groupDestinationAuthority,type CoordinationDestinationGroupAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
@@ -834,6 +834,7 @@ export class CoordinationV3Store {
       JOIN scheduler_run_activations a ON a.run_id=r.id
       JOIN request_source_lineage lineage ON lineage.activation_id=a.activation_id
       WHERE lineage.request_id=? AND r.agent_id=? AND r.project_id=?
+        AND ${currentRequestAttachmentSql("a")}
       ORDER BY r.created_at DESC,r.id DESC LIMIT 1`).get(requestId,agentId,request.projectId) as
       {id:string;created_at:string;started_at:string|null;status:string}|undefined;
     return row?{runId:row.id,leasedAt:row.created_at,...(row.started_at?{runStartedAt:row.started_at}:{}),runStatus:row.status}:undefined;
