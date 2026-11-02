@@ -29,18 +29,25 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
         AND fencing_token=? AND status='running' AND side_effects_fenced_at IS NULL AND lease_expires_at>?`)
         .get(run.v3SchedulerRunId, id, run.v3FencingToken, new Date().toISOString());
       if (!owned) return undefined;
-      return { runtime, runId: run.runId, fencingToken: run.v3FencingToken };
+      return { runtime, session: runtime.session, sessionId: runtime.session.engineAgentId, runId: run.runId, fencingToken: run.v3FencingToken };
     }
     if (context.coordinationV3.activeAgentRun(id)) return undefined;
     const source = context.store.providerCommandContextBoundary(id);
     if (!source || source.providerSessionId !== runtime.session.engineAgentId) return undefined;
-    return { runtime, runId: source.executionId, fencingToken: source.fencingToken };
+    return { runtime, session: runtime.session, sessionId: runtime.session.engineAgentId, runId: source.executionId, fencingToken: source.fencingToken };
+  };
+  const unchanged = (id: string, expected: NonNullable<ReturnType<typeof boundary>>) => {
+    const current = boundary(id);
+    return current && current.runtime === expected.runtime && current.session === expected.session &&
+      current.sessionId === expected.sessionId && current.runId === expected.runId &&
+      current.fencingToken === expected.fencingToken;
   };
   app.get<{Params:{id:string}}>("/api/agents/:id/native-controls", async (request, reply) => {
     const current = boundary(request.params.id);
     if (!current) return reply.code(409).send({ error: "Exact retained runtime boundary unavailable" });
-    const catalog = await current.runtime.session.capabilities?.();
-    return { sessionId: current.runtime.session.engineAgentId, runId: current.runId,
+    const catalog = await current.session.capabilities?.();
+    if (!unchanged(request.params.id, current)) return reply.code(409).send({ error: "Native control boundary changed" });
+    return { sessionId: current.sessionId, runId: current.runId,
       fencingToken: current.fencingToken,
       operations: catalog?.commands.filter(command => ["native-model", "native-permission-mode"].includes(command.name) &&
         command.invocation === "runtime" && command.status === "available").map(command => command.name.slice("native-".length)) ?? [] };
@@ -52,16 +59,15 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
     if (busy.has(id)) return reply.code(409).send({error:"Native control already active"});
     const current = boundary(id);
     if (!current || current.runId !== body.runId || current.fencingToken !== body.fencingToken ||
-        current.runtime.session.engineAgentId !== body.sessionId) return reply.code(409).send({error:"Native control boundary changed"});
+        current.sessionId !== body.sessionId) return reply.code(409).send({error:"Native control boundary changed"});
+    const session = current.session;
+    const catalog = await session.capabilities?.();
+    if (!session.invokeCommand || !catalog?.commands.some(command => command.name === `native-${body.operation}` && command.invocation === "runtime" && command.status === "available")) return reply.code(409).send({error:"Native control unsupported"});
+    if (!unchanged(id, current)) return reply.code(409).send({error:"Native control boundary changed"});
     // Human model selection already persists through the normal Agent settings UI.
     // A live command must agree with that saved selection, never silently replace it.
     const agent = context.store.getAgent(id)!;
     if (body.operation === "model" && body.value !== (agent.model ?? agent.presetSnapshot?.model)) return reply.code(409).send({error:"Save this Agent's model selection first"});
-    const session = current.runtime.session;
-    const catalog = await session.capabilities?.();
-    if (!session.invokeCommand || !catalog?.commands.some(command => command.name === `native-${body.operation}` && command.invocation === "runtime" && command.status === "available")) return reply.code(409).send({error:"Native control unsupported"});
-    const before = boundary(id);
-    if (!before || before.runtime !== current.runtime || before.runId !== current.runId || before.fencingToken !== current.fencingToken) return reply.code(409).send({error:"Native control boundary changed"});
     if (busy.has(id)) return reply.code(409).send({error:"Native control already active"});
     busy.add(id);
     const callId = randomUUID();
@@ -69,8 +75,7 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
       context.store.appendEvent(id, { type: "work_start", kind: "native_tool", callId, executionId: current.runId });
       context.store.appendEvent(id, { type: "tool_call", id: callId, name: `native_${body.operation}`, input: { sessionId:body.sessionId, runId:body.runId, fencingToken:body.fencingToken, value:body.value } });
       const result = await session.invokeCommand(`native-${body.operation}`, body.value);
-      const after = boundary(id);
-      if (!after || after.runtime !== current.runtime || after.runId !== current.runId || after.fencingToken !== current.fencingToken) return reply.code(409).send({outcome:"outcome_unknown",error:"Native response arrived after authority changed; do not replay"});
+      if (!unchanged(id, current)) return reply.code(409).send({outcome:"outcome_unknown",error:"Native response arrived after authority changed; do not replay"});
       context.store.appendEvent(id, { type:"tool_result", id:callId, output:"Native control acknowledged; source work remains independently governed" });
       return result;
     } catch {

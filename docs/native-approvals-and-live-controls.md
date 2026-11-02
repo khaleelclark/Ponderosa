@@ -119,6 +119,14 @@ returns `outcome_unknown` without replay. Control audit work conservatively
 invalidates a preceding completed source context estimate; normal Context Refresh
 may be needed before the next idle context command.
 
+Live-control inspection and changes capture the retained session object and native
+session ID along with the runtime, source Run and fence. After capability discovery,
+GET refuses a changed boundary instead of returning stale controls. POST checks the
+same captured boundary before sending and after acknowledgement. The saved human
+model choice is reread after capability discovery, immediately before sending. Replacing a session
+on a retained runtime cannot redirect an earlier settings request. If ownership changes
+after sending, the result stays unknown and the route does not retry the command.
+
 Generic transient provider-command endpoints refuse model/permission-mode changes
 and direct the operator to retained Agent Settings, preventing apparent controls
 that disappear when a temporary helper exits.
