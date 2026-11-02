@@ -804,3 +804,69 @@ remaining-heavy-case/profiling evidence. Existing lifecycle/cleanup/six-row/UI/
 recording acceptance retains its own attribution. No broader runtime/historical/
 Phase2/provider/imported Script/native-platform qualification, new workers,
 lock/schema changes, liveDB, unrelated edits, deploy or push.
+
+
+### Historical complete-file execution — FAILED/OPEN (2026-11-02)
+
+The reviewed finite plan enabled one genuine unfiltered complete-file execution;
+full historical acceptance remains **FAILED/OPEN**. Frozen isolated candidate
+`92005c6d4bd749c9cff24fdb1e21780ba5e6326a` (direct1d98 parent) reached terminal
+results for all415 cases: **372 pass,43 fail,0 skipped/cancelled/todo**, exit1,
+aggregate1858820.789686ms (30m58.821s), within saved6900s deadline. Failing bodies
+can stop before later assertions; this does not mean every original assertion
+executed successfully. Normal failing completion, not deadline exhaustion.
+
+All415 ordered synchronous lifecycle start/end pairs match original registration
+occurrences, including repeated names;43 lifecycle errors match reporter failure
+names. File and aggregate summaries agree. Exact1544 physical source and2232
+module outputs unchanged before/after; packet output hashes verified. Owned group
+absent after parent exit and at Delivery verification; Quality checked saved
+observations, not a fresh process census. Original31 and localized103 integrity
+hashes preserved. No source overlay, forced exit, skipped case or automatic retry.
+
+Thirteen observed exact error signatures total43 failures, not13 proved roots:
+six mapped-attempt ownership failures, fourteen current group owner pin refusals,
+five issued executable continuation replay refusals, four replayable parent/child
+refusals, four participant-effects refusal expectation mismatches, and ten other
+custody/allocation/abandonment/assertion mismatches. The first positive fails tree
+idempotent replay's retained mapped-attempt ownership check. These are concrete
+failing boundaries, not authority to weaken guards or proof every failure is a
+product defect rather than fixture/contract mismatch. Exact names/stacks and
+ordered timings are retained in completion-full-failure-inventory.json,
+completion-full-durations.json and completion-full/run.log.
+
+Pilot393 established checkpoint-before-admission provenance failure;399 then
+established randomized composite map item IDs. Minimal isolated repairs move
+single final checkpoint after admission inside the same owner/import transaction
+and derive item IDs as mapped invocation:index, retaining strict guards. Candidate
+has three changed files, original415 cases/assertions plus21 assertion lines.
+Final sequential Agents/Server builds/types v4, focused6/6 and affected six-file
+68/68 PASS with exact source bindings. Heavy359/363/393/396/399/406 PASS in the full
+run. These do not cancel43 failures; candidate repairs remain **uncomposed**.
+Earlier pilot/build failures and all original timeout/diagnostic packets remain.
+
+Preexecution Quality SUPPORT
+`auto:eeefcc7fa6da5ef3c2ee561037eb857d502f723104bf7e277bbcbd2bf2a18a96`
+covered the saved415-row plan (6267s pooled reserves plus10% rounding to6900s),
+pristine command and external observer. Final independent Quality review COMPLETE:
+`auto:b73896ba362b2cdd84d3caed8faec7420f5ab3b757b9b9e7989000da7ca8e692`,
+2026-11-02T03:56:58.989Z, ACCEPTS packet integrity and FAILED/OPEN disposition;
+full historical acceptance REFUSED. All391 archived integrity hashes verified.
+
+[Immutable completion evidence archive](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_c5c98a0b601d6b5c933d35f1a30532ae93f0255c6a77e9bd/download),
+SHA256546457169204411c13b7b0d7a4d76b1ab58805c495ef5965638a90f320cf2270.
+Archive retains assessment before final Quality wording correction; original
+report preserved separately. [Corrected final assessment](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_e59723c35a25eb07a69e0b269b4a624ea78a3d5f9860bbc0/download),
+SHA256df7d3f0368ff913f4492f1e2808b732c0e7d6bfbdb2c4b12ab8280d79b5e0022.
+No runtime rerun for this correction.
+
+Remaining gate: concretely diagnose/correct all failing contracts while retaining
+assertions and authority/custody/lifecycle checks; affected builds/types/tests;
+separately justified complete-file execution after established correction; final
+independent acceptance before product composition. This tracker-only update does
+not compose isolated source. Portability supported the checkpoint boundary; map
+reservation delta separately disclosed. Original six UI rows remain1d98-attributed;
+all prior lifecycle/cleanup/UI/recording acceptance retains its own source scope.
+Dependencies/native reused; no fresh native/dependency qualification, real
+providers/imported Script, broad runtime/historical/portability/Phase2 acceptance,
+new workers, lock/schema changes, liveDB, unrelated edits, deploy or push.
