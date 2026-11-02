@@ -51,7 +51,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged,r
   const path=command.kind==='prepare'?base:command.kind==='admit'?`${base}/admit`:`${base}/${encodeURIComponent(command.admissionId)}/disclosure`;
   const value=await requestJson<BranchDisclosureReceipt|BranchIssuedDestinationDto>(path,{method:'POST',body:JSON.stringify(command.body)});
   await accept(command,value);
- },onError:(error,command)=>{
+ },onError:error=>{
   setNotice(error.message);setConfirm(undefined);
   if(error instanceof ApiRequestError&&error.status===409){
    // Keep the exact original command for pure receipt recovery after any refusal.

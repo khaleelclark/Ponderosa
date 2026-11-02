@@ -31,7 +31,7 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
   {query.error&&<Alert severity="warning">{query.error.message} · selections + confirmations cleared · explicitly restart inventory</Alert>}
   {!query.isError&&<>
    <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Loaded {items.length} · revision {revision??'pending'} · {query.isPending?'reading first page':query.hasNextPage?'more entries available':'end of inventory'}</Typography>
-   {Boolean(pages[0]?.unverifiedEvidenceCount)&&<Alert severity="warning">{pages[0].unverifiedEvidenceCount} unverified evidence files · quarantined/unrecognized · no selectable operation IDs</Alert>}
+   {Boolean(pages[0]?.unverifiedEvidenceCount)&&<Alert severity="warning">{pages[0]?.unverifiedEvidenceCount} unverified evidence files · quarantined/unrecognized · no selectable operation IDs</Alert>}
    <TextField select label={titles[kind]} value={target?selected:''} disabled={query.isFetching} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose canonical identity</MenuItem>{items.map(item=><MenuItem key={identity(item)} value={identity(item)}>{label(item)}</MenuItem>)}</TextField>
    {query.hasNextPage&&<Button disabled={query.isFetching} onClick={()=>void query.fetchNextPage()}>Load more {titles[kind].toLowerCase()}</Button>}
   </>}

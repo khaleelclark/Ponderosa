@@ -47,7 +47,14 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
  const retryReady=Boolean(retained&&releaseStatus&&releaseStatus.state!=='released');
  const apply=()=>{
   if(fence.current||busy||!enabled)return;
-  if(confirm==='access'&&accessReady&&review){fence.current=true;setConfirm(undefined);setMessage('');access.mutate({action:refs.length?'keep_destination':action as Choice,reviewSha256:review.reviewSha256,...(refs.length?{agentActions:Object.fromEntries(refs.map(ref=>[ref,choices[ref]]))}:{})});}
+  if(confirm==='access'&&accessReady&&review){
+   const agentActions:Record<string,Choice>={};
+   for(const ref of refs){const choice=choices[ref];if(!choice)return;agentActions[ref]=choice;}
+   let resolutionAction:Choice;
+   if(refs.length)resolutionAction='keep_destination';
+   else {if(!action)return;resolutionAction=action;}
+   fence.current=true;setConfirm(undefined);setMessage('');access.mutate({action:resolutionAction,reviewSha256:review.reviewSha256,...(refs.length?{agentActions}:{})});
+  }
   else if(confirm==='release'){
    const input=retained?(retryReady?retained:undefined):newRelease&&value&&!inspection.isFetching?resourceReleaseInput(value,createClientId()):undefined;
    if(input){fence.current=true;setMessage('');release.mutate(input);}

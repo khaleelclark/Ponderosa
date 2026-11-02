@@ -9,7 +9,9 @@ export function disclosureReviewMatches(review:BranchDisclosureReviewDto,target:
   const intent=source.custody?.intent,stage=review.review.stage.agentMap,facts=review.facts.filter(f=>f.kind==='historical_generation');
   if(!intent||!generationHistorySelectionsMatch(historical,intent.resourceGeneration,executionId,intent.resourceStepId)||facts.length!==historical.length)return false;
   if(historical.some((selection,index)=>{
-   const fact=facts[index],seal=historicalFactSeal(fact),identity=seal?.identity as Record<string,unknown>|undefined;
+   const fact=facts[index];
+   if(!fact)return true;
+   const seal=historicalFactSeal(fact),identity=seal?.identity as Record<string,unknown>|undefined;
    return !seal||!identity||identity.executionId!==selection.executionId||identity.stepId!==selection.stepId||identity.generation!==selection.generation||seal.checkpointId!==selection.checkpointId||seal.checkpointHash!==selection.checkpointHash||seal.envelopeSha256!==selection.envelopeSha256||JSON.stringify(seal.intakeFence)!==JSON.stringify(selection.intakeFence)||JSON.stringify(identity.agentIds)!==JSON.stringify(fact.originalAgentIds)||selection.discloseTo.length!==Object.keys(stage).length||selection.discloseTo.some(ref=>!stage[ref])||JSON.stringify(selection.discloseTo.map(ref=>stage[ref]).sort())!==JSON.stringify([...fact.destinationAgentIds].sort())||fact.originalAgentIds.some(id=>id in stage||Object.values(stage).includes(id));
   }))return false;
  }

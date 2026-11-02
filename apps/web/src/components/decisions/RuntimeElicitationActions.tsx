@@ -265,7 +265,7 @@ export function RuntimeElicitationActions({
           disabled={submitDisabled}
           onClick={() => void submit()}
         >
-          {action.data.mode !== "url" && action.data.nativeApproval
+          {action.data.nativeApproval
             ? "Respond to native request"
             : fields.length > 0
             ? "Submit"

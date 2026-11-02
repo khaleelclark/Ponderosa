@@ -19,7 +19,7 @@ export function DirectReplyPreview({sent,request,agentId,messages=[],projectId,p
  const replyIntent=sent?.communicationIntent==='collaboration'?'collaboration':sent?.communicationIntent==='broadcast'?'broadcast':'direct_to_user';
  const sender=sent?.communicationSender;
  const peerSenderId=sender?.kind==='agent'?sender.agentId:undefined;
- const canonical=request?TERMINAL_REQUEST_STATES.has(request.state):Boolean(reply?.runId??executionId)&&messages.some(item=>item.role==='assistant'&&item.communicationIntent===sent?.communicationIntent&&item.authorAgentId===agentId&&item.executionId===(reply?.runId??executionId)&&(replyIntent!=='collaboration'||(item.collaborationRecipients?.length===1&&item.collaborationRecipients[0].id===peerSenderId)));
+ const canonical=request?TERMINAL_REQUEST_STATES.has(request.state):Boolean(reply?.runId??executionId)&&messages.some(item=>item.role==='assistant'&&item.communicationIntent===sent?.communicationIntent&&item.authorAgentId===agentId&&item.executionId===(reply?.runId??executionId)&&(replyIntent!=='collaboration'||(item.collaborationRecipients?.length===1&&item.collaborationRecipients[0]?.id===peerSenderId)));
  useEffect(()=>{
   setReply(undefined);setError('');
   if(!conversationId||canonical||(!request&&!receipt&&!peerAgentId)||['failed','cancelled','undelivered','retry_exhausted','unconfirmed'].includes(receipt?.state??''))return;

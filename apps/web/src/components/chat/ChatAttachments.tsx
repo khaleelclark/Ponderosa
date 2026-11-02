@@ -80,6 +80,7 @@ export function ChatAttachments({
           const image = !attachment.mediaType || attachment.mediaType.startsWith("image/");
           const previewUrl = attachment.previewUrl ?? attachment.url;
           const downloadUrl = attachment.downloadUrl ?? attachment.url;
+          const audioUrl = downloadUrl ?? previewUrl;
           const unavailable = attachment.unavailable || failed.has(attachment.id) ||
             (!previewUrl && !downloadUrl);
           return (
@@ -98,8 +99,8 @@ export function ChatAttachments({
                   </Typography>
                   {failed.has(attachment.id) && !attachment.unavailable ? <Button size="small" onClick={() => setFailed(current => { const next = new Set(current); next.delete(attachment.id); return next; })}>Retry preview</Button> : null}
                 </Stack>
-              ) : attachment.mediaType.startsWith("audio/") && (downloadUrl||previewUrl) ? (
-                <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" sx={{overflowWrap:"anywhere"}}>{attachment.name}</Typography><AudioMessagePlayer src={(downloadUrl??previewUrl)!} label={`Play ${attachment.name}`}/><Button href={downloadUrl??previewUrl} download size="small">Download audio</Button></Stack>
+              ) : attachment.mediaType.startsWith("audio/") && audioUrl ? (
+                <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" sx={{overflowWrap:"anywhere"}}>{attachment.name}</Typography><AudioMessagePlayer src={audioUrl} label={`Play ${attachment.name}`}/><Button href={audioUrl} download size="small">Download audio</Button></Stack>
               ) : image && previewUrl ? (
                 <ButtonBase
                   aria-label={`Preview ${attachment.name}`}
