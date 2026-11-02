@@ -9,10 +9,19 @@ using **Back to chat**, explicitly selects the output Agent’s chat view rather
 than restoring a tab previously visited in the full workspace.
 
 The output app's top **Settings** opens schedule and provider/model controls.
-**Save schedule** publishes an interval schedule behind the app, with a workflow
-version and output-settings revision checks, preserving its busy policy. An unchanged interval keeps its cadence. **Run automatically** controls that trigger. Cadence is at least
-one minute; event-triggered workflows require **More options** rather than
-silently replacing their event source. **Save model** uses the existing Agent
+**Run automatically**, applied with **Save schedule**, enables or pauses the
+existing trigger without replacing its source or cadence. This also works for
+cron, one-time, filesystem and webhook triggers; their current configuration is
+shown instead of an interval editor. Turning automatic runs on also enables the
+workflow. Re-enabling a trigger validates its configuration and shows any error.
+
+For manual workflows and existing interval schedules, **Check every (minutes)**
+is editable, with a minimum of one minute. Enabling automatic runs on a manual
+workflow creates an interval schedule; changing an interval publishes the new
+cadence while preserving its busy policy. An unchanged interval keeps its cadence.
+Saves check the workflow version and output-settings revision and report conflicts.
+Use **More options** to change other trigger configuration.
+**Save model** uses the existing Agent
 runtime settings endpoint and validation; it changes the bound Agent without
 changing identity or history. Schedule and model saves are independent actions.
 **More options** opens the owning workflow in Branches.
