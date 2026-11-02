@@ -1,4 +1,4 @@
-import {useLayoutEffect,useRef,useState} from 'react';
+import {useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {Alert,Button,Checkbox,FormControlLabel,MenuItem,Stack,TextField,Typography} from '@mui/material';
 import {BranchesClient} from '@ponderosa/core/branches-client';
 import {type BranchForeignContinuationInput,type BranchForeignContinuationReview,type BranchForeignContinuationReceipt,type BranchRuntimeDataReadback} from '@ponderosa/core';
@@ -17,13 +17,28 @@ export function BranchForeignContinuationReview({saved,sourceExecutionId,executi
  const owner=saved.data.owners.find(item=>item.sourceExecutionId===sourceExecutionId);
  const checkpoints=owner?.facts.filter(f=>{if(f.kind!=='checkpoint')return false;try{return JSON.parse(f.json).restore_supported===true}catch{return false}})??[];
  const [selected,setSelected]=useState(''),[review,setReview]=useState<BranchForeignContinuationReview>(),[consent,setConsent]=useState(false),[command,setCommand]=useState<BranchForeignContinuationInput>(),[receipt,setReceipt]=useState<BranchForeignContinuationReceipt>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[storageBlocked,setStorageBlocked]=useState(true);
- const lock=useRef(false),epoch=useRef(0);
+ const lock=useRef(false),epoch=useRef(0),loadedCommand=useRef<BranchForeignContinuationInput|undefined>(undefined);
  const originalMapsMatch=(value:BranchForeignContinuationReview)=>value.manifestSha256===saved.data.sha256&&value.ownerSha256===owner?.sha256&&canonical(value.nativeMaps)===canonical(saved.receipt);
- useLayoutEffect(()=>{try{setCommand(readForeignCommand(localStorage.getItem(storageKey),planId,sourceExecutionId));setStorageBlocked(false)}catch(e){setError(String(e));setStorageBlocked(true)}return()=>{epoch.current++}},[storageKey,planId,sourceExecutionId]);
+ useLayoutEffect(()=>{
+  loadedCommand.current=undefined;setCommand(undefined);setReceipt(undefined);setReview(undefined);setConsent(false);setSelected('');setError('');setBusy(false);setStorageBlocked(true);
+  try{const retained=readForeignCommand(localStorage.getItem(storageKey),planId,sourceExecutionId);loadedCommand.current=retained;setCommand(retained);setStorageBlocked(false)}catch(e){setError(String(e))}
+  return()=>{epoch.current++};
+ },[storageKey,planId,sourceExecutionId]);
+ // Reopening only reads the original receipt; it never repeats acceptance.
+ useEffect(()=>{
+  if(!command||loadedCommand.current!==command)return;
+  let active=true;const token=epoch.current;setBusy(true);
+  void client.foreignContinuationReceipt(branchId,executionId,command.commandKey).then(result=>{
+   if(!active||token!==epoch.current)return;
+   if(!foreignReceiptMatches(result,branchId,executionId,command)||!originalMapsMatch(result.review))throw Error('Original continuation receipt differs; held');
+   setReceipt(result);setError('');
+  }).catch(e=>{if(active&&token===epoch.current)setError(String(e))}).finally(()=>{if(active&&token===epoch.current)setBusy(false)});
+  return()=>{active=false};
+ },[storageKey,command]);
  const fact=checkpoints.find(f=>f.key===selected);
  const selection=fact?{planId,sourceExecutionId,checkpointKey:fact.key,checkpointSha256:fact.sha256}:undefined;
  async function act(action:'review'|'confirm'|'recover'){
-  if(lock.current||storageBlocked)return;lock.current=true;setBusy(true);setError('');const token=epoch.current;
+  if(lock.current||busy||(storageBlocked&&action!=='recover'))return;lock.current=true;setBusy(true);setError('');const token=epoch.current;
   const current=()=>token===epoch.current;
   try{
    if(action==='recover'){
@@ -52,5 +67,5 @@ export function BranchForeignContinuationReview({saved,sourceExecutionId,executi
    }
   }catch(e){if(current()){setError(String(e));setConsent(false);setReview(undefined)}}finally{lock.current=false;if(current())setBusy(false)}
  }
- return <Stack spacing={1}><Typography variant="h6">Continue a standalone Script checkpoint</Typography><Alert severity="warning">Manual, synchronous, serial, effect-free Script cuts only. The original owner stays held. Filesystem contents are not restored. Fresh current destination authority is required; unsupported or unknown effects remain held.</Alert>{error&&<Alert severity="error">{error}</Alert>}{command?<><Typography>Original command retained · no automatic retry or replacement command</Typography><Button disabled={busy||storageBlocked} onClick={()=>void act('recover')}>Look up original continuation result</Button></>:<><TextField select label="Original checkpoint" value={selected} disabled={busy||storageBlocked} onChange={e=>{epoch.current++;setSelected(e.target.value);setReview(undefined);setConsent(false)}}>{checkpoints.map(f=><MenuItem key={f.key} value={f.key}>{f.key} · {f.sha256}</MenuItem>)}</TextField>{fact&&<PrivateJson label="Exact original checkpoint evidence" value={fact.json}/>}<Button disabled={busy||storageBlocked||!selection} onClick={()=>void act('review')}>Review current continuation authority</Button>{review&&<><PrivateJson label="Current definition, bindings, configuration, directories, policy, budget and original maps" value={review}/><Typography sx={{overflowWrap:'anywhere'}}>Review SHA-256 {review.reviewSha256}</Typography><FormControlLabel control={<Checkbox checked={consent} disabled={busy} onChange={e=>setConsent(e.target.checked)}/>} label="I reviewed this exact checkpoint and current destination choices, including directory identity, policy and budget. I authorize a fresh manual execution with no secrets or source authority."/><Button disabled={busy||!consent||storageBlocked} onClick={()=>void act('confirm')}>Accept current authority and continue</Button></>}</>}{receipt&&<><Alert severity="success">Fresh continuation accepted · original imported owner remains held</Alert><PrivateJson label="Fresh continuation receipt and identity maps" value={receipt}/><Button href={branchRoutePath({branchId,tab:'executions',executionId:receipt.executionId})}>Open fresh execution</Button></>}</Stack>;
+ return <Stack spacing={1}><Typography variant="h6">Continue a standalone Script checkpoint</Typography><Alert severity="warning">Manual, synchronous, serial, effect-free Script cuts only. The original owner stays held. Filesystem contents are not restored. Fresh current destination authority is required; unsupported or unknown effects remain held.</Alert>{error&&<Alert severity="error">{error}</Alert>}{command?<><Typography>Original command retained · no automatic retry or replacement command</Typography><Button disabled={busy} onClick={()=>void act('recover')}>{busy?'Checking saved result…':'Refresh saved result'}</Button></>:<><TextField select label="Original checkpoint" value={selected} disabled={busy||storageBlocked} onChange={e=>{epoch.current++;setSelected(e.target.value);setReview(undefined);setConsent(false)}}>{checkpoints.map(f=><MenuItem key={f.key} value={f.key}>{f.key} · {f.sha256}</MenuItem>)}</TextField>{fact&&<PrivateJson label="Exact original checkpoint evidence" value={fact.json}/>}<Button disabled={busy||storageBlocked||!selection} onClick={()=>void act('review')}>Review current continuation authority</Button>{review&&<><PrivateJson label="Current definition, bindings, configuration, directories, policy, budget and original maps" value={review}/><Typography sx={{overflowWrap:'anywhere'}}>Review SHA-256 {review.reviewSha256}</Typography><FormControlLabel control={<Checkbox checked={consent} disabled={busy} onChange={e=>setConsent(e.target.checked)}/>} label="I reviewed this exact checkpoint and current destination choices, including directory identity, policy and budget. I authorize a fresh manual execution with no secrets or source authority."/><Button disabled={busy||!consent||storageBlocked} onClick={()=>void act('confirm')}>Accept current authority and continue</Button></>}</>}{receipt&&<><Alert severity="success">Fresh continuation accepted · original imported owner remains held</Alert><PrivateJson label="Fresh continuation receipt and identity maps" value={receipt}/><Button href={branchRoutePath({branchId,tab:'executions',executionId:receipt.executionId})}>Open fresh execution</Button></>}</Stack>;
 }
