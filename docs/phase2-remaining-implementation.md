@@ -589,19 +589,13 @@ reruns. Historical baseline/intermediate failures and diagnostic patches remain.
 Existing locked dependencies/native addon reused; output overlap disclosed, no
 fresh native build. No extra execution was required for identity-only composition.
 
-Retry remains OPEN/UNCHANGED: strict Complete exact Run inventory required,
-original members1Run/1registration and0/0, generation0/retry_draining. There is no
-valid absence-as-exit inference. Proposed product contract requires permanent
-member/generation/Chat fences at EVERY process-start admission, durable in-flight
-claims BEFORE adapter awaits, drain of all pre-fence/late openings with unknown
-outcomes held, and a transactional distinct immutable fenced-never-started receipt
-only after exact original membership and no claims/registrations/Run evidence.
-A versioned reader must cover every original member with observed exit or that
-receipt and reject later activity. Existing registration-only checks do not prove
-physical no-start; readiness/context-recovery/non-Run starts need coverage.
-Requester contract decision remains unresolved; no dependent lifecycle edits made.
-Alternative is retain strict v1 and require actual per-member registered execution
-by product design. No fabricated Runs, dropped members or relaxed readers.
+Historical retry status at the completed-workflow composition: strict Complete
+exact Run inventory refused original members1Run/1registration and0/0 at
+generation0/retry_draining. This remains failed historical evidence. The earlier
+statement that requester approval was unresolved was stale: A–D approval was
+recorded2026-11-02T01:48:03.197Z and explicitly renewed. The reviewed lifecycle
+implementation and bounded original retry closure below supersede that status.
+No absence-as-exit inference, fabricated Run or dropped member was used.
 
 Evidence: /tmp/ponderosa-runtime-cleanup-evidence and immutable archive
 /tmp/ponderosa-runtime-cleanup-ebbc7ac00.tar.gz, SHA256
@@ -609,3 +603,75 @@ bbc8b11ec2c63ba2f979566cf6f6b1e5fc1a9a2ca1c9f058a245d7d3f3816771.
 No broad runtime/historical semantics, other cleanup modes, whole-app/browser/
 portability, real providers/imported Script or Phase2 acceptance. No new workers,
 install/lock/schema/Web/recording/b716/live-data/deploy/push changes.
+
+
+Reviewed fenced-never-started lifecycle composition (2026-11-02):
+Delivery composed frozen8668ec3482767b927af5ba9f714a2cce455c0909 as
+c989f4857 directly after70feed7dd. Independent Quality SUPPORTS bounded
+composition with no definite repair-scope source/contract blocker. All TWELVE
+required physical files in the frozen source-manifest.json were nonempty and
+hash/commit exact before composition and verified again in integration. The
+accepted completed-workflow repair remains; only its branch-host audit scope is
+extended as described below. No schema migration or new dependency.
+
+A–D: inventory in /tmp/ponderosa-fenced-never-started-evidence/producer-inventory.md
+covers supported Agent root starts: persistent openSession, one-shot seed/continue
+at first iteration, readiness/context recovery and non-Run commands. The sole
+server opts.engines consumer wraps admissions before adapter callback/await or
+underlying iterable creation, in immediate transactions with immutable scoped
+worker/Agent/Project/Chat/current-generation claims and permanent original-member
+fences. Central callbacks retain actual handles/registrations before the old
+callback; close/await/close plus runtime/OS drain owns late admitted openings.
+Unknown, rejected/no-handle, failed persistence/close and lost-worker claims remain
+holds; admission-before-fence can never become no-start. Project/account diagnostic
+processes are separately owned and outside the member claim. This is supported-
+adapter static completeness, not arbitrary future-adapter/provider-internal proof.
+
+Creation coverage is written only by canonical new Agent INSERT under installed
+authority, never legacy/reopen/idempotent backfill. Immediate receipt issuance
+requires exact original member/generation fence, creation coverage, trusted server
+producer/runtime drain and zero Runs/admissions/registrations/live authority.
+Distinct immutable no-start receipts hash-bind those canonical references.
+Core provider-exit-evidence.v2 exhaustively partitions each original member into
+complete observed exit or validated neverStarted; v1 nonempty Run/registration
+semantics remain unchanged. Shared live/retained/capture/deletion/historical
+readers reject tampering, wrong identities, conflicting/later activity and extra
+registered inventory. No fake Run/exit, dropped member or absence-alone proof.
+
+The first candidate exposed a further checkpoint saver refusal after old Chat
+deletion and resource-generation reset. Audit-only historical scope now requires
+same execution/Branch, terminal original root/recipient, canonical deletion/project,
+exact sealed generation and hash-bound retirement/context. Missing seal/retirement
+and nonterminal rollback adversaries execute; previous completed-workflow
+adversaries remain. No replay/admission/delete authority is granted.
+
+Quality ACCEPTS final focused23/23 and disjoint related14-file189/189 (total212,
+zero failures/skips/cancellations). Original retry positive retains both-generation
+Chat deletion checks, sealed v2 with one genuine scheduler Run/observed inert
+process lifetime plus one no-start member, and fixture shutdown. Original completed
+workflow/reopen also passes. Nine added contract tests cover mixed/all-never,
+both admission/fence orders, late actual inert OS open and observed exit, rejection/
+unknown/no-handle/failed-close/persistence holds, tampering/stale/wrong identity,
+later activity, replay/reopen/worker loss and legacy refusal. All-never and other
+synthetic scope/handle cases are not actual provider workflow qualification.
+
+Sequential Core/Engines/Agents/Server builds PASS and bind all NINE final product
+files; only test-only physical race and inventory additions came later. Focused23,
+bounded189 and all9 workspace types PASS bind all TWELVE final files. These ran
+before commit-only freeze with exact source/patch/harness/UTC/exits/output bindings,
+not fresh postcommit or composed-head reruns. Physical183 evidence hashes and2232
+module bindings were reviewed; Delivery reverified source/patch/evidence/archive
+identity before composition. Initial inference, fixture-resolution, historical
+audit and invalid added-adversary failures remain failed historical packets.
+Existing locked dependencies/native addon reused; output overlap disclosed.
+
+Evidence: /tmp/ponderosa-fenced-never-started-evidence; immutable archive
+/tmp/ponderosa-fenced-never-started-8668ec348.tar.gz, SHA256
+ e23846622171b43805e2d765d9f6a270a2c5656cbafa6f37f6e93048a8f7784d.
+Project artifact import_157a9b6a8e27c9584281488a9257d0b8e8e4f164e95ff6a5.
+This closes the exact original retry/shutdown fixture gate at reviewed source,
+not broad runtime/historical semantics, other cleanup modes, full app/browser/
+mobile/auth/accessibility/portability, real providers/imported Script, fresh native
+build or Phase2 acceptance. No new workers, installs/upgrades/lock/schema migration,
+unrelated Web/recording/b716/liveDB/deploy/push. Composition required no additional
+runtime execution; affected files are byte-identical to the reviewed candidate.
