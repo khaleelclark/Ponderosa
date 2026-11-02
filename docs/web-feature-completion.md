@@ -189,7 +189,13 @@ shown without inventing audio or MP4 output. The server remains authoritative
 for live Run, session, epoch, queued actual active page and lifecycle admission.
 
 Complete original start/stop input is stored before effect under origin/product/
-route identity. Storage failure/corruption holds new recording mutations.
+route identity. Storage failure/corruption holds new recording mutations, but
+does not block explicit read-only status inspection for the selected destination.
+A validated server status and managed download/playback remain visible even when
+saving the destination or clearing a recovered command throws. The destination
+stays bound in memory, failed command cleanup retains the pending command, and
+the storage warning continues to hold new recording actions. Session, epoch,
+destination and receipt checks still apply; inspection never replays a mutation.
 Mutation calls execute once; no effect runs on mount, no automatic retry or
 POST replay. Lost response/remount uses explicit read-only recording/status
 POST at the same session/epoch. Original start page plus prior recording ID,

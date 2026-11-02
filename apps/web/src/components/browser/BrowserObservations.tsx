@@ -61,7 +61,7 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
  
  const clearPending=()=>{localStorage.removeItem(storageKey);setPending(undefined);};
  const inspect=()=>void guarded(async()=>{
-  if(!destinationReady||storageError)throw Error('Select exact destination Chat');
+  if(!destinationReady)throw Error('Select exact destination Chat');
   const original=authority,result=await adapter.observations!.recordingStatus(context());
   if(live.current!==original||!mounted.current)return;
   if(!result||typeof result!=='object'||(shared&&result.recording&&(!recordingDestinationValid(result.destination)||result.destination.projectId!==destination?.projectId||result.destination.conversationId!==destination?.conversationId))||(result.recording&&!recordingStatusValid(result.recording))||(result.artifact&&(!result.recording||!recordingArtifactValid(result.artifact,adapter.recordingProjectId!,destination))))throw Error('Recording status proof unavailable');
@@ -69,9 +69,12 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
    if(JSON.stringify(pending.context)!==JSON.stringify(context())||JSON.stringify(pending.destinationEvidence)!==JSON.stringify(destination))throw Error('Original session/epoch changed · command retained');
    const matches=result.recording&&(pending.operation==='start'?result.recording.pageId===pending.pageId&&result.recording.id!==pending.previousRecordingId:result.recording.id===pending.recordingId&&!!result.artifact);
    if(!matches)throw Error('Original outcome unconfirmed · command retained');
-   clearPending();
+   try{clearPending();}catch{setStorageError('Saved recording command could not be cleared · new attempts held');}
   }
-  if(shared&&result.recording&&destination){localStorage.setItem(destinationKey,JSON.stringify(destination));setBound(destination);}
+  if(shared&&result.recording&&destination){
+   setBound(destination);
+   try{localStorage.setItem(destinationKey,JSON.stringify(destination));}catch{setStorageError('Recording destination could not be saved · new attempts held');}
+  }
   setRecording(result.recording);setArtifact(result.artifact);setChecked(true);setUnknown(false);setMessage(result.artifact?'Managed recording recovered':result.recording?'Original recording recovered':'No recording receipt · status is not crash-durable');
  });
  const send=(command:RecordingCommand)=>void guarded(async()=>{
@@ -118,7 +121,7 @@ function ObservationControls({scope,adapter,session,pageId,busy}:{scope:string;a
      {shared?<><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Producer · Operator · destination {destination?`${destination.projectId} / ${destination.conversationId}`:'select a live Chat'}</Typography>{!shared.conversationId&&!bound?<Stack direction={{xs:'column',sm:'row'}} spacing={1}><Button disabled={!available||!!pending} onClick={()=>void guarded(async()=>{setChoices([]);setChoice('');setChecked(false);const original=authority,chats=await api.listConversations(shared.projectId);if(!mounted.current||live.current!==original)return;setChoices(chats.filter(chat=>chat.projectId===shared.projectId&&!chat.deletedAt&&!chat.executionId));})}>Load destination Chats</Button><Select size="small" inputProps={{'aria-label':'Recording destination Chat'}} value={choice} disabled={working||!!pending} onChange={event=>{setChoice(event.target.value);setChecked(false);setRecording(undefined);setArtifact(undefined);}}><MenuItem value="">Choose Chat</MenuItem>{choices.map(chat=><MenuItem key={chat.id} value={chat.id}>{chat.title} · {chat.id}</MenuItem>)}</Select></Stack>:null}<Typography variant="caption">Current access and active Chat ownership revalidated by server · no Agent sharing</Typography></>:null}
      <Typography variant="caption">JPEG frames · 60 s / 120 frames / 8 MiB limit · no audio</Typography>
      <Stack direction={{xs:'column',sm:'row'}} spacing={1}>
-      <Button disabled={!available||!destinationReady||!!storageError} onClick={inspect}>Inspect recording status</Button>
+      <Button disabled={!available||!destinationReady} onClick={inspect}>Inspect recording status</Button>
       <Button disabled={!available||!destinationReady||!!storageError||!!pending||unknown||!checked||(!!recording&&!artifact)||!selected||pageId!==session?.activePageId} onClick={()=>setConfirm({context:context(),...(destination?{destinationEvidence:destination}:{}),operation:'start',pageId:pageId!,...(recording?{previousRecordingId:recording.id}:{})})}>Start recording</Button>
       <Button disabled={!available||!destinationReady||!!storageError||!!pending||unknown||!recording||!!artifact} onClick={()=>send({context:context(),...(destination?{destinationEvidence:destination}:{}),operation:'stop',recordingId:recording!.id})}>Stop & publish JSON</Button>
      </Stack>
