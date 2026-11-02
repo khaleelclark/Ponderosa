@@ -340,3 +340,38 @@ remain failed immutable attempts. No additional recording blocker remains within
 the accepted bounded scope; broader qualification requires its own authorized work.
 Portability/tree-continuation source and validation remain separate and unexecuted
 by this recording workflow.
+
+Bounded portability validation closure (2026-11-02): frozen minimal fix successor
+`6ea29eddbbe31505350607364f998ecb299ddf6b`, cumulative base `632f993e`, is now
+source-composed through ordered integration commits `035b95e68`, `a4b2a79a4`,
+`8f0757ea3`, `5a55e1fc0`. Eight changed files cover publication's undefined key,
+durable imported Chat ownership during projection rebuild, relevant typing/refusal
+diagnostics, drained/separate-receiver fixtures and the fix report. Separate moving
+tree-continuation `b71606cd` is excluded. Recording source/evidence stays unchanged.
+
+Independent Quality grants bounded scoped acceptance of the frozen validation
+packets, not full portability/Bible #8/Phase 2 acceptance:
+
+| Row | Final bounded disposition |
+| --- | --- |
+| Focused definition/tree/standalone/UI assertions | PASS 17/17 at production-identical `2f7751c`; final definition fixture socket rerun 3/3 at `6ea29ed`. |
+| Actual Chrome/ephemeral-socket backend | Tree/standalone 9/9; canonical final definition 3/3; final targeted live caller 2/2. |
+| Actual BranchRuntimeReadback to live backend | Four standalone/tree desktop 1440×960 and phone 390×844 invocations; one real GET each, no page errors. Static assets alone intercepted. Receipt accordion clicked; expansion visibility/visible JSON not asserted. Nonblank preteardown screenshots confer no usability/accessibility verdict. |
+| Prior mounted recovery/quota/storage checks | Six normal and four adapted negative invocations retain mocked-response/no-post-only limits. |
+| Core/Web/native TypeScript initial checks | PASS at initial source; native addon reused, no fresh addon build. |
+| Complete Agents/Server/Engines builds and workspace types | FAIL; repaired relevant diagnostics absent, remaining broad failures persist. |
+| Whole rendered import/review/confirm, live recovery/quota composition, full app/auth/accessibility/mobile usability, actual continuation UI and unsupported families | UNAVAILABLE. |
+
+Durable row matrix and exact receipts/harness snapshots/output hashes are in
+`/tmp/ponderosa-portability-validation-evidence/assessment.md`, including
+`held2f-focused*`, `socket2f-browser-v2*`, `socket6ea-definition*`,
+`live6ea-{ui-build,readback}*`, `live6ea-ui-results.jsonl` and
+`socket-output-integrity.json`. Failed/interrupted initial runs and initial
+provenance limitations remain disclosed. The append-only request log's original
+hash-bound prefix was recovered and independently verified. No installs/lock
+changes/live database/providers/imported Script processes/deployment/new workers.
+Delivery performed source composition and static exact-file verification only;
+frozen validation does not imply an executed composed-head build or runtime pass.
+Remaining whole-build and whole-rendered-flow gates require separately scoped
+follow-through. See `portability-validation-fix-632f.md` for immutable source-stage
+history; its historical pending-execution statements describe those earlier stages.
