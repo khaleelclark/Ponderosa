@@ -217,6 +217,6 @@ for await (const line of createInterface({input:process.stdin})) {
 test('native command cannot take an uncertain source lifetime after an ordinary error', async () => {
   const { ClaudeStreamSession } = await import('../../packages/engines/dist/claude-stream-session.js');
   const runtime = Object.create(ClaudeStreamSession.prototype);
-  Object.assign(runtime, { active: false, taskLifetime: lifetime() });
+  Object.assign(runtime, { active: false, fileHistory: {uncertain:false}, controls:{uncertain:false}, taskLifetime: lifetime() });
   await assert.rejects(() => runtime.invokeCommand('compact'), /uncertain native work/);
 });

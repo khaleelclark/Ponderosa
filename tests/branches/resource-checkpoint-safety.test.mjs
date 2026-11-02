@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store,CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
+import {checkpointPackageCustody} from '../../apps/server/dist/checkpoint-agent-packages.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
 import {BranchScriptService} from '../../apps/server/dist/branch-script-service.js';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return {promise,resolve,reject};};
@@ -33,7 +34,10 @@ async function fixture(t,mode='async'){
  const create=async(input,key,owner)=>{const p=store.createProject({...input,...owner,hostPath:dir,chatOwned:true},{idempotencyKey:key,payloadHash:'inert Chat boundary'});return store.getConversation(p.lastConversationId);};
  const deleteAgents=async ids=>{if(!ids.length)return;const preview=store.previewAgentDeletion(ids);store.deleteAgentSubtrees(ids,preview.previewHash,id=>coordination.handleAgentDeletion(id));};
  const deleteChat=async id=>{if(!store.getConversation(id,{includeDeleting:true}))return;const receipt=store.commitConversationDeletion(id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(id);};
- const service=(createChat=create)=>{const r=new BranchResourceService(branches,store,deleteAgents,createChat,deleteChat);services.push(r);return r;};
+ // Real private disk custody for synthetic imported fixtures: no provider history/exit claim.
+ const custody=checkpointPackageCustody(dir);
+ const packages={inspectCheckpoint:source=>custody.inspect(source),readCheckpoint:receipt=>custody.read(receipt),captureCheckpoint:source=>custody.capture(source,'inert-preopening-boundary',async()=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:source.agentIds.length===1?'agent':'organization',exportedAt:'2026-11-02T00:00:00.000Z',sourceLabel:'Inert imported fixture',rootRef:source.agentIds[0],agents:source.agentIds.map(ref=>({ref,title:'Inert worker',engine:'codex',sourceChat:{ref:source.sourceChatId,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},history:[],artifacts:[]}))}))};
+ const service=(createChat=create)=>{const r=new BranchResourceService(branches,store,deleteAgents,createChat,deleteChat);r.setPackageEngine(packages);services.push(r);return r;};
  const openGate=async()=>{gateAvailability(null);for(let n=0;n<30&&!branches.detail(pe.id).gates.length;n++){await branches.unitSaver.drain();branches.advance();}assert.equal(branches.detail(pe.id).gates[0].state,'waiting');return branches.execution(pe.id).checkpointInvocation;};
  const approve=()=>{const gate=branches.detail(pe.id).gates[0];branches.resolveGate(gate.id,{commandKey:'approve',expectedRevision:gate.revision,decision:'approve'});};
  const step=async()=>{await branches.unitSaver.drain();branches.advance();};
@@ -68,13 +72,15 @@ for(const mode of ['async','sync','exit'])test(`in-flight Chat creation holds an
  for(let n=0;n<30&&!imports;n++){await f.step();await r.tick(true);}
  assert.equal(imports,1);assert.notEqual(f.branches.execution(f.pe.id).checkpointInvocation.id,closing.id);
  for(let n=0;n<15&&!f.store.sqlite.prepare('SELECT 1 FROM coordination_requests').get();n++){await f.step();await r.tick(true);}
- assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1,JSON.stringify(f.store.sqlite.prepare('SELECT state,error FROM branch_resources').all()));
 });
 
 
 async function attachChat(f){
+ const stepId=f.resource.step_execution_id,token=f.branches.beginResourceOperation(stepId,f.resource.creation_key,'chat');assert.ok(token);
+ await f.branches.waitResourceCheckpoint(stepId);assert.equal(f.branches.releaseResourceChat(stepId,f.resource.creation_key,token),true);
  const chat=await f.create({label:'Known setup Chat',defaultEngine:'codex'},'known-setup',{branchId:f.child.id,executionId:f.resource.execution_id});
- f.branches.bindResourceChat(f.resource.step_execution_id,chat.id);await f.branches.unitSaver.drain();return chat;
+ f.branches.completeResourceOperation(stepId,'chat',token,{chatId:chat.id});await f.branches.unitSaver.drain();return chat;
 }
 for(const mode of ['async','sync','exit'])test(`in-flight import records known result but holds opening Request until fresh ancestor release (${mode})`,{timeout:15000},async t=>{
  const f=await fixture(t,mode);await attachChat(f);const entered=deferred(),release=deferred(),r=f.service();let calls=0;
@@ -89,7 +95,7 @@ for(const mode of ['async','sync','exit'])test(`in-flight import records known r
  for(let n=0;n<3;n++){await f.step();await r.tick(true);}assert.equal(calls,1);
  f.approve();await r.tick(true);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,0);
  for(let n=0;n<25&&!f.store.sqlite.prepare('SELECT 1 FROM coordination_requests').get();n++){await f.step();await r.tick(true);}
- assert.equal(calls,1);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1);
+ assert.equal(calls,1);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1,JSON.stringify(f.store.sqlite.prepare('SELECT state,error FROM branch_resources').all()));
  assert.notEqual(f.branches.execution(f.pe.id).checkpointInvocation.id,closing.id);
 });
 
@@ -148,7 +154,7 @@ test('a pending resource await does not hold unrelated dispatch; errors surface 
  release.resolve();await pending;
  const operation=f.branches.resourceOperation(f.resource.step_execution_id,'import');
  assert.throws(()=>f.branches.planResource(f.resource.step_execution_id,[randomUUID()],operation.token),/fenced/);
- assert.throws(()=>f.branches.bindResource(f.resource.step_execution_id,{rootAgentId:'unknown',agentIds:['unknown']}),/known committed/);
+ assert.throws(()=>f.branches.bindResource(f.resource.step_execution_id,{rootAgentId:'unknown',agentIds:['unknown']}),/retained private checkpoint capture/);
  await assert.rejects(scripts.tick(false),/checkpoint durability failed/);
  assert.equal(f.branches.detail(execution.id).sealedResults.length,1);assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE state='outcome_unknown'").get().n,0);
 });
@@ -199,7 +205,7 @@ test('ancestor saver failure preserves known import, forbids opening/replay and 
  release.resolve();await pending;await assert.rejects(f.branches.unitSaver.drain(),/checkpoint|save|failure/i);
  assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'import').state,'completed');
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM agents').get().n,1);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,0);
- await r.tick(true);assert.equal(calls,1);assert.equal(r.errors().length,0,'checkpoint failure is not an importer failure');
+ await r.tick(true);assert.equal(calls,1);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'import').error,undefined,'checkpoint failure is not an importer failure');assert.match(f.branches.resourceCaptureJournal(f.resource.step_execution_id).error,/checkpoint|durability|save/i);
  f.branches.cancel(f.pe.id);await r.tick(false);assert.equal(f.store.sqlite.prepare('SELECT state FROM branch_resources').get().state,'retired');
  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE state='outcome_unknown'").get().n,0);
 });
@@ -214,7 +220,7 @@ test('an unrelated failed saver cannot abort a valid owner import plan',{timeout
  await r.tick(true);
  assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'import').state,'completed');assert.equal(r.errors().length,0);
  await f.branches.unitSaver.waitFor([f.pe.id,f.resource.execution_id]);await r.tick(true);
- assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1,JSON.stringify(f.store.sqlite.prepare('SELECT state,error FROM branch_resources').all()));
 });
 
 
@@ -223,7 +229,10 @@ test('known import survives a later importer throw without losing the visible du
  r.setImporter(async(p,h)=>{calls++;const plan=await f.importPlan(p,h);f.importCommit(p,h,plan);throw Error('failure after known import commit');});
  await r.tick(true);assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'import').state,'completed');
  await f.branches.unitSaver.waitFor([f.pe.id,f.resource.execution_id]);await r.tick(true);
- assert.equal(calls,1);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1);
+ assert.equal(calls,1);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests').get().n,1,JSON.stringify(f.store.sqlite.prepare('SELECT state,error FROM branch_resources').all()));
+ assert.equal(f.branches.resourceOperation(f.resource.step_execution_id,'import').error,undefined,'completed import receipt stays byte exact');
+ assert.match(f.branches.detail(f.resource.execution_id).resources[0].error,/after known import commit/);
+ assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM branch_commands WHERE command_key LIKE 'resource-completion-error:%'").get().n,1);
  assert.match(r.errors()[0].message,/after known import commit/);
  const fresh=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));assert.match(fresh.resourceErrors()[0].message,/after known import commit/);
  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_attempts WHERE state='outcome_unknown'").get().n,0);

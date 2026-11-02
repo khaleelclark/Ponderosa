@@ -90,7 +90,7 @@ test('exit interruption saves a closed parallel invocation and restores under a 
  f.branches.checkpointInterruption(f.branch.id,f.source.id,'interrupt',old.id,'parallel-cut');
  await f.branches.unitSaver.completeExits();
  const cut=f.points(f.source.id).find(cp=>cp.snapshot.selected.maps.length);assert.ok(cut);
- f.branches.checkpointInterruption(f.branch.id,f.source.id,'resume',old.id,'parallel-resume');
+ f.branches.checkpointInterruption(f.branch.id,f.source.id,'resume',f.branches.execution(f.source.id).checkpointInvocation.interruptionId,'parallel-resume');
  await f.finish(f.source.id);
  const next=f.branches.rewindHistorical(f.branch.id,f.source.id,cut.id,cut.contentHash,'exit-restore');
  assert.notEqual(f.branches.execution(next.id).checkpointInvocation.id,old.id);

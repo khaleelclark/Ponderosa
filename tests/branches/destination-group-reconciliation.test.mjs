@@ -1,7 +1,10 @@
 // Deferred canonical boundary fixtures. Synthetic custody/observer evidence is not host drain qualification.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import Database from 'better-sqlite3';
+import {createRequire} from 'node:module';
+const Database=createRequire(new URL('../../apps/server/package.json',import.meta.url))('better-sqlite3');
+import {createHash} from 'node:crypto';
+import {resourceCaptureFrontierHash} from '../../packages/agents/dist/branch-resource-capture.js';
 import {readFileSync} from 'node:fs';
 import {CoordinationV3DestinationReconciliation,groupReconciliationAuthority} from '../../packages/agents/dist/coordination-v3-destination-reconciliation.js';
 import {destinationAdmissionHeld} from '../../packages/agents/dist/coordination-v3-destination-staging.js';
@@ -16,13 +19,20 @@ function fixture(t,mode='full'){
  for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql','0039_coordination_destination_group_chats.sql'])db.exec(readFileSync(new URL('../../packages/agents/src/schema/'+name,import.meta.url),'utf8'));
  db.exec("INSERT INTO branches VALUES('branch');INSERT INTO branch_executions VALUES('source1'),('source2');INSERT INTO branch_unit_snapshots VALUES(1)");
  const resources=[1,2].map(i=>({custody:{sourceChatId:`old-chat${i}`,agentIds:[`old${i}`],intent:{executionId:`source${i}`,resourceStepId:`source-step${i}`,resourceGeneration:0}},destination:{projectId:'project',conversationId:`fresh-chat${i}`,executionId:'new-owner',resourceStepId:`new-step${i}`,resourceGeneration:0}}));
- const reservation={branchId:'branch',sourceExecutionId:'source1',checkpointId:1,checkpointHash:payloadHash({}),commandKey:'reserve',operatorId:'operator',reconcileEffects:true,custody:resources[0].custody,destination:resources[0].destination,resources};
+ // Synthetic but fully sealed per-resource retained evidence; no host drain claim.
+ const selected={execution:[{id:'source1',branch_id:'branch'}],resources:resources.map((r,i)=>({step_execution_id:r.custody.intent.resourceStepId,execution_id:'source1',chat_id:r.custody.sourceChatId,generation:0,import_operation_json:stableJson({result:{agentIds:r.custody.agentIds}})}))};
+ const evidence=rows=>rows.map(row=>({row,sha256:payloadHash(row)}));
+ const cut={schema:'ponderosa.branch.host-dependencies.v1',executionId:'source1',restoreAuthority:'fresh_admission_required',nativeState:'not_captured',artifactStorage:'references_only',roots:[],coverage:{complete:true,missingReferences:[],requestVersions:[]},...Object.fromEntries(['requests','updates','lateResults','joins','members','suspensions','communications','joinOutcomes','artifactRefs','resources','resourceMembers','resourceContexts','resourceReceipts'].map(k=>[k,[]])),bindingPin:{revisionId:'binding',sha256:payloadHash({}),requiredSecretRefs:[]}};
+ cut.resources=evidence(selected.resources);cut.resourceMembers=evidence(resources.map(r=>({step_execution_id:r.custody.intent.resourceStepId,agent_id:r.custody.agentIds[0]})));
+ const snapshot={selected,hostDependencies:cut,issuedContinuation:{bindingHash:cut.bindingPin.sha256,configuration:{}}};
+ for(const [i,r] of resources.entries())r.custody={...r.custody,version:1,checkpointId:`package${i}`,custodyId:createHash('sha256').update(`package${i}`).digest('hex'),boundaryId:`synthetic${i}`,sha256:payloadHash({package:i}),byteLength:1,intent:{...r.custody.intent,executionId:'source1',frontierSha256:resourceCaptureFrontierHash(selected),hostCutSha256:payloadHash(cut),bindingSha256:cut.bindingPin.sha256,configurationSha256:payloadHash({})}};
+ const reservation={branchId:'branch',sourceExecutionId:'source1',checkpointId:1,checkpointHash:payloadHash(snapshot),commandKey:'reserve',operatorId:'operator',reconcileEffects:true,custody:resources[0].custody,destination:resources[0].destination,resources};
  const stages=Object.fromEntries([1,2].map(i=>[`old-chat${i}`,{importPlan:{creationOperationId:`import${i}`,projectId:'project',conversationId:`fresh-chat${i}`,agents:[{sourceRef:`old${i}`,agentId:`new${i}`}],artifacts:[]},agentMap:{[`old${i}`]:`new${i}`},artifactMap:{}}]));
  const stage=mode==='full'?{importPlan:stages['old-chat1'].importPlan,imports:Object.fromEntries(Object.entries(stages).map(([k,v])=>[k,v.importPlan])),agentMap:{old1:'new1',old2:'new2'},artifactMap:{}}:null;
- db.prepare('INSERT INTO coordination_destination_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('group','branch','source1',1,'reserve',payloadHash(reservation),stableJson(reservation),'{}','project','fresh-chat1',stage?'staged':'reserved',stage?stableJson(stage):null,null,'now','now');
+ db.prepare('INSERT INTO coordination_destination_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('group','branch','source1',1,'reserve',payloadHash(reservation),stableJson(reservation),stableJson(snapshot),'project','fresh-chat1',stage?'staged':'reserved',stage?stableJson(stage):null,null,'now','now');
  for(const i of [1,2]){
   const prepared=mode!=='empty'&&(mode!=='partial'||i===1);
-  db.prepare('INSERT INTO coordination_destination_group_chats VALUES(?,?,?,?,?)').run('group',`old-chat${i}`,`source${i}`,`fresh-chat${i}`,prepared?stableJson(stages[`old-chat${i}`]):null);
+  db.prepare('INSERT INTO coordination_destination_group_chats VALUES(?,?,?,?,?)').run('group',`old-chat${i}`,'source1',`fresh-chat${i}`,prepared?stableJson(stages[`old-chat${i}`]):null);
   if(prepared){db.prepare('INSERT INTO coordination_destination_members VALUES(?,?,?)').run('group',`old${i}`,`new${i}`);db.prepare('INSERT INTO agent_creation_operations VALUES(?,?,?,?)').run(`import${i}`,'project',`fresh-chat${i}`,'rolled_back');}
  }
  const service=new CoordinationV3DestinationReconciliation(db,true),singular=new CoordinationV3DestinationReconciliation(db);
@@ -58,7 +68,7 @@ test('non-first surviving Agent, runtime and unknown import refuse; preserve-onl
  f.setReferences(['still-referenced']);const exact=f.input(false),receipt=f.retire(exact);assert.equal(receipt.releasedSourcePins,false);
  assert.equal(f.db.prepare('SELECT count(*) n FROM coordination_destination_group_chats').get().n,2);
  assert.equal(f.db.prepare('SELECT count(*) n FROM coordination_destination_members').get().n,2);
- assert.throws(()=>f.db.exec("DELETE FROM branch_executions WHERE id='source2'"),/FOREIGN KEY/);
+ assert.throws(()=>f.db.exec("DELETE FROM branch_executions WHERE id='source1'"),/FOREIGN KEY/);
  assert.throws(()=>f.retire({...exact,releaseSourcePins:true}),/conflict/);
 });
 test('partial importer stages and empty reservations retain exhaustive slots; admitted and corrupt evidence refuse',t=>{

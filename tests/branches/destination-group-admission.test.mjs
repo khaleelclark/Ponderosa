@@ -26,12 +26,12 @@ async function fixture(t){
  // Synthetic inert retained resource inventory isolates the new runtime boundary from the Branch
  // consumer, which remains separately refused. The saved Request/update prefix is canonical.
  const selected=selectBranchUnit(db,source.id),resourceStepId=selected.steps[0]?.id??selected.attempts[0].step_execution_id;
- const resource={step_execution_id:resourceStepId,execution_id:source.id,chat_id:chat.id,generation:0,requested_count:1},secondResource={...resource,step_execution_id:randomUUID(),chat_id:secondChat.id};selected.resources=[resource,secondResource];
+ const resource={step_execution_id:resourceStepId,execution_id:source.id,chat_id:chat.id,generation:0,requested_count:1,import_operation_json:stableJson({result:{agentIds:[agent.id]}})},secondResource={...resource,step_execution_id:randomUUID(),chat_id:secondChat.id,import_operation_json:stableJson({result:{agentIds:[secondAgent.id]}})};selected.resources=[resource,secondResource];
  const cut=db.transaction(()=>captureBranchHostCut(db,source.id,{...selectBranchUnit(db,source.id),resources:[]}))();
  cut.resources=[resource,secondResource].map(row=>({row,sha256:payloadHash(row)}));
  cut.resourceMembers=[{step_execution_id:resourceStepId,agent_id:agent.id,origin:'template'},{step_execution_id:secondResource.step_execution_id,agent_id:secondAgent.id,origin:'template'}].map(row=>({row,sha256:payloadHash(row)}));
  const secondRow=db.prepare('SELECT * FROM coordination_requests WHERE id=?').get(secondRequest);cut.requests.push({row:secondRow,sha256:payloadHash(secondRow)});cut.coverage.requestVersions.push({requestId:secondRequest,version:0,updatePrefixComplete:true});
- const snapshot={selected,hostDependencies:cut},checkpointHash=payloadHash(snapshot);
+ const snapshot={selected,hostDependencies:cut,issuedContinuation:{bindingHash:cut.bindingPin.sha256,configuration:{}}},checkpointHash=payloadHash(snapshot);
  const checkpointId=Number(db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(source.id,stableJson(snapshot),checkpointHash).lastInsertRowid);
  coordination.updateRequest({requestId,updateId:'old-answer',kind:'answer',inReplyToUpdateId:'old-question',actor:{kind:'user'},payload:{text:'Later answer does not replace retained question'}});
  coordination.updateRequest({requestId,updateId:'old-completed',kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'Old effects settled'}});
@@ -40,7 +40,7 @@ async function fixture(t){
  assert.equal(branches.execution(source.id).state,'completed');
  db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
  const execution=branches.accept(branch.id,'fresh','fresh'),creationKey='destination-chat',conversationId=workspaceCreationId('conversation',project.id,creationKey),freshStep=randomUUID();
- const custody={version:1,checkpointId:'fixture-custody',custodyId:createHash('sha256').update('fixture-custody').digest('hex'),sourceChatId:chat.id,agentIds:[agent.id],boundaryId:'fixture-source-boundary',sha256:'a'.repeat(64),byteLength:1,intent:{executionId:source.id,resourceStepId,resourceGeneration:0,frontierSha256:resourceCaptureFrontierHash(selected),bindingSha256:cut.bindingPin.sha256,configurationSha256:payloadHash({})}};
+ const custody={version:1,checkpointId:'fixture-custody',custodyId:createHash('sha256').update('fixture-custody').digest('hex'),sourceChatId:chat.id,agentIds:[agent.id],boundaryId:'fixture-source-boundary',sha256:'a'.repeat(64),byteLength:1,intent:{executionId:source.id,resourceStepId,resourceGeneration:0,frontierSha256:resourceCaptureFrontierHash(selected),hostCutSha256:payloadHash(cut),bindingSha256:cut.bindingPin.sha256,configurationSha256:payloadHash({})}};
 
  const secondCreationKey='second-destination-chat',secondConversationId=workspaceCreationId('conversation',project.id,secondCreationKey),secondStep=randomUUID();
  const resources=[{custody,destination:{projectId:project.id,conversationId,executionId:execution.id,resourceStepId:freshStep,resourceGeneration:1}},
@@ -53,6 +53,7 @@ async function fixture(t){
  for(const [index,r] of resources.entries()){
   assert.equal(destinationAdmissionHeld(db,undefined,r.destination.conversationId),true,'every prospective Chat held');
   store.createConversation(project.id,{title:'Destination '+index},{idempotencyKey:index?secondCreationKey:creationKey,payloadHash:payloadHash({title:'Destination '+index})});
+  db.prepare('UPDATE conversations SET branch_id=?,branch_execution_id=? WHERE id=?').run(branch.id,execution.id,r.destination.conversationId);
   const freshAgent=randomUUID(),operationId=randomUUID();freshAgents.push(freshAgent);
   db.prepare("INSERT INTO agent_creation_operations(id,project_id,actor_scope,kind,idempotency_key,payload_hash,status,created_at,updated_at) VALUES(?,?,'user:fixture','import',?,?,'preparing',?,?)").run(operationId,project.id,'group-import-'+index,payloadHash({}),now(),now());
   db.prepare('UPDATE agent_creation_operations SET conversation_id=? WHERE id=?').run(r.destination.conversationId,operationId);

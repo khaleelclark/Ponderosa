@@ -1,4 +1,4 @@
-import {hostUpdateFact,hostRequestPayload,retainedRestorationSnapshot} from './branch-host-provenance.js';
+import {hostUpdateHashMatches,hostUpdateFact,hostRequestPayload,retainedRestorationSnapshot} from './branch-host-provenance.js';
 import type {BranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {randomUUID} from 'node:crypto';
@@ -27,7 +27,7 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
  if(!verifyBranchHostCut(cut,receipt.source_execution_id)||!cut.coverage.complete)throw Error('Historical result retained cut integrity failure');
  const source=cut.updates.find(({row})=>row.id===origin.source_update_id)?.row,map=JSON.parse(receipt.receipt_json);
  if(!source||source.request_id!==origin.source_request_id||source.kind!==origin.source_kind||source.payload_hash!==origin.source_payload_hash
-  ||source.resulting_version!==origin.source_resulting_version||source.payload_hash!==payloadHash(JSON.parse(source.payload_json))
+  ||source.resulting_version!==origin.source_resulting_version||!hostUpdateHashMatches(cut,source)
   ||stableJson({kind:source.actor_kind,id:source.actor_id})!==origin.source_actor_json
   ||map.restorationId!==receipt.id||map.checkpointId!==receipt.checkpoint_id||map.checkpointHash!==receipt.cut_hash
   ||map.updateMap[source.id]!==update.id||map.requestMap[source.request_id]!==update.request_id
@@ -45,7 +45,7 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
 export function validateHistoricalRequest(row:Row,updates:Row[],cut?:BranchHostCut):void {
  let state:CoordinationRequestSnapshot={state:'open',version:0};
  for(const update of updates){
-  if(stableJson(JSON.parse(update.payload_json))!==update.payload_json||payloadHash(JSON.parse(update.payload_json))!==update.payload_hash)throw Error('Historical update payload hash differs');
+  if(!cut||!hostUpdateHashMatches(cut,update))throw Error('Historical update payload hash differs');
   const kind=cut?hostUpdateFact(cut,update).kind:update.kind;
   if(!Object.hasOwn(REQUEST_UPDATE_AUTHORIZATION,kind))throw Error('Unsupported historical update kind');
   if(update.request_id!==row.id||update.resulting_version!==state.version+1)throw Error('Historical update prefix is not contiguous');

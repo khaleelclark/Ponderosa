@@ -962,7 +962,7 @@ export class BranchStore {
           if(!this.executionBudgets.admit(next.id,now))throw Error('Restored review admission unavailable');
           this.checkpoint(next.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',next.id)!.admission_json)},now);
         }
-        if(!restored.paths!.some(p=>p.state==='active'))this.state(next.id,'waiting',now,'Waiting for approval');
+        this.state(next.id,restored.paths!.some(p=>p.state==='active')?'running':'waiting',now,restored.paths!.some(p=>p.state==='active')?undefined:'Waiting for approval');
       }
       this.selectedWrite(next.id);
       return this.execution(next.id)!;
@@ -1525,7 +1525,11 @@ export class BranchStore {
   resourceCaptureError(stepExecutionId:string,error:string):void {
     this.unitTransaction(()=>{
       const c=this.resourceCaptureJournal(stepExecutionId),r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);
-      if(c&&r)this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...c,error:branchText(error)}),r.execution_id,`resource-capture:${r.creation_key}`);
+      const message=branchText(error);
+      if(c&&r&&c.error!==message){
+        this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...c,error:message}),r.execution_id,`resource-capture:${r.creation_key}`);
+        this.selectedWrite(r.execution_id);
+      }
     }).immediate();
   }
   issuedResourceCapture(executionId:string,stepId:string,commandKey:string) {return issuedResourceCapture(this.sqlite,executionId,stepId,commandKey);}
@@ -1746,8 +1750,15 @@ export class BranchStore {
       const message=error instanceof Error?error.message:error===undefined?'Resource operation returned without a durable completion':String(error);
       if(operation.state==='completed'){
         if(error!==undefined){
-          if(operation.error!==message)this.writeResourceOperation(r,phase,{...operation,error:message});
-          this.resourceError(stepExecutionId,message);
+          if(phase==='import'&&this.resourceCaptureJournal(stepExecutionId)){
+            // The committed import already pins custody. Preserve that exact frontier;
+            // a later importer exception is an append-only observation, not a changed result.
+            const diagnostic={phase,token,error:branchText(message)},key=`resource-completion-error:${r.creation_key}:${payloadHash(diagnostic)}`;
+            this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?) ON CONFLICT(execution_id,command_key) DO NOTHING',r.execution_id,key,payloadHash(diagnostic),stableJson(diagnostic),new Date().toISOString());
+          }else{
+            if(operation.error!==message)this.writeResourceOperation(r,phase,{...operation,error:message});
+            this.resourceError(stepExecutionId,message);
+          }
         }
         return;
       }
@@ -1825,8 +1836,11 @@ export class BranchStore {
       this.run('UPDATE branch_resources SET error=? WHERE step_execution_id=?',message,stepExecutionId);this.selectedWrite(r.execution_id);
     })();
   }
+  private resourceCompletionError(r:Row):string|undefined {
+    return this.row("SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE execution_id=? AND command_key LIKE ? ORDER BY created_at DESC,command_key DESC LIMIT 1",r.execution_id,`resource-completion-error:${r.creation_key}:%`)?.error;
+  }
   resourceErrors():Error[] {return this.rows(`SELECT error FROM branch_resources WHERE error IS NOT NULL
-    UNION SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE command_key LIKE 'resource-capture:%' AND json_extract(result_json,'$.error') IS NOT NULL
+    UNION SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE (command_key LIKE 'resource-capture:%' OR command_key LIKE 'resource-completion-error:%') AND json_extract(result_json,'$.error') IS NOT NULL
     UNION SELECT json_extract(c.result_json,'$.error') error FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id
       AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
       WHERE json_extract(c.result_json,'$.error') IS NOT NULL`).map(r=>new Error(r.error));}
@@ -1984,7 +1998,7 @@ export class BranchStore {
       maps:maps.map(r=>({id:r.id,mapId:r.map_id,parentPathId:r.parent_path_id,joinId:r.join_id,...(r.source_result_id?{sourceResultId:r.source_result_id}:{}),itemCount:r.item_count,itemsHash:r.items_hash,state:r.state})),
       mapItems:mapItems.map(r=>({id:r.id,mapInvocationId:r.map_invocation_id,mapId:this.row('SELECT map_id FROM branch_map_invocations WHERE id=?',r.map_invocation_id)!.map_id,index:r.item_index,pathId:r.path_id,input:r.input_text,inputHash:r.input_hash,state:r.path_state,...(r.path_result_json?{result:JSON.parse(r.path_result_json)}:{}),...(r.step_execution_id?{stepExecutionId:r.step_execution_id,...this.mapItemAttemptSummary(r.step_execution_id)}:{attemptCount:0}),...(r.step_execution_id&&this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)!.id}:{})})),
       steps: steps.map(r => this.stepDto(r)), attempts: attempts.map(r => this.attemptDto(execution,definition,r)),
-      resources: resources.map(r=>({stepExecutionId:r.step_execution_id,templateRef:r.template_ref,state:r.state,...(r.root_agent_id?{rootAgentId:r.root_agent_id}:{}),agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",r.step_execution_id).map(m=>m.agent_id),...(r.error?{error:r.error}:{})})),
+      resources: resources.map(r=>({stepExecutionId:r.step_execution_id,templateRef:r.template_ref,state:r.state,...(r.root_agent_id?{rootAgentId:r.root_agent_id}:{}),agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",r.step_execution_id).map(m=>m.agent_id),...((r.error??this.resourceCompletionError(r))?{error:r.error??this.resourceCompletionError(r)}:{})})),
       paths: paths.map(r => ({ id: r.id, state: r.state, input: r.input_text, ...(r.node_id ? { nodeId: r.node_id } : {}), ...(r.step_execution_id?{stepExecutionId:r.step_execution_id}:{}), ...(r.parent_path_id ? { parentPathId: r.parent_path_id } : {}), ...(r.fork_invocation_id ? { forkInvocationId: r.fork_invocation_id, edgeId: r.edge_id } : {}), ...(r.last_result_id?{lastResultId:r.last_result_id}:{}), ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}) })),
       gates: gates.map(r => this.gateDto(execution,definition,r)) };
   }

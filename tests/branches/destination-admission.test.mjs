@@ -95,8 +95,12 @@ test('changed human review and thrown composer never partially admit identities 
 test('missing private participant mapping refuses review without dropping facts or publishing work',async t=>{
  const f=await fixture(t),row=f.db.prepare('SELECT stage_json FROM coordination_destination_admissions WHERE id=?').get(f.reserved.admissionId),stage=JSON.parse(row.stage_json);
  delete stage.agentMap[f.agent.id];
+ // First prove the durable identity trigger rejects this corruption. Then bypass only
+ // that trigger in this disposable adversarial fixture to exercise the reader boundary.
+ assert.throws(()=>f.db.prepare('UPDATE coordination_destination_admissions SET stage_json=? WHERE id=?').run(stableJson(stage),f.reserved.admissionId),/immutable/);
+ f.db.exec('DROP TRIGGER coordination_destination_identity_immutable');
  f.db.prepare('UPDATE coordination_destination_admissions SET stage_json=? WHERE id=?').run(stableJson(stage),f.reserved.admissionId);
  const counts=()=>['coordination_requests','coordination_cut_restorations','activation_outbox'].map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
- assert.throws(()=>f.review(),/mapping|map|stage|inventory/i);
+ assert.throws(()=>f.review(),/Destination import member ownership changed/);
  assert.deepEqual(counts(),before);assert.equal(destinationAdmissionHeld(f.db,f.freshAgent),true);
 });

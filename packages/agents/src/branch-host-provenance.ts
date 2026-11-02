@@ -54,6 +54,17 @@ export function captureHostProvenance(db:Database.Database,requests:Row[],update
  return {restorations,origins};
 }
 
+/** Live updates hash their complete command envelope; imported updates hash their sealed payload.
+ * Artifact commands need their original local metadata/order, which reference-only cuts omit.
+ * Refuse those rather than substituting a payload-only hash for the canonical command hash. */
+export function hostUpdateHashMatches(cut:BranchHostCut,u:Row):boolean {
+ const payload=JSON.parse(u.payload_json);
+ if(stableJson(payload)!==u.payload_json)return false;
+ if(imported(u))return payloadHash(payload)===u.payload_hash;
+ if(cut.artifactRefs.some(e=>e.row.owner_kind==='request_update'&&e.row.owner_id===u.id))return false;
+ return payloadHash({requestId:u.request_id,kind:u.kind,actor:{kind:u.actor_kind,...(u.actor_id!==null?{id:u.actor_id}:{})},inReplyToUpdateId:u.in_reply_to_update_id??null,payload,...(u.provider_failure_category?{providerFailureCategory:u.provider_failure_category}:{}),artifacts:[]})===u.payload_hash;
+}
+
 class HostFacts {
  private active=new Set<string>();
  private checked=new Set<BranchHostCut>();
@@ -139,7 +150,7 @@ class HostFacts {
   if(!origin){if(imported(u))throw Error('Historical update provenance unavailable');return {kind:u.kind,payload,actor:{kind:u.actor_kind,id:u.actor_id},row:u};}
   const source=this.source(cut,origin.restoration_id),old=source.cut.updates.find(e=>e.row.id===origin.source_update_id)?.row;
   if(!old||old.request_id!==origin.source_request_id||old.kind!==origin.source_kind||old.payload_hash!==origin.source_payload_hash
-   ||old.resulting_version!==origin.source_resulting_version||old.payload_hash!==payloadHash(JSON.parse(old.payload_json))||stableJson({kind:old.actor_kind,id:old.actor_id})!==origin.source_actor_json
+   ||old.resulting_version!==origin.source_resulting_version||!hostUpdateHashMatches(source.cut,old)||stableJson({kind:old.actor_kind,id:old.actor_id})!==origin.source_actor_json
    ||source.map.updateMap[old.id]!==u.id||source.map.requestMap[old.request_id]!==u.request_id
    ||(old.in_reply_to_update_id&&!source.map.updateMap[old.in_reply_to_update_id])||(u.in_reply_to_update_id??null)!==(old.in_reply_to_update_id?source.map.updateMap[old.in_reply_to_update_id]:null)
    ||u.actor_kind!=='system'||u.actor_id!=='host-cut-restoration'||u.resulting_version!==old.resulting_version||u.resulting_state!==old.resulting_state

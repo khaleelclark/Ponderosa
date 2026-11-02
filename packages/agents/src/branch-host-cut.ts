@@ -47,7 +47,7 @@ export function captureBranchHostCut(db:Database.Database,id:string,selected:Sel
    if(!row){missingReferences.push({kind:'request',id:requestId});continue;}scoped(row);if(!participants.has(row.requester_agent_id)&&!participants.has(row.recipient_agent_id))throw Error('Host dependency exceeds root participant scope');parse(row.payload_json);requests.set(row.id,row);
    if(row.superseded_by_request_id)pendingRequests.add(row.superseded_by_request_id);
    for(const predecessor of db.prepare('SELECT id FROM coordination_requests WHERE superseded_by_request_id=?').all(row.id) as Row[])pendingRequests.add(predecessor.id);
-   const history=db.prepare(`SELECT id,request_id,kind,actor_kind,actor_id,in_reply_to_update_id,payload_json,payload_hash,resulting_state,resulting_version,created_at FROM coordination_request_updates WHERE request_id=? ORDER BY resulting_version,id LIMIT 513`).all(row.id) as Row[];
+   const history=db.prepare(`SELECT id,request_id,kind,actor_kind,actor_id,in_reply_to_update_id,payload_json,payload_hash,resulting_state,resulting_version,created_at,provider_failure_category FROM coordination_request_updates WHERE request_id=? ORDER BY resulting_version,id LIMIT 513`).all(row.id) as Row[];
    if(history.length>512)throw Error('Request update capture exceeds 512 records');
    let version=0,updatePrefixComplete=true;
    for(const update of history){parse(update.payload_json);if(update.resulting_version!==++version)updatePrefixComplete=false;updates.set(update.id,update);}

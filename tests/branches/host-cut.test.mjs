@@ -211,7 +211,7 @@ test('mapped historical question accepts a live answer and completes its fresh J
  const root=f.branches.detail(f.source.id).attempts[0].requestId;
  const child=f.coordination.coordinate({projectId:f.project.id,conversationId:f.chat.id,requesterAgentId:f.agent.id,actorScope:'controlled-host-fixture',idempotencyKey:'historical-question-join',requests:[{recipientAgentId:f.peer.id,lifetime:{kind:'indefinite'},payload:{text:'Inspect without repeating effects'}}],join:{mode:'all',continuationRequestIds:[root]}});
  f.coordination.updateRequest({requestId:child.requestIds[0],updateId:'historical-question-source',kind:'question',actor:{kind:'agent',id:f.peer.id},payload:{text:'Which retained source should be inspected?'}});
- const cut=f.capture(),snapshot={schema:'branch-unit-selected.v2',hostDependencies:cut},bytes=stableJson(snapshot),expectedHash=payloadHash(snapshot);
+ const cut=f.capture(),snapshot={schema:'branch-unit-selected.v2',selected:selectBranchUnit(f.store.sqlite,f.source.id),hostDependencies:cut},bytes=stableJson(snapshot),expectedHash=payloadHash(snapshot);
  const checkpointId=Number(f.store.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,bytes,expectedHash).lastInsertRowid);
  f.coordination.updateRequest({requestId:child.requestIds[0],updateId:'settled-child',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Original task settled'}});
  f.coordination.updateRequest({requestId:root,updateId:'settled-root',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Original root settled'}});
@@ -571,4 +571,18 @@ test('recaptured tree union refuses conflicting immutable origin evidence across
  assert.ok(owners.length>=2);const shared=owners[0].hostDependencies.provenance.origins.find(e=>owners[1].hostDependencies.provenance.origins.some(other=>other.row.update_id===e.row.update_id));assert.ok(shared);
  const changed=owners[1].hostDependencies.provenance.origins.find(e=>e.row.update_id===shared.row.update_id);changed.row.source_payload_hash='0'.repeat(64);changed.sha256=payloadHash(changed.row);owners[1].hostDependenciesHash=payloadHash(owners[1].hostDependencies);
  assert.throws(()=>retainedBranchHostGraph(capture.saved,first.id),/Shared tree historical provenance differs/);
+});
+
+
+test('ordinary retained updates verify the exact canonical command envelope, never a payload-only replacement',async t=>{
+ const {hostUpdateHashMatches}=await import('../../packages/agents/dist/branch-host-provenance.js');
+ const {payloadHash,stableJson}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+ const f=fixture(t);for(let n=0;n<30&&!f.branches.detail(f.source.id).attempts[0]?.requestId;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+ const requestId=f.branches.detail(f.source.id).attempts[0].requestId;
+ f.coordination.updateRequest({requestId,updateId:'envelope-progress',kind:'progress',actor:{kind:'agent',id:f.agent.id},payload:{text:'Observed retained progress'}});
+ const cut=f.capture(),row=cut.updates.find(e=>e.row.id==='envelope-progress').row;
+ assert.equal(hostUpdateHashMatches(cut,row),true);
+ assert.notEqual(row.payload_hash,payloadHash(JSON.parse(row.payload_json)));
+ for(const change of [{payload_hash:payloadHash(JSON.parse(row.payload_json))},{actor_id:'foreign'},{request_id:'foreign'},{in_reply_to_update_id:'foreign'},{provider_failure_category:'unknown'},{payload_json:stableJson({text:'changed'})}])assert.equal(hostUpdateHashMatches(cut,{...row,...change}),false);
+ assert.equal(hostUpdateHashMatches({...cut,artifactRefs:[{row:{owner_kind:'request_update',owner_id:row.id}}]},row),false,'reference-only cuts cannot supply omitted original artifact command metadata');
 });

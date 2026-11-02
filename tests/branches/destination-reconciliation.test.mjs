@@ -1,7 +1,8 @@
 // Deferred source fixture: exercises the canonical retirement boundary, not Branch end-to-end drain.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import Database from 'better-sqlite3';
+import {createRequire} from 'node:module';
+const Database=createRequire(new URL('../../apps/server/package.json',import.meta.url))('better-sqlite3');
 import {readFileSync} from 'node:fs';
 import {CoordinationV3DestinationReconciliation} from '../../packages/agents/dist/coordination-v3-destination-reconciliation.js';
 import {destinationAdmissionHeld} from '../../packages/agents/dist/coordination-v3-destination-staging.js';
