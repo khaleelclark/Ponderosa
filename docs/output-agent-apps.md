@@ -4,7 +4,9 @@ In a persistent Branch Agent's Settings, turn on **Output app** and choose
 **Open output app**. Its stable local URL is `/apps/<agent-id>`. The page uses
 the existing Agent chat, attachment, voice, browser, and stream components;
 authoring and history remain in their existing canonical stores. Temporary
-execution Agents cannot be output agents.
+execution Agents cannot be output agents. Opening an output URL or Assistant, and
+using **Back to chat**, explicitly selects the output Agent’s chat view rather
+than restoring a tab previously visited in the full workspace.
 
 The output app's top **Settings** opens schedule and provider/model controls.
 **Save schedule** publishes an interval schedule behind the app, with a workflow

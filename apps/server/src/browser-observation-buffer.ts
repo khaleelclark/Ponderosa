@@ -7,7 +7,8 @@ export class BrowserObservationBuffer {
   private readonly entries: BrowserConsoleEntry[] = [];
   private recording?: {status: BrowserRecordingStatus; start: number; bytes: number; frames: BrowserRecordingData['frames']; endedAt?: string; reason?: BrowserRecordingData['reason']};
   console(pageId: string, level: BrowserConsoleEntry['level'], text: string): void {
-    this.entries.push({sequence: ++this.sequence, at: new Date().toISOString(), pageId, level, text: redactBrowserText(text).slice(0, 4000)});
+    const redacted = redactBrowserText(text);
+    this.entries.push({sequence: ++this.sequence, at: new Date().toISOString(), pageId, level, text: redacted.slice(0, 4000), textTruncated: redacted.length > 4000});
     if (this.entries.length > 500) this.entries.shift();
   }
   query(query: BrowserConsoleQuery = {}): BrowserConsoleResult {

@@ -11,6 +11,8 @@ export interface BrowserConsoleEntry {
   pageId: string;
   level: 'log' | 'info' | 'warning' | 'error';
   text: string;
+  /** Redacted text exceeded the retained 4,000-character entry limit. */
+  textTruncated?: boolean;
 }
 export interface BrowserConsoleResult {
   entries: BrowserConsoleEntry[];

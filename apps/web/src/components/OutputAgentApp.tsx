@@ -37,7 +37,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  useEffect(()=>{
   if(!app){setRoute(undefined);return;}
   setStandaloneWorkspaceOwner({branchId:app.branchId,chatId:app.chatId});
-  setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId}});
+  setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId,view:'chat'}});
   return()=>setStandaloneWorkspaceOwner(undefined);
  },[ownerKey]);
  // Refresh the draft when settings opens; background refreshes must not erase edits.
@@ -62,7 +62,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
    <Typography component="h1" variant="h6" sx={{flex:'1 1 8rem',minWidth:0,overflowWrap:'anywhere'}}>{app?.title??(assistant?'Assistant':'Chat')}</Typography>
-   {app&&route&&(route.workspace?.kind!=='agent'||route.workspace.agentId!==app.agentId)&&<Button onClick={()=>setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId}})}>Back to chat</Button>}
+   {app&&route&&(route.workspace?.kind!=='agent'||route.workspace.agentId!==app.agentId)&&<Button onClick={()=>setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId,view:'chat'}})}>Back to chat</Button>}
    <Button href="/home">Ponderosa</Button><Button onClick={()=>{setError('');setSettings(true);}}>Settings</Button>
   </Stack>
   {error&&!settings&&<Alert severity="error">{error}</Alert>}

@@ -26,7 +26,7 @@ export function consoleResultValid(value:unknown,pageId:string,after?:number,lev
  if(!v||!Array.isArray(v.entries)||v.entries.length>100||!Number.isSafeInteger(v.next)||v.next<0||typeof v.truncated!=='boolean')return false;
  let previous=after??0;
  return v.entries.every(entry=>{
-  if(!entry||!Number.isSafeInteger(entry.sequence)||entry.sequence<=previous||entry.sequence>v.next||entry.pageId!==pageId||(level!==undefined&&entry.level!==level)||!['log','info','warning','error'].includes(entry.level)||typeof entry.text!=='string'||entry.text.length>4000||!Number.isFinite(Date.parse(entry.at)))return false;
+  if(!entry||!Number.isSafeInteger(entry.sequence)||entry.sequence<=previous||entry.sequence>v.next||entry.pageId!==pageId||(level!==undefined&&entry.level!==level)||!['log','info','warning','error'].includes(entry.level)||typeof entry.text!=='string'||entry.text.length>4000||(entry.textTruncated!==undefined&&typeof entry.textTruncated!=='boolean')||!Number.isFinite(Date.parse(entry.at)))return false;
   previous=entry.sequence;return true;
  })&&(after===undefined||v.next>=after);
 }
