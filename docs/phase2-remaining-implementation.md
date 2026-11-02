@@ -675,3 +675,74 @@ mobile/auth/accessibility/portability, real providers/imported Script, fresh nat
 build or Phase2 acceptance. No new workers, installs/upgrades/lock/schema migration,
 unrelated Web/recording/b716/liveDB/deploy/push. Composition required no additional
 runtime execution; affected files are byte-identical to the reviewed candidate.
+
+
+Historical complete-file tranche disposition (2026-11-02): OPEN/UNQUALIFIED.
+Delivery ran the entire unfiltered2521-line
+`tests/branches/historical-checkpoint-rewind.test.mjs` ONCE at exact tracked
+1d98fa37ced6c9d0045c06ed4f14ee79302bbd43 in isolated
+/tmp/ponderosa-historical-complete. Existing workspace resolver and
+--test-concurrency=1; no product/test delta or skipped assertion. Source inventory
+confirms disposable stores, manually settled inert Script leases, synthetic
+recovered process handles, in-memory package adapters and Fastify injection;
+no provider/imported Script or whole-app listener execution.
+
+Actual complete-file command reached imposed480s deadline: TIMEOUT,
+02:21:36.646114–02:29:36.806315UTC. Log ends Interrupted while running with
+NO final plan/summary/count. New-session runner uses TERM then conditional KILL
+only for its owned process group; recorded later observation reports that group
+absent. This is bounded termination evidence, not a current global process census.
+Partial printed positives/probe diagnostics cannot establish full coverage or a
+product pass/failure. Required runtime versus possible stalled/order-dependent
+boundary remains undetermined; insufficient budget is NOT a proven root cause.
+
+Narrow anchored diagnostic of historical HTTP list/rewind exact-shape/queued-lineage
+case PASS1/1, exit0, total1671ms under60s deadline. It does not reproduce that case
+as stalled or establish it was the actual blocked boundary. No speculative repair,
+blanket preexisting attribution or repeated broad rerun. Earlier parser/interrupted
+and selected-five attempts remain separate historical records. The full gate needs
+a justified future finite budget or a concretely isolated stall/failure; no new
+builds/types for unchanged product/test source.
+
+Independent Quality review COMPLETE: ACCEPT evidence integrity and honest
+TIMEOUT/UNQUALIFIED disposition; separately ACCEPT narrow HTTP1/1. This accepts an
+incomplete execution record, NOT full historical semantics. Final canonical verdict
+`auto:c7b503046bce1b7067da8dce5787474390964fbe94996b9d7a7cb46c35fcec37`,
+completed review request
+`v3-request-c71725dd5249e68ed9d25cb07cd87dc5d44ba8c5db6a7075823d340228c17287`,
+2026-11-02T02:32:48.970Z. Quality verified both1544-file source inventories and
+2232-module inventories against physical files/accepted8668 outputs, all31 evidence
+hashes, source/patch/harness/dependency/receipt/log bindings and archive. Delivery
+reverified the physical required test against commit and31 evidence hashes before
+this sole tracker update. Ten untracked dependency symlinks in isolated tree are
+disclosed; reused emitted/native outputs are identity-verified, not rebuilt.
+
+Immutable historical packet SHA256
+5fec430af5b0d8d5d8c31332c5e13efa22cc246b860e5e1d490391e11df7d460:
+[Historical attempt archive](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_f51f8c550ba9795e34f0a236dd5963892c4359b5f4b07bfd/download).
+Evidence /tmp/ponderosa-historical-complete-evidence. This tracker wording supersedes
+any assessment wording suggesting execution budget rather than stall was proven.
+No full-runtime/Phase2 claim, new workers/install/lock/schema/provider/imported
+Script/liveDB/deploy/push or unrelated Web/recording/b716 edits.
+
+Separately received combined-backend six-row qualification at exact clean1d98fa37c:
+Quality ACCEPT grouped Shared-root/access desktop+phone2/2 and standalone
+continuation normal/lost desktop+phone4/4. Sequential Core/native TypeScript/
+Engines/Agents/Server/Web builds, nine-package types and fixture build PASS; native
+addon reused, no dependency rebuild. No product/test delta. Delivery physically
+verified all1544 source files against integration, original48 evidence bindings
+(using preserved assessment-pre-quality.md for the original assessment binding),
+and corrected assessment SHA256
+d3773823a61fb77eb8fec3e3c2aa31347400113ed2e113c4865a9734334f1b92.
+Quality canonical verdict
+`auto:04439aa70c4cd9fb9e3d8edd7d4591646fc32cfb9f9510a31e80b46b451fb0b9`,
+completed review request
+`v3-request-f4679b4ff272dbd4134f2410ad94394738e0219393d985aca5cd6e5d9261c84a`.
+[Immutable combined archive](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_bf40b5c71fe000d3bcd4b3c1c5dfb196f8be0bf2b0795716/download),
+SHA2563ec3a59f9f639a6575e6470c4f22cc35c785548d031e1e929b7ae2b63c0281dc;
+[Corrected final assessment](/api/projects/f746a33b-98a9-52ce-89d8-fd0901feb4d6/artifacts/import_d823a6c0ca7ae64c79c698a976bc9f51ebae3de7d9ff0335/download).
+Only these SIX rows transfer to1d98; historical/runtime matrices retain original
+source attribution. Both rendered access choices keep_destination; controlled
+loss occurs after completed response, not socket/host-crash durability. Settings/
+callback is not routed navigation/mobile usability/auth/a11y qualification. No
+broader portability/Phase2 acceptance. No runtime rerun for this tracker update.
