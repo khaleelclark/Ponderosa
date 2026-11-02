@@ -50,7 +50,7 @@ The folder and settings review/import behavior is unchanged by these controls.
 Explicit Git-selected export now preserves `intentToAdd`, `assumeUnchanged` and
 `skipWorktree` as required boolean fields on every exact index entry. Omission,
 unknown fields or nonbooleans refuse on import; flags are never defaulted away.
-The bounded binary v2/v3 reader checks exact original path bytes, mode, stage,
+The bounded binary v2/v3/v4 reader checks exact original path bytes, mode, stage,
 OID, main flags and extended flags. Raw storage identities/bytes and the complete
 logical inventory must match before/after capture. Unknown bits, invalid encoding,
 padding, checksum or layout refuse. Index names cannot supply another entry's
@@ -82,7 +82,7 @@ and the binary storage references below.
 
 ### Ordinary local split-index storage
 
-Explicit Git selection accepts bounded version-2/version-3 full or split index
+Explicit Git selection accepts bounded version-2/version-3/version-4 full or split index
 originals inside the selected normal local `.git`. Capture decodes the index
 checksum, entries, supported flags and complete extension boundaries directly;
 it never invokes native Git to read an index. Native Git's split-index read path
@@ -109,7 +109,7 @@ Only `link` and the known derived `TREE` cache extension are accepted. TREE's
 complete count/length grammar is checked and its cache is not adopted. Other
 extensions, including resolve-undo, untracked/fsmonitor caches, offset tables and
 sparse-directory extensions, refuse rather than silently lose semantics.
-Version-4 path compression, sparse-index/sparse-checkout and unknown layouts
+Sparse-index/sparse-checkout and unknown layouts
 remain unsupported. Both logical and storage entry inventories are bounded to
 10,000. Unsupported originals remain at source.
 
@@ -125,6 +125,33 @@ Source references: [Git index and split-index format](https://git-scm.com/docs/i
 [Git split-index merge](https://github.com/git/git/blob/master/split-index.c),
 [EWAH serialization](https://github.com/git/git/blob/master/ewah/ewah_io.c) and
 [shared-index read/freshening](https://github.com/git/git/blob/master/read-cache.c).
+
+### Version-4 full and split index paths
+
+The same direct reader accepts v4 originals in either the main index or its exact
+required shared index. Each physical file starts with an empty previous byte path.
+For each entry, the bounded Git offset-varint specifies bytes removed from that
+previous path; the NUL-terminated suffix supplies the rest. Arithmetic uses the
+Git continuation increment, with at most five prefix bytes, complete termination
+and removal no greater than the previous byte length. V4 consumes no v2/v3 padding.
+Reconstructed byte length must match the stored flags length (or its 0xfff cap),
+be at most 1 MiB per path and at most 32 MiB summed across each file's entries.
+Existing 1 MiB original-file and 10,000-entry bounds still apply. Reconstruction
+uses bytes before strict UTF-8 round-trip validation, so multibyte boundaries are
+never interpreted as character counts. Unsupported encodings refuse.
+
+Full entries, empty-name split replacements and shared originals reuse the same
+mode/stage/OID/flag checks, exact shared checksum association, ordering, extension
+consumption, no-follow identity and before/after storage/logical checks. Malformed
+prefixes, overlong removals, missing terminators, invalid decoded paths/lengths,
+unknown extensions and observed drift refuse without source writes or native
+index-reading commands. Sparse storage/checkout and external repository authority
+remain unsupported. Destination storage stays the existing inactive standalone
+full v2/v3 index: v4 compression and source stat/cache layout are not reproduced.
+No tests, native capture or runtime qualification were performed for this batch.
+
+References: [Git v4 index format](https://git-scm.com/docs/index-format) and
+[Git offset-varint implementation](https://github.com/git/git/blob/master/varint.c).
 
 ### Selected local reflogs
 
@@ -213,7 +240,7 @@ still requires separate human review/action.
 | --- | --- |
 | `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist. Normal local `.git` only; no external common-dir or alternate object inventory is inferred. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
-| `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3 split storage normalizes to this full index; unknown flags/extensions and sparse semantics refuse. |
+| `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and sparse semantics refuse. |
 | `git.configurationReview[].{key,value,implicitBoolean?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans, hook/fsmonitor command text and external include references. Includes are not followed to export their contents. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
 | `providerFiles[].{path,dataBase64,removedSecretFields}` | `.claude/settings.json`, `settings.local.json`, `CLAUDE.md`, `.codex/config.toml`, `instructions.md`, and regular custom files under Claude commands/agents/skills and Codex skills/rules. JSON known secret fields are removed structurally, preserving other settings. Simple single-line TOML credential assignments are excluded; multiline TOML refuses rather than guessing continuation boundaries. Dotted assignment keys (including `api_key.value`), inline-table syntax and escaped keys refuse before export and on import; quoted or escaped table/array-table paths refuse before segment inspection, and known-secret bare table paths also refuse. The conservative table guard rejects any bracket-leading line with quotes or backslashes, including otherwise harmless quoted header comments or array continuation lines. The conservative inline-table guard also refuses braces in noncomment lines, even inside a quoted value. This bounded reader does not claim structural support for those TOML forms. Remaining known-credential syntax refuses. Commands/MCP/permissions/hooks remain human-review data, with no grant or execution. |
@@ -233,13 +260,13 @@ to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal pres
 the source instead of truncating data.
 
 The existing source fence and before/after checks do not drain independent native
-writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; Git hook files are never read. Known-secret inspection detects recognized fields/syntax,
+writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; Git hook files are never read. Known-secret inspection detects recognized fields/syntax,
 not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
 
 Exact remaining implementation: scoped linked-worktree/common-dir Git export;
-unsupported index flags/extensions, v4 index storage and sparse-index
+unsupported index flags/extensions and sparse-index
 semantics; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats; general multiline TOML
 secret separation; explicit reviewed activation into a native-owned live Git or

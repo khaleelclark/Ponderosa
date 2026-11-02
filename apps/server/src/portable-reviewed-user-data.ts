@@ -217,24 +217,39 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
 type IndexEntry=ReviewedGitUserData['index'][number];
 function indexOrder(a:IndexEntry,b:IndexEntry):number{return Buffer.compare(Buffer.from(a.path),Buffer.from(b.path))||a.stage-b.stage;}
 
-/** Decode only v2/v3 originals; never ask Git to read a split index (it freshens shared-file mtime). */
+/** Decode bounded v2/v3/v4 originals; never ask Git to read a split index (it freshens shared-file mtime). */
 function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];link?:Buffer} {
   const width=format==='sha1'?20:32,end=data.length-width;
   if(end<12||data.toString('latin1',0,4)!=='DIRC'||!createHash(format).update(data.subarray(0,end)).digest().equals(data.subarray(end)))throw new Error('Invalid Git index header/checksum');
   const version=data.readUInt32BE(4),count=data.readUInt32BE(8);
-  if(![2,3].includes(version)||count>10000)throw new Error('Only bounded v2/v3 Git index storage is supported');
-  const entries:IndexEntry[]=[];let offset=12;
+  if(![2,3,4].includes(version)||count>10000)throw new Error('Only bounded v2/v3/v4 Git index storage is supported');
+  const entries:IndexEntry[]=[];let offset=12,decodedBytes=0;let previous:Buffer=Buffer.alloc(0);
   for(let i=0;i<count;i++){
     const start=offset;
     if(offset+42+width>end)throw new Error('Truncated Git index entry');
     const mode=data.readUInt32BE(offset+24).toString(8),oid=data.subarray(offset+40,offset+40+width).toString('hex'),flags=data.readUInt16BE(offset+40+width);
     offset+=42+width;let extended=0;
-    if(flags&0x4000){if(version!==3||offset+2>end)throw new Error('Unsupported Git extended flags');extended=data.readUInt16BE(offset);offset+=2;if(extended&~0x6000)throw new Error('Unknown Git extended flags');}
+    if(flags&0x4000){if(version===2||offset+2>end)throw new Error('Unsupported Git extended flags');extended=data.readUInt16BE(offset);offset+=2;if(extended&~0x6000)throw new Error('Unknown Git extended flags');}
+    let remove=0;
+    if(version===4){
+      if(offset>=end)throw new Error('Missing v4 Git path prefix');
+      let byte=data[offset++]!,bytes=1;remove=byte&0x7f;
+      while(byte&0x80){
+        if(bytes++>=5||offset>=end)throw new Error('Truncated or oversized v4 Git path prefix');
+        byte=data[offset++]!;remove=(remove+1)*128+(byte&0x7f);
+        if(remove>previous.length)throw new Error('V4 Git path prefix exceeds previous original');
+      }
+      if(remove>previous.length)throw new Error('V4 Git path prefix exceeds previous original');
+    }
     const nul=data.indexOf(0,offset);
-    if(nul<offset||nul>=end||(flags&0xfff)!==Math.min(nul-offset,0xfff))throw new Error('Invalid Git index path length');
-    const name=text(data.subarray(offset,nul));if(!Buffer.from(name).equals(data.subarray(offset,nul)))throw new Error('Noncanonical Git index path encoding');if(name)indexPath(name);
-    offset=start+Math.ceil((nul+1-start)/8)*8;
-    if(offset>end||data.subarray(nul,offset).some(byte=>byte!==0))throw new Error('Invalid Git index padding');
+    if(nul<offset||nul>=end)throw new Error('Unterminated Git index path');
+    const length=(version===4?previous.length-remove:0)+nul-offset;
+    if(length>1024*1024||(decodedBytes+=length)>limit||(flags&0xfff)!==Math.min(length,0xfff))throw new Error('Invalid or oversized decoded Git index path');
+    const raw=version===4?Buffer.concat([previous.subarray(0,previous.length-remove),data.subarray(offset,nul)],length):data.subarray(offset,nul);
+    const name=text(raw);if(!Buffer.from(name).equals(raw))throw new Error('Noncanonical Git index path encoding');if(name)indexPath(name);
+    previous=raw;
+    offset=version===4?nul+1:start+Math.ceil((nul+1-start)/8)*8;
+    if(offset>end||version!==4&&data.subarray(nul,offset).some(byte=>byte!==0))throw new Error('Invalid Git index padding');
     if(!['100644','100755','120000','160000'].includes(mode))throw new Error('Unsupported or sparse Git index mode');
     entries.push({path:name,mode,oid,stage:(flags>>>12)&3,assumeUnchanged:Boolean(flags&0x8000),intentToAdd:Boolean(extended&0x2000),skipWorktree:Boolean(extended&0x4000)});
   }
