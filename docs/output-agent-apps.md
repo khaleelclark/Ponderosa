@@ -11,9 +11,9 @@ than restoring a tab previously visited in the full workspace.
 The output app's top **Settings** opens schedule and provider/model controls.
 **Run automatically**, applied with **Save schedule**, enables or pauses the
 existing trigger without replacing its source or cadence. This also works for
-cron, one-time, filesystem and webhook triggers; their current configuration is
+cron, one-time, filesystem and webhook triggers; their trigger type or schedule summary is
 shown instead of an interval editor. Turning automatic runs on also enables the
-workflow. Re-enabling a trigger validates its configuration and shows any error.
+workflow. Re-enabling a paused trigger validates its configuration and shows any error.
 
 For manual workflows and existing interval schedules, **Check every (minutes)**
 is editable, with a minimum of one minute. Enabling automatic runs on a manual
