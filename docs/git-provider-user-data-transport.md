@@ -20,7 +20,7 @@ Both booleans are required; either may be false, but at least one must be true.
 Omitting the query preserves existing working-folder export behavior and exclusions.
 Each distinct selected organization root is captured independently. Selecting Git
 on a root with no supported local repository refuses, rather than returning an
-apparently complete Git export. Linked worktrees currently refuse explicitly, as do external/shared object storage, sparse indexes, shallow history and unfinished Git operations.
+apparently complete Git export. Linked worktrees currently refuse explicitly, as do external/shared object storage, unsupported combined split/sparse index storage, shallow history and unfinished Git operations.
 
 Inspect the resulting ordinary artifact `.ponderosa-portable-review/user-data.json`
 before importing. Its `selection`, Git refs/index/configuration review, provider
@@ -87,7 +87,7 @@ originals inside the selected normal local `.git`. Capture decodes the index
 checksum, entries, supported flags and complete extension boundaries directly;
 it never invokes native Git to read an index. Native Git's split-index read path
 freshens shared-file mtime, so the former `ls-files` diagnostic path is removed.
-The existing DTO and import validator are unchanged.
+The existing logical index-entry fields are unchanged; sparse review extends the manifest as described below.
 
 A `link` extension resolves only its exact `sharedindex.<checksum>` original in
 that same canonical `.git`. No shared-file directory scan, external pointer or
@@ -105,12 +105,10 @@ well as the complete logical inventory. Unreferenced shared files are neither
 read nor transported. A missing required shared file or observed drift refuses.
 These checks do not drain independent writers or guarantee an atomic snapshot.
 
-Only `link` and the known derived `TREE` cache extension are accepted. TREE's
+Only `link`, the empty `sdir` marker and the known derived `TREE` cache extension are accepted; combined split/sparse storage refuses. TREE's
 complete count/length grammar is checked and its cache is not adopted. Other
-extensions, including resolve-undo, untracked/fsmonitor caches, offset tables and
-sparse-directory extensions, refuse rather than silently lose semantics.
-Sparse-index/sparse-checkout and unknown layouts
-remain unsupported. Both logical and storage entry inventories are bounded to
+extensions, including resolve-undo, untracked/fsmonitor caches and offset tables,
+refuse rather than silently lose semantics. Unknown layouts remain unsupported. Both logical and storage entry inventories are bounded to
 10,000. Unsupported originals remain at source.
 
 Recovery writes the existing exclusive **full** v2/v3 review index into a new
@@ -240,10 +238,11 @@ still requires separate human review/action.
 | --- | --- |
 | `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist. Normal local `.git` only; no external common-dir or alternate object inventory is inferred. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
-| `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and sparse semantics refuse. |
-| `git.configurationReview[].{key,value,implicitBoolean?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans, hook/fsmonitor command text and external include references. Includes are not followed to export their contents. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
+| `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
+| `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
 | `providerFiles[].{path,dataBase64,removedSecretFields}` | Project-root `.mcp.json`, `.claude/settings.json`, `settings.local.json`, `CLAUDE.md`, `.codex/config.toml`, `instructions.md`, and regular custom files under Claude commands/agents/skills/rules and Codex skills/rules. JSON known secret fields are removed structurally, preserving other settings. Simple single-line TOML credential assignments are excluded; multiline TOML refuses rather than guessing continuation boundaries. Dotted assignment keys (including `api_key.value`), inline-table syntax and escaped keys refuse before export and on import; quoted or escaped table/array-table paths refuse before segment inspection, and known-secret bare table paths also refuse. The conservative table guard rejects any bracket-leading line with quotes or backslashes, including otherwise harmless quoted header comments or array continuation lines. The conservative inline-table guard also refuses braces in noncomment lines, even inside a quoted value. This bounded reader does not claim structural support for those TOML forms. Remaining known-credential syntax refuses. Commands/MCP/permissions/hooks remain human-review data, with no grant or execution. |
+| `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/cyclicLinks/specialNodes` | Required literal `refuse`. Existing folder inventory refuses these semantics; there is no dereference or silent conversion to regular bytes. A package requiring them needs a new supported recreation contract. |
 | `recreationScope.acl/xattrs` | Required literal `not_inspected_preserve_source`. Current host file API does not inventory or reproduce ACL/xattrs. Import refuses a manifest claiming stronger semantics. Ordinary modes/mtime do not establish equivalent access rules or metadata. Source retention remains necessary wherever these attributes matter. |
@@ -268,12 +267,63 @@ See Claude's [project MCP scope](https://code.claude.com/docs/en/mcp) and
 [project rules](https://code.claude.com/docs/en/memory) for the native locations;
 this transport does not install or execute their contents.
 
+Sparse checkout is captured for ordinary normal local `.git` only. Exact pattern
+bytes preserve cone/noncone text, comments, order and final-newline state; they
+are bounded UTF-8 review text, with no NULs and no recognized credentials. Missing
+patterns remain null, not an invented empty file; enabled sparse checkout without
+a pattern original refuses. Local `config` and optional `config.worktree` are
+private bounded no-follow originals. The existing read-only Git config parser
+receives their captured bytes on stdin with includes disabled. Ordered nonsecret
+entries, original values, implicit booleans and source scope survive; source
+formatting and credential fields are not copied. Include/includeIf declarations
+refuse before repository-aware plumbing, rather than permitting an external
+include to influence sparse meaning. Home profiles and linked/common directories
+are never selected. Worktree sparse values require an explicit local
+`extensions.worktreeConfig` setting; true applies worktree precedence only for
+validation, false retains those values as dormant review data.
+
+Supported sparse directories require mode `40000`, stage zero, a trailing slash,
+skip-worktree true, intent-to-add and assume-unchanged false, the empty `sdir`
+extension, and explicit enabled sparse/cone settings. Their exact original
+records remain in `sparseReview.directories`. Every captured object hash, type and
+graph is validated before expansion. Only those original tree/blob objects supply
+full logical paths, modes and OIDs; no working-file reads, pattern interpretation,
+Git index command or invented content fills missing entries. Normal entries
+retain their three flag booleans and staged identities; derived tree leaves are
+stage zero and skip-worktree, without intent-to-add or assume-unchanged. Directory
+flags outside this supported native form refuse. Import revalidates the tree
+expansion against every covered full-index entry and refuses overlaps, duplicate
+paths/stages, file/directory conflicts or merged/unmerged collisions.
+
+Expansion is bounded to 128 tree levels, 10,000 visited trees and 10,000 logical
+entries with 32 MiB cumulative path bytes; pattern and each raw config/index
+original are bounded to 1 MiB. Unknown boolean forms (beyond implicit true,
+true/yes/on/1 and false/no/off/0/empty), missing or unordered tree originals,
+unsupported extension payloads and combined split/sparse storage refuse. Noncone
+checkout with an ordinary full index is supported without interpreting patterns;
+a noncone sparse-directory index refuses. These are supported-data limits, not
+permission to discard required originals. Gitlink identities survive, while
+submodule repository content remains a gap.
+
+The fresh review repository always receives the full v2/v3 logical index.
+`CONFIGURATION-REVIEW.json` retains `sparseReview` and scoped nonsecret settings;
+no active `info/sparse-checkout`, `config.worktree`, sparse config setting or
+`sdir` storage is installed. Raw sparse storage, stat caches and tree caches are
+normalized, never adopted as destination ownership. Exact before/after raw and
+logical snapshots plus identical object streams establish the same derivation
+for observed stable input; independent-writer atomicity remains unproved.
+Source and partial destination bytes remain retained, and exclusive new writes,
+credential refusal and inactivity are unchanged. Runtime qualification has not
+been performed. Native references: [sparse directory index format](https://git-scm.com/docs/gitformat-index),
+[sparse-index design](https://git-scm.com/docs/sparse-index), and
+[Git config scopes](https://git-scm.com/docs/git-config).
+
 Export plumbing is source code only: `rev-parse`, `symbolic-ref`, `for-each-ref`,
-`config --local --no-includes` and `cat-file --batch-all-objects`.
+`config --file - --no-includes` on captured exact local bytes, and `cat-file --batch-all-objects`.
 It drops inherited Git overrides, disables system/global config, fsmonitor,
 optional locks, replacement objects, lazy fetching and terminal prompts. No shell
 command interpolation or mutating Git command is used. Before/after
-refs/HEAD/logical index/config/reflogs plus raw index/shared-index bytes and identity and full object streams must match. Each native
+refs/HEAD/logical index/config/reflogs plus raw index/shared-index/local-config/worktree-config/pattern bytes and identity and full object streams must match (including file absence). Each native
 call has a 30-second and 32 MiB output bound. Git objects are bounded
 to 32 MiB and 10,000 objects; refs/index entries to 10,000 each; provider files
 to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal preserves
@@ -286,8 +336,7 @@ whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
 
 Exact remaining implementation: scoped linked-worktree/common-dir Git export;
-unsupported index flags/extensions and sparse-index
-semantics; staged submodule repository originals; custom external Git include/hook
+unsupported index flags/extensions and combined split/sparse or other unsupported sparse forms; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats; general multiline TOML
 secret separation; explicit reviewed activation into a native-owned live Git or
 provider configuration; recursive re-export of already recreated review data.

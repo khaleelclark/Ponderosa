@@ -29,10 +29,11 @@ function credentialPath(value:string):boolean {
 type GitObject=ReviewedGitUserData['objects'][number];
 
 /** Read-only plumbing: no hooks, filters, textconv, network, optional locks or inherited Git overrides. */
-function git(root:string,args:string[]):Promise<Buffer> {
+function git(root:string,args:string[],input?:Buffer):Promise<Buffer> {
   return new Promise((resolve,reject)=>{
     const env:NodeJS.ProcessEnv={PATH:process.env.PATH,LANG:'C',LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1'};
-    execFile('git',['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-c','core.untrackedCache=false','-C',root,...args],{env,encoding:'buffer',maxBuffer:limit,timeout:30000},(error,stdout,stderr)=>error||stderr.length?reject(new Error('Portable Git read failed or warned; repository retained unchanged')):resolve(stdout));
+    const child=execFile('git',['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-c','core.untrackedCache=false','-C',root,...args],{env,encoding:'buffer',maxBuffer:limit,timeout:30000},(error,stdout,stderr)=>error||stderr.length?reject(new Error('Portable Git read failed or warned; repository retained unchanged')):resolve(stdout));
+    child.stdin!.on('error',()=>reject(new Error('Portable Git input failed; repository retained unchanged')));child.stdin!.end(input);
   });
 }
 function text(data:Buffer):string{return new TextDecoder('utf-8',{fatal:true}).decode(data);}
@@ -82,7 +83,7 @@ function indexPath(value:string):string {
   return value;
 }
 function excludedGitKey(key:string):boolean {
-  return /password|token|secret|extraheader|authorization|^core\.worktree$|^extensions\.worktreeconfig$/i.test(key)||/credential/i.test(key);
+  return /password|token|secret|extraheader|authorization|^core\.worktree$/i.test(key)||/credential/i.test(key);
 }
 
 export function parseReviewedUserData(data:Buffer):ReviewedUserData {
@@ -137,7 +138,7 @@ async function captureReflogs(gitDir:string):Promise<ReviewedGitUserData['reflog
 }
 
 export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','reflogs','configurationReview','exclusions']);
+  fields(value,['version','format','objects','refs','head','index','reflogs','configurationReview','sparseReview','exclusions']);
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const ids=new Map<string,GitObject>();let bytes=0;
   const oidPattern=value.format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
@@ -211,14 +212,123 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
     if(entries.has(key)||!Number.isInteger(entry.stage)||entry.stage<0||entry.stage>3||!['100644','100755','120000','160000'].includes(entry.mode)||!oidPattern.test(entry.oid)||entry.mode!=='160000'&&ids.get(entry.oid)?.type!=='blob')throw new Error('Invalid staged Git original');
     entries.add(key);
   }
-  for(const item of value.configurationReview){fields(item,['key','value'],['implicitBoolean']);if(typeof item.key!=='string'||typeof item.value!=='string'||item.implicitBoolean!==undefined&&(item.implicitBoolean!==true||item.value!=='')||excludedGitKey(item.key)||/:\/\/[^/]*@/.test(item.value))throw new Error('Invalid reviewed Git configuration');safeText(`${item.key}=${item.value}`,'Git configuration');}
+  for(const item of value.configurationReview){fields(item,['key','value'],['implicitBoolean','source']);if(item.source!==undefined&&item.source!=='config.worktree')throw new Error('Invalid reviewed Git configuration source');if(typeof item.key!=='string'||typeof item.value!=='string'||item.implicitBoolean!==undefined&&(item.implicitBoolean!==true||item.value!=='')||excludedGitKey(item.key)||/:\/\/[^/]*@/.test(item.value))throw new Error('Invalid reviewed Git configuration');safeText(`${item.key}=${item.value}`,'Git configuration');}
+  validateSparseReview(value,ids);
 }
 
 type IndexEntry=ReviewedGitUserData['index'][number];
 function indexOrder(a:IndexEntry,b:IndexEntry):number{return Buffer.compare(Buffer.from(a.path),Buffer.from(b.path))||a.stage-b.stage;}
 
+function sparseKey(key:string):boolean {return /^(?:core\.sparsecheckout(?:cone)?|index\.sparse|extensions\.(?:sparseindex|worktreeconfig))$/i.test(key);}
+
+/** Raw snapshots are private comparison evidence; only nonsecret parsed settings enter the package. */
+async function captureSparseConfiguration(gitDir:string,root:string) {
+  const originals:Array<{name:string;identity:string;data:string}>=[];
+  const configuration:ReviewedGitUserData['configurationReview']=[];
+  let patternsBase64:string|null=null;
+  const info=path.join(gitDir,'info');
+  try{const stat=await fs.lstat(info);if(!stat.isDirectory()||await fs.realpath(info)!==info)throw new Error('Sparse pattern parent is not a canonical local directory');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  for(const name of ['config','config.worktree','info/sparse-checkout']){
+    const target=path.join(gitDir,name);
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+    const {data}=await regularOriginal(target),after=await fs.lstat(target,{bigint:true});
+    const identity=(stat:typeof before)=>[stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
+    if(identity(before)!==identity(after))throw new Error('Local Git sparse/config original changed');
+    originals.push({name,identity:identity(after),data:data.toString('base64')});
+    if(name==='info/sparse-checkout'){patternsBase64=data.toString('base64');continue;}
+    const parsed=text(await git(root,['config','--file','-','--null','--list','--no-includes'],data));
+    if(parsed&&!parsed.endsWith('\0'))throw new Error('Incomplete local Git configuration inventory');
+    for(const row of parsed?parsed.slice(0,-1).split('\0'):[]){
+      if(configuration.length>=10000)throw new Error('Local Git configuration exceeds its bound');
+      const split=row.indexOf('\n'),key=split<0?row:row.slice(0,split),value=split<0?'':row.slice(split+1);
+      // Repository-aware plumbing must never resolve an include outside this exact local authority.
+      if(/^(?:include|includeif)\./i.test(key))throw new Error('Git configuration includes require separate scoped capture');
+      configuration.push({key,value,...(split<0?{implicitBoolean:true as const}:{}),...(name==='config.worktree'?{source:'config.worktree' as const}:{})});
+    }
+  }
+  return {originals,configuration,patternsBase64};
+}
+
+/** Expand only already hash/graph-verified objects; no filesystem, Git command or pattern interpretation. */
+function expandSparseDirectories(directories:IndexEntry[],objects:Map<string,GitObject>,format:'sha1'|'sha256'):IndexEntry[] {
+  const result:IndexEntry[]=[];let nodes=0,pathBytes=0;
+  const active=new Set<string>(),width=format==='sha1'?20:32;
+  const walk=(oid:string,prefix:string,depth:number):void=>{
+    if(depth>128||++nodes>10000||active.has(oid))throw new Error('Sparse Git tree expansion exceeds its bound or cycles');
+    const object=objects.get(oid);if(object?.type!=='tree')throw new Error('Sparse Git tree original is missing');
+    active.add(oid);const data=Buffer.from(object.dataBase64,'base64');let offset=0,previous:Buffer|undefined;
+    const names=new Set<string>();
+    while(offset<data.length){
+      const space=data.indexOf(32,offset),nul=data.indexOf(0,space+1);
+      if(space<offset||nul<space||nul+1+width>data.length)throw new Error('Malformed sparse Git tree');
+      const mode=text(data.subarray(offset,space)),name=text(data.subarray(space+1,nul)),child=data.subarray(nul+1,nul+1+width).toString('hex');
+      if(!name||!Buffer.from(name).equals(data.subarray(space+1,nul))||name.includes('/')||names.has(name)||!['40000','100644','100755','120000','160000'].includes(mode))throw new Error('Unsupported or duplicate sparse Git tree entry');
+      const order=Buffer.concat([data.subarray(space+1,nul),Buffer.from([mode==='40000'?47:0])]);
+      if(previous&&Buffer.compare(previous,order)>=0)throw new Error('Sparse Git tree is not canonically ordered');previous=order;names.add(name);
+      const path=indexPath(prefix+name);if(credentialPath(path))throw new Error('Sparse Git original contains a known credential path');
+      if((pathBytes+=Buffer.byteLength(path))>limit||result.length>=10000)throw new Error('Expanded sparse Git index exceeds its bound');
+      if(mode==='40000')walk(child,path+'/',depth+1);
+      else {
+        if(mode!=='160000'&&objects.get(child)?.type!=='blob')throw new Error('Sparse Git blob original is missing');
+        result.push({path,mode,oid:child,stage:0,intentToAdd:false,assumeUnchanged:false,skipWorktree:true});
+      }
+      offset=nul+1+width;
+    }
+    active.delete(oid);
+  };
+  for(const entry of directories){
+    fields(entry,['mode','oid','stage','path','intentToAdd','assumeUnchanged','skipWorktree']);
+    if(entry.mode!=='40000'||typeof entry.path!=='string'||!entry.path.endsWith('/')||entry.stage!==0||entry.intentToAdd!==false||entry.assumeUnchanged!==false||entry.skipWorktree!==true)throw new Error('Unsupported sparse directory original flags');
+    indexPath(entry.path.slice(0,-1));walk(entry.oid,entry.path,0);
+  }
+  return result.sort(indexOrder);
+}
+
+function validateSparseReview(value:ReviewedGitUserData,objects:Map<string,GitObject>):void {
+  fields(value.sparseReview,['patternsBase64','directories']);
+  const {patternsBase64,directories}=value.sparseReview;
+  if(!Array.isArray(directories)||directories.length>10000||patternsBase64!==null&&typeof patternsBase64!=='string')throw new Error('Invalid sparse Git review data');
+  if(patternsBase64!==null){
+    if(patternsBase64.length>Math.ceil(1024*1024/3)*4)throw new Error('Sparse patterns exceed their bound');
+    const raw=Buffer.from(patternsBase64,'base64');if(raw.length>1024*1024||raw.toString('base64')!==patternsBase64||raw.includes(0))throw new Error('Invalid sparse pattern bytes');
+    safeText(text(raw),'Git sparse patterns');
+  }
+  const local=value.configurationReview.filter(item=>!item.source),worktree=value.configurationReview.filter(item=>item.source==='config.worktree');
+  const boolean=(items:typeof local,key:string):boolean|undefined=>{
+    let result:boolean|undefined;
+    for(const item of items.filter(item=>item.key.toLowerCase()===key)){
+      if(item.implicitBoolean)result=true;
+      else if(/^(?:true|yes|on|1)$/i.test(item.value))result=true;
+      else if(/^(?:false|no|off|0|)$/i.test(item.value))result=false;
+      else throw new Error('Unsupported sparse Git configuration boolean');
+    }
+    return result;
+  };
+  // Validate every declared sparse boolean, including dormant worktree settings, without inventing defaults.
+  for(const items of [local,worktree])for(const key of ['core.sparsecheckout','core.sparsecheckoutcone','index.sparse','extensions.sparseindex','extensions.worktreeconfig'])boolean(items,key);
+  const enabled=boolean(local,'extensions.worktreeconfig'),effective=enabled?[...local,...worktree]:local;
+  if(enabled===undefined&&worktree.some(item=>sparseKey(item.key)))throw new Error('Ambiguous worktree sparse configuration without an explicit extension setting');
+  if(boolean(effective,'core.sparsecheckout')===true&&patternsBase64===null)throw new Error('Enabled sparse checkout has no captured pattern original');
+  if(directories.length&&(boolean(effective,'core.sparsecheckout')!==true||boolean(effective,'core.sparsecheckoutcone')!==true))throw new Error('Sparse directory originals require explicit cone checkout settings');
+  const prefixes:string[]=[];
+  for(const entry of directories){
+    if(typeof entry.path!=='string'||prefixes.some(prefix=>entry.path.startsWith(prefix)||prefix.startsWith(entry.path)))throw new Error('Overlapping sparse directory originals');
+    prefixes.push(entry.path);
+  }
+  const expected=expandSparseDirectories(directories,objects,value.format),actual=value.index.filter(entry=>prefixes.some(prefix=>entry.path.startsWith(prefix))).sort(indexOrder);
+  const same=(a:IndexEntry,b:IndexEntry)=>a.path===b.path&&a.mode===b.mode&&a.oid===b.oid&&a.stage===b.stage&&a.intentToAdd===b.intentToAdd&&a.assumeUnchanged===b.assumeUnchanged&&a.skipWorktree===b.skipWorktree;
+  if(expected.length!==actual.length||expected.some((entry,i)=>!same(entry,actual[i]!)))throw new Error('Full index differs from captured sparse directory originals');
+  const leaves=new Set(value.index.map(entry=>entry.path)),merged=new Set(value.index.filter(entry=>entry.stage===0).map(entry=>entry.path));let bytes=0;
+  for(const entry of value.index){
+    if((bytes+=Buffer.byteLength(entry.path))>limit)throw new Error('Logical index paths exceed their bound');
+    const parts=entry.path.split('/');for(let i=1;i<parts.length;i++)if(leaves.has(parts.slice(0,i).join('/')))throw new Error('Git index file/directory paths conflict');
+    if(entry.stage!==0&&merged.has(entry.path))throw new Error('Merged/unmerged Git index stages conflict');
+  }
+  for(const prefix of prefixes){const parts=prefix.slice(0,-1).split('/');for(let i=1;i<=parts.length;i++)if(leaves.has(parts.slice(0,i).join('/')))throw new Error('Sparse directory conflicts with an index file');}
+}
+
 /** Decode bounded v2/v3/v4 originals; never ask Git to read a split index (it freshens shared-file mtime). */
-function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];link?:Buffer} {
+function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];link?:Buffer;sparse?:true} {
   const width=format==='sha1'?20:32,end=data.length-width;
   if(end<12||data.toString('latin1',0,4)!=='DIRC'||!createHash(format).update(data.subarray(0,end)).digest().equals(data.subarray(end)))throw new Error('Invalid Git index header/checksum');
   const version=data.readUInt32BE(4),count=data.readUInt32BE(8);
@@ -246,11 +356,11 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];l
     const length=(version===4?previous.length-remove:0)+nul-offset;
     if(length>1024*1024||(decodedBytes+=length)>limit||(flags&0xfff)!==Math.min(length,0xfff))throw new Error('Invalid or oversized decoded Git index path');
     const raw=version===4?Buffer.concat([previous.subarray(0,previous.length-remove),data.subarray(offset,nul)],length):data.subarray(offset,nul);
-    const name=text(raw);if(!Buffer.from(name).equals(raw))throw new Error('Noncanonical Git index path encoding');if(name)indexPath(name);
+    const name=text(raw);if(!Buffer.from(name).equals(raw))throw new Error('Noncanonical Git index path encoding');if(name)indexPath(mode==='40000'&&name.endsWith('/')?name.slice(0,-1):name);
     previous=raw;
     offset=version===4?nul+1:start+Math.ceil((nul+1-start)/8)*8;
     if(offset>end||version!==4&&data.subarray(nul,offset).some(byte=>byte!==0))throw new Error('Invalid Git index padding');
-    if(!['100644','100755','120000','160000'].includes(mode))throw new Error('Unsupported or sparse Git index mode');
+    if(!['40000','100644','100755','120000','160000'].includes(mode))throw new Error('Unsupported Git index mode');
     entries.push({path:name,mode,oid,stage:(flags>>>12)&3,assumeUnchanged:Boolean(flags&0x8000),intentToAdd:Boolean(extended&0x2000),skipWorktree:Boolean(extended&0x4000)});
   }
   let link:Buffer|undefined;const seen=new Set<string>();
@@ -260,6 +370,7 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];l
     if(size>end-offset||seen.has(signature))throw new Error('Invalid or duplicate Git index extension');seen.add(signature);
     const body=data.subarray(offset,offset+size);offset+=size;
     if(signature==='link'){link=body;continue;}
+    if(signature==='sdir'){if(body.length)throw new Error('Unsupported sparse-index extension payload');continue;}
     if(signature!=='TREE')throw new Error('Unknown or unsupported Git index extension; preserve source');
     // TREE is only a derived cache: validate its complete grammar, then recreate no cache.
     let cursor=0,pending=1,nodes=0;
@@ -274,7 +385,8 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];l
     }
     if(cursor!==body.length)throw new Error('Unconsumed Git cache-tree bytes');
   }
-  return {entries,...(link?{link}:{})};
+  if(entries.some(entry=>entry.mode==='40000')&&!seen.has('sdir')||seen.has('sdir')&&link)throw new Error('Sparse directory extension missing or combined with split storage');
+  return {entries,...(link?{link}:{}),...(seen.has('sdir')?{sparse:true as const}:{})};
 }
 
 function splitBitmap(data:Buffer,start:number,bound:number):{bits:Set<number>;end:number} {
@@ -317,7 +429,7 @@ async function captureIndexStorage(gitDir:string,format:'sha1'|'sha256'):Promise
   if(!/^0+$/.test(oid)){
     const shared=await read(`sharedindex.${oid}`);
     if(!shared.subarray(shared.length-width).equals(link.subarray(0,width)))throw new Error('Shared Git index identity differs');
-    const parsed=decodeIndex(shared,format);if(parsed.link)throw new Error('Nested shared Git index refused');base=parsed.entries;
+    const parsed=decodeIndex(shared,format);if(parsed.link||parsed.sparse)throw new Error('Nested shared or sparse split Git index refused');base=parsed.entries;
   }
   ordered(base);
   let deleted=new Set<number>(),replaced=new Set<number>();
@@ -340,8 +452,8 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   if(!stat.isDirectory()||await fs.realpath(path.join(root,'.git'))!==path.join(root,'.git'))throw new Error('Linked/external Git ownership requires a scoped repository reader; preserve source instead of exporting unrelated common objects');
   try{await fs.lstat(path.join(root,'.git','objects','info','alternates'));throw new Error('External Git alternates require explicit scoped recreation');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
   const gitDir=path.join(root,'.git');
-  for(const name of ['commondir','gitdir','shallow','MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock','config.worktree','info/sparse-checkout']){
-    try{await fs.lstat(path.join(gitDir,name));throw new Error('Selected Git repository has unsupported shared/shallow/sparse/in-progress metadata; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  for(const name of ['commondir','gitdir','shallow','MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock']){
+    try{await fs.lstat(path.join(gitDir,name));throw new Error('Selected Git repository has unsupported shared/shallow/in-progress metadata; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
   }
   let controlEntries=0;
   const inspectControl=async(target:string):Promise<void>=>{
@@ -350,7 +462,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     if(current.isDirectory()){for(const name of await fs.readdir(target))await inspectControl(path.join(target,name));}
     else if(!current.isFile()||current.nlink!==1)throw new Error('Git control data is not a private regular original');
   };
-  for(const name of ['HEAD','config','index','packed-refs','refs'])await inspectControl(path.join(gitDir,name));
+  for(const name of ['HEAD','config','config.worktree','info/sparse-checkout','index','packed-refs','refs'])await inspectControl(path.join(gitDir,name));
   let objectEntries=0;
   const inspectObjects=async(directory:string):Promise<void>=>{
     if(await fs.realpath(directory)!==directory)throw new Error('External Git object directory refused');
@@ -361,19 +473,21 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     }
   };
   await inspectObjects(path.join(root,'.git','objects'));
+  // Parse only captured local bytes, with includes disabled, before repository-aware plumbing.
+  await captureSparseConfiguration(gitDir,root);
   const format=text(await git(root,['rev-parse','--show-object-format'])).trim();
   if(format!=='sha1'&&format!=='sha256')throw new Error('Unsupported Git object format');
   const snapshot=async()=>{
     try{await fs.lstat(path.join(gitDir,'index.lock'));throw new Error('Git index is locked; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    const sparse=await captureSparseConfiguration(gitDir,root);
     const storage=await captureIndexStorage(gitDir,format);
     const refs=await git(root,['for-each-ref','--format=%(refname)%00%(objectname)%00%(symref)']);
     let head:Buffer;
     try{head=await git(root,['symbolic-ref','-q','HEAD']);}catch{head=await git(root,['rev-parse','--verify','HEAD']);}
     const index=Buffer.from(JSON.stringify(storage.logical));
-    const config=await git(root,['config','--local','--null','--list','--no-includes']);
-    for(const row of text(config).split('\0')){const [key,...values]=row.split('\n');if(/^(?:core\.sparsecheckout(?:cone)?|extensions\.sparseindex)$/i.test(key!)&&!/^(?:false|no|off|0)$/i.test(values.join('\n')))throw new Error('Sparse Git index/checkout configuration requires separate recreation');}
+    const config=Buffer.from(JSON.stringify(sparse.configuration));
     const reflogs=Buffer.from(JSON.stringify(await captureReflogs(gitDir)));
-    return {refs,head,index,config,reflogs,storage:storage.originals};
+    return {refs,head,index,config,reflogs,storage:storage.originals,sparse:Buffer.from(JSON.stringify(sparse))};
   };
   const before=await snapshot(),batch=await git(root,['cat-file','--batch-all-objects','--batch']);
   const objects:GitObject[]=[];let offset=0;
@@ -386,22 +500,30 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     objects.push({oid:match[1]!,type:match[2] as GitObject['type'],dataBase64:batch.subarray(offset,offset+size).toString('base64')});offset+=size+1;
   }
   const after=await snapshot();
-  for(const key of ['refs','head','index','config','reflogs','storage'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
-  const index:ReviewedGitUserData['index']=JSON.parse(text(before.index));
+  for(const key of ['refs','head','index','config','reflogs','storage','sparse'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
+  const originalIndex:IndexEntry[]=JSON.parse(text(before.index));
+  const sparseSnapshot=JSON.parse(text(before.sparse)) as Awaited<ReturnType<typeof captureSparseConfiguration>>;
+  const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
   if(!batch.equals(await git(root,['cat-file','--batch-all-objects','--batch'])))throw new Error('Git object inventory changed during capture');
   const headText=text(before.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Unsupported index flags/extensions, sparse-index and operation-in-progress metadata need separate recreation; supported split storage normalizes to a full review index'];
+  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
-  for(const row of text(before.config).split('\0').filter(Boolean)){
-    const split=row.indexOf('\n');
-    const key=split<0?row:row.slice(0,split),value=split<0?'':row.slice(split+1);
+  for(const item of JSON.parse(text(before.config)) as ReviewedGitUserData['configurationReview']){
+    const {key,value}=item;
     if(excludedGitKey(key)){exclusions.push('Git configuration entry excluded: credential or source ownership');continue;}
-    try{safeText(`${key}=${value}`,'Git configuration');if(/:\/\/[^/]*@/.test(value))throw new Error('URL userinfo');configurationReview.push({key,value,...(split<0?{implicitBoolean:true as const}:{})});}catch{exclusions.push('Git configuration entry excluded: recognizable credential or URL userinfo');}
+    try{safeText(`${key}=${value}`,'Git configuration');if(/:\/\/[^/]*@/.test(value))throw new Error('URL userinfo');configurationReview.push(item);}catch{
+      if(sparseKey(key))throw new Error('Required sparse configuration contains recognizable credentials; preserve source');
+      exclusions.push('Git configuration entry excluded: recognizable credential or URL userinfo');
+    }
   }
-  const result:ReviewedGitUserData={version:1,format,objects,reflogs:JSON.parse(text(before.reflogs)),refs:text(before.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index,configurationReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,objects,reflogs:JSON.parse(text(before.reflogs)),refs:text(before.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),sparseReview,configurationReview,exclusions};
   const final=await fs.lstat(gitDir);if(final.dev!==stat.dev||final.ino!==stat.ino||await fs.realpath(gitDir)!==gitDir)throw new Error('Selected Git ownership directory changed');
-  validateReviewedGit(result);return result;
+  // Verify every captured object and graph before deriving any missing logical index entries.
+  const directories=sparseReview.directories;
+  validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
+  result.index.push(...expandSparseDirectories(directories,new Map(objects.map(object=>[object.oid,object])),format));
+  result.index.sort(indexOrder);validateReviewedGit(result);return result;
 }
 
 /** Recreate a separate review repository, never the native-owned destination .git. No Git command or hook runs. */
@@ -430,7 +552,7 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
     }
     const header=Buffer.alloc(12);header.write('DIRC');header.writeUInt32BE(extendedIndex?3:2,4);header.writeUInt32BE(entries.length,8);
     const index=Buffer.concat([header,...entries]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
-    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
+    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
   }catch(error){throw new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error});}
 }
 

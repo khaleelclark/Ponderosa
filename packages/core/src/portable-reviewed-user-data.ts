@@ -9,7 +9,9 @@ export interface ReviewedGitUserData {
   /** Exact oldest-first local reflog bytes; never source worktree ownership. */
   reflogs:Array<{path:string;dataBase64:string}>;
   index:Array<{mode:string;oid:string;stage:number;path:string;intentToAdd:boolean;assumeUnchanged:boolean;skipWorktree:boolean}>;
-  configurationReview:Array<{key:string;value:string;implicitBoolean?:true}>;
+  /** Exact patterns and collapsed directory originals; destination index is full and settings stay inactive. */
+  sparseReview:{patternsBase64:string|null;directories:ReviewedGitUserData['index']};
+  configurationReview:Array<{key:string;value:string;implicitBoolean?:true;source?:'config.worktree'}>;
   exclusions:string[];
 }
 export interface ReviewedUserData {
