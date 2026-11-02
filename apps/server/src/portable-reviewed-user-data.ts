@@ -61,14 +61,14 @@ function assertSupportedReviewToml(value:string):void {
     }
   }
 }
-async function regularOriginal(target:string):Promise<{data:Buffer;mode:number}> {
+async function regularOriginal(target:string,maxBytes=1024*1024):Promise<{data:Buffer;mode:number}> {
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');
   const observed=await fs.lstat(target,{bigint:true});
-  if(!observed.isFile()||observed.nlink!==1n||observed.size>1024n*1024n)throw new Error('Reviewed data requires a bounded regular original');
+  if(!observed.isFile()||observed.nlink!==1n||observed.size>BigInt(maxBytes))throw new Error('Reviewed data requires a bounded regular original');
   const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try{
     const before=await handle.stat({bigint:true});
-    if(!before.isFile()||before.nlink!==1n||before.dev!==observed.dev||before.ino!==observed.ino||before.size>1024n*1024n)throw new Error('Reviewed original changed before reading');
+    if(!before.isFile()||before.nlink!==1n||before.dev!==observed.dev||before.ino!==observed.ino||before.size>BigInt(maxBytes))throw new Error('Reviewed original changed before reading');
     const data=Buffer.alloc(Number(before.size));let offset=0;
     while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error('Reviewed original shortened');offset+=read.bytesRead;}
     const after=await handle.stat({bigint:true}),current=await fs.lstat(target,{bigint:true});
@@ -115,28 +115,6 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
 function reflogPath(value:string):void {
   if(typeof value!=='string'||value.length>1024)throw new Error('Invalid Git reflog path');
   if(value!=='HEAD')refName(value);
-}
-
-/** Read only private normal local logs; exact bytes and per-file order remain unchanged. */
-async function captureReflogs(gitDir:string):Promise<ReviewedGitUserData['reflogs']> {
-  const result:ReviewedGitUserData['reflogs']=[];let nodes=0,bytes=0;
-  const walk=async(relative:string):Promise<void>=>{
-    const target=path.join(gitDir,'logs',relative);
-    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if(!relative&&(error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
-    if(++nodes>10000||await fs.realpath(target)!==target)throw new Error('Git reflog inventory is external or exceeds its bound');
-    if(before.isDirectory()){
-      if(relative&&relative!=='refs'&&!relative.startsWith('refs/'))throw new Error('Unsupported Git reflog directory');
-      for(const name of (await fs.readdir(target)).sort())await walk(relative?`${relative}/${name}`:name);
-      const after=await fs.lstat(target,{bigint:true});
-      if(before.dev!==after.dev||before.ino!==after.ino||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Git reflog directory changed during capture');
-    }else{
-      reflogPath(relative);
-      const {data}=await regularOriginal(target);bytes+=data.length;
-      if(bytes>limit)throw new Error('Git reflog bytes exceed their bound');
-      result.push({path:relative,dataBase64:data.toString('base64')});
-    }
-  };
-  await walk('');return result;
 }
 
 export function validateReviewedGit(value:ReviewedGitUserData):void {
@@ -237,14 +215,14 @@ async function parseCapturedGitConfiguration(data:Buffer):Promise<string> {
 }
 
 /** Raw snapshots are private comparison evidence; only nonsecret parsed settings enter the package. */
-async function captureSparseConfiguration(gitDir:string) {
+async function captureSparseConfiguration(gitDir:string,commonDir=gitDir) {
   const originals:Array<{name:string;identity:string;data:string}>=[];
   const configuration:ReviewedGitUserData['configurationReview']=[];
   let patternsBase64:string|null=null;
-  const info=path.join(gitDir,'info');
-  try{const stat=await fs.lstat(info);if(!stat.isDirectory()||await fs.realpath(info)!==info)throw new Error('Sparse pattern parent is not a canonical local directory');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  const info=path.join(gitDir,'info');let infoIdentity:string|null=null;
+  try{const stat=await fs.lstat(info,{bigint:true});if(!stat.isDirectory()||await fs.realpath(info)!==info)throw new Error('Sparse pattern parent is not a canonical local directory');infoIdentity=originalIdentity(stat);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
   for(const name of ['config','config.worktree','info/sparse-checkout']){
-    const target=path.join(gitDir,name);
+    const target=path.join(name==='config'?commonDir:gitDir,name);
     let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
     const {data}=await regularOriginal(target),after=await fs.lstat(target,{bigint:true});
     const identity=(stat:typeof before)=>[stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
@@ -261,7 +239,7 @@ async function captureSparseConfiguration(gitDir:string) {
       configuration.push({key,value,...(split<0?{implicitBoolean:true as const}:{}),...(name==='config.worktree'?{source:'config.worktree' as const}:{})});
     }
   }
-  return {originals,configuration,patternsBase64};
+  return {originals,configuration,patternsBase64,infoIdentity};
 }
 
 /** Expand only already hash/graph-verified objects; no filesystem, Git command or pattern interpretation. */
@@ -461,50 +439,207 @@ async function captureIndexStorage(gitDir:string,format:'sha1'|'sha256'):Promise
   return {originals:Buffer.from(JSON.stringify(originals)),logical};
 }
 
-/** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
-export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData|undefined> {
-  let stat;try{stat=await fs.lstat(path.join(root,'.git'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}
-  if(!stat.isDirectory()||await fs.realpath(path.join(root,'.git'))!==path.join(root,'.git'))throw new Error('Linked/external Git ownership requires a scoped repository reader; preserve source instead of exporting unrelated common objects');
-  try{await fs.lstat(path.join(root,'.git','objects','info','alternates'));throw new Error('External Git alternates require explicit scoped recreation');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-  const gitDir=path.join(root,'.git');
-  for(const name of ['commondir','gitdir','shallow','MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock']){
-    try{await fs.lstat(path.join(gitDir,name));throw new Error('Selected Git repository has unsupported shared/shallow/in-progress metadata; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+type GitAssociation={root:string;gitDir:string;commonDir:string;linked:boolean;evidence:string};
+function originalIdentity(stat:{dev:bigint;ino:bigint;mode:bigint;uid:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint}):string {
+  return [stat.dev,stat.ino,stat.mode,stat.uid,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
+}
+async function absentGitPath(target:string):Promise<void> {
+  try{await fs.lstat(target);throw new Error('Unsupported Git topology or operation metadata; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+}
+
+/** Check raw path components before resolving dot-dot; lexical normalization must not erase a symlink. */
+async function associationDirectory(base:string,value:string):Promise<string> {
+  const parts=value.split(path.sep);if(parts.length>128)throw new Error('Git association path exceeds its bound');
+  let target=path.isAbsolute(value)?path.parse(value).root:base;
+  for(const part of parts){
+    if(!part||part==='.')continue;
+    target=part==='..'?path.dirname(target):path.join(target,part);
+    const stat=await fs.lstat(target);
+    if(!stat.isDirectory()||await fs.realpath(target)!==target)throw new Error('Git association path has a symlink or special component');
   }
-  let controlEntries=0;
-  const inspectControl=async(target:string):Promise<void>=>{
-    let current;try{current=await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
-    if(++controlEntries>20000||await fs.realpath(target)!==target)throw new Error('Git control inventory is external or exceeds its bound');
-    if(current.isDirectory()){for(const name of await fs.readdir(target))await inspectControl(path.join(target,name));}
-    else if(!current.isFile()||current.nlink!==1)throw new Error('Git control data is not a private regular original');
+  return target;
+}
+
+/** Explicit Include Git authorizes only this reciprocal association, never a worktrees inventory. */
+async function gitAssociation(root:string):Promise<GitAssociation|undefined> {
+  const pointer=path.join(root,'.git');
+  let node;try{node=await fs.lstat(pointer,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}
+  const owner=(await fs.lstat(root,{bigint:true})).uid,evidence:Array<{path:string;identity:string;data?:string}>=[];
+  const directory=async(target:string)=>{
+    const stat=await fs.lstat(target,{bigint:true});
+    if(!stat.isDirectory()||stat.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git association requires canonical same-owner directories');
+    evidence.push({path:target,identity:originalIdentity(stat)});
   };
-  for(const name of ['HEAD','config','config.worktree','info/sparse-checkout','index','packed-refs','refs'])await inspectControl(path.join(gitDir,name));
-  let objectEntries=0;
-  const inspectObjects=async(directory:string):Promise<void>=>{
-    if(await fs.realpath(directory)!==directory)throw new Error('External Git object directory refused');
-    for(const name of await fs.readdir(directory)){
-      if(++objectEntries>10000)throw new Error('Git object-file inventory exceeds its bound');
-      const target=path.join(directory,name),stat=await fs.lstat(target);
-      if(stat.isDirectory())await inspectObjects(target);else if(!stat.isFile())throw new Error('External Git object symlink or special file requires scoped recreation');
+  const associationFile=async(target:string)=>{
+    const before=await fs.lstat(target,{bigint:true}),{data}=await regularOriginal(target,4096),after=await fs.lstat(target,{bigint:true});
+    if(before.uid!==owner||data.length>4096||originalIdentity(before)!==originalIdentity(after))throw new Error('Git association original is oversized, foreign or changed');
+    const value=text(data);if(!value||!Buffer.from(value).equals(data)||/[\0\r]/.test(value)||value.replace(/\n$/,'').includes('\n'))throw new Error('Malformed Git association original');
+    evidence.push({path:target,identity:originalIdentity(after),data:data.toString('base64')});return value.replace(/\n$/,'');
+  };
+  await directory(root);
+  if(node.isDirectory()){
+    await directory(pointer);
+    for(const name of ['commondir','gitdir'])await absentGitPath(path.join(pointer,name));
+    return {root,gitDir:pointer,commonDir:pointer,linked:false,evidence:JSON.stringify(evidence)};
+  }
+  // Only these association records may be read before reciprocal authority is established.
+  const value=await associationFile(pointer);
+  if(!value.startsWith('gitdir: ')||!value.slice(8))throw new Error('Unsupported Git pointer');
+  const gitDir=await associationDirectory(root,value.slice(8));await directory(gitDir);
+  const backlink=await associationFile(path.join(gitDir,'gitdir'));
+  if(!path.isAbsolute(backlink)||backlink!==pointer)throw new Error('Git worktree backlink does not identify the selected root');
+  const commonValue=await associationFile(path.join(gitDir,'commondir')),commonDir=await associationDirectory(gitDir,commonValue);
+  if(!commonValue||commonDir===gitDir||path.dirname(gitDir)!==path.join(commonDir,'worktrees')||!path.basename(gitDir)||path.basename(gitDir).startsWith('.'))throw new Error('Unsupported Git common-directory association');
+  await directory(commonDir);await directory(path.join(commonDir,'worktrees'));
+  for(const name of ['commondir','gitdir'])await absentGitPath(path.join(commonDir,name));
+  // Recheck the complete association before permitting any repository content read.
+  for(const item of evidence){
+    const before=await fs.lstat(item.path,{bigint:true});
+    if(originalIdentity(before)!==item.identity||await fs.realpath(item.path)!==item.path)throw new Error('Git reciprocal association changed');
+    if(item.data!==undefined){const {data}=await regularOriginal(item.path,4096),after=await fs.lstat(item.path,{bigint:true});if(data.toString('base64')!==item.data||originalIdentity(after)!==item.identity)throw new Error('Git reciprocal association original changed');}
+  }
+  return {root,gitDir,commonDir,linked:true,evidence:JSON.stringify(evidence)};
+}
+
+type CapturedGitFile={name:string;data:Buffer};
+/** Complete exact allowed roots only; never enumerate common/worktrees or main-worktree private files. */
+async function captureGitRaw(association:GitAssociation) {
+  const {gitDir,commonDir,linked}=association,files:CapturedGitFile[]=[],inventory:Array<{name:string;identity:string;digest?:string;absent?:true}>=[];
+  let nodes=0,bytes=0;
+  const walk=async(target:string,name:string,objects=false):Promise<void>=>{
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name,identity:'',absent:true});return;}throw error;}
+    if(linked&&/^(?:refs|logs\/refs)\/(?:bisect|rewritten|worktree)(?:\/|$)/.test(name))throw new Error('Other worktree private namespace is outside the selected Git scope');
+    if(++nodes>20000||await fs.realpath(target)!==target)throw new Error('Git raw inventory is external or exceeds its bound');
+    if(before.isDirectory()){
+      if(!objects&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
+      if(objects&&!['objects','objects/pack','objects/info'].includes(name)&&!/^objects\/[a-f0-9]{2}$/.test(name))throw new Error('Unsupported Git object directory');
+      inventory.push({name,identity:originalIdentity(before)});
+      for(const entry of (await fs.readdir(target)).sort())await walk(path.join(target,entry),name+'/'+entry,objects);
+      const after=await fs.lstat(target,{bigint:true});if(originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw directory changed');
+    }else{
+      if(objects&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
+      if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/'))reflogPath(name.slice(5));
+      const {data}=await regularOriginal(target,objects?limit:1024*1024),after=await fs.lstat(target,{bigint:true});
+      if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
+      inventory.push({name,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,data});
     }
   };
-  await inspectObjects(path.join(root,'.git','objects'));
-  // Parse only captured local bytes, with includes disabled, before repository-aware plumbing.
-  await captureSparseConfiguration(gitDir);
-  const format=text(await git(root,['rev-parse','--show-object-format'])).trim();
-  if(format!=='sha1'&&format!=='sha256')throw new Error('Unsupported Git object format');
-  const snapshot=async()=>{
-    try{await fs.lstat(path.join(gitDir,'index.lock'));throw new Error('Git index is locked; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-    const sparse=await captureSparseConfiguration(gitDir);
-    const storage=await captureIndexStorage(gitDir,format);
+  for(const name of ['HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name);
+  const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
+  // Packed refs precede loose overrides in the captured view.
+  for(const name of ['config','packed-refs','refs','objects'])await walk(path.join(commonDir,name),name,name==='objects');
+  for(const directory of new Set([gitDir,commonDir])){
+    const target=path.join(directory,'logs');
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name:directory===gitDir?'selected/logs':'shared/logs',identity:'',absent:true});continue;}throw error;}
+    if(!before.isDirectory()||await fs.realpath(target)!==target)throw new Error('Git log parent is not canonical');
+    if(!linked||directory===gitDir)for(const name of await fs.readdir(target))if(!(linked?['HEAD']:['HEAD','refs']).includes(name))throw new Error('Unsupported selected Git reflog original');
+    inventory.push({name:directory===gitDir?'selected/logs':'shared/logs',identity:originalIdentity(before)});
+  }
+  await walk(path.join(gitDir,'logs','HEAD'),'logs/HEAD');await walk(path.join(commonDir,'logs','refs'),'logs/refs');
+  if(linked){
+    // These namespaces are private to a worktree; this bounded implementation refuses instead of merging them.
+    for(const base of [path.join(gitDir,'refs'),path.join(gitDir,'logs','refs')])await absentGitPath(base);
+  }
+  return {files,evidence:JSON.stringify(inventory)};
+}
+
+/** Native plumbing sees only an exclusive private copy, with generated config and no source pointers/index. */
+async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
+  const parent=await fs.realpath(tmpdir()),root=await fs.mkdtemp(path.join(parent,'ponderosa-git-read-'));
+  const stat=await fs.lstat(root);if(!stat.isDirectory()||(stat.mode&0o077)!==0||await fs.realpath(root)!==root||(await fs.readdir(root)).length)throw new Error('Git capture view is not private and empty');
+  try{
+    const directories=[root],written:Array<{target:string;data:Buffer;identity:string}>=[];
+    const mkdir=async(target:string):Promise<void>=>{
+      if(directories.includes(target))return;await mkdir(path.dirname(target));await fs.mkdir(target,{mode:0o700});directories.push(target);
+    };
+    const write=async(name:string,data:Buffer)=>{
+      const target=path.join(root,'.git',name);await mkdir(path.dirname(target));await fs.writeFile(target,data,{flag:'wx',mode:0o600});written.push({target,data,identity:originalIdentity(await fs.lstat(target,{bigint:true}))});
+    };
+    // Nothing copied here can route Git to a live repository or settings file.
+    await mkdir(path.join(root,'.git','refs'));await mkdir(path.join(root,'.git','objects'));
+    await write('config',Buffer.from(format==='sha256'?'[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nobjectformat = sha256\n':'[core]\nrepositoryformatversion = 0\nbare = true\n'));
+    const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
+    const expectedRefs=new Map<string,{oid?:string;symbolic?:string}>();
+    for(const file of files){
+      if(file.name.startsWith('objects/')){
+        const width=format==='sha1'?40:64;
+        const loose=new RegExp('^objects/[a-f0-9]{2}/[a-f0-9]{'+(width-2)+'}$'),packed=new RegExp('^objects/pack/pack-[a-f0-9]{'+width+'}\\.(?:pack|idx|rev|bitmap)$');
+        if(!loose.test(file.name)&&!packed.test(file.name))throw new Error('Git object storage name differs from the declared format');
+      }
+      if(file.name==='packed-refs'){
+        const value=text(file.data);if(value&&!value.endsWith('\n'))throw new Error('Truncated packed Git refs');
+        const names=new Set<string>();let canPeel=false;
+        for(const line of value?value.slice(0,-1).split('\n'):[]){
+          if(line.startsWith('#')){if(!/^# pack-refs with:(?: (?:peeled|fully-peeled|sorted))* *$/.test(line))throw new Error('Unsupported packed Git ref header');canPeel=false;continue;}
+          if(line.startsWith('^')){if(!canPeel||!oidPattern.test(line.slice(1)))throw new Error('Invalid peeled Git ref');canPeel=false;continue;}
+          const split=line.indexOf(' '),oid=line.slice(0,split),name=line.slice(split+1);refName(name);
+          if(!oidPattern.test(oid)||names.has(name)||/^refs\/(?:bisect|rewritten|worktree)(?:\/|$)/.test(name))throw new Error('Invalid, duplicate or private packed Git ref');
+          names.add(name);expectedRefs.set(name,{oid});canPeel=true;
+        }
+      }
+      if(file.name.startsWith('objects/pack/')){
+        const stem=file.name.replace(/\.[^.]+$/,'');
+        if(!files.some(item=>item.name===stem+'.pack')||!files.some(item=>item.name===stem+'.idx'))throw new Error('Incomplete captured Git pack storage');
+      }
+      if(file.name==='HEAD'||file.name.startsWith('refs/')){
+        if(file.name!=='HEAD')refName(file.name);
+        const value=text(file.data).replace(/\n$/,'');
+        if(value.startsWith('ref: '))refName(value.slice(5));else if(!oidPattern.test(value))throw new Error('Unsupported Git ref original');
+        if(file.name!=='HEAD')expectedRefs.set(file.name,value.startsWith('ref: ')?{symbolic:value.slice(5)}:{oid:value});
+      }else if(file.name!=='packed-refs'&&!file.name.startsWith('objects/'))continue;
+      await write(file.name,file.data);
+    }
+    const directoryIdentities=await Promise.all(directories.map(async target=>({target,identity:originalIdentity(await fs.lstat(target,{bigint:true}))})));
     const refs=await git(root,['for-each-ref','--format=%(refname)%00%(objectname)%00%(symref)']);
-    let head:Buffer;
-    try{head=await git(root,['symbolic-ref','-q','HEAD']);}catch{head=await git(root,['rev-parse','--verify','HEAD']);}
-    const index=Buffer.from(JSON.stringify(storage.logical));
-    const config=Buffer.from(JSON.stringify(sparse.configuration));
-    const reflogs=Buffer.from(JSON.stringify(await captureReflogs(gitDir)));
-    return {refs,head,index,config,reflogs,storage:storage.originals,sparse:Buffer.from(JSON.stringify(sparse))};
+    const actualRefs=new Map<string,{oid:string;symbolic:string}>();
+    for(const row of text(refs).split('\n').filter(Boolean)){
+      const parts=row.split('\0');if(parts.length!==3||actualRefs.has(parts[0]!))throw new Error('Invalid captured Git ref inventory');
+      actualRefs.set(parts[0]!,{oid:parts[1]!,symbolic:parts[2]!});
+    }
+    if(actualRefs.size!==expectedRefs.size||[...expectedRefs].some(([name,expected])=>{const actual=actualRefs.get(name);return !actual||expected.oid!==undefined&&actual.oid!==expected.oid||actual.symbolic!==(expected.symbolic??'');}))throw new Error('Missing, broken or normalized Git ref original');
+    const originalHead=files.find(file=>file.name==='HEAD');if(!originalHead)throw new Error('Missing selected Git HEAD');
+    const headValue=text(originalHead.data).replace(/\n$/,'');
+    const head=Buffer.from(headValue.startsWith('ref: ')?headValue.slice(5):headValue);
+    const batch=await git(root,['cat-file','--batch-all-objects','--batch']);
+    // On any failure leave private partial originals; remove only known, unchanged copies after success.
+    for(const file of written){const {data}=await regularOriginal(file.target,limit),stat=await fs.lstat(file.target,{bigint:true});if(!data.equals(file.data)||originalIdentity(stat)!==file.identity)throw new Error('Private Git view changed; retain partial originals');}
+    for(const directory of directoryIdentities)if(await fs.realpath(directory.target)!==directory.target||originalIdentity(await fs.lstat(directory.target,{bigint:true}))!==directory.identity)throw new Error('Private Git view directory changed; retain partial originals');
+    for(const file of written)await fs.unlink(file.target);
+    for(const directory of directories.reverse())await fs.rmdir(directory);
+    return {refs,head,batch};
+  }catch(error){throw new Error(`Git capture view incomplete; preserve private originals at ${root}`,{cause:error});}
+}
+
+/** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
+export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData|undefined> {
+  const association=await gitAssociation(root);if(!association)return undefined;
+  const {gitDir,commonDir,linked}=association;
+  const assertTopology=async()=>{
+    for(const name of ['MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock'])await absentGitPath(path.join(gitDir,name));
+    for(const name of ['shallow','info/grafts','objects/info/alternates','objects/info/http-alternates'])await absentGitPath(path.join(commonDir,name));
+    if(linked){
+      await absentGitPath(path.join(gitDir,'config'));
+      for(const name of ['bisect','rewritten','worktree']){
+        await absentGitPath(path.join(commonDir,'refs',name));await absentGitPath(path.join(commonDir,'logs','refs',name));
+      }
+    }
   };
-  const before=await snapshot(),batch=await git(root,['cat-file','--batch-all-objects','--batch']);
+  const snapshot=async()=>{
+    const current=await gitAssociation(root);if(!current||current.evidence!==association.evidence)throw new Error('Git association changed during capture');
+    await assertTopology();
+    const sparse=await captureSparseConfiguration(gitDir,commonDir);
+    const raw=await captureGitRaw(association);
+    return {sparse,raw};
+  };
+  const initial=await snapshot();
+  const local=initial.sparse.configuration.filter(item=>!item.source);
+  const declared=local.filter(item=>item.key.toLowerCase()==='extensions.objectformat');
+  if(declared.length>1||declared.some(item=>!['sha1','sha256'].includes(item.value)))throw new Error('Unsupported Git object format declaration');
+  const format: 'sha1'|'sha256'=declared[0]?.value==='sha256'?'sha256':'sha1';
+  const versions=local.filter(item=>item.key.toLowerCase()==='core.repositoryformatversion');
+  if(versions.length!==1||!['0','1'].includes(versions[0]!.value)||declared.length>0&&versions[0]!.value!=='1'||local.some(item=>/^extensions\./i.test(item.key)&&!['extensions.objectformat','extensions.worktreeconfig'].includes(item.key.toLowerCase())))throw new Error('Unsupported Git repository format or extension');
+  const before={...initial,storage:await captureIndexStorage(gitDir,format)};
+  const captured=await readCapturedGit(before.raw.files,format),batch=captured.batch;
   const objects:GitObject[]=[];let offset=0;
   while(offset<batch.length){
     const end=batch.indexOf(10,offset);if(end<0)throw new Error('Truncated Git object header');
@@ -514,17 +649,17 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     if(!Number.isSafeInteger(size)||size>limit||offset+size>=batch.length||batch[offset+size]!==10)throw new Error('Truncated Git object original');
     objects.push({oid:match[1]!,type:match[2] as GitObject['type'],dataBase64:batch.subarray(offset,offset+size).toString('base64')});offset+=size+1;
   }
-  const after=await snapshot();
-  for(const key of ['refs','head','index','config','reflogs','storage','sparse'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
-  const originalIndex:IndexEntry[]=JSON.parse(text(before.index));
-  const sparseSnapshot=JSON.parse(text(before.sparse)) as Awaited<ReturnType<typeof captureSparseConfiguration>>;
+  const after={...await snapshot(),storage:await captureIndexStorage(gitDir,format)};
+  if(before.raw.evidence!==after.raw.evidence||JSON.stringify(before.sparse)!==JSON.stringify(after.sparse)||!before.storage.originals.equals(after.storage.originals)||JSON.stringify(before.storage.logical)!==JSON.stringify(after.storage.logical))throw new Error('Git selection changed during capture; preserve source and retry');
+  const finalAssociation=await gitAssociation(root);if(!finalAssociation||finalAssociation.evidence!==association.evidence)throw new Error('Git association changed after capture');
+  const originalIndex:IndexEntry[]=before.storage.logical;
+  const sparseSnapshot=before.sparse;
   const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
-  if(!batch.equals(await git(root,['cat-file','--batch-all-objects','--batch'])))throw new Error('Git object inventory changed during capture');
-  const headText=text(before.head).trim();
+  const headText=text(captured.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
+  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
-  for(const item of JSON.parse(text(before.config)) as ReviewedGitUserData['configurationReview']){
+  for(const item of before.sparse.configuration){
     const {key,value}=item;
     if(excludedGitKey(key)){exclusions.push('Git configuration entry excluded: credential or source ownership');continue;}
     try{safeText(`${key}=${value}`,'Git configuration');if(/:\/\/[^/]*@/.test(value))throw new Error('URL userinfo');configurationReview.push(item);}catch{
@@ -532,8 +667,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
       exclusions.push('Git configuration entry excluded: recognizable credential or URL userinfo');
     }
   }
-  const result:ReviewedGitUserData={version:1,format,objects,reflogs:JSON.parse(text(before.reflogs)),refs:text(before.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),sparseReview,configurationReview,exclusions};
-  const final=await fs.lstat(gitDir);if(final.dev!==stat.dev||final.ino!==stat.ino||await fs.realpath(gitDir)!==gitDir)throw new Error('Selected Git ownership directory changed');
+  const result:ReviewedGitUserData={version:1,format,objects,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')).map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),sparseReview,configurationReview,exclusions};
   // Verify every captured object and graph before deriving any missing logical index entries.
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});

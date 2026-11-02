@@ -20,7 +20,7 @@ Both booleans are required; either may be false, but at least one must be true.
 Omitting the query preserves existing working-folder export behavior and exclusions.
 Each distinct selected organization root is captured independently. Selecting Git
 on a root with no supported local repository refuses, rather than returning an
-apparently complete Git export. Linked worktrees currently refuse explicitly, as do external/shared object storage, unsupported combined split/sparse index storage, shallow history and unfinished Git operations.
+apparently complete Git export. Supported reciprocally associated linked worktrees use the explicit Git authority described below. External alternates/includes, unsupported shared layouts, combined split/sparse index storage, shallow history and unfinished selected-worktree Git operations refuse.
 
 Inspect the resulting ordinary artifact `.ponderosa-portable-review/user-data.json`
 before importing. Its `selection`, Git refs/index/configuration review, provider
@@ -44,6 +44,87 @@ true. The server refuses this option for template exports, selected-files-only
 exports, unknown fields or invalid selections. Existing definition-tree export
 forwards each Agent's selection to the shared package engine without broadening it.
 The folder and settings review/import behavior is unchanged by these controls.
+
+### Explicit linked-worktree Git authority
+
+The human-approved **Include Git** policy authorizes future export reads of the
+selected worktree's reciprocally validated private gitdir and its exact common
+repository, even outside the selected folder. This does not authorize other
+worktrees' private state, external includes/alternates, unrelated repositories or
+cross-root working-file traversal. Ordinary `recreationScope.crossRootLinks`
+remains `refuse`; no source pointers, ownership metadata or live topology are
+adopted at import. These are separate authority rules.
+
+Before external repository contents are read, the reader validates the bounded
+single-link no-follow regular selected `.git` pointer, private `gitdir` backlink
+identifying that exact selected `.git`, and private `commondir` association. The
+supported layout is exactly `<common>/worktrees/<id>`, with canonical same-owner
+directories and no symlink components (including raw paths before dot-dot normalization; at most 128 path components). Association records are strict UTF-8,
+at most 4 KiB, one line (optional final LF), with no CR/NUL. The backlink must be
+absolute and exact. Normal `.git` directories continue to refuse `gitdir` or
+`commondir` indirection. Directory/pointer identity, bytes and change times are
+rechecked before repository-content reads and in the before/after capture.
+Association records alone may be read while establishing this authority; no
+broad filesystem/repository search or other-worktree inventory is performed.
+Ambiguous, broken, foreign-owner, changed or unsupported topology refuses.
+Ownership supports association validation; explicit human selection supplies
+permission. This implementation batch performed no live external-repository reads.
+
+Only selected private `HEAD`, `index`, exact linked `sharedindex.<OID>` originals,
+`config.worktree`, `info/sparse-checkout` and `logs/HEAD` supply selected state.
+Shared `config`, `packed-refs`, `refs`, `objects` and `logs/refs` supply repository
+state. The common repository's private HEAD/index/config.worktree/patterns/HEAD
+log are never used, and `common/worktrees` is never enumerated. Its directory
+identity is association evidence only. Selected/shared identities and exact raw
+file bytes (compared by SHA-256), bounded directory inventories, complete logical
+index/sparse state and required index storage must match before/after export.
+Independent writers are not drained; this is observed-change refusal, not proof
+of an arbitrary-writer atomic snapshot.
+
+All native plumbing now reads an exclusive mode-0700 temporary captured view,
+including for ordinary repositories. It contains only captured selected HEAD,
+shared refs/packed refs and approved bounded object-storage originals, plus a
+minimal generated format-only config. Source config, config.worktree, pointers,
+commondir, hooks, logs, index and sparse settings are never copied into its active
+metadata. Native startup therefore cannot discover the selected/common/ancestor
+repository, resolve a live include, refresh a shared index or update a linked
+backlink. Captured source config is parsed separately with the existing isolated
+stdin parser and include declarations still refuse. Ref names/targets and packed
+ref structure are checked before plumbing; output must include every effective
+captured ref with its exact OID/symbolic target. Broken or omitted refs refuse.
+Original hashes/types/graphs are checked as before. Successful temporary views
+remove only known unchanged files and empty directories; failures retain private
+partial copies. There is no recursive cleanup, source write or activation.
+
+Supported object storage is regular single-link loose objects and canonical
+`pack-<OID>.pack/.idx` pairs, with optional same-pack `.rev`/`.bitmap` files;
+filenames must match the declared SHA-1/SHA-256 format. Raw object/control/log
+originals (excluding separately bounded index/shared-index originals) together
+are bounded to 32 MiB and 20,000 inventory nodes, with 1 MiB
+per nonobject file and 32 MiB per object-storage file. Alternates (including HTTP
+alternates), promisor/unknown object metadata, commit-graph/info files, incomplete
+packs, unknown repository extensions/formats and malformed packed refs refuse.
+Repository format declarations must be exactly 0 or 1; objectformat requires 1.
+Only objectformat/worktreeConfig repository extensions are accepted (a local
+extensions.sparseindex declaration now refuses; native sparse state uses
+index.sparse and the index marker);
+no ignored native storage file is silently dropped. Selected private refs/log
+refs and shared private `refs/{bisect,rewritten,worktree}` namespaces refuse rather
+than merging another worktree's state. Main-worktree private logs are excluded,
+not read. Unsupported selected operation metadata, shallow history, grafts,
+combined split/sparse storage and the existing index/sparse limits remain.
+Supported split/v4/sparse originals use the selected private gitdir and verified
+captured shared objects; full inactive standalone recreation is unchanged.
+Submodule repository contents, general linked layouts and live activation remain
+gaps. No DTO, caller, UI, transport format or destination ownership change is needed.
+
+Native routing references: [Git repository layout](https://git-scm.com/docs/gitrepository-layout),
+[Git private/common path routing](https://github.com/git/git/blob/v2.43.0/path.c),
+[Git setup](https://github.com/git/git/blob/v2.43.0/setup.c),
+[Git config sequence](https://github.com/git/git/blob/v2.43.0/config.c), and
+[Git files ref backend](https://github.com/git/git/blob/v2.43.0/refs/files-backend.c).
+Verification for this batch is source/status/whitespace inspection only; no
+native capture, tests, preparation, builds or runtime qualification was performed.
 
 ### Ordinary index flags
 
@@ -71,8 +152,7 @@ the version-3 extended word. If no entry needs extended flags, version 2 is kept
 Path/stage ordering, entry padding and SHA-1/SHA-256 checksum are reconstructed;
 source stat/inode caches are not adopted. Nothing runs Git or grants native
 worktree/settings authority. Existing files refuse; partial recovery bytes remain.
-Sparse index storage, linked/common-dir repositories, unsupported binary
-layouts and other flags remain separate gaps. Supported ordinary split storage
+Unsupported sparse/common-directory layouts, binary layouts and other flags remain separate gaps. Supported ordinary split storage
 normalizes to a full review index as described below. No native capture, tests or builds
 were run for this source change.
 
@@ -83,14 +163,14 @@ and the binary storage references below.
 ### Ordinary local split-index storage
 
 Explicit Git selection accepts bounded version-2/version-3/version-4 full or split index
-originals inside the selected normal local `.git`. Capture decodes the index
+originals inside the selected normal local `.git` or the reciprocally validated selected-worktree private gitdir. Capture decodes the index
 checksum, entries, supported flags and complete extension boundaries directly;
 it never invokes native Git to read an index. Native Git's split-index read path
 freshens shared-file mtime, so the former `ls-files` diagnostic path is removed.
 The existing logical index-entry fields are unchanged; sparse review extends the manifest as described below.
 
 A `link` extension resolves only its exact `sharedindex.<checksum>` original in
-that same canonical `.git`. No shared-file directory scan, external pointer or
+that same canonical selected gitdir. No shared-file directory scan, external pointer or
 other worktree inventory is performed. The shared checksum must match both its
 content and the link. Complete bounded EWAH delete/replace maps are decoded;
 replacement entries must have empty names and inherit the exact shared path.
@@ -189,8 +269,7 @@ Import validates logs and object relationships before creating the review reposi
 then writes the original bytes exclusively under its new `.git/logs`. It never
 writes into the active destination repository, appends current identities, runs
 Git or activates source hooks/settings. Existing files refuse and partial recovery
-bytes remain. General linked-worktree/common-dir logs and historical logs whose
-objects are unavailable remain unsupported. No tests or native capture/recreation
+bytes remain. Supported linked selections combine only selected private `logs/HEAD` with shared `logs/refs`; main-worktree HEAD logs and other private logs are excluded. Private per-worktree ref namespaces and historical logs whose objects are unavailable remain unsupported. No tests or native capture/recreation
 were run for this source change.
 
 ### Bounded TOML syntax
@@ -267,12 +346,11 @@ See Claude's [project MCP scope](https://code.claude.com/docs/en/mcp) and
 [project rules](https://code.claude.com/docs/en/memory) for the native locations;
 this transport does not install or execute their contents.
 
-Sparse checkout is captured for ordinary normal local `.git` only. Exact pattern
+Sparse checkout is captured for normal local `.git` and the supported reciprocal linked-worktree association below. Exact pattern
 bytes preserve cone/noncone text, comments, order and final-newline state; they
 are bounded UTF-8 review text, with no NULs and no recognized credentials. Missing
 patterns remain null, not an invented empty file; enabled sparse checkout without
-a pattern original refuses. Local `config` and optional `config.worktree` are
-private bounded no-follow originals. The existing read-only Git config parser
+a pattern original refuses. Shared repository `config` and selected private `config.worktree` are bounded no-follow originals; selected private `info/sparse-checkout` supplies patterns. The main worktree configuration/patterns are never substituted for selected private files. The existing read-only Git config parser
 receives their captured bytes on stdin with includes disabled. Parsing runs in a
 fresh private empty temporary directory, with both process cwd and `-C` there;
 its canonical parent is the Git discovery ceiling, so neither the selected nor
@@ -286,8 +364,7 @@ cleanup refuses. No source configuration bytes are written to the parser directo
 entries, original values, implicit booleans and source scope survive; source
 formatting and credential fields are not copied. Include/includeIf declarations
 refuse before repository-aware plumbing, rather than permitting an external
-include to influence sparse meaning. Home profiles and linked/common directories
-are never selected. Worktree sparse values require an explicit local
+include to influence sparse meaning. Home profiles are never selected. Linked/common directories require the separate reciprocal Git authority above. Worktree sparse values require an explicit local
 `extensions.worktreeConfig` setting; true applies worktree precedence only for
 validation, false retains those values as dormant review data.
 
@@ -319,7 +396,7 @@ The fresh review repository always receives the full v2/v3 logical index.
 no active `info/sparse-checkout`, `config.worktree`, sparse config setting or
 `sdir` storage is installed. Raw sparse storage, stat caches and tree caches are
 normalized, never adopted as destination ownership. Exact before/after raw and
-logical snapshots plus identical object streams establish the same derivation
+logical snapshots plus identical raw object-storage inventories establish the same derivation
 for observed stable input; independent-writer atomicity remains unproved.
 Source and partial destination bytes remain retained, and exclusive new writes,
 credential refusal and inactivity are unchanged. Runtime qualification has not
@@ -327,13 +404,19 @@ been performed. Native references: [sparse directory index format](https://git-s
 [sparse-index design](https://git-scm.com/docs/sparse-index), and
 [Git config scopes](https://git-scm.com/docs/git-config).
 
-Export plumbing is source code only: `rev-parse`, `symbolic-ref`, `for-each-ref`,
-`config --file - --no-includes` on captured exact local bytes, and `cat-file --batch-all-objects`.
-Every Git child starts with its process cwd and `-C` at the intended root, an explicit parent discovery ceiling and `--no-pager`. It drops inherited Git overrides, disables system/global config, fsmonitor,
-optional locks, replacement objects, lazy fetching and terminal prompts. No shell
-command interpolation or mutating Git command is used. Before/after
-refs/HEAD/logical index/config/reflogs plus raw index/shared-index/local-config/worktree-config/pattern bytes and identity and full object streams must match (including file absence). Each native
-call has a 30-second and 32 MiB output bound. Git objects are bounded
+Export plumbing is source code only: `config --file - --no-includes` receives
+captured configuration bytes in an empty isolated directory. `for-each-ref` and
+`cat-file --batch-all-objects` run only in the private captured Git view described
+above; no native child discovers or reads a live selected/common repository.
+Every Git child starts with its process cwd and `-C` at its isolated root, an
+explicit parent discovery ceiling and `--no-pager`. The fresh environment drops
+inherited Git/trace/config/alias/pager overrides, disables system/global config,
+fsmonitor, optional locks, replacement objects, lazy fetching and terminal prompts.
+No shell interpolation or mutating Git command is used. Before/after association,
+raw selected/shared control/config/log/object-storage originals, exact required
+index/shared-index files and complete logical index/sparse inventories must match,
+including absence, identities, sizes and change times. Each native call has a
+30-second and 32 MiB output bound. Git objects are bounded
 to 32 MiB and 10,000 objects; refs/index entries to 10,000 each; provider files
 to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal preserves
 the source instead of truncating data.
@@ -344,7 +427,7 @@ not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
 
-Exact remaining implementation: scoped linked-worktree/common-dir Git export;
+Exact remaining implementation: unsupported linked/common-directory layouts and private ref namespaces;
 unsupported index flags/extensions and combined split/sparse or other unsupported sparse forms; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats; general multiline TOML
 secret separation; explicit reviewed activation into a native-owned live Git or
