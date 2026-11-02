@@ -20,7 +20,7 @@ export function validateReviewedUserDataSelection(value:unknown):asserts value i
   if(typeof selection.git!=='boolean'||typeof selection.harness!=='boolean'||!selection.git&&!selection.harness)throw new Error('Select Git data, harness settings, or both');
 }
 function providerPath(value:string):boolean {
-  return ['.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|skills)|codex\/(?:skills|rules))\//.test(value);
+  return ['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|skills|rules)|codex\/(?:skills|rules))\//.test(value);
 }
 function credentialPath(value:string):boolean {
   return value.split('/').some(part=>['.ssh','.aws','.gnupg','browser-profiles'].includes(part.toLowerCase())||/^\.env(?:\.|$)/i.test(part)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(part));
@@ -438,7 +438,7 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
 export async function exportReviewedUserData(root:string,selection:ReviewedUserDataSelection):Promise<ReviewedUserData> {
   validateReviewedUserDataSelection(selection);
   const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{...selection},recreationScope:{...recreationScope},providerFiles:[],exclusions:[]};let bytes=0;
-  const selected=['.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'];
+  const selected=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'];
   let entries=0;
   const walk=async(relative:string):Promise<void>=>{
     const target=path.join(root,relative);
@@ -451,7 +451,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     }
     const after=await fs.lstat(target,{bigint:true});if(stat.ino!==after.ino||stat.mtimeNs!==after.mtimeNs||stat.ctimeNs!==after.ctimeNs)throw new Error('Custom provider configuration inventory changed');
   };
-  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/skills','.codex/skills','.codex/rules']:[]))await walk(directory);
+  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/skills','.claude/rules','.codex/skills','.codex/rules']:[]))await walk(directory);
   for(const relative of selection.harness?selected:[]){
     const target=path.join(root,relative);
     let originalFile;try{originalFile=await regularOriginal(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}

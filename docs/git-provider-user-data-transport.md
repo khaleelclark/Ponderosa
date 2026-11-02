@@ -243,10 +243,30 @@ still requires separate human review/action.
 | `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and sparse semantics refuse. |
 | `git.configurationReview[].{key,value,implicitBoolean?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans, hook/fsmonitor command text and external include references. Includes are not followed to export their contents. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | `.claude/settings.json`, `settings.local.json`, `CLAUDE.md`, `.codex/config.toml`, `instructions.md`, and regular custom files under Claude commands/agents/skills and Codex skills/rules. JSON known secret fields are removed structurally, preserving other settings. Simple single-line TOML credential assignments are excluded; multiline TOML refuses rather than guessing continuation boundaries. Dotted assignment keys (including `api_key.value`), inline-table syntax and escaped keys refuse before export and on import; quoted or escaped table/array-table paths refuse before segment inspection, and known-secret bare table paths also refuse. The conservative table guard rejects any bracket-leading line with quotes or backslashes, including otherwise harmless quoted header comments or array continuation lines. The conservative inline-table guard also refuses braces in noncomment lines, even inside a quoted value. This bounded reader does not claim structural support for those TOML forms. Remaining known-credential syntax refuses. Commands/MCP/permissions/hooks remain human-review data, with no grant or execution. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Project-root `.mcp.json`, `.claude/settings.json`, `settings.local.json`, `CLAUDE.md`, `.codex/config.toml`, `instructions.md`, and regular custom files under Claude commands/agents/skills/rules and Codex skills/rules. JSON known secret fields are removed structurally, preserving other settings. Simple single-line TOML credential assignments are excluded; multiline TOML refuses rather than guessing continuation boundaries. Dotted assignment keys (including `api_key.value`), inline-table syntax and escaped keys refuse before export and on import; quoted or escaped table/array-table paths refuse before segment inspection, and known-secret bare table paths also refuse. The conservative table guard rejects any bracket-leading line with quotes or backslashes, including otherwise harmless quoted header comments or array continuation lines. The conservative inline-table guard also refuses braces in noncomment lines, even inside a quoted value. This bounded reader does not claim structural support for those TOML forms. Remaining known-credential syntax refuses. Commands/MCP/permissions/hooks remain human-review data, with no grant or execution. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/cyclicLinks/specialNodes` | Required literal `refuse`. Existing folder inventory refuses these semantics; there is no dereference or silent conversion to regular bytes. A package requiring them needs a new supported recreation contract. |
 | `recreationScope.acl/xattrs` | Required literal `not_inspected_preserve_source`. Current host file API does not inventory or reproduce ACL/xattrs. Import refuses a manifest claiming stronger semantics. Ordinary modes/mtime do not establish equivalent access rules or metadata. Source retention remains necessary wherever these attributes matter. |
+
+Project-root `.mcp.json` and recursive regular custom `.claude/rules` files use
+only the explicit harness selection and the same bounded, canonical-parent,
+no-follow original reader and import whitelist as other provider review files.
+MCP JSON uses recursive known-secret field removal; remaining nonsecret server
+settings survive, and remaining recognizable credentials refuse. Rule text and
+accepted literal environment references remain uninterpreted: no expansion,
+rule-import traversal, home-profile reads, server connections or tool grants.
+Links and special nodes refuse. Import preserves original path mappings in
+nonexecutable numbered `.review` files, never active `.mcp.json` or rules.
+
+Ordinary selected-file export/import refuses any `.mcp.json` path component,
+just as it refuses `.claude` native paths. Whole-folder inventory records those
+paths in `excludedPaths` and does not read them through the ordinary file lane;
+selecting harness review data separately includes only the supported sanitized
+project-root original. Nested `.mcp.json` files remain excluded, not captured as
+project-root settings. Source and partial recovery bytes remain retained.
+See Claude's [project MCP scope](https://code.claude.com/docs/en/mcp) and
+[project rules](https://code.claude.com/docs/en/memory) for the native locations;
+this transport does not install or execute their contents.
 
 Export plumbing is source code only: `rev-parse`, `symbolic-ref`, `for-each-ref`,
 `config --local --no-includes` and `cat-file --batch-all-objects`.
