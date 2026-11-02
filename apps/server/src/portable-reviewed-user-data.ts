@@ -201,8 +201,45 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   fields(value.head,'symbolic' in value.head?['symbolic']:['oid']);
   if('symbolic' in value.head)refName(value.head.symbolic);else if(!ids.has(value.head.oid))throw new Error('Missing detached HEAD object');
   const entries=new Set<string>();
-  for(const entry of value.index){fields(entry,['mode','oid','stage','path']);indexPath(entry.path);if(credentialPath(entry.path))throw new Error('Known credential path in selected Git index; preserve source');const key=`${entry.path}\0${entry.stage}`;if(entries.has(key)||!Number.isInteger(entry.stage)||entry.stage<0||entry.stage>3||!['100644','100755','120000','160000'].includes(entry.mode)||!oidPattern.test(entry.oid)||entry.mode!=='160000'&&ids.get(entry.oid)?.type!=='blob')throw new Error('Invalid staged Git original');entries.add(key);}
+  for(const entry of value.index){
+    fields(entry,['mode','oid','stage','path','intentToAdd','assumeUnchanged','skipWorktree']);
+    if(typeof entry.intentToAdd!=='boolean'||typeof entry.assumeUnchanged!=='boolean'||typeof entry.skipWorktree!=='boolean')throw new Error('Explicit Git index flags are required');
+    if(entry.intentToAdd&&(entry.stage!==0||!['100644','100755','120000'].includes(entry.mode)||entry.oid!==objectId(value.format,'blob',Buffer.alloc(0))))throw new Error('Unsupported Git intent-to-add original');
+    indexPath(entry.path);
+    if(credentialPath(entry.path))throw new Error('Known credential path in selected Git index; preserve source');
+    const key=`${entry.path}\0${entry.stage}`;
+    if(entries.has(key)||!Number.isInteger(entry.stage)||entry.stage<0||entry.stage>3||!['100644','100755','120000','160000'].includes(entry.mode)||!oidPattern.test(entry.oid)||entry.mode!=='160000'&&ids.get(entry.oid)?.type!=='blob')throw new Error('Invalid staged Git original');
+    entries.add(key);
+  }
   for(const item of value.configurationReview){fields(item,['key','value'],['implicitBoolean']);if(typeof item.key!=='string'||typeof item.value!=='string'||item.implicitBoolean!==undefined&&(item.implicitBoolean!==true||item.value!=='')||excludedGitKey(item.key)||/:\/\/[^/]*@/.test(item.value))throw new Error('Invalid reviewed Git configuration');safeText(`${item.key}=${item.value}`,'Git configuration');}
+}
+
+/** Path-aligned bounded Git diagnostics; unknown layouts/flags refuse instead of losing semantics. */
+function capturedIndex(index:Buffer,tags:Buffer,debug:Buffer):ReviewedGitUserData['index'] {
+  const rows=text(index),tagRows=text(tags),details=text(debug);
+  if(rows&&!rows.endsWith('\0')||tagRows&&!tagRows.endsWith('\0'))throw new Error('Incomplete Git index inventory');
+  const paths=rows?rows.slice(0,-1).split('\0'):[],labels=tagRows?tagRows.slice(0,-1).split('\0'):[];
+  if(paths.length>10000||paths.length!==labels.length)throw new Error('Git index inventories differ or exceed their bound');
+  const diagnostic=/  ctime: [0-9]+:[0-9]+\n  mtime: [0-9]+:[0-9]+\n  dev: [0-9]+\tino: [0-9]+\n  uid: [0-9]+\tgid: [0-9]+\n  size: [0-9]+\tflags: ([a-f0-9]{1,8})\n/y;
+  let offset=0;
+  const entries=paths.map((row,i)=>{
+    const match=/^(100644|100755|120000|160000) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(row);
+    if(!match)throw new Error('Unsupported staged index entry');
+    const name=match[4]!,stage=Number(match[3]),nul=details.indexOf('\0',offset);
+    if(nul<0||details.slice(offset,nul)!==name)throw new Error('Git index diagnostic path differs');
+    diagnostic.lastIndex=nul+1;const record=diagnostic.exec(details);
+    if(!record)throw new Error('Unsupported Git index diagnostic layout');
+    offset=diagnostic.lastIndex;
+    const bits=parseInt(record[1]!,16);
+    if((bits&~0x6000f000)!==0||((bits&0x3000)>>>12)!==stage)throw new Error('Unsupported Git index flags or stage mismatch');
+    const intentToAdd=Boolean(bits&0x20000000),skipWorktree=Boolean(bits&0x40000000),assumeUnchanged=Boolean(bits&0x8000);
+    if(Boolean(bits&0x4000)!==(intentToAdd||skipWorktree))throw new Error('Git extended flags disagree');
+    const tag=stage?'M':skipWorktree?'S':'H';
+    if(labels[i]!==`${assumeUnchanged?tag.toLowerCase():tag} ${name}`)throw new Error('Git index tag/flag inventories disagree');
+    return {mode:match[1]!,oid:match[2]!,stage,path:name,intentToAdd,assumeUnchanged,skipWorktree};
+  });
+  if(offset!==details.length)throw new Error('Unconsumed Git index diagnostics');
+  return entries;
 }
 
 /** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
@@ -258,13 +295,11 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   }
   const after=await snapshot();
   for(const key of ['refs','head','index','flags','debug','config','reflogs'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
-  if(text(before.flags).split('\0').filter(Boolean).some(row=>!/^H |^M /.test(row)))throw new Error('Git index flags require separate recreation; source retained');
-  const indexFlags=[...text(before.debug).matchAll(/\tflags: ([a-f0-9]+)\n/g)];
-  if(indexFlags.length!==text(before.index).split('\0').filter(Boolean).length||indexFlags.some(match=>(parseInt(match[1]!,16)&~0x3000)!==0))throw new Error('Extended/intent-to-add index flags require separate recreation; source retained');
+  const index=capturedIndex(before.index,before.flags,before.debug);
   if(!batch.equals(await git(root,['cat-file','--batch-all-objects','--batch'])))throw new Error('Git object inventory changed during capture');
   const headText=text(before.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Index flags/extensions, intent-to-add, sparse/split-index and operation-in-progress metadata need separate recreation'];
+  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Unsupported index flags/extensions, sparse/split-index and operation-in-progress metadata need separate recreation'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
   for(const row of text(before.config).split('\0').filter(Boolean)){
     const split=row.indexOf('\n');
@@ -272,7 +307,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     if(excludedGitKey(key)){exclusions.push('Git configuration entry excluded: credential or source ownership');continue;}
     try{safeText(`${key}=${value}`,'Git configuration');if(/:\/\/[^/]*@/.test(value))throw new Error('URL userinfo');configurationReview.push({key,value,...(split<0?{implicitBoolean:true as const}:{})});}catch{exclusions.push('Git configuration entry excluded: recognizable credential or URL userinfo');}
   }
-  const result:ReviewedGitUserData={version:1,format,objects,reflogs:JSON.parse(text(before.reflogs)),refs:text(before.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:text(before.index).split('\0').filter(Boolean).map(row=>{const match=/^(100644|100755|120000|160000) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(row);if(!match)throw new Error('Unsupported staged index entry');return {mode:match[1]!,oid:match[2]!,stage:Number(match[3]),path:match[4]!};}),configurationReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,objects,reflogs:JSON.parse(text(before.reflogs)),refs:text(before.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index,configurationReview,exclusions};
   const final=await fs.lstat(gitDir);if(final.dev!==stat.dev||final.ino!==stat.ino||await fs.realpath(gitDir)!==gitDir)throw new Error('Selected Git ownership directory changed');
   validateReviewedGit(result);return result;
 }
@@ -292,13 +327,16 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
     await write('config',`[core]\n\trepositoryformatversion = ${value.format==='sha256'?1:0}\n\tbare = false\n\thooksPath = /dev/null\n\tfsmonitor = false\n${value.format==='sha256'?'[extensions]\n\tobjectFormat = sha256\n':''}`);
     const entries:Buffer[]=[];
+    const extendedIndex=value.index.some(entry=>entry.intentToAdd||entry.skipWorktree);
     for(const entry of [...value.index].sort((a,b)=>Buffer.compare(Buffer.from(a.path),Buffer.from(b.path))||a.stage-b.stage)){
       const name=Buffer.from(entry.path),fixed=Buffer.alloc(40);fixed.writeUInt32BE(parseInt(entry.mode,8),24);
-      const flags=Buffer.alloc(2);flags.writeUInt16BE((entry.stage<<12)|Math.min(name.length,0xfff));
-      const body=Buffer.concat([fixed,Buffer.from(entry.oid,'hex'),flags,name,Buffer.from([0])]);
+      const extended=entry.intentToAdd||entry.skipWorktree;
+      const flags=Buffer.alloc(2);flags.writeUInt16BE((entry.assumeUnchanged?0x8000:0)|(extended?0x4000:0)|(entry.stage<<12)|Math.min(name.length,0xfff));
+      const extra=Buffer.alloc(extended?2:0);if(extended)extra.writeUInt16BE((entry.intentToAdd?0x2000:0)|(entry.skipWorktree?0x4000:0));
+      const body=Buffer.concat([fixed,Buffer.from(entry.oid,'hex'),flags,extra,name,Buffer.from([0])]);
       entries.push(Buffer.concat([body,Buffer.alloc((8-body.length%8)%8)]));
     }
-    const header=Buffer.alloc(12);header.write('DIRC');header.writeUInt32BE(2,4);header.writeUInt32BE(entries.length,8);
+    const header=Buffer.alloc(12);header.write('DIRC');header.writeUInt32BE(extendedIndex?3:2,4);header.writeUInt32BE(entries.length,8);
     const index=Buffer.concat([header,...entries]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
     await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
   }catch(error){throw new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error});}

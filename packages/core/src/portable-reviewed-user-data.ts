@@ -8,7 +8,7 @@ export interface ReviewedGitUserData {
   head:{symbolic:string}|{oid:string};
   /** Exact oldest-first local reflog bytes; never source worktree ownership. */
   reflogs:Array<{path:string;dataBase64:string}>;
-  index:Array<{mode:string;oid:string;stage:number;path:string}>;
+  index:Array<{mode:string;oid:string;stage:number;path:string;intentToAdd:boolean;assumeUnchanged:boolean;skipWorktree:boolean}>;
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true}>;
   exclusions:string[];
 }

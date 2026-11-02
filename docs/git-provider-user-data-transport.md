@@ -45,6 +45,41 @@ exports, unknown fields or invalid selections. Existing definition-tree export
 forwards each Agent's selection to the shared package engine without broadening it.
 The folder and settings review/import behavior is unchanged by these controls.
 
+### Ordinary index flags
+
+Explicit Git-selected export now preserves `intentToAdd`, `assumeUnchanged` and
+`skipWorktree` as required boolean fields on every exact index entry. Omission,
+unknown fields or nonbooleans refuse on import; flags are never defaulted away.
+The existing `ls-files --stage -z`, `-v -z` and `--debug -z` snapshots are compared
+before/after capture. Entries must align by exact NUL-delimited path and order,
+with equal inventory counts. The complete five-line diagnostic record must match
+the supported layout; leftover bytes, unknown bits, inconsistent stage/extended
+marker or tag disagreement refuse. Name bytes resembling diagnostic text cannot
+supply another entry's flags. The only accepted diagnostic bits are stage,
+assume-unchanged, extended marker, intent-to-add and skip-worktree.
+
+Intent-to-add is supported at stage zero for regular/executable/symlink modes with
+the original canonical empty-blob ID present in the captured object inventory.
+Other intent-to-add combinations refuse rather than being converted to staged
+content. Ordinary staged and unmerged entries retain their original identities.
+Combinations of the supported flags remain explicit and are serialized together.
+The 10,000-entry bound, required object checks, known-credential path/object refusal
+and independent-writer snapshot limitations remain unchanged.
+
+Recreation writes only the new separate review repository's exclusive index file:
+assume-unchanged uses the main flags word, while intent-to-add/skip-worktree use
+the version-3 extended word. If no entry needs extended flags, version 2 is kept.
+Path/stage ordering, entry padding and SHA-1/SHA-256 checksum are reconstructed;
+source stat/inode caches are not adopted. Nothing runs Git or grants native
+worktree/settings authority. Existing files refuse; partial recovery bytes remain.
+Split/sparse index storage, linked/common-dir repositories, unknown diagnostic
+layouts and other flags remain separate gaps. No native capture, tests or builds
+were run for this source change.
+
+Source references: [Git index format](https://git-scm.com/docs/gitformat-index),
+[Git cache flag definitions](https://github.com/git/git/blob/master/read-cache-ll.h)
+and [Git ls-files diagnostics](https://github.com/git/git/blob/master/builtin/ls-files.c).
+
 ### Selected local reflogs
 
 The explicit Git checkbox/API selection now includes ordinary local `.git/logs/HEAD`
@@ -132,7 +167,7 @@ still requires separate human review/action.
 | --- | --- |
 | `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist. Normal local `.git` only; no external common-dir or alternate object inventory is inferred. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
-| `git.index[].{mode,oid,stage,path}` | Fresh v2 index retains original stage 0–3 identities, paths and file/executable/symlink/gitlink modes. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Extended flags, intent-to-add, assume-unchanged and skip-worktree refuse; these are unsupported data semantics, not secret exclusions. |
+| `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Unknown flags and split/sparse semantics still refuse. |
 | `git.configurationReview[].{key,value,implicitBoolean?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans, hook/fsmonitor command text and external include references. Includes are not followed to export their contents. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
 | `providerFiles[].{path,dataBase64,removedSecretFields}` | `.claude/settings.json`, `settings.local.json`, `CLAUDE.md`, `.codex/config.toml`, `instructions.md`, and regular custom files under Claude commands/agents/skills and Codex skills/rules. JSON known secret fields are removed structurally, preserving other settings. Simple single-line TOML credential assignments are excluded; multiline TOML refuses rather than guessing continuation boundaries. Dotted assignment keys (including `api_key.value`), inline-table syntax and escaped keys refuse before export and on import; quoted or escaped table/array-table paths refuse before segment inspection, and known-secret bare table paths also refuse. The conservative table guard rejects any bracket-leading line with quotes or backslashes, including otherwise harmless quoted header comments or array continuation lines. The conservative inline-table guard also refuses braces in noncomment lines, even inside a quoted value. This bounded reader does not claim structural support for those TOML forms. Remaining known-credential syntax refuses. Commands/MCP/permissions/hooks remain human-review data, with no grant or execution. |
@@ -160,7 +195,7 @@ whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
 
 Exact remaining implementation: scoped linked-worktree/common-dir Git export;
-extended/intent-to-add/sparse-index
+unsupported index flags and split/sparse-index
 semantics; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats; general multiline TOML
 secret separation; explicit reviewed activation into a native-owned live Git or
