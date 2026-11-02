@@ -214,32 +214,109 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   for(const item of value.configurationReview){fields(item,['key','value'],['implicitBoolean']);if(typeof item.key!=='string'||typeof item.value!=='string'||item.implicitBoolean!==undefined&&(item.implicitBoolean!==true||item.value!=='')||excludedGitKey(item.key)||/:\/\/[^/]*@/.test(item.value))throw new Error('Invalid reviewed Git configuration');safeText(`${item.key}=${item.value}`,'Git configuration');}
 }
 
-/** Path-aligned bounded Git diagnostics; unknown layouts/flags refuse instead of losing semantics. */
-function capturedIndex(index:Buffer,tags:Buffer,debug:Buffer):ReviewedGitUserData['index'] {
-  const rows=text(index),tagRows=text(tags),details=text(debug);
-  if(rows&&!rows.endsWith('\0')||tagRows&&!tagRows.endsWith('\0'))throw new Error('Incomplete Git index inventory');
-  const paths=rows?rows.slice(0,-1).split('\0'):[],labels=tagRows?tagRows.slice(0,-1).split('\0'):[];
-  if(paths.length>10000||paths.length!==labels.length)throw new Error('Git index inventories differ or exceed their bound');
-  const diagnostic=/  ctime: [0-9]+:[0-9]+\n  mtime: [0-9]+:[0-9]+\n  dev: [0-9]+\tino: [0-9]+\n  uid: [0-9]+\tgid: [0-9]+\n  size: [0-9]+\tflags: ([a-f0-9]{1,8})\n/y;
-  let offset=0;
-  const entries=paths.map((row,i)=>{
-    const match=/^(100644|100755|120000|160000) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(row);
-    if(!match)throw new Error('Unsupported staged index entry');
-    const name=match[4]!,stage=Number(match[3]),nul=details.indexOf('\0',offset);
-    if(nul<0||details.slice(offset,nul)!==name)throw new Error('Git index diagnostic path differs');
-    diagnostic.lastIndex=nul+1;const record=diagnostic.exec(details);
-    if(!record)throw new Error('Unsupported Git index diagnostic layout');
-    offset=diagnostic.lastIndex;
-    const bits=parseInt(record[1]!,16);
-    if((bits&~0x6000f000)!==0||((bits&0x3000)>>>12)!==stage)throw new Error('Unsupported Git index flags or stage mismatch');
-    const intentToAdd=Boolean(bits&0x20000000),skipWorktree=Boolean(bits&0x40000000),assumeUnchanged=Boolean(bits&0x8000);
-    if(Boolean(bits&0x4000)!==(intentToAdd||skipWorktree))throw new Error('Git extended flags disagree');
-    const tag=stage?'M':skipWorktree?'S':'H';
-    if(labels[i]!==`${assumeUnchanged?tag.toLowerCase():tag} ${name}`)throw new Error('Git index tag/flag inventories disagree');
-    return {mode:match[1]!,oid:match[2]!,stage,path:name,intentToAdd,assumeUnchanged,skipWorktree};
+type IndexEntry=ReviewedGitUserData['index'][number];
+function indexOrder(a:IndexEntry,b:IndexEntry):number{return Buffer.compare(Buffer.from(a.path),Buffer.from(b.path))||a.stage-b.stage;}
+
+/** Decode only v2/v3 originals; never ask Git to read a split index (it freshens shared-file mtime). */
+function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];link?:Buffer} {
+  const width=format==='sha1'?20:32,end=data.length-width;
+  if(end<12||data.toString('latin1',0,4)!=='DIRC'||!createHash(format).update(data.subarray(0,end)).digest().equals(data.subarray(end)))throw new Error('Invalid Git index header/checksum');
+  const version=data.readUInt32BE(4),count=data.readUInt32BE(8);
+  if(![2,3].includes(version)||count>10000)throw new Error('Only bounded v2/v3 Git index storage is supported');
+  const entries:IndexEntry[]=[];let offset=12;
+  for(let i=0;i<count;i++){
+    const start=offset;
+    if(offset+42+width>end)throw new Error('Truncated Git index entry');
+    const mode=data.readUInt32BE(offset+24).toString(8),oid=data.subarray(offset+40,offset+40+width).toString('hex'),flags=data.readUInt16BE(offset+40+width);
+    offset+=42+width;let extended=0;
+    if(flags&0x4000){if(version!==3||offset+2>end)throw new Error('Unsupported Git extended flags');extended=data.readUInt16BE(offset);offset+=2;if(extended&~0x6000)throw new Error('Unknown Git extended flags');}
+    const nul=data.indexOf(0,offset);
+    if(nul<offset||nul>=end||(flags&0xfff)!==Math.min(nul-offset,0xfff))throw new Error('Invalid Git index path length');
+    const name=text(data.subarray(offset,nul));if(!Buffer.from(name).equals(data.subarray(offset,nul)))throw new Error('Noncanonical Git index path encoding');if(name)indexPath(name);
+    offset=start+Math.ceil((nul+1-start)/8)*8;
+    if(offset>end||data.subarray(nul,offset).some(byte=>byte!==0))throw new Error('Invalid Git index padding');
+    if(!['100644','100755','120000','160000'].includes(mode))throw new Error('Unsupported or sparse Git index mode');
+    entries.push({path:name,mode,oid,stage:(flags>>>12)&3,assumeUnchanged:Boolean(flags&0x8000),intentToAdd:Boolean(extended&0x2000),skipWorktree:Boolean(extended&0x4000)});
+  }
+  let link:Buffer|undefined;const seen=new Set<string>();
+  while(offset<end){
+    if(offset+8>end)throw new Error('Truncated Git index extension');
+    const signature=data.toString('latin1',offset,offset+4),size=data.readUInt32BE(offset+4);offset+=8;
+    if(size>end-offset||seen.has(signature))throw new Error('Invalid or duplicate Git index extension');seen.add(signature);
+    const body=data.subarray(offset,offset+size);offset+=size;
+    if(signature==='link'){link=body;continue;}
+    if(signature!=='TREE')throw new Error('Unknown or unsupported Git index extension; preserve source');
+    // TREE is only a derived cache: validate its complete grammar, then recreate no cache.
+    let cursor=0,pending=1,nodes=0;
+    while(pending){
+      if(++nodes>10000)throw new Error('Git cache-tree exceeds its bound');
+      const nul=body.indexOf(0,cursor),newline=body.indexOf(10,nul+1);
+      if(nul<cursor||newline<nul)throw new Error('Invalid Git cache-tree');
+      const counts=/^(-1|[0-9]+) ([0-9]+)$/.exec(text(body.subarray(nul+1,newline)));
+      if(!counts||Number(counts[1])>10000||Number(counts[2])>10000)throw new Error('Unsupported Git cache-tree counts');
+      cursor=newline+1+(counts[1]==='-1'?0:width);pending+=Number(counts[2])-1;
+      if(cursor>body.length||pending>10000)throw new Error('Truncated Git cache-tree');
+    }
+    if(cursor!==body.length)throw new Error('Unconsumed Git cache-tree bytes');
+  }
+  return {entries,...(link?{link}:{})};
+}
+
+function splitBitmap(data:Buffer,start:number,bound:number):{bits:Set<number>;end:number} {
+  if(start+12>data.length)throw new Error('Truncated split-index bitmap');
+  const size=data.readUInt32BE(start),words=data.readUInt32BE(start+4),end=start+12+words*8;
+  if(size>bound||words<1||words>10000||end>data.length)throw new Error('Invalid bounded split-index bitmap');
+  const rlw=data.readUInt32BE(end-4),bits=new Set<number>();let word=0,position=0,lastRlw=-1;
+  while(word<words){
+    lastRlw=word;const control=data.readBigUInt64BE(start+8+8*word++),run=Number((control>>1n)&0xffffffffn),literals=Number(control>>33n);
+    if(word+literals>words||position+64*(run+literals)>Math.ceil(size/64)*64)throw new Error('Invalid split-index bitmap run');
+    if(control&1n)for(let bit=position;bit<position+run*64;bit++){if(bit>=size)throw new Error('Split-index bitmap has out-of-range bits');bits.add(bit);}
+    position+=run*64;
+    for(let i=0;i<literals;i++){
+      const literal=data.readBigUInt64BE(start+8+8*word++);
+      for(let bit=0;bit<64;bit++)if(literal&(1n<<BigInt(bit))){if(position+bit>=size)throw new Error('Split-index bitmap has out-of-range bits');bits.add(position+bit);}
+      position+=64;
+    }
+  }
+  if(rlw!==lastRlw||position!==Math.ceil(size/64)*64)throw new Error('Incomplete split-index bitmap');
+  return {bits,end};
+}
+
+async function captureIndexStorage(gitDir:string,format:'sha1'|'sha256'):Promise<{originals:Buffer;logical:IndexEntry[]}> {
+  const originals:Array<{name:string;identity:string;data:string}>=[];
+  const read=async(name:string)=>{
+    const target=path.join(gitDir,name),before=await fs.lstat(target,{bigint:true}),{data}=await regularOriginal(target),after=await fs.lstat(target,{bigint:true});
+    const identity=(stat:typeof before)=>[stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
+    if(identity(before)!==identity(after))throw new Error('Git index storage changed during capture');
+    originals.push({name,identity:identity(after),data:data.toString('base64')});return data;
+  };
+  let data:Buffer;
+  try{await fs.lstat(path.join(gitDir,'index'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return {originals:Buffer.from('[]'),logical:[]};throw error;}
+  data=await read('index');
+  const decoded=decodeIndex(data,format);
+  const ordered=(entries:IndexEntry[])=>{for(let i=0;i<entries.length;i++)if(!entries[i]!.path||i>0&&indexOrder(entries[i-1]!,entries[i]!)>=0)throw new Error('Invalid Git index path/stage ordering');};
+  if(!decoded.link){ordered(decoded.entries);return {originals:Buffer.from(JSON.stringify(originals)),logical:decoded.entries};}
+  const width=format==='sha1'?20:32,link=decoded.link;
+  if(link.length<width)throw new Error('Truncated split-index link');
+  const oid=link.subarray(0,width).toString('hex');let base:IndexEntry[]=[];
+  if(!/^0+$/.test(oid)){
+    const shared=await read(`sharedindex.${oid}`);
+    if(!shared.subarray(shared.length-width).equals(link.subarray(0,width)))throw new Error('Shared Git index identity differs');
+    const parsed=decodeIndex(shared,format);if(parsed.link)throw new Error('Nested shared Git index refused');base=parsed.entries;
+  }
+  ordered(base);
+  let deleted=new Set<number>(),replaced=new Set<number>();
+  if(link.length!==width){const first=splitBitmap(link,width,base.length),second=splitBitmap(link,first.end,base.length);if(second.end!==link.length)throw new Error('Unconsumed split-index link');deleted=first.bits;replaced=second.bits;}
+  if(replaced.size>decoded.entries.length)throw new Error('Missing split-index replacements');
+  let replacement=0;
+  const logical=base.flatMap((entry,i)=>{
+    if(deleted.has(i)&&replaced.has(i))throw new Error('Conflicting split-index bitmaps');
+    if(replaced.has(i)){const next=decoded.entries[replacement++]!;if(next.path)throw new Error('Named split-index replacement refused');return [{...next,path:entry.path}];}
+    return deleted.has(i)?[]:[entry];
   });
-  if(offset!==details.length)throw new Error('Unconsumed Git index diagnostics');
-  return entries;
+  const additions=decoded.entries.slice(replacement);ordered(additions);logical.push(...additions);logical.sort(indexOrder);ordered(logical);
+  if(logical.length>10000)throw new Error('Logical split index exceeds its bound');
+  return {originals:Buffer.from(JSON.stringify(originals)),logical};
 }
 
 /** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
@@ -251,7 +328,6 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   for(const name of ['commondir','gitdir','shallow','MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock','config.worktree','info/sparse-checkout']){
     try{await fs.lstat(path.join(gitDir,name));throw new Error('Selected Git repository has unsupported shared/shallow/sparse/in-progress metadata; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
   }
-  if((await fs.readdir(gitDir)).some(name=>name.startsWith('sharedindex.')))throw new Error('Split Git index requires separate recreation');
   let controlEntries=0;
   const inspectControl=async(target:string):Promise<void>=>{
     let current;try{current=await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
@@ -273,15 +349,16 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   const format=text(await git(root,['rev-parse','--show-object-format'])).trim();
   if(format!=='sha1'&&format!=='sha256')throw new Error('Unsupported Git object format');
   const snapshot=async()=>{
+    try{await fs.lstat(path.join(gitDir,'index.lock'));throw new Error('Git index is locked; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    const storage=await captureIndexStorage(gitDir,format);
     const refs=await git(root,['for-each-ref','--format=%(refname)%00%(objectname)%00%(symref)']);
     let head:Buffer;
     try{head=await git(root,['symbolic-ref','-q','HEAD']);}catch{head=await git(root,['rev-parse','--verify','HEAD']);}
-    const index=await git(root,['ls-files','--stage','-z']);
-    const flags=await git(root,['ls-files','-v','-z']);
-    const debug=await git(root,['ls-files','--debug','-z']);
+    const index=Buffer.from(JSON.stringify(storage.logical));
     const config=await git(root,['config','--local','--null','--list','--no-includes']);
+    for(const row of text(config).split('\0')){const [key,...values]=row.split('\n');if(/^(?:core\.sparsecheckout(?:cone)?|extensions\.sparseindex)$/i.test(key!)&&!/^(?:false|no|off|0)$/i.test(values.join('\n')))throw new Error('Sparse Git index/checkout configuration requires separate recreation');}
     const reflogs=Buffer.from(JSON.stringify(await captureReflogs(gitDir)));
-    return {refs,head,index,flags,debug,config,reflogs};
+    return {refs,head,index,config,reflogs,storage:storage.originals};
   };
   const before=await snapshot(),batch=await git(root,['cat-file','--batch-all-objects','--batch']);
   const objects:GitObject[]=[];let offset=0;
@@ -294,12 +371,12 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     objects.push({oid:match[1]!,type:match[2] as GitObject['type'],dataBase64:batch.subarray(offset,offset+size).toString('base64')});offset+=size+1;
   }
   const after=await snapshot();
-  for(const key of ['refs','head','index','flags','debug','config','reflogs'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
-  const index=capturedIndex(before.index,before.flags,before.debug);
+  for(const key of ['refs','head','index','config','reflogs','storage'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
+  const index:ReviewedGitUserData['index']=JSON.parse(text(before.index));
   if(!batch.equals(await git(root,['cat-file','--batch-all-objects','--batch'])))throw new Error('Git object inventory changed during capture');
   const headText=text(before.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Unsupported index flags/extensions, sparse/split-index and operation-in-progress metadata need separate recreation'];
+  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Unsupported index flags/extensions, sparse-index and operation-in-progress metadata need separate recreation; supported split storage normalizes to a full review index'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
   for(const row of text(before.config).split('\0').filter(Boolean)){
     const split=row.indexOf('\n');
