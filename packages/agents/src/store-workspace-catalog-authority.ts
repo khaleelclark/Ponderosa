@@ -731,7 +731,10 @@ export class AgentWorkspaceCatalogAuthority {
     const file=projectJsonPath(this.dataDir,id);
     if(!existsSync(file))return false;
     const record=readJson<ProjectJson>(file);
-    return record.id===id&&Boolean(record.managedWorkspaceName&&record.creationIdempotencyKey)&&record.hostPath===record.creationHostPath;
+    if(record.id!==id||!record.managedWorkspaceName||!record.creationIdempotencyKey)return false;
+    const creationPath=record.creationHostPath===`managed:workspaces/${record.managedWorkspaceName}`
+      ? managedWorkspacePath(this.dataDir,record.managedWorkspaceName) : record.creationHostPath;
+    return record.hostPath===creationPath;
   }
 
   getManagedCreationHostPath(key: string, name: string): string | undefined {

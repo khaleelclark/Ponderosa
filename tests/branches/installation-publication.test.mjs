@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {AgentStore} from '@ponderosa/agents';
 import {createServer} from '../../apps/server/dist/app.js';
+import {composeAgentPackages} from '../../apps/server/dist/compose-agent-packages.js';
 
 test('Branch package atomically activates staged Chat and Agent before validating published bindings',async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'branch-install-publication-'));
@@ -39,25 +40,42 @@ test('Branch package atomically activates staged Chat and Agent before validatin
  const resources=store.sqlite.prepare('SELECT state,staging_plan_id FROM branch_installation_resources WHERE branch_id=?').all(result.branchId);
  assert.equal(resources.length,2);assert.ok(resources.every(r=>r.state==='active'&&r.staging_plan_id===null));
  assert.equal((await api('POST','/api/branches/installations/'+preview.id+'/confirm',{})).state,'completed');
- assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM agents WHERE deleted_at IS NULL').get().n,1);
- // Deferred integration: grouped activation uses one receipt and one reviewed Shared cwd.
+ assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM agents WHERE deleted_at IS NULL AND conversation_id=?').get(chat.id).n,1);
+ // Grouped activation uses one receipt and one reviewed Shared cwd, including restart after access review.
  for(const forest of [false,true]){
  const grouped=structuredClone(pkg);grouped.packageId='test.grouped-publication-'+forest;grouped.mode='full';
  const leader=grouped.chats[0].agents[0];leader.definition.mode='full';
  const child=structuredClone(leader);child.ref='child';if(!forest)child.managerRef='speaker';child.definition.rootRef='child';child.definition.agents[0].ref='child';child.definition.agents[0].title='Child';grouped.chats[0].agents.push(child);
  const {CAPABILITY_IDS}=await import('@ponderosa/core');
  for(const entry of grouped.chats[0].agents){const node=entry.definition.agents[0];node.workingCopyMode='shared';node.sourceChat={ref:'original-chat',title:'Original'};node.workingFolder={directories:[],excludedPaths:[]};node.accessSettings={restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite]};}
- const groupPreview=await api('POST','/api/branches/install-preview',{package:grouped,bindings:{directories:{workspace:root},agents:{},engines:{codex:'codex'}},fileSelections:{[JSON.stringify(['chat','speaker'])]:{newManagedChatFolderName:path.basename(root)+'-group-'+forest,workingFilesActivation:{},workingFilesDestination:path.join(root,'group-recovery-'+forest)}}});
+ const composed=(await composeAgentPackages(grouped.chats[0].agents.map(entry=>({ref:entry.ref,managerRef:entry.managerRef,package:entry.definition})))).package;
+ const rootDestinations=Object.fromEntries([...new Set(composed.agents.map(node=>node.workingRootRef).filter(Boolean))].map((ref,i)=>[ref,path.join(root,'group-recovery-'+forest+'-'+i)]));
+ const groupPreview=await api('POST','/api/branches/install-preview',{package:grouped,bindings:{directories:{workspace:root},agents:{},engines:{codex:'codex'}},fileSelections:{[JSON.stringify(['chat','speaker'])]:{newManagedChatFolderName:path.basename(root)+'-group-'+forest,workingFilesActivation:{},workingRootDestinations:rootDestinations}}});
  await api('POST','/api/branches/installations/'+groupPreview.id+'/confirm',{acknowledgeFullImport:true});
  const groupUrl='/api/branches/installations/'+groupPreview.id,rootReview=(await api('GET',groupUrl)).workingRootReview;assert.ok(rootReview);
+ for(const payload of [{chatRef:'chat',agentRef:'speaker'},{chatRef:'chat',agentRef:'child',sharedRoot:rootReview.sharedRoot}]){
+  assert.equal((await app.inject({method:'POST',url:groupUrl+'/working-root-review',payload})).statusCode,409);
+ }
+ const reviewedChat=store.getConversation(rootReview.chatId),reviewedProject=store.getProject(reviewedChat.projectId);
+ assert.equal(store.isManagedProjectImportDestination(reviewedProject.id),true);
+ const projectFile=path.join(root,'state','projects',reviewedProject.id,'project.json'),originalProject=readFileSync(projectFile,'utf8');
+ const canonicalProject=JSON.parse(originalProject);
+ for(const change of [{hostPath:path.join(root,'foreign')},{creationHostPath:'managed:workspaces/foreign'},{creationIdempotencyKey:undefined},{managedWorkspaceName:undefined}]){
+  writeFileSync(projectFile,JSON.stringify({...canonicalProject,...change}));
+  assert.equal(store.isManagedProjectImportDestination(reviewedProject.id),false,'missing or foreign managed identity must refuse');
+ }
+ writeFileSync(projectFile,originalProject);
  const invalidRoot=await app.inject({method:'POST',url:groupUrl+'/working-root-review',payload:{chatRef:'chat',agentRef:'speaker',sharedRoot:'/foreign'}});assert.equal(invalidRoot.statusCode,409);
  await api('POST',groupUrl+'/working-root-review',{chatRef:'chat',agentRef:'speaker',sharedRoot:rootReview.sharedRoot});
  await api('POST',groupUrl+'/confirm',{});
  const groupAccess=(await api('GET',groupUrl)).accessSettingsReview;assert.deepEqual(groupAccess.agentRefs,['speaker','child']);
  await api('POST',groupUrl+'/access-review',{chatRef:'chat',agentRef:'speaker',resolution:{action:'keep_destination',reviewSha256:groupAccess.review.reviewSha256,agentActions:{speaker:'keep_destination',child:'use_source'}}});
+ assert.equal((await app.inject({method:'POST',url:groupUrl+'/working-root-review',payload:{chatRef:'chat',agentRef:'speaker',sharedRoot:rootReview.sharedRoot}})).statusCode,409,'consumed root review cannot be replayed');
+ app.prepareForShutdown();await app.close();app=undefined;store.close();store=new AgentStore(path.join(root,'state'));
+ app=createServer({dataDir:path.join(root,'state'),store,logger:false,engines:[{adapter,authStatus:async()=>({authenticated:true})}]});
  await api('POST',groupUrl+'/confirm',{});
  const groupDone=await api('GET',groupUrl);assert.equal(groupDone.state,'completed',groupDone.error);
- const groupConfig=await api('GET','/api/branches/'+groupDone.branchId+'/configuration'),groupLeader=store.getAgent(groupConfig.agents.speaker),groupChild=store.listAgents(groupLeader.projectId).find(a=>a.id!==groupLeader.id);assert.ok(groupChild);assert.equal(groupChild.managerAgentId,forest?null:groupLeader.id);
+ const groupConfig=await api('GET','/api/branches/'+groupDone.branchId+'/configuration'),groupLeader=store.getAgent(groupConfig.agents.speaker),groupChild=store.listAgents(groupLeader.projectId).find(a=>a.id!==groupLeader.id);assert.ok(groupChild);assert.equal(groupChild.managerAgentId??null,forest?null:groupLeader.id);
  assert.equal(groupLeader.workingCopy.rootPath,rootReview.sharedRoot);assert.equal(groupChild.workingCopy.rootPath,rootReview.sharedRoot);
  const groupReceipts=store.sqlite.prepare("SELECT DISTINCT creation_operation_id FROM branch_installation_resources WHERE branch_id=? AND agent_ref!=''").all(groupDone.branchId);assert.equal(groupReceipts.length,1);
  const {CapabilityPolicyStore}=await import('@ponderosa/agents'),policies=new CapabilityPolicyStore(store.sqlite);assert.equal(policies.resolveForAgent(groupLeader.id).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryWrite),false);assert.equal(policies.resolveForAgent(groupChild.id).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryWrite),true);
@@ -67,7 +85,7 @@ test('Branch package atomically activates staged Chat and Agent before validatin
 
  await app.close();app=undefined;store.close();store=new AgentStore(path.join(root,'state'));
  assert.equal(store.getAgent(agent.id).conversationId,chat.id);
- assert.equal(store.sqlite.prepare(`SELECT COUNT(*) n FROM agent_creation_operations WHERE status='completed'`).get().n,3);
+ assert.equal(store.sqlite.prepare(`SELECT COUNT(*) n FROM agent_creation_operations WHERE status='completed' AND kind='import' AND idempotency_key LIKE 'branch-install:%'`).get().n,3);
  passed=true;
 });
 
