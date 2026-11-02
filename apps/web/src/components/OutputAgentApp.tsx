@@ -51,13 +51,15 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  };
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({enabled})}));
  useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({initialize:true})}));},[assistant,status.data?.initialized]);
- const interval=Number(minutes),validInterval=minutes.trim()!==''&&Number.isFinite(interval)&&interval>=1&&Number.isSafeInteger(interval*60000);
- const settingsDirty=Boolean(app&&(automatic!==app.automatic||interval!==(app.everyMs??600000)/60000||engine!==app.engine||model!==(app.model??'')));
+ const editableInterval=app?.triggerKind==='manual'||app?.schedule?.scheduleKind==='interval';
+ const intervalChanged=Boolean(editableInterval&&app&&Number(minutes)!==(app.everyMs??600000)/60000);
+ const interval=Number(minutes),validInterval=!editableInterval||minutes.trim()!==''&&Number.isFinite(interval)&&interval>=1&&Number.isSafeInteger(interval*60000);
+ const settingsDirty=Boolean(app&&(automatic!==app.automatic||intervalChanged||engine!==app.engine||model!==(app.model??'')));
  useUnsavedForm('output-app-settings',settings&&settingsDirty);
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
  const saveSchedule=()=>{
   if(!app||!validInterval)return;
-  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic,everyMs:interval*60000})}));
+  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic,...(intervalChanged||(app.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}));
  };
  return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
@@ -78,7 +80,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
     {error&&<Alert severity="error">{error}</Alert>}
     <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/>
     {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>setAutomatic(value)}/>} label="Run automatically"/>
-     <TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>setMinutes(event.target.value)} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>
+     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>setMinutes(event.target.value)} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>:<Typography>{app.schedule?.scheduleKind==='cron'?`Cron schedule: ${app.schedule.expression} (${app.schedule.timezone})`:app.schedule?.scheduleKind==='once'?`Once at ${app.schedule.at}`:app.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
      <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>
      {engines.isError&&<Alert severity="error" action={<Button onClick={()=>void engines.refetch()}>Retry</Button>}>{engines.error.message}</Alert>}
      <TextField disabled={busy||engines.isPending} select label="Provider" value={engine} onChange={event=>{setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}>

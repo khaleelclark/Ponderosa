@@ -1,6 +1,6 @@
 import type { ConversationDto } from "./dto/conversations.js";
 import type { AgentPortablePackageDto } from "./dto/agents.js";
-import type { TriggerBudgetPeriod, TriggerSourceConfig } from "./dto/branch-triggers.js";
+import type { TriggerBudgetPeriod, TriggerSourceConfig, TriggerSourceKind, TriggerScheduleConfig } from "./dto/branch-triggers.js";
 import type { DecisionDto, WorkspaceNotificationDto } from "./dto/workspace.js";
 /** Branch definitions are desired structure. Runtime records never live in a package. */
 /** Local operational policy; never part of portable definitions or execution snapshots. */
@@ -319,7 +319,7 @@ export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTea
 export interface OutputAgentAppDto {
   agentId: string; branchId: string; projectId: string; chatId: string; title: string;
   url: string; speaker: boolean; versionId: string; bindingRevisionId:string; settingsRevision:string; model?: string; engine: string;
-  automatic: boolean; everyMs?: number;
+  automatic: boolean; triggerKind: 'manual' | TriggerSourceKind; schedule?: TriggerScheduleConfig; everyMs?: number;
 }
 export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto; setupError?:{message:string;at:string} }
 

@@ -216,24 +216,36 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
       const app=context.outputApps.designate(request.params.id,body.enabled,body.speaker===true);await sources.refresh();notify();return {app:app??null};
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
-  app.put<{Params:{id:string};Body:{expectedVersionId:string;expectedSettingsRevision:string;automatic:boolean;everyMs:number}}>('/api/branches/output-apps/:id/schedule',async(request,reply)=>{
+  app.put<{Params:{id:string};Body:{expectedVersionId:string;expectedSettingsRevision:string;automatic:boolean;everyMs?:number}}>('/api/branches/output-apps/:id/schedule',async(request,reply)=>{
     try{
       const body=validatedObject(request.body,'output settings');exactObjectFields(body,['expectedVersionId','expectedSettingsRevision','automatic','everyMs'],'schedule settings');
-      if(typeof body.expectedVersionId!=='string'||typeof body.expectedSettingsRevision!=='string'||typeof body.automatic!=='boolean'||(typeof body.everyMs!=='number'||!Number.isInteger(body.everyMs)))throw new Error('Invalid schedule settings');
+      if(typeof body.expectedVersionId!=='string'||typeof body.expectedSettingsRevision!=='string'||typeof body.automatic!=='boolean'||(body.everyMs!==undefined&&(typeof body.everyMs!=='number'||!Number.isSafeInteger(body.everyMs))))throw new Error('Invalid schedule settings');
+      const {automatic,everyMs,expectedVersionId}=body;
       const output=context.outputApps.get(request.params.id),branch=branches.getBranch(output.branchId)!;assertEditable(branch.id);
-      if(body.expectedVersionId!==branch.versionId||body.expectedSettingsRevision!==output.settingsRevision)throw new Error('Workflow changed. Reload settings.');
+      if(expectedVersionId!==branch.versionId||body.expectedSettingsRevision!==output.settingsRevision)throw new Error('Workflow changed. Reload settings.');
       const version=branches.version(branch.id,branch.versionId);if(!version)throw new Error('Publish this workflow before changing its schedule');
-      if(version.definition.trigger.kind!=='manual'&&version.definition.trigger.kind!=='schedule')throw new Error('Open More options to change an event-triggered workflow');
-      if(body.automatic&&!branch.enabled)throw new Error('Workflow is disabled. Enable it in More options before turning on automatic runs.');
-      const priorConfig=branches.trigger(branch.id)?.sourceConfig;
-      const schedule=priorConfig&&'scheduleKind'in priorConfig?priorConfig:undefined;
-      const config={scheduleKind:'interval' as const,everyMs:body.everyMs,startsAt:schedule?.scheduleKind==='interval'&&schedule.everyMs===body.everyMs?schedule.startsAt:new Date(Date.now()+body.everyMs).toISOString(),...(schedule&&'whenRunning'in schedule&&schedule.whenRunning?{whenRunning:schedule.whenRunning}:{})};
-      normalizeTriggerSourceConfig('schedule',config);
-      const ref=version.definition.trigger.kind==='schedule'?version.definition.trigger.configRef:'output_schedule';
-      const bindings=branches.localConfiguration(branch.id);if(!bindings)throw new Error('Workflow bindings are unavailable');
-      const input:DeployBranchRequest={chatId:'',branchId:branch.id,expectedVersionId:body.expectedVersionId,idempotencyKey:randomUUID(),definition:{...version.definition,trigger:{kind:'schedule',configRef:ref}},bindings:{...bindings,triggers:{...bindings.triggers,[ref]:{sourceConfig:config,enabled:body.automatic}}}};
-      const previous=branches.trigger(branch.id);branches.deploy(input,new Date().toISOString(),validateLocal(input));
-      await sources.applyDefinitionChange(previous,branches.trigger(branch.id));notify();return context.outputApps.get(request.params.id);
+      const previous=branches.trigger(branch.id),kind=version.definition.trigger.kind;
+      if(kind!=='manual'&&previous?.sourceKind!==kind)throw new Error('Workflow trigger is unavailable');
+      const schedule=previous?.sourceKind==='schedule'?previous.sourceConfig:undefined;
+      if(everyMs!==undefined&&kind!=='manual'&&kind!=='schedule')throw new Error('Event-triggered workflows do not have a timer interval');
+      const changeCadence=everyMs!==undefined&&(!schedule||!('everyMs'in schedule)||schedule.everyMs!==everyMs);
+      // Toggle the existing intake without publishing a different trigger or cadence.
+      // In particular, disabling a past one-time schedule must not revalidate its date.
+      store.sqlite.transaction(()=>{
+        if(changeCadence){
+          const config={scheduleKind:'interval' as const,everyMs:everyMs!,startsAt:new Date(Date.now()+everyMs!).toISOString(),...(schedule&&'whenRunning'in schedule&&schedule.whenRunning?{whenRunning:schedule.whenRunning}:{})};
+          normalizeTriggerSourceConfig('schedule',config);
+          const ref=version.definition.trigger.kind==='schedule'?version.definition.trigger.configRef:'output_schedule';
+          const bindings=branches.localConfiguration(branch.id);if(!bindings)throw new Error('Workflow bindings are unavailable');
+          const input:DeployBranchRequest={chatId:'',branchId:branch.id,expectedVersionId:expectedVersionId,idempotencyKey:randomUUID(),definition:{...version.definition,trigger:{kind:'schedule',configRef:ref}},bindings:{...bindings,triggers:{...bindings.triggers,[ref]:{sourceConfig:config,enabled:automatic}}}};
+          branches.deploy(input,new Date().toISOString(),validateLocal(input));
+        }else if(previous){
+          const normalized=automatic&&!previous.enabled?normalizeTriggerSourceConfig(previous.sourceKind,previous.sourceConfig):undefined;
+          branches.triggers.updateTriggerDefinition(previous.id,{enabled:automatic,...(normalized?{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt??null}:{})});
+        }else if(automatic)throw new Error('Choose how often this workflow should run automatically');
+        if(automatic&&!branch.enabled)branches.setEnabled(branch.id,true);
+      })();
+      await sources.applyDefinitionChange(previous,branches.trigger(branch.id));await sources.refresh();notify();return context.outputApps.get(request.params.id);
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.post<{Body:{package:unknown;bindings:import('@ponderosa/core').BranchBindings;branchId?:string;memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;treeBindings?:Record<string,import('@ponderosa/core').BranchBindings>}}>('/api/branches/install-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{

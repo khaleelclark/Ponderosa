@@ -86,13 +86,13 @@ export class OutputAgentApps {
   get(id:string):OutputAgentAppDto{
     if(!this.roles().agentIds.includes(id))throw new OutputAppUnavailableError('Output Agent is not designated');
     const {agent,chat}=this.owner(id),branch=this.branches.getBranch(chat.branchId!)!,trigger=this.branches.trigger(branch.id);
-    const config=trigger?.sourceConfig;
+    const config=trigger?.sourceKind==='schedule'?trigger.sourceConfig as import('@ponderosa/core').TriggerScheduleConfig:undefined;
     const revision=this.store.sqlite.prepare('SELECT configuration_revision revision FROM branches WHERE id=?').get(branch.id) as {revision:number};
     const settingsRevision=createHash('sha256').update(stableJson({versionId:branch.versionId,bindingRevisionId:branch.bindingRevisionId,configurationRevision:revision.revision,enabled:branch.enabled,
       trigger:trigger?{id:trigger.id,enabled:trigger.enabled,sourceKind:trigger.sourceKind,sourceConfig:trigger.sourceConfig}:null})).digest('hex');
     return {agentId:id,branchId:branch.id,projectId:chat.projectId,chatId:chat.id,title:agent.title,url:`/apps/${encodeURIComponent(id)}`,
       speaker:this.roles().speakerAgentId===id,versionId:branch.versionId,bindingRevisionId:branch.bindingRevisionId,settingsRevision,model:agent.model??undefined,engine:agent.activeEngine,
-      automatic:Boolean(trigger?.enabled&&branch.enabled),...(config&&'scheduleKind'in config&&config.scheduleKind==='interval'?{everyMs:config.everyMs}:{})};
+      automatic:Boolean(trigger?.enabled&&branch.enabled),triggerKind:trigger?.sourceKind??'manual',...(config?{schedule:config}:{}),...(config?.scheduleKind==='interval'?{everyMs:config.everyMs}:{})};
   }
   private pause(app:OutputAgentAppDto){
     const trigger=this.branches.trigger(app.branchId);

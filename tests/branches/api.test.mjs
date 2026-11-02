@@ -362,3 +362,74 @@ test('output settings reject same-version trigger drift and a fresh snapshot can
  assert.equal(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)).enabled,false);
  const saved=f.ok(await f.api('PUT',`/api/branches/output-apps/${app.agentId}/schedule`,{...request,expectedSettingsRevision:current.settingsRevision}));assert.equal(saved.automatic,true);
 }));
+
+// Exercise the same standalone settings endpoint used by /apps/:id and /assistant.
+for(const [kind,sourceConfig] of [
+ ['manual',undefined],
+ ['schedule',{scheduleKind:'interval',everyMs:120000,startsAt:'2099-01-01T00:00:00.000Z',whenRunning:'queue_all'}],
+ ['schedule',{scheduleKind:'cron',expression:'15 9 * * 1-5',timezone:'America/New_York',whenRunning:'run_latest'}],
+ ['schedule',{scheduleKind:'once',at:'2099-01-01T00:00:00.000Z'}],
+ ['webhook',{}],
+ ['filesystem',{include:['**/*.txt'],exclude:['private/**'],quietMs:500,maxWindowMs:5000}],
+])test(`output automatic control preserves ${kind}/${sourceConfig?.scheduleKind??'event'} and enables ordinary disabled workflows`,async t=>{
+ let store;await withFixture(t,async f=>{
+  const app=f.ok(await f.api('GET','/api/branches/assistant')).app;
+  const {BranchStore,CoordinationV3Store}=await import('@ponderosa/agents'),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const definition=branches.version(app.branchId,app.versionId).definition,bindings=branches.localConfiguration(app.branchId);
+  f.ok(await f.api('POST','/api/branches/deploy',{chatId:'',branchId:app.branchId,expectedVersionId:app.versionId,idempotencyKey:randomUUID(),definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:{...bindings,directories:{...bindings.directories,workspace:f.root},triggers:sourceConfig?{source:{sourceConfig,enabled:true}}:{}}}));
+  const url=`/api/branches/output-apps/${app.agentId}`,read=async()=>f.ok(await f.api('GET',url));
+  const save=async(automatic,extra={})=>{const current=await read();return f.api('PUT',url+'/schedule',{expectedVersionId:current.versionId,expectedSettingsRevision:current.settingsRevision,automatic,...extra});};
+  const before=await read(),original=branches.trigger(app.branchId),versionId=before.versionId,bindingRevisionId=before.bindingRevisionId;
+  assert.equal(before.triggerKind,kind);assert.equal(before.everyMs,sourceConfig?.scheduleKind==='interval'?sourceConfig.everyMs:undefined);
+  if(kind==='schedule')assert.deepEqual(before.schedule,original.sourceConfig);else assert.equal(before.schedule,undefined);
+  f.ok(await save(false));assert.equal((await read()).automatic,false);
+  if(original){assert.deepEqual(branches.trigger(app.branchId).sourceConfig,original.sourceConfig);assert.equal(branches.trigger(app.branchId).nextFireAt,original.nextFireAt);}
+  assert.equal((await read()).versionId,versionId);assert.equal((await read()).bindingRevisionId,bindingRevisionId);
+  f.ok(await f.api('PUT',`/api/branches/${app.branchId}/availability`,{enabled:false}));
+  const disabled=await read();assert.equal(disabled.automatic,false);
+  if(kind==='manual'){
+   assert.equal((await save(true)).status,409,'A manual workflow needs an explicitly selected interval');
+   f.ok(await save(true,{everyMs:180000}));assert.equal((await read()).everyMs,180000);assert.equal((await read()).triggerKind,'schedule');
+  }else{
+   f.ok(await save(true));const enabled=await read();assert.equal(enabled.versionId,versionId);assert.equal(enabled.bindingRevisionId,bindingRevisionId);
+   assert.deepEqual(branches.trigger(app.branchId).sourceConfig,original.sourceConfig);assert.equal(branches.trigger(app.branchId).id,original.id);
+   if(kind!=='schedule')assert.equal((await save(false,{everyMs:600000})).status,409,'An event source cannot acquire a timer');
+  }
+  assert.equal(branches.getBranch(app.branchId).enabled,true);assert.equal((await read()).automatic,true);
+  // Availability drift is covered by the same optimistic settings snapshot.
+  assert.equal((await f.api('PUT',url+'/schedule',{expectedVersionId:disabled.versionId,expectedSettingsRevision:disabled.settingsRevision,automatic:false})).status,409);
+  assert.equal((await read()).automatic,true);
+  store.sqlite.prepare('UPDATE branches SET deleting=1 WHERE id=?').run(app.branchId);
+  assert.equal((await f.api('PUT',url+'/schedule',{expectedVersionId:versionId,expectedSettingsRevision:before.settingsRevision,automatic:true})).status,409);
+  store.sqlite.prepare('UPDATE branches SET deleting=0 WHERE id=?').run(app.branchId);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('output pause preserves an elapsed one-time schedule; resume refuses to invent another occurrence',async t=>{
+ let store;await withFixture(t,async f=>{
+  const app=f.ok(await f.api('GET','/api/branches/assistant')).app;
+  const {BranchStore,CoordinationV3Store}=await import('@ponderosa/agents'),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),trigger=branches.trigger(app.branchId);
+  const config={scheduleKind:'once',at:'2000-01-01T00:00:00.000Z'};
+  branches.triggers.updateTriggerDefinition(trigger.id,{sourceConfig:config,nextFireAt:null,enabled:false});
+  const url=`/api/branches/output-apps/${app.agentId}`,current=()=>f.api('GET',url).then(f.ok);
+  const save=async automatic=>{const snapshot=await current();return f.api('PUT',url+'/schedule',{expectedVersionId:snapshot.versionId,expectedSettingsRevision:snapshot.settingsRevision,automatic});};
+  f.ok(await save(false));assert.deepEqual(branches.trigger(app.branchId).sourceConfig,config);assert.equal(branches.trigger(app.branchId).nextFireAt,undefined);
+  const refused=await save(true);assert.equal(refused.status,409);assert.match(refused.body.error,/one-time schedule must be in the future/);assert.equal(branches.trigger(app.branchId).enabled,false);
+  assert.deepEqual(branches.trigger(app.branchId).sourceConfig,config);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('output automatic enable rolls back trigger changes if ordinary workflow availability fails',async t=>{
+ let store;await withFixture(t,async f=>{
+  const app=f.ok(await f.api('GET','/api/branches/assistant')).app,url=`/api/branches/output-apps/${app.agentId}`;
+  const trigger=f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`));
+  f.ok(await f.api('PATCH',`/api/branches/${app.branchId}/trigger`,{enabled:false,reviewedTrigger:trigger}));
+  f.ok(await f.api('PUT',`/api/branches/${app.branchId}/availability`,{enabled:false}));
+  const before=f.ok(await f.api('GET',url)),paused=f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`));
+  store.sqlite.exec("CREATE TEMP TRIGGER refuse_output_enable BEFORE UPDATE OF enabled ON branches WHEN NEW.enabled=1 BEGIN SELECT RAISE(ABORT,'Controlled availability failure'); END");
+  const refused=await f.api('PUT',url+'/schedule',{expectedVersionId:before.versionId,expectedSettingsRevision:before.settingsRevision,automatic:true});
+  assert.equal(refused.status,409);assert.match(refused.body.error,/Controlled availability failure/);
+  assert.deepEqual(f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`)),paused);assert.equal(f.ok(await f.api('GET',url)).settingsRevision,before.settingsRevision);
+  store.sqlite.exec('DROP TRIGGER refuse_output_enable');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
