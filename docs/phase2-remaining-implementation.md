@@ -498,3 +498,45 @@ reconstruction is established; intermediate uncommitted packets lack saved
 per-command patch bytes, so complete intermediate reconstruction is not claimed.
 Composition is static identity verification, not new composed-head execution.
 No broad rerun, provider process, live data, install, deployment or push performed.
+
+Standalone continuation UI and grouped managed-root composition (2026-11-02):
+Delivery composed the eight reviewed UI deliverables from accepted653c/ea2 as
+`f124a5f81`, retaining all eleven exact a819 compiler repairs, then the reviewed
+TWO-file ebdf managed-root delta as `8fd6edeee`. All25 cumulative runtime/UI/root
+source/test deliverables physically verified nonempty/hash exact; all11 compiler
+files byte-identical to a819. No foreign b716, recording, lock/schema or route edits.
+
+Managed-root predicate now resolves only the exact name-matching canonical
+managed:workspaces/name creation token through existing managedWorkspacePath.
+Exact current root/project identity, creation key/name, explicit Shared-root
+consent, unused managed destination, distinct roots and member modes stay guarded.
+Quality supports source composition and accepts disposable server4/4 (tree/forest,
+root+independent grouped access, close/reopen, publication, stale/foreign/missing/
+consumed refusals). Original v3 browser failure and candidate failures preserved.
+
+Prior UI acceptance remains bounded: actual import16/16, continuation18/18 plus
+same-scenario unknown409 followups, access/output-role4/4, and separate canonical/
+mock/helper checks. Accepted653c Web build/workspace types pass; original ea2 build
+PASS/types FAIL are distinct source receipts. New c3c1fc affected grouped folder/
+access desktop+phone rerun2/2 PASS with exact root and managed identity/zero-Agent
+assertions before consent, current access digest/actions, Settings/Done/callback;
+real disposable API and inert adapter. Existing Quality supplemental classification
+is pending, so the grouped rendered gate remains OPEN until that verdict.
+
+Combined frozen8fd6 Web production build PASS (exit0). Initial combined workspace types FAIL on stale emitted Core/Agents declarations.
+Core/Engines/Agents/Server refreshed in order, each build PASS; corrected combined
+workspace types PASS all9. Combined actual disposable publication regression
+PASS4/4. Failed initial packet preserved; no product source fix was needed. These new
+combined checks do not repeat the actual browser matrix. Compile/type output
+inventories may overlap; packets disclose before/after module changes rather than
+claiming independent output closures. Composition identity and checks are in
+`/tmp/ponderosa-final-composition-evidence`. No provider/imported Script/liveDB,
+installs/native rebuild/deployment/push or new workers. Earlier runtime195/197 and
+separate historical5/5 retain their exact24aa source attribution and unresolved
+retry-witness/capture-custody/shutdown gates. No full-app/auth/accessibility/mobile
+usability/Bible8/Phase2 acceptance.
+
+Combined packet provenance limit: its initial dependency-links file was empty,
+so those packets do not establish preexecution dependency-link identities. A
+separate current2718-link observation is retained without backdating. Commands,
+source/patch/lock/module inventories, exits and outputs are bound independently.
