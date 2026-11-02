@@ -520,8 +520,8 @@ mock/helper checks. Accepted653c Web build/workspace types pass; original ea2 bu
 PASS/types FAIL are distinct source receipts. New c3c1fc affected grouped folder/
 access desktop+phone rerun2/2 PASS with exact root and managed identity/zero-Agent
 assertions before consent, current access digest/actions, Settings/Done/callback;
-real disposable API and inert adapter. Existing Quality supplemental classification
-is pending, so the grouped rendered gate remains OPEN until that verdict.
+real disposable API and inert adapter. Final independent Quality classification is COMPLETE/ACCEPT: the grouped
+rendered completion gate is CLOSED for these exact c3c desktop/phone fixtures.
 
 Combined frozen8fd6 Web production build PASS (exit0). Initial combined workspace types FAIL on stale emitted Core/Agents declarations.
 Core/Engines/Agents/Server refreshed in order, each build PASS; corrected combined
@@ -540,3 +540,18 @@ Combined packet provenance limit: its initial dependency-links file was empty,
 so those packets do not establish preexecution dependency-link identities. A
 separate current2718-link observation is retained without backdating. Commands,
 source/patch/lock/module inventories, exits and outputs are bound independently.
+
+
+Final grouped-flow Quality closure (2026-11-02): accepted rendered choices are
+speaker+child both keep_destination; mixed choices are covered by the separately
+reviewed server fixture. Callback/Settings completion does not establish full
+routed-app navigation or mobile usability. Quality verified dedicated frozen
+harness/output bindings and original v3 preservation; five broad historical path
+bindings changed across overlapping packets, so not every historical broad path
+matches current bytes. Original archives remain unchanged. Corrected c3c report:
+`/tmp/ponderosa-ui-shared-root-evidence/assessment.md`, SHA256
+`bfb736b95826579a0eabd5b616ccc680118177aab1702cb537d1bb2e20735538`.
+Accepted653c and c3c executed rows retain their exact source attribution; combined
+integration checks are separately recorded above. Runtime24aa lifecycle witness,
+capture/custody and shutdown failures stay OPEN; full historical semantics remain
+unqualified. No additional runtime execution was needed for this report correction.
