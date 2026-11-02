@@ -1361,10 +1361,13 @@ export class BranchStore {
     if(!resource)return false;
     const operation=this.resourceOperation(resource.step_execution_id,'import'),request=this.row('SELECT * FROM coordination_requests WHERE id=?',current.request_id);
     const bound=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='resource_created' AND transition_key=?",executionId,`resource-bound:${resource.step_execution_id}:${resource.generation}`);
-    const receipt=request&&this.row("SELECT result_json FROM coordination_idempotency WHERE project_id=? AND actor_scope=? AND operation='coordinate' AND idempotency_key=?",request.project_id,`branch:${executionId}`,original.id);
     if(operation?.state!=='completed'||!request||request.requester_agent_id!==null||request.communication_event_id!==null||request.recipient_agent_id!==resource.root_agent_id||request.conversation_id!==resource.chat_id
       ||!bound||bound.evidence_json!==stableJson({...operation.result,requestId:request.id,creationKey:resource.creation_key})
-      ||!receipt||stableJson(JSON.parse(receipt.result_json).requestIds)!==stableJson([request.id]))return false;
+      ||request.lifetime_kind!=='indefinite'||request.deadline_at!==null)return false;
+    // Read-only replay verifies the complete original coordinate input hash, including every payload field.
+    let opening;
+    try{opening=this.coordination.replayCoordinate({projectId:request.project_id,conversationId:request.conversation_id,actorScope:`branch:${executionId}`,idempotencyKey:original.id,requests:[{requestId:request.id,recipientAgentId:request.recipient_agent_id,lifetime:{kind:'indefinite'},payload:JSON.parse(request.payload_json)}]});}catch{return false;}
+    if(!opening||opening.joinId||stableJson(opening.requestIds)!==stableJson([request.id]))return false;
     const host=captureBranchHostCut(this.sqlite,executionId,selectBranchUnit(this.sqlite,executionId));
     if(!host?.coverage.complete||!verifyBranchHostCut(host,executionId)||!host.roots.some(root=>root.attemptId===original.id&&root.requestId===request.id))return false;
     verifyHostProvenance(host);
@@ -1508,7 +1511,7 @@ export class BranchStore {
         if(stableJson(prior.input)!==stableJson(input))throw Error('Resource custody release idempotency conflict');
         if(prior.result.state!=='released'){
           const original=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',prior.receipt.intent.executionId,prior.captureKey),capture=original&&JSON.parse(original.result_json);
-          if(!capture||original.input_hash!==payloadHash(capture.source)||!['releasing','released'].includes(capture.state)||stableJson(capture.receipt)!==stableJson(prior.receipt))throw Error('Original resource custody release intent unavailable');
+          if(!capture||original.input_hash!==payloadHash(capture.source)||!['releasing','released'].includes(capture.state)||!receiptMatchesSource(capture.receipt,capture.source)||stableJson(capture.receipt)!==stableJson(prior.receipt))throw Error('Original resource custody release intent unavailable');
           if(this.custodyLifecycle.references(capture.source).some(ref=>ref.kind!=='command'||ref.ownerId!==prior.receipt.intent.executionId||ref.key!==prior.captureKey))throw Error('Original resource custody release acquired conflicting references');
         }
         return {receipt:prior.receipt,result:prior.result};

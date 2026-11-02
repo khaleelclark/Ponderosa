@@ -1053,6 +1053,7 @@ for(const mode of ['async','sync','exit'])test(`resource reservation ${mode} exe
  const db=f.store.sqlite,target=f.reservation(second.id),attempt=db.prepare('SELECT * FROM branch_attempts WHERE step_execution_id=?').get(target.step_execution_id),request=db.prepare('SELECT * FROM coordination_requests WHERE id=?').get(attempt.request_id);
  for(const corrupt of [
   ()=>db.prepare('UPDATE branch_attempts SET request_id=? WHERE id=?').run('foreign-opening',attempt.id),
+  ()=>db.prepare('UPDATE coordination_requests SET payload_json=? WHERE id=?').run(stableJson({...JSON.parse(request.payload_json),input:'foreign restored input'}),request.id),
   ()=>db.prepare("DELETE FROM branch_checkpoints WHERE execution_id=? AND transition_key=?").run(second.id,`resource-bound:${target.step_execution_id}:${target.generation}`),
   ()=>db.prepare("UPDATE coordination_idempotency SET result_json=? WHERE project_id=? AND actor_scope=? AND operation='coordinate' AND idempotency_key=?").run(stableJson({requestIds:['foreign-opening']}),request.project_id,`branch:${second.id}`,attempt.id),
  ])assert.throws(()=>db.transaction(()=>{corrupt();assert.throws(()=>f.branches.rewindHistorical(f.branch.id,first.id,b.id,b.contentHash,'resource-B'),/Tree mapped attempt ownership failure/);assert.deepEqual(allocationCounts(f),counts);throw Error('restore opening proof');})(),/restore opening proof/);
@@ -1325,6 +1326,8 @@ test('resource custody release command survives response loss and never selects 
  assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM branch_commands ORDER BY execution_id,command_key').all(),statusBefore,'command inspection does not retry deletion');
  assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{...input,expectedGeneration:inspection.generation+1}),/conflict/);
  await f.reopen();
+ const captureKey=`resource-capture:${f.reservation(f.source.id).creation_key}`,captureRow=f.store.sqlite.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,captureKey);
+ assert.throws(()=>f.store.sqlite.transaction(()=>{const changed=JSON.parse(captureRow.result_json);changed.source.checkpointId='foreign-original-capture';f.store.sqlite.prepare('UPDATE branch_commands SET input_hash=?,result_json=? WHERE execution_id=? AND command_key=?').run(hash(stableJson(changed.source)),stableJson(changed),f.source.id,captureKey);assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,input),/^Error: Original resource custody release intent unavailable$/);assert.equal(calls,1);throw Error('restore original capture source');})(),/restore original capture source/);
  const pinKey='adversarial-new-original-custody-pin',pin=stableJson({receipt:retained.receipt});f.store.sqlite.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(f.source.id,pinKey,hash(pin),pin,new Date().toISOString());
  const pinned=allocationCounts(f);assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,input),/^Error: Original resource custody release acquired conflicting references$/);assert.equal(calls,1);assert.deepEqual(allocationCounts(f),pinned);
  f.store.sqlite.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,pinKey);
