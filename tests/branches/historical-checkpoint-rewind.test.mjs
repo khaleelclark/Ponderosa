@@ -1618,6 +1618,25 @@ test('issued composer owner failure rolls back graph, import completion, readine
  assert.equal(db.prepare('SELECT COUNT(*) n FROM agent_activations WHERE scope_key=?').get(`conversation:${p.destination.conversationId}`).n,0);
  assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'awaiting_disclosure');
  f.branches.composeIssuedDestination=original;
+ const checkpoint=f.branches.checkpointIssuedDestination;
+ const assertHeld=()=>{
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_resources WHERE execution_id=?').get(p.destination.executionId).n,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM coordination_requests WHERE conversation_id=?').get(p.destination.conversationId).n,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM agent_activations WHERE scope_key=?').get(`conversation:${p.destination.conversationId}`).n,0);
+  assert.equal(composer.inspect(f.branch.id,f.source.id,x.input.commandKey).state,'awaiting_disclosure');
+ };
+ const plan=f.branches.issuedDestinationPlan(f.branch.id,f.source.id,x.input.commandKey);
+ assert.throws(()=>checkpoint.call(f.branches,plan),/same transaction/);
+ assert.throws(()=>db.transaction(()=>checkpoint.call(f.branches,plan))(),/admitted graph/);
+ f.branches.checkpointIssuedDestination=function(...args){
+  const admission=db.prepare('SELECT state,receipt_json FROM coordination_destination_admissions WHERE id=?').get(p.admissionId);
+  assert.equal(admission.state,'admitted');assert.ok(admission.receipt_json);
+  checkpoint.apply(this,args);throw Error('final checkpoint refused');
+ };
+ await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,preview.reviewHash),/final checkpoint refused/);assertHeld();
+ const stage=JSON.parse(db.prepare('SELECT stage_json FROM coordination_destination_admissions WHERE id=?').get(p.admissionId).stage_json);
+ assert.equal(f.store.getAgentCreationOperation(stage.importPlan.creationOperationId).status,'canonical_committed');
+ f.branches.checkpointIssuedDestination=checkpoint;
  assert.equal((await composer.admit(f.branch.id,f.source.id,x.input.commandKey,preview.reviewHash)).state,'admitted');
 });
 
@@ -2288,6 +2307,8 @@ for(const mode of ['async','sync'])for(const [parallel,generation,budgetOverride
  const x=await issuedDestinationFixture(t,mode,false,{f,saved}),{composer,disclosure}=x.services();
  const prepared=await composer.prepare(f.branch.id,f.source.id,x.input),review=await disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId);
  assert.equal(review.facts.filter(v=>v.kind==='historical_generation').length,generation);
+ const destinationMap=f.branches.issuedDestinationPlan(f.branch.id,f.source.id,x.input.commandKey).idMap;
+ for(const item of journal.snapshot.selected.items)assert.equal(destinationMap[item.id],`${destinationMap[item.map_invocation_id]}:${item.item_index}`);
  await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'all-chain-human-approval',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
  const originalCompose=f.branches.composeIssuedDestination;f.branches.composeIssuedDestination=function(...args){originalCompose.apply(this,args);throw Error('chain owner rollback');};
  await assert.rejects(composer.admit(f.branch.id,f.source.id,x.input.commandKey,review.reviewHash),/chain owner rollback/);f.branches.composeIssuedDestination=originalCompose;

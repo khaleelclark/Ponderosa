@@ -1102,7 +1102,8 @@ export class BranchStore {
       if(saved.custody.agentIds.length>(definition.policy.maxEphemeralAgents??100))throw Error('Destination ephemeral Agent budget unavailable');
       const next=this.accept(branchId,`issued-destination:${randomUUID()}`,saved.selected.execution![0]!.input_text,now);
       if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Destination execution budget/capacity unavailable');
-      const idMap=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
+      const idMap:Record<string,string>=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
+      for(const item of saved.selected.items!)idMap[item.id]=`${idMap[item.map_invocation_id]}:${item.item_index}`;
       const reservation:import('@ponderosa/core').CoordinationDestinationReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,
         commandKey:input.commandKey,operatorId:chat.operatorId,reconcileEffects:true,custody:saved.custody,
         ...(c.generationRetry?{historicalPartition:generationHistoricalSelections(c.generationRetry)}:{}),
@@ -1154,16 +1155,20 @@ export class BranchStore {
     this.checkpoint(e.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',e.id)!.admission_json)},now);
     this.checkpoint(e.id,`resource-bound:${d.resourceStepId}:0`,'resource_created',{...result,requestId:restored.requestBindings.find(b=>b.stepExecutionId===d.resourceStepId)?.requestId,creationKey:resource.creation_key},now);
     this.state(e.id,'running',now);this.selectedWrite(e.id);completeImport();
-    // Admission publishes wakes in this transaction. Retain its final selected
-    // bytes now, including SYNC coverage, rather than relying on a later task.
-    const candidate=this.unitSaver.freeze({written:new Set([e.id])})[0];
-    if(!candidate?.content||!candidate.hash||Object.hasOwn(candidate,'error'))throw Error('Destination final checkpoint coverage unavailable');
-    const savedCheckpoint=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(e.id,candidate.content,candidate.hash);
-    const readiness={checkpointId:Number(savedCheckpoint.lastInsertRowid),checkpointHash:candidate.hash};
-    this.run("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?) WHERE id=?",readiness.checkpointId,e.id);
-    this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({coordinationDestination:graph,sourceCheckpoint:restored.sourceCheckpoint,idMap:plan.idMap,readiness}),e.id,receiptId);
     return {executionId:e.id,resourceStepId:d.resourceStepId,resourceGeneration:0,creationOperationId:stage.importPlan.creationOperationId,requestBindings:restored.requestBindings,receiptId};
   }
+  checkpointIssuedDestination(plan:Row):void {
+    if(!this.sqlite.inTransaction||this.row('SELECT state FROM coordination_destination_admissions WHERE id=?',plan.admissionId)?.state!=='admitted')throw Error('Final checkpoint requires admitted graph in same transaction');
+    const id=plan.reservation.destination.executionId,receiptId=`issued-destination-owner:${plan.admissionId}`;
+    const candidate=this.unitSaver.freeze({written:new Set([id])})[0];
+    if(!candidate?.content||!candidate.hash||Object.hasOwn(candidate,'error'))throw Error('Destination final checkpoint coverage unavailable');
+    const savedCheckpoint=this.sqlite.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(id,candidate.content,candidate.hash);
+    const readiness={checkpointId:Number(savedCheckpoint.lastInsertRowid),checkpointHash:candidate.hash};
+    this.run("UPDATE branch_executions SET checkpoint_invocation_json=json_set(checkpoint_invocation_json,'$.saved_snapshot_id',?) WHERE id=?",readiness.checkpointId,id);
+    const row=this.row('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?',id,receiptId)!;
+    this.run('UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?',stableJson({...JSON.parse(row.result_json),readiness}),id,receiptId);
+  }
+
   /** Recheck persistent targets before accepting a graph with an unlaunched Agent suffix. */
   private historicalAgentTargets(branchId:string,definition:BranchDefinition,bindings:BranchBindings):void {
     const branch=this.getBranch(branchId)!;

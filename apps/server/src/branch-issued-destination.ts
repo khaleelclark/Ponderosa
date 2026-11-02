@@ -142,6 +142,8 @@ export class BranchIssuedDestinationService {
    const authority=this.authority(),review=this.coordination.reviewCoordinationDestination(plan.admissionId,authority);
    this.packages().finishDestinationImport(stage.importPlan.creationOperationId,(result,complete)=>{
     this.coordination.admitCoordinationDestination(plan.admissionId,review.reviewHash,authority,graph=>this.branches.composeIssuedDestination(plan,graph,result,complete));
+    // Final provenance exists now; coverage remains inside the import and owner transaction.
+    this.branches.checkpointIssuedDestination(plan);
    });
    this.db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(executionId,admitKey,inputHash,stableJson({admissionId:plan.admissionId,reviewHash}),new Date().toISOString());
   }).immediate();
