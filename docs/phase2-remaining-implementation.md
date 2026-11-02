@@ -449,3 +449,52 @@ owns tracker/composition; Cliff must scope remaining valid semantic fixtures and
 runtime-owner follow-through without weakening evidence/refusal guards. No new
 workers, installs/lock edits, live database/provider/model/imported Script
 processes, deployment or push. Portability has the immutable source/receipt handoff.
+
+Runtime regression repair (2026-11-02): independent Quality supports **source-only
+composition** of clean frozen `24aa22f289600c466cadd867866540b92547dc68`, direct
+`1ec3d9e7c` parent. Delivery fast-forwarded the clean integration branch to that
+exact reviewed source. All 15 deliverables (five Agents source, ten tests) were
+physically read/nonempty and matched to commit and SHA256 manifest before and
+after composition. No Web/Portability/ExecutionPanel/recording/Core/lock/schema
+change. This row supersedes the earlier unexecuted group/missing-map rows only
+within the stated fixture scope; whole runtime acceptance remains blocked.
+
+| Gate | Reviewed actual outcome / remaining work |
+| --- | --- |
+| Agents / Server builds and workspace types | PASS at frozen24aa: both builds and all nine participating package typechecks. Existing native addon/dependencies reused. |
+| Bounded semantic regressions | FAIL: 197 tests = 195 PASS / 2 FAIL, zero skipped/cancelled, exit1. No regression-green claim. |
+| Required group reconciliation | PASS 3/3: actual canonical reader/CAS/refusal/all-slot rollback/readback/immutable replay, using fully sealed SYNTHETIC retained evidence and one source owner. No cross-source-owner or real provider-drain claim. |
+| Missing private participant map negative | PASS: immutable trigger refusal first; explicit disposable trigger bypass then exact member-ownership reader refusal, counts/held identities preserved. Does not directly cover the later facts-map guard. |
+| Historical rewind | Selected frozen checks PASS 5/5. Expanded full-file attempt deliberately INTERRUPTED, exit1; whole-file semantics UNQUALIFIED. |
+| Final retry cleanup | FAIL: final ehrN6f active generation0/retry_draining; strict Complete exact Run inventory required. Undeleted members have 1 Run/1 registration and 0/0. Needs valid per-member lifecycle witnesses or an explicitly designed never-started contract; absence is not observed exit. |
+| Final completed-workflow cleanup | FAIL, DIFFERENT gate: final opl3Nf resource RESERVED, completed import, capture journal capturing/error Resource capture failed; explicit owner reconciliation required. No Requests; both members 0 Runs/0 registrations. Stops before exit evidence; exact capture/custody failure root cause UNRESOLVED. Both final cases timeout and report shutdown failure. |
+| Full-flow acceptance | Cleanup/shutdown, full historical/runtime semantics, real providers/imported Script, browser/auth/mobile/accessibility/portability and Phase2 remain unqualified. Accepted recording stays closed. |
+
+Product repairs preserve the actual full live update command-envelope hash,
+including provider failure category, and separate imported provenance checks.
+Reference-only artifact commands lacking original local metadata/order remain
+refused. Parsed configuration comparison avoids key-order-only drift while
+retaining changed-value/secret review. Admitted restored gate owners run/wait
+consistently; changed capture diagnostics publish selected coverage; late importer
+exceptions append a deduplicated durable diagnostic without rewriting pinned
+completed results/frontiers. Unknown/replay/custody/permission guards remain.
+
+Every original 72 failure row is individually classified in the corrected
+`/tmp/ponderosa-runtime-evidence/original-72-classified.json`; resolution/parser
+failures are distinguished from executed semantic assertions. Only the exact
+earlier destination hash setup failure has untouched6ea baseline evidence.
+**Correction:** earlier EXak8V missing-witness proof describes that earlier
+reproduction only; it does not establish both frozen final failure causes.
+Quality found no definite repair-scope source blocker, but the separate final
+capture/custody defect remains unresolved, not classified as external evidence.
+
+Original immutable archive remains
+`/tmp/ponderosa-runtime-evidence-24aa22f28-final.tar.gz`, SHA256
+`0dcf6c56ec1e674b8e2a4361dc913caf08cbfe15fe38ac7875bfc352522c9527`.
+It preserves the original attribution; the separate Quality-correction packet
+supersedes that attribution only. Twenty-two command packets preserve actual
+commands/UTC/exits/copied harness/source/lock/module/output bindings. Frozen source
+reconstruction is established; intermediate uncommitted packets lack saved
+per-command patch bytes, so complete intermediate reconstruction is not claimed.
+Composition is static identity verification, not new composed-head execution.
+No broad rerun, provider process, live data, install, deployment or push performed.
