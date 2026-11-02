@@ -6,6 +6,8 @@ export interface ReviewedGitUserData {
   objects:Array<{oid:string;type:'blob'|'tree'|'commit'|'tag';dataBase64:string}>;
   refs:Array<{name:string;oid:string;symbolic?:string}>;
   head:{symbolic:string}|{oid:string};
+  /** Exact oldest-first local reflog bytes; never source worktree ownership. */
+  reflogs:Array<{path:string;dataBase64:string}>;
   index:Array<{mode:string;oid:string;stage:number;path:string}>;
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true}>;
   exclusions:string[];

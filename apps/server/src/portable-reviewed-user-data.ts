@@ -109,8 +109,35 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   return value;
 }
 
+function reflogPath(value:string):void {
+  if(typeof value!=='string'||value.length>1024)throw new Error('Invalid Git reflog path');
+  if(value!=='HEAD')refName(value);
+}
+
+/** Read only private normal local logs; exact bytes and per-file order remain unchanged. */
+async function captureReflogs(gitDir:string):Promise<ReviewedGitUserData['reflogs']> {
+  const result:ReviewedGitUserData['reflogs']=[];let nodes=0,bytes=0;
+  const walk=async(relative:string):Promise<void>=>{
+    const target=path.join(gitDir,'logs',relative);
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if(!relative&&(error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+    if(++nodes>10000||await fs.realpath(target)!==target)throw new Error('Git reflog inventory is external or exceeds its bound');
+    if(before.isDirectory()){
+      if(relative&&relative!=='refs'&&!relative.startsWith('refs/'))throw new Error('Unsupported Git reflog directory');
+      for(const name of (await fs.readdir(target)).sort())await walk(relative?`${relative}/${name}`:name);
+      const after=await fs.lstat(target,{bigint:true});
+      if(before.dev!==after.dev||before.ino!==after.ino||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Git reflog directory changed during capture');
+    }else{
+      reflogPath(relative);
+      const {data}=await regularOriginal(target);bytes+=data.length;
+      if(bytes>limit)throw new Error('Git reflog bytes exceed their bound');
+      result.push({path:relative,dataBase64:data.toString('base64')});
+    }
+  };
+  await walk('');return result;
+}
+
 export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','configurationReview','exclusions']);
+  fields(value,['version','format','objects','refs','head','index','reflogs','configurationReview','exclusions']);
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const ids=new Map<string,GitObject>();let bytes=0;
   const oidPattern=value.format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
@@ -123,6 +150,29 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
     safeText(data.toString('latin1'),'Git object');
     ids.set(object.oid,object);
   }
+  if(!Array.isArray(value.reflogs)||value.reflogs.length>10000)throw new Error('Invalid bounded Git reflogs');
+  const logPaths=new Set<string>(),logDirectories=new Set(['']);let logBytes=0,logEntries=0;
+  for(const log of value.reflogs){
+    fields(log,['path','dataBase64']);reflogPath(log.path);
+    if(logPaths.has(log.path)||typeof log.dataBase64!=='string'||log.dataBase64.length>Math.ceil(1024*1024/3)*4)throw new Error('Invalid or duplicate Git reflog');
+    logPaths.add(log.path);
+    const parts=log.path.split('/');
+    for(let i=1;i<parts.length;i++)logDirectories.add(parts.slice(0,i).join('/'));
+    if(logPaths.size+logDirectories.size>10000)throw new Error('Git reflog inventory exceeds its bound');
+    const raw=Buffer.from(log.dataBase64,'base64');logBytes+=raw.length;
+    if(raw.length>1024*1024||logBytes>limit||raw.toString('base64')!==log.dataBase64)throw new Error('Git reflog byte bound or encoding mismatch');
+    const original=text(raw);safeText(original,'Git reflog');
+    if(original&&!original.endsWith('\n'))throw new Error('Incomplete Git reflog entry');
+    for(const line of original?original.slice(0,-1).split('\n'):[]){
+      if(++logEntries>10000)throw new Error('Git reflog entry count exceeds its bound');
+      const entry=/^([a-f0-9]+) ([a-f0-9]+) ([^<>\x00-\x1f\x7f]+) <([^<>\x00-\x20\x7f]+)> ([0-9]{1,16}) ([+-][0-9]{4})\t([^\x00-\x1f\x7f]*)$/.exec(line);
+      if(!entry||!oidPattern.test(entry[1]!)||!oidPattern.test(entry[2]!)||Number(entry[6]!.slice(1,3))>23||Number(entry[6]!.slice(3))>59)throw new Error('Unsupported Git reflog entry; preserve source');
+      const zero='0'.repeat(value.format==='sha1'?40:64);
+      if(entry[1]===zero&&entry[2]===zero)throw new Error('Git reflog has no object endpoint');
+      for(const oid of [entry[1]!,entry[2]!])if(oid!==zero&&!ids.has(oid))throw new Error('Git reflog original object is missing; preserve source');
+    }
+  }
+  for(const name of logPaths)if(logDirectories.has(name))throw new Error('Git reflog file/directory paths conflict');
   const requireObject=(oid:string,type?:string)=>{const object=ids.get(oid);if(!object||type&&object.type!==type)throw new Error('Git graph is incomplete or has a mismatched object type');};
   for(const object of value.objects){
     const data=Buffer.from(object.dataBase64,'base64');
@@ -193,7 +243,8 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     const flags=await git(root,['ls-files','-v','-z']);
     const debug=await git(root,['ls-files','--debug','-z']);
     const config=await git(root,['config','--local','--null','--list','--no-includes']);
-    return {refs,head,index,flags,debug,config};
+    const reflogs=Buffer.from(JSON.stringify(await captureReflogs(gitDir)));
+    return {refs,head,index,flags,debug,config,reflogs};
   };
   const before=await snapshot(),batch=await git(root,['cat-file','--batch-all-objects','--batch']);
   const objects:GitObject[]=[];let offset=0;
@@ -206,14 +257,14 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     objects.push({oid:match[1]!,type:match[2] as GitObject['type'],dataBase64:batch.subarray(offset,offset+size).toString('base64')});offset+=size+1;
   }
   const after=await snapshot();
-  for(const key of ['refs','head','index','flags','debug','config'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
+  for(const key of ['refs','head','index','flags','debug','config','reflogs'] as const)if(!before[key].equals(after[key]))throw new Error('Git selection changed during capture; preserve source and retry');
   if(text(before.flags).split('\0').filter(Boolean).some(row=>!/^H |^M /.test(row)))throw new Error('Git index flags require separate recreation; source retained');
   const indexFlags=[...text(before.debug).matchAll(/\tflags: ([a-f0-9]+)\n/g)];
   if(indexFlags.length!==text(before.index).split('\0').filter(Boolean).length||indexFlags.some(match=>(parseInt(match[1]!,16)&~0x3000)!==0))throw new Error('Extended/intent-to-add index flags require separate recreation; source retained');
   if(!batch.equals(await git(root,['cat-file','--batch-all-objects','--batch'])))throw new Error('Git object inventory changed during capture');
   const headText=text(before.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Reflogs, index flags/extensions, intent-to-add, sparse/split-index and operation-in-progress metadata need separate recreation'];
+  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership','Index flags/extensions, intent-to-add, sparse/split-index and operation-in-progress metadata need separate recreation'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
   for(const row of text(before.config).split('\0').filter(Boolean)){
     const split=row.indexOf('\n');
@@ -221,7 +272,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     if(excludedGitKey(key)){exclusions.push('Git configuration entry excluded: credential or source ownership');continue;}
     try{safeText(`${key}=${value}`,'Git configuration');if(/:\/\/[^/]*@/.test(value))throw new Error('URL userinfo');configurationReview.push({key,value,...(split<0?{implicitBoolean:true as const}:{})});}catch{exclusions.push('Git configuration entry excluded: recognizable credential or URL userinfo');}
   }
-  const result:ReviewedGitUserData={version:1,format,objects,refs:text(before.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:text(before.index).split('\0').filter(Boolean).map(row=>{const match=/^(100644|100755|120000|160000) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(row);if(!match)throw new Error('Unsupported staged index entry');return {mode:match[1]!,oid:match[2]!,stage:Number(match[3]),path:match[4]!};}),configurationReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,objects,reflogs:JSON.parse(text(before.reflogs)),refs:text(before.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:text(before.index).split('\0').filter(Boolean).map(row=>{const match=/^(100644|100755|120000|160000) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(row);if(!match)throw new Error('Unsupported staged index entry');return {mode:match[1]!,oid:match[2]!,stage:Number(match[3]),path:match[4]!};}),configurationReview,exclusions};
   const final=await fs.lstat(gitDir);if(final.dev!==stat.dev||final.ino!==stat.ino||await fs.realpath(gitDir)!==gitDir)throw new Error('Selected Git ownership directory changed');
   validateReviewedGit(result);return result;
 }
@@ -236,6 +287,7 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
   const write=async(relative:string,data:Buffer|string)=>{const target=path.join(gitDir,relative);await fs.mkdir(path.dirname(target),{recursive:true,mode:0o700});await fs.writeFile(target,data,{flag:'wx',mode:0o600});};
   try{
     for(const object of value.objects){const data=Buffer.from(object.dataBase64,'base64');await write(`objects/${object.oid.slice(0,2)}/${object.oid.slice(2)}`,deflateSync(Buffer.concat([Buffer.from(`${object.type} ${data.length}\0`),data])));}
+    for(const log of value.reflogs)await write(`logs/${log.path}`,Buffer.from(log.dataBase64,'base64'));
     for(const ref of value.refs)await write(ref.name,ref.symbolic?`ref: ${ref.symbolic}\n`:`${ref.oid}\n`);
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
     await write('config',`[core]\n\trepositoryformatversion = ${value.format==='sha256'?1:0}\n\tbare = false\n\thooksPath = /dev/null\n\tfsmonitor = false\n${value.format==='sha256'?'[extensions]\n\tobjectFormat = sha256\n':''}`);

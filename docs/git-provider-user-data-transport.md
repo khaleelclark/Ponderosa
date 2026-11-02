@@ -45,6 +45,48 @@ exports, unknown fields or invalid selections. Existing definition-tree export
 forwards each Agent's selection to the shared package engine without broadening it.
 The folder and settings review/import behavior is unchanged by these controls.
 
+### Selected local reflogs
+
+The explicit Git checkbox/API selection now includes ordinary local `.git/logs/HEAD`
+and `.git/logs/refs/*`. No reflog is read when Git is not selected. The required
+`git.reflogs` array contains `{path,dataBase64}` entries relative to `logs/`.
+An empty array records absent/empty local inventory; omission refuses rather than
+claiming complete capture. The existing package artifact, hash, full-history
+warning, byte codec and import preview carry these originals unchanged.
+
+Each file preserves exact UTF-8 bytes, oldest-to-newest physical entry order,
+old/new object IDs, user name/email, original timestamp/timezone and message.
+No identity, timestamp, message or object relationship is rewritten. Every nonzero
+old/new ID must exist in the captured object inventory, which already includes
+unreachable/reflog-only objects and validates their graph closure. Zero IDs are
+allowed at either endpoint for creation/deletion, but not both. Logs may remain
+for deleted refs: a current ref is not required and entry continuity is not
+invented. Recognized credentials anywhere in the raw log refuse the whole selection.
+
+Supported entry syntax is two lowercase SHA-1/SHA-256 IDs, a nonempty name and
+nonempty whitespace-free email in angle brackets, a 1–16 digit nonnegative Unix
+timestamp, signed four-digit timezone (hours 00–23/minutes 00–59), a tab and a
+possibly empty single-line message, terminated by LF. Control bytes, invalid UTF-8,
+unterminated/unknown forms, unknown log paths, links, hardlinks, special files,
+missing objects (including expired/pruned originals), lock files and external
+worktree logs refuse. This narrow contract does not normalize older/other formats.
+
+Reflogs have a 1 MiB/file, 32 MiB total, 10,000 total entry and 10,000 inventory-node
+bound; path length is at most 1,024 characters. Existing 48 MiB manifest/package
+limits can refuse a smaller combined selection. Capture reads canonical private
+regular originals with no-follow/exact file identity checks, checks directory
+identity/change times while walking, then compares complete sorted inventories
+and bytes in the existing before/after snapshot. Independent writers are not
+drained; these checks do not prove an arbitrary-writer atomic snapshot.
+
+Import validates logs and object relationships before creating the review repository,
+then writes the original bytes exclusively under its new `.git/logs`. It never
+writes into the active destination repository, appends current identities, runs
+Git or activates source hooks/settings. Existing files refuse and partial recovery
+bytes remain. General linked-worktree/common-dir logs and historical logs whose
+objects are unavailable remain unsupported. No tests or native capture/recreation
+were run for this source change.
+
 ### Bounded TOML syntax
 
 The same `assertSupportedReviewToml` guard runs before export sanitization and
@@ -103,7 +145,7 @@ Export plumbing is source code only: `rev-parse`, `symbolic-ref`, `for-each-ref`
 It drops inherited Git overrides, disables system/global config, fsmonitor,
 optional locks, replacement objects, lazy fetching and terminal prompts. No shell
 command interpolation or mutating Git command is used. Before/after
-refs/HEAD/index/flags/debug/config and full object streams must match. Each native
+refs/HEAD/index/flags/debug/config/reflogs and full object streams must match. Each native
 call has a 30-second and 32 MiB output bound. Git objects are bounded
 to 32 MiB and 10,000 objects; refs/index entries to 10,000 each; provider files
 to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal preserves
@@ -118,7 +160,7 @@ whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
 
 Exact remaining implementation: scoped linked-worktree/common-dir Git export;
-reflogs and their original user metadata; extended/intent-to-add/sparse-index
+extended/intent-to-add/sparse-index
 semantics; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats; general multiline TOML
 secret separation; explicit reviewed activation into a native-owned live Git or
