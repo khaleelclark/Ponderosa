@@ -377,7 +377,7 @@ export interface BranchHostRequestAdoptionDto {
 /** Explicit reviewed recovery destinations and optional live activation per JSON.stringify([chatRef,agentRef]). */
 export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>;workingFilesActivation?:{sharedRoot?:string};newManagedChatFolderName?:string}
 export type BranchImportFileSelections=Record<string,BranchImportFileSelection>;
-export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:string[];wholeWorkingFolder?:boolean}>;
+export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:string[];wholeWorkingFolder?:boolean;reviewedUserData?:import('./portable-reviewed-user-data.js').ReviewedUserDataSelection}>;
 
 /** Partial group capture cannot release any custody or cleanup pin. */
 export interface BranchIssuedGroupCaptureStatus {

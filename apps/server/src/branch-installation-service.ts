@@ -1,3 +1,4 @@
+import {validateReviewedUserDataSelection} from './portable-reviewed-user-data.js';
 import {composeBranchChat} from './branch-package-group.js';
 import {isAbsolute,resolve,sep} from 'node:path';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
@@ -207,7 +208,8 @@ export class BranchInstallationService {
   if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid export file selections');
   const requested=new Set(Object.keys(fileSelections));
   for(const selection of Object.values(fileSelections)){
-   if(!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['selectedWorkingFiles','wholeWorkingFolder'].includes(k))||selection.wholeWorkingFolder!==undefined&&typeof selection.wholeWorkingFolder!=='boolean'||selection.selectedWorkingFiles!==undefined&&(!Array.isArray(selection.selectedWorkingFiles)||selection.selectedWorkingFiles.some(p=>typeof p!=='string')))throw new Error('Invalid export file selection');
+   if(!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['selectedWorkingFiles','wholeWorkingFolder','reviewedUserData'].includes(k))||selection.wholeWorkingFolder!==undefined&&typeof selection.wholeWorkingFolder!=='boolean'||selection.selectedWorkingFiles!==undefined&&(!Array.isArray(selection.selectedWorkingFiles)||selection.selectedWorkingFiles.some(p=>typeof p!=='string')))throw new Error('Invalid export file selection');
+   if(selection.reviewedUserData!==undefined){validateReviewedUserDataSelection(selection.reviewedUserData);if(mode!=='full'||!selection.wholeWorkingFolder)throw new Error('Git/settings review data requires full export and explicit whole working-folder selection');}
   }
   const branch=this.branches.getBranch(branchId),definition=branch&&this.branches.version(branchId,branch.versionId)?.definition;
   if(!branch||!definition)throw new Error('Publish a Branch before exporting');

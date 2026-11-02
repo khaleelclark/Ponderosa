@@ -22,10 +22,11 @@ export function useAgentPackageActions({
     workingFiles: string[] = [],
     wholeWorkingFolder = false,
     organizationWorkingFolders = false,
+    reviewedUserData?: import("@ponderosa/core").ReviewedUserDataSelection,
   ) => {
     try {
       await copyDeferredText(
-        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders),
+        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData),
       );
       notify({ key: "copy-agent-package", message: "Copied" });
     } catch (error) {
@@ -40,9 +41,10 @@ export function useAgentPackageActions({
     workingFiles: string[] = [],
     wholeWorkingFolder = false,
     organizationWorkingFolders = false,
+    reviewedUserData?: import("@ponderosa/core").ReviewedUserDataSelection,
   ) => {
     const anchor = document.createElement("a");
-    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders);
+    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData);
     anchor.download = portablePackageFileName(
       title ?? "agent",
       organization,

@@ -28,10 +28,22 @@ path list, removed-secret flags and exclusions describe exactly what will travel
 Use the existing import preview and explicitly chosen new recovery folder or
 confirmed fresh managed root. Import validates the manifest/hash before writing
 working-folder bytes and recreates review copies only. It neither changes access
-nor runs Git, hooks, provider commands or settings. The shared internal
-`BranchPackageEngine.exportAgent` also accepts `reviewedUserData`; the public Branch
-`fileSelections` API and web selection controls are not extended by this change.
-Their callers must expose the same choice before claiming this option is available there.
+nor runs Git, hooks, provider commands or settings.
+
+The Agent export dialog exposes separate unchecked Git and harness-settings choices
+for full exports with whole root or organization working folders. Copy JSON and
+Download JSON pass the same explicit choice. Selected-file and setup-only export
+do not capture either family.
+
+The full Branch export dialog exposes the same unchecked choices, applied only to
+Agents selected for whole working-folder export (including the all-folders option).
+The public Branch package API and SDK carry each Agent's choice in
+`fileSelections[agentId].reviewedUserData={git:true,harness:false}` alongside
+`wholeWorkingFolder:true`. Both booleans are required, and at least one must be
+true. The server refuses this option for template exports, selected-files-only
+exports, unknown fields or invalid selections. Existing definition-tree export
+forwards each Agent's selection to the shared package engine without broadening it.
+The folder and settings review/import behavior is unchanged by these controls.
 
 Harness selection means the listed project-root configuration families below;
 it never reads the host home profile. Unsupported global/native settings are
