@@ -60,7 +60,11 @@ single-link no-follow regular selected `.git` pointer, private `gitdir` backlink
 identifying that exact selected `.git`, and private `commondir` association. The
 supported layout is exactly `<common>/worktrees/<id>`, with canonical same-owner
 directories and no symlink components (including raw paths before dot-dot normalization; at most 128 path components). Association records are strict UTF-8,
-at most 4 KiB, one line (optional final LF), with no CR/NUL. The backlink must be
+at most 4 KiB, one line (optional final LF), with no CR/NUL. Same-owner, regular-file,
+single-link and size gates run before any association-record content read; the
+no-follow open handle must independently satisfy ownership/type/link/size and
+identity checks before the first read. Ownership and identity are checked again
+afterward, including association re-reads. The backlink must be
 absolute and exact. Normal `.git` directories continue to refuse `gitdir` or
 `commondir` indirection. Directory/pointer identity, bytes and change times are
 rechecked before repository-content reads and in the before/after capture.
@@ -223,8 +227,10 @@ mode/stage/OID/flag checks, exact shared checksum association, ordering, extensi
 consumption, no-follow identity and before/after storage/logical checks. Malformed
 prefixes, overlong removals, missing terminators, invalid decoded paths/lengths,
 unknown extensions and observed drift refuse without source writes or native
-index-reading commands. Sparse storage/checkout and external repository authority
-remain unsupported. Destination storage stays the existing inactive standalone
+index-reading commands. Supported sparse checkout/directory forms and reciprocal
+linked-worktree authority use this same v4 reader under the separate contracts
+above and below; combined split/sparse storage, unsupported sparse forms and
+unassociated external repository authority still refuse. Destination storage stays the existing inactive standalone
 full v2/v3 index: v4 compression and source stat/cache layout are not reproduced.
 No tests, native capture or runtime qualification were performed for this batch.
 
@@ -315,7 +321,7 @@ still requires separate human review/action.
 
 | Field | Implemented disposition |
 | --- | --- |
-| `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist. Normal local `.git` only; no external common-dir or alternate object inventory is inferred. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
+| `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist. Supported normal local `.git` and the explicit reciprocally validated selected-worktree/common-directory association above only. Associated shared objects are explicitly authorized by Include Git; unassociated external/common directories and alternate object stores refuse. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
 | `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |

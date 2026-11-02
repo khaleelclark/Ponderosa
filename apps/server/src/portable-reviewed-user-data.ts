@@ -61,18 +61,18 @@ function assertSupportedReviewToml(value:string):void {
     }
   }
 }
-async function regularOriginal(target:string,maxBytes=1024*1024):Promise<{data:Buffer;mode:number}> {
+async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:bigint):Promise<{data:Buffer;mode:number}> {
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');
   const observed=await fs.lstat(target,{bigint:true});
-  if(!observed.isFile()||observed.nlink!==1n||observed.size>BigInt(maxBytes))throw new Error('Reviewed data requires a bounded regular original');
+  if(!observed.isFile()||observed.nlink!==1n||observed.size>BigInt(maxBytes)||expectedOwner!==undefined&&observed.uid!==expectedOwner)throw new Error('Reviewed data requires a bounded regular original');
   const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   try{
     const before=await handle.stat({bigint:true});
-    if(!before.isFile()||before.nlink!==1n||before.dev!==observed.dev||before.ino!==observed.ino||before.size>BigInt(maxBytes))throw new Error('Reviewed original changed before reading');
+    if(!before.isFile()||before.nlink!==1n||before.dev!==observed.dev||before.ino!==observed.ino||before.size>BigInt(maxBytes)||expectedOwner!==undefined&&before.uid!==expectedOwner)throw new Error('Reviewed original changed before reading');
     const data=Buffer.alloc(Number(before.size));let offset=0;
     while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error('Reviewed original shortened');offset+=read.bytesRead;}
     const after=await handle.stat({bigint:true}),current=await fs.lstat(target,{bigint:true});
-    if(before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||current.dev!==after.dev||current.ino!==after.ino||current.nlink!==1n)throw new Error('Reviewed original changed during reading');
+    if(before.uid!==after.uid||current.uid!==after.uid||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||current.dev!==after.dev||current.ino!==after.ino||current.nlink!==1n)throw new Error('Reviewed original changed during reading');
     return {data,mode:Number(before.mode)&0o777};
   }finally{await handle.close();}
 }
@@ -471,8 +471,10 @@ async function gitAssociation(root:string):Promise<GitAssociation|undefined> {
     evidence.push({path:target,identity:originalIdentity(stat)});
   };
   const associationFile=async(target:string)=>{
-    const before=await fs.lstat(target,{bigint:true}),{data}=await regularOriginal(target,4096),after=await fs.lstat(target,{bigint:true});
-    if(before.uid!==owner||data.length>4096||originalIdentity(before)!==originalIdentity(after))throw new Error('Git association original is oversized, foreign or changed');
+    const before=await fs.lstat(target,{bigint:true});
+    if(before.uid!==owner||!before.isFile()||before.nlink!==1n||before.size>4096n)throw new Error('Git association original requires a bounded same-owner regular file');
+    const {data}=await regularOriginal(target,4096,owner),after=await fs.lstat(target,{bigint:true});
+    if(data.length>4096||originalIdentity(before)!==originalIdentity(after))throw new Error('Git association original is oversized, foreign or changed');
     const value=text(data);if(!value||!Buffer.from(value).equals(data)||/[\0\r]/.test(value)||value.replace(/\n$/,'').includes('\n'))throw new Error('Malformed Git association original');
     evidence.push({path:target,identity:originalIdentity(after),data:data.toString('base64')});return value.replace(/\n$/,'');
   };
@@ -496,7 +498,7 @@ async function gitAssociation(root:string):Promise<GitAssociation|undefined> {
   for(const item of evidence){
     const before=await fs.lstat(item.path,{bigint:true});
     if(originalIdentity(before)!==item.identity||await fs.realpath(item.path)!==item.path)throw new Error('Git reciprocal association changed');
-    if(item.data!==undefined){const {data}=await regularOriginal(item.path,4096),after=await fs.lstat(item.path,{bigint:true});if(data.toString('base64')!==item.data||originalIdentity(after)!==item.identity)throw new Error('Git reciprocal association original changed');}
+    if(item.data!==undefined){const {data}=await regularOriginal(item.path,4096,owner),after=await fs.lstat(item.path,{bigint:true});if(data.toString('base64')!==item.data||originalIdentity(after)!==item.identity)throw new Error('Git reciprocal association original changed');}
   }
   return {root,gitDir,commonDir,linked:true,evidence:JSON.stringify(evidence)};
 }
