@@ -273,7 +273,16 @@ are bounded UTF-8 review text, with no NULs and no recognized credentials. Missi
 patterns remain null, not an invented empty file; enabled sparse checkout without
 a pattern original refuses. Local `config` and optional `config.worktree` are
 private bounded no-follow originals. The existing read-only Git config parser
-receives their captured bytes on stdin with includes disabled. Ordered nonsecret
+receives their captured bytes on stdin with includes disabled. Parsing runs in a
+fresh private empty temporary directory, with both process cwd and `-C` there;
+its canonical parent is the Git discovery ceiling, so neither the selected nor
+an ancestor repository supplies startup configuration. A ceiling path containing
+a platform path-list separator refuses instead of weakening discovery isolation. Explicit `--no-pager`
+disables pager-config discovery before command dispatch; a fresh allowlisted
+environment clears inherited Git/trace/config/alias/pager overrides, disables
+system/global files and reads only stdin for the requested enumeration. Only an
+empty parser directory is removed afterward; unexpected bytes are retained and
+cleanup refuses. No source configuration bytes are written to the parser directory. Ordered nonsecret
 entries, original values, implicit booleans and source scope survive; source
 formatting and credential fields are not copied. Include/includeIf declarations
 refuse before repository-aware plumbing, rather than permitting an external
@@ -320,7 +329,7 @@ been performed. Native references: [sparse directory index format](https://git-s
 
 Export plumbing is source code only: `rev-parse`, `symbolic-ref`, `for-each-ref`,
 `config --file - --no-includes` on captured exact local bytes, and `cat-file --batch-all-objects`.
-It drops inherited Git overrides, disables system/global config, fsmonitor,
+Every Git child starts with its process cwd and `-C` at the intended root, an explicit parent discovery ceiling and `--no-pager`. It drops inherited Git overrides, disables system/global config, fsmonitor,
 optional locks, replacement objects, lazy fetching and terminal prompts. No shell
 command interpolation or mutating Git command is used. Before/after
 refs/HEAD/logical index/config/reflogs plus raw index/shared-index/local-config/worktree-config/pattern bytes and identity and full object streams must match (including file absence). Each native

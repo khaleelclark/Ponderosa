@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
+import {tmpdir} from 'node:os';
 import {deflateSync} from 'node:zlib';
 import type {ReviewedGitUserData,ReviewedUserData,ReviewedUserDataSelection} from '@ponderosa/core';
 import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnostic,withoutPortableSecrets} from './portable-secrets.js';
@@ -31,8 +32,9 @@ type GitObject=ReviewedGitUserData['objects'][number];
 /** Read-only plumbing: no hooks, filters, textconv, network, optional locks or inherited Git overrides. */
 function git(root:string,args:string[],input?:Buffer):Promise<Buffer> {
   return new Promise((resolve,reject)=>{
-    const env:NodeJS.ProcessEnv={PATH:process.env.PATH,LANG:'C',LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1'};
-    const child=execFile('git',['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-c','core.untrackedCache=false','-C',root,...args],{env,encoding:'buffer',maxBuffer:limit,timeout:30000},(error,stdout,stderr)=>error||stderr.length?reject(new Error('Portable Git read failed or warned; repository retained unchanged')):resolve(stdout));
+    if(path.dirname(root).includes(path.delimiter)){reject(new Error('Git discovery ceiling cannot contain a path-list separator'));return;}
+    const env:NodeJS.ProcessEnv={PATH:process.env.PATH,LANG:'C',LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CEILING_DIRECTORIES:path.dirname(root),GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1'};
+    const child=execFile('git',['--no-pager','-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-c','core.untrackedCache=false','-C',root,...args],{cwd:root,env,encoding:'buffer',maxBuffer:limit,timeout:30000},(error,stdout,stderr)=>error||stderr.length?reject(new Error('Portable Git read failed or warned; repository retained unchanged')):resolve(stdout));
     child.stdin!.on('error',()=>reject(new Error('Portable Git input failed; repository retained unchanged')));child.stdin!.end(input);
   });
 }
@@ -221,8 +223,21 @@ function indexOrder(a:IndexEntry,b:IndexEntry):number{return Buffer.compare(Buff
 
 function sparseKey(key:string):boolean {return /^(?:core\.sparsecheckout(?:cone)?|index\.sparse|extensions\.(?:sparseindex|worktreeconfig))$/i.test(key);}
 
+/** Git startup must see only an empty private cwd, never the selected or an ancestor repository. */
+async function parseCapturedGitConfiguration(data:Buffer):Promise<string> {
+  const parent=await fs.realpath(tmpdir()),directory=await fs.mkdtemp(path.join(parent,'ponderosa-config-'));
+  try{
+    const stat=await fs.lstat(directory);
+    if(!stat.isDirectory()||(stat.mode&0o077)!==0||await fs.realpath(directory)!==directory||(await fs.readdir(directory)).length)throw new Error('Git config parser directory is not private and empty');
+    return text(await git(directory,['config','--file','-','--null','--list','--no-includes'],data));
+  }finally{
+    // Only remove an empty parser directory; preserve any unexpected bytes instead of recursive cleanup.
+    await fs.rmdir(directory);
+  }
+}
+
 /** Raw snapshots are private comparison evidence; only nonsecret parsed settings enter the package. */
-async function captureSparseConfiguration(gitDir:string,root:string) {
+async function captureSparseConfiguration(gitDir:string) {
   const originals:Array<{name:string;identity:string;data:string}>=[];
   const configuration:ReviewedGitUserData['configurationReview']=[];
   let patternsBase64:string|null=null;
@@ -236,7 +251,7 @@ async function captureSparseConfiguration(gitDir:string,root:string) {
     if(identity(before)!==identity(after))throw new Error('Local Git sparse/config original changed');
     originals.push({name,identity:identity(after),data:data.toString('base64')});
     if(name==='info/sparse-checkout'){patternsBase64=data.toString('base64');continue;}
-    const parsed=text(await git(root,['config','--file','-','--null','--list','--no-includes'],data));
+    const parsed=await parseCapturedGitConfiguration(data);
     if(parsed&&!parsed.endsWith('\0'))throw new Error('Incomplete local Git configuration inventory');
     for(const row of parsed?parsed.slice(0,-1).split('\0'):[]){
       if(configuration.length>=10000)throw new Error('Local Git configuration exceeds its bound');
@@ -474,12 +489,12 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   };
   await inspectObjects(path.join(root,'.git','objects'));
   // Parse only captured local bytes, with includes disabled, before repository-aware plumbing.
-  await captureSparseConfiguration(gitDir,root);
+  await captureSparseConfiguration(gitDir);
   const format=text(await git(root,['rev-parse','--show-object-format'])).trim();
   if(format!=='sha1'&&format!=='sha256')throw new Error('Unsupported Git object format');
   const snapshot=async()=>{
     try{await fs.lstat(path.join(gitDir,'index.lock'));throw new Error('Git index is locked; preserve source');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-    const sparse=await captureSparseConfiguration(gitDir,root);
+    const sparse=await captureSparseConfiguration(gitDir);
     const storage=await captureIndexStorage(gitDir,format);
     const refs=await git(root,['for-each-ref','--format=%(refname)%00%(objectname)%00%(symref)']);
     let head:Buffer;
