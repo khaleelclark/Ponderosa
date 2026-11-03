@@ -7,12 +7,14 @@ import type {NativeReviewedGitConfiguration} from './portable-reviewed-user-data
 type Location='gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';
 type NodeLocation={path:string;context?:Location};
 export interface NativeGitExternalApplication {
+  rootMetadata?:{context:'worktree';mode:number;mtimeNs:string};
   absentPaths?:NodeLocation[];
   directories:Array<NodeLocation&{mode:number;mtimeNs:string}>;
   files:Array<NodeLocation&{data:Buffer;mode:number;mtimeNs:string}>;
   links:Array<NodeLocation&{target:string;targetContext?:Location;kind:'symlink'|'hardlink';mtimeNs?:string}>;
 }
 export interface NativeGitExternalGraph {
+  rootMetadata:Array<{path:string;root:string;mode:number;mtimeNs:string}>;
   absentPaths:Array<{path:string;root:string}>;
   directories:Array<{path:string;root:string;mode:number;mtimeNs:string}>;
   files:Array<{path:string;root:string;data:Buffer;mode:number;mtimeNs:string}>;
@@ -26,9 +28,22 @@ function destination(root:string,name:string):string{
   relativeName(name);if(!path.isAbsolute(root)||path.resolve(root)!==root)throw new Error('External Git context must be a canonical current-host root');
   const target=path.join(root,...name.split('/'));if(!target.startsWith(root+path.sep))throw new Error('External Git node leaves its owned context');return target;
 }
+type GraphContext={gitDir:string;privateDir?:string;worktreePath:string};
+// Local planning authority only: neither portable data nor a destination file
+// can grant a selected module a different top-level ownership context.
+const graphOwners=new WeakMap<NativeReviewedGitConfiguration,{configuration:NativeReviewedGitConfiguration;context:GraphContext}>();
+export function bindNativeGitExternalGraphOwner(configuration:NativeReviewedGitConfiguration,owner:NativeReviewedGitConfiguration,context:GraphContext):void {
+  if(configuration===owner)return;
+  let next={configuration:owner,context};const seen=new Set<NativeReviewedGitConfiguration>([configuration]);
+  while(graphOwners.has(next.configuration)){if(seen.has(next.configuration))throw new Error('Native external graph owner cycle');seen.add(next.configuration);next=graphOwners.get(next.configuration)!;}
+  if(next.configuration===configuration)throw new Error('Native external graph owner cycle');
+  const prior=graphOwners.get(configuration);if(prior&&(prior.configuration!==next.configuration||JSON.stringify(prior.context)!==JSON.stringify(next.context)))throw new Error('Native module external graph already has another local owner');
+  graphOwners.set(configuration,next);
+}
 /** Flatten only a declared owned native graph. Never follow links or read the host filesystem. */
 export function getNativeGitExternalGraph(configuration:NativeReviewedGitConfiguration|undefined,context:{gitDir:string;privateDir?:string;worktreePath:string}):NativeGitExternalGraph{
-  const result:NativeGitExternalGraph={absentPaths:[],directories:[],files:[],links:[]},nodes=new Map<string,{kind:'directory'|'file'|'link'|'absent';value:unknown}>();let count=0;
+  const owner=configuration?graphOwners.get(configuration):undefined;if(owner)return getNativeGitExternalGraph(owner.configuration,owner.context);
+  const result:NativeGitExternalGraph={rootMetadata:[],absentPaths:[],directories:[],files:[],links:[]},nodes=new Map<string,{kind:'directory'|'file'|'link'|'absent';value:unknown}>(),rootReferences=new Set<string>();let count=0;
   const add=(name:string,kind:'directory'|'file'|'link'|'absent',value:unknown)=>{
     if(++count>10000)throw new Error('Native external graph exceeds its node bound');
     const key=nativeKey(name),prior=nodes.get(key);
@@ -41,12 +56,13 @@ export function getNativeGitExternalGraph(configuration:NativeReviewedGitConfigu
     if(depth>32)throw new Error('Native external module graph exceeds its nesting bound');
     const plan=(config as (NativeReviewedGitConfiguration&{external?:NativeGitExternalApplication})|undefined)?.external;
     if(plan){
+      if(plan.rootMetadata){if(plan.rootMetadata.context!=='worktree')throw new Error('Root metadata requires the issued worktree root');const value={path:current.worktreePath,root:current.worktreePath,mode:plan.rootMetadata.mode,mtimeNs:plan.rootMetadata.mtimeNs};const prior=result.rootMetadata.find(row=>nativeKey(row.path)===nativeKey(value.path));if(prior&&(prior.mode!==value.mode||prior.mtimeNs!==value.mtimeNs))throw new Error('Conflicting root metadata');if(!prior){result.rootMetadata.push(value);add(value.path,'directory',value);}}
       const root=(location:Location|undefined)=>{if(location!==undefined&&!['gitdir','private','worktree','owner','ownerWorktree'].includes(location))throw new Error('Unknown native external node context');return location==='ownerWorktree'?context.worktreePath:location==='worktree'?current.worktreePath:location==='private'?current.privateDir??current.gitDir:location==='owner'?context.gitDir:current.gitDir;};
       for(const node of [...plan.directories,...plan.files,...plan.links])if(node.context==='owner'||node.context==='ownerWorktree')throw new Error('Top-level owner contexts are references, not node creation authority');
       for(const node of plan.absentPaths??[]){const base=root(node.context),value={path:destination(base,node.path),root:base};if(add(value.path,'absent',value))result.absentPaths.push(value);}
       for(const node of plan.directories){const base=root(node.context),value={path:destination(base,node.path),root:base,mode:node.mode,mtimeNs:node.mtimeNs};if(add(value.path,'directory',value))result.directories.push(value);}
       for(const node of plan.files){const base=root(node.context),value={path:destination(base,node.path),root:base,data:node.data,mode:node.mode,mtimeNs:node.mtimeNs};if(add(value.path,'file',value))result.files.push(value);}
-      for(const node of plan.links){const base=root(node.context),targetRoot=root(node.targetContext),value={path:destination(base,node.path),root:base,target:destination(targetRoot,node.target),targetRoot,kind:node.kind,text:'',...(node.mtimeNs!==undefined?{mtimeNs:node.mtimeNs}:{})};value.text=path.relative(path.dirname(value.path),value.target).split(path.sep).join('/')||'.';if(add(value.path,'link',value))result.links.push(value);}
+      for(const node of plan.links){const base=root(node.context),targetRoot=root(node.targetContext),value={path:destination(base,node.path),root:base,target:node.target==='.'&&node.kind==='symlink'&&(node.targetContext==='worktree'||node.targetContext==='ownerWorktree')?targetRoot:destination(targetRoot,node.target),targetRoot,kind:node.kind,text:'',...(node.mtimeNs!==undefined?{mtimeNs:node.mtimeNs}:{})};if(node.target==='.')rootReferences.add(value.path);value.text=path.relative(path.dirname(value.path),value.target).split(path.sep).join('/')||'.';if(add(value.path,'link',value))result.links.push(value);}
     }
     for(const module of config?.modules??[])collect(module.configuration,{gitDir:module.gitDir,privateDir:module.layout?.privateDir??module.gitDir,worktreePath:module.worktreePath},depth+1);
   };
@@ -61,6 +77,7 @@ export function getNativeGitExternalGraph(configuration:NativeReviewedGitConfigu
     for(const module of config?.modules??[])aliases(module.configuration);
   };aliases(configuration);
   for(const link of result.links){
+    if(rootReferences.has(link.path)&&!result.rootMetadata.some(row=>nativeKey(row.path)===nativeKey(link.target)))throw new Error('Root symlink reference requires explicit issued-root metadata');
     const target=nodes.get(nativeKey(link.target));if(!target)throw new Error('Native external alias target is outside its complete declared owned graph');
     if(link.kind==='hardlink'){
       if(target.kind!=='file')throw new Error('Native hardlink target must be a declared regular original');
@@ -116,6 +133,8 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     const nativeDefault=family.bindings.find(binding=>binding.default&&sourcePathsEqual(binding.resolvedPath,source));
     const defaultScope=nativeDefault?scopes.find(scope=>sourcePathsEqual(joinSourcePath(scope.sourceCommon,'config'),nativeDefault.sourceConfigPath)):undefined;
     if(defaultScope)return {target:path.join(defaultScope.gitDir,'hooks'),scope:defaultScope,context:'gitdir' as const};
+    const selectedRootScope=scopes.filter(scope=>sourcePathsEqual(scope.sourceWorkingRoot,source)&&!scope.worktreePath.startsWith(context.common+path.sep)&&selectedDestinations.some(root=>scope.worktreePath===root||scope.worktreePath.startsWith(root+path.sep))).sort((a,b)=>b.sourceWorkingRoot.length-a.sourceWorkingRoot.length)[0];
+    if(selectedRootScope)return {target:selectedRootScope.worktreePath,scope:selectedRootScope,context:'worktree' as const};
     const workingScope=scopes.filter(scope=>!sourcePathsEqual(scope.sourceWorkingRoot,source)&&sourcePathWithin(scope.sourceWorkingRoot,source)&&!sourceStorage(source)).sort((a,b)=>b.sourceWorkingRoot.length-a.sourceWorkingRoot.length).find(scope=>family.files.filter(file=>sourcePathWithin(source,file.sourcePath)&&!sourceStorage(file.sourcePath)).every(file=>read(path.join(scope.worktreePath,...relativeSourcePath(scope.sourceWorkingRoot,file.sourcePath).split('/')))?.equals(Buffer.from(file.dataBase64,'base64'))));
     return workingScope?{target:path.join(workingScope.worktreePath,...relativeSourcePath(workingScope.sourceWorkingRoot,source).split('/')),scope:workingScope,context:'worktree' as const}:{target:ownedTree(source),scope:rootScope,context:'gitdir' as const};
   };
@@ -148,10 +167,12 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
   const payloadLinks=new Set(family.links.filter(link=>dataRoots.some(root=>sourcePathWithin(root.source,link.sourcePath))||family.bindings.some(binding=>sourcePathsEqual(binding.resolvedPath,link.sourcePath))).map(link=>sourcePathKey(link.sourcePath)));
   for(let pass=0;pass<=family.links.length;pass++){let changed=false;for(const link of family.links)if(payloadLinks.has(sourcePathKey(link.sourcePath))&&family.links.some(next=>sourcePathsEqual(next.sourcePath,link.targetSourcePath))&&!payloadLinks.has(sourcePathKey(link.targetSourcePath))){payloadLinks.add(sourcePathKey(link.targetSourcePath));changed=true;}if(!changed)break;}
   const payloadTargets=new Set(family.links.filter(link=>payloadLinks.has(sourcePathKey(link.sourcePath))).map(link=>sourcePathKey(link.targetSourcePath)));
-  const putDirectory=(p:Placement,metadata:{mode:number;mtimeNs:string})=>{if(p.path)p.scope.external.directories.push({path:p.path,context:p.context,...metadata});};
+  const putDirectory=(p:Placement,metadata:{mode:number;mtimeNs:string})=>{if(p.path)p.scope.external.directories.push({path:p.path,context:p.context,...metadata});else if(p.context==='worktree'){const prior=p.scope.external.rootMetadata;if(prior&&(prior.mode!==metadata.mode||prior.mtimeNs!==metadata.mtimeNs))throw new Error('Captured root metadata is inconsistent');p.scope.external.rootMetadata={context:'worktree',...metadata};}else throw new Error('Only an issued worktree root can carry root metadata');};
   for(const folder of family.directories)if(dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath))||payloadTargets.has(sourcePathKey(folder.sourcePath)))putDirectory(placement(folder.sourcePath),{mode:folder.mode,mtimeNs:folder.mtimeNs});
   for(const file of family.files){const p=placement(file.sourcePath),data=Buffer.from(file.dataBase64,'base64');p.scope.external.files.push({path:p.path,context:p.context,data,mode:file.mode,mtimeNs:file.mtimeNs});originals.set(p.absolute,data);}
   const reference=(from:NativeExternalScope,target:Placement):{target:string;targetContext:Location}=>{
+    if(from===target.scope&&!target.path&&target.context==='worktree'&&target.scope.external.rootMetadata)return {target:'.',targetContext:'worktree'};
+    if(target.absolute===context.worktree&&rootScope.external.rootMetadata)return {target:'.',targetContext:'ownerWorktree'};
     if(from===target.scope&&target.path)return {target:target.path,targetContext:target.context};
     for(const [root,location] of [[context.common,'owner'],[context.worktree,'ownerWorktree']] as const){
       if(target.absolute.startsWith(root+path.sep)){const name=path.relative(root,target.absolute).split(path.sep).join('/');relativeName(name);return {target:name,targetContext:location};}
@@ -182,7 +203,9 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
       const relative='.ponderosa-portable-review/active-git-hooks/'+digest(JSON.stringify([sourcePathKey(sourceConfigPath),rawValue]));
       for(const binding of bindings){
         if(scope.bare&&binding.context==='worktree')continue;
-        const original=placement(binding.resolvedPath),location=binding.context==='worktree'?'worktree':'private',base=location==='worktree'?scope.worktreePath:scope.privateDir,ref=reference(scope,original);
+        const location=binding.context==='worktree'?'worktree':'private';
+        if(absentSources.has(sourcePathKey(binding.resolvedPath))){if(!scope.external.absentPaths!.some(node=>node.path===relative&&node.context===location))scope.external.absentPaths!.push({path:relative,context:location});continue;}
+        const original=placement(binding.resolvedPath),base=location==='worktree'?scope.worktreePath:scope.privateDir,ref=reference(scope,original);
         if(!scope.external.links.some(link=>link.path===relative&&link.context===location))scope.external.links.push({path:relative,context:location,...ref,kind:'symlink'});
         if(!base)throw new Error('Configured hook context has no fresh owned root');
       }

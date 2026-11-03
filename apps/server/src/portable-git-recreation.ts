@@ -1,5 +1,5 @@
 import {workingDirectoryIdentity,workingNativeAliasEvidence,createWorkingNativeMetadataEvidence,type WorkingRootIdentity,type WorkingNativeMetadata} from './portable-working-files.js';
-import {planReviewedGitExternalApplication,getNativeGitExternalGraph,type PlannedGitExternalApplication,type NativeExternalScope} from './portable-git-external-application.js';
+import {planReviewedGitExternalApplication,getNativeGitExternalGraph,bindNativeGitExternalGraphOwner,type PlannedGitExternalApplication,type NativeExternalScope} from './portable-git-external-application.js';
 import {decodePortableMetadataArtifact} from './agent-package-codec.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
@@ -140,6 +140,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
       if(owner.task===task||JSON.stringify(task.value.git)!==JSON.stringify(owner.module.value.git)||JSON.stringify(task.value.providerFiles.filter(file=>file.path.startsWith('.git/')))!==JSON.stringify(owner.module.value.providerFiles))throw new Error('Captured module and selected Agent repository disagree; re-export one coherent source');
       if(task.storage?.gitDir!==owner.module.gitDir)throw new Error('Selected module storage must match its parent repository destination topology');
       task.moduleOwner={ref:owner.task.ref,gitDir:owner.module.layout?.privateDir??owner.module.gitDir};task.configuration=owner.module.configuration;
+      bindNativeGitExternalGraphOwner(task.configuration,owner.task.configuration!,{gitDir:owner.task.layout?.commonDir??owner.task.storage?.gitDir??path.join(owner.task.destination,'.git'),privateDir:owner.task.layout?.privateDir,worktreePath:owner.task.destination});
       task.activation={...owner.module.activation,harness:task.activation.harness};
     }
     const ordered:RecoveryTask[]=[],visiting=new Set<string>();

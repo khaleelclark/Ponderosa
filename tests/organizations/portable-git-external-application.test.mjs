@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {planReviewedGitExternalApplication,getNativeGitExternalGraph,getNativeGitGeneratedHookViews} from '../../apps/server/dist/portable-git-external-application.js';
+import {planReviewedGitExternalApplication,getNativeGitExternalGraph,getNativeGitGeneratedHookViews,bindNativeGitExternalGraphOwner} from '../../apps/server/dist/portable-git-external-application.js';
 
 const base=path.resolve('/fresh/work'),common=path.join(base,'.git');
 const context={common,private:common,worktree:base};
@@ -22,9 +22,9 @@ test('relative hook contexts retain one canonical working copy and explicit gene
  assert.match(projected.value,/^\.ponderosa-portable-review\/active-git-hooks\/[a-f0-9]{64}$/);
  const graph=getNativeGitExternalGraph(config(planned.external),{gitDir:common,worktreePath:base});
  assert.equal(graph.files[0].path,path.join(base,'.husky','pre-commit'));
- assert.equal(graph.links.length,2,'normal and bare/push Git contexts remain separately bound');
- assert.equal(graph.absentPaths.length,1);
- assert.equal(getNativeGitGeneratedHookViews(config(planned.external),{gitDir:common,worktreePath:base}).length,2);
+ assert.equal(graph.links.length,1,'absent push-context hooks stay absent while normal hooks use a view');
+ assert.equal(graph.absentPaths.length,2);
+ assert.equal(getNativeGitGeneratedHookViews(config(planned.external),{gitDir:common,worktreePath:base}).length,1);
 });
 
 test('a captured dangling hook symlink targets explicit owned negative evidence',()=>{
@@ -64,4 +64,22 @@ test('bare capsule placement is explicit and raw config originals cannot replace
 test('omission never becomes absence and human mappings stay inside selected destinations',()=>{
  assert.throws(()=>plan(value(family({omittedPaths:['/secret/config']}))),/omitted, not observed absent/);
  assert.throws(()=>planReviewedGitExternalApplication(value(family()),{git:true,harness:false,gitPathMappings:[{source:'/secret',destination:path.resolve('/outside')}]},context,[base],new Map()),/selected fresh import roots/);
+});
+
+test('selected dependency root metadata is separate from directory payload ownership',()=>{
+ const planned=plan(value(family({directories:[folder('/old')],files:[file('/old/script')],bindings:[binding('hooks','.','/old','worktree','/old')]})));
+ planned.project(context,'/old/.git/config','core.hooksPath','.');
+ assert.equal(planned.external.rootMetadata.context,'worktree');
+ assert.equal(planned.external.files[0].path,'script');
+ const graph=getNativeGitExternalGraph(config(planned.external),{gitDir:common,worktreePath:base});
+ assert.equal(graph.rootMetadata[0].path,base);assert.equal(graph.directories.length,0);assert.equal(graph.links[0].target,base);
+});
+
+test('a selected module task retains the locally compiled top graph authority',()=>{
+ const child=config({directories:[],files:[],links:[{path:'hooks/run',target:'helper',targetContext:'ownerWorktree',kind:'symlink'}]});
+ const parent={...config({directories:[],files:[{path:'helper',context:'worktree',data:Buffer.from('script'),...metadata}],links:[]}),modules:[{gitDir:path.join(common,'modules','child'),worktreePath:path.join(base,'child'),configuration:child}]};
+ const childContext={gitDir:path.join(common,'modules','child'),worktreePath:path.join(base,'child')};
+ assert.throws(()=>getNativeGitExternalGraph(child,childContext),/outside its complete declared/);
+ bindNativeGitExternalGraphOwner(child,parent,{gitDir:common,worktreePath:base});
+ assert.equal(getNativeGitExternalGraph(child,childContext).links[0].target,path.join(base,'helper'));
 });
