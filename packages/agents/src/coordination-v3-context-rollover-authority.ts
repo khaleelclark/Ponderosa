@@ -11,6 +11,7 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { unfinishedHumanSourceActivationIds } from "./coordination-v3-required-reply-authority.js";
 import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
@@ -942,7 +943,7 @@ export class CoordinationV3ContextRolloverAuthority {
   commitReplacementInputForRun(runId: string, agentId: string, now = new Date().toISOString()): ContextRolloverV3 | undefined {
     return this.sqlite.transaction(() => {
       const row = this.sqlite.prepare(`
-        SELECT rollover.*, provider.prompt_hash, provider.system_prompt_hash,
+        SELECT rollover.*, provider.provider_prompt, provider.prompt_hash, provider.system_prompt_hash,
           provider.source_manifest_json,
           CASE WHEN EXISTS (
             SELECT 1 FROM scheduler_run_activations recovery_attached
@@ -975,6 +976,7 @@ export class CoordinationV3ContextRolloverAuthority {
           )
         LIMIT 1
       `).get(runId, runId, agentId) as (RolloverRow & {
+        provider_prompt: string;
         prompt_hash: string;
         system_prompt_hash: string;
         source_manifest_json: string;
@@ -1047,14 +1049,29 @@ export class CoordinationV3ContextRolloverAuthority {
           (!recovery && JSON.stringify(manifestActivationIds) !== JSON.stringify(attachedActivationIds))) {
         throw new Error("context rollover replacement manifest activation binding is mismatched");
       }
+      // Original human objectives are reconstruction data, not additional
+      // attached work. Resolve their exact scoped obligation lineage in the
+      // same transaction and verify each original payload is in this packet.
+      const taskSourceIds = unfinishedHumanSourceActivationIds(this.sqlite, runId)
+        .filter(id => !manifestActivationIds.includes(id));
+      const taskSources = taskSourceIds.map(id => {
+        const source = this.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND scope_key=?')
+          .get(id, row.agent_id, row.project_id, row.scope_key) as {payload_json:string} | undefined;
+        const communication = source && (JSON.parse(source.payload_json) as {communication?: {eventId?:unknown; text?:unknown; sender?:{kind?:unknown}}}).communication;
+        if (!communication || communication.sender?.kind !== 'user' || typeof communication.eventId !== 'string' || typeof communication.text !== 'string' ||
+            !row.provider_prompt.includes(JSON.stringify({sourceActivationId:id, communication})))
+          throw new Error('context rollover original human objective is unavailable');
+        return {id, eventId:communication.eventId as string, hash:createHash('sha256').update(communication.text).digest('hex')};
+      });
       const recentTail = JSON.parse(row.recent_tail_event_ids_json) as string[];
       const recentTailHashes = JSON.parse(row.recent_tail_hashes_json) as string[];
       if (manifest.historyMessageCount !== recentTail.length) {
         throw new Error("context rollover replacement history count does not match its frozen tail");
       }
       const communicationEventIds = manifest.communicationEventIds.filter((id): id is string => typeof id === "string");
+      const expectedCommunicationEventIds = [...new Set([...recentTail, ...taskSources.map(source => source.eventId)])];
       if (communicationEventIds.length !== manifest.communicationEventIds.length ||
-          JSON.stringify(communicationEventIds) !== JSON.stringify(recentTail)) {
+          JSON.stringify(communicationEventIds) !== JSON.stringify(expectedCommunicationEventIds)) {
         throw new Error("context rollover replacement manifest does not exactly match its frozen recent tail");
       }
       const communicationSources = manifest.sources.filter((source): source is {
@@ -1062,11 +1079,15 @@ export class CoordinationV3ContextRolloverAuthority {
       } => Boolean(source && typeof source === "object" &&
         (source as { kind?: unknown }).kind === "communication" &&
         typeof (source as { ref?: unknown }).ref === "string"));
-      if (communicationSources.length !== recentTail.length || recentTail.some((eventId, index) => {
+      if (communicationSources.length !== expectedCommunicationEventIds.length || recentTail.some((eventId, index) => {
         const source = communicationSources[index];
         return source?.ref !== eventId || source.delivery !== "submitted" ||
           source.hash !== recentTailHashes[index];
-      })) throw new Error("context rollover replacement sources do not match frozen canonical content hashes");
+      }) || communicationSources.slice(recentTail.length).some((source, index) =>
+        source.ref !== expectedCommunicationEventIds[recentTail.length + index] ||
+        source.delivery !== 'submitted' ||
+        (source.hash !== undefined && source.hash !== taskSources.find(task => task.eventId === source.ref)?.hash)))
+        throw new Error("context rollover replacement sources do not match frozen canonical content hashes");
       const handoffSources = manifest.sources.filter((source): source is { kind: string; ref: string; hash?: string; delivery?: string } =>
         Boolean(source && typeof source === "object" &&
           (source as { kind?: unknown }).kind === "continuation_handoff" &&
@@ -1165,7 +1186,7 @@ export class CoordinationV3ContextRolloverAuthority {
       const policySources = sourcesOf("policy");
       const teamSources = sourcesOf("team_directory");
       const activationSources = sourcesOf("activation");
-      const expectedActivationSourceIds = recovery ? manifestActivationIds : attachedActivationIds;
+      const expectedActivationSourceIds = [...(recovery ? manifestActivationIds : attachedActivationIds), ...taskSourceIds].sort();
       if (identitySources.length !== 1 || identitySources[0]!.ref !== row.agent_id ||
           policySources.length !== 1 || !/^[a-f0-9]{64}$/u.test(policySources[0]!.hash ?? "") ||
           teamSources.length !== 1 || !/^[a-f0-9]{64}$/u.test(teamSources[0]!.hash ?? "") ||

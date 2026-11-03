@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { CoordinationV3Store } from '../../packages/agents/dist/index.js';
 
 const Database = createRequire(new URL("../../apps/server/package.json", import.meta.url))('better-sqlite3');
 
@@ -69,7 +70,33 @@ for (const windowTokens of [200000, undefined]) test(`checks 93, 94: automatic p
   let retainedFact, replacementSessionId;
   assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).contextRolloverEnabled, true);
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverWindowFraction: 0.75 }));
-  const session = await f.hold(agent.id);
+  const objective='Complete all implementation, then validate the whole product.';
+  const steering='Include the discovered instruction-following failures; finish implementation before testing.';
+  f.plans.set(agent.id,[{hold:true}]);await f.send(agent.id,objective);
+  await until(()=>f.turns.some(turn=>turn.agentId===agent.id&&turn.input.prompt.includes(objective)),'broad task accepted');
+  const session=f.sessions.get(agent.id);
+  await f.send(agent.id,steering,{activeRunDelivery:'steer'});
+  await until(()=>f.steers.some(turn=>turn.agentId===agent.id&&turn.input.prompt.includes(steering)),'human steering acknowledged');
+  // Push the broad objective and its steering out of the frozen three-message
+  // tail. They must survive through their durable task sources instead.
+  for(let n=0;n<4;n++){
+    const fyi='Additional human context '+n;
+    await f.send(agent.id,fyi,{activeRunDelivery:'steer'});
+    await until(()=>f.steers.some(turn=>turn.agentId===agent.id&&turn.input.prompt.includes(fyi)),'later context acknowledged');
+  }
+  let rejectedForeign=false;
+  const originalCommit=CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement;
+  CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=function(input){
+    if(input.sourceManifest?.providerSessionDisposition==='reseeded' && !rejectedForeign){
+      const forged={...input,sourceManifest:{...input.sourceManifest,sources:[...input.sourceManifest.sources,
+        {kind:'activation',ref:randomUUID(),delivery:'submitted'}]}};
+      assert.throws(()=>originalCommit.call(this,forged),/source multiset/);
+      assert.throws(()=>originalCommit.call(this,{...input,prompt:input.prompt.replaceAll(objective,'forged objective')}),/original human objective is unavailable/);
+      rejectedForeign=true;
+    }
+    return originalCommit.call(this,input);
+  };
+  t.after(()=>{CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=originalCommit;});
   session.contextUsage = () => ({ usedTokens: 160000, ...(windowTokens ? { windowTokens } : {}), providerSessionGeneration: session.engineAgentId });
   const events = async () => (await readFile(path.join(f.dataDir, 'projects', chat.projectId, 'agents', agent.id, 'events.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).event);
   f.plans.set(agent.id, [
@@ -81,6 +108,9 @@ for (const windowTokens of [200000, undefined]) test(`checks 93, 94: automatic p
       assert.notEqual(s.engineAgentId, session.engineAgentId, 'Replacement reused the old session');
       retainedFact = JSON.stringify(turn).match(/handoff-[a-f0-9-]{36}/)?.[0];
       assert.equal(retainedFact, fact, 'The accepted handoff was absent from the replacement input');
+      assert.ok(input.prompt.includes(objective),'original broad objective survives reseed');
+      assert.ok(input.prompt.includes(steering),'acknowledged human steering survives reseed');
+      assert.equal(rejectedForeign,true,'unrelated activation source must be rejected');
       replacementSessionId = s.engineAgentId;
       s.events.push({ type: 'context_usage', providerSessionId: s.engineAgentId, providerSessionGeneration: s.engineAgentId, usedTokens: 1000, ...(windowTokens ? { windowTokens } : {}) });
       await until(async () => (await events()).some(x => x.type === 'context_rollover_completed'), 'replacement accepted before task delivery');
