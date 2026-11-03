@@ -4,7 +4,7 @@ import { withSourceMutation } from "./source-capture-boundary.js";
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "@ponderosa/native-host/fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { promises as fs } from "@ponderosa/native-host/fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import type Database from "better-sqlite3";
@@ -115,10 +115,10 @@ function validateWorkingCopy(
   const parent=workingCopy.importedParent;
   if(parent){
     const parts=parent.relativePath?.split('/')??[];
-    if(!parent.parentAgentId||!parent.parentProjectId||typeof parent.parentPath!=='string'||!path.isAbsolute(parent.parentPath)||!parts.length||parts.some(part=>!part||part==='.'||part==='..')||parent.relativePath.includes('\\')||[parent.parentDevice,parent.parentInode,parent.device,parent.inode].some(value=>typeof value!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(value))||workingCopy.rootPath!==path.join(parent.parentPath,...parts))throw new Error('invalid locally issued contained-root identity');
+    if(!parent.parentAgentId||!parent.parentProjectId||typeof parent.parentPath!=='string'||!isAbsolute(parent.parentPath)||!parts.length||parts.some(part=>!part||part==='.'||part==='..')||parent.relativePath.includes('\\')||[parent.parentDevice,parent.parentInode,parent.device,parent.inode].some(value=>typeof value!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(value))||workingCopy.rootPath!==join(parent.parentPath,...parts))throw new Error('invalid locally issued contained-root identity');
   }
   const preparations=workingCopy.containedRootPreparations;
-  if(preparations&&(!Array.isArray(preparations)||preparations.length>10000||new Set(preparations.map(item=>item.id)).size!==preparations.length||preparations.some(item=>!item.id||!['creating','created','binding','bound'].includes(item.phase)||typeof item.relativePath!=='string'||!item.relativePath||item.relativePath.split('/').some(part=>!part||part==='.'||part==='..')||item.relativePath.includes('\\')||item.rootPath!==path.join(workingCopy.rootPath,...item.relativePath.split('/'))||[item.parentDevice,item.parentInode].some(value=>typeof value!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(value))||(item.phase!=='creating'&&[item.device,item.inode].some(value=>typeof value!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(value)))||((item.phase==='binding'||item.phase==='bound')&&!item.childAgentId))))throw new Error('invalid contained-root preparation receipt');
+  if(preparations&&(!Array.isArray(preparations)||preparations.length>10000||new Set(preparations.map(item=>item.id)).size!==preparations.length||preparations.some(item=>!item.id||!['creating','created','binding','bound'].includes(item.phase)||typeof item.relativePath!=='string'||!item.relativePath||item.relativePath.split('/').some(part=>!part||part==='.'||part==='..')||item.relativePath.includes('\\')||item.rootPath!==join(workingCopy.rootPath,...item.relativePath.split('/'))||[item.parentDevice,item.parentInode].some(value=>typeof value!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(value))||(item.phase!=='creating'&&[item.device,item.inode].some(value=>typeof value!=='string'||!/^(?:0|[1-9][0-9]*)$/.test(value)))||((item.phase==='binding'||item.phase==='bound')&&!item.childAgentId))))throw new Error('invalid contained-root preparation receipt');
   if (workingCopy.mode === "shared" && (
     workingCopy.id !== `shared:${project.id}` ||
     workingCopy.rootPath !== project.hostPath ||
