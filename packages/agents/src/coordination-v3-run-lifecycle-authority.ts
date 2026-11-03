@@ -444,6 +444,19 @@ export class CoordinationV3RunLifecycleAuthority {
       if (!attached || attached.agent_id !== run.agent_id) {
         throw new Error("offending activation is not attached to the Run");
       }
+      // A continuation that could not compile never reached its provider.
+      // Terminalize its exact retained rollover before reply recovery observes
+      // the Run, so the original obligation stays held with its handoff.
+      this.sqlite.prepare(`UPDATE context_rollovers
+        SET state='failed',last_error='Continuation input could not be prepared; original work and handoff remain held.',
+          updated_at=?,terminal_at=COALESCE(terminal_at,?)
+        WHERE agent_id=? AND project_id=? AND scope_key=? AND state='continuation_ready'
+          AND replacement_verified_at IS NULL AND (
+            continuation_activation_id=? OR EXISTS (
+              SELECT 1 FROM activation_sources recovery WHERE recovery.activation_id=?
+                AND recovery.source_kind='context_rollover_recovery' AND recovery.source_id=context_rollovers.id
+            )
+          )`).run(now,now,run.agent_id,run.project_id,run.scope_key,input.activationId,input.activationId);
       this.support.nextFence(run.agent_id as string);
       const detail = input.errorDetail
         ? (input.errorCode + ": " + input.errorDetail).slice(0, 2_000)

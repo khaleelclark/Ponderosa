@@ -177,3 +177,32 @@ for(const phase of ['before packet commit','after packet commit']) test(`failed 
     assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,3,'only opening, held task and handoff ran');
   } finally {db.close();}
 }));
+
+
+test('rollover continuation compilation failure holds original task and handoff',options,t=>withFixture(t,async f=>{
+  const chat=await f.createChat('Invalid continuation input'),agent=await f.createAgent(chat,'Task owner');
+  const session=await f.hold(agent.id);
+  f.plans.set(agent.id,[{run:async s=>s.events.push({type:'text',delta:'The original task remains unfinished.'})}]);
+  const originalLease=CoordinationV3Store.prototype.leaseNextRun;
+  CoordinationV3Store.prototype.leaseNextRun=function(...args){
+    const lease=originalLease.apply(this,args);
+    if(!lease||!lease.activations.some(a=>a.kind==='context_rollover_continuation'))return lease;
+    return {...lease,activations:lease.activations.map(a=>a.kind==='context_rollover_continuation'?{...a,payload:{...a.payload,controlledOversized:'x'.repeat(1024*1024)}}:a)};
+  };
+  t.after(()=>{CoordinationV3Store.prototype.leaseNextRun=originalLease;});
+  session.events.push({type:'context_usage',providerSessionId:session.engineAgentId,providerSessionGeneration:session.engineAgentId,usedTokens:160000,windowTokens:200000});
+  const db=new Database(path.join(f.dataDir,'ponderosa.db'),{readonly:true,fileMustExist:true});
+  try{
+    await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'rollover requested');
+    session.finish();
+    await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='failed'").get(agent.id),'compilation failure held');
+    const rollover=db.prepare('SELECT * FROM context_rollovers WHERE agent_id=?').get(agent.id);
+    assert.match(rollover.last_error,/could not be prepared/);assert.ok(rollover.handoff_event_id);
+    const candidate=db.prepare('SELECT run.id FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id WHERE attached.activation_id=?').get(rollover.continuation_activation_id);
+    const obligations=db.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').all(candidate.id);
+    assert.ok(obligations.length>0);assert.ok(obligations.every(row=>row.state==='pending'));
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_activations WHERE kind='required_reply_recovery' AND json_extract(payload_json,'$.requiredReplyRecovery.sourceRunId')=?").get(candidate.id).n,0);
+    assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,3);
+  }finally{db.close();}
+}));
