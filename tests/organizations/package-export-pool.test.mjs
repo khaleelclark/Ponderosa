@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, linkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, statSync, readFileSync, renameSync, rmSync, writeFileSync, linkSync, unlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DataDirectoryAuthority } from '../../packages/native-host/dist/index.js';
@@ -88,4 +88,16 @@ test('forged and closed root authorities cannot authorize the pool', {skip: proc
     assert.throws(() => p.write(0,Buffer.from('x')));
     p.close();
   } finally { f.cleanup(); }
+});
+
+test('restrictive umask still creates a private readable and writable pool', {skip: process.platform !== 'linux'}, () => {
+  const f=fixture();
+  const previous=process.umask(0o777);
+  try {
+    const p=openPackageExportPool(f.authority,f.markers);
+    assert.equal(statSync(path.join(f.dir,'package-export-pool-v1.bin')).mode & 0o777,0o600);
+    p.write(0,Buffer.from('ok'));
+    assert.equal(p.read(0,2).toString(),'ok');
+    p.close();
+  } finally { process.umask(previous); f.cleanup(); }
 });

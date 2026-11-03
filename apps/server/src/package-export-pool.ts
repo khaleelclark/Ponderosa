@@ -1,4 +1,4 @@
-import { constants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readSync, statfsSync, writeSync } from 'node:fs';
+import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readSync, statfsSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { allocatedHeldFileBytes, DataDirectoryAuthority, pinPortableRegularFile } from '@ponderosa/native-host';
 
@@ -100,6 +100,8 @@ export function openPackageExportPool(authority: DataDirectoryAuthority, markers
       rootSame();
       // O_EXCL never opens or modifies a pre-existing name, including symlinks.
       fd = openSync(filename, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      // Apply private mode only to the just-created, exclusively held inode.
+      fchmodSync(fd, 0o600);
       const file = fstatSync(fd, { bigint: true });
       receipt = { version: 1, name: NAME, capacity: PACKAGE_EXPORT_POOL_CAPACITY,
         rootDevice: root.dev.toString(), rootInode: root.ino.toString(),
