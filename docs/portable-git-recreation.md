@@ -21,6 +21,25 @@ destination ownership evidence. Source pointers and process/cleanup authority
 remain historical data. No Git command, hook, provider command, fetch or service
 is invoked by recreation. Existing metadata is never replaced.
 
+An explicit module binding recreates its Git storage in the chosen fresh storage
+root and writes a new worktree pointer. Contained module inventories recurse into
+`modules/name`, restore each repository's objects, refs, index, configuration and
+originals, and bind `core.worktree` to the chosen current working root. Initialized
+modules receive a fresh `.git` pointer; deinitialized modules keep their stored
+repository and remain deinitialized. Embedded source `.git` directories normalize
+to this same destination path. External module worktrees require an explicit
+selected-root mapping. Source Gitlink entries require a new export with inspected
+module presence or absence, rather than treating an old omitted field as empty.
+
+If an included Agent and its parent's module inventory name the same repository,
+their complete native snapshots and selected storage must agree. One parent
+writer creates the repository, the child verifies that exact pointer, and the
+native receipts run in dependency order. Typed `workingRootNesting` boundaries
+permit the exact selected parent/child destination layout; unrelated overlaps
+still refuse. All root identities remain held, including file-only support roots.
+Module recursion is bounded to 32 levels and 1,000 repositories per import to
+protect parser memory; these limits are explicit failures, never clipping.
+
 Supported logical index entries, including a captured sparse index expanded to
 its verified full representation, and its sparse settings/patterns are restored.
 Worktree-local configuration remains in its own slot. Default Git hook/support
@@ -63,3 +82,8 @@ mapped pointers, unchanged source registration, dependency refusal and duplicate
 application refusal. It is added to the maintained server inventory. Tests,
 builds and typechecks were deliberately deferred to the integrated final pass.
 Source presence is not round-trip or whole-Bible acceptance evidence.
+
+Exact POSIX hook mode/time application uses the native Linux/macOS descriptor
+operation. Windows explicitly refuses that POSIX metadata before native Git
+creation; inert data recovery remains available. This is a declared platform
+compatibility boundary, not a Windows metadata-equivalence claim.

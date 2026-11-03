@@ -224,7 +224,6 @@ export function reviewedGitConfiguration(value:ReviewedUserData,activation:Revie
         const source=include?(path.posix.isAbsolute(setting)?setting:path.posix.resolve(sourceDirectory(worktree),setting)):setting;
         if(path.posix.isAbsolute(setting))setting=map(setting);
         else if(include)setting=map(source);
-        else if(setting.split('/').some(part=>part==='..'))throw new Error('Escaping relative Git settings require explicit source path mapping');
         targets.push(setting);
         if(include){includes.push({source,destination:setting});setting=includeOverrides.get(setting)??setting;}
       }
@@ -251,6 +250,8 @@ export function planReviewedUserDataActivation(data:Buffer,sha256:string,activat
   const value=parseReviewedUserData(data);
   if(activation.git&&!value.selection.git||activation.harness&&!value.selection.harness)throw new Error('Activated family is absent from the authoritative original');
   if(activation.git)validateNativeGitSelection(value,mapped);
+  const hasPosixMetadata=(git:ReviewedGitUserData):boolean=>reviewedGitModules(git).some(module=>module.originals.some(file=>file.metadata)||hasPosixMetadata(module.git));
+  if(activation.git&&process.platform==='win32'&&(value.providerFiles.some(file=>gitReviewOriginal(file.path)&&file.metadata)||hasPosixMetadata(value.git!)))throw new Error('Windows cannot apply captured POSIX Git-original mode bits; choose inert recovery or a compatible destination');
   if(activation.harness&&process.platform==='win32')throw new Error('Exact provider POSIX metadata is unsupported on Windows');
   if(activation.harness&&!value.providerFiles.some(file=>!gitReviewOriginal(file.path))&&!value.providerDirectories.length)throw new Error('No selected harness originals are present');
   const paths=value.providerFiles.filter(file=>!gitReviewOriginal(file.path)).map(file=>file.path);
@@ -275,14 +276,19 @@ function validateNativeGitSelection(value:ReviewedUserData,mapped=false):void {
   if(versions.length!==1||versions[0]!.implicitBoolean||!['0','1'].includes(versions[0]!.value)||formats.length>1||formats.some(item=>item.value!==git.format)||(git.reftableReview||formats.length)&&versions[0]!.value!=='1'||git.format==='sha256'&&formats.length!==1)throw new Error('Native Git format declarations differ from verified storage');
   for(const key of ['core.bare','core.filemode','core.ignorecase','core.precomposeunicode','core.quotepath','core.symlinks'])gitConfigurationBoolean(git.configurationReview,key);
   if(gitConfigurationBoolean(git.configurationReview,'core.bare'))throw new Error('Native Shared Git requires a non-bare source');
-  if(git.indexOptionalReview.length||git.index.some(entry=>entry.mode==='160000'))throw new Error('Native Git optional-index or submodule semantics require separate recreation');
+  if(git.indexOptionalReview.length)throw new Error('Native Git optional-index semantics require separate recreation');
+  if(git.index.some(entry=>entry.mode==='160000')&&!Object.hasOwn(git,'modules'))throw new Error('Gitlink activation requires a fresh export with inspected module presence or absence');
   for(const file of value.providerFiles.filter(file=>/^\.git\/hooks\/[^/]+$/.test(file.path)&&!file.path.endsWith('.sample'))){
     if(!file.metadata)throw new Error('Active Git hooks require captured mode and timestamp; export the original again');
   }
 }
 
 /** Create directly into an empty NEW owned root, never replace a generated .git. */
-export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>};
+export interface ReviewedGitModuleData {name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string;configurationSha256:string;initialized:boolean;embedded?:true};worktreeRelativePath:string|null;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}
+export function reviewedGitModules(value:ReviewedGitUserData):readonly ReviewedGitModuleData[] {return (value as ReviewedGitUserData&{modules?:ReviewedGitModuleData[]}).modules??[];}
+export interface NativeReviewedGitModulePlan {gitDir:string;worktreePath:string;initialized:boolean;value:ReviewedUserData;activation:ReviewedUserDataActivation;configuration:NativeReviewedGitConfiguration}
+export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>;modules?:NativeReviewedGitModulePlan[]};
+export interface NativeReviewedGitStorage {gitDir:string;worktreePath:string;initialized:boolean;existingRoot?:boolean}
 type SelectedWorktreeReftable={tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
 export function selectedWorktreeReftable(value:ReviewedGitUserData):SelectedWorktreeReftable|undefined {
   return (value.reftableReview as (NonNullable<ReviewedGitUserData['reftableReview']>&{selectedWorktree?:SelectedWorktreeReftable})|null)?.selectedWorktree;
@@ -297,11 +303,11 @@ export async function createReviewedNativeGit(root:string,original:Buffer,sha256
 }
 
 /** Recovery roots were just created by the importer; existing native metadata is never replaced. */
-export async function createReviewedRecoveryGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},configuration?:NativeReviewedGitConfiguration):Promise<void> {
+export async function createReviewedRecoveryGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},configuration?:NativeReviewedGitConfiguration,storage?:NativeReviewedGitStorage):Promise<void> {
   const source=parseReviewedUserData(original),module=source.associationReview?.length===1&&source.associationReview[0]!.role==='module';
   const value=planReviewedUserDataActivation(original,sha256,activation,!!layout||module);
   if(!activation.git||!value.git)throw new Error('Explicit Git activation is required');
-  await writeReviewedGit(root,value.git,value,layout,true,configuration??reviewedGitConfiguration(value,activation));
+  await writeReviewedGit(root,value.git,value,layout,true,configuration??reviewedGitConfiguration(value,activation),storage);
 }
 
 /** Only freshly owned native roots; all collisions are checked before creating provider nodes. */
@@ -2392,15 +2398,16 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
   await writeReviewedGit(destination,value,undefined,{commonDir,privateDir:path.join(commonDir,'worktrees','selected'),writeCommon:true},true);
 }
 
-async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
+async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration,storage?:NativeReviewedGitStorage):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
   validateReviewedGit(value);
   if(native&&!configuration)throw new Error('Native Git requires its validated configuration plan');
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
   if(native||recovery){if(await fs.realpath(destination)!==destination||!recovery&&(await fs.readdir(destination)).length)throw new Error('Git recreation requires its freshly owned canonical destination');}else await fs.mkdir(destination,{mode:0o700});
-  const gitDir=layout?.commonDir??path.join(destination,'.git');
+  const gitDir=layout?.commonDir??storage?.gitDir??path.join(destination,'.git');
   if(layout){
     if(!recovery||!native&&(!selectedWorktreeReftable(value)||gitDir!==path.join(destination,'.ponderosa-review-git')||layout.privateDir!==path.join(gitDir,'worktrees','selected')||!layout.writeCommon)||!path.isAbsolute(gitDir)||path.resolve(gitDir)!==gitDir||path.dirname(layout.privateDir)!==path.join(gitDir,'worktrees')||await fs.realpath(gitDir)!==gitDir)throw new Error('Mapped Git requires its freshly owned canonical common directory and private worktree slot');
-  }else await fs.mkdir(gitDir,{mode:0o700});
+  }else if(!storage?.existingRoot)await fs.mkdir(gitDir,{mode:0o700});
+  else if(!recovery||await fs.realpath(gitDir)!==gitDir||!(await fs.lstat(gitDir)).isDirectory())throw new Error('Mapped module storage requires its exact fresh selected destination root');
   if(!layout||layout.writeCommon){await fs.mkdir(path.join(gitDir,'objects'),{mode:0o700});await fs.mkdir(path.join(gitDir,'refs'),{mode:0o700});}
   if(layout){
     if(layout.writeCommon)await fs.mkdir(path.join(gitDir,'worktrees'),{mode:0o700});
@@ -2440,7 +2447,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
     if(layout&&!native)await write('HEAD','ref: refs/heads/.invalid\n',undefined,true);
     else if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
-    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':'')]));else
+    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':storage?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(storage.worktreePath)}\n`:'')]));else
     await write('config','[core]\n\trepositoryformatversion = '+(value.reftableReview||value.format==='sha256'||layout?1:0)+'\n\tbare = '+(layout?'true':'false')+'\n\thooksPath = /dev/null\n\tfsmonitor = false\n'+(value.reftableReview||value.format==='sha256'||layout?'[extensions]\n':'')+(value.format==='sha256'?'\tobjectFormat = sha256\n':'')+(value.reftableReview?'\trefStorage = reftable\n':'')+(layout?'\tworktreeConfig = true\n':''));
     if(layout&&!native)await write('config.worktree','[core]\n\tbare = false\n\tworktree = '+JSON.stringify(destination)+'\n');
     if(native){
@@ -2480,6 +2487,29 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       const pointer=path.join(destination,'.git'),pointerData=Buffer.from('gitdir: '+path.relative(destination,layout.privateDir).split(path.sep).join('/')+'\n');
       const handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try{const before=await handle.stat({bigint:true});await handle.writeFile(pointerData);await handle.sync();const current=await fs.lstat(pointer,{bigint:true});if(!current.isFile()||current.nlink!==1n||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Mapped Git worktree pointer changed');}finally{await handle.close();}
+    }
+    if(native&&(!layout||layout.writeCommon))for(const module of configuration!.modules??[]){
+      const relative=path.relative(gitDir,module.gitDir);
+      if(!relative||path.isAbsolute(relative)||relative==='..'||relative.startsWith('..'+path.sep))throw new Error('Native module storage escapes its selected parent repository');
+      let parent=gitDir;
+      for(const component of relative.split(path.sep).slice(0,-1)){
+        parent=path.join(parent,component);
+        if(!directories.has(parent)){await fs.mkdir(parent,{mode:0o700});const stat=await fs.lstat(parent,{bigint:true});if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Native module storage parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});}
+      }
+      await checkDirectories();
+      validateNativeGitSelection(module.value);
+      const children=await writeReviewedGit(destination,module.value.git!,module.value,undefined,true,module.configuration,{gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized});
+      const moduleStat=await fs.lstat(module.gitDir,{bigint:true});if(!moduleStat.isDirectory()||await fs.realpath(module.gitDir)!==module.gitDir)throw new Error('Created module storage identity changed');directories.set(module.gitDir,{device:moduleStat.dev,inode:moduleStat.ino});
+      for(const file of children)created.push({...file,path:path.relative(gitDir,module.gitDir).split(path.sep).join('/')+'/'+file.path});
+    }
+    if(storage?.initialized){
+        const root=await fs.open(storage.worktreePath,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);
+        try{
+          const before=await root.stat({bigint:true});if(!before.isDirectory()||await fs.realpath(storage.worktreePath)!==storage.worktreePath)throw new Error('Initialized module worktree destination changed');
+          const pointer=path.join(storage.worktreePath,'.git'),handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+          try{await handle.writeFile('gitdir: '+path.relative(storage.worktreePath,gitDir).split(path.sep).join('/')+'\n');await handle.sync();}finally{await handle.close();}
+          const current=await fs.lstat(storage.worktreePath,{bigint:true});if(current.dev!==before.dev||current.ino!==before.ino)throw new Error('Initialized module worktree membership changed');await root.sync();
+        }finally{await root.close();}
     }
     if(!native&&value.modules?.length){
       const parent=path.join(destination,'MODULES-REVIEW');await fs.mkdir(parent,{mode:0o700});

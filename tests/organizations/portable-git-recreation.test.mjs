@@ -19,7 +19,7 @@ const packageFor=(manifest,files={},bindings)=>{
 };
 async function initialize(root){await mkdir(root);await git(root,'init','--template=','--initial-branch=main');await git(root,'config','user.name','Portable Test');await git(root,'config','user.email','portable@example.invalid');await writeFile(path.join(root,'file.txt'),'committed\n');await git(root,'add','file.txt');await git(root,'commit','--no-gpg-sign','-m','Initial');}
 
-test('fresh recovery preserves staged work, activates hook metadata and recursively relocates included configuration without running hooks',async()=>{
+test('fresh recovery preserves staged work, activates hook metadata and recursively relocates included configuration without running hooks',{skip:process.platform==='win32'},async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'portable-git-recovery-'));
   try{
     const source=path.join(root,'source'),destination=path.join(root,'destination'),external=path.join(root,'external'),support=path.join(root,'support');await initialize(source);await mkdir(external);
@@ -46,6 +46,33 @@ test('fresh recovery preserves staged work, activates hook metadata and recursiv
     await assert.rejects(applyReviewedRecoveryRoots(tasks,activation,()=>{}),/already has native Git/);
     const missing=structuredClone(pkg);missing.agents[1].workingFiles=missing.agents[1].workingFiles.filter(file=>file.path!=='nested.conf');
     assert.throws(()=>planReviewedRecoveryRoots(missing,{work:destination,support},activation),/Include the configured Git file/);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('native recreation retains initialized and deinitialized module repositories with fresh worktree pointers',{skip:process.platform==='win32'},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-native-modules-'));
+  try{
+    const child=path.join(root,'child'),source=path.join(root,'source');await initialize(child);await initialize(source);
+    await git(source,'-c','protocol.file.allow=always','submodule','add',child,'module');
+    await git(source,'config','-f','.gitmodules','submodule.module.url','https://example.invalid/module');await git(source,'config','submodule.module.url','https://example.invalid/module');await git(path.join(source,'module'),'remote','set-url','origin','https://example.invalid/module');
+    await git(source,'add','.gitmodules','module');await git(source,'commit','--no-gpg-sign','-m','Add module');
+    await writeFile(path.join(source,'module','file.txt'),'uncommitted module work\n');
+    const childHead=await git(path.join(source,'module'),'rev-parse','HEAD'),gitmodules=await readFile(path.join(source,'.gitmodules'),'utf8');
+    const manifest=await exportReviewedUserData(source,{git:true,harness:false});assert.equal(manifest.git.modules[0].source.initialized,true);
+    const destination=path.join(root,'new');await mkdir(destination);await mkdir(path.join(destination,'module'));await writeFile(path.join(destination,'file.txt'),'committed\n');await writeFile(path.join(destination,'.gitmodules'),gitmodules);await writeFile(path.join(destination,'module','file.txt'),'uncommitted module work\n');
+    const pkg=packageFor(manifest,{'file.txt':'committed\n','.gitmodules':gitmodules,'module/file.txt':'uncommitted module work\n'}),activation={git:true,harness:false};
+    const tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation);await applyReviewedRecoveryRoots(tasks,activation,()=>{});
+    assert.equal(await git(path.join(destination,'module'),'rev-parse','HEAD'),childHead);
+    assert.equal(await git(path.join(destination,'module'),'rev-parse','--show-toplevel'),path.join(destination,'module'));
+    assert.equal(await readFile(path.join(destination,'module','file.txt'),'utf8'),'uncommitted module work\n');
+    assert.equal(await readFile(path.join(destination,'module','.git'),'utf8'),'gitdir: ../.git/modules/module\n');
+    assert.equal(await git(path.join(destination,'module'),'status','--porcelain=v1'),'M file.txt');
+    await git(source,'submodule','deinit','-f','module');
+    const inactive=await exportReviewedUserData(source,{git:true,harness:false});assert.equal(inactive.git.modules[0].source.initialized,false);
+    const recovery=path.join(root,'inactive');await mkdir(recovery);await mkdir(path.join(recovery,'module'));await writeFile(path.join(recovery,'file.txt'),'committed\n');await writeFile(path.join(recovery,'.gitmodules'),gitmodules);
+    await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(packageFor(inactive,{'file.txt':'committed\n','.gitmodules':gitmodules}),{work:recovery},activation),activation,()=>{});
+    await assert.rejects(lstat(path.join(recovery,'module','.git')),{code:'ENOENT'});
+    assert.equal(await git(recovery,'--git-dir='+path.join(recovery,'.git','modules','module'),'rev-parse','HEAD'),childHead);
   }finally{await rm(root,{recursive:true,force:true});}
 });
 

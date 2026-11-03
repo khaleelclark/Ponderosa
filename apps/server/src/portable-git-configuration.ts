@@ -3,6 +3,10 @@ import path from 'node:path';
 import type {ReviewedUserData,ReviewedUserDataActivation} from '@ponderosa/core';
 import {parseReviewedGitConfiguration,reviewedGitConfiguration,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 
+export function getNativeGitModuleAnchors(configuration?:NativeReviewedGitConfiguration):string[] {
+  return [...new Set((configuration?.modules??[]).flatMap(module=>[...(module.initialized?[path.join(module.worktreePath,'.git')]:[]),...getNativeGitModuleAnchors(module.configuration)]))];
+}
+
 /** Source directories rebind to the native storage the human's fresh destination choice creates. */
 export function bindReviewedGitDirectories(value:ReviewedUserData,activation:ReviewedUserDataActivation,directories:{common:string;private:string}):ReviewedUserDataActivation {
   if(!activation.git)return activation;
