@@ -1,11 +1,11 @@
-import {snapshotImportedNativeGit,importedNativeGitStorage,type ImportedNativeGitStorage,type ImportedNativeExternalProof,type ImportedNativeGitCustody} from './portable-native-git-snapshot.js';
+import {snapshotImportedNativeGit,finalizeImportedNativeSnapshot,importedNativeGitStorage,type ImportedNativeGitStorage,type ImportedNativeExternalProof,type ImportedNativeGitCustody,type LocalGeneratedHooksProof} from './portable-native-git-snapshot.js';
 import {compileReviewedGitConfiguration} from './portable-git-configuration.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
 import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,parseReviewedUserData,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 import {planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
-import {importWorkingFiles,finalizeWorkingFolderMetadata,assertWorkingRootIdentity,type WorkingRootIdentity} from './portable-working-files.js';
+import {importWorkingFiles,finalizeWorkingFolderMetadata,assertWorkingRootIdentity,createWorkingNativeMetadataEvidence,type WorkingNativeMetadata,type WorkingRootIdentity} from './portable-working-files.js';
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath, rmdir, readdir, open } from "@ponderosa/native-host/fs/promises";
@@ -225,7 +225,8 @@ async function gitWorktreeRootRegistered(
 }
 
 export class AgentWorkingCopyService {
-  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[];storage:ImportedNativeGitStorage;external:ImportedNativeExternalProof;custody:ImportedNativeGitCustody}>();
+  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[];storage:ImportedNativeGitStorage;external:ImportedNativeExternalProof;custody:ImportedNativeGitCustody;generatedHooks?:LocalGeneratedHooksProof}>();
+  private readonly importedNativeMetadata=new Map<string,WorkingNativeMetadata>();
   private readonly importedRootCustody=new Map<string,{device:bigint;inode:bigint;agentId:string;identity?:WorkingRootIdentity}>();
   private readonly containedReservations=new Map<string,ImportedContainedRootReservation>();
   private readonly containedParentDirectories=new Map<string,{device:bigint;inode:bigint}>();
@@ -304,11 +305,13 @@ export class AgentWorkingCopyService {
       if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Git requires the unused NEW managed Project');
       const issued=await lstat(project.hostPath,{bigint:true});if(!issued.isDirectory()||issued.isSymbolicLink())throw new Error('Fresh native Project root changed before initialization');
       const configuration=original.configuration??compileReviewedGitConfiguration(parseReviewedUserData(original.data),original.activation,{common:path.join(project.hostPath,'.git'),private:path.join(project.hostPath,'.git')},new Map());
-      configuration.directoryProofs??=new Map();
+      configuration.directoryProofs??=new Map();const metadata=createWorkingNativeMetadataEvidence();configuration.nativeMetadata=metadata;configuration.nativeMetadataScope={};configuration.deferNativeMetadata=true;
       await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,configuration);
-      const custody:ImportedNativeGitCustody={roots:{[project.hostPath]:{device:issued.dev.toString(),inode:issued.ino.toString()}},directories:configuration.directoryProofs};
+      await configuration.prepareNativeMetadata?.();
+      const custody:ImportedNativeGitCustody={roots:{[project.hostPath]:{device:issued.dev.toString(),inode:issued.ino.toString()}},directories:configuration.directoryProofs,metadataPending:true};
       const storage=importedNativeGitStorage(project.hostPath,configuration),observed=await snapshotImportedNativeGit(project.hostPath,[project.hostPath],storage,configuration,undefined,custody);
-      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,...observed,storage,custody,allowedRoots:[project.hostPath]});return;
+      await configuration.finalizeNativeMetadata?.();metadata.deferredMetadata.clear();
+      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,...finalizeImportedNativeSnapshot(observed,metadata),storage,custody:{...custody,metadataPending:false},allowedRoots:[project.hostPath]});return;
     }
     await runGit(project.hostPath,['init','--template=','--initial-branch=main']);
     await runGit(project.hostPath,['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit','--allow-empty','--no-gpg-sign','-m','Initialize imported working roots']);
@@ -375,11 +378,11 @@ export class AgentWorkingCopyService {
     return issuedIdentity;
   }
 
-  async finalizeImportedRootMetadata(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],links:Parameters<typeof importWorkingFiles>[5],activation?:import('@ponderosa/core').ReviewedMetadataActivation,counts?:ReadonlyMap<string,bigint>):Promise<void>{
+  async finalizeImportedRootMetadata(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],links:Parameters<typeof importWorkingFiles>[5],activation?:import('@ponderosa/core').ReviewedMetadataActivation,counts?:ReadonlyMap<string,bigint>,nativeMetadata?:WorkingNativeMetadata):Promise<void>{
     if(!this.modeChanges.has(agent.id))throw new Error('Final live metadata requires its fenced imported destination');
-    const root=await this.resolve(agent,project),proof=this.importedRootCustody.get(root.rootPath),stat=await lstat(root.rootPath,{bigint:true});
+    const prepared=await this.inspectPreparedImportedRoot(agent,project),root=prepared??await this.resolve(agent,project),proof=this.importedRootCustody.get(root.rootPath),stat=await lstat(root.rootPath,{bigint:true});
     if(!proof||proof.agentId!==agent.id||proof.device!==stat.dev||proof.inode!==stat.ino||await realpath(root.rootPath)!==root.rootPath)throw new Error('Final metadata root lost its fresh local custody');
-    await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts,proof.identity??{device:proof.device.toString(),inode:proof.inode.toString()});
+    await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts,proof.identity??{device:proof.device.toString(),inode:proof.inode.toString()},nativeMetadata??this.importedNativeMetadata.get(root.rootPath));
   }
 
   /** Local storage authority; a source package never supplies this path. */
@@ -501,6 +504,15 @@ export class AgentWorkingCopyService {
     if(!proof||proof.sha256!==sha256||proof.snapshot!==(await snapshotImportedNativeGit(rootPath,proof.allowedRoots,proof.storage,undefined,proof.external,proof.custody)).snapshot)throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
   }
 
+  private recordImportedGeneratedHooks(rootPath:string,sourceOriginalSha256:string,proof:LocalGeneratedHooksProof|undefined,agentIds:readonly string[]):void {
+    if(!proof)return;
+    for(const id of new Set(agentIds)){
+      const agent=this.store.getAgent(id);if(!agent||agent.workingCopy.rootPath!==rootPath)continue;
+      if(!this.modeChanges.has(id)||this.activeUses.has(id))throw new Error('Generated hook issuance lost exact current owner custody');
+      this.store.recordGeneratedHookNamespace(id,rootPath,sourceOriginalSha256,proof);
+    }
+  }
+
   private async stageImportedGitRoot(rootPath:string,agentId?:string):Promise<void> {
     const stat=await lstat(rootPath,{bigint:true});
     if(!stat.isDirectory()||await realpath(rootPath)!==rootPath||(await readdir(rootPath)).length||this.stagedImportedGitRoots.has(rootPath))throw new Error('Native import root must be freshly allocated and empty');
@@ -554,22 +566,32 @@ export class AgentWorkingCopyService {
   }
 
   /** Files first, one complete Git closure next, and final ACLs/times last. */
-  async completeImportedGitRoots(_project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation|undefined,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2],agentIds:readonly string[]=[]):Promise<void> {
+  async completeImportedGitRoots(_project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation|undefined,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2],agentIds:readonly string[]=[],nativeMetadata:WorkingNativeMetadata=createWorkingNativeMetadataEvidence(),finalizeWorkingData?:()=>Promise<void>):Promise<void> {
     const roots=[...new Set([...Object.values(destinations),...[...this.stagedImportedGitRoots.entries()].filter(([,staged])=>staged.agentId&&agentIds.includes(staged.agentId)).map(([root])=>root)])],tasks=activation?planReviewedRecoveryRoots(pkg,destinations,activation):[];
-    const originalRoots:Record<string,WorkingRootIdentity>={};
+    const originalRoots:Record<string,WorkingRootIdentity>={},pendingReady=new Map<string,AgentDto>();
+    // Canonical imported rows remain unavailable until the complete physical
+    // graph and selected metadata finish, including Shared root aliases.
+    for(const id of new Set(agentIds)){
+      const agent=this.store.getAgent(id);if(!agent||!roots.includes(agent.workingCopy.rootPath))throw new Error('Native import current owner is outside its selected root closure');
+      if(!this.modeChanges.has(id)||this.activeUses.has(id))throw new Error('Native import requires every current root owner fence');
+      const pending=this.requireUpdated(id,{...agent.workingCopy,state:'unavailable',failure:'Native import metadata and ownership proof are pending; preserve the exact import operation.',updatedAt:new Date().toISOString()});pendingReady.set(id,pending);
+    }
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root),stat=await lstat(root,{bigint:true});
       if(!staged||(staged.phase!=='populated'&&!(staged.phase==='allocated'&&!Object.values(destinations).includes(root)))||stat.dev!==staged.device||stat.ino!==staged.inode||await realpath(root)!==root)throw new Error('Native import root is not in its exact populated phase');
       if(staged.agentId&&(!agentIds.includes(staged.agentId)||!this.modeChanges.has(staged.agentId)||this.activeUses.has(staged.agentId)))throw new Error('Git adoption lost exact current Agent custody');
       originalRoots[root]=staged.identity??{device:staged.device.toString(),inode:staged.inode.toString()};
+      if(staged.agentId&&tasks.some(task=>task.layout?.commonDir===root)&&!tasks.some(task=>task.destination===root&&task.activation.git))throw new Error('A selected bare common-storage root cannot also become a Separate Git working tree; choose a distinct storage subfolder or retain its Shared folder mode');
       staged.phase='adopting';
     }
     // The shared recreation engine validates included target/config closure and
     // records each applying/incomplete outcome for exactly the requested families.
-    const receipts=new Map<string,Parameters<typeof onReceipt>[0]>(),nativeDirectories=new Map<string,{device:string;inode:string}>();
-    for(const task of tasks)if(task.configuration)task.configuration.directoryProofs=nativeDirectories;
+    const receipts=new Map<string,Parameters<typeof onReceipt>[0]>(),nativeDirectories=new Map<string,{device:string;inode:string}>(),nativeMetadataScope={};
+    for(const task of tasks)if(task.configuration){task.configuration.directoryProofs=nativeDirectories;task.configuration.nativeMetadata=nativeMetadata;task.configuration.nativeMetadataScope=nativeMetadataScope;task.configuration.deferNativeMetadata=true;}
+    for(const root of roots)this.importedNativeMetadata.set(root,nativeMetadata);
     try{
-    if(activation)await applyReviewedRecoveryRoots(tasks,activation,receipt=>{const current={...receipt,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);},originalRoots);
+    if(activation)await applyReviewedRecoveryRoots(tasks,activation,receipt=>{const current={...receipt,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);},originalRoots,nativeMetadata);
+    const prepare=[...new Set(tasks.flatMap(task=>task.configuration?.prepareNativeMetadata?[task.configuration.prepareNativeMetadata]:[]))];for(const apply of prepare)await apply();
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root)!;if(!staged.agentId)continue;
       const agent=this.store.getAgent(staged.agentId);if(!agent||agent.workingCopy.repositoryRoot!==root||agent.workingCopy.state!=='unavailable')throw new Error('Imported Separate Git ownership changed before activation');
@@ -591,18 +613,28 @@ export class AgentWorkingCopyService {
       createOwnedBranchReferences(root,branch,receipt.ownershipRef,baseHead);
       await runGit(root,['symbolic-ref','HEAD','refs/heads/'+branch]);
       await runGit(root,['update-ref','-d',receipt.ownershipRef,baseHead]);
-      const ready=this.requireUpdated(agent.id,{...workingCopy,state:'ready',baseHead,branchOwned:true,failure:undefined,updatedAt:new Date().toISOString()});
-      const ownerProject=this.store.getProject(ready.projectId);if(!ownerProject)throw new Error('Imported Git owner Project disappeared');
-      await this.resolve(ready,ownerProject);
+      const owned=this.requireUpdated(agent.id,{...workingCopy,state:'unavailable',baseHead,branchOwned:true,failure:'Native Git final metadata is pending; preserve its exact import operation.',updatedAt:new Date().toISOString()});
+      const ownerProject=this.store.getProject(owned.projectId);if(!ownerProject)throw new Error('Imported Git owner Project disappeared');
+      await this.resolve({...owned,workingCopy:{...owned.workingCopy,state:'ready',failure:undefined}},ownerProject);pendingReady.set(owned.id,owned);
     }
     // Seal after every local branch is established: common Git storage can be
     // shared by multiple selected roots, so earlier snapshots would be obsolete.
-    for(const task of tasks.filter(task=>task.activation.git&&task.value.git)){const gitDir=task.layout?.privateDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),commonDir=task.layout?.commonDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),storage=importedNativeGitStorage(task.destination,task.configuration,{gitDir,commonDir}),custody:ImportedNativeGitCustody={roots:originalRoots,directories:nativeDirectories},observed=await snapshotImportedNativeGit(task.destination,roots,storage,task.configuration,undefined,custody);this.importedGitRoots.set(task.destination,{sha256:task.sha256,...observed,allowedRoots:roots,storage,custody});}
+    const pendingProofs:Array<{task:typeof tasks[number];storage:ImportedNativeGitStorage;custody:ImportedNativeGitCustody;observed:Awaited<ReturnType<typeof snapshotImportedNativeGit>>}>=[];
+    for(const task of tasks.filter(task=>task.activation.git&&task.value.git)){
+      const gitDir=task.layout?.privateDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),commonDir=task.layout?.commonDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),storage=importedNativeGitStorage(task.destination,task.configuration,{gitDir,commonDir}),custody:ImportedNativeGitCustody={roots:originalRoots,directories:nativeDirectories,metadataPending:true},observed=await snapshotImportedNativeGit(task.destination,roots,storage,task.configuration,undefined,custody);
+      pendingProofs.push({task,storage,custody,observed});
+    }
+    await finalizeWorkingData?.();
+    const finalize=[...new Set(tasks.flatMap(task=>task.configuration?.finalizeNativeMetadata?[task.configuration.finalizeNativeMetadata]:[]))];for(const apply of finalize)await apply();
+    for(const {task,storage,custody,observed} of pendingProofs){const finalized=finalizeImportedNativeSnapshot(observed,nativeMetadata);this.recordImportedGeneratedHooks(task.destination,task.sha256,finalized.generatedHooks,agentIds);this.importedGitRoots.set(task.destination,{sha256:task.sha256,...finalized,allowedRoots:roots,storage,custody:{...custody,metadataPending:false}});}
+    for(const owned of pendingReady.values()){const current=this.store.getAgent(owned.id);if(!current||current.workingCopy.id!==owned.workingCopy.id||current.workingCopy.rootPath!==owned.workingCopy.rootPath||current.workingCopy.branch!==owned.workingCopy.branch||current.workingCopy.state!=='unavailable'||owned.workingCopy.mode==='separate_git'&&!current.workingCopy.branchOwned)throw new Error('Imported Git canonical ownership changed during final metadata');this.requireUpdated(owned.id,{...current.workingCopy,state:'ready',failure:undefined,updatedAt:new Date().toISOString()});}
+    nativeMetadata.deferredMetadata.clear();
     for(const root of roots)this.stagedImportedGitRoots.delete(root);
     for(const receipt of receipts.values())onReceipt({...receipt,state:'completed'});
     }catch(error){
+      nativeMetadata.deferredMetadata.clear();
       const receiptErrors:unknown[]=[];
-      for(const root of roots){const staged=this.stagedImportedGitRoots.get(root),agent=staged?.agentId&&this.store.getAgent(staged.agentId);if(agent&&agent.workingCopy.repositoryRoot===root&&agent.workingCopy.state==='ready')try{this.requireUpdated(agent.id,{...agent.workingCopy,state:'unavailable',failure:'Native Git import proof is incomplete; preserve its exact root and original import operation.',updatedAt:new Date().toISOString()});}catch(storageError){receiptErrors.push(storageError);}}
+      for(const id of pendingReady.keys()){const agent=this.store.getAgent(id);if(agent&&roots.includes(agent.workingCopy.rootPath)&&agent.workingCopy.state!=='removed')try{this.requireUpdated(id,{...agent.workingCopy,state:'unavailable',failure:'Native Git import proof is incomplete; preserve its exact root and original import operation.',updatedAt:new Date().toISOString()});}catch(storageError){receiptErrors.push(storageError);}}
 
       for(const receipt of receipts.values()){
         try{onReceipt({...receipt,state:'incomplete',error:{code:error&&typeof (error as {code?:unknown}).code==='string'?(error as {code:string}).code:'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots,cause:safeFailure(error)}}});}

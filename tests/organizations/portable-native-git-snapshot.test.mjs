@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,mkdir,writeFile,readFile,link,symlink,lstat,rename,unlink,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,link,symlink,lstat,rename,unlink,rm,open,chmod} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promises as hostFs} from '@ponderosa/native-host/fs';
-import {snapshotImportedNativeGit,importedNativeGitStorage} from '../../apps/server/dist/portable-native-git-snapshot.js';
+import {snapshotImportedNativeGit,finalizeImportedNativeSnapshot,importedNativeGitStorage} from '../../apps/server/dist/portable-native-git-snapshot.js';
+import {createWorkingNativeMetadataEvidence} from '../../apps/server/dist/portable-working-files.js';
 async function graphFixture(){
  const root=await mkdtemp(path.join(tmpdir(),'native-snapshot-graph-')),gitDir=path.join(root,'.git'),owned=path.join(gitDir,'owned');await mkdir(gitDir);await mkdir(owned,{mode:0o750});await writeFile(path.join(gitDir,'HEAD'),'ref: refs/heads/main\n');await writeFile(path.join(gitDir,'config'),'[core]\n repositoryformatversion = 0\n');
  const data=Buffer.from('one declared original');await writeFile(path.join(owned,'original'),data,{mode:0o640});await link(path.join(owned,'original'),path.join(owned,'hard'));await symlink('original',path.join(owned,'symbolic'));await symlink('cycle-b',path.join(owned,'cycle-a'));await symlink('cycle-a',path.join(owned,'cycle-b'));
@@ -28,7 +29,7 @@ test('native proof admits only the declared closed alias graph, with exact bytes
 });
 test('native proof refuses changed declared target or contents without following outside aliases',{skip:process.platform==='win32'},async()=>{
  const f=await graphFixture();const originalOpen=hostFs.open;let outsideOpened=false;try{
-  const proof=await snapshotImportedNativeGit(f.root,[f.root],f.storage,f.configuration),outside=path.join(f.root,'outside-original');await writeFile(outside,'must stay private');
+  const proof=await snapshotImportedNativeGit(f.root,[f.root],f.storage,f.configuration,undefined,f.custody),outside=path.join(f.root,'outside-original');await writeFile(outside,'must stay private');
   await unlink(path.join(f.owned,'symbolic'));await symlink('../..'+path.sep+'outside-original',path.join(f.owned,'symbolic'));
   proof.external.directories[0].mtimeNs=(await lstat(f.owned,{bigint:true})).mtimeNs.toString();
   hostFs.open=async function(name,...args){if(name===outside)outsideOpened=true;return originalOpen.call(this,name,...args);};
@@ -66,4 +67,45 @@ test('first seal rejects replacement of its issued root before opening native da
   hostFs.open=async function(name,...args){if(typeof name==='string'&&name.startsWith(f.root+path.sep))dataOpened=true;return originalOpen.call(this,name,...args);};
   await assert.rejects(snapshotImportedNativeGit(f.root,[f.root],f.storage,f.configuration,undefined,f.custody),/custody changed/);assert.equal(dataOpened,false);assert.equal(await readFile(path.join(retained,'.git','owned','original'),'utf8'),'one declared original');
  }finally{hostFs.open=originalOpen;await rm(f.root,{recursive:true,force:true});await rm(retained,{recursive:true,force:true});}
+});
+
+
+test('negative evidence is rooted in issued directories and refuses a later target or parent symlink',{skip:process.platform==='win32'},async()=>{
+ const f=await graphFixture(),outside=f.root+'-outside';const originalOpen=hostFs.open;let outsideOpened=false;
+ try{
+  f.configuration.external.absentPaths=[{path:'missing/optional.conf'}];
+  const proof=await snapshotImportedNativeGit(f.root,[f.root],f.storage,f.configuration,undefined,f.custody);assert.equal(proof.external.absentPaths.length,1);
+  await mkdir(outside);await symlink(outside,path.join(f.gitDir,'missing'));
+  hostFs.open=async function(name,...args){if(typeof name==='string'&&name.startsWith(outside))outsideOpened=true;return originalOpen.call(this,name,...args);};
+  await assert.rejects(snapshotImportedNativeGit(f.root,[f.root],f.storage,undefined,proof.external,f.custody),/negative evidence parent/);assert.equal(outsideOpened,false);
+  await unlink(path.join(f.gitDir,'missing'));await mkdir(path.join(f.gitDir,'missing'));const parent=await lstat(path.join(f.gitDir,'missing'),{bigint:true});f.custody.directories.set(path.join(f.gitDir,'missing'),{device:String(parent.dev),inode:String(parent.ino)});await writeFile(path.join(f.gitDir,'missing','optional.conf'),'not absent');
+  await assert.rejects(snapshotImportedNativeGit(f.root,[f.root],f.storage,undefined,proof.external,f.custody),/no longer absent/);
+ }finally{hostFs.open=originalOpen;await rm(f.root,{recursive:true,force:true});await rm(outside,{recursive:true,force:true});}
+});
+
+test('mode000 final readback normalizes the readable seal but never supplies a cached later byte proof',{skip:process.platform!=='linux'},async()=>{
+ const f=await graphFixture();let held;
+ try{
+  f.configuration.external.files[0].mode=0;
+  const pending=await snapshotImportedNativeGit(f.root,[f.root],f.storage,f.configuration,undefined,{...f.custody,metadataPending:true}),file=path.join(f.owned,'original');held=await open(file,'r+');await held.chmod(0);
+  const stat=await held.stat({bigint:true}),metadata=createWorkingNativeMetadataEvidence(),fileProof={device:String(stat.dev),inode:String(stat.ino),mode:0,mtimeNs:String(stat.mtimeNs),ctimeNs:String(stat.ctimeNs),sha256:createHash('sha256').update('one declared original').digest('hex'),expectedLinkCount:'2'};
+  metadata.files.set(file,fileProof);metadata.files.set(path.join(f.owned,'hard'),fileProof);const directory=await lstat(f.owned,{bigint:true});metadata.directories.set(f.owned,{device:String(directory.dev),inode:String(directory.ino),mode:Number(directory.mode&0o7777n),mtimeNs:String(directory.mtimeNs),ctimeNs:String(directory.ctimeNs)});
+  const finalized=finalizeImportedNativeSnapshot(pending,metadata);assert.ok(JSON.parse(finalized.snapshot).filter(row=>row.kind==='file'&&(row.path===file||row.path===path.join(f.owned,'hard'))).every(row=>(BigInt(row.mode)&0o7777n)===0n));
+  const wrong=createWorkingNativeMetadataEvidence();wrong.files=new Map(metadata.files);wrong.directories=new Map(metadata.directories);wrong.files.set(file,{...fileProof,inode:String(stat.ino+1n)});assert.throws(()=>finalizeImportedNativeSnapshot(pending,wrong),/readable owned seal/);
+  // A retained fd can change inaccessible data. Revalidation must really read or
+  // fail permission checks; the earlier seal is never substituted for that read.
+  await held.write(Buffer.from('changed contents!!!!!'),0,20,0);await held.sync();
+  await assert.rejects(snapshotImportedNativeGit(f.root,[f.root],f.storage,undefined,finalized.external,f.custody),/EACCES|permission|bytes|metadata|changed/i);
+ }finally{await held?.close();await chmod(path.join(f.owned,'original'),0o640).catch(()=>{});await rm(f.root,{recursive:true,force:true});}
+});
+
+test('canonical generated hook namespace proof contains only exact planned local views',{skip:process.platform==='win32'},async()=>{
+ const f=await graphFixture();
+ try{
+  const namespace=path.join(f.root,'.ponderosa-portable-review','active-git-hooks'),name='a'.repeat(64);await mkdir(namespace,{recursive:true});await symlink(path.relative(namespace,path.join(f.owned,'original')).split(path.sep).join('/'),path.join(namespace,name));
+  f.configuration.external.links.push({context:'worktree',path:'.ponderosa-portable-review/active-git-hooks/'+name,target:'owned/original',kind:'symlink'});
+  for(const directory of [path.dirname(namespace),namespace]){const stat=await lstat(directory,{bigint:true});f.custody.directories.set(directory,{device:String(stat.dev),inode:String(stat.ino)});}
+  const observed=await snapshotImportedNativeGit(f.root,[f.root],f.storage,f.configuration,undefined,f.custody);assert.equal(observed.generatedHooks.schema,'ponderosa.generated-hook-namespace.v1');assert.equal(observed.generatedHooks.links[0].name,name);assert.equal(observed.generatedHooks.namespace.inode,String((await lstat(namespace,{bigint:true})).ino));assert.equal(observed.generatedHooks.operationId,undefined,'A readable filesystem seal cannot invent canonical operation authority');
+  await writeFile(path.join(namespace,'unknown'),'preserve me');await assert.rejects(snapshotImportedNativeGit(f.root,[f.root],f.storage,f.configuration,undefined,f.custody),/unexpected names/);assert.equal(await readFile(path.join(namespace,'unknown'),'utf8'),'preserve me');
+ }finally{await rm(f.root,{recursive:true,force:true});}
 });
