@@ -5,9 +5,9 @@ import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 type Row=Record<string,any>;
 const triggerLimits={maxDepth:64,maxNodes:250_000};
 
-// shortcut: automatic origin proof covers serial Scripts; gates/parallel/Calls need their own origin-aware replay.
+// shortcut: automatic origin proof covers serial Scripts/approval gates; parallel/Calls need their own origin-aware replay.
 export function automaticScriptDefinitionSupported(definition:BranchDefinition):boolean {
-  return ['schedule','webhook','filesystem'].includes(definition.trigger.kind)&&definition.steps.every(s=>s.kind==='script')&&definition.controls.every(c=>['condition','route'].includes(c.kind));
+  return ['schedule','webhook','filesystem'].includes(definition.trigger.kind)&&definition.steps.every(s=>s.kind==='script'||s.kind==='human_gate')&&definition.controls.every(c=>['condition','route'].includes(c.kind));
 }
 /** Same immutable untrusted input at native intake and historical verification. */
 export function branchTriggerInput(payload:unknown,occurrenceId:string,provenance:Row,payloadMediaType:string):string {

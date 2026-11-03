@@ -98,17 +98,27 @@ when the occurrence still exists. Missing original occurrence bytes are explicit
 `unavailable_held`; no current trigger, schedule, occurrence or native activation is
 created. Trigger-origin manual admission likewise retains its original trigger hash
 rather than requiring the unrelated ordinary-manual-input hash. Proven standalone
-automatic serial Script/state/condition/route owners can now recreate their native
+automatic serial Script/ordinary-approval-gate/state/condition/route owners can now recreate their native
 frontier **held**, through the same shared origin proof used for continuation. It
 requires the exact retained activated occurrence, canonical original payload/media/
 provenance/trigger snapshot and native envelope or large-input reference, original
 input hash and accepted/started audit. Missing/unavailable/changed or unsupported
-automatic gate/parallel/Call-tree evidence remains `evidence_only`. No acceptance,
+automatic parallel/Call-tree or recovery-purpose-gate evidence remains `evidence_only`. No acceptance,
 trigger lifetime, scheduler lease or occurrence is recreated. Only a separate human
 review/confirm can accept an earlier genuine supported checkpoint with a fresh
 manual destination input hash/admission; the source automatic hash stays historical.
 The selected and latest cuts independently retain canonical replay and sync/async/
-closed-EXIT saver/process-drain requirements. Existing manual behavior is unchanged.
+closed-EXIT saver/process-drain requirements. Ordinary serial approval gates retain
+exact selected/latest opening, revision, proposal, choices, response and state-seal
+proof. Held recreation/remap and nested re-export retain their evidence without
+notifications or source response authority. Only explicit continuation acceptance
+creates fresh destination gate identities/pending notifications; completed prefix
+decisions stay historical. Existing receipt and bounded generation/local-rewind
+replay independently prove original automatic input and fresh manual destination
+identity, actual later destination resolution, and full current causal cancellation
+where supported. Serial canceled source gates remain refused. The shared eligibility
+change reaches these existing callers without a new runtime format, saver/remap,
+server/SDK/UI route or gate lifecycle. Existing manual behavior is unchanged.
 See [the continuation proof and limits](branch-foreign-checkpoint-continuation.md#proven-automatic-source-standalone-serial-scripts).
 
 An imported held owner can be exported again. A private `import` fact retains the

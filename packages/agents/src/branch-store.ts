@@ -784,7 +784,7 @@ export class BranchStore {
       ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)
       ||!e||e.id!==sourceOwner.sourceExecutionId||e.branch_id!==resolved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||!['manual','automatic'].includes(e.admission_source)
       ||!portableScriptDefinitionSupported(definition)
-      ||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Supported standalone manual Script/gate graphs or proven automatic-source serial Script/state/condition/route cuts require exact sync/async or closed EXIT saver proof and no secrets');
+      ||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Supported standalone manual Script/gate graphs or proven automatic-source serial Script/approval-gate/state/condition/route cuts require exact sync/async or closed EXIT saver proof and no secrets');
     const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.some(g=>g.purpose!=='approval')
       &&!cut.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state));
     if(!effectFree(selected)||!effectFree(current)||sourceOwner.facts.some(f=>f.kind==='custody')||sourceOwner.chatRefs.length)throw Error('Issued, unknown, bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
