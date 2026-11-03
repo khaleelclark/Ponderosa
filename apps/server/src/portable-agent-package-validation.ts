@@ -1,7 +1,7 @@
 import {decodePortableMetadataArtifact} from './agent-package-codec.js';
 import {createHash} from 'node:crypto';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
-import {portableWorkingPath,validateWorkingTopology,validateMappedWorkingLinks,orderWorkingRoots,validateWorkingFileData} from './portable-working-files.js';
+import {portableWorkingPath,validateWorkingTopology,validateMappedWorkingLinks,orderWorkingRoots,validateWorkingFileData,validateWorkingRootNesting} from './portable-working-files.js';
 import {BUILT_IN_CAPABILITIES,parseConnectorCapabilityId} from '@ponderosa/core';
 import {validatePortableCommunication} from './portable-communication.js';
 import {validateOutputRoles} from './portable-output-roles.js';
@@ -22,7 +22,7 @@ export interface ValidatedPortableAgentPackage {
 /** Mutation-free parser shared by standalone and Branch package imports. */
 export function validatePortableAgentPackage(value:unknown):ValidatedPortableAgentPackage {
   const record=validatedObject(value,'Agent package');
-  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','rootRefs','agents','memory','outputRoles','gitStorageBindings'],'Agent package');
+  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','rootRefs','agents','memory','outputRoles','gitStorageBindings','workingRootNesting'],'Agent package');
   if(record.schema!=='ponderosa.agent-package.v1'||(record.mode!=='template'&&record.mode!=='full')||!Array.isArray(record.agents)||record.agents.length<1)throw new Error('invalid Ponderosa Agent package');
   if(record.agents.length>AGENT_PACKAGE_MAX_AGENTS)throw Object.assign(new Error(`Agent package contains ${record.agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`),{statusCode:413});
   if(typeof record.exportedAt!=='string'||!Number.isFinite(Date.parse(record.exportedAt))||typeof record.sourceLabel!=='string'||(record.sourceProjectInstructions!==undefined&&(typeof record.sourceProjectInstructions!=='string'||record.sourceProjectInstructions.length>100_000)))throw new Error('Agent package metadata is invalid');
@@ -109,6 +109,14 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
   }
   const rootRefs=new Set(portable.agents.flatMap(node=>node.workingRootRef?[node.workingRootRef]:[]));
   for(const node of portable.agents)for(const link of node.workingFolder?.links??[])if(link.targetRootRef&&!rootRefs.has(link.targetRootRef))throw new Error('Mapped symbolic target requires complete included root closure');
+  if(portable.workingRootNesting!==undefined){
+    if(portable.mode!=='full')throw Error('Working-root nesting requires full selected data');validateWorkingRootNesting(rootRefs,portable.workingRootNesting);
+    for(const boundary of portable.workingRootNesting){
+      const owner=portable.agents.find(node=>node.workingRootRef===boundary.parentRootRef&&node.workingFolder),folder=owner?.workingFolder;
+      if(!folder||!folder.excludedPaths.some(name=>name==='.'||name===boundary.path)||[...(owner?.workingFiles??[]),...folder.directories,...(folder.links??[])].some(item=>item.path===boundary.path||item.path.startsWith(boundary.path+'/')))throw Error('Nested root must own its exact excluded parent boundary without duplicate originals');
+    }
+    orderWorkingRoots(portable.agents.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[]})),portable.workingRootNesting);
+  }
   if(portable.gitStorageBindings!==undefined){
     if(portable.mode!=='full')throw new Error('Git storage bindings require full selected working-root evidence');
     validatePortableGitStorageBindings(portable.gitStorageBindings,rootRefs);

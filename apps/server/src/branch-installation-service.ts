@@ -1,8 +1,9 @@
+import {createBranchWorkingData,validateBranchWorkingData} from './branch-working-data.js';
 import {validateReviewedUserDataActivation,requireReviewedMetadataApplication,parseReviewedUserData} from './portable-reviewed-user-data.js';
 import {validateReviewedUserDataSelection,validateGitStorageSelections} from './portable-reviewed-user-data.js';
 import {composeBranchChat} from './branch-package-group.js';
 import {isAbsolute,resolve,sep} from 'node:path';
-import type {BranchPackageEngine} from './routes/agent-packages.js';
+import type {BranchPackageEngine,BranchAgentExportSet} from './routes/agent-packages.js';
 import {selectBranchMemory} from './branch-memory-update.js';
 import {validateOutputRoles} from './portable-output-roles.js';
 import type {OutputAgentApps} from './output-agent-apps.js';
@@ -152,9 +153,12 @@ export class BranchInstallationService {
   refuse();
   for(const row of this.rows("SELECT provenance_json FROM branch_executions WHERE branch_id IN ("+ids.map(()=>'?').join(',')+")",...ids)){const origin=JSON.parse(row.provenance_json);if(origin.source==='portable_runtime_data'&&origin.tree){const saved=this.row('SELECT result_json FROM branch_commands WHERE command_key=?',`portable-runtime-tree-manifest:${createHash('sha256').update(stableJson(origin.planId)).digest('hex')}`);if(!saved)throw new Error('Original private tree manifest unavailable');readHeldTreeForContinuation(this.store.sqlite,origin.planId,JSON.parse(saved.result_json).receipt.rootBranchId);}}
   const before=snapshot(),packages:InstalledBranchPackage[]=[],nodes:import('@ponderosa/core').BranchPortableDefinitionNode[]=[];
+  const sourceIds=this.rows("SELECT a.id FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id IN ("+ids.map(()=>'?').join(',')+") AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id IN (a.id,c.id) AND r.state!='active') ORDER BY c.created_at,c.id,a.created_at,a.id",...ids).map(row=>row.id as string);
+  const captured=this.engine?.exportAgentSet?await this.engine.exportAgentSet(sourceIds,'full',selections):undefined;
+  if(!captured&&Object.values(selections).some(selection=>selection.wholeWorkingFolder||selection.gitStorageBindings))throw new Error('The shared package engine must capture the complete Branch working-root closure');
   const selected=new Set(Object.keys(selections));
   for(const id of ids){const local=Object.fromEntries(Object.entries(selections).filter(([agent])=>!!this.row('SELECT 1 FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE a.id=? AND c.branch_id=?',agent,id)));for(const key of Object.keys(local))selected.delete(key);
-   const pkg=await this.export(id,'full',includeValues,local,true,true);
+   const pkg=await this.export(id,'full',includeValues,local,true,true,captured);
    const chatRef=(ref:string)=>JSON.stringify([id,ref]);pkg.chats.forEach(c=>{c.ref=chatRef(c.ref);});
    pkg.agentBindings=Object.fromEntries(Object.entries(pkg.agentBindings).map(([ref,target])=>[ref,{...target,chatRef:chatRef(target.chatRef)}]));
    for(const role of pkg.outputRoles??[])role.chatRef=chatRef(role.chatRef);
@@ -168,7 +172,11 @@ export class BranchInstallationService {
   const after=snapshot();if(before!==after)throw new Error('Definition dependency source changed during export; review again');
   const runtimeBranches=Object.fromEntries(packages.filter(p=>p.runtimeData).map(p=>[p.runtimeData!.sourceBranchId,p.runtimeData!])),runtimeInventory={schema:'ponderosa.branch-runtime-tree.v1' as const,rootSourceBranchId:root,branches:runtimeBranches};
   const executionTree=Object.values(runtimeBranches).some(b=>b.owners.length)?validateBranchExecutionTree({...runtimeInventory,sha256:createHash('sha256').update(stableJson(runtimeInventory)).digest('hex')}):undefined;
-  const flattened={...packages[0]!,runtimeData:undefined,...(executionTree?{executionTree}:{}),chats:packages.flatMap(p=>p.chats),outputRoles:packages.flatMap(p=>p.outputRoles??[])};
+  const flattened:InstalledBranchPackage={...packages[0]!,runtimeData:undefined,...(executionTree?{executionTree}:{}),chats:packages.flatMap(p=>p.chats),outputRoles:packages.flatMap(p=>p.outputRoles??[])};
+  if(captured?.working){
+    const owners=Object.fromEntries(captured.working.agents.map(node=>{const agent=this.store.getAgent(node.ref),chat=agent&&this.store.getConversation(agent.conversationId);if(!agent||!chat?.branchId||!ids.includes(chat.branchId))throw new Error('Selected physical root owner left the Branch dependency closure');const logical=this.identity(chat.branchId,chat.id,agent.id);return [node.ref,{chatRef:JSON.stringify([chat.branchId,logical.chatRef]),agentRef:logical.agentRef!}];}));
+    flattened.workingData=createBranchWorkingData(captured.working,owners);
+  }
   const inventory={rootSourceBranchId:root,nodes,packageSha256:createHash('sha256').update(stableJson(flattened)).digest('hex')},definitionTree={...inventory,sha256:createHash('sha256').update(stableJson(inventory)).digest('hex')};
   return this.validate({...flattened,definitionTree});
  }
@@ -206,14 +214,14 @@ export class BranchInstallationService {
   }
   if(chatRefs.size!==Object.keys(receipt.chatMap).length||agentRefs.size!==Object.keys(receipt.agentMap).length||new Set(Object.values(receipt.chatMap)).size!==chatRefs.size||new Set(Object.values(receipt.agentMap)).size!==agentRefs.size)throw new Error('Aliased or incomplete tree resource maps');
  }
- async export(branchId:string,mode:'template'|'full',includeValues=false,fileSelections:import('@ponderosa/core').BranchExportFileSelections={},single=false,called=false):Promise<InstalledBranchPackage>{
+ async export(branchId:string,mode:'template'|'full',includeValues=false,fileSelections:import('@ponderosa/core').BranchExportFileSelections={},single=false,called=false,capturedSource?:BranchAgentExportSet):Promise<InstalledBranchPackage>{
   if(mode==='full'&&!single){const closure=this.definitionClosure(branchId);if(closure.length>1||this.branches.version(branchId,this.branches.getBranch(branchId)!.versionId)!.definition.steps.some(s=>s.kind==='branch_call'))return this.exportDefinitionTree(branchId,closure,includeValues,fileSelections);}
   if(!this.engine)throw new Error('Package Engine unavailable');
   if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid export file selections');
   const requested=new Set(Object.keys(fileSelections));
   for(const selection of Object.values(fileSelections)){
    if(!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['selectedWorkingFiles','wholeWorkingFolder','reviewedUserData','gitStorageBindings'].includes(k))||selection.wholeWorkingFolder!==undefined&&typeof selection.wholeWorkingFolder!=='boolean'||selection.selectedWorkingFiles!==undefined&&(!Array.isArray(selection.selectedWorkingFiles)||selection.selectedWorkingFiles.some(p=>typeof p!=='string')))throw new Error('Invalid export file selection');
-   if(selection.gitStorageBindings!==undefined){validateGitStorageSelections(selection.gitStorageBindings);throw new Error('Cross-root Branch capture requires an export-wide selected-root context; an individual Agent export cannot authorize another root');}
+   if(selection.gitStorageBindings!==undefined){validateGitStorageSelections(selection.gitStorageBindings);}
    if(selection.reviewedUserData!==undefined){validateReviewedUserDataSelection(selection.reviewedUserData);if(mode!=='full'||!selection.wholeWorkingFolder)throw new Error('Git/settings review data requires full export and explicit whole working-folder selection');}
   }
   const branch=this.branches.getBranch(branchId),definition=branch&&this.branches.version(branchId,branch.versionId)?.definition;
@@ -228,10 +236,14 @@ export class BranchInstallationService {
   const sourceRoster=mode==='full'?roster():undefined;
   const runtimeData=mode==='full'?captureBranchRuntimeData(this.store.sqlite,branchId,chatRefs,Object.fromEntries(refs),called):undefined;
   const sourceRuntimeJson=runtimeData?stableJson(runtimeData):undefined;
+  const sourceIds=[...sourceAgents.values()].flat().map(agent=>agent.id);
+  const captured=capturedSource??(this.engine.exportAgentSet?await this.engine.exportAgentSet(sourceIds,mode,fileSelections):undefined);
+  if(!captured&&Object.values(fileSelections).some(selection=>selection.wholeWorkingFolder||selection.gitStorageBindings))throw new Error('The shared package engine must capture the complete Branch working-root closure');
+
   for(const row of sourceChats){
    const c=this.store.getConversation(row.id)!;const identity=this.identity(branchId,c.id),agents=sourceAgents.get(c.id)!;
    const nodes:BranchPackageChat['agents']=[];let exportedTeamMemory=false;
-   for(const a of agents){requested.delete(a.id);const portable=await this.engine.exportAgent(a.id,mode,fileSelections[a.id]),ref=refs.get(a.id)!.agentRef;
+   for(const a of agents){requested.delete(a.id);const portable=structuredClone(captured?.agents[a.id]??await this.engine.exportAgent(a.id,mode,fileSelections[a.id])),ref=refs.get(a.id)!.agentRef;
     if(portable.memory){
       for(const entry of portable.memory){
         entry.agentRefs=Object.fromEntries(Object.keys(entry.agentRefs).map(id=>[id,ref]));
@@ -250,6 +262,10 @@ export class BranchInstallationService {
   let packageId=this.row('SELECT package_id FROM branches WHERE id=?',branchId)!.package_id;
   if(!packageId){packageId=randomUUID();this.run('UPDATE branches SET package_id=? WHERE id=?',packageId,branchId);}
   const portable:InstalledBranchPackage={schema:'ponderosa.branch-installation.v1',packageId,mode,exportedAt:new Date().toISOString(),definition,chats,agentBindings,limits:configuration.limits,...(mode==='full'&&includeValues?{parameters:configuration.parameters}:{}),triggers:bindings.triggers,engines:bindings.engines};
+  if(!capturedSource&&captured?.working){
+    const owners=Object.fromEntries(captured.working.agents.map(node=>{const owner=refs.get(node.ref);if(!owner)throw new Error('Physical root owner is outside the selected workflow');return [node.ref,owner];}));
+    portable.workingData=createBranchWorkingData(captured.working,owners);
+  }
   const roles=this.outputApps?.portableRoles([...refs.keys()]);
   if(roles?.length)portable.outputRoles=roles.map(role=>({...refs.get(role.ref)!,output:role.output,speaker:role.speaker}));
   if(mode==='full'){if(roster()!==sourceRoster)throw new Error('Runtime Chat or Agent roster changed during export');const current=captureBranchRuntimeData(this.store.sqlite,branchId,chatRefs,Object.fromEntries(refs),called);if(stableJson(current??null)!==stableJson(runtimeData??null)||this.branches.getBranch(branchId)?.versionId!==branch.versionId)throw new Error('Runtime source changed during export; review again');if(runtimeData)portable.runtimeData=runtimeData;}
@@ -290,7 +306,7 @@ export class BranchInstallationService {
   agentPackageJsonUtf8Bytes(value);
   const p=structuredClone(value) as InstalledBranchPackage;
   if(!p||p.schema!=='ponderosa.branch-installation.v1'||typeof p.packageId!=='string'||!p.packageId||!['template','full'].includes(p.mode)||!Array.isArray(p.chats)||p.chats.length>100||!p.agentBindings)throw new Error('Invalid Branch installation package');
-  if(Object.keys(p).some(k=>!['schema','packageId','mode','exportedAt','definition','chats','agentBindings','limits','parameters','triggers','engines','outputRoles','runtimeData','definitionTree','executionTree'].includes(k)))throw new Error('Unsupported package field');
+  if(Object.keys(p).some(k=>!['schema','packageId','mode','exportedAt','definition','chats','agentBindings','limits','parameters','triggers','engines','outputRoles','runtimeData','definitionTree','executionTree','workingData'].includes(k)))throw new Error('Unsupported package field');
   if(p.runtimeData!==undefined){if(p.mode!=='full')throw new Error('Template packages cannot contain runtime data');p.runtimeData=validateBranchRuntimeData(p.runtimeData);}
   if(p.executionTree){if(!p.definitionTree||p.runtimeData||p.mode!=='full')throw new Error('Runtime tree requires its full Branch inventory');p.executionTree=validateBranchExecutionTree(p.executionTree);}
   p.definition=validateBranchDefinition(p.definition);
@@ -303,6 +319,7 @@ export class BranchInstallationService {
     const visited=new Set([a.ref]);let parent=a.managerRef;while(parent){if(!agents.has(parent)||visited.has(parent))throw new Error('Invalid organization relationships');visited.add(parent);parent=agents.get(parent)!.managerRef;}
    }
   }
+  if(p.workingData!==undefined)validateBranchWorkingData(p.workingData,p.chats,p.mode);
   if(p.runtimeData){
    const d=p.runtimeData;
    if(Object.values(d.identities.chats).length!==p.chats.length||Object.values(d.identities.chats).some(ref=>!p.chats.some(c=>c.ref===ref)))throw new Error('Runtime Chat inventory is incomplete');

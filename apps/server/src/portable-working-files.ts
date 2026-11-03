@@ -28,12 +28,13 @@ export async function verifyWorkingHardlinkCapture(capture:WorkingHardlinkCaptur
   }
 }
 /** Root dependencies are directed from an alias to its regular original. No destination mutation. */
-export function orderWorkingRoots<T extends {ref:string;links:readonly PortableWorkingLinkDto[]}>(roots:readonly T[]):T[]{
+export function orderWorkingRoots<T extends {ref:string;links:readonly PortableWorkingLinkDto[]}>(roots:readonly T[],nesting:NonNullable<import('@ponderosa/core').AgentPortablePackageDto['workingRootNesting']>=[]):T[]{
   const byRef=new Map(roots.map(root=>[root.ref,root])),done=new Set<string>(),pending=new Set<string>(),ordered:T[]=[];
   const visit=(root:T)=>{
     if(done.has(root.ref))return;
     if(pending.has(root.ref))throw new Error('Cyclic cross-root hardlink originals');
     pending.add(root.ref);
+    for(const boundary of nesting.filter(boundary=>boundary.childRootRef===root.ref)){const parent=byRef.get(boundary.parentRootRef);if(!parent)throw Error('Nested child requires its included parent root');visit(parent);}
     for(const link of root.links)if(link.kind==='hardlink'&&link.targetRootRef){
       const original=byRef.get(link.targetRootRef);if(!original)throw new Error('Hardlink original lacks included root closure');
       visit(original);
@@ -42,6 +43,23 @@ export function orderWorkingRoots<T extends {ref:string;links:readonly PortableW
   };
   for(const root of roots)visit(root);
   return ordered;
+}
+
+/** Typed selected-root boundaries preserve directories without visiting their bytes twice. */
+export function validateWorkingRootNesting(refs:ReadonlySet<string>,nesting:NonNullable<import('@ponderosa/core').AgentPortablePackageDto['workingRootNesting']>,destinations?:Readonly<Record<string,string>>):void{
+ if(!Array.isArray(nesting)||nesting.length>10000)throw Error('Invalid selected working-root nesting');
+ const parents=new Map<string,{parentRootRef:string;childRootRef:string;path:string}>();
+ for(const boundary of nesting){
+  if(!boundary||typeof boundary!=='object'||Object.keys(boundary).some(key=>!['parentRootRef','childRootRef','path'].includes(key))||!refs.has(boundary.parentRootRef)||!refs.has(boundary.childRootRef)||boundary.parentRootRef===boundary.childRootRef||parents.has(boundary.childRootRef)||typeof boundary.path!=='string'||!boundary.path||boundary.path.length>4096||/[\\:\x00-\x1f\x7f]/.test(boundary.path)||boundary.path.split('/').some(part=>!part||part==='.'||part==='..'))throw Error('Selected child root needs one canonical relative boundary and included parent');
+  parents.set(boundary.childRootRef,boundary);
+ }
+ for(const ref of refs){const seen=new Set<string>();let current=ref;while(parents.has(current)){if(seen.has(current))throw Error('Cyclic selected working-root nesting');seen.add(current);current=parents.get(current)!.parentRootRef;}}
+ if(!destinations)return;
+ const entries=Object.entries(destinations);
+ if(entries.length!==refs.size||entries.some(([ref,name])=>!refs.has(ref)||typeof name!=='string'||!path.isAbsolute(name)||path.resolve(name)!==name))throw Error('Exact canonical destination for every selected working root required');
+ for(const boundary of nesting)if(destinations[boundary.childRootRef]!==path.join(destinations[boundary.parentRootRef]!,...boundary.path.split('/')))throw Error('Nested working-root destinations must preserve the exact selected child boundary');
+ const ancestor=(child:string,parent:string)=>{let current=child;while(parents.has(current)){current=parents.get(current)!.parentRootRef;if(current===parent)return true;}return false;};
+ for(const [ref,name]of entries)for(const [otherRef,other]of entries)if(ref!==otherRef&&(name===other||name.startsWith(other+path.sep)&&!ancestor(ref,otherRef)))throw Error('Working-root destination overlap lacks its exact selected boundary');
 }
 
 export function portableWorkingPath(value:unknown):string {
@@ -351,7 +369,7 @@ export function workingLinkCounts(ref:string,roots:readonly {ref:string;links:re
 
 /** Explicit whole-folder selection. Omit native ownership/credential paths and report every omission. */
 export interface WorkingFolderInventory {mode:number;mtime:string;paths:string[];directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links:PortableWorkingLinkDto[];persistentPaths:string[];linkCounts:Map<string,bigint>;validationPaths:Map<string,string[]>}
-export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:ReviewedUserDataSelection,gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,sharedHardlinks?:WorkingHardlinkCapture):Promise<WorkingFolderInventory> {
+export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:ReviewedUserDataSelection,gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,sharedHardlinks?:WorkingHardlinkCapture,selectedChildRoots:readonly string[]=[]):Promise<WorkingFolderInventory> {
   const root=await fs.realpath(rootPath),paths:string[]=[],directories:Array<{path:string;mode:number;mtime:string}>=[],excludedPaths:string[]=[];
   const gitStorage=gitCapture?gitCapture.exclusions(root):reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
   const persistentPaths:string[]=[],links:PortableWorkingLinkDto[]=[],linkCounts=new Map<string,bigint>(),validationPaths=new Map<string,string[]>(),originals=new Map<string,{path:string;nlink:bigint;count:number}>();
@@ -363,6 +381,7 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
     for(const entry of (await fs.readdir(directory,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>10000)throw new Error('Whole working folder exceeds 10000 entries');
       const name=relative?`${relative}/${entry.name}`:entry.name;
+      if(selectedChildRoots.includes(name)){excludedPaths.push(name);continue;}
       if(gitStorage.includes('.')||gitStorage.includes(name)){excludedPaths.push(name);continue;}
       if(name==='.ponderosa-portable-review'){
         if(reviewedSelection?.source!=='retained_originals')throw new Error('Existing imported review data requires explicit retained-original selection');

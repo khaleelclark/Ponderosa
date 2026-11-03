@@ -195,6 +195,8 @@ export interface PortablePackageMemoryDto {snapshot:PortableChatMemorySnapshotDt
 export interface PortableOutputRoleDto { ref: string; output: boolean; speaker: boolean }
 export interface OutputRoleImportReviewDto { id: string; warning?: string; inactive: boolean; speaker: 'activate' | 'inactive' | 'unchanged'; targets: Array<{ref:string;output:boolean;speaker:boolean}> }
 export interface AgentPortablePackageDto {
+  /** Immediate explicitly selected physical child roots; all destination overlaps must match. */
+  workingRootNesting?:Array<{parentRootRef:string;childRootRef:string;path:string}>;
   schema: "ponderosa.agent-package.v1";
   mode: AgentExportMode;
   kind: "agent" | "organization";

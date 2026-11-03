@@ -2408,6 +2408,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native workspaces, Git2.53+ with reftable, disposable local repositories; no provider account",
       "origin": "Codex Phase2 linked reftable and complete native module capture"
+    },
+    {
+      "path": "tests/organizations/branch-working-data.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; inert Fastify/SQLite fixtures and owned temporary roots; no provider session",
+      "origin": "Bible8 Branch-wide physical closure: cross-Chat aliases, nested selected roots, separate histories and exact repeated Git selections"
     }
   ],
   "retainedReleasePayload": [
