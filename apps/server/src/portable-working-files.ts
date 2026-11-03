@@ -250,16 +250,29 @@ export async function assertWorkingRootIdentity(destination:string,expected:Work
 
 /** Keep configured Git originals accessible for inspection without activating
  * hooks, links, configuration or any historical source path. */
-export async function materializeGitExternalReview(folder:string,data:ReviewedGitExternalDependencies,checkRoot:()=>Promise<void>):Promise<void>{
+export async function materializeGitExternalReview(folder:string,data:ReviewedGitExternalDependencies,checkRoot:()=>Promise<void>,parentIdentity:WorkingDirectoryIdentity):Promise<void>{
   await checkRoot();
-  await fs.mkdir(folder,{mode:0o700});
+  const parent=path.dirname(folder);
+  await assertWorkingRootIdentity(parent,parentIdentity);
+  const parentHandle=await fs.open(parent,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  let folderHandle:Awaited<ReturnType<typeof fs.open>>|undefined;
+  try{
+  const held=await parentHandle.stat({bigint:true});
+  if(held.dev.toString()!==parentIdentity.device||held.ino.toString()!==parentIdentity.inode)throw new Error('Git review parent identity changed');
+  const heldParent=process.platform==='linux'?'/proc/self/fd/'+parentHandle.fd:parent;
+  if(process.platform==='linux'){const proc=await fs.stat(heldParent,{bigint:true});if(proc.dev!==held.dev||proc.ino!==held.ino)throw new Error('Held Git review parent is unavailable');}
+  await fs.mkdir(path.join(heldParent,path.basename(folder)),{mode:0o700});
   const identity=await observedWorkingRootIdentity(folder);
-  const check=async()=>{await checkRoot();await assertWorkingRootIdentity(folder,identity);};
+  folderHandle=await fs.open(path.join(heldParent,path.basename(folder)),constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  const opened=await folderHandle.stat({bigint:true});if(opened.dev.toString()!==identity.device||opened.ino.toString()!==identity.inode)throw new Error('Git review directory identity changed');
+  const heldFolder=process.platform==='linux'?'/proc/self/fd/'+folderHandle.fd:folder;
+  if(process.platform==='linux'){const proc=await fs.stat(heldFolder,{bigint:true});if(proc.dev!==opened.dev||proc.ino!==opened.ino)throw new Error('Held Git review directory is unavailable');}
+  const check=async()=>{await checkRoot();await assertWorkingRootIdentity(parent,parentIdentity);await assertWorkingRootIdentity(folder,identity);};
   const originals:Array<{sourcePath:string;reviewFile:string;mode?:number;mtimeNs?:string;removedSecretFields?:boolean}>=[],repositories:Array<{sourcePath:string;metadataFile:string;originals:Array<{sourcePath:string;reviewFile:string}>}>=[];
   const write=async(data:Buffer,sourcePath:string,metadata?:{mode?:number;mtimeNs?:string;removedSecretFields?:boolean})=>{
     await check();
     const reviewFile=String(originals.length).padStart(6,'0')+'.review';
-    const handle=await fs.open(path.join(folder,reviewFile),'wx',0o600);
+    const handle=await fs.open(path.join(heldFolder,reviewFile),'wx',0o600);
     try{await handle.writeFile(data);await handle.sync();}finally{await handle.close();}
     await check();
     originals.push({sourcePath,reviewFile,...metadata});
@@ -277,9 +290,10 @@ export async function materializeGitExternalReview(folder:string,data:ReviewedGi
   }
   await check();
   const manifest={activation:'inert_review_only',description:'The numbered .review files contain original Git dependency bytes. Paths and links are historical evidence only.',sourceWorkingRoot:data.sourceWorkingRoot,files:originals,directories:data.directories,links:data.links,absentPaths:data.absentPaths,omittedPaths:data.omittedPaths,bindings:data.bindings,repositories};
-  const handle=await fs.open(path.join(folder,'manifest.json'),'wx',0o600);
+  const handle=await fs.open(path.join(heldFolder,'manifest.json'),'wx',0o600);
   try{await handle.writeFile(JSON.stringify(manifest,null,2));await handle.sync();}finally{await handle.close();}
   await check();
+  }finally{try{await folderHandle?.close();}finally{await parentHandle.close();}}
 }
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
@@ -407,7 +421,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     if(reviewedData){
       // Separate repository only: never overwrite this working root's native-owned .git or provider settings.
       if(reviewedData.git)await recreateReviewedGit(path.join(destination,'.ponderosa-portable-review','git-repository'),reviewedData.git);
-      if(reviewedData.gitExternalDependencies)await materializeGitExternalReview(path.join(destination,'.ponderosa-portable-review','external-git'),reviewedData.gitExternalDependencies,checkRoot);
+      if(reviewedData.gitExternalDependencies)await materializeGitExternalReview(path.join(destination,'.ponderosa-portable-review','external-git'),reviewedData.gitExternalDependencies,checkRoot,directoryIdentities['.ponderosa-portable-review']!);
       if(reviewedData.providerFiles.length||reviewedData.providerDirectories.length){
         const folder=path.join(destination,'.ponderosa-portable-review','provider-files');await fs.mkdir(folder,{mode:0o700});
         const manifest=[];

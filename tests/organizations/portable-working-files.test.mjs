@@ -149,7 +149,8 @@ test('external Git review keeps original bytes and link evidence inert and inspe
   const root=await mkdtemp(path.join(tmpdir(),'portable-external-review-'));
   try{
     const folder=path.join(root,'review'),bytes=Buffer.from('#!/bin/sh\\necho preserved\\n');
-    await materializeGitExternalReview(folder,{version:1,sourceWorkingRoot:'/old/worktree',files:[{sourcePath:'/old/hooks/pre-commit',dataBase64:bytes.toString('base64'),mode:0o755,mtimeNs:'123'}],directories:[{sourcePath:'/old/hooks',mode:0o755,mtimeNs:'123'}],links:[{sourcePath:'/old/hooks/alias',targetSourcePath:'/old/hooks/pre-commit',kind:'symlink'}],absentPaths:['/old/missing'],omittedPaths:[],bindings:[]},async()=>{});
+    const parentStat=await lstat(root,{bigint:true});
+    await materializeGitExternalReview(folder,{version:1,sourceWorkingRoot:'/old/worktree',files:[{sourcePath:'/old/hooks/pre-commit',dataBase64:bytes.toString('base64'),mode:0o755,mtimeNs:'123'}],directories:[{sourcePath:'/old/hooks',mode:0o755,mtimeNs:'123'}],links:[{sourcePath:'/old/hooks/alias',targetSourcePath:'/old/hooks/pre-commit',kind:'symlink'}],absentPaths:['/old/missing'],omittedPaths:[],bindings:[]},async()=>{},{device:parentStat.dev.toString(),inode:parentStat.ino.toString()});
     assert.deepEqual(await readFile(path.join(folder,'000000.review')),bytes);
     assert.equal((await lstat(path.join(folder,'000000.review'))).mode&0o777,0o600);
     const manifest=JSON.parse(await readFile(path.join(folder,'manifest.json'),'utf8'));
