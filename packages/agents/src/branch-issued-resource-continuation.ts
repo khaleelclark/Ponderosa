@@ -56,7 +56,8 @@ function issuedResourceReplay(source:IssuedReplaySource,executionId:string,selec
   if(stableJson(validateBranchConfiguration(c.configuration,definition,true))!==stableJson(c.configuration))return false;
   verifyHostProvenance(host);
   if(!selected.resources)return false;
-  const resourceCleanup=e.state==='waiting'&&selected.paths?.length===1&&selected.paths[0]?.state==='completed';
+  const rootPaths=selected.paths?.filter(path=>path.parent_path_id===null)??[];
+  const resourceCleanup=e.state==='waiting'&&rootPaths.length===1&&rootPaths[0]?.state==='completed'&&selected.paths!.every(path=>!['active','waiting','joining'].includes(path.state));
   if(resourceCleanup&&(e.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'||!['active','draining'].includes(selected.resources[0]?.state)))return false;
   if(source.kind==='retained-issued-resource'&&(c.generationRetry||c.group))return false;
   const retry=source.kind==='native'&&c.generationRetry?generationOneReplay(source.db,selected,host,c.generationRetry):undefined;
