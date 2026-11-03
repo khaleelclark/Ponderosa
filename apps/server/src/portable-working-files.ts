@@ -16,7 +16,7 @@ export interface WorkingHardlinkCapture {
   aliases:Array<{root:string;path:string;key:string;identity:string}>;
 }
 /** Runtime-only proofs issued by native writers after complete alias/readback checks. */
-export interface WorkingNativeDirectoryProof {device:string;inode:string;mode:number;mtimeNs:string;ctimeNs?:string}
+export interface WorkingNativeDirectoryProof {device:string;inode:string;mode:number;mtimeNs:string;ctimeNs?:string;uid?:string;gid?:string;size?:string;nlink?:string}
 export interface WorkingNativeFileProof extends WorkingNativeDirectoryProof {sha256:string;expectedLinkCount:string}
 export interface WorkingNativeMetadata {
  files:Map<string,WorkingNativeFileProof>;directories:Map<string,WorkingNativeDirectoryProof>;
