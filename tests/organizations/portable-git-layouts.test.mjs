@@ -283,7 +283,7 @@ test('configured external module worktree read requires opt-in and an exact held
   assert.deepEqual(deinitialized.git.modules[0].git.objects,module.git.objects);
 });
 
-test('held export reads content-verified hardlinked loose objects without altering other names',{skip:process.platform==='win32'},async t=>{
+test('held export reads content-verified hardlinked loose objects without altering other names',{skip:process.platform!=='linux'},async t=>{
   const root=await fixture(t),repo=path.join(root,'repo'),foreign=path.join(root,'foreign-original');
   const oid=await repository(repo),object=path.join(repo,'.git','objects',oid.slice(0,2),oid.slice(2));
   await link(object,foreign);
