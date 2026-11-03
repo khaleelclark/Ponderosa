@@ -392,7 +392,8 @@ test('canonical history reuses authorized artifact full-file references without 
   session.finish();await f.settled(agent.id);await f.reopen();
   for(let index=0;index<45;index++){const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text:'Newer bounded item '+index+' '+('Controlled held task evidence '.repeat(150)),createdAt:new Date().toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'})}
   // A fresh boundary, not a fabricated managed rollover, grants this canonical read.
-  f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverTokens:75000,globalInstructions:'Read omitted evidence through the canonical history tool'}));
+  // Leave room for the required runtime contract; the history assertion below still proves omission.
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverTokens:150000,globalInstructions:'Read omitted evidence through the canonical history tool'}));
   const next=await f.hold(agent.id),run=(await f.detail(agent.id)).runs.find(item=>item.status==='running');
   const packet=store.getProviderInput(run.id,true);
   assert.equal(packet.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(sent.eventId),false,'Use a real policy-budget omission, independent of message-count cutoffs');
