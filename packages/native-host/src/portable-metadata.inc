@@ -244,6 +244,31 @@ napi_value Partial(napi_env env,const std::string& message,napi_value observed) 
 #endif
 } // namespace portable_metadata
 
+napi_value PinPortableRegularFile(napi_env env,napi_callback_info info) {
+#if defined(__linux__) && defined(O_PATH)
+  using namespace portable_metadata;
+  DescriptorSet owned;
+  try{
+    size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+    if(argc!=1)throw std::runtime_error("one regular-file pin input required");
+    const auto input=args[0];const std::string pathname=String(env,Property(env,input,"path"),4096);
+    if(pathname.empty()||pathname[0]!='/'||pathname.find('\0')!=std::string::npos)throw std::runtime_error("one absolute regular pathname required");
+    const uint64_t device=Identity(env,Property(env,input,"expectedDevice")),inode=Identity(env,Property(env,input,"expectedInode"));
+    const int fd=open(pathname.c_str(),O_PATH|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0)throw std::runtime_error(std::string("regular metadata pin failed: ")+std::strerror(errno));owned.values.push_back(fd);
+    struct stat held{};
+    if(fstat(fd,&held)!=0||!S_ISREG(held.st_mode)||uint64_t(held.st_dev)!=device||uint64_t(held.st_ino)!=inode)
+      throw std::runtime_error("selected regular inode was replaced or is not a regular file; no content endpoint opened");
+    const std::string readPath=MetadataPath(fd);
+    auto result=Object(env);Set(env,result,"fd",Number(env,fd));Set(env,result,"readPath",Text(env,readPath));
+    // Ownership transfers only after every fallible type/procfs check.
+    owned.values.clear();return result;
+  }catch(const std::exception& e){return Failure(env,"ERR_PORTABLE_REGULAR_PIN",e.what());}
+#else
+  return portable_metadata::Failure(env,"ERR_PORTABLE_REGULAR_PIN_UNSUPPORTED","Exact regular metadata pins currently require Linux O_PATH/procfs");
+#endif
+}
+
 napi_value InspectExtendedMetadata(napi_env env,napi_callback_info info) {
 #ifdef __linux__
   try {
@@ -264,11 +289,11 @@ napi_value ApplyExtendedMetadataInput(napi_env env,napi_value input) {
   bool attempted=false;Target target{};std::string qualifier,destinationQualifier;
   try {
     target=ReadTarget(env,input);auto before=Stat(target);
-    if(target.fifo){
+    if(MetadataOnly(target.fd)){
 #if defined(SYS_fchmodat2) && defined(AT_EMPTY_PATH)
-      errno=0;if(syscall(SYS_fchmodat2,-1,"",0,AT_EMPTY_PATH)!=-1||errno!=EBADF)throw std::runtime_error("descriptor-only FIFO chmod support unavailable before metadata mutation");
+      errno=0;if(syscall(SYS_fchmodat2,-1,"",0,AT_EMPTY_PATH)!=-1||errno!=EBADF)throw std::runtime_error("descriptor-only metadata chmod support unavailable before mutation");
 #else
-      throw std::runtime_error("descriptor-only FIFO chmod requires fchmodat2/AT_EMPTY_PATH");
+      throw std::runtime_error("descriptor-only metadata chmod requires fchmodat2/AT_EMPTY_PATH");
 #endif
     }
     if(!Literal(env,input,"restore","replace-user-and-posix-acl"))throw std::runtime_error("explicit exact selected restore required");

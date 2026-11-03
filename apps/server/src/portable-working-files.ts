@@ -1,6 +1,7 @@
 import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core";
 import {encodePortableArtifactData} from "./agent-package-codec.js";
 import {constants} from 'node:fs';
+import {openPortableRegular} from './portable-held-regular.js';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -182,7 +183,7 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     const relative=portableWorkingPath(item),parts=relative.split('/');
     let current=root;
     for(const part of parts){current=path.join(current,part);if((await fs.lstat(current)).isSymbolicLink())throw new Error(`Working-file symlinks are not portable originals: ${relative}`);}
-    const handle=await fs.open(current,constants.O_RDONLY|constants.O_NOFOLLOW);
+    const handle=await openPortableRegular(current);
     let data:Buffer,mode:number,mtime:string;
     try{
       const before=await handle.stat({bigint:true});
@@ -352,7 +353,7 @@ export async function finalizeWorkingFolderMetadata(destination:string,files:Par
     for(const file of files){
       const target=path.join(destination,portableWorkingPath(file.path));
       if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Final working-file parent changed');
-      const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
+      const handle=await openPortableRegular(target);
       try{
         const before=await handle.stat({bigint:true}),expectedLinks=expectedLinkCounts?.get(file.path)??BigInt(1+links.filter(link=>link.kind==='hardlink'&&!link.targetRootRef&&link.target===file.path).length);
         if(!before.isFile()||before.size!==BigInt(file.data.length)||before.nlink!==expectedLinks)throw new Error('Final working-file identity, size or complete aliases differ');

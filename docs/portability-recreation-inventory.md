@@ -1308,3 +1308,7 @@ and partial-state retention. Linux user.* attributes are kernel-forbidden on
 FIFOs; no unsupported values or default ACL are invented. Ordinary global
 metadata staging is also wired for permission-restricting directories/files.
 No tests, native execution, builds or typechecks were performed for this successor.
+
+### Held regular reader successor
+
+Linux regular-source reads and ordinary metadata finalization now use the shared [held regular inode gate](portable-filesystem-recreation.md#regular-file-replacement-boundary); regular metadata operations retain O_PATH throughout. A mutable regular pathname becoming a FIFO cannot open an endpoint or block before type validation. Non-Linux ordinary behavior is preserved and remains unqualified at this race boundary. Source regression coverage is added but unexecuted pending whole-product validation.

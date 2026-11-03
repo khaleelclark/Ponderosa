@@ -195,6 +195,11 @@ class RetainedFile {
   async read(buffer: Buffer, offset = 0, length = buffer.length, position: number | null = null): Promise<any> { return { bytesRead: node.readSync(this.fd, buffer, offset, length, position), buffer }; }
   async write(body: Buffer | string, offset?: any, length?: any, position?: any): Promise<any> { return { bytesWritten: typeof body === "string" ? node.writeSync(this.fd, body, offset, length) : node.writeSync(this.fd, body, offset, length, position), buffer: body }; }
 }
+/** Transfer an already owned native descriptor into the existing handle boundary. */
+export function adoptPortableFileDescriptor(descriptor:number):asyncNode.FileHandle{
+  if(!Number.isSafeInteger(descriptor)||descriptor<0)throw new TypeError('invalid owned native file descriptor');
+  return new RetainedFile(descriptor) as unknown as asyncNode.FileHandle;
+}
 export const promises: typeof asyncNode = {
   ...asyncNode,
   open: (async (name: node.PathLike, flags: node.OpenMode, mode?: node.Mode) => retained(name) ? new RetainedFile(openSync(name, flags, mode)) : asyncNode.open(name, flags, mode)) as typeof asyncNode.open,

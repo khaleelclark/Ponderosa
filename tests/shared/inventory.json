@@ -2416,6 +2416,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native server workspaces; inert Fastify/SQLite fixtures and owned temporary roots; no provider session",
       "origin": "Bible8 Branch-wide physical closure: cross-Chat aliases, nested selected roots, separate histories and exact repeated Git selections"
+    },
+    {
+      "path": "tests/organizations/portable-held-regular.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native/server workspaces; Linux disposable regular/FIFO inode replacements and a bounded child; no provider or live data",
+      "origin": "Bible8/12/15 regular-to-FIFO replacement: metadata-only inode gate before data open"
     }
   ],
   "retainedReleasePayload": [

@@ -136,3 +136,31 @@ defines non-directory/default and access ACL semantics.
 The added FIFO ACL round-trip regression is unexecuted pending combined validation.
 
 Generic Agent and Branch imports both stage every regular original before any root's links. Only nesting imposes parent-first root order; cross-inode root dependency cycles remain supported. Deferred live links reuse baseline retention, so displaced fresh-checkout files survive in the exact import backup folder.
+## Regular-file replacement boundary
+
+On Linux every portable ordinary source read, ordinary finalization hash read,
+and regular-node metadata capture/application now starts with a no-follow O_PATH
+pin. The native pin checks regular type and exact observed device/inode before
+any data open. Metadata stays on that descriptor. A data reader opens only the
+qualified procfs path of that already held regular inode, keeps the pin until
+read-handle identity is checked, and then releases it once. A substituted FIFO,
+socket, device or symbolic link cannot be opened as a data endpoint merely to
+discover its type. Parent/root custody checks remain separate and unchanged.
+
+The shared helper is portable-held-regular.ts; native pin ownership is explicit
+and cleanup failure preserves the primary failure while attempting each owned
+close once. Exact mode/time operations on O_PATH use descriptor-only Linux
+syscalls, including support preflight and exact readback. Exclusive new-file
+creation and directory opens keep their existing no-replace/O_DIRECTORY paths.
+
+The bounded regression launches a disposable child with a stale regular inode
+observation after the pathname becomes a FIFO. It must refuse within the timeout
+and preserve both originals. A second regression keeps read/metadata pins across
+pathname replacement and verifies that only the original regular inode is read
+or updated. Both regression sources remain unexecuted until combined validation.
+
+Non-Linux ordinary file functionality is retained. Its previous mutable-name
+open/replacement boundary is still unqualified: no O_EVTONLY, Windows handle,
+or other platform semantics are guessed here. That remaining boundary is neither
+a True verdict nor an approved Bible exception. Native extended metadata remains
+explicitly Linux-only. This tranche does not claim an independent-writer snapshot.

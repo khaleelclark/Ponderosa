@@ -6,6 +6,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
+  pinPortableRegularFile(input:{path:string;expectedDevice:bigint;expectedInode:bigint}):{fd:number;readPath:string};
   inspectExtendedMetadata(input: HeldMetadataTarget & { sourceQualifier: string }): ExtendedMetadataEvidence;
   applyExtendedMetadata(input: ExtendedMetadataRestore): ExtendedMetadataEvidence;
   inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence;
@@ -66,6 +67,9 @@ interface NativeJobBinding {
     expectedIdentity: string,
   ): boolean;
 }
+
+/** Linux only: pin a no-follow regular inode before any read open. The caller owns fd and must close it. readPath is an exact qualified procfd path, not a user path. */
+export function pinPortableRegularFile(input:{path:string;expectedDevice:bigint;expectedInode:bigint}):{fd:number;readPath:string}{return binding().pinPortableRegularFile(input);}
 
 /** Native evidence only: the caller supplies a source host/user-namespace qualifier.
  * Numeric IDs are observations, never cross-host principal authority. */
@@ -162,7 +166,7 @@ export function inspectPersistentNode(input: PersistentNodeParent): PersistentNo
 }
 /** Linux FIFO only, requires fchmodat2 AT_EMPTY_PATH and utimensat AT_EMPTY_PATH.
  * Caller owns the destination directory/name and separately proves current grant.
- * No replacement; inherited default ACL must be absent. Refuses special mode bits.
+ * No replacement. Inherited ACL requires explicit exact restoration; full POSIX mode bits remain subject to OS permission checks/readback.
  * Creation changes parent directory metadata. Partial error retains the node and
  * reports observed evidence|null; no rollback or automatic retry. */
 export function createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint;restoreExtendedMetadata?:boolean }): PersistentNodeEvidence {

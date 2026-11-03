@@ -2551,9 +2551,28 @@ napi_value ApplyExactFileMetadata(napi_env env, napi_callback_info info) {
     napi_set_named_property(env, error, "observed", fstat(fd, &observed) == 0 ? ExactMetadataEvidence(env, observed) : Null(env));
     napi_throw(env, error); return nullptr;
   };
-  // Time first: subsequent chmod restores special bits a timestamp update may clear.
-  if (futimens(fd, times) != 0) return failure("futimens failed", errno);
-  if (fchmod(fd, mode) != 0) return failure("fchmod failed", errno);
+  // O_PATH regular pins are metadata-only: never reopen the mutable name.
+#if defined(__linux__) && defined(O_PATH)
+  const int descriptorFlags=fcntl(fd,F_GETFL);
+  if(descriptorFlags<0){ThrowCode(env,"ERR_EXACT_METADATA_STAT","metadata descriptor flags unavailable");return nullptr;}
+  const bool metadataOnly=(descriptorFlags&O_PATH)==O_PATH;
+  if(metadataOnly){
+#if defined(SYS_fchmodat2) && defined(AT_EMPTY_PATH)
+    errno=0;if(syscall(SYS_fchmodat2,-1,"",0,AT_EMPTY_PATH)!=-1||errno!=EBADF){ThrowCode(env,"ERR_EXACT_METADATA_UNSUPPORTED","descriptor-only chmod unavailable; no metadata changed");return nullptr;}
+    const struct timespec probe[2]={{0,0},{0,0}};
+    errno=0;if(utimensat(-1,"",probe,AT_EMPTY_PATH)!=-1||errno!=EBADF){ThrowCode(env,"ERR_EXACT_METADATA_UNSUPPORTED","descriptor-only timestamp unavailable; no metadata changed");return nullptr;}
+    if(utimensat(fd,"",times,AT_EMPTY_PATH)!=0)return failure("descriptor utimensat failed",errno);
+    if(syscall(SYS_fchmodat2,fd,"",mode,AT_EMPTY_PATH)!=0)return failure("descriptor fchmodat2 failed",errno);
+#else
+    ThrowCode(env,"ERR_EXACT_METADATA_UNSUPPORTED","descriptor-only exact metadata requires fchmodat2/AT_EMPTY_PATH; no metadata changed");return nullptr;
+#endif
+  }else
+#endif
+  {
+    // Time first: subsequent chmod restores bits a timestamp update may clear.
+    if (futimens(fd, times) != 0) return failure("futimens failed", errno);
+    if (fchmod(fd, mode) != 0) return failure("fchmod failed", errno);
+  }
   struct stat after{};
   if (fstat(fd, &after) != 0) return failure("verification fstat failed", errno);
 #ifdef __APPLE__
@@ -2575,6 +2594,7 @@ napi_value ApplyExactFileMetadata(napi_env env, napi_callback_info info) {
 
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
+      {"pinPortableRegularFile", nullptr, PinPortableRegularFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"inspectExtendedMetadata", nullptr, InspectExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"applyExtendedMetadata", nullptr, ApplyExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"inspectPersistentNodeMetadata", nullptr, InspectPersistentNodeMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},

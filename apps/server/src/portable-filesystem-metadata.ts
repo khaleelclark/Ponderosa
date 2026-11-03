@@ -1,4 +1,5 @@
 import {constants} from 'node:fs';
+import {openPortableRegular} from './portable-held-regular.js';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -113,7 +114,7 @@ export async function captureFilesystemMetadata(root:string,selection:ReviewedUs
     for(const [relativePath,kind] of [['.','directory'],...inventory.directories.map(item=>[item.path,'directory']),...inventory.paths.map(item=>[item,'file'])] as Array<[string,'file'|'directory']>){
       const target=relativePath==='.'?root:path.join(root,relativePath);
       if(await fs.realpath(target)!==target)fail('Selected metadata node is no longer canonical');
-      const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|(kind==='directory'?constants.O_DIRECTORY:0));
+      const handle=kind==='directory'?await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW):await openPortableRegular(target,'metadata');
       await withMetadataHandle(handle,async()=>{
         const stat=await handle.stat({bigint:true}),evidence=inspectExtendedMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind,sourceQualifier:provenance.qualifier,...(kind==='file'?{expectedLinkCount:inventory.linkCounts.get(relativePath)??1n}:{})});
         result.nodes.push({path:relativePath,kind,mode:evidence.identity.mode,mtimeNs:String(evidence.identity.mtimeNs),ownerId:String(evidence.identity.ownerId),groupId:String(evidence.identity.groupId),...selectedEvidence(evidence,selection)});
@@ -187,7 +188,7 @@ export async function applyFilesystemMetadata(root:string,metadata:PortableFiles
   for(const node of [...metadata.nodes].sort((a,b)=>b.path.split('/').length-a.path.split('/').length||(a.path==='.'?1:b.path==='.'?-1:0))){
     const target=node.path==='.'?root:path.join(root,node.path);
     if(await fs.realpath(target)!==target)fail('Metadata destination node changed');
-    const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|(node.kind==='directory'?constants.O_DIRECTORY:0));
+    const handle=node.kind==='directory'?await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW):await openPortableRegular(target,'metadata');
     await withMetadataHandle(handle,async()=>{
       const stat=await handle.stat({bigint:true});
       const held={fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:node.kind,...(node.kind==='file'?{expectedLinkCount:expectedLinkCounts?.get(node.path)??BigInt(1+links.filter(link=>link.kind==='hardlink'&&!link.targetRootRef&&link.target===node.path).length)}:{})};

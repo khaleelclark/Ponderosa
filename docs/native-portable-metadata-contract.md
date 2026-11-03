@@ -119,8 +119,7 @@ an in-process advisory lock. It does not authorize replacing existing entries.
 
 It preflights input/time_t representation and uses invalid-descriptor-only probes
 to establish descriptor-mode/time syscall support without changing a node. A
-parent default ACL must be explicitly absent (or ACLs unsupported); present or
-unreadable default ACL refuses, because O_PATH cannot use fd xattr restoration.
+parent default ACL may be inherited only when explicit exact FIFO extended-metadata restoration is selected; otherwise present/unreadable inherited ACL refuses.
 It then exclusively creates a FIFO with initial 0600 mode, opens O_PATH only,
 applies exact timestamp with utimensat AT_EMPTY_PATH and mode with fchmodat2
 AT_EMPTY_PATH, and verifies the same single-link FIFO, rdev zero, owner/group,
@@ -241,3 +240,7 @@ establishes inode-only metadata dispatch and the FIFO user-namespace prohibition
 [POSIX ACL implementation](https://raw.githubusercontent.com/torvalds/linux/v7.0/fs/posix_acl.c)
 defines non-directory/default and access ACL semantics.
 The added FIFO ACL round-trip regression is unexecuted pending combined validation.
+
+## Held ordinary regular pins
+
+See [the regular-file replacement contract](portable-filesystem-recreation.md#regular-file-replacement-boundary). Linux metadata capture/application uses exact no-follow O_PATH regular pins, while data/hash reads reopen that held inode through its qualified procfs fd path. No FIFO endpoint is opened before a type check. Parent/root identity checks remain required. O_PATH exact mode/time applies through descriptor-only fchmodat2/utimensat with support preflight and readback. Non-Linux ordinary replacement races remain unqualified; their existing functionality is preserved. No tests/build/native execution were run in this successor.
