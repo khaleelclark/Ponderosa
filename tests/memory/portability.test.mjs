@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
+import {rename,access,mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 import {instance,seed,read,vector} from './portability-fixture.mjs';
 import {validateMemorySnapshot,MEMORY_SNAPSHOT_MAX_BYTES} from '../../apps/server/dist/portable-memory-snapshot.js';
 
@@ -84,4 +87,200 @@ test('natural local embedding export retries exactly before and after reopen; ch
   await assert.rejects(destination.memory.restorePackageMemory(changed,destination.chat.id,mapping,key),/collision/);
  }
  assert.deepEqual(canonical(await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id])),canonical(restored));
+});
+
+test('Assistant startup provisions its Chat memory and a missing established collection is never recreated',async t=>{
+ const f=await instance(t);
+ const response=await f.app.inject({method:'GET',url:'/api/branches/assistant'});
+ assert.equal(response.statusCode,200,response.body);
+ const chatId=response.json().app?.chatId;assert.ok(chatId,'default Assistant owns a Chat');
+ const raw=f.memory.core.database.raw,names=raw.names('chat:'+chatId);
+ for(const name of [names.memory,names.log])assert.ok(await raw.client.getCollection({name}));
+ const disabled=await f.app.inject({method:'POST',url:'/api/branches/assistant',payload:{enabled:false}});assert.equal(disabled.statusCode,200,disabled.body);
+ const enabled=await f.app.inject({method:'POST',url:'/api/branches/assistant',payload:{enabled:true}});assert.equal(enabled.statusCode,200,enabled.body);
+ const newChatId=enabled.json().app?.chatId;assert.ok(newChatId);assert.notEqual(newChatId,chatId);
+ for(const name of Object.values(raw.names('chat:'+newChatId)))assert.ok(await raw.client.getCollection({name}));
+ await f.reopen();
+ const reopened=f.memory.core.database.raw,missing=new Error('The requested resource could not be found');missing.name='ChromaNotFoundError';
+ const originalGet=reopened.client.getCollection.bind(reopened.client),originalCreate=reopened.client.createCollection.bind(reopened.client);let creates=0;
+ reopened.client.getCollection=async args=>{if(args.name===names.memory)throw missing;return originalGet(args);};
+ reopened.client.createCollection=async args=>{creates++;return originalCreate(args);};
+ try{await assert.rejects(f.memory.provisionInventory(),error=>error===missing);assert.equal(creates,0,'an established missing collection must remain held');}
+ finally{reopened.client.getCollection=originalGet;reopened.client.createCollection=originalCreate;}
+});
+
+
+test('new Chat creation provisions exactly its own memory scope',async t=>{
+ const f=await instance(t);
+ const result=await f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':randomUUID()},payload:{label:'Fresh memory scope',hostPath:f.root,defaultEngine:'fixture'}});
+ assert.equal(result.statusCode,200,result.body);
+ const chatId=result.json().id;assert.ok(chatId);
+ for(const name of Object.values(f.memory.core.database.raw.names('chat:'+chatId)))assert.ok(await f.memory.core.database.raw.client.getCollection({name}));
+ await f.reopen();
+});
+
+test('a process-unknown existing Chat never authorizes recreating its missing collection',async t=>{
+ const f=await instance(t),memory=f.memory,raw=memory.core.database.raw,names=raw.names('chat:'+f.chat.id);
+ const missing=new Error('The requested resource could not be found');missing.name='ChromaNotFoundError';
+ const originalGet=raw.client.getCollection.bind(raw.client),originalCreate=raw.client.createCollection.bind(raw.client);let creates=0;
+ memory.knownScopes.delete('chat:'+f.chat.id);
+ raw.client.getCollection=async args=>{if(args.name===names.memory)throw missing;return originalGet(args);};
+ raw.client.createCollection=async args=>{creates++;return originalCreate(args);};
+ try{await assert.rejects(memory.provisionInventory(),error=>error===missing);assert.equal(creates,0,'an old scope must not be recreated just because this process has not seen it');}
+ finally{raw.client.getCollection=originalGet;raw.client.createCollection=originalCreate;}
+});
+
+
+test('concurrent committed Chats provision only their own new memory scopes',async t=>{
+ const f=await instance(t),memory=f.memory,original=memory.provisionNewChat.bind(memory);
+ let arrivals=0,release;const both=new Promise(resolve=>{release=resolve;});
+ memory.provisionNewChat=async chatId=>{if(++arrivals===2)release();await both;return original(chatId);};
+ const create=label=>f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':randomUUID()},payload:{label,hostPath:f.root,defaultEngine:'fixture'}});
+ try{
+  const responses=await Promise.all([create('Concurrent one'),create('Concurrent two')]);
+  for(const response of responses){
+   assert.equal(response.statusCode,200,response.body);
+   for(const name of Object.values(memory.core.database.raw.names('chat:'+response.json().id)))assert.ok(await memory.core.database.raw.client.getCollection({name}));
+  }
+  assert.equal(arrivals,2);
+ }finally{memory.provisionNewChat=original;}
+ await f.reopen();
+});
+
+test('a planned new Chat scope survives a lost pre-dispatch response and can safely resume',async t=>{
+ const f=await instance(t),memory=f.memory,key=randomUUID(),original=memory.provisionNewChat.bind(memory);
+ memory.provisionNewChat=async()=>{throw Error('synthetic pre-dispatch interruption');};
+ const request=()=>f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':key},payload:{label:'Planned memory scope',hostPath:f.root,defaultEngine:'fixture'}});
+ let first;
+ try{first=await request();}finally{memory.provisionNewChat=original;}
+ assert.equal(first.statusCode,409,first.body);
+ const chatId=first.json().chatId;assert.ok(chatId);assert.equal(first.json().code,'memory_provision_pending');
+ assert.deepEqual(f.store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'planned',log_state:'planned'});
+ await f.reopen();
+ const second=await request();assert.equal(second.statusCode,200,second.body);assert.equal(second.json().id,chatId);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'confirmed',log_state:'confirmed'});
+ await f.reopen();
+});
+
+test('a submitted but missing Chat collection remains held without another create',async t=>{
+ const f=await instance(t),memory=f.memory,client=memory.core.database.raw.client,key=randomUUID(),original=client.createCollection.bind(client);let calls=0;
+ client.createCollection=async()=>{calls++;throw Error('synthetic unknown create outcome');};
+ const request=()=>f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':key},payload:{label:'Uncertain memory scope',hostPath:f.root,defaultEngine:'fixture'}});
+ let first;
+ try{first=await request();}finally{client.createCollection=original;}
+ assert.equal(first.statusCode,409,first.body);
+ const chatId=first.json().chatId;assert.ok(chatId);assert.equal(first.json().code,'memory_provision_pending');
+ assert.deepEqual(f.store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'submitted',log_state:'planned'});
+ const second=await request();assert.equal(second.statusCode,409,second.body);assert.equal(second.json().chatId,chatId);
+ assert.equal(calls,1,'uncertain collection creation was not blindly repeated');
+ assert.deepEqual(f.store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'submitted',log_state:'planned'});
+ assert.throws(()=>memory.core.database.assertSourceSettled(),/requires reconciliation/);
+});
+
+test('observing a matching created collection does not clear an independent unknown-write hold',async t=>{
+ const f=await instance(t),memory=f.memory,client=memory.core.database.raw.client,key=randomUUID(),original=client.createCollection.bind(client);let calls=0;
+ client.createCollection=async options=>{calls++;const result=await original(options);if(calls===1)throw Error('synthetic lost create response');return result;};
+ const request=()=>f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':key},payload:{label:'Observed memory scope',hostPath:f.root,defaultEngine:'fixture'}});
+ let first;
+ try{first=await request();}finally{client.createCollection=original;}
+ assert.equal(first.statusCode,409,first.body);
+ const chatId=first.json().chatId;assert.ok(chatId);
+ const second=await request();assert.equal(second.statusCode,200,second.body);assert.equal(second.json().id,chatId);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'confirmed',log_state:'confirmed'});
+ assert.throws(()=>memory.core.database.assertSourceSettled(),/requires reconciliation/,'a matching read is not evidence that the unknown remote write drained');
+});
+
+
+test('a retained memory intent cannot authorize a different Chat owner',async t=>{
+ const f=await instance(t),key=randomUUID();
+ const response=await f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':key},payload:{label:'Owner binding',hostPath:f.root,defaultEngine:'fixture'}});
+ assert.equal(response.statusCode,200,response.body);
+ const chatId=response.json().id,memory=f.memory,client=memory.core.database.raw.client,originalCreate=client.createCollection.bind(client);let creates=0;
+ f.store.sqlite.prepare("UPDATE local_memory_scope_provisioning SET project_id='foreign-project' WHERE chat_id=?").run(chatId);
+ client.createCollection=async (...args)=>{creates++;return originalCreate(...args);};
+ try{await assert.rejects(memory.verifyChat(chatId),/does not match current scope and installation/);assert.equal(creates,0);}
+ finally{client.createCollection=originalCreate;}
+});
+
+
+test('a missing established memory policy is not recreated even when provisioning is configured',async t=>{
+ const f=await instance(t),file=path.join(f.options.localMemory.stateDirectory,'host-policy.sqlite'),saved=file+'.preserved';
+ await f.suspend();await rename(file,saved);
+ try{
+  await assert.rejects(f.resume(),/Established local memory policy is missing/);
+  await assert.rejects(access(file),error=>error.code==='ENOENT');
+  await access(saved);
+ }finally{
+  try{f.store.close();}catch{}
+  await rename(saved,file);
+  await f.resume();
+ }
+});
+
+test('an unwitnessed upgraded installation does not treat a missing policy as fresh',async t=>{
+ const f=await instance(t),file=path.join(f.options.localMemory.stateDirectory,'host-policy.sqlite'),saved=file+'.preserved';
+ f.store.sqlite.prepare('DELETE FROM local_memory_host_binding WHERE singleton=1').run();
+ await f.suspend();await rename(file,saved);
+ try{
+  await assert.rejects(f.resume(),/no first-install witness/);
+  await assert.rejects(access(file),error=>error.code==='ENOENT');
+  await access(saved);
+ }finally{
+  try{f.store.close();}catch{}
+  await rename(saved,file);
+  await f.resume();
+ }
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM local_memory_host_binding WHERE singleton=1').get().state,'bound');
+});
+
+test('a foreign host witness refuses before creating a missing memory policy',async t=>{
+ const f=await instance(t),file=path.join(f.options.localMemory.stateDirectory,'host-policy.sqlite'),saved=file+'.preserved';
+ const witness=f.store.sqlite.prepare('SELECT * FROM local_memory_host_binding WHERE singleton=1').get();
+ f.store.sqlite.prepare("UPDATE local_memory_host_binding SET data_generation='foreign-generation' WHERE singleton=1").run();
+ await f.suspend();await rename(file,saved);
+ try{
+  await assert.rejects(f.resume(),/host binding differs/);
+  await assert.rejects(access(file),error=>error.code==='ENOENT');await access(saved);
+ }finally{
+  try{f.store.close();}catch{}
+  const Database=(await import('better-sqlite3')).default,db=new Database(path.join(f.dataDir,'ponderosa.db'));
+  db.prepare('UPDATE local_memory_host_binding SET data_generation=? WHERE singleton=1').run(witness.data_generation);db.close();
+  await rename(saved,file);await f.resume();
+ }
+});
+
+
+test('initial global scope planned before dispatch resumes safely after restart',async t=>{
+ const f=await instance(t),root=await mkdtemp(path.join(tmpdir(),'memory-first-intent-'));
+ const {AgentStore}=await import('@ponderosa/agents'),{LocalMemoryService}=await import('../../apps/server/dist/local-memory.js');
+ const store=new AgentStore(path.join(root,'data'));
+ const inference={signature:'initial-intent-fixture',async embed(){return Array.from({length:384},(_,i)=>i?0:1);},async rerank(pairs){return pairs.map(()=>1);},async close(){}};
+ const options={dataDir:path.join(root,'data'),localMemory:{...f.options.localMemory,collectionPrefix:'first_'+randomUUID().replaceAll('-',''),stateDirectory:path.join(root,'policy'),provision:true}};
+ const open=()=>new LocalMemoryService({opts:options,store,capabilities:new Map(),activeRuns:new Map(),ownsRun:()=>false},inference);
+ let memory=open();
+ try{
+  assert.deepEqual(store.sqlite.prepare("SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id='global'").get(),{memory_state:'planned',log_state:'planned'});
+  const raw=memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);
+  raw.client.getCollection=async()=>{throw Error('synthetic pre-dispatch offline');};
+  try{await assert.rejects(memory.ready(),/pre-dispatch offline/);}finally{raw.client.getCollection=original;}
+  assert.deepEqual(store.sqlite.prepare("SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id='global'").get(),{memory_state:'planned',log_state:'planned'});
+  await memory.close();memory=open();await memory.ready();
+  assert.deepEqual(store.sqlite.prepare("SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id='global'").get(),{memory_state:'confirmed',log_state:'confirmed'});
+ }finally{await memory.close();store.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('fresh memory installation refuses an existing same-name collection without modifying it',async t=>{
+ const f=await instance(t),root=await mkdtemp(path.join(tmpdir(),'memory-foreign-namespace-'));
+ const {AgentStore}=await import('@ponderosa/agents'),{LocalMemoryService}=await import('../../apps/server/dist/local-memory.js');
+ const store=new AgentStore(path.join(root,'data'));
+ const inference={signature:'foreign-namespace-fixture',async embed(){return Array.from({length:384},(_,i)=>i?0:1);},async rerank(pairs){return pairs.map(()=>1);},async close(){}};
+ const options={dataDir:path.join(root,'data'),localMemory:{...f.options.localMemory,collectionPrefix:'foreign_'+randomUUID().replaceAll('-',''),stateDirectory:path.join(root,'policy'),provision:true}};
+ const memory=new LocalMemoryService({opts:options,store,capabilities:new Map(),activeRuns:new Map(),ownsRun:()=>false},inference);
+ const raw=memory.core.database.raw,originalGet=raw.client.getCollection.bind(raw.client),originalCreate=raw.client.createCollection.bind(raw.client);let creates=0;
+ raw.client.getCollection=async()=>({metadata:{embedding_signature:raw.signature,dimensions:384,'hnsw:space':'cosine'}});
+ raw.client.createCollection=async (...args)=>{creates++;return originalCreate(...args);};
+ try{
+  await assert.rejects(memory.ready(),/already exists without its exact creation receipt/);assert.equal(creates,0);
+  assert.deepEqual(store.sqlite.prepare("SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id='global'").get(),{memory_state:'planned',log_state:'planned'});
+ }finally{raw.client.getCollection=originalGet;raw.client.createCollection=originalCreate;await memory.close();store.close();await rm(root,{recursive:true,force:true});}
 });

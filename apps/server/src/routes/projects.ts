@@ -1,3 +1,4 @@
+import {localMemoryFor} from '../local-memory.js';
 import {removeEmptyTombstone} from '../empty-tombstone.js';
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, realpathSync, promises as fs } from "@ponderosa/native-host/fs";
@@ -924,6 +925,10 @@ export function registerProjectRoutes(
       if (!chat || chat.branchId !== owner?.branchId || chat.executionId !== owner?.executionId) {
         throw Object.assign(new Error("Chat creation identity no longer belongs to a live Chat in this scope"), {statusCode:409});
       }
+      if (!owner?.executionId) {
+        try { await localMemoryFor(app)?.verifyChat(chat.id); }
+        catch { throw Object.assign(new Error('Chat exists, but its memory setup is incomplete. The Chat and existing memory were preserved. Submitted collection creation is not repeated automatically; review memory health.'), {statusCode:409,chatId:chat.id}); }
+      }
       return chat;
     }
     if (!engines.has(defaultEngine)) throw Object.assign(new Error("a configured default engine is required"), {statusCode:400});
@@ -965,6 +970,7 @@ export function registerProjectRoutes(
       }
     }
     let project;
+    let freshlyCommittedChatId: string | undefined;
     try {
       signal?.throwIfAborted();
       project = store.createProject({
@@ -977,7 +983,7 @@ export function registerProjectRoutes(
         ...(resolvedCreation.model ? { defaultModel: resolvedCreation.model } : {}),
         ...(resolvedCreation.effort ? { defaultEffort: resolvedCreation.effort } : {}),
         defaultSpeed: resolvedCreation.speed,
-      }, creationIdentity);
+      }, creationIdentity, chatId => { localMemoryFor(app)?.reserveNewChat(chatId); freshlyCommittedChatId = chatId; });
     } catch (error) {
       const committed = store.getProjectCreation(creationIdentity);
       if (committed) project = committed;
@@ -988,12 +994,16 @@ export function registerProjectRoutes(
         throw error;
       }
     }
+    const chat=store.getConversation(project.lastConversationId!);
+    if (!chat || chat.branchId !== owner?.branchId || chat.executionId !== owner?.executionId) throw new Error("Chat creation did not establish its owned context");
+    if (freshlyCommittedChatId && !owner?.executionId) {
+      try { await localMemoryFor(app)?.provisionNewChat(freshlyCommittedChatId); }
+      catch { throw Object.assign(new Error('Chat was created, but its memory setup is incomplete. The Chat and existing memory were preserved. Submitted collection creation is not repeated automatically; review memory health.'), {statusCode:409,chatId:freshlyCommittedChatId}); }
+    }
     if (managedIdentity) await finishManagedProjectFolder(managedWorkspacesRoot, managedIdentity);
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "created" });
     refreshCommunicationReconciliation(project.id);
     if (project.lastConversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: project.lastConversationId, action: "created" });
-    const chat=store.getConversation(project.lastConversationId!);
-    if (!chat || chat.branchId !== owner?.branchId || chat.executionId !== owner?.executionId) throw new Error("Chat creation did not establish its owned context");
     return chat;
     } finally {
       releaseCreationClaim?.();
@@ -1004,7 +1014,7 @@ export function registerProjectRoutes(
     request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
     try { return await createChat(request.body,request.headers["idempotency-key"] ?? ""); }
     catch (error) {
-      if (error instanceof Error && "statusCode" in error) return reply.code(Number(error.statusCode)).send({error:error.message});
+      if (error instanceof Error && "statusCode" in error) return reply.code(Number(error.statusCode)).send({error:error.message,...("chatId" in error && typeof error.chatId === "string" ? {chatId:error.chatId,code:"memory_provision_pending"} : {})});
       throw error;
     }
   });

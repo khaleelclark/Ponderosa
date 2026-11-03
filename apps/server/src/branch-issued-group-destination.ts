@@ -12,7 +12,7 @@ const hash=(v:unknown)=>createHash('sha256').update(stableJson(v)).digest('hex')
 export class BranchIssuedGroupDestinationService {
  private readonly preparing=new Set<string>();
  readonly disclosures:BranchDisclosureReviewService;
- constructor(private readonly store:AgentStore,private readonly branches:BranchStore,private readonly coordination:CoordinationV3Store,private readonly packages:()=>BranchPackageEngine){
+ constructor(private readonly store:AgentStore,private readonly branches:BranchStore,private readonly coordination:CoordinationV3Store,private readonly packages:()=>BranchPackageEngine,private readonly provisionProjectChat?:(chatId:string,fresh:boolean)=>Promise<void>,private readonly reserveProjectChat?:(chatId:string)=>void){
   this.disclosures=new BranchDisclosureReviewService(store,branches,coordination,async(executionId,checkpointId,expectedHash)=>{
    const saved=readIssuedGroup(this.db,executionId,checkpointId,expectedHash);
    for(const receipt of saved.issuedGroupCustody)await this.packages().readCheckpoint(receipt);
@@ -183,8 +183,18 @@ export class BranchIssuedGroupDestinationService {
    if(!sourceProject||!defaultEngine)throw Error('Current group Project/Engine unavailable');
    this.db.transaction(()=>this.authority().requireGroupCustodyAndOwner(plan.reservation))();
    const identity={idempotencyKey:creationKey,payloadHash:hash({projectId,branchId,executionId:plan.reservation.destination.executionId})};
-   const project=this.store.getProjectCreation(identity)??this.store.createProject({label:'Restored workflow group',hostPath:sourceProject.hostPath,defaultEngine},identity);
+   let freshProjectChatId:string|undefined;
+   const project=this.store.getProjectCreation(identity)??this.store.createProject({label:'Restored workflow group',hostPath:sourceProject.hostPath,defaultEngine},identity,id=>{this.reserveProjectChat?.(id);freshProjectChatId=id;});
    if(project.id!==projectId)throw Error('Prospective group Project differs');
+   if(this.provisionProjectChat){
+    // lastConversationId changes as group children are created; the Project's
+    // default Chat is fixed by the original creation identity.
+    const defaultChatId=workspaceCreationId('conversation',projectId,`${creationKey}:default`);
+    const defaultChat=this.store.getConversation(defaultChatId);
+    if(!defaultChat||defaultChat.projectId!==projectId||defaultChat.branchId||defaultChat.executionId)throw Error('Group Project default Chat identity differs');
+    try{await this.provisionProjectChat(defaultChatId,freshProjectChatId===defaultChatId);}
+    catch{throw Error('Group Project was created, but its default Chat memory setup is incomplete. Existing data was preserved; review memory health.');}
+   }
    for(let index=0;index<plan.reservation.resources.length;index++){
     const item=plan.reservation.resources[index],d=item.destination,pkg=pkgs.get(item.custody.custodyId)!,owner=sourceOwners.find(o=>o.executionId===item.custody.intent.executionId)!,ownerBranchId=owner.selected.execution[0].branch_id;
     this.db.transaction(()=>this.authority().requireGroupCustodyAndOwner(plan.reservation))();

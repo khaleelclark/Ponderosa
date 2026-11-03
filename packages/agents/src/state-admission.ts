@@ -112,7 +112,7 @@ const predecessorVersions = [
   "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
   "0029_assistant_workspace.sql", "0030_agent_run_pauses.sql",
   "0031_branch_initial_checkpoints.sql", "0032_branch_unit_snapshots.sql",
-  "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql",
+  "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql", "0043_package_export_cache.sql",
 ] as const;
 const predecessorContracts = new Map<string, string>();
 function isPredecessorContract(actual: string, budget: StateReadBudget): boolean {
@@ -275,6 +275,9 @@ function bootstrap(root: string, names: string[]): StateIdentity {
     closeSync(openSync(path, "wx", 0o600));
     const sqlite = new Database(storageDatabaseFilename(path), { fileMustExist: true });
     try { initializeCurrentDatabase(sqlite); declareGeneration(sqlite); mintGeneration(sqlite, marker.generationId);
+      // Only the fresh, empty canonical bootstrap can prove memory has never
+      // been configured for this data generation.
+      sqlite.prepare("INSERT INTO local_memory_host_binding VALUES(1,?,'never_configured',NULL,NULL)").run(marker.generationId);
       verifyDatabase(sqlite, marker.generationId); }
     finally { sqlite.close(); }
     for (const suffix of ["", "-wal", "-shm", "-journal"]) if (regular(path + suffix)) fsyncPath(path + suffix);

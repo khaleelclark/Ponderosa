@@ -20,8 +20,19 @@ function trackedCollection<T extends object>(raw:ChromaStorage,collection:T,scop
  return new Proxy(collection,{get(target,key){const value=Reflect.get(target,key);if(typeof value!=='function')return value;return (...args:unknown[])=>['upsert','add','update','delete','modify'].includes(String(key))?mutate(raw,()=>Reflect.apply(value,target,args),{scope,log,operation:String(key) as MemoryMutationEffect['operation']}):Reflect.apply(value,target,args);}});
 }
 export async function checkedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>,create=false):Promise<Awaited<ReturnType<ChromaStorage["client"]["getCollection"]>>>{
- await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(!create||!/not.?found|does not exist/i.test(String(e)))throw e;await guard();c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384}}),{scope,log,operation:'create_collection'});}await guard();
+ await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(!create||!(e instanceof Error)||e.name!=='ChromaNotFoundError')throw e;await guard();c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384}}),{scope,log,operation:'create_collection'});}await guard();
  if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Incompatible memory collection binding');return trackedCollection(raw,c,scope,log);
+}
+/** Issue one durably planned collection creation. An existing name is never
+ * adopted as a fresh result; a lost response is resolved separately by token. */
+export async function createPlannedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>,token:string,beforeDispatch:()=>void){
+ await guard();
+ try{await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});throw Error('Fresh memory collection already exists without its exact creation receipt');}
+ catch(error){if(!(error instanceof Error)||error.name!=='ChromaNotFoundError')throw error;}
+ await guard();beforeDispatch();
+ const c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384,ponderosa_provision_intent:token}}),{scope,log,operation:'create_collection'});
+ await guard();
+ if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||c.metadata?.ponderosa_provision_intent!==token||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Created memory collection proof differs');
 }
 /** A per-call storage view, not persistence, a journal, a transaction or a recovery coordinator. */
 export class AuthorityStorage implements MemoryStorage{

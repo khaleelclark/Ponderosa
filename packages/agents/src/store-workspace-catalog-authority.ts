@@ -437,6 +437,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
+    onFreshChatCommit?: (chatId: string) => void,
   ): ProjectDto {
     const validateBranchOwner = (): void => {
       if (input.executionId && !input.branchId) throw new Error("An execution-owned Chat requires its Branch");
@@ -532,6 +533,7 @@ export class AgentWorkspaceCatalogAuthority {
         validateBranchOwner();
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
         tx.insert(conversations).values({ id: conversationId, projectId: id, branchId:input.branchId ?? null, executionId:input.executionId ?? null, title: input.chatOwned ? input.label : "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now }).run();
+        onFreshChatCommit?.(conversationId);
         for (const event of presets) {
           tx.insert(agentPresets).values({ ...event.preset, enabled: 1 }).run();
         }
@@ -999,6 +1001,7 @@ export class AgentWorkspaceCatalogAuthority {
     input: CreateConversationRequest,
     identity?: WorkspaceCreationIdentity,
     owner?: {branchId:string;executionId:string},
+    onFreshChatCommit?: (chatId: string) => void,
   ): ConversationDto {
     const validateOwner=()=>{if(owner&&!this.db.get(sql`SELECT 1 FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=${owner.executionId} AND b.id=${owner.branchId} AND b.deleting=0`))throw Error('Branch group Chat owner unavailable');};
     validateOwner();
@@ -1083,6 +1086,7 @@ export class AgentWorkspaceCatalogAuthority {
         }).run();
         tx.update(projects).set({ lastUsedAt: now, lastConversationId: id })
           .where(eq(projects.id, projectId)).run();
+        onFreshChatCommit?.(id);
       });
     } catch (error) {
       try {

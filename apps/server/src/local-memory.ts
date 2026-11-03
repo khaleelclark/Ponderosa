@@ -9,7 +9,7 @@ import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {CapabilityPolicyStore,type AgentStore,type AgentDeletionReceipt} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
-import {HostMemoryRuntime,checkedCollection,type MemoryAuthority} from './local-memory-authority.js';
+import {HostMemoryRuntime,checkedCollection,createPlannedCollection,type MemoryAuthority} from './local-memory-authority.js';
 import {PonderosaMemory} from '@local-memory/mcp-node-private/ponderosa';
 import {validateMemoryCall} from './local-memory-catalog.js';
 type HostContext={chatId:string;actor:{kind:'agent'|'user';id:string;operator?:boolean};runId:string;fenceToken:string;active:boolean;sourceType:'user_statement'|'ai_inference';grants:{readChat:boolean;readGlobal:boolean;writeChat:boolean;writeGlobal:boolean}};
@@ -27,7 +27,6 @@ export class LocalMemoryService{
  private closed=false;
  private calls=new Set<Promise<unknown>>();
  private knownScopes=new Set<string>();
- private freshPolicy=false;
  private initialized?:Promise<void>;
  private deniedSpeech=new WeakSet<ActiveRun>();
  private speech=new Map<string,{authority:MemoryAuthority;signature:string;refs:Map<string,{id:string;scope:string;hash:string}>;invalid:boolean;expires:number;started:boolean}>();
@@ -38,7 +37,24 @@ export class LocalMemoryService{
   if(['state.json','owner.lock','journal.sqlite'].some(n=>fs.readdirSync(directory).includes(n)))throw Error('Legacy journal directory refused; no adoption or cleanup');
   if(!fs.readdirSync(directory).includes('host-policy.sqlite')&&c.provision!==true)throw Error('Fresh policy requires explicit provision:true');
   this.core=new HostMemoryRuntime({storage:'chroma',chroma:{url:c.chromaUrl,collectionPrefix:c.collectionPrefix,create:false},modelDir:c.modelDir,inference,accessTracking:false,backupDir:path.join(directory,'backups')},signature=>{
-   const file=path.join(directory,'host-policy.sqlite');let fresh=false;try{const fd=fs.openSync(file,fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_RDWR|fs.constants.O_NOFOLLOW,0o600);fs.closeSync(fd);fresh=true;}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
+   const file=path.join(directory,'host-policy.sqlite');
+   const canonical=ports.store.sqlite;
+   const witness=canonical.prepare('SELECT * FROM local_memory_host_binding WHERE singleton=1').get() as {data_generation:string;state:string;principal_id:string|null;storage_binding:string|null}|undefined;
+   const currentGeneration=(canonical.prepare('SELECT generation_id FROM _state_generation WHERE singleton=1').get() as {generation_id:string}).generation_id;
+   if(witness&&(witness.data_generation!==currentGeneration||witness.state==='never_configured'&&(witness.principal_id!==null||witness.storage_binding!==null)||witness.state==='bound'&&(typeof witness.principal_id!=='string'||typeof witness.storage_binding!=='string')||!['never_configured','bound'].includes(witness.state)))throw Error('Local memory host binding differs');
+   let fresh=false;
+   if(witness?.state==='bound'){
+    // Never recreate a missing established policy, even if provision:true
+    // remains in the operator's persistent configuration.
+    try{const fd=fs.openSync(file,fs.constants.O_RDWR|fs.constants.O_NOFOLLOW);fs.closeSync(fd);}
+    catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')throw Error('Established local memory policy is missing; existing memory was preserved');throw e;}
+   }else {
+    // An unwitnessed old installation with a missing policy is ambiguous:
+    // its prior memory may have been lost. Only a witnessed fresh bootstrap
+    // may create a new policy without an explicit recovery decision.
+    if(!witness&&!fs.readdirSync(directory).includes('host-policy.sqlite'))throw Error('Local memory policy has no first-install witness; review existing memory before provisioning');
+    try{const fd=fs.openSync(file,fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_RDWR|fs.constants.O_NOFOLLOW,0o600);fs.closeSync(fd);fresh=true;}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
+   }
    const st=fs.lstatSync(file);if(!st.isFile()||st.nlink!==1||(st.mode&0o077))throw Error('Memory policy requires private regular file');let policy=new Database(file,{fileMustExist:true,readonly:!fresh});
    const installation='CREATE TABLE local_memory_installation(id INTEGER PRIMARY KEY CHECK(id=1),format INTEGER NOT NULL CHECK(format=2),principal_id TEXT NOT NULL UNIQUE,data_generation TEXT NOT NULL,storage_binding TEXT NOT NULL)';
    const grants='CREATE TABLE local_memory_chat_grants(chat_id TEXT PRIMARY KEY,principal_id TEXT NOT NULL,read_global INTEGER NOT NULL CHECK(read_global IN (0,1)),revision INTEGER NOT NULL CHECK(revision>0),updated_at TEXT NOT NULL)';
@@ -49,7 +65,23 @@ export class LocalMemoryService{
     const tables=policy.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name").all() as {name:string;sql:string}[];if(tables.length!==2||tables.find(t=>t.name==='local_memory_installation')?.sql!==installation||tables.find(t=>t.name==='local_memory_chat_grants')?.sql!==grants)throw Error('Incompatible memory policy schema');
     const rows=policy.prepare('SELECT * FROM local_memory_installation').all() as any[],principal=rows[0];if(rows.length!==1||principal.id!==1||principal.format!==2||typeof principal.principal_id!=='string'||!/^[0-9a-f-]{36}$/.test(principal.principal_id)||principal.data_generation!==generation||principal.storage_binding!==binding)throw Error('Foreign memory policy installation/storage binding');
     if(policy.prepare('SELECT 1 FROM local_memory_chat_grants WHERE principal_id!=? OR revision<1 OR read_global NOT IN (0,1)').get(principal.principal_id))throw Error('Foreign memory policy grant');
-    if(!fresh){policy.close();policy=new Database(file,{fileMustExist:true});}this.policy=policy;this.freshPolicy=fresh;return principal.principal_id;
+    canonical.transaction(()=>{
+     const existing=canonical.prepare('SELECT * FROM local_memory_host_binding WHERE singleton=1').get() as {data_generation:string;state:string;principal_id:string|null;storage_binding:string|null}|undefined;
+     if(existing){
+      if(existing.data_generation!==generation)throw Error('Local memory host binding differs');
+      if(existing.state==='bound'){if(existing.principal_id!==principal.principal_id||existing.storage_binding!==binding)throw Error('Local memory host binding differs');}
+      else if(existing.state==='never_configured'&&existing.principal_id===null&&existing.storage_binding===null)canonical.prepare("UPDATE local_memory_host_binding SET state='bound',principal_id=?,storage_binding=? WHERE singleton=1 AND state='never_configured'").run(principal.principal_id,binding);
+      else throw Error('Local memory host binding differs');
+     }else canonical.prepare("INSERT INTO local_memory_host_binding VALUES(1,?,'bound',?,?)").run(generation,principal.principal_id,binding);
+     if(fresh){
+      // Initial scopes are planned atomically with the binding before any
+      // remote create; existing names are never adopted under a new principal.
+      const scopes=[{id:'global',project:'global'},...(canonical.prepare('SELECT id,project_id FROM conversations WHERE branch_execution_id IS NULL').all() as {id:string;project_id:string}[]).filter(row=>Boolean(activeChatResourceOwner(ports.store,'chat',row.id))).map(row=>({id:row.id,project:row.project_id}))];
+      const insert=canonical.prepare("INSERT INTO local_memory_scope_provisioning VALUES(?,?,?,?,?,?,'planned','planned',?)");
+      for(const scope of scopes)insert.run(scope.id,scope.project,generation,principal.principal_id,binding,randomUUID(),new Date().toISOString());
+     }
+    }).immediate();
+    if(!fresh){policy.close();policy=new Database(file,{fileMustExist:true});}this.policy=policy;return principal.principal_id;
    }catch(e){policy.close();throw e;}
   },path.join(directory,'source-mutation-holds'));this.principalId=this.core.database.principal;
    this.core.database.packageVisible=id=>this.ports.store.getAgentCreationOperation(id)?.status==='completed'&&!this.ports.store.sqlite.prepare("SELECT 1 FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.creation_operation_id=? AND p.state!='completed'").get(id);
@@ -185,13 +217,68 @@ export class LocalMemoryService{
   if(!await this.core.inference.rerank([['synthetic readiness','synthetic readiness']]))throw new Error('Local reranker unavailable');
   await this.provisionInventory();
  }
+ /** Called inside the canonical transaction that inserted exactly this Chat. */
+ reserveNewChat(chatId:string){
+  const db=this.ports.store.sqlite;if(!db.inTransaction)throw Error('Memory scope intent requires the Chat creation transaction');
+  const chat=db.prepare('SELECT project_id,branch_execution_id FROM conversations WHERE id=?').get(chatId) as {project_id:string;branch_execution_id:string|null}|undefined;
+  if(!chat)throw Error('New memory scope Chat is unavailable');if(chat.branch_execution_id)return;
+  const generation=(db.prepare('SELECT generation_id FROM _state_generation WHERE singleton=1').get() as {generation_id:string}).generation_id;
+  const policy=this.policy.prepare('SELECT principal_id,data_generation,storage_binding FROM local_memory_installation WHERE id=1').get() as {principal_id:string;data_generation:string;storage_binding:string};
+  if(policy.principal_id!==this.principalId||policy.data_generation!==generation)throw Error('Memory scope installation binding differs');
+  db.prepare("INSERT INTO local_memory_scope_provisioning VALUES(?,?,?,?,?,?,'planned','planned',?)").run(chatId,chat.project_id,generation,policy.principal_id,policy.storage_binding,randomUUID(),new Date().toISOString());
+ }
  async provisionInventory(){
   return this.core.database.raw.exclusive(async()=>{
-  this.live();const eligible=(this.ports.store.sqlite.prepare('SELECT id FROM conversations WHERE branch_execution_id IS NULL').all() as {id:string}[]).filter(({id})=>Boolean(activeChatResourceOwner(this.ports.store,'chat',id)));
-  const scopes=['global',...eligible.map(({id})=>'chat:'+id)];const initial=this.knownScopes.size===0;
-  for(const scope of scopes){const guard=async()=>{this.live();if(scope!=='global'&&!activeChatResourceOwner(this.ports.store,'chat',scope.slice(5)))throw Error('Canonical Chat unavailable during provisioning');};const create=initial?this.freshPolicy:!this.knownScopes.has(scope);await checkedCollection(this.core.database.raw,scope,false,guard,create);await checkedCollection(this.core.database.raw,scope,true,guard,create);this.knownScopes.add(scope);}
-  this.freshPolicy=false;
+   this.live();
+   const eligible=(this.ports.store.sqlite.prepare('SELECT id FROM conversations WHERE branch_execution_id IS NULL').all() as {id:string}[]).filter(({id})=>Boolean(activeChatResourceOwner(this.ports.store,'chat',id)));
+   for(const scope of ['global',...eligible.map(({id})=>'chat:'+id)]){
+    const id=scope==='global'?'global':scope.slice(5);
+    if(this.memoryIntent(id))await this.provisionIntent(id);
+    else await this.provisionScope(scope,false);
+   }
   });
+ }
+ async provisionNewChat(chatId:string){await this.ready();return this.core.database.raw.exclusive(()=>this.provisionIntent(chatId));}
+ async verifyChat(chatId:string){await this.ready();return this.core.database.raw.exclusive(async()=>{if(this.memoryIntent(chatId))await this.provisionIntent(chatId);else await this.provisionScope('chat:'+chatId,false);});}
+ private scopeGuard(scope:string){return async()=>{this.live();if(scope!=='global'){const owner=activeChatResourceOwner(this.ports.store,'chat',scope.slice(5));if(!owner||owner.executionId)throw Error('Canonical durable Chat unavailable during provisioning');}};}
+ private memoryIntent(chatId:string){
+  const db=this.ports.store.sqlite;
+  const intent=db.prepare('SELECT * FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId) as {chat_id:string;project_id:string;data_generation:string;principal_id:string;storage_binding:string;intent_id:string;memory_state:string;log_state:string}|undefined;
+  if(!intent)return;
+  const chat=chatId==='global'?undefined:db.prepare('SELECT project_id,branch_execution_id FROM conversations WHERE id=?').get(chatId) as {project_id:string;branch_execution_id:string|null}|undefined;
+  const generation=(db.prepare('SELECT generation_id FROM _state_generation WHERE singleton=1').get() as {generation_id:string}).generation_id;
+  const policy=this.policy.prepare('SELECT principal_id,data_generation,storage_binding FROM local_memory_installation WHERE id=1').get() as {principal_id:string;data_generation:string;storage_binding:string};
+  if((chatId==='global'?intent.project_id!=='global':!chat||Boolean(chat.branch_execution_id)||chat.project_id!==intent.project_id)||intent.data_generation!==generation||policy.data_generation!==generation||intent.principal_id!==this.principalId||intent.principal_id!==policy.principal_id||intent.storage_binding!==policy.storage_binding||!/^[0-9a-f-]{36}$/.test(intent.intent_id))throw Error('Memory scope creation receipt does not match current scope and installation');
+  return intent;
+ }
+ private async provisionIntent(chatId:string){
+  const scope=chatId==='global'?'global':'chat:'+chatId,baseGuard=this.scopeGuard(scope),db=this.ports.store.sqlite;
+  const expected=this.memoryIntent(chatId);if(!expected)throw Error('Exact memory scope creation receipt required');
+  const guard=async()=>{await baseGuard();const current=this.memoryIntent(chatId);if(!current||current.intent_id!==expected.intent_id)throw Error('Memory scope creation ownership changed');};
+  const transition=(column:'memory_state'|'log_state',from:'planned'|'submitted',to:'submitted'|'confirmed')=>db.transaction(()=>{
+   const current=this.memoryIntent(chatId),owner=chatId==='global'?undefined:activeChatResourceOwner(this.ports.store,'chat',chatId);
+   if(!current||current.intent_id!==expected.intent_id||chatId!=='global'&&(!owner||owner.executionId)||current[column]!==from)throw Error('Memory scope creation ownership changed');
+   const changed=db.prepare(`UPDATE local_memory_scope_provisioning SET ${column}=? WHERE chat_id=? AND intent_id=? AND ${column}=?`).run(to,chatId,expected.intent_id,from).changes;
+   if(changed!==1)throw Error('Memory scope creation ownership changed');
+  }).immediate();
+  for(const kind of ['memory','log'] as const){
+   await guard();const intent=this.memoryIntent(chatId);if(!intent)throw Error('Exact memory scope creation receipt required');
+   const column=kind==='memory'?'memory_state':'log_state',state=intent[column],token=intent.intent_id+':'+kind;
+   if(state==='planned'){
+    await createPlannedCollection(this.core.database.raw,scope,kind==='log',guard,token,()=>transition(column,'planned','submitted'));
+   }else if(state!=='submitted'&&state!=='confirmed')throw Error('Memory scope creation receipt has an unsupported state');
+   // A submitted-but-missing collection remains held; no second create is sent.
+   const collection=await checkedCollection(this.core.database.raw,scope,kind==='log',guard,false);
+   if(collection.metadata?.ponderosa_provision_intent!==token)throw Error('Memory scope collection does not match its creation receipt');
+   if(state!=='confirmed')transition(column,'submitted','confirmed');
+  }
+  this.knownScopes.add(scope);
+ }
+ private async provisionScope(scope:string,create:boolean){
+  const guard=this.scopeGuard(scope);
+  await checkedCollection(this.core.database.raw,scope,false,guard,create);
+  await checkedCollection(this.core.database.raw,scope,true,guard,create);
+  this.knownScopes.add(scope);
  }
 
  private grant(chatId:string){return this.policy.prepare('SELECT * FROM local_memory_chat_grants WHERE chat_id=?').get(chatId) as {principal_id:string;read_global:number;revision:number;updated_at:string}|undefined;}
@@ -350,7 +437,7 @@ export function registerLocalMemory(app:FastifyInstance,ports:Ports){
  if(!ports.opts.localMemory)return;
  const memory=new LocalMemoryService(ports);services.set(app,memory);
  app.addHook('onReady',()=>memory.ready());app.addHook('preClose',async()=>memory.fence());app.addHook('onClose',()=>memory.close());
- app.addHook('onSend',async(request,reply)=>{if(!['GET','HEAD'].includes(request.method)&&reply.statusCode<300)memory.checkSpeechAuthorities();if(request.method==='POST'&&reply.statusCode<300&&['/api/chats','/api/branches/:id/chats','/api/branches/installations/:id/confirm'].includes(request.routeOptions.url??''))await memory.provisionInventory();});
+ app.addHook('onSend',async(request,reply)=>{if(!['GET','HEAD'].includes(request.method)&&reply.statusCode<300)memory.checkSpeechAuthorities();});
  const error=(reply:any,e:unknown)=>reply.code(e instanceof MemoryDenied?e.statusCode:500).send({error:e instanceof Error?e.message:String(e)});
  app.get('/api/local-memory/mutation-holds',async(request,reply)=>{try{return await memory.mutationReconciliation(request);}catch(e){return error(reply,e);}});
  app.get<{Params:{id:string}}>('/api/local-memory/mutation-holds/:id',async(request,reply)=>{try{return await memory.mutationReconciliation(request,request.params.id);}catch(e){return reply.code(409).send({error:(e as Error).message});}});

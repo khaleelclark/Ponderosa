@@ -1054,7 +1054,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
   const receipt=store.commitConversationDeletion(temporary.id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(temporary.id);branches.resourceRetired(r.step_execution_id);await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');
   return {chatId:temporary.id,agentId,chatToken,token,deletionPreviewHash:preview.previewHash};
  };
- return {get store(){return store},get branches(){return branches},branch,parent,root,source,claim,settle,reservation,advance,capture,resume,finish,async reopen(){await branches.unitSaver.drain();store.close();open();}};
+ return {dir,get store(){return store},get branches(){return branches},branch,parent,root,source,claim,settle,reservation,advance,capture,resume,finish,async reopen(){await branches.unitSaver.drain();store.close();open();}};
 }
 for(const mode of ['async','sync','exit'])test(`resource reservation ${mode} executable A and restored B with fresh custody`,async t=>{
  const f=await reservationHistoryFixture(t,mode),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);const a=await f.capture(f.source.id);assert.ok(a,'actual resource reservation unit must be executable');
@@ -2032,7 +2032,7 @@ async function twoIssuedResources(t,mode,count=2,parallel=false,completedIndices
  const complete=item=>coord().updateRequest({requestId:item.request,updateId:`completed-${item.request}`,kind:'completed',actor:{kind:'agent',id:item.agentId},payload:{text:'selected evidence'}});
  for(let i=0;i<count;i++){const item=await openResource();if(!parallel&&completedIndices.includes(i))complete(item);}
  if(parallel)for(const index of completedIndices)complete(issued[index]);
- let bytes=true,imports=0,failSecond=false;
+ let bytes=true,imports=0,failSecond=false,failImportAt=0;
  const custody=new Map();let captures=0;
  const packageFor=receipt=>({schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date(0).toISOString(),sourceLabel:'Inert group custody',rootRef:receipt.agentIds[0],agents:receipt.agentIds.map(ref=>({ref,title:'Retained group worker',engine:'codex',sourceChat:{ref:receipt.sourceChatId,title:'Source'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))});
  const engine={
@@ -2040,7 +2040,7 @@ async function twoIssuedResources(t,mode,count=2,parallel=false,completedIndices
   readCheckpoint:async receipt=>{assert.deepEqual(receipt,custody.get(receipt.custodyId));if(!bytes)throw Error('missing group bytes');return packageFor(receipt);},
   verifyCheckpointNow:receipt=>{assert.deepEqual(receipt,custody.get(receipt.custodyId));if(!bytes)throw Error('missing group bytes');return receipt.sha256;},validateAgent:()=>{},
   importAgent:async(projectId,chatId,pkg,engines,key,{branchHooks:hooks})=>{
-   imports++;const op=f.store.beginAgentCreationOperation({projectId,conversationId:chatId,actorScope:'user:local-operator',kind:'import',idempotencyKey:key,payloadHash:hash(stableJson(pkg))}).operation,map=Object.fromEntries(pkg.agents.map(a=>[a.ref,randomUUID()]));
+   imports++;if(failImportAt===imports)throw Error('injected group import before staging');const op=f.store.beginAgentCreationOperation({projectId,conversationId:chatId,actorScope:'user:local-operator',kind:'import',idempotencyKey:key,payloadHash:hash(stableJson(pkg))}).operation,map=Object.fromEntries(pkg.agents.map(a=>[a.ref,randomUUID()]));
    db().transaction(()=>{Object.values(map).forEach((id,index)=>f.store.addAgentCreationOperationMember(op.id,id,index));hooks.stage({creationOperationId:op.id,projectId,conversationId:chatId,agents:Object.entries(map).map(([sourceRef,agentId])=>({sourceRef,agentId})),artifacts:[]});})();await hooks.plan();
    for(const id of Object.values(map))f.store.createAgent(projectId,{title:'Fresh group worker',engine:'codex',conversationId:chatId},undefined,id);
    const result={rootAgentId:map[pkg.rootRef],agentIds:Object.values(map),agentRefs:map};hooks.transaction(()=>{f.store.updateAgentCreationOperation(op.id,{status:'canonical_committed',result:{...result,branchDestinationPrepared:true}});hooks.holdForDisclosure();});return result;
@@ -2048,7 +2048,7 @@ async function twoIssuedResources(t,mode,count=2,parallel=false,completedIndices
   finishDestinationImport:(id,compose)=>{const op=f.store.getAgentCreationOperation(id);assert.equal(op.status,'canonical_committed');compose(op.result,()=>{if(failSecond&&id===lastOperation())throw Error('injected final completion');f.store.updateAgentCreationOperation(id,{status:'completed'});});assert.equal(f.store.getAgentCreationOperation(id).status,'completed');},
  };
  const {BranchIssuedGroupDestinationService}=await import('../../apps/server/dist/branch-issued-group-destination.js');
- const service=()=>new BranchIssuedGroupDestinationService(f.store,f.branches,coord(),()=>engine);
+ const service=(provision,reserve)=>new BranchIssuedGroupDestinationService(f.store,f.branches,coord(),()=>engine,provision,reserve);
  const beforePreview=db().prepare('SELECT COUNT(*) n FROM branch_commands').get().n;
  const preview=service().previewCapture(f.branch.id,f.source.id);
  assert.deepEqual(service().previewCapture(f.branch.id,f.source.id),preview);
@@ -2075,8 +2075,34 @@ async function twoIssuedResources(t,mode,count=2,parallel=false,completedIndices
  assert.equal(f.branches.execution(f.source.id).state,'completed');
  const input={commandKey:'restore-two-resource-cut',checkpointId:captured.checkpointId,expectedHash:captured.checkpointHash,reconcileEffects:true};
  function lastOperation(){const row=db().prepare('SELECT stage_json FROM coordination_destination_admissions WHERE command_key=?').get(input.commandKey);if(!row?.stage_json)return;const plan=f.branches.issuedGroupDestinationPlan(f.branch.id,f.source.id,input.commandKey);return JSON.parse(row.stage_json).imports[plan.reservation.resources.at(-1).custody.sourceChatId].creationOperationId;}
- return {f,captured,input,service,issued,get imports(){return imports},setBytes:v=>{bytes=v},setFailure:v=>{failSecond=v}};
+ return {f,captured,input,service,issued,get imports(){return imports},setBytes:v=>{bytes=v},setFailure:v=>{failSecond=v},setFailImport:v=>{failImportAt=v}};
 }
+test('issued group partial restart verifies its immutable default Chat with real memory provisioning',async t=>{
+ const x=await twoIssuedResources(t,'async'),{f,input}=x,provisioned=[],reserved=[];
+ const {instance}=await import('../memory/portability-fixture.mjs');
+ const memoryFixture=await instance(t),{LocalMemoryService}=await import('../../apps/server/dist/local-memory.js');
+ const policyDir=mkdtempSync(join(tmpdir(),'group-memory-policy-'));
+ const inference={signature:'group-memory-fixture',async embed(){return Array.from({length:384},(_,i)=>i?0:1);},async rerank(pairs){return pairs.map(()=>1);},async close(){}};
+ const options={dataDir:f.dir,localMemory:{...memoryFixture.options.localMemory,collectionPrefix:'group_'+randomUUID().replaceAll('-',''),stateDirectory:policyDir,provision:true}};
+ let memory;
+ const open=async()=>{memory=new LocalMemoryService({opts:options,store:f.store,capabilities:new Map(),activeRuns:new Map(),ownsRun:()=>false},inference);await memory.ready();};
+ const provision=async(id,fresh)=>{provisioned.push({id,fresh});await (fresh?memory.provisionNewChat(id):memory.verifyChat(id));};
+ const reserve=id=>{assert.equal(f.store.sqlite.inTransaction,true);memory.reserveNewChat(id);reserved.push(id);};
+ try{
+  await open();x.setFailImport(2);
+  await assert.rejects(x.service(provision,reserve).prepare(f.branch.id,f.source.id,input),/injected group import before staging/);
+  assert.equal(reserved.length,1);assert.deepEqual(provisioned,[{id:reserved[0],fresh:true}]);
+  const defaultChat=f.store.getConversation(reserved[0]);assert.ok(defaultChat);
+  const project=f.store.getProject(defaultChat.projectId);assert.notEqual(project.lastConversationId,defaultChat.id);
+  const child=f.store.getConversation(project.lastConversationId);assert.ok(child.executionId);
+  for(const name of Object.values(memory.core.database.raw.names('chat:'+defaultChat.id)))assert.ok(await memory.core.database.raw.client.getCollection({name}));
+  x.setFailImport(0);await memory.close();memory=undefined;await f.reopen();await open();
+  const prepared=await x.service(provision,reserve).prepare(f.branch.id,f.source.id,input);
+  assert.equal(prepared.state,'awaiting_disclosure');
+  assert.deepEqual(provisioned,[{id:reserved[0],fresh:true},{id:reserved[0],fresh:false}]);
+  assert.equal(reserved.length,1);
+ }finally{await memory?.close();rmSync(policyDir,{recursive:true,force:true});}
+});
 for(const mode of ['async','sync'])test(`two-resource ${mode} capture -> held imports -> whole human review -> admit -> no-byte restart readback`,async t=>{
  const x=await twoIssuedResources(t,mode),{f,input}=x,s=x.service(),prepared=await s.prepare(f.branch.id,f.source.id,input);
  assert.equal(prepared.state,'awaiting_disclosure');assert.equal(prepared.resources.length,2);assert.equal(new Set(prepared.resources.map(r=>r.destination.projectId)).size,1);

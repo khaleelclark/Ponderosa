@@ -142,6 +142,6 @@ export function registerAgentWorkspaceActions(app:FastifyInstance,context:Contex
     return receipt({agentId:agent.id,chatId,projectId:chat.projectId,communicationId:id,requestId:work.requestIds[0]});
    })();
    await context.reconcile({projectId:chat.projectId,communicationEventId:id});context.notify();return result;
-  }catch(error){return reply.code((error as {statusCode?:number}).statusCode??409).send({error:(error as Error).message});}
+  }catch(error){return reply.code((error as {statusCode?:number}).statusCode??409).send({error:(error as Error).message,...(error instanceof Error&&'chatId' in error&&typeof error.chatId==='string'?{chatId:error.chatId,code:'memory_provision_pending'}:{})});}
  });
 }

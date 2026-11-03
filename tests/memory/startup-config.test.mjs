@@ -74,7 +74,29 @@ test('Local Memory still refuses policy aliases, broad permissions and hard-link
 
 import {CapabilityPolicyStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
-import {AuthorityStorage} from '../../apps/server/dist/local-memory-authority.js';
+import {AuthorityStorage,checkedCollection} from '../../apps/server/dist/local-memory-authority.js';
+
+test('collection provisioning recognizes a Chroma missing collection without creating on unrelated errors or existing state',async()=>{
+ const missing=new Error('The requested resource could not be found');missing.name='ChromaNotFoundError';
+ const unrelated=new Error('The requested resource could not be found');unrelated.name='ChromaUnauthorizedError';
+ const created=[];
+ const collection={configuration:{hnsw:{space:'cosine'}},metadata:{embedding_signature:'fixture',dimensions:384}};
+ let failure=missing,guards=0;
+ const raw={signature:'fixture',names:()=>({memory:'fixture_memory',log:'fixture_log'}),client:{
+  async getCollection(){throw failure;},
+  async createCollection(options){created.push(options);return collection;},
+ }};
+ const guard=async()=>{guards++;};
+ const opened=await checkedCollection(raw,'global',false,guard,true);assert.deepEqual(opened.metadata,collection.metadata);
+ assert.equal(created.length,1);
+ assert.equal(created[0].name,'fixture_memory');
+ assert.ok(guards>=2);
+ await assert.rejects(checkedCollection(raw,'global',false,guard,false),error=>error===missing);
+ assert.equal(created.length,1,'existing state must not recreate a missing collection');
+ failure=unrelated;
+ await assert.rejects(checkedCollection(raw,'global',false,guard,true),error=>error===unrelated);
+ assert.equal(created.length,1,'unrelated failures must never create a collection');
+});
 
 function authorizeMemoryAgent(ports,root){
  const project=ports.store.createProject({label:'Global writes',hostPath:root,defaultEngine:'inert',chatOwned:true});

@@ -1,3 +1,4 @@
+import {localMemoryFor} from '../local-memory.js';
 import {packageExportDownloads} from '../package-export-downloads.js';
 import {BranchIssuedGroupDestinationService} from '../branch-issued-group-destination.js';
 import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
@@ -29,7 +30,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   const hostArtifactGrant=(projectId:string,artifactId:string,recipientAgentId:string)=>store.operatorCanReadProjectArtifact(projectId,artifactId)&&store.agentCanReadProjectArtifact(projectId,artifactId,recipientAgentId);
   const disclosures=new BranchDisclosureReviewService(store,branches,context.coordination,(executionId,checkpointId,expectedHash)=>context.resources.verifyHistoricalCustody(executionId,checkpointId,expectedHash),false,receipt=>context.resources.destinationPackageEngine().readCheckpoint(receipt));
   const destinations=new BranchIssuedDestinationService(store,branches,context.coordination,disclosures,()=>context.resources.destinationPackageEngine(),context.createChat);
-  const groups=new BranchIssuedGroupDestinationService(store,branches,context.coordination,()=>context.resources.destinationPackageEngine());
+  const groups=new BranchIssuedGroupDestinationService(store,branches,context.coordination,()=>context.resources.destinationPackageEngine(),async(chatId,fresh)=>{const memory=localMemoryFor(app);if(memory)await (fresh?memory.provisionNewChat(chatId):memory.verifyChat(chatId));},chatId=>{localMemoryFor(app)?.reserveNewChat(chatId);});
   const groupPath='/api/branches/:id/executions/:executionId/destination-groups';
   type GroupParams={id:string;executionId:string;admissionId:string};
   app.get<{Querystring:{kind:'captures'|'admissions';limit?:string;cursor?:string}}>('/api/branches/destination-groups/discovery',(request,reply)=>{

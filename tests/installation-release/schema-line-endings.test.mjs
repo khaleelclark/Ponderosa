@@ -26,9 +26,9 @@ function signature(sql) {
 test('schema inspection accepts the fixed object ceiling and refuses excess objects and oversized declarations',()=>{
   assert.throws(()=>signature(`CREATE TABLE oversized (value TEXT DEFAULT '${'a'.repeat(1_100_000)}')`),
     /bounded state read refused|unsupported bounded state schema metadata/);
-  // Pin the approved finite 601-object envelope independently of runtime constants.
-  const atLimit = Array.from({length:601},(_,i)=>`CREATE TABLE t${i} (value TEXT);`).join('\n');
-  assert.equal(JSON.parse(signature(atLimit)).objects.length, 601);
+  // Pin the approved finite 605-object envelope independently of runtime constants.
+  const atLimit = Array.from({length:605},(_,i)=>`CREATE TABLE t${i} (value TEXT);`).join('\n');
+  assert.equal(JSON.parse(signature(atLimit)).objects.length, 605);
   assert.throws(()=>signature(`${atLimit}\nCREATE TABLE excess (value TEXT);`),
     /unsupported bounded state schema metadata/);
 });
@@ -107,7 +107,7 @@ test('current-state admission accepts a CRLF-created real database without rewri
   };
   try {
     const before = read();
-    assert.equal(before.length, 596, 'the complete current schema, including generation and all receipt extensions, fits the fixed 601-object ceiling');
+    assert.equal(before.length, 600, 'the complete current schema, including generation and all receipt extensions, fits the fixed 605-object ceiling');
     assert.ok(before.some(row => row.sql?.includes('\r\n')), 'fixture stores real CRLF declarations');
     assert.ok(before.every(row => !row.sql?.includes('\r\r\n')), 'fixture does not double existing CRLF');
     admission = admitDataDirectory(fixture.data);
@@ -140,7 +140,7 @@ test('clean AgentStore bootstrap admits the complete canonical schema and reopen
   try {
     store = new AgentStore(root);
     const original = stateSchemaSignature(store.sqlite);
-    assert.equal(JSON.parse(original).objects.length, 596);
+    assert.equal(JSON.parse(original).objects.length, 600);
     store.close(); store = undefined;
     store = new AgentStore(root);
     assert.equal(stateSchemaSignature(store.sqlite), original);

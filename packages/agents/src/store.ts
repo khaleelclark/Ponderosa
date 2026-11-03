@@ -1342,8 +1342,9 @@ export class AgentStore extends AgentEventSessionFacade {
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
+    onFreshChatCommit?: (chatId: string) => void,
   ): ProjectDto {
-    return this.workspaceCatalog.createProject(input, identity);
+    return this.workspaceCatalog.createProject(input, identity, onFreshChatCommit);
   }
 
   getProjectCreation(identity: WorkspaceCreationIdentity): ProjectDto | undefined {
@@ -1472,8 +1473,9 @@ export class AgentStore extends AgentEventSessionFacade {
     input: CreateConversationRequest,
     identity?: WorkspaceCreationIdentity,
     owner?: {branchId:string;executionId:string},
+    onFreshChatCommit?: (chatId: string) => void,
   ): ConversationDto {
-    return this.workspaceCatalog.createConversation(projectId, input, identity,owner);
+    return this.workspaceCatalog.createConversation(projectId, input, identity,owner,onFreshChatCommit);
   }
 
   getConversationCreation(
