@@ -70,14 +70,22 @@ regular original. Total observed link count must equal the complete selected
 alias count. Secret/excluded or outside aliases refuse. Named identity, link
 count, size, mode, mtime and ctime are checked before and after capture.
 
-That canonical choice makes exported hardlink root dependencies acyclic.
-Import sorts dependencies independently of destination-map ordering, creates
-regular originals before alias roots, and verifies same-device destinations.
-A cross-device failure preserves partial folders and originals. Metadata
-application waits for every alias and uses the exact complete expected link
-count. Native helpers still default to one link; a bounded larger count is
-supplied only from this complete selected/caller-owned alias graph. Aliases never
-receive competing attribute applications.
+The canonical original choice is stable, but import does not require an
+acyclic cross-root alias graph. Generic Agent and full Branch imports stage
+regular originals across every selected root before installing any root's links.
+Only declared nesting imposes parent-first root creation; cross-inode root
+dependency cycles remain supported. Native Git/provider application follows all
+aliases, then ordinary/native metadata is finalized. Each hardlink checks
+same-device destinations. A cross-device failure preserves partial folders and
+originals; deferred live links also preserve displaced fresh-checkout baselines
+in the exact import backup folder.
+
+Metadata waits for every alias and uses the exact complete expected link count.
+Native helpers still default to one link; a bounded larger count is supplied
+only from this complete selected/caller-owned alias graph. Aliases never receive
+competing attribute applications. The original root device/inode custody crosses
+the deferred phases as described below; a later pathname observation is not a
+replacement grant.
 
 ## Exact remaining boundaries
 
@@ -91,8 +99,12 @@ receive competing attribute applications.
 - Source special-mode restoration can fail if the destination OS, filesystem,
   ownership or group membership cannot preserve the selected bits. Exact readback
   fails loudly; no privilege escalation or masking occurs.
-- Branch single-Agent composition still requires complete root closure. An
-  independently exported Agent cannot manufacture another root's data or grant.
+- An independently exported Agent cannot manufacture another root's data or
+  grant. Full Branch export establishes selected cross-Chat physical closure
+  through one shared capture context while keeping canonical Chat histories
+  separate; it does not relax the single-Agent package's ownership boundary.
+- Native extended metadata remains Linux-only. Non-Linux ordinary mutable-name
+  open/replacement behavior remains unqualified, not an approved Bible exception.
 
 Regression sources cover exact metadata/absence, missing principals, secret
 attributes, FIFO choices, real Linux attribute-plus-hardlink/full-mode round trips,
@@ -135,7 +147,6 @@ establishes inode-only metadata dispatch and the FIFO user-namespace prohibition
 defines non-directory/default and access ACL semantics.
 The added FIFO ACL round-trip regression is unexecuted pending combined validation.
 
-Generic Agent and Branch imports both stage every regular original before any root's links. Only nesting imposes parent-first root order; cross-inode root dependency cycles remain supported. Deferred live links reuse baseline retention, so displaced fresh-checkout files survive in the exact import backup folder.
 ## Regular-file replacement boundary
 
 On Linux every portable ordinary source read, ordinary finalization hash read,

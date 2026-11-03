@@ -1,5 +1,33 @@
 # Portability implementation status
 
+## Current source status — 3 November 2026
+
+This section is authoritative for the integrated source at
+`8cbfb578d` and supersedes the earlier limitation statements in the historical
+log below. It records implementation, not deployed behavior or a passing Bible
+verdict. No tests, builds, typechecks or product/native execution were performed
+for this reconciliation.
+
+| Area | Current implementation and source contract |
+| --- | --- |
+| Agent and Branch ownership | An ordinary Agent/organization package retains its within-Chat reporting boundary. Full Branch export captures the complete selected physical root graph across separate Chats and called Branches once, alongside independent Chat definitions. Canonical imports preserve each Chat's own history, memory and Agent identities; no carrier Agent or cross-Chat reporting relationship is created. See [Branch working data](branch-working-data.md) and [physical closure](phase2-branch-physical-closure.md). |
+| Files and aliases | Full-folder capture shares root mappings and a complete hardlink inventory. Selected cross-root hardlinks, relocated absolute/sibling symbolic links, passive symbolic cycles and typed nested roots are represented and validated. Import stages all regular originals, then all links; only nesting requires parent-first root creation. Incomplete alias closure and unselected targets still refuse. See [filesystem recreation](portable-filesystem-recreation.md). |
+| Live restoration and recovery | Restored folders can become confirmed NEW managed Shared roots or fresh locally owned Separate Git roots. Cross-Chat shared/nested namespaces use exact staged owner and local parent/child inode proof. Existing user roots are not adopted. Recovery originals, displaced fresh-checkout baselines and partial results remain retained. Uncertain physical phases stay held; a completed receipt can rebuild missing result projections without replay. A failed interrupted namespace bind quarantines its affected Project and fences the still-owned plan while independent work remains available. |
+| Native metadata and persistent nodes | Explicit export and separate destination choices reach product capture/import, not merely helper APIs. Linux selected user attributes/POSIX ACLs, exact ordinary metadata and selected FIFO recreation have mapped principals, inode custody, final readback and durable partial-failure evidence. All aliases and Git/provider children precede final metadata. Device/socket evidence does not create a device or service. Hidden namespace completeness, chown and other platform ACL dialects are not claimed. |
+| Git and harness data | The shared package engine carries reviewed Git/harness originals, selected common/private/module storage bindings and mapped native recreation/configuration. Generated destination configuration is distinct from retained original bytes; imported source paths remain provenance, not authority. Configured dependency capture has a separate explicit `externalGitDependencies` family; its current coverage and remaining work follow the [Git configuration contract](git-provider-user-data-transport.md), not the earlier blanket exclusions below. |
+| User choices and transport | Agent and Branch controls expose source family choices, mapped Git folders, recovery paths, NEW live destinations, native activation, principal mappings and retained results. Their normal clients send export choices in a POST body to the same exporter. Complete packages are serialized incrementally into bounded private staging; native downloads retry the same staged bytes for 15 minutes without a whole-package browser Blob. Access/grant changes remain explicit current human choices. |
+| Qualification and genuine limits | These mechanisms still require combined execution and round-trip qualification. Native extended metadata is explicitly Linux-only. Non-Linux ordinary mutable-name open/replacement semantics remain unqualified; existing functionality is retained, with no claimed platform equivalence or Bible exception. Identity/drift checks do not supply an independent-writer atomic snapshot, device mapping or live service authority. |
+
+## Historical implementation log (chronological)
+
+Everything below is retained evidence from successive source increments. Statements
+such as “remaining,” “unimplemented,” “UI owner work,” “content-only,” or “current”
+describe the increment being recorded; they are not a second current-status
+checklist. In particular the earlier no-multi-Chat, blanket hardlink/link refusal,
+content-only restoration and pending product-control statements are superseded
+by the dated table above. Later entries retain their own source-only qualification
+limits and do not turn unexecuted checks into passes.
+
 Implementation increment from the unified f64 source. No tests, builds, types, browser checks, suites, runners or prerequisite preparation were executed. These changes do not establish a passing Bible verdict.
 
 | Requirement | Implementation |
