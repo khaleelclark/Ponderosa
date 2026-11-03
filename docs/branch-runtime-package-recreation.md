@@ -230,7 +230,7 @@ Manual standalone effect-free Script/ordinary-approval-gate graphs with existing
 Fork/Map/Join controls can now pass the portable consumer with canonical Script
 retry histories. The shared portable definition guard permits retry only on Script
 steps in that family; the serial successor below extends manual standalone
-Script retries. Automatic-source and human-gate retry policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
+Script retries; the automatic serial successor below extends proven automatic sources. Automatic parallel and human-gate retry policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
 DTO, storage-version or scheduler format is added.
 
 Existing capture retains all attempt rows, failed results, retry transition bytes
@@ -279,7 +279,7 @@ selected checkpoint with canonical Script retries. Definitions may omit controls
 or use the existing condition/route/loop family. The shared serial definition guard has
 an explicit retry opt-in; structural frontier/replay enables it only for actual
 parentless manual standalone owners or their exact terminal observation context.
-Existing automatic, Call-tree, issued/Agent/resource serial eligibility and manual
+The automatic serial successor below extends proven automatic sources. Call-tree, issued/Agent/resource serial eligibility and manual
 parallel retry behavior are unchanged. Workflow and gate policies still stop.
 
 Capture already retains all original attempts, failed results, timestamps and
@@ -319,3 +319,50 @@ or dependency changes. See the
 No tests/preparation/builds/typechecks/Node/parser/native/runtime/liveDB actions
 were performed. Source support does not qualify execution, timing/durability,
 notifications, round trips, scheduling, rollback or whole-Bible portability.
+
+
+## Proven automatic-source standalone serial retry successor
+
+The existing serial retry continuation now includes original schedule/webhook/
+filesystem standalone effect-free Node Script/ordinary approval-gate owners, with
+JSON state, condition/route/loop paths, workflow/gate stop policy and per-Script
+retry. Automatic parallel/tree retries and called/issued/Agent/resource/native/
+effectful/unknown work remain outside this extension; manual behavior is unchanged.
+
+Automatic definition/origin validators require an explicit serial retry opt-in,
+defaulting off and incompatible with Calls or parallel controls. Shared frontier/
+replay opts in only for an actual parentless standalone or exact terminal context.
+Original selected and independent latest automatic cuts retain exact occurrence,
+payload/provenance/trigger snapshot, accepted/started/input/hash and admission
+proof. Foreign readers use retained facts without source-owner SQL fallback. The
+original definition can remain automatic while mapped held/admitted/re-exported/
+locally rewound destinations retain their real fresh human/manual acceptance.
+Original trigger proof supplies history, never destination scheduling authority.
+
+The same serial replay proves all consecutive failed attempts, per-attempt actual
+process exit/settlement, policy ceiling/delay and immutable absolute deadline; no
+intermediate failure writes state or seals. Remap/storage keep numbers/results/
+`available_at`, seed only the proven prefix and permit actual suffix progress.
+Current destination time/readiness/capacity/policy controls claim and future retry
+numbers remain `MAX(number)+1`. No delay or consumed-attempt reset occurs.
+
+The necessary store callers explicitly opt into automatic serial origin proof for
+held recreation and local rewind. EXIT producer eligibility also recognizes an
+automatic standalone owner without parents/Call depth/children, and its existing
+owner-chain origin check uses the separate serial opt-in. Current configuration/
+pins/authority, real interruption/closure/drain, committed selected sync/async/
+default bytes/hash and independent latest proof remain required. No closing
+evidence is manufactured. Existing mode-aware saver and destination lifecycle stay
+in charge. Unsupported evidence remains held.
+
+Bounded original lineage, fresh review/manual admission/current budgets/choices/
+directories/no-secrets, original command/key receipt and pending-gate destination
+notifications remain connected. Serial canceled source gates still refuse. Existing
+capture/import/readback/re-export, remap/storage/saver and server/SDK/DTO/UI carry
+and expose the full proof without format changes. Complete changed files: shared
+serial consumer, automatic origin module, necessary store callers and both guides.
+See [automatic serial proof](branch-foreign-checkpoint-continuation.md#proven-automatic-source-standalone-serial-script-retries).
+
+No tests/preparation/builds/types/Node/parser/native/runtime/browser/provider/liveDB
+actions were performed. Source support does not qualify execution, timing/durability,
+notifications, round trips, scheduling, rollback, atomicity or whole-Bible acceptance.
