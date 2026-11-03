@@ -2568,6 +2568,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24 and built native-host; owned disposable directories; no provider or production state",
       "origin": "Held-root exact usable capacity observation and replacement/closed-authority refusal"
+    },
+    {
+      "path": "tests/organizations/package-export-pool.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, isolated owned native data directory; Linux pool authority, no production files",
+      "origin": "Held export pool identity, issuance, replacement and restrictive umask"
     }
   ],
   "retainedReleasePayload": [
