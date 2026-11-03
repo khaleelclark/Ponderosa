@@ -98,17 +98,17 @@ when the occurrence still exists. Missing original occurrence bytes are explicit
 `unavailable_held`; no current trigger, schedule, occurrence or native activation is
 created. Trigger-origin manual admission likewise retains its original trigger hash
 rather than requiring the unrelated ordinary-manual-input hash. Proven standalone
-automatic serial Script/ordinary-approval-gate/state/condition/route owners can now recreate their native
+automatic standalone serial/parallel Script/ordinary-approval-gate/state/control owners can now recreate their native
 frontier **held**, through the same shared origin proof used for continuation. It
 requires the exact retained activated occurrence, canonical original payload/media/
 provenance/trigger snapshot and native envelope or large-input reference, original
 input hash and accepted/started audit. Missing/unavailable/changed or unsupported
-automatic parallel/Call-tree or recovery-purpose-gate evidence remains `evidence_only`. No acceptance,
+automatic Call-tree or recovery-purpose-gate evidence remains `evidence_only`. No acceptance,
 trigger lifetime, scheduler lease or occurrence is recreated. Only a separate human
 review/confirm can accept an earlier genuine supported checkpoint with a fresh
 manual destination input hash/admission; the source automatic hash stays historical.
 The selected and latest cuts independently retain canonical replay and sync/async/
-closed-EXIT saver/process-drain requirements. Ordinary serial approval gates retain
+closed-EXIT saver/process-drain requirements. Ordinary approval gates retain
 exact selected/latest opening, revision, proposal, choices, response and state-seal
 proof. Held recreation/remap and nested re-export retain their evidence without
 notifications or source response authority. Only explicit continuation acceptance
@@ -119,7 +119,7 @@ identity, actual later destination resolution, and full current causal cancellat
 where supported. Serial canceled source gates remain refused. The shared eligibility
 change reaches these existing callers without a new runtime format, saver/remap,
 server/SDK/UI route or gate lifecycle. Existing manual behavior is unchanged.
-See [the continuation proof and limits](branch-foreign-checkpoint-continuation.md#proven-automatic-source-standalone-serial-scripts).
+See [the continuation proof and limits](branch-foreign-checkpoint-continuation.md#proven-automatic-source-standalone-scripts).
 
 An imported held owner can be exported again. A private `import` fact retains the
 complete original manifest and receipt, including private checkpoint/custody facts
@@ -159,3 +159,22 @@ This is source-only supported-family implementation, not runnable foreign contin
 or a full portability/runtime qualification claim.
 
 The separate [fresh-reviewed foreign Script continuation consumer](branch-foreign-checkpoint-continuation.md) is an unqualified source tranche. Its independent human review and canonical fresh manual acceptance/admission are required; a held import receipt alone cannot run data. Tree and other unsupported continuation families remain refused.
+
+
+Proven automatic standalone parallel owners use the existing Fork/Map/Join typed
+inventory and remap. The shared structural frontier admits automatic identity only
+without parent/child/resource/issued context; executable continuation separately
+requires original occurrence proof and full independent selected/latest causal
+parallel replay. Ordered Map items, Join choices/cancellation, attempt fences,
+state/loop/traversal seals and real process exits are preserved. Canceled parallel
+gates require actual causal cancellation; canceled serial source gates still refuse.
+Held recreation does not turn a pending save into durable evidence or adopt source
+scheduling/response authority. Existing committed selected and closed-EXIT latest
+proof, bounded generation/local-rewind composition, fresh manual confirmation,
+destination pending notifications and original-key receipt recovery remain unchanged.
+Automatic Call trees, retries, bundles, secrets and issued/native/effectful/resource/
+Agent/unknown/in-flight families remain unsupported by this continuation subset.
+Runtime package/saver/remap/server/SDK/UI formats and paths need no changes because
+they already carry this graph evidence through the shared codec and review.
+No execution or notification/timing/durability/round-trip/scheduling/rollback
+validation was performed for this extension.

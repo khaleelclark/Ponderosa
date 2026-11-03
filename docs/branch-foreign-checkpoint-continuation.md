@@ -18,7 +18,7 @@ Current choices are established through the existing destination configuration/b
 
 ## Authority and atomicity
 
-Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source serial Script/approval-gate subset described below. Workflow and per-step failure policies must stop; retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
+Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source standalone Script/approval-gate subset described below. Workflow and per-step failure policies must stop; retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
 
 The preview independently verifies the actual recreated-held imported native frontier/maps/participant ownership through existing runtime-data readback. It checks the imported owner remains waiting/unaccepted, current destination availability/pins/configuration/policy and accessible directories. Any unknown custody or native authority on the held owner refuses. `not_applicable` means no selected/latest source or native resource exists; it never means an unavailable receipt was treated as released.
 
@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining beyond the supported Call-tree family described below: unproven automatic and automatic gate/parallel/Call-tree frontiers; issued/unknown/resource/bundle/Agent frontiers; EXIT trees without the closed saved proof described below; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the supported Call-tree family described below: unproven automatic and automatic Call-tree frontiers; issued/unknown/resource/bundle/Agent frontiers; EXIT trees without the closed saved proof described below; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -393,7 +393,7 @@ command. A copied pending gate later canceled in the destination additionally
 requires complete current Script replay, including causal Join/path/item/gate
 events and exact attempt fences. Recovery refuses a running/leased Script attempt
 or unknown outcome; it requires a supported quiescent current frontier. Serial
-canceled gates without supported canonical replay remain refused. Closed standalone EXIT support and the narrower proven automatic serial subset are described below; unsupported automatic and effectful work remain excluded.
+canceled gates without supported canonical replay remain refused. Closed standalone EXIT support and the proven automatic standalone subset are described below; unsupported automatic and effectful work remain excluded.
 
 This extension changes source support only. No async timing, durability, runtime,
 notification delivery, round-trip or rollback validation was performed.
@@ -577,14 +577,14 @@ typechecks, runtime, timing/durability, notifications, round trips, scheduling o
 rollback qualification was performed.
 
 
-## Proven automatic-source standalone serial Scripts
+## Proven automatic-source standalone Scripts
 
 An original automatic execution can supply an independently supported selected
-checkpoint and latest cut for standalone effect-free serial Node Scripts, ordinary
-`human_gate` approval steps, declared JSON state, conditions/routes and their existing
-loop counters. Schedule, webhook and filesystem definitions keep their actual trigger kind/configRef and exact
-pinned configuration; no trigger is rewritten to manual. Automatic fork/Map/Join,
-Call trees, issued/effectful/native/resource/Agent work and secrets
+checkpoint and latest cut for standalone effect-free serial or parallel Node Scripts, ordinary
+`human_gate` approval steps, declared JSON state, conditions/routes, fork/Map/Join
+controls and their existing loop counters. Schedule, webhook and filesystem definitions keep their actual trigger kind/configRef and exact
+pinned configuration; no trigger is rewritten to manual. Automatic Call trees,
+issued/effectful/native/resource/Agent work, retries and secrets
 remain outside this origin-proof subset. Manual graph behavior is unchanged.
 
 The shared origin validator reads the genuine native occurrence or original private
@@ -628,13 +628,13 @@ lineage walker keeps the original automatic identity and the new manual identity
 separate. Held/admitted/re-exported generations follow the same bounded original
 selected/latest proof and immutable receipts. Cancellation/unknown latest outcomes
 retain existing refusal or complete-current-causality requirements; no missing
-process exit is inferred. Serial canceled source gates remain refused; source gate
-cancellation cannot become a pending or resolved prefix through a receipt.
+process exit is inferred. Serial canceled source gates remain refused; parallel cancellation needs its full
+causal proof below and cannot become a pending or resolved prefix through a receipt.
 
 Ordinary approval gates use the existing serial gate proof, including exact opening,
 revision, input/proposal, prompt, choices, validated response/routing and sealed result.
 Selected and latest gate cuts replay independently: a later source approval never
-resolves a selected pending gate. For EXIT, waiting-gate invocation closure and actual
+resolves a selected pending gate. For EXIT, waiting-gate invocation closure or explicit interruption and actual
 Script process drains remain mandatory, alongside exact committed checkpoint bytes.
 Copied completed decisions remain historical once, with no source command authority.
 Each selected pending gate receives a fresh mapped destination ID and pending
@@ -652,10 +652,51 @@ Later cancellation of a copied pending gate additionally requires complete quies
 current causal replay with attempt fences; cancellation without that proof refuses.
 Held import/re-export itself emits no notification or response authority. Recovery-
 purpose gates, leased/inflight/unknown work and operator-manual-marker hash mismatches
-remain refused, as do automatic parallel and Call-tree families.
+remain refused, as do automatic Call-tree families.
 
 Existing snapshot listing and foreign picker use codec eligibility; server/SDK/UI
 review and confirmation carry full private checkpoint/manifests and current choices,
 so no new DTO, endpoint, storage version or UI is needed. Native intake and historical
 proof now share the exact envelope formatter. No timing/durability, scheduling,
 notification, round-trip or rollback execution was performed for this source tranche.
+
+
+### Automatic standalone parallel graph proof
+
+The same original occurrence proof now covers supported standalone fork/Map/Join
+Script/ordinary-gate graphs. The structural parallel frontier permits automatic
+admission only for a genuine standalone owner, or its standalone terminal
+observation with no child/resource/issued context. Called owners remain distinct.
+`replayScriptCut` proves the original automatic origin and canonical owned audit
+before entering `replayParallelCut`; the parallel structural check alone never
+supplies origin authority. Foreign proof uses original retained facts only, never
+destination SQL fallback. Stop policies remain mandatory; this change adds no retries.
+
+Selected and latest cuts independently replay full Fork ancestry/selections, ordered
+Map inventory/item hashes/bounds/concurrency, Join satisfaction/results/remainder
+cancellation, state-seal order, route/condition/loop/traversal counts and gate
+opening/resolution/cancellation. A canceled parallel gate qualifies only with the
+actual causal Join/path/item/gate cancellation and exact attempt fence transitions;
+a canceled serial source gate still refuses. Every authorized Script process must
+have its actual observed exit, including canceled work. Unknown or in-flight work
+and result bundles remain outside the portable consumer. Pending saver tickets do
+not attest bytes: selected cuts require exact committed mode/invocation/hash proof;
+EXIT latest additionally requires its own matching committed closed inventory and
+invocation/closure proof. Sync/async latest replay remains an independent observation,
+not a claim that a pending latest save is durable.
+
+Existing bounded retained-generation/local-rewind composition, held export/import,
+review/confirm and original-key receipt recovery carry parallel state and both input
+identities without change. Completed prefix work and decisions are restored once;
+only unfinished destination suffix work may schedule after fresh human/manual
+acceptance. Selected pending gates receive fresh destination IDs/notifications and
+normal response ownership. Source trigger/scheduler/response authority is never
+adopted. Copied pending-gate cancellation after acceptance still requires complete
+quiescent current causal replay, not just a matching canceled gate row.
+
+No saver, continuation composer, runtime-package, remap, server, SDK or UI change is
+needed: their shared eligibility/frontier/replay callers already preserve private
+parallel facts, current configuration, full gate/state/control review and explicit
+confirmation. The store diagnostic names the wider standalone family. This is
+source support only; no execution, timing/durability, notification, round-trip,
+scheduling or rollback qualification was performed.
