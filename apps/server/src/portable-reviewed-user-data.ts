@@ -2381,17 +2381,25 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
 
 /** Recreate a separate review repository, never the native-owned destination .git. No Git command or hook runs. */
 export async function recreateReviewedGit(destination:string,value:ReviewedGitUserData):Promise<void> {
-  await writeReviewedGit(destination,value);
+  if(!selectedWorktreeReftable(value)){await writeReviewedGit(destination,value);return;}
+  // A selected native stack cannot be flattened into loose files: reftable
+  // names and logs belong to their original common/private backends.
+  validateReviewedGit(value);
+  if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
+  await fs.mkdir(destination,{mode:0o700});
+  const commonDir=path.join(destination,'.ponderosa-review-git');
+  await fs.mkdir(commonDir,{mode:0o700});
+  await writeReviewedGit(destination,value,undefined,{commonDir,privateDir:path.join(commonDir,'worktrees','selected'),writeCommon:true},true);
 }
 
 async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
   validateReviewedGit(value);
   if(native&&!configuration)throw new Error('Native Git requires its validated configuration plan');
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
-  if(native){if(await fs.realpath(destination)!==destination||!recovery&&(await fs.readdir(destination)).length)throw new Error('Native Git requires the empty NEW managed root');}else await fs.mkdir(destination,{mode:0o700});
+  if(native||recovery){if(await fs.realpath(destination)!==destination||!recovery&&(await fs.readdir(destination)).length)throw new Error('Git recreation requires its freshly owned canonical destination');}else await fs.mkdir(destination,{mode:0o700});
   const gitDir=layout?.commonDir??path.join(destination,'.git');
   if(layout){
-    if(!recovery||!native||!path.isAbsolute(gitDir)||path.resolve(gitDir)!==gitDir||path.dirname(layout.privateDir)!==path.join(gitDir,'worktrees')||await fs.realpath(gitDir)!==gitDir)throw new Error('Mapped Git requires its freshly owned canonical common directory and private worktree slot');
+    if(!recovery||!native&&(!selectedWorktreeReftable(value)||gitDir!==path.join(destination,'.ponderosa-review-git')||layout.privateDir!==path.join(gitDir,'worktrees','selected')||!layout.writeCommon)||!path.isAbsolute(gitDir)||path.resolve(gitDir)!==gitDir||path.dirname(layout.privateDir)!==path.join(gitDir,'worktrees')||await fs.realpath(gitDir)!==gitDir)throw new Error('Mapped Git requires its freshly owned canonical common directory and private worktree slot');
   }else await fs.mkdir(gitDir,{mode:0o700});
   if(!layout||layout.writeCommon){await fs.mkdir(path.join(gitDir,'objects'),{mode:0o700});await fs.mkdir(path.join(gitDir,'refs'),{mode:0o700});}
   if(layout){
@@ -2423,16 +2431,18 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       await write('reftable/tables.list',Buffer.from(value.reftableReview.tablesListBase64,'base64'),undefined,true);
       for(const table of value.reftableReview.tables)await write('reftable/'+table.name,Buffer.from(table.dataBase64,'base64'),undefined,true);
       const selected=selectedWorktreeReftable(value);
-      if(native&&selected){
+      if(selected){
         if(!layout)throw new Error('Selected-worktree reftable requires distinct common/private destination storage');
         await write('reftable/tables.list',Buffer.from(selected.tablesListBase64,'base64'),undefined,false,true);
         for(const table of selected.tables)await write('reftable/'+table.name,Buffer.from(table.dataBase64,'base64'),undefined,false,true);
       }
     }
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
-    if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
+    if(layout&&!native)await write('HEAD','ref: refs/heads/.invalid\n',undefined,true);
+    else if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
     if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':'')]));else
-    await write('config',`[core]\n\trepositoryformatversion = ${value.reftableReview||value.format==='sha256'?1:0}\n\tbare = false\n\thooksPath = /dev/null\n\tfsmonitor = false\n${value.reftableReview||value.format==='sha256'?'[extensions]\n':''}${value.format==='sha256'?'\tobjectFormat = sha256\n':''}${value.reftableReview?'\trefStorage = reftable\n':''}`);
+    await write('config','[core]\n\trepositoryformatversion = '+(value.reftableReview||value.format==='sha256'||layout?1:0)+'\n\tbare = '+(layout?'true':'false')+'\n\thooksPath = /dev/null\n\tfsmonitor = false\n'+(value.reftableReview||value.format==='sha256'||layout?'[extensions]\n':'')+(value.format==='sha256'?'\tobjectFormat = sha256\n':'')+(value.reftableReview?'\trefStorage = reftable\n':'')+(layout?'\tworktreeConfig = true\n':''));
+    if(layout&&!native)await write('config.worktree','[core]\n\tbare = false\n\tworktree = '+JSON.stringify(destination)+'\n');
     if(native){
       const worktreeConfig=configuration!.private;
       if(layout||worktreeConfig!==null)await write('config.worktree',Buffer.concat([worktreeConfig??Buffer.alloc(0),Buffer.from(layout?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(destination)}\n`:'')]));

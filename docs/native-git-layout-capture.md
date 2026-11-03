@@ -25,11 +25,16 @@ original instead of rejecting all reftable manifests. A private object-enumerati
 view uses generated ordinary configuration and the validated logical selected
 frontier; it never activates original configuration, hooks or main HEAD.
 
-The separate inactive review repository normalizes dual-stack refs into ordinary
-file storage and retains both raw stacks in CONFIGURATION-REVIEW.json. Native
-activation's mapped writer separately preserves the common and selected stacks
-under newly issued local topology. The source's creation/cleanup ownership is
-never imported.
+The separate inactive review repository now reuses the shared raw-stack writer.
+It creates a new common store at .ponderosa-review-git and one fresh selected
+worktree slot, then writes both original stacks byte-for-byte to their respective
+backends. Its .git, commondir and gitdir records are newly generated local
+associations; they do not copy source ownership. Minimal generated configuration
+disables hooks/fsmonitor and contains no source settings, includes or remotes.
+The common physical HEAD is the native reftable sentinel; logical HEAD and logs
+come from the original selected stack, never an invented merged stack. This
+preserves ref-prefix conflicts across original worktree backends and their
+independent logs. Native activation remains a separate, explicitly reviewed action.
 
 ## Modules
 
@@ -76,6 +81,8 @@ inventory, creates disposable local Git repositories to check:
 
 - Different selected/main HEAD and private refs in linked reftable storage.
 - Exact dual-stack mapped provenance, corruption refusal and selected review HEAD.
+- Automatic importWorkingFiles review creation with native cross-worktree ref-prefix
+  conflicts, byte-exact common/private tables and selected HEAD/reflog equivalence.
 - Initialized/deinitialized module object preservation and review recreation.
 - Old-form embedded repositories and explicit inspected module absence.
 - Explicit module bindings across nested selected roots, including tampered
@@ -89,3 +96,9 @@ Primary contracts: installed Git reports 2.53.0. Source inspection used the
 matching [reftable backend](https://github.com/git/git/blob/v2.53.0/refs/reftable-backend.c),
 [repository layout](https://github.com/git/git/blob/v2.53.0/Documentation/gitrepository-layout.adoc)
 and [submodule contract](https://github.com/git/git/blob/v2.53.0/Documentation/gitsubmodules.adoc).
+
+The inactive raw-stack successor is based on integrated 4e7e7d99d and changes
+only the shared writer's inert layout path and generated inert configuration,
+plus its regression and this contract. No tests/builds/typechecks have run in
+this implementation step. Source current ownership and native activation
+configuration/grants remain separate.

@@ -142,3 +142,42 @@ test('old-form embedded modules and inspected empty module inventories retain co
   assert.deepEqual(module.git.modules,[]);
   validateReviewedGit(result.git);
 });
+
+test('automatic inactive review import preserves separate raw stacks and cross-worktree ref-prefix conflicts',async t=>{
+  const {createHash}=await import('node:crypto');
+  const {importWorkingFiles}=await import('../../apps/server/dist/portable-working-files.js');
+  const {REVIEWED_USER_DATA_PATH}=await import('../../apps/server/dist/portable-reviewed-user-data.js');
+  const root=await fixture(t),common=path.join(root,'main'),selected=path.join(root,'selected');
+  const mainOid=await repository(common,'reftable');
+  native(common,'worktree','add','-b','selected',selected);
+  await writeFile(path.join(selected,'file.txt'),'selected worktree\n');
+  native(selected,'add','file.txt');native(selected,'commit','-m','selected worktree');
+  const selectedOid=native(selected,'rev-parse','HEAD');
+  // Both names are valid in their own native worktree backend. Flattening them
+  // into one loose-ref namespace is neither necessary nor faithful.
+  native(common,'update-ref','refs/worktree/topic',mainOid);
+  native(selected,'update-ref','refs/worktree/topic/nested',selectedOid);
+  const expectedRefs=native(selected,'for-each-ref','--format=%(refname)%00%(objectname)');
+  const expectedLog=native(selected,'reflog','show','HEAD','--format=%H%x00%gs');
+  const reviewData=await exportReviewedUserData(selected,{git:true,harness:false});
+  const wire=Buffer.from(JSON.stringify(reviewData));
+  const destination=path.join(root,'imported');
+  await importWorkingFiles(destination,[{path:REVIEWED_USER_DATA_PATH,data:wire,sha256:createHash('sha256').update(wire).digest('hex')}]);
+  const review=path.join(destination,'.ponderosa-portable-review','git-repository');
+  const commonDir=path.join(review,'.ponderosa-review-git'),privateDir=path.join(commonDir,'worktrees','selected');
+  assert.match(await readFile(path.join(review,'.git'),'utf8'),/^gitdir: \.ponderosa-review-git\/worktrees\/selected\n$/);
+  assert.equal(native(review,'rev-parse','HEAD'),selectedOid);
+  assert.equal(native(review,'for-each-ref','--format=%(refname)%00%(objectname)'),expectedRefs);
+  assert.equal(native(review,'reflog','show','HEAD','--format=%H%x00%gs'),expectedLog);
+  assert.equal(native(review,'rev-parse','refs/worktree/topic/nested'),selectedOid);
+  for(const [stack,directory] of [[reviewData.git.reftableReview,commonDir],[reviewData.git.reftableReview.selectedWorktree,privateDir]]){
+    assert.equal((await readFile(path.join(directory,'reftable','tables.list'))).toString('base64'),stack.tablesListBase64);
+    for(const table of stack.tables)assert.equal((await readFile(path.join(directory,'reftable',table.name))).toString('base64'),table.dataBase64);
+  }
+  const config=await readFile(path.join(commonDir,'config'),'utf8');
+  assert.match(config,/hooksPath = \/dev\/null/);assert.match(config,/fsmonitor = false/);
+  assert.doesNotMatch(config,/remote|include|credential/);
+  assert.equal(native(common,'rev-parse','HEAD'),mainOid);
+  assert.equal(native(selected,'rev-parse','HEAD'),selectedOid);
+  assert.deepEqual(await readFile(path.join(destination,REVIEWED_USER_DATA_PATH)),wire);
+});
