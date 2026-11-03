@@ -184,3 +184,5 @@ New regressions replace an issued root between byte and link/metadata phases and
 require refusal before parent creation or metadata changes. Another verifies that
 a prior fresh allocation identity refuses replacement before backup creation.
 Execution remains deferred until all implementation is integrated.
+
+The original issued directory identity now crosses every deferred mutation boundary: link installation, native Git/provider recreation, and final metadata. Phase-entry observations cannot replace that authority. A replaced directory is refused before later-phase writes, retaining both the original and observed paths.

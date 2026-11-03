@@ -1,3 +1,4 @@
+import type {WorkingRootIdentity} from './portable-working-files.js';
 import {decodePortableMetadataArtifact} from './agent-package-codec.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
@@ -134,7 +135,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
 }
 
 /** Apply once to fresh recovery roots. An incomplete receipt never authorizes a retry. */
-export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planReviewedRecoveryRoots>,activation:ReviewedUserDataActivation,onReceipt:(receipt:RecoveryReceipt)=>void):Promise<void> {
+export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planReviewedRecoveryRoots>,activation:ReviewedUserDataActivation,onReceipt:(receipt:RecoveryReceipt)=>void,expectedRoots?:Readonly<Record<string,WorkingRootIdentity>>):Promise<void> {
   validateReviewedUserDataActivation(activation);
   const opened:Array<{path:string;handle:Awaited<ReturnType<typeof fs.open>>;device:bigint;inode:bigint}>=[];
   const commonCreated=new Set<string>();
@@ -145,6 +146,7 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
       const handle=await fs.open(root,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);
       const owned={path:root,handle,device:0n,inode:0n};opened.push(owned);
       const stat=await handle.stat({bigint:true});owned.device=stat.dev;owned.inode=stat.ino;
+      if(expectedRoots){const expected=expectedRoots[root];if(!expected||String(stat.dev)!==expected.device||String(stat.ino)!==expected.inode)throw new Error('Native recovery root differs from its original issued identity; preserve partial state');}
       if(!stat.isDirectory()||await fs.realpath(root)!==root)throw new Error('Recovery root is no longer canonical');
     }
     const check=async()=>{for(const owned of opened){const stat=await fs.lstat(owned.path,{bigint:true});if(!stat.isDirectory()||stat.dev!==owned.device||stat.ino!==owned.inode||await fs.realpath(owned.path)!==owned.path)throw new Error('Recovery root identity changed; preserve all partial state');}};

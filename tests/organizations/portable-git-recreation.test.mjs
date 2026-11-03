@@ -337,3 +337,20 @@ test('native sharing preflights every inode before changing any mode',{skip:proc
     assert.equal((await lstat(head,{bigint:true})).mode,headStat.mode,'mismatched node was not changed');
   }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('native recovery refuses replaced original roots before creating Git metadata',async()=>{
+ const {rename}=await import('node:fs/promises');
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-git-original-root-')));
+ try{
+  const source=path.join(base,'source'),destination=path.join(base,'destination'),retained=path.join(base,'retained');
+  await initialize(source);await mkdir(destination);await writeFile(path.join(destination,'file.txt'),'committed\n');
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest,{'file.txt':'committed\n'}),activation={git:true,harness:false};
+  const tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation),identity=await lstat(destination,{bigint:true});
+  await rename(destination,retained);await mkdir(destination);
+  await assert.rejects(applyReviewedRecoveryRoots(tasks,activation,()=>{},{
+   [destination]:{device:String(identity.dev),inode:String(identity.ino)},
+  }),/original issued identity/);
+  await assert.rejects(lstat(path.join(destination,'.git')),error=>error.code==='ENOENT');
+  assert.equal(await readFile(path.join(retained,'file.txt'),'utf8'),'committed\n');
+ }finally{await rm(base,{recursive:true,force:true});}
+});
