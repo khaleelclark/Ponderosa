@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {checkpointCaptureAbandonment} from '../../apps/server/dist/checkpoint-capture-abandonment.js';
 import {destinationLifecycle} from '../../apps/server/dist/destination-lifecycle.js';
 import {lifecycleHash} from '../../apps/server/dist/lifecycle-journal.js';
-import {stableJson} from '../../packages/agents/dist/index.js';
+import {stableJson,resourceCaptureFrontierHash} from '../../packages/agents/dist/index.js';
 import {CoordinationV3DestinationReconciliation,groupReconciliationAuthority} from '../../packages/agents/dist/coordination-v3-destination-reconciliation.js';
 const source={checkpointId:'capture',sourceChatId:'source-chat',agentIds:['source-agent'],intent:{executionId:'source',resourceStepId:'step',resourceGeneration:0,frontierSha256:'a'.repeat(64),bindingSha256:'b'.repeat(64),configurationSha256:'c'.repeat(64)}};
 const custodyId=createHash('sha256').update(source.checkpointId).digest('hex');
@@ -18,7 +18,7 @@ function fixture(t){
  mkdirSync(path.join(dataDir,'checkpoint-package-custody'),{mode:0o700});
  db.exec(`CREATE TABLE branches(id TEXT PRIMARY KEY);CREATE TABLE branch_unit_snapshots(id INTEGER PRIMARY KEY);
  CREATE TABLE branch_commands(execution_id TEXT,command_key TEXT,result_json TEXT);
- CREATE TABLE branch_executions(id TEXT,state TEXT,parent_execution_id TEXT);
+ CREATE TABLE branch_executions(id TEXT PRIMARY KEY,state TEXT,parent_execution_id TEXT);
  CREATE TABLE scheduler_runs(agent_id TEXT,status TEXT);CREATE TABLE provider_process_authority(agent_id TEXT);
  CREATE TABLE agent_activations(agent_id TEXT,state TEXT);CREATE TABLE agent_creation_operation_members(operation_id TEXT,agent_id TEXT);
  CREATE TABLE agent_creation_operations(id TEXT,conversation_id TEXT,status TEXT,idempotency_key TEXT);
@@ -84,9 +84,23 @@ test('destination retirement binds observed destination cleanup and durable exac
 test('group host observes both resources, extra deleted members and stale approval before one canonical retirement',t=>{
  const {dataDir,db}=fixture(t);
  for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql','0039_coordination_destination_group_chats.sql'])db.exec(readFileSync(new URL('../../packages/agents/src/schema/'+name,import.meta.url),'utf8'));
- const resources=[0,1].map(index=>({custody:{...source,checkpointId:`capture-${index}`,sourceChatId:`source-chat-${index}`,agentIds:[`source-agent-${index}`],intent:{...source.intent,executionId:`source-${index}`,resourceStepId:`source-step-${index}`},custodyId:lifecycleHash(`capture-${index}`)},destination:{projectId:'project',conversationId:`destination-${index}`,executionId:`destination-owner-${index}`,resourceStepId:`step-${index}`,resourceGeneration:0}}));
- const reservation={branchId:'branch',sourceExecutionId:'source-0',checkpointId:1,checkpointHash:lifecycleHash({}),commandKey:'reserve',operatorId:'local-operator',reconcileEffects:true,...resources[0],resources};
- db.prepare('INSERT INTO coordination_destination_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('group','branch','source-0',1,'reserve',lifecycleHash(reservation),stableJson(reservation),'{}','project','destination-0','reserved',null,null,'now','now');
+ db.exec("INSERT INTO branches VALUES('branch');INSERT INTO branch_executions(id,state) VALUES('source-0','completed'),('source-1','completed');INSERT INTO branch_unit_snapshots VALUES(1)");
+ const evidence=row=>({row,sha256:lifecycleHash(row)});
+ const owners=[0,1].map(index=>{
+  const executionId=`source-${index}`;
+  const resource={execution_id:executionId,step_execution_id:`source-step-${index}`,chat_id:`source-chat-${index}`,generation:0,import_operation_json:stableJson({result:{agentIds:[`source-agent-${index}`]}})};
+  const selected={execution:[{id:executionId,branch_id:'branch',version_id:`version-${index}`,binding_revision_id:`binding-${index}`,...(index?{parent_execution_id:'source-0',parent_attempt_id:'call'}:{})}],resources:[resource],attempts:[{id:`attempt-${index}`,request_id:`request-${index}`},...(!index?[{id:'call'}]:[])]};
+  const cut={schema:'ponderosa.branch.host-dependencies.v1',executionId,restoreAuthority:'fresh_admission_required',nativeState:'not_captured',artifactStorage:'references_only',bindingPin:{revisionId:`binding-${index}`,sha256:String(index).repeat(64),requiredSecretRefs:[]},coverage:{complete:true,missingReferences:[],requestVersions:[]},roots:[{attemptId:`attempt-${index}`,requestId:`request-${index}`}],...Object.fromEntries(['requests','updates','lateResults','joins','members','suspensions','communications','joinOutcomes','artifactRefs','resources','resourceMembers','resourceContexts','resourceReceipts'].map(k=>[k,[]]))};
+  cut.resources=[evidence(resource)];cut.resourceMembers=[evidence({agent_id:`source-agent-${index}`,step_execution_id:resource.step_execution_id})];
+  return {executionId,versionId:`version-${index}`,bindingRevisionId:`binding-${index}`,bindingHash:cut.bindingPin.sha256,configuration:{owner:index},selected,hostDependencies:cut,hostDependenciesHash:lifecycleHash(cut)};
+ });
+ const snapshot={selected:owners[0].selected,hostDependencies:owners[0].hostDependencies,continuation:{schema:'ponderosa.branch.script-tree-continuation.v1',rootExecutionId:'source-0',owners}};
+ const resources=owners.map((owner,index)=>{
+  const original={checkpointId:`capture-${index}`,sourceChatId:`source-chat-${index}`,agentIds:[`source-agent-${index}`],intent:{executionId:owner.executionId,resourceStepId:`source-step-${index}`,resourceGeneration:0,frontierSha256:resourceCaptureFrontierHash(owner.selected),hostCutSha256:lifecycleHash(owner.hostDependencies),bindingSha256:owner.bindingHash,configurationSha256:lifecycleHash(owner.configuration)}};
+  return {custody:{version:1,...original,custodyId:createHash('sha256').update(original.checkpointId).digest('hex'),boundaryId:'original',sha256:'a'.repeat(64),byteLength:1},destination:{projectId:'project',conversationId:`destination-${index}`,executionId:`destination-owner-${index}`,resourceStepId:`step-${index}`,resourceGeneration:0}};
+ });
+ const reservation={branchId:'branch',sourceExecutionId:'source-0',checkpointId:1,checkpointHash:lifecycleHash(snapshot),commandKey:'reserve',operatorId:'local-operator',reconcileEffects:true,...resources[0],resources};
+ db.prepare('INSERT INTO coordination_destination_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('group','branch','source-0',1,'reserve',lifecycleHash(reservation),stableJson(reservation),stableJson(snapshot),'project','destination-0','reserved',null,null,'now','now');
  for(const resource of resources)db.prepare('INSERT INTO coordination_destination_group_chats VALUES(?,?,?,?,NULL)').run('group',resource.custody.sourceChatId,resource.custody.intent.executionId,resource.destination.conversationId);
  const partial={importPlan:{creationOperationId:'partial-import',projectId:'project',conversationId:'destination-1',agents:[{sourceRef:'source-agent-1',agentId:'mapped'}],artifacts:[]},agentMap:{'source-agent-1':'mapped'},artifactMap:{}};
  db.prepare("UPDATE coordination_destination_group_chats SET stage_json=? WHERE source_chat_id='source-chat-1'").run(stableJson(partial));
