@@ -1,3 +1,5 @@
+import {verifyRetainedGeneratedHooks} from './portable-retained-hook-proof.js';
+import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
@@ -3018,7 +3020,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
 
 
 /** Only the original manifest is authoritative; generated review repositories are never read. */
-export async function captureRetainedReviewOriginal(root:string,selection:ReviewedUserDataSelection,original:Buffer):Promise<{data:Buffer;verify:()=>Promise<void>}> {
+export async function captureRetainedReviewOriginal(root:string,selection:ReviewedUserDataSelection,original:Buffer,canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof):Promise<{data:Buffer;verify:()=>Promise<void>}> {
   validateReviewedUserDataSelection(selection);
   if(selection.source!=='retained_originals')throw new Error('Retained originals require explicit source selection');
   const manifest=parseReviewedUserData(original);
@@ -3027,13 +3029,14 @@ export async function captureRetainedReviewOriginal(root:string,selection:Review
   const directory=await fs.lstat(folder,{bigint:true});
   if(!directory.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
   const names=await fs.readdir(folder);
-  if(names.length>5||names.some(name=>!['user-data.json','git-repository','provider-files','external-git','native-git-common'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
+  if(names.length>6||names.some(name=>!['user-data.json','git-repository','provider-files','external-git','native-git-common','active-git-hooks'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
   const before=await fs.lstat(target,{bigint:true}),captured=await regularOriginal(target,48*1024*1024);
   const verify=async()=>{
     const currentDirectory=await fs.lstat(folder,{bigint:true}),current=await fs.lstat(target,{bigint:true});
     if(originalIdentity(directory)!==originalIdentity(currentDirectory)||originalIdentity(before)!==originalIdentity(current)||await fs.realpath(folder)!==folder)throw new Error('Retained review original changed');
     const reread=await regularOriginal(target,48*1024*1024);
     if(!reread.data.equals(original))throw new Error('Retained review original differs from its canonical artifact');
+    if(names.includes('active-git-hooks'))await verifyRetainedGeneratedHooks(root,manifest,original,canonicalGeneratedHooksProof);
   };
   if(!captured.data.equals(original))throw new Error('Retained review original differs from its canonical artifact');
   await verify();return {data:captured.data,verify};

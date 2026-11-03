@@ -1,3 +1,4 @@
+import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {packageExportDownloads} from '../package-export-downloads.js';
 import {applyBranchWorkingData,prepareBranchWorkingDataChild,type ApplyBranchWorkingDataInput,type BranchWorkingDataApplication,type PrepareBranchWorkingDataChildInput,type BranchWorkingDataPreparation} from '../apply-branch-working-data.js';
 import {collectBranchGitStorageSelections} from '../branch-export-selections.js';
@@ -1056,12 +1057,12 @@ export function registerAgentPackageRoutes(
       if(gitCapture?.exclusions(sourceRoot).includes('.')&&(await reviewedSelectionForRoot(sourceRoot))?.harness)throw new Error('Whole-root Git storage cannot also carry harness working-file review; select separate storage and working roots');
       const rootReviewedSelection=await reviewedSelectionForRoot(sourceRoot);
       const folderInventory=firstRoot?folderInventories.get(sourceRoot):!organizationWorkingFolders&&agent.id===root.id&&wholeWorkingFolder?folderInventories.get(sourceRoot):undefined;
-      let retainedOriginal:{data:Buffer;mode?:number;mtime?:string}|undefined;
+      let retainedOriginal:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof}|undefined;
       if(folderInventory&&rootReviewedSelection?.source==='retained_originals'){
         // Shared-root originals may belong to a peer excluded from this Agent export.
         const owners=store.listAgents(agent.projectId).filter(node=>node.conversationId===agent.conversationId&&path.resolve(node.workingCopy.rootPath)===sourceRoot);
         if(owners.length>AGENT_PACKAGE_MAX_AGENTS)throw new AssetError(413,'Retained original owner inventory exceeds the package bound');
-        const bindings:NonNullable<AgentPortablePackageDto['agents'][number]['workingFiles']>=[];
+        const bindings:Array<{binding:NonNullable<AgentPortablePackageDto['agents'][number]['workingFiles']>[number];ownerAgentId:string}>=[];
         for(const owner of owners){
           let imported=importedHistories.get(owner.id);
           if(!imported){
@@ -1069,14 +1070,17 @@ export function registerAgentPackageRoutes(
             try{const parsed=await parsePortablePackageFile(pathname,{packageOnly:true});imported=parsed.portable as unknown as ImportedHistory;}
             catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
           }
-          bindings.push(...(imported.portableState?.workingFiles?.filter(file=>file.path==='.ponderosa-portable-review/user-data.json')??[]));
+          bindings.push(...(imported.portableState?.workingFiles?.filter(file=>file.path==='.ponderosa-portable-review/user-data.json')??[]).map(binding=>({binding,ownerAgentId:owner.id})));
         }
         if(bindings.length!==1)throw new AssetError(409,'Retained review data needs one unambiguous imported original binding for this working root');
-        const binding=bindings[0]!,original=(workingSet?store.getProjectArtifacts(agent.projectId):projectArtifacts).find(artifact=>artifact.id===binding.artifactRef);
+        const {binding,ownerAgentId}=bindings[0]!,original=(workingSet?store.getProjectArtifacts(agent.projectId):projectArtifacts).find(artifact=>artifact.id===binding.artifactRef);
         if(!original?.size||!original.sha256)throw new AssetError(409,'Retained review original artifact identity is unavailable');
         const [data]=await readManagedArtifactContentsAsync(context.dataDir,agent.projectId,[{artifactId:original.id,expectedSize:original.size,expectedSha256:original.sha256}]);
         if(!data)throw new AssetError(409,'Retained review original artifact is missing or changed');
-        retainedOriginal={data,mode:binding.mode,mtime:binding.mtime};
+        const observedRoot=await fs.lstat(sourceRoot,{bigint:true});
+        if(!observedRoot.isDirectory()||await fs.realpath(sourceRoot)!==sourceRoot)throw new AssetError(409,'Retained original working-root custody changed');
+        const canonicalGeneratedHooksProof=store.findGeneratedHookNamespace({agentId:ownerAgentId,rootPath:sourceRoot,root:{device:observedRoot.dev.toString(),inode:observedRoot.ino.toString()},sourceOriginalSha256:createHash('sha256').update(data).digest('hex')});
+        retainedOriginal={data,mode:binding.mode,mtime:binding.mtime,...(canonicalGeneratedHooksProof?{canonicalGeneratedHooksProof}:{})};
       }
       const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
       const workingFiles=(organizationWorkingFolders?firstRoot:agent.id===root.id)&&(selectedPaths.length||folderInventory)

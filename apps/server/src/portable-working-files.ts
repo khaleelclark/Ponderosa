@@ -6,7 +6,7 @@ import {applyExactFileMetadata} from '@ponderosa/native-host';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies} from '@ponderosa/core';
+import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies,CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {applyFilesystemMetadata,planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
 import {captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
@@ -185,11 +185,11 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
 }
 
 /** Explicit selection only; no implicit traversal of user folders or native profiles. */
-export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string},gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:WorkingFolderInventory):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
+export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof},gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:WorkingFolderInventory):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
   const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
   const gitStorage=gitCapture?gitCapture.exclusions(root):reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
   if(selected.some(name=>gitStorage.some(storage=>storage==='.'||name===storage||name.startsWith(storage+'/'))))throw new Error('Selected Git storage cannot also be exported as ordinary working files');
-  const retained=reviewedSelection?.source==='retained_originals'?await captureRetainedReviewOriginal(root,reviewedSelection,retainedOriginal?.data??Buffer.alloc(0)):undefined;
+  const retained=reviewedSelection?.source==='retained_originals'?await captureRetainedReviewOriginal(root,reviewedSelection,retainedOriginal?.data??Buffer.alloc(0),retainedOriginal?.canonicalGeneratedHooksProof):undefined;
   validateWorkingTopology([...selected.map(path=>({path})),...(reviewedSelection?[{path:REVIEWED_USER_DATA_PATH}]:[])],[],links,'passive_in_root');
   const verifyLinks=async()=>{for(const link of links){
     const name=path.join(root,link.path);

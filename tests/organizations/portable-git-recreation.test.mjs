@@ -1,7 +1,9 @@
+import {captureRetainedReviewOriginal} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {generatedHookName,generatedHookIdentity} from '../../apps/server/dist/portable-generated-hook-proof.js';
 import test from 'node:test';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,chmod,lstat,realpath,open,rm,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,readlink,unlink,chmod,lstat,realpath,open,rm,symlink} from 'node:fs/promises';
 import {tmpdir,homedir,userInfo} from 'node:os';
 import {mkdirSync,renameSync} from 'node:fs';
 import path from 'node:path';
@@ -472,4 +474,34 @@ test('replacement after local branch readiness but before first native seal stay
    await assert.rejects(service.completeImportedGitRoots(project,pkg,{work:root},{git:true,harness:false},()=>{throw new Error('Never replay uncertain native actions');},[agent.id]),/exact populated phase/);
   }finally{release();}
  }finally{store?.close();await rm(base,{recursive:true,force:true});}
+});
+
+
+test('retained-original export ignores only exact generated hook links backed by canonical local proof', {skip:process.platform==='win32'},async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-retained-hook-proof-')));
+ try{
+  const source=path.join(base,'source'),destination=path.join(base,'restored');await initialize(source);await mkdir(path.join(source,'user-hooks'));await writeFile(path.join(source,'user-hooks','pre-commit'),'#!/bin/sh\nexit 0\n');await git(source,'config','core.hooksPath','user-hooks');
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),original=Buffer.from(JSON.stringify(manifest)),selection={git:true,harness:false,source:'retained_originals'};
+  const binding=manifest.gitExternalDependencies.bindings.find(binding=>binding.kind==='hooks'&&!binding.default&&binding.context==='worktree');assert.ok(binding,'Fixture must contain an actual relative hook declaration');
+  await mkdir(destination);const review=path.join(destination,'.ponderosa-portable-review'),namespace=path.join(review,'active-git-hooks');await mkdir(review);await mkdir(namespace);await writeFile(path.join(review,'user-data.json'),original);
+  const name=generatedHookName(binding.sourceConfigPath,binding.rawValue),text='../../hook-target',pathname=path.join(namespace,name);await mkdir(path.join(destination,'hook-target'));await symlink(text,pathname);
+  const observedRoot=await lstat(destination,{bigint:true}),proof={schema:'ponderosa.generated-hook-namespace.v1',operationId:'fixture-local-completed-import',sourceOriginalSha256:createHash('sha256').update(original).digest('hex'),root:{device:observedRoot.dev.toString(),inode:observedRoot.ino.toString()},namespace:generatedHookIdentity(await lstat(namespace,{bigint:true})),links:[{name,text,identity:generatedHookIdentity(await lstat(pathname,{bigint:true}))}]};
+  // Reorder stored keys as a canonical serializer may do; identity comparison is by value.
+  proof.namespace=Object.fromEntries(Object.entries(proof.namespace).sort());proof.links[0].identity=Object.fromEntries(Object.entries(proof.links[0].identity).sort());
+  const captured=await captureRetainedReviewOriginal(destination,selection,original,proof);assert.deepEqual(captured.data,original);await captured.verify();
+  await assert.rejects(captureRetainedReviewOriginal(destination,selection,original),/canonical local creation-operation proof/,'Editable working-root state cannot authorize its own exclusion');
+  const foreign=structuredClone(proof);foreign.root.inode=(BigInt(foreign.root.inode)+1n).toString();await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,foreign),/root differs/);
+  const otherOriginal=structuredClone(proof);otherOriginal.sourceOriginalSha256='0'.repeat(64);await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,otherOriginal),/canonical original/);
+  await writeFile(path.join(namespace,'manifest.json'),JSON.stringify(proof));
+  await assert.rejects(captureRetainedReviewOriginal(destination,selection,original),/canonical local creation-operation proof/,'A forged receipt file is never used as authority');
+  await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,proof),/identity|contents/,'Unknown files remain visible and preserved');assert.equal(await readFile(path.join(namespace,'manifest.json'),'utf8'),JSON.stringify(proof));
+  await unlink(path.join(namespace,'manifest.json'));
+  // A real issuer would observe final creation state once; this is a fixture of
+  // that trusted input, while store issuer/lookup tests cover canonical authority.
+  const refreshed={...proof,namespace:generatedHookIdentity(await lstat(namespace,{bigint:true}))};
+  const next=await captureRetainedReviewOriginal(destination,selection,original,refreshed);
+  await unlink(pathname);await symlink('../../../outside-ignored-target',pathname);
+  await assert.rejects(next.verify(),/identity|changed/);assert.equal(await readlink(pathname),'../../../outside-ignored-target','Verifier preserves unknown replacement links');
+  assert.deepEqual(await readFile(path.join(review,'user-data.json')),original,'Canonical source bytes are never mutated');
+ }finally{await rm(base,{recursive:true,force:true});}
 });
