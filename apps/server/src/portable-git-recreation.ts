@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
+import {sourcePathWithin,relativeSourcePath} from './portable-source-paths.js';
 import type {AgentPortablePackageDto,PortableGitStorageBinding,ReviewedUserData,ReviewedUserDataActivation,PortableArtifactDto} from '@ponderosa/core';
 import {bindReviewedGitDirectories,compileReviewedGitConfiguration} from './portable-git-configuration.js';
 import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,parseReviewedUserData,planReviewedUserDataActivation,reviewedGitModules,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings,validateReviewedUserDataActivation,type NativeReviewedGitModulePlan,type NativeReviewedGitStorage} from './portable-reviewed-user-data.js';
@@ -87,8 +88,8 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
       if(depth>32)throw new Error('Native module nesting exceeds its documented parser memory bound');
       return reviewedGitModules(value.git!).map(module=>{
         if(++moduleCount>1000||!module.name||path.posix.normalize(module.name)!==module.name||path.posix.isAbsolute(module.name)||module.name.split('/').some(part=>part==='..'||part==='.')||/[\\\x00-\x1f\x7f]/.test(module.name))throw new Error('Invalid or excessive native module storage selection');
-        const sourceMap=[...(activation.gitPathMappings??[])].sort((a,b)=>b.source.length-a.source.length).find(mapping=>module.source.worktreePath===mapping.source||module.source.worktreePath.startsWith(mapping.source+'/'));
-        const worktreePath=sourceMap?path.join(sourceMap.destination,path.posix.relative(sourceMap.source,module.source.worktreePath)):module.worktreeRelativePath!==null?path.join(workingRoot,module.worktreeRelativePath):undefined;
+        const sourceMap=[...(activation.gitPathMappings??[])].sort((a,b)=>b.source.length-a.source.length).find(mapping=>sourcePathWithin(mapping.source,module.source.worktreePath));
+        const worktreePath=sourceMap?path.join(sourceMap.destination,...relativeSourcePath(sourceMap.source,module.source.worktreePath).split('/')):module.worktreeRelativePath!==null?path.join(workingRoot,module.worktreeRelativePath):undefined;
         if(!worktreePath||!paths.some(root=>worktreePath===root||worktreePath.startsWith(root+path.sep)))throw new Error('Choose a selected destination root mapping for external module worktree: '+module.source.worktreePath);
         const gitDir=path.join(common,'modules',module.name);
         const moduleValue:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:true,harness:false},recreationScope:value.recreationScope,git:module.git,providerFiles:module.originals,providerDirectories:[],exclusions:[]};

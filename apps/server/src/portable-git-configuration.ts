@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import path from 'node:path';
+import {joinSourcePath,dirnameSourcePath,sourcePathKey} from './portable-source-paths.js';
 import type {ReviewedUserData,ReviewedUserDataActivation} from '@ponderosa/core';
 import {parseReviewedGitConfiguration,reviewedGitConfiguration,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 
@@ -10,15 +11,15 @@ export function getNativeGitModuleAnchors(configuration?:NativeReviewedGitConfig
 /** Source directories rebind to the native storage the human's fresh destination choice creates. */
 export function bindReviewedGitDirectories(value:ReviewedUserData,activation:ReviewedUserDataActivation,directories:{common:string;private:string}):ReviewedUserDataActivation {
   if(!activation.git)return activation;
-  const mappings=new Map((activation.gitPathMappings??[]).map(mapping=>[mapping.source,mapping.destination]));
+  const mappings=new Map((activation.gitPathMappings??[]).map(mapping=>[sourcePathKey(mapping.source),mapping]));
   for(const role of ['common','private'] as const){
     const binding=value.associationReview?.find(binding=>binding.role===role),root=binding?.capture?.roots.find(root=>root.rootRef===binding.storageRootRef);
-    const source=value.git?.configurationSourceDirectories?.[role]??(binding&&root?path.posix.join(root.sourcePath,binding.relativePath):undefined);
+    const source=value.git?.configurationSourceDirectories?.[role]??(binding&&root?joinSourcePath(root.sourcePath,binding.relativePath):undefined);
     if(!source)continue;
-    if(mappings.has(source)&&mappings.get(source)!==directories[role])throw new Error('Git configuration directory mapping conflicts with the chosen native storage');
-    mappings.set(source,directories[role]);
+    const key=sourcePathKey(source);if(mappings.has(key)&&mappings.get(key)!.destination!==directories[role])throw new Error('Git configuration directory mapping conflicts with the chosen native storage');
+    mappings.set(key,{source,destination:directories[role]});
   }
-  return {...activation,...(mappings.size?{gitPathMappings:[...mappings].map(([source,destination])=>({source,destination}))}:{})};
+  return {...activation,...(mappings.size?{gitPathMappings:[...mappings.values()]}:{})};
 }
 
 /** Compile external includes only from transported originals, never historical host paths. */
@@ -31,7 +32,7 @@ export function compileReviewedGitConfiguration(value:ReviewedUserData,activatio
     if(sourceDirectories)return sourceDirectories[privateSide?'private':'common'];
     const binding=value.associationReview?.find(binding=>binding.role===(privateSide?'private':'common'));
     const root=binding?.capture?.roots.find(root=>root.rootRef===binding.storageRootRef);
-    return root&&binding?path.posix.join(root.sourcePath,binding.relativePath):undefined;
+    return root&&binding?joinSourcePath(root.sourcePath,binding.relativePath):undefined;
   };
   const compile=(items:NonNullable<ReviewedUserData['git']>['configurationReview'],source:string|undefined,privateSide:boolean,stack:ReadonlySet<string>,depth:number):Buffer=>{
     if(depth>10)throw new Error('Git configuration include depth exceeds the native ten-level limit');
@@ -48,7 +49,7 @@ export function compileReviewedGitConfiguration(value:ReviewedUserData,activatio
       const parsed=parseReviewedGitConfiguration(original);
       if((bytes+=original.length)>32*1024*1024||++count>1000)throw new Error('Git configuration include closure exceeds its documented memory bound');
       const next=new Set(stack);next.add(identity);
-      const data=compile(parsed.items,path.posix.dirname(request.source),privateSide,next,depth+1);
+      const data=compile(parsed.items,dirnameSourcePath(request.source),privateSide,next,depth+1);
       const digest=createHash('sha256').update(request.source).update('\0').update(data).digest('hex'),relative='ponderosa-includes/'+digest+'.config';
       const destination=path.join(directories[privateSide?'private':'common'],relative),key=JSON.stringify([privateSide,relative]),prior=files.get(key);
       if(prior!==undefined&&prior!==data.toString('base64'))throw new Error('Conflicting included Git configuration identity');

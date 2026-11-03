@@ -10,6 +10,7 @@ import type {ReviewedGitUserData,ReviewedUserData,ReviewedUserDataSelection,Revi
 import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnostic,withoutPortableSecrets} from './portable-secrets.js';
 
 import {captureFilesystemMetadata,validateFilesystemMetadata} from './portable-filesystem-metadata.js';
+import {canonicalSourcePath,normalizeSourcePath,serializeSourcePath,sourcePathAbsolute,sourcePathKey,sourcePathsEqual,sourcePathWithin,joinSourcePath,resolveSourcePath,dirnameSourcePath,basenameSourcePath,relativeSourcePath} from './portable-source-paths.js';
 import {openPortableRegular} from './portable-held-regular.js';
 import {applyNativeGitPermissions,type NativeGitPermissionNode} from './portable-git-permissions.js';
 
@@ -78,9 +79,9 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
       const roots=new Set<string>(),paths=new Set<string>(),records=new Set<string>();
       for(const root of proof.roots){
         fields(root,['rootRef','sourcePath','identity']);portableBindingIdentity(root.rootRef);
-        if(!rootRefs.has(root.rootRef)||roots.has(root.rootRef)||typeof root.sourcePath!=='string'||!root.sourcePath.startsWith('/')||path.posix.normalize(root.sourcePath)!==root.sourcePath||Buffer.byteLength(root.sourcePath)>4096||/[\x00-\x1f\x7f]/.test(root.sourcePath)||paths.has(root.sourcePath))throw new Error('Git capture provenance lacks unique final root closure');
+        if(!rootRefs.has(root.rootRef)||roots.has(root.rootRef)||!canonicalSourcePath(root.sourcePath)||paths.has(sourcePathKey(root.sourcePath)))throw new Error('Git capture provenance lacks unique final root closure');
         if(typeof root.identity!=='string'||!/^[0-9]+(?::[0-9]+){4}:-?[0-9]+:-?[0-9]+$/.test(root.identity))throw new Error('Invalid captured selected-root identity');
-        roots.add(root.rootRef);paths.add(root.sourcePath);
+        roots.add(root.rootRef);paths.add(sourcePathKey(root.sourcePath));
       }
       if(!roots.has(binding.worktreeRootRef)||!roots.has(binding.storageRootRef))throw new Error('Git binding differs from its captured root closure');
       let bytes=0;
@@ -96,7 +97,7 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
         }
         if(record.moduleWorktree!==undefined){
           fields(record.moduleWorktree,['value','sha256']);
-          if(binding.role!=='module'||record.dataBase64!==undefined||record.absent||typeof record.moduleWorktree.value!=='string'||!record.moduleWorktree.value||Buffer.byteLength(record.moduleWorktree.value)>4096||/[\\\0\r\n]/.test(record.moduleWorktree.value)||!/^[a-f0-9]{64}$/.test(record.moduleWorktree.sha256))throw new Error('Invalid selected module worktree configuration proof');
+          if(binding.role!=='module'||record.dataBase64!==undefined||record.absent||typeof record.moduleWorktree.value!=='string'||!record.moduleWorktree.value||Buffer.byteLength(record.moduleWorktree.value)>4096||/[\0\r\n]/.test(record.moduleWorktree.value)||!/^[a-f0-9]{64}$/.test(record.moduleWorktree.sha256))throw new Error('Invalid selected module worktree configuration proof');
           safeText(record.moduleWorktree.value,'Module worktree path');
         }
         records.add(key);
@@ -110,20 +111,20 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
     if(!binding.capture)continue;
     if(binding.role==='module'){
       const proof=binding.capture,source=(ref:string)=>proof.roots.find(root=>root.rootRef===ref)!.sourcePath;
-      const storage=path.posix.join(source(binding.storageRootRef),binding.relativePath),worktree=source(binding.worktreeRootRef);
+      const storage=joinSourcePath(source(binding.storageRootRef),binding.relativePath),worktree=source(binding.worktreeRootRef);
       const original=proof.records.find(record=>record.rootRef===binding.worktreeRootRef&&record.relativePath==='.git');
       const pointer=original?.dataBase64?text(Buffer.from(original.dataBase64,'base64')).replace(/\n$/,''):'';
       const config=proof.records.filter(record=>record.moduleWorktree);
-      if(!pointer.startsWith('gitdir: ')||/[\0\r\n]/.test(pointer)||path.posix.resolve(worktree,pointer.slice(8))!==storage||config.length!==1||path.posix.join(source(config[0]!.rootRef),config[0]!.relativePath)!==path.posix.join(storage,'config')||path.posix.resolve(storage,config[0]!.moduleWorktree!.value)!==worktree)throw new Error('Selected module pointer and core.worktree proof differ');
-      for(const target of [worktree,storage])if(!proof.records.some(record=>!record.absent&&record.dataBase64===undefined&&!record.moduleWorktree&&path.posix.join(source(record.rootRef),record.relativePath)===target))throw new Error('Module capture lacks held directory proof');
-      for(const name of ['gitdir','commondir'])if(!proof.records.some(record=>record.absent===true&&path.posix.join(source(record.rootRef),record.relativePath)===path.posix.join(storage,name)))throw new Error('Module capture lacks explicit association absences');
+      if(!pointer.startsWith('gitdir: ')||/[\0\r\n]/.test(pointer)||!sourcePathsEqual(resolveSourcePath(worktree,pointer.slice(8)),storage)||config.length!==1||!sourcePathsEqual(joinSourcePath(source(config[0]!.rootRef),config[0]!.relativePath),joinSourcePath(storage,'config'))||!sourcePathsEqual(resolveSourcePath(storage,config[0]!.moduleWorktree!.value),worktree))throw new Error('Selected module pointer and core.worktree proof differ');
+      for(const target of [worktree,storage])if(!proof.records.some(record=>!record.absent&&record.dataBase64===undefined&&!record.moduleWorktree&&sourcePathsEqual(joinSourcePath(source(record.rootRef),record.relativePath),target)))throw new Error('Module capture lacks held directory proof');
+      for(const name of ['gitdir','commondir'])if(!proof.records.some(record=>record.absent===true&&sourcePathsEqual(joinSourcePath(source(record.rootRef),record.relativePath),joinSourcePath(storage,name))))throw new Error('Module capture lacks explicit association absences');
       continue;
     }
     const peer=(value as PortableGitStorageBinding[]).find(other=>other.worktreeRootRef===binding.worktreeRootRef&&other.role===(binding.role==='common'?'private':'common'));
     if(!peer?.capture||JSON.stringify(peer.capture)!==JSON.stringify(binding.capture))throw new Error('Captured Git association requires a complete matching common/private proof pair');
     if(binding.role!=='private')continue;
     const proof=binding.capture,source=(ref:string)=>proof.roots.find(root=>root.rootRef===ref)!.sourcePath;
-    const privatePath=path.posix.join(source(binding.storageRootRef),binding.relativePath),commonPath=path.posix.join(source(peer.storageRootRef),peer.relativePath),worktreePath=source(binding.worktreeRootRef);
+    const privatePath=joinSourcePath(source(binding.storageRootRef),binding.relativePath),commonPath=joinSourcePath(source(peer.storageRootRef),peer.relativePath),worktreePath=source(binding.worktreeRootRef);
     const original=(rootRef:string,relativePath:string)=>{
       const record=proof.records.find(record=>record.rootRef===rootRef&&record.relativePath===relativePath);
       if(!record?.dataBase64)throw new Error('Missing reciprocal Git association original');
@@ -131,12 +132,12 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
       if(!raw||/[\0\r]/.test(raw)||raw.replace(/\n$/,'').includes('\n'))throw new Error('Malformed Git association original');
       return raw.replace(/\n$/,'');
     };
-    const directoryOriginal=(target:string)=>proof.records.some(record=>!record.absent&&record.dataBase64===undefined&&path.posix.join(source(record.rootRef),record.relativePath)===target);
-    if(![worktreePath,privatePath,commonPath,path.posix.join(commonPath,'worktrees')].every(directoryOriginal))throw new Error('Captured Git topology lacks held directory evidence');
-    for(const name of ['gitdir','commondir'])if(!proof.records.some(record=>record.absent===true&&path.posix.join(source(record.rootRef),record.relativePath)===path.posix.join(commonPath,name)))throw new Error('Captured common Git topology lacks explicit association absence evidence');
+    const directoryOriginal=(target:string)=>proof.records.some(record=>!record.absent&&record.dataBase64===undefined&&sourcePathsEqual(joinSourcePath(source(record.rootRef),record.relativePath),target));
+    if(![worktreePath,privatePath,commonPath,joinSourcePath(commonPath,'worktrees')].every(directoryOriginal))throw new Error('Captured Git topology lacks held directory evidence');
+    for(const name of ['gitdir','commondir'])if(!proof.records.some(record=>record.absent===true&&sourcePathsEqual(joinSourcePath(source(record.rootRef),record.relativePath),joinSourcePath(commonPath,name))))throw new Error('Captured common Git topology lacks explicit association absence evidence');
     const gitfile=original(binding.worktreeRootRef,'.git');
     const inPrivate=(name:string)=>binding.relativePath==='.'?name:binding.relativePath+'/'+name;
-    if(!gitfile.startsWith('gitdir: ')||path.posix.resolve(worktreePath,gitfile.slice(8))!==privatePath||path.posix.resolve(privatePath,original(binding.storageRootRef,inPrivate('commondir')))!==commonPath||path.posix.resolve(privatePath,original(binding.storageRootRef,inPrivate('gitdir')))!==path.posix.join(worktreePath,'.git')||path.posix.dirname(privatePath)!==path.posix.join(commonPath,'worktrees')||worktreePath===commonPath||worktreePath===privatePath||path.posix.basename(privatePath).startsWith('.'))throw new Error('Git capture original pointers differ from their common/private final-root topology');
+    if(!gitfile.startsWith('gitdir: ')||!sourcePathsEqual(resolveSourcePath(worktreePath,gitfile.slice(8)),privatePath)||!sourcePathsEqual(resolveSourcePath(privatePath,original(binding.storageRootRef,inPrivate('commondir'))),commonPath)||!sourcePathsEqual(resolveSourcePath(privatePath,original(binding.storageRootRef,inPrivate('gitdir'))),joinSourcePath(worktreePath,'.git'))||!sourcePathsEqual(dirnameSourcePath(privatePath),joinSourcePath(commonPath,'worktrees'))||sourcePathsEqual(worktreePath,commonPath)||sourcePathsEqual(worktreePath,privatePath)||basenameSourcePath(privatePath).startsWith('.'))throw new Error('Git capture original pointers differ from their common/private final-root topology');
   }
 }
 /** Compare historical source evidence after portable refs/IDs have been deterministically remapped. */
@@ -181,8 +182,8 @@ export function validateReviewedUserDataActivation(value:unknown):asserts value 
     const sources=new Set<string>();
     for(const mapping of activation.gitPathMappings){
       fields(mapping,['source','destination']);
-      for(const name of [mapping.source,mapping.destination])if(typeof name!=='string'||!path.posix.isAbsolute(name)||path.posix.normalize(name)!==name||Buffer.byteLength(name)>4096||/[\\\x00-\x1f\x7f]/.test(name))throw new Error('Git path mappings require canonical absolute paths');
-      if(sources.has(mapping.source))throw new Error('Duplicate Git source path mapping');sources.add(mapping.source);
+      if(!canonicalSourcePath(mapping.source)||typeof mapping.destination!=='string'||!path.isAbsolute(mapping.destination)||path.normalize(mapping.destination)!==mapping.destination||Buffer.byteLength(mapping.destination)>4096||/[\x00-\x1f\x7f]/.test(mapping.destination)||process.platform!=='win32'&&mapping.destination.includes('\\'))throw new Error('Git mappings require canonical source provenance and current-host absolute destinations');
+      const sourceKey=sourcePathKey(mapping.source);if(sources.has(sourceKey))throw new Error('Duplicate Git source path mapping');sources.add(sourceKey);
     }
   }
 }
@@ -191,23 +192,27 @@ export function validateReviewedUserDataActivation(value:unknown):asserts value 
 export function reviewedGitConfiguration(value:ReviewedUserData,activation:ReviewedUserDataActivation,includeOverrides:ReadonlyMap<string,string>=new Map(),sourceDirectories?:{common:string;private:string;home?:string}):{common:Buffer;private:Buffer|null;targets:string[];includes:Array<{source:string;destination:string}>} {
   const mappings=[...(activation.gitPathMappings??[])].sort((a,b)=>b.source.length-a.source.length),targets:string[]=[],includes:Array<{source:string;destination:string}>=[];
   const map=(source:string):string=>{
-    const match=mappings.find(mapping=>source===mapping.source||source.startsWith((mapping.source==='/'?'':mapping.source)+'/'));
+    const match=mappings.find(mapping=>sourcePathWithin(mapping.source,source));
     if(!match)throw new Error('Choose an imported destination mapping for Git path: '+source);
-    return path.posix.join(match.destination,path.posix.relative(match.source,source));
+    return path.join(match.destination,...relativeSourcePath(match.source,source).split('/'));
   };
-  const sourceDirectory=(worktree:boolean):string=>{
+  const optionalSourceDirectory=(worktree:boolean):string|undefined=>{
     const directory=(sourceDirectories??value.git?.configurationSourceDirectories)?.[worktree?'private':'common'];
     if(directory)return directory;
     const binding=value.associationReview?.find(binding=>binding.role===(worktree?'private':'common'));
     const root=binding?.capture?.roots.find(root=>root.rootRef===binding.storageRootRef);
-    if(!binding||!root)throw new Error('Relative external Git includes require captured source-directory provenance; use a new full mapped export');
-    return path.posix.join(root.sourcePath,binding.relativePath);
+    return binding&&root?joinSourcePath(root.sourcePath,binding.relativePath):undefined;
+  };
+  const sourceDirectory=(worktree:boolean):string=>{const directory=optionalSourceDirectory(worktree);if(!directory)throw new Error('Relative external Git includes require captured source-directory provenance; use a new full mapped export');return directory;};
+  const absoluteSource=(name:string,worktree:boolean):string|undefined=>{
+    const directory=optionalSourceDirectory(worktree);
+    return sourcePathAbsolute(name,directory)?directory?resolveSourcePath(directory,name):normalizeSourcePath(name):undefined;
   };
   const expandHome=(name:string):string=>{
     if(!name.startsWith('~'))return name;
     const home=(sourceDirectories??value.git?.configurationSourceDirectories)?.home;
-    if(!home||name!=='~'&&!name.startsWith('~/'))throw new Error('Git home-based paths require captured source home provenance');
-    return path.posix.join(home,name.slice(2));
+    if(!home||name!=='~'&&!name.startsWith('~/')&&!name.startsWith('~\\'))throw new Error('Git home-based paths require captured source home provenance');
+    return resolveSourcePath(home,name.slice(2));
   };
   const render=(worktree:boolean):Buffer=>{
     const rows:string[]=[];
@@ -215,18 +220,23 @@ export function reviewedGitConfiguration(value:ReviewedUserData,activation:Revie
       let key=original.key,setting=original.value;
       const conditional=/^includeif\.(gitdir\/i:|gitdir:)(.+)\.path$/i.exec(key);
       if(conditional){
-        const suffix=conditional[2]!.endsWith('/**')?'/**':conditional[2]!.endsWith('/')?'/':'';
-        let condition=expandHome(conditional[2]!.slice(0,suffix? -suffix.length:undefined));
-        if(condition.startsWith('./'))condition=path.posix.resolve(sourceDirectory(worktree),condition);
-        if(path.posix.isAbsolute(condition))key='includeif.'+conditional[1]+map(condition)+suffix+'.path';
+        const directory=optionalSourceDirectory(worktree),windows=!!directory&&/^(?:[A-Z]:|\/\/)/.test(directory);
+        const originalCondition=windows?conditional[2]!.replace(/\\/g,'/'):conditional[2]!;
+        const suffix=originalCondition.endsWith('/**')?'/**':originalCondition.endsWith('/')?'/':'';
+        let condition=expandHome(originalCondition.slice(0,suffix? -suffix.length:undefined));
+        if(condition.startsWith('./'))condition=resolveSourcePath(sourceDirectory(worktree),condition);
+        const absolute=absoluteSource(condition,worktree);
+        if(absolute)key='includeif.'+conditional[1]+map(absolute)+suffix+'.path';
+        else if(windows)key='includeif.'+conditional[1]+condition+suffix+'.path';
       }
       const include=/^(?:include|includeif\..+)\.path$/i.test(key);
-      const pathSetting=include||/^core\.(?:hookspath|attributesfile|excludesfile)$/i.test(key)||/^(?:remote|submodule)\..+\.url$/i.test(key)&&setting.startsWith('/');
+      const pathSetting=include||/^core\.(?:hookspath|attributesfile|excludesfile)$/i.test(key)||/^(?:remote|submodule)\..+\.url$/i.test(key)&&absoluteSource(setting,worktree)!==undefined;
       if(pathSetting&&setting!=='/dev/null'){
         setting=expandHome(setting);
-        const source=include?(path.posix.isAbsolute(setting)?setting:path.posix.resolve(sourceDirectory(worktree),setting)):setting;
-        if(path.posix.isAbsolute(setting))setting=map(setting);
+        const absolute=absoluteSource(setting,worktree),source=include?absolute??resolveSourcePath(sourceDirectory(worktree),setting):absolute??setting;
+        if(absolute)setting=map(absolute);
         else if(include)setting=map(source);
+        else{const directory=optionalSourceDirectory(worktree);if(directory&&/^(?:[A-Z]:|\/\/)/.test(directory))setting=relativeSourcePath(directory,resolveSourcePath(directory,setting));}
         targets.push(setting);
         if(include){includes.push({source,destination:setting});setting=includeOverrides.get(setting)??setting;}
       }
@@ -1156,7 +1166,7 @@ function decodeReftableReview(value:NonNullable<ReviewedGitUserData['reftableRev
 export function validateReviewedGit(value:ReviewedGitUserData,depth=0):void {
   if(depth>16)throw new Error('Native Git module nesting exceeds the capture bound');
   fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','reflogMissingObjects','indexOptionalReview','configurationReview','configurationOriginalReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','fetchHeadReview','exclusions','reftableReview'],['modules','configurationSourceDirectories']);
-  if(value.configurationSourceDirectories!==undefined){fields(value.configurationSourceDirectories,['common','private'],['home']);for(const directory of Object.values(value.configurationSourceDirectories))if(typeof directory!=='string'||!path.posix.isAbsolute(directory)||path.posix.normalize(directory)!==directory||Buffer.byteLength(directory)>4096||/[\\\x00-\x1f\x7f]/.test(directory))throw new Error('Invalid historical Git configuration directory provenance');}
+  if(value.configurationSourceDirectories!==undefined){fields(value.configurationSourceDirectories,['common','private'],['home']);for(const directory of Object.values(value.configurationSourceDirectories))if(!canonicalSourcePath(directory))throw new Error('Invalid historical Git configuration directory provenance');}
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const reftable=value.reftableReview===null?undefined:decodeReftableReview(value.reftableReview,value.format);
   if(reftable&&(JSON.stringify(reftable.refs)!==JSON.stringify(value.refs)||JSON.stringify(reftable.head)!==JSON.stringify(value.head)))throw new Error('Logical refs/HEAD differ from authoritative reftable stack');
@@ -1311,8 +1321,8 @@ export function validateReviewedGit(value:ReviewedGitUserData,depth=0):void {
       fields(module,['name','source','worktreeRelativePath','git','originals']);storageRelativePath(module.name);
       fields(module.source,['storagePath','worktreePath','coreWorktree','configurationSha256','initialized'],['embedded']);
       const source=module.source;
-      if(module.name==='.'||[...names].some(name=>name===module.name||name.startsWith(module.name+'/')||module.name.startsWith(name+'/'))||typeof source.initialized!=='boolean'||typeof source.coreWorktree!=='string'||!source.coreWorktree||/[\\\0\r\n]/.test(source.coreWorktree)||!/^[a-f0-9]{64}$/.test(source.configurationSha256)||typeof source.storagePath!=='string'||typeof source.worktreePath!=='string'||![source.storagePath,source.worktreePath].every(target=>target.startsWith('/')&&path.posix.normalize(target)===target&&Buffer.byteLength(target)<=4096)||path.posix.resolve(source.storagePath,source.coreWorktree)!==source.worktreePath)throw new Error('Native module association provenance differs');
-      if(source.embedded!==undefined&&(source.embedded!==true||source.storagePath!==path.posix.join(source.worktreePath,'.git')||!source.initialized))throw new Error('Embedded module association differs');
+      if(module.name==='.'||[...names].some(name=>name===module.name||name.startsWith(module.name+'/')||module.name.startsWith(name+'/'))||typeof source.initialized!=='boolean'||typeof source.coreWorktree!=='string'||!source.coreWorktree||/[\0\r\n]/.test(source.coreWorktree)||!/^[a-f0-9]{64}$/.test(source.configurationSha256)||!canonicalSourcePath(source.storagePath)||!canonicalSourcePath(source.worktreePath)||!sourcePathsEqual(resolveSourcePath(source.storagePath,source.coreWorktree),source.worktreePath))throw new Error('Native module association provenance differs');
+      if(source.embedded!==undefined&&(source.embedded!==true||!sourcePathsEqual(source.storagePath,joinSourcePath(source.worktreePath,'.git'))||!source.initialized))throw new Error('Embedded module association differs');
       safeText(source.coreWorktree,'Module core.worktree');names.add(module.name);
       if(module.worktreeRelativePath!==null){storageRelativePath(module.worktreeRelativePath);if(module.worktreeRelativePath==='.')throw new Error('Native module cannot replace its parent root');}
       if(!Array.isArray(module.originals)||module.originals.length>1000)throw new Error('Invalid native module originals');
@@ -1920,7 +1930,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
           const root=roots.find(root=>root.ref===ref)!;
           safeText(root.pathname,'Git source root provenance');
           const identity=rootIdentities.get(ref);if(!identity)throw new Error('Selected Git root lacks observed custody identity');
-          return {rootRef:ref,sourcePath:root.pathname,identity};
+          return {rootRef:ref,sourcePath:serializeSourcePath(root.pathname),identity};
         });
         return {...binding,capture:{version:1 as const,currentAuthority:false as const,...(includeHashes?{reviewSha256}:{}),roots:proofRoots,records:records.map(record=>{
           const root=locate(record.path);return {rootRef:root.ref,relativePath:path.relative(root.pathname,record.path).split(path.sep).join('/')||'.',identity:record.identity,...(record.data!==undefined?{dataBase64:record.data}:{}),...(record.absent?{absent:true as const}:{}),...(record.moduleWorktree?{moduleWorktree:record.moduleWorktree}:{})};
@@ -2255,7 +2265,7 @@ async function captureModuleSources(root:string,association:GitAssociation,fs:Gi
       const parsed=await parseCapturedGitConfiguration(data),values=(parsed?parsed.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n')).toLowerCase()==='core.worktree');
       if(!parsed.endsWith('\0')||values.length!==1)throw new Error('Native module storage needs one literal core.worktree');
       const coreWorktree=values[0]!.slice(values[0]!.indexOf('\n')+1);safeText(coreWorktree,'Native module worktree path');
-      if(!coreWorktree||/[\\\0\r\n]/.test(coreWorktree))throw new Error('Malformed native module worktree path');
+      if(!coreWorktree||/[\0\r\n]/.test(coreWorktree)||process.platform!=='win32'&&coreWorktree.includes('\\'))throw new Error('Malformed native module worktree path');
       const worktreePath=path.resolve(target,coreWorktree),contained=worktreePath.startsWith(root+path.sep),relative=contained?path.relative(root,worktreePath).split(path.sep).join('/'):null;
       // Source pathname disclosure is inert. Reading a working pointer still requires a selected root.
       if(!contained&&!capture?.bindings.some(binding=>worktreePath===binding.worktreePath||worktreePath.startsWith(binding.worktreePath+path.sep)))throw new Error('Module working root is outside the selected closure; include its Agent root and module storage binding');
@@ -2295,7 +2305,7 @@ async function captureModuleSources(root:string,association:GitAssociation,fs:Gi
       const parsed=await parseCapturedGitConfiguration(data),values=(parsed?parsed.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n')).toLowerCase()==='core.worktree');
       if(!parsed.endsWith('\0')||values.length>1)throw new Error('Embedded module has ambiguous core.worktree');
       const coreWorktree=values.length?values[0]!.slice(values[0]!.indexOf('\n')+1):'..';
-      if(!coreWorktree||/[\\\0\r\n]/.test(coreWorktree)||path.resolve(pointer,coreWorktree)!==worktreePath)throw new Error('Embedded module core.worktree differs');
+      if(!coreWorktree||/[\0\r\n]/.test(coreWorktree)||process.platform!=='win32'&&coreWorktree.includes('\\')||path.resolve(pointer,coreWorktree)!==worktreePath)throw new Error('Embedded module core.worktree differs');
       const source={storagePath:pointer,worktreePath,coreWorktree,configurationSha256:createHash('sha256').update(data).digest('hex'),initialized:true,embedded:true as const};
       const original=JSON.stringify({source,identity:originalIdentity(end),directoryIdentity:originalIdentity(stat)});evidence.push(original);
       modules.push({name:entry.path,source,worktreeRelativePath:entry.path,evidence:original});
@@ -2417,7 +2427,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   const reflogEvidence={bytes:0,entries:0,missing:new Set<string>()},objectInventory=new Map(objects.map(object=>[object.oid,object]));
   for(const file of before.raw.files.filter(file=>file.name.startsWith('logs/')))validateGitReflogData(file.data.toString('base64'),format,objectInventory,reflogEvidence);
   if(reftable)for(const log of reftable.logs)for(const oid of [log.old,log.next])if(oid&&!/^0+$/.test(oid)&&!objectInventory.has(oid))reflogEvidence.missing.add(oid);
-  const result:ReviewedGitUserData={version:1,format,configurationSourceDirectories:{common:commonDir,private:gitDir,home:homedir()},reftableReview,objects,reflogMissingObjects:[...reflogEvidence.missing].sort(),indexOptionalReview:before.storage.indexOptionalReview,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:reftable?reftable.refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,fetchHeadReview:before.raw.fetchHeadReview,configurationReview,configurationOriginalReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,configurationSourceDirectories:{common:serializeSourcePath(commonDir),private:serializeSourcePath(gitDir),home:serializeSourcePath(homedir())},reftableReview,objects,reflogMissingObjects:[...reflogEvidence.missing].sort(),indexOptionalReview:before.storage.indexOptionalReview,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:reftable?reftable.refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,fetchHeadReview:before.raw.fetchHeadReview,configurationReview,configurationOriginalReview,exclusions};
   // Verify every captured object and graph before deriving any missing logical index entries.
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
@@ -2430,7 +2440,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   if(moduleSources.modules.length){
     for(const module of moduleSources.modules){
       const child=await captureReviewedGit(module.source.worktreePath,{root:association.root,gitDir:module.source.storagePath,commonDir:module.source.storagePath,linked:false,moduleData:true,evidence:module.evidence},capture,depth+1);
-      result.modules.push({name:module.name,source:module.source,worktreeRelativePath:module.worktreeRelativePath,git:child.git,originals:child.gitOriginals});
+      result.modules.push({name:module.name,source:{...module.source,storagePath:serializeSourcePath(module.source.storagePath),worktreePath:serializeSourcePath(module.source.worktreePath)},worktreeRelativePath:module.worktreeRelativePath,git:child.git,originals:child.gitOriginals});
     }
     validateReviewedGit(result,depth);
   }

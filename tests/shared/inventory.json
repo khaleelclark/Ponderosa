@@ -2467,6 +2467,14 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-source-paths.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built workspaces; pure cross-platform source path and inert carrier checks; no Windows host/provider account/native Git execution",
+      "origin": "Phase2 preserve Windows drive/UNC source provenance across POSIX imports"
     }
   ],
   "retainedReleasePayload": [
