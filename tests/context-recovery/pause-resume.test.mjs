@@ -1,8 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
+import {projectPauseCheckpointForProvider} from '../../apps/server/dist/routes/agent-run-preparation.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 import {AgentStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
+
+test('pause checkpoint projects obsolete tool definitions without changing durable evidence or task text',()=>{
+ const definitions=[{name:'old-tool',description:'historical tool definition'}];
+ const manifest=JSON.stringify({sources:[{kind:'human',ref:'source-request'}],normalRuntimeContract:{contractHash:'original-contract',dynamicTools:definitions}});
+ const original=JSON.stringify({sourceRunId:'source-run',priorInputSelection:'Exact submitted same-session inputs',priorInputs:[{execution_id:'source-run',provider_prompt:'Finish the entire original objective',prompt_hash:'original-prompt',source_manifest_json:manifest}],uncertainEffects:'Inspect before retry'});
+ const projected=JSON.parse(projectPauseCheckpointForProvider(original)),input=projected.priorInputs[0],visible=JSON.parse(input.source_manifest_json);
+ assert.equal(input.provider_prompt,'Finish the entire original objective');
+ assert.equal(input.prompt_hash,'original-prompt');
+ assert.equal(input.source_manifest_original_sha256,createHash('sha256').update(manifest).digest('hex'));
+ assert.deepEqual(visible.sources,[{kind:'human',ref:'source-request'}]);
+ assert.equal(visible.normalRuntimeContract.contractHash,'original-contract');
+ assert.equal(visible.normalRuntimeContract.dynamicTools,undefined);
+ assert.deepEqual(visible.normalRuntimeContract.dynamicToolsReference,{count:1,sha256:createHash('sha256').update(JSON.stringify(definitions)).digest('hex'),executionId:'source-run'});
+ assert.equal(projected.uncertainEffects,'Inspect before retry');
+ assert.match(projected.priorInputSelection,/tool definitions.*referenced rather than submitted/);
+ assert.equal(JSON.parse(original).priorInputs[0].source_manifest_json,manifest,'caller retains the exact stored bytes');
+});
 
 for(const stage of ['active','requested refresh','handoff','replacement'])test(`human pause/resume preserves exact work during ${stage}`,{timeout:30000},async t=>{
  let store;
@@ -29,6 +47,7 @@ for(const stage of ['active','requested refresh','handoff','replacement'])test(`
   assert.equal((await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:randomUUID(),idempotencyKey:randomUUID()})).status,409);
   const key=randomUUID(),paused=f.ok(await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:run.id,idempotencyKey:key}));
   assert.ok(paused.pauseId);
+  const durableCheckpoint=store.sqlite.prepare('SELECT checkpoint_json FROM agent_run_pauses WHERE id=?').get(paused.pauseId).checkpoint_json;
   assert.equal(f.ok(await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:run.id,idempotencyKey:key})).pauseId,paused.pauseId);
   assert.equal((await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:randomUUID(),idempotencyKey:key})).status,409);
   const late=await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Forbidden paused publication'});assert.notEqual(late.status,200);
@@ -60,6 +79,15 @@ for(const stage of ['active','requested refresh','handoff','replacement'])test(`
   assert.equal(store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(request.id).state,request.state);
   const turn=f.turns.filter(x=>x.agentId===agent.id).at(-1);
   assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),packet,'original packet remains immutable');
+  assert.equal(store.sqlite.prepare('SELECT checkpoint_json FROM agent_run_pauses WHERE id=?').get(paused.pauseId).checkpoint_json,durableCheckpoint,'original checkpoint remains byte-for-byte exact');
+  if(stage==='active'){
+   const recoveredPacket=store.sqlite.prepare('SELECT provider_prompt,source_manifest_json FROM provider_inputs WHERE scheduler_run_id=?').get(resumed.id);
+   assert.match(recoveredPacket.provider_prompt,/dynamicToolsReference/,'recovery references obsolete definitions instead of resubmitting them');
+   const entry=JSON.parse(recoveredPacket.source_manifest_json).sources.find(source=>source.kind==='pause_checkpoint');
+   assert.equal(entry.hash,createHash('sha256').update(projectPauseCheckpointForProvider(durableCheckpoint)).digest('hex'),'ledger hashes delivered checkpoint bytes');
+   assert.equal(entry.sourceHash,createHash('sha256').update(durableCheckpoint).digest('hex'),'ledger retains the exact source checkpoint hash');
+   assert.equal(entry.projection,'pause_historical_tools_reference_v1');
+  }
   if(stage==='replacement')assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(resumed.id),packet,'replacement recovery preserves exact saved packet hashes');
   if(stage!=='replacement')assert.match(JSON.stringify(turn),/INTERRUPTED EXECUTION CHECKPOINT/);
   assert.doesNotMatch(JSON.stringify(turn),/Queued while paused remains future work/);

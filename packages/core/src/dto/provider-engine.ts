@@ -122,6 +122,9 @@ export interface ProviderInputSourceManifestV3 {
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";
     hash?: string;
+    /** Hash of the original canonical source when the submitted source is a projection. */
+    sourceHash?: string;
+    projection?: "pause_historical_tools_reference_v1";
     createdAt?: string;
     /** Canonical origin retained for cross-chat Agent-private continuity. */
     conversationId?: string;
