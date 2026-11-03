@@ -34,6 +34,7 @@ test('source paths resolve Windows drive/UNC and POSIX namespaces without using 
  assert.equal(sourcePathAbsolute('C:/repo'),true);assert.equal(sourcePathAbsolute('C:repo'),false);
  for(const value of ['C:repo',String.raw`\relative`,String.raw`\\?\C:\repo`,String.raw`\\.\pipe\service`,'//server','/a\0b'])assert.throws(()=>normalizeSourcePath(value));
  assert.throws(()=>resolveSourcePath('C:/repo','D:relative'),/Ambiguous/);
+ assert.throws(()=>resolveSourcePath('C:/repo','//server'),/complete drive or UNC share/);
  for(const value of ['c:/repo','C:/repo/../other',String.raw`C:\repo`,'/repo/./child'])assert.equal(canonicalSourcePath(value),false);
 });
 

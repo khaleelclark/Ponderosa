@@ -1,4 +1,5 @@
 import type {ReviewedMetadataActivation,ReviewedUserDataActivation} from '@ponderosa/core';
+import {portablePathChoice,sourcePathChoice} from './portablePathChoices';
 /** Bounded, display-only native data summary. The server validates original bytes and authority. */
 export interface NativeDataPreview {
  git:boolean;harness:boolean;
@@ -58,8 +59,7 @@ export async function nativeDataPreview(nodes:unknown[]):Promise<NativeDataPrevi
 export type NativeImportChoices={reviewedUserDataActivation?:ReviewedUserDataActivation;reviewedMetadataActivation?:ReviewedMetadataActivation};
 export function nativeImportChoiceError(value:NativeImportChoices,summary?:NativeDataPreview):string|undefined {
  const native=value.reviewedUserDataActivation as (ReviewedUserDataActivation&{gitPathMappings?:Array<{source:string;destination:string}>})|undefined;
- const absolute=(path:string)=>path.startsWith('/')&&(path==='/'||!path.endsWith('/'))&&!path.split('/').some(part=>part==='.'||part==='..')&&!/[\x00-\x1f\x7f]/.test(path);
- if(native?.gitPathMappings?.some(mapping=>!absolute(mapping.source)||!absolute(mapping.destination)))return 'Map each old settings path to an included destination folder or file.';
+ if(native?.gitPathMappings?.some(mapping=>!sourcePathChoice(mapping.source)||!portablePathChoice(mapping.destination)))return 'Map each old settings path to an included destination folder or file. Use forward slashes for source paths.';
  const metadata=value.reviewedMetadataActivation;
  if(summary&&(native?.git&&!summary.git||native?.harness&&!summary.harness))return 'Included native settings changed. Review the package again.';
  if(metadata){

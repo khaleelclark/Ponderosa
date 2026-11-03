@@ -5,7 +5,9 @@ import {gzipSync} from 'node:zlib';
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 const require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript'),exports={};
-vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/nativeDataPreview.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,Blob,atob,Uint8Array,DataView,TextDecoder,DecompressionStream,Error});
+const pathChoices={};
+vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/portablePathChoices.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports:pathChoices});
+vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/nativeDataPreview.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,require:name=>{if(name==='./portablePathChoices')return pathChoices;throw Error('Unexpected preview dependency '+name);},Blob,atob,Uint8Array,DataView,TextDecoder,DecompressionStream,Error});
 const principalAcl=()=>{const bytes=Buffer.alloc(12);bytes.writeUInt32LE(2,0);bytes.writeUInt16LE(2,4);bytes.writeUInt16LE(4,6);bytes.writeUInt32LE(2000,8);return bytes.toString('base64');};
 const metadata=(qualifier='linux:source')=>({version:1,sourceQualifier:qualifier,nodes:[{ownerId:'1000',groupId:'100',accessAclBase64:principalAcl(),defaultAclBase64:null}],persistentNodes:[{kind:'fifo',ownerId:'1000',groupId:'100'}]});
 const node=(manifest,gzip=false,ref='root')=>({ref,workingRootRef:ref,workingFiles:[{path:'.ponderosa-portable-review/user-data.json',artifactRef:'original'}],artifacts:[{ref:'original',dataBase64:(gzip?gzipSync(Buffer.from(JSON.stringify(manifest))):Buffer.from(JSON.stringify(manifest))).toString('base64'),...(gzip?{dataEncoding:'gzip'}:{})}]});
@@ -62,4 +64,17 @@ test('Branch native preview follows package object replacement even when export 
  assert.equal(render(second).props.summary,undefined,'old permissions disappear in the replacement render');
  await new Promise(setImmediate);assert.equal(render(second).props.summary.metadata.sourceQualifier,'new');
  for(const cleanup of cleanups)cleanup?.();
+});
+
+
+test('native mapping choices accept Windows drive and UNC provenance with current-host destination syntax',()=>{
+ const choose=(source,destination)=>({reviewedUserDataActivation:{git:true,harness:false,gitPathMappings:[{source,destination}]}});
+ assert.equal(exports.nativeImportChoiceError(choose('C:/Projects/Repo','/new/repo')),undefined);
+ assert.equal(exports.nativeImportChoiceError(choose('//server/share/config','/new/config')),undefined);
+ assert.equal(exports.nativeImportChoiceError(choose('//server/share/','/new/share')),undefined);
+ assert.equal(exports.nativeImportChoiceError(choose('/old/repo',String.raw`C:\Recovery\Repo`)),undefined);
+ assert.equal(pathChoices.sourcePathInput(String.raw`c:\Projects\Repo`),'C:/Projects/Repo');
+ assert.equal(pathChoices.sourcePathInput(String.raw`\\server\share\config`),'//server/share/config');
+ for(const source of ['C:relative','C:/old/../other','//server','//server/../folder',String.raw`\\?\C:\old`])assert.match(exports.nativeImportChoiceError(choose(source,'/new/repo')),/Map/);
+ for(const destination of ['relative','C:relative','/new/../other','//server'])assert.match(exports.nativeImportChoiceError(choose('C:/old',destination)),/Map/);
 });

@@ -11,6 +11,7 @@ export function normalizeSourcePath(value:string):string{
   if(windows(value)){
     const native=value.replace(/\//g,'\\');
     if(!/^[A-Za-z]:\\/.test(native)&&!/^\\\\[^\\]+\\[^\\]+(?:\\|$)/.test(native))throw new Error('Windows source paths require a complete drive or UNC share');
+    if(native.startsWith('\\\\')&&native.slice(2).split('\\').slice(0,2).some(part=>part==='.'||part==='..'))throw new Error('UNC source paths require a server and share name');
     const normalized=path.win32.normalize(native),root=path.win32.parse(normalized).root;
     let result=normalized;
     while(result.length>root.length&&result.endsWith('\\'))result=result.slice(0,-1);
@@ -30,6 +31,7 @@ export function sourcePathsEqual(left:string,right:string):boolean{return source
 export function resolveSourcePath(base:string,...parts:string[]):string{
   const normalized=normalizeSourcePath(base),win=windows(normalized);
   for(const value of parts){if(typeof value!=='string'||Buffer.byteLength(value)>4096||/[\x00-\x1f\x7f]/.test(value)||/^[A-Za-z]:(?![\\/])/.test(value))throw new Error('Ambiguous or invalid historical source path component');}
+  if(win)for(const value of parts)if(/^[\\/]{2}/.test(value))normalizeSourcePath(value);
   if(!win&&parts.some(value=>value.includes('\\')))throw new Error('Backslash source components require Windows provenance');
   return normalizeSourcePath((win?path.win32:path.posix).resolve(normalized,...parts));
 }

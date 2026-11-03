@@ -16,3 +16,18 @@ test('shared source root aliases use the first canonical Chat instead of asking 
  const aliases=structuredClone(pkg);aliases.workingData.package.agents[1].workingRootRef='parent';delete aliases.workingData.package.workingRootNesting;
  assert.deepEqual(branchWorkingDataDerivedChat(aliases,'chat-b'),{kind:'shared',sourceChatRef:'chat-a'});
 });
+
+
+test('Branch recovery preview preserves declared Windows drive and UNC nesting',()=>{
+ for(const [parent,child] of [[String.raw`C:\Recovery\New`,String.raw`C:\Recovery\New\modules\child`],['//server/share/recovery','//server/share/recovery/modules/child']]){
+  const choices={[key('a')]:{workingRootDestinations:{parent}},[key('b')]:{workingRootDestinations:{child}}};
+  assert.equal(branchWorkingDataFileError(pkg,choices,new Set()),undefined);
+  const independent=structuredClone(pkg);delete independent.workingData.package.workingRootNesting;
+  assert.match(branchWorkingDataFileError(independent,choices,new Set()),/Only declared/);
+  assert.match(branchWorkingDataFileError(pkg,{...choices,[key('b')]:{workingRootDestinations:{child:parent+'/other'}}},new Set()),/captured relative location/);
+ }
+ for(const parent of ['C:/','//server/share/','C:relative',String.raw`\\?\C:\recovery`,'C:/Recovery/../other']){
+  const choices={[key('a')]:{workingRootDestinations:{parent}},[key('b')]:{workingRootDestinations:{child:'/recovery/new/modules/child'}}};
+  assert.match(branchWorkingDataFileError(pkg,choices,new Set()),/absolute recovery folder/);
+ }
+});

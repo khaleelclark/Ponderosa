@@ -1,4 +1,5 @@
 import type {BranchImportFileSelections,InstalledBranchPackage} from '@ponderosa/core';
+import {portablePathChoice,destinationChoiceKey} from '../portablePathChoices';
 export const workingOwnerKey=(chatRef:string,agentRef:string)=>JSON.stringify([chatRef,agentRef]);
 export function branchWorkingDataRoots(pkg:InstalledBranchPackage){
  const data=pkg.workingData;if(!data)return [];
@@ -21,11 +22,11 @@ export function branchWorkingDataDerivedChat(pkg:InstalledBranchPackage,chatRef:
 export function branchWorkingDataFileError(pkg:InstalledBranchPackage,choices:BranchImportFileSelections,retained:Set<string>):string|undefined{
  const roots=branchWorkingDataRoots(pkg),destinations=branchWorkingDataDestinations(pkg,choices),nesting=pkg.workingData?.package.workingRootNesting??[];
  if(roots.some(root=>root.members.some(member=>{const owner=pkg.workingData!.owners[member.ref]!;return retained.has(workingOwnerKey(owner.chatRef,owner.agentRef));})))return 'Working-folder imports require new Agents; existing folders stay unchanged.';
- for(const root of roots){const name=destinations[root.ref];if(!name||!name.startsWith('/')||name==='/'||name.endsWith('/')||name.split('/').some(part=>part==='.'||part==='..'))return 'Choose a new absolute recovery folder for every captured root.';}
+ for(const root of roots){const selected=portablePathChoice(destinations[root.ref]??'');if(!selected||selected.root)return 'Choose a new absolute recovery folder for every captured root.';}
  const parent=new Map(nesting.map(boundary=>[boundary.childRootRef,boundary.parentRootRef]));
  const ancestor=(child:string,wanted:string)=>{const seen=new Set<string>();while(parent.has(child)){if(seen.has(child))return false;seen.add(child);child=parent.get(child)!;if(child===wanted)return true;}return false;};
- for(const boundary of nesting)if(destinations[boundary.childRootRef]!==destinations[boundary.parentRootRef]+'/'+boundary.path)return 'Keep nested working folders at their captured relative location.';
- for(const left of roots)for(const right of roots)if(left.ref!==right.ref){const a=destinations[left.ref]!,b=destinations[right.ref]!;if(a===b||a.startsWith(b+'/')&&!ancestor(left.ref,right.ref))return 'Only declared parent and child working folders may nest.';}
+ for(const boundary of nesting)if(destinationChoiceKey(destinations[boundary.childRootRef]!)!==destinationChoiceKey(portablePathChoice(destinations[boundary.parentRootRef]!)!.path+'/'+boundary.path))return 'Keep nested working folders at their captured relative location.';
+ for(const left of roots)for(const right of roots)if(left.ref!==right.ref){const a=destinationChoiceKey(destinations[left.ref]!)!,b=destinationChoiceKey(destinations[right.ref]!)!;if(a===b||a.startsWith(b+'/')&&!ancestor(left.ref,right.ref))return 'Only declared parent and child working folders may nest.';}
  const live=Object.values(choices).some(choice=>choice.workingFilesActivation);
  if(live)for(const chat of pkg.chats){const root=chat.agents.find(agent=>!agent.managerRef)??chat.agents[0];if(!root||!Object.values(pkg.workingData!.owners).some(owner=>owner.chatRef===chat.ref))continue;const choice=choices[workingOwnerKey(chat.ref,root.ref)];if(!choice?.workingFilesActivation||!branchWorkingDataDerivedChat(pkg,chat.ref)&&!choice.newManagedChatFolderName?.trim())return 'Choose a new managed working-folder name for every imported Chat.';}
 }
