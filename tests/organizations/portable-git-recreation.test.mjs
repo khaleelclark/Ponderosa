@@ -365,3 +365,22 @@ test('native Git configuration failures retain their exact redacted cause',async
   });
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('live native held-open rejects replacement after service precheck before any native write',async()=>{
+ const {promises:hostFs}=await import('@ponderosa/native-host/fs'),{rename}=await import('node:fs/promises');
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-live-original-open-')));let store,restore;
+ try{
+  const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data');await initialize(source);await initialize(shared);await mkdir(data);
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest),bytes=Buffer.from(JSON.stringify(manifest));
+  store=new AgentStore(data);const project=store.createProject({label:'Existing',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Fresh Separate'}),agent=store.createAgent(project.id,{title:'Owner',engine:'codex',conversationId:chat.id}),service=new AgentWorkingCopyService(data,store),release=service.beginModeChange(agent.id);
+  try{
+   const created=await service.allocateImportedSeparateGit(agent,project),root=created.workingCopy.rootPath,retained=root+'-retained',originalOpen=hostFs.open;let replaced=false;
+   await service.populateImportedRoot(created,project,[{path:'.ponderosa-portable-review/user-data.json',data:bytes,sha256:createHash('sha256').update(bytes).digest('hex')}],[],undefined,path.join(root,'.ponderosa-import-backups'),[],'refuse',undefined,undefined,{work:root},true,true);
+   // Only the native helper uses this object seam; service precheck uses its
+   // existing named lstat/realpath imports and has already verified original custody.
+   hostFs.open=async function(name,...args){if(name===root&&!replaced){replaced=true;await rename(root,retained);await mkdir(root);}return originalOpen.call(this,name,...args);};restore=()=>{hostFs.open=originalOpen;};
+   await assert.rejects(service.completeImportedGitRoots(project,pkg,{work:root},{git:true,harness:false},()=>{throw new Error('No native applying receipt may precede original held-open custody');},[agent.id]),error=>/original issued identity/.test(String(error.cause?.message)));
+   restore();restore=undefined;assert.equal(replaced,true);await assert.rejects(lstat(path.join(root,'.git')),error=>error.code==='ENOENT');assert.equal(await readFile(path.join(retained,'.ponderosa-portable-review/user-data.json'),'utf8'),bytes.toString());assert.equal(store.getAgent(agent.id).workingCopy.state,'unavailable');
+  }finally{release();}
+ }finally{restore?.();store?.close();await rm(base,{recursive:true,force:true});}
+});

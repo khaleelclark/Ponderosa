@@ -574,17 +574,19 @@ export class AgentWorkingCopyService {
   /** Files first, one complete Git closure next, and final ACLs/times last. */
   async completeImportedGitRoots(_project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation|undefined,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2],agentIds:readonly string[]=[]):Promise<void> {
     const roots=[...new Set([...Object.values(destinations),...[...this.stagedImportedGitRoots.entries()].filter(([,staged])=>staged.agentId&&agentIds.includes(staged.agentId)).map(([root])=>root)])],tasks=activation?planReviewedRecoveryRoots(pkg,destinations,activation):[];
+    const originalRoots:Record<string,WorkingRootIdentity>={};
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root),stat=await lstat(root,{bigint:true});
       if(!staged||(staged.phase!=='populated'&&!(staged.phase==='allocated'&&!Object.values(destinations).includes(root)))||stat.dev!==staged.device||stat.ino!==staged.inode||await realpath(root)!==root)throw new Error('Native import root is not in its exact populated phase');
       if(staged.agentId&&(!agentIds.includes(staged.agentId)||!this.modeChanges.has(staged.agentId)||this.activeUses.has(staged.agentId)))throw new Error('Git adoption lost exact current Agent custody');
+      originalRoots[root]={device:staged.device.toString(),inode:staged.inode.toString()};
       staged.phase='adopting';
     }
     // The shared recreation engine validates included target/config closure and
     // records each applying/incomplete outcome for exactly the requested families.
     const receipts=new Map<string,Parameters<typeof onReceipt>[0]>();
     try{
-    if(activation)await applyReviewedRecoveryRoots(tasks,activation,receipt=>{const current={...receipt,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);});
+    if(activation)await applyReviewedRecoveryRoots(tasks,activation,receipt=>{const current={...receipt,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);},originalRoots);
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root)!;if(!staged.agentId)continue;
       const agent=this.store.getAgent(staged.agentId);if(!agent||agent.workingCopy.repositoryRoot!==root||agent.workingCopy.state!=='unavailable')throw new Error('Imported Separate Git ownership changed before activation');

@@ -595,3 +595,31 @@ test('oversized clipboard packages are cancelled and require the complete downlo
  await assert.rejects(readAgentPackageClipboard(response,32),AgentPackageDownloadRequired);assert.equal(cancelled,true);
  await assert.rejects(readAgentPackageClipboard(new Response('too large',{headers:{'Content-Length':'100'}}),32),AgentPackageDownloadRequired);
 });
+
+test('native live receipts include Git A only while metadata-only B remains inert',options,t=>withPortability(t,async f=>{
+ const {mkdir}=await import('node:fs/promises'),{execFile}=await import('node:child_process'),{promisify}=await import('node:util');
+ const {exportReviewedUserData}=await import('../../apps/server/dist/portable-reviewed-user-data.js'),run=promisify(execFile);
+ const gitOptions={env:{...Object.fromEntries(Object.entries(process.env).filter(([name])=>!name.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}};
+ const source=path.join(f.dataDir,'workspaces','git-source'),other=path.join(f.dataDir,'workspaces','metadata-source');await mkdir(source,{recursive:true});await mkdir(other);
+ await run('git',['init','--template=','--initial-branch=main'],{...gitOptions,cwd:source});await writeFile(path.join(source,'file.txt'),'original');
+ await run('git',['-c','core.hooksPath=/dev/null','add','file.txt'],{...gitOptions,cwd:source});await run('git',['-c','core.hooksPath=/dev/null','-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--no-gpg-sign','-m','Original'],{...gitOptions,cwd:source});
+ const manifests=[await exportReviewedUserData(source,{git:true,harness:false}),await exportReviewedUserData(other,{git:false,harness:false,persistentNodes:{fifo:false,evidenceOnly:true}})],refs=[randomUUID(),randomUUID()];
+ const agents=manifests.map((manifest,i)=>({ref:'node-'+i,title:'Root '+i,engine:'codex',...(i?{managerRef:'node-0'}:{}),managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingCopyMode:'separate_git',workingRootRef:refs[i],workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:[{path:'.ponderosa-portable-review/user-data.json',artifactRef:'manifest-'+i}],artifacts:[{ref:'manifest-'+i,kind:'document',path:'manifest.json',createdAt:new Date().toISOString(),dataBase64:Buffer.from(JSON.stringify(manifest)).toString('base64')}]}));
+ const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',sourceLabel:'Per-root native receipts',exportedAt:new Date().toISOString(),rootRef:'node-0',agents};
+ const choices={workingRootDestinations:{[refs[0]]:path.join(f.dataDir,'workspaces','recover-a'),[refs[1]]:path.join(f.dataDir,'workspaces','recover-b')},workingFilesActivation:{},reviewedUserDataActivation:{git:true,harness:false}};
+ const review=await f.packageEngine.reviewAccess(pkg,f.destination.id,choices);
+ const result=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{...choices,accessSettingsResolution:{action:'keep_destination',reviewSha256:review.reviewSha256}});
+ assert.deepEqual(result.reviewedUserDataApplications.map(receipt=>({ref:receipt.ref,selection:receipt.selection,state:receipt.state})),[{ref:refs[0],selection:{git:true,harness:false},state:'completed'}]);
+ const inert=result.liveWorkingRoots.find(root=>root.ref===refs[1]);assert.ok(inert);assert.ok(!result.reviewedUserDataApplications.some(receipt=>receipt.path===inert.path));
+}));
+test('nested recovery metadata finalizes child before restrictive parent permissions',{...options,skip:process.platform==='win32'||process.getuid?.()===0},t=>withPortability(t,async f=>{
+ const {chmod,lstat}=await import('node:fs/promises'),parent=randomUUID(),child=randomUUID(),stamp='2026-11-03T00:00:00.000Z';
+ const node=(ref,root,folder,files=[])=>({ref,title:ref,engine:'codex',...(ref==='child'?{managerRef:'parent'}:{}),managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingCopyMode:'shared',workingRootRef:root,workingFolder:folder,workingFiles:files.map((file,i)=>({path:file.path,artifactRef:ref+'-'+i,mode:0o640,mtime:stamp})),artifacts:files.map((file,i)=>({ref:ref+'-'+i,kind:'document',path:file.path,createdAt:stamp,dataBase64:Buffer.from(file.data).toString('base64')}))});
+ const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',sourceLabel:'Restrictive nested metadata',exportedAt:stamp,rootRef:'parent',workingRootNesting:[{parentRootRef:parent,childRootRef:child,path:'child'}],agents:[node('parent',parent,{directories:[],excludedPaths:['child'],mode:0,mtime:stamp}),node('child',child,{directories:[],excludedPaths:[],mode:0o750,mtime:stamp},[{path:'original',data:'exact original'}])]};
+ const destination=path.join(f.dataDir,'workspaces','restricted-parent'),nested=path.join(destination,'child');
+ try{
+  const result=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{workingRootDestinations:{[parent]:destination,[child]:nested}});
+  assert.equal(result.agentIds.length,2);assert.equal((await lstat(destination)).mode&0o777,0);
+  await chmod(destination,0o700);assert.equal((await lstat(nested)).mode&0o777,0o750);assert.equal(await readFile(path.join(nested,'original'),'utf8'),'exact original');
+ }finally{await chmod(destination,0o700).catch(()=>undefined);}
+}));
