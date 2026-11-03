@@ -28,9 +28,10 @@ export const childTreeLineage=(line:Row,lineageId:number,sourceId:string,targetI
 /** Bind tree replay to the one immutable canonical receipt, never to caller-supplied maps. */
 export const treeCoordinationLineageSupported=coordinationLineageSupported;
 const audit=(db:Database.Database,id:string)=>db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(id);
-function read(db:Database.Database,id:number,owner:string):{value:Row;hash:string}|undefined {
+function read(db:Database.Database,id:number,owner:string,evidence?:Map<string,BranchPortableRuntimeOwner>):{value:Row;hash:string}|undefined {
   if(!Number.isSafeInteger(id)||id<1||typeof owner!=='string')return;
-  const row=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(id,owner) as Row|undefined;
+  const fact=evidence?.get(owner)?.facts.find(f=>f.kind==='checkpoint'&&f.key===String(id));
+  const row=evidence?fact?{snapshot_json:fact.json,content_hash:fact.sha256}:undefined:db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(id,owner) as Row|undefined;
   if(!row)return;
   const value=JSON.parse(row.snapshot_json);if(stableJson(value)!==row.snapshot_json||payloadHash(value)!==row.content_hash)return;
   return {value,hash:row.content_hash};
@@ -81,6 +82,12 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
       ||v.content_hash!==o.versionHash||payloadHash(JSON.parse(v.definition_json))!==o.versionHash||b.content_hash!==o.bindingHash||payloadHash(JSON.parse(b.bindings_json))!==o.bindingHash
       ||evidence&&(fact('definition')?.key!==o.versionId||fact('bindings')?.key!==o.bindingRevisionId)||Object.hasOwn(o.configuration,'secretBindings')||Object.keys(JSON.parse(actual.configuration_json).secretBindings??{}).length)return false;
     const {secretBindings,...safe}=JSON.parse(actual.configuration_json);if(stableJson(safe)!==stableJson(o.configuration))return false;
+    const acceptance=source?.facts.find(f=>f.kind==='acceptance');
+    if(acceptance){
+      const accepted=JSON.parse(acceptance.json),started=o.audit.filter((a:Row)=>a.kind==='workflow_started');
+      if(started.length?(started.length!==1||typeof accepted.admittedAt!=='string'||!accepted.admittedAt||typeof accepted.admissionJson!=='string'||started[0].evidence_json!==stableJson({admission:JSON.parse(accepted.admissionJson)})):(accepted.admittedAt!==null||accepted.admissionJson!==null))return false;
+    }
+    if(source&&treeFact(source,'provenance').source==='historical_child'&&(!seeds?.has(o.executionId)||!o.audit.some((a:Row)=>a.kind==='tree_historical_rewind')))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     const issuedResource=c.issuedResources===true;
     const workflowGates=definition.steps.some(s=>s.kind==='human_gate');
@@ -147,17 +154,17 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
   }
   return true;
 }
-function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
+function compose(db:Database.Database,c:Row,encoding=false,data?:BranchPortableExecutionTree,work={remaining:128,active:new Set<string>(),cache:new Map<string,Row>()},depth=0,latest=false):Row[]|undefined {
   try {
     const frames:{c:Row;seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>;ref?:Row}[]=[],seen=new Set<string>();
-    const base:Row[]=[];
+    const base:Row[]=[],evidence=data?new Map(portableTreeOwners(data).map(o=>[o.sourceExecutionId,o])):undefined;
     let current=c;
     for(;;){
-      if(current.schema!==TREE_SCHEMA||seen.has(current.rootExecutionId))return;seen.add(current.rootExecutionId);
+      if(depth+frames.length>16||current.schema!==TREE_SCHEMA||seen.has(current.rootExecutionId))return;seen.add(current.rootExecutionId);
       const frame:typeof frames[number]={c:current};frames.push(frame);
       const root=current.owners.find((o:Row)=>o.executionId===current.rootExecutionId);if(!root)return;
       if(root.audit.some((a:Row)=>a.kind==='foreign_tree_selected_prefix')){
-        const proof=foreignTreeSeeds(db,current);if(!proof)return;
+        const proof=foreignTreeSeeds(db,current,data,work,depth+frames.length-1);if(!proof)return;
         frame.seeds=proof.seeds;frame.ref=proof.reference;
         for(const previous of proof.provenance)base.push(previous);
         break;
@@ -165,15 +172,18 @@ function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
       const origins=root.audit.filter((a:Row)=>a.kind==='tree_historical_rewind');
       if(!origins.length){if(current.owners.some((o:Row)=>o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))))return;break;}
       if(origins.length!==1)return;
-      const evidence=JSON.parse(origins[0].evidence_json),stored=read(db,evidence.lineageId,current.rootExecutionId);if(!stored)return;
-      const line=stored.value,source=read(db,line.checkpointId,line.sourceExecutionId);
+      const originEvidence=JSON.parse(origins[0].evidence_json),stored=read(db,originEvidence.lineageId,current.rootExecutionId,evidence);if(!stored)return;
+      const line=stored.value,source=read(db,line.checkpointId,line.sourceExecutionId,evidence);
       if(!source||line.schema!=='ponderosa.branch.tree-rewind-lineage.v1'||line.executionId!==current.rootExecutionId||source.hash!==line.checkpointHash
         ||line.commandHash!==payloadHash({executionId:line.sourceExecutionId,checkpointId:line.checkpointId,expectedHash:line.checkpointHash})||typeof line.commandKey!=='string')return;
       const snapshot=source.value,old=snapshot.continuation;
       if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||old?.schema!==TREE_SCHEMA||!treeSnapshotMetadata(snapshot,old)||old.rootExecutionId!==line.sourceExecutionId)return;
+      if(data&&(line.coordination||line.graphReviewHash||old.owners.some((o:Row)=>o.selected.gates.length||!evidence!.get(o.executionId)?.facts.some(f=>f.kind==='acceptance'))))return;
       if(!treeCoordinationLineageSupported(db,line,snapshot))return;
-      const receipt=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(line.sourceExecutionId,`tree-historical-rewind:${payloadHash(line.commandKey)}`) as Row|undefined;
-      if(!receipt||receipt.input_hash!==line.commandHash||receipt.result_json!==stableJson({executionId:current.rootExecutionId,lineageId:evidence.lineageId}))return;
+      if(data&&(!portableScriptTreeSupported(db,data,line.sourceExecutionId,snapshot,work,depth+1)||!portableScriptTreeSupported(db,data,line.sourceExecutionId,undefined,work,depth+1)))return;
+      const commandKey=`tree-historical-rewind:${payloadHash(line.commandKey)}`,commandFact=evidence?.get(line.sourceExecutionId)?.facts.find(f=>f.kind==='command'&&f.key===commandKey);
+      const receipt=evidence?commandFact?JSON.parse(commandFact.json):undefined:db.prepare('SELECT command_key,input_hash,result_json,created_at FROM branch_commands WHERE execution_id=? AND command_key=?').get(line.sourceExecutionId,commandKey) as Row|undefined;
+      if(!receipt||receipt.command_key!==commandKey||typeof receipt.created_at!=='string'||!receipt.created_at||receipt.input_hash!==line.commandHash||receipt.result_json!==stableJson({executionId:current.rootExecutionId,lineageId:originEvidence.lineageId}))return;
       const map=line.idMap;
       if(!treeIdMapSupported(old.owners,map,old.rootExecutionId,current.rootExecutionId))return;
       const seeds=new Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>();
@@ -184,19 +194,32 @@ function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
         if(ce.parent_execution_id!==(pe.parent_execution_id?map[pe.parent_execution_id]:null)||ce.parent_attempt_id!==(pe.parent_attempt_id?map[pe.parent_attempt_id]:null)||ce.input_text!==pe.input_text)return;
         const origin=target.audit.filter((a:Row)=>a.kind==='tree_historical_rewind'),prefix=target.audit.filter((a:Row)=>a.kind==='tree_restored_prefix');
         if(origin.length!==1||prefix.length!==1||target.audit[0]?.kind!=='trigger_accepted'||target.audit[1]!==prefix[0]||target.audit[2]!==origin[0]||prefix[0].transition_key!=='tree-restored-prefix'||origin[0].transition_key!=='tree-rewind-origin')return;
-        const value=JSON.parse(origin[0].evidence_json),expected={sourceRootId:line.sourceExecutionId,sourceExecutionId:previous.executionId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash,commandKey:line.commandKey,lineageId:evidence.lineageId,...(previous.executionId!==old.rootExecutionId?{childLineageId:value.childLineageId}:{})};
+        const value=JSON.parse(origin[0].evidence_json),expected={sourceRootId:line.sourceExecutionId,sourceExecutionId:previous.executionId,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash,commandKey:line.commandKey,lineageId:originEvidence.lineageId,...(previous.executionId!==old.rootExecutionId?{childLineageId:value.childLineageId}:{})};
         if(stableJson(value)!==stableJson(expected)||prefix[0].evidence_json!==stableJson(expected))return;
-        if(previous.executionId!==old.rootExecutionId){const child=read(db,value.childLineageId,target.executionId);if(!child||stableJson(child.value)!==stableJson(childTreeLineage(line,evidence.lineageId,previous.executionId,target.executionId)))return;}
+        if(previous.executionId!==old.rootExecutionId){const child=read(db,value.childLineageId,target.executionId,evidence);if(!child||stableJson(child.value)!==stableJson(childTreeLineage(line,originEvidence.lineageId,previous.executionId,target.executionId)))return;}
         seeds.set(target.executionId,{selected:previous.selected,idMap:map,requestMap:line.coordination?.requestMap});
       }
       for(const o of current.owners)if(!seeds.has(o.executionId)&&o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind)))return;
-      frame.seeds=seeds;frame.ref={executionId:current.rootExecutionId,sourceExecutionId:line.sourceExecutionId,lineageId:evidence.lineageId,lineageHash:stored.hash,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash};current=old;
+      frame.seeds=seeds;frame.ref={executionId:current.rootExecutionId,sourceExecutionId:line.sourceExecutionId,lineageId:originEvidence.lineageId,lineageHash:stored.hash,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash};
+      if(data){
+        for(const o of current.owners){
+          const retained=evidence!.get(o.executionId);if(!retained)return;
+          const origin=treeFact(retained,'provenance'),e=o.selected.execution[0],acceptance=retained.facts.find(f=>f.kind==='acceptance'),accepted=acceptance&&JSON.parse(acceptance.json),started=o.audit.filter((a:Row)=>a.kind==='workflow_started');
+          if(!accepted||e.parent_execution_id&&stableJson(origin)!==stableJson({source:seeds.has(o.executionId)?'historical_child':'branch_call',parentExecutionId:e.parent_execution_id,parentAttemptId:e.parent_attempt_id})||!e.parent_execution_id&&origin.source!=='manual')return;
+          // Terminal prefix children were accepted as data by the original local rewind, never admitted.
+          const terminalPrefix=seeds.has(o.executionId)&&['completed','failed'].includes(seeds.get(o.executionId)!.selected.execution![0]!.state);
+          if(terminalPrefix){if(started.length||accepted.admittedAt!==null||accepted.admissionJson!==null)return;}
+          else if(typeof accepted.admittedAt!=='string'||!accepted.admittedAt||typeof accepted.admissionJson!=='string'||started.length!==1||started[0].evidence_json!==stableJson({admission:JSON.parse(accepted.admissionJson)}))return;
+        }
+        for(const previous of old.provenance)base.push(previous);break;
+      }
+      current=old;
     }
     const flat:Row[]=[...base];
     for(const frame of frames.reverse()){
       if(frame.ref)flat.push(frame.ref);
       if(!(encoding&&frame.c===c)&&stableJson(frame.c.provenance??[])!==stableJson(flat))return;
-      if(!validateOwners(db,frame.c,frame.seeds,encoding&&frame.c===c))return;
+      if(!validateOwners(db,frame.c,frame.seeds,encoding&&frame.c===c,evidence,latest&&frame.c===c))return;
     }
     return flat;
   }catch{return;}
@@ -227,18 +250,16 @@ export function portableScriptTreeSupported(db:Database.Database,data:BranchPort
   const related=all.filter(o=>{let e=fact(o,'frontier').execution[0];const seen=new Set<string>();for(;;){if(e.id===rootId)return true;if(!e.parent_execution_id||seen.has(e.id))return false;seen.add(e.id);const p=byId.get(e.parent_execution_id);if(!p)return false;e=fact(p,'frontier').execution[0];}});
   for(const o of related){
    const d=validateBranchDefinition(fact(o,'definition')),config=fact(o,'configuration'),s=fact(o,'frontier');
-   const origin=fact(o,'provenance');if(o.sourceExecutionId===rootId?!['manual','foreign_tree_continuation'].includes(origin.source):origin.source!=='branch_call')return;
+   const origin=fact(o,'provenance');if(o.sourceExecutionId===rootId?!['manual','foreign_tree_continuation'].includes(origin.source):!['branch_call','historical_child'].includes(origin.source))return;
    if(o.chatRefs.length||o.facts.some(f=>['custody','tree-import','import','continuation'].includes(f.kind))||config.requiredSecretRefs.length||config.configuration.checkpointMode!=='sync'||d.trigger.kind!=='manual'||d.steps.some((s:Row)=>!['script','branch_call','human_gate'].includes(s.kind))||!scriptDefinitionSupported(d,true)||
-    s.resources.length||s.actions.length||s.bundles.length||s.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))||o.facts.filter(f=>f.kind==='transition').some(f=>['tree_historical_rewind','tree_restored_prefix','historical_rewind','restored_prefix','foreign_selected_prefix'].includes(JSON.parse(f.json).kind)))return;
+    s.resources.length||s.actions.length||s.bundles.length||s.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))||o.facts.filter(f=>f.kind==='transition').some(f=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(JSON.parse(f.json).kind)))return;
   }
   const latestOwners=related.map(o=>{const s=fact(o,'frontier'),e=s.execution[0],config=fact(o,'configuration').configuration;return {executionId:o.sourceExecutionId,versionId:e.version_id,versionHash:payloadHash(fact(o,'definition')),bindingRevisionId:e.binding_revision_id,bindingHash:payloadHash(fact(o,'bindings')),configuration:config,selected:s,audit:o.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json))};});
   const c=snapshot?.continuation??{schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:rootId,owners:latestOwners,provenance:[]};
   if(c.schema!==TREE_SCHEMA||c.rootExecutionId!==rootId||c.issuedResources||snapshot&&(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!=='sync'||!treeSnapshotMetadata(snapshot,c)))return;
   if(c.owners.some((o:Row)=>!related.some(p=>p.sourceExecutionId===o.executionId)||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return;
-  const proof=foreignTreeSeeds(db,c,data,work,depth);
-  if(!proof||snapshot&&stableJson(c.provenance)!==stableJson([...proof.provenance,...(proof.reference?[proof.reference]:[])]))return;
-  if(!snapshot)c.provenance=[...proof.provenance,...(proof.reference?[proof.reference]:[])];
-  if(!validateOwners(db,c,proof.seeds,false,byId,!snapshot))return;
+  const provenance=compose(db,c,!snapshot,data,work,depth,!snapshot);if(!provenance)return;
+  if(!snapshot)c.provenance=provenance;
   work.active.delete(key);work.cache.set(key,c);return c;
  }catch{return;}
 }

@@ -139,6 +139,7 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
    }
    if(origin.source==='foreign_tree_continuation')add('tree-continuation','original',stableJson(captureForeignTreeGeneration(db,e.id,origin)));
    const host=captureBranchHostCut(db,e.id,selected);if(host)add('host','current',stableJson(host));
+   // Keep every private snapshot: local tree rewind proof owns root and child lineage rows here.
    for(const [kind,table] of [['initial','branch_initial_checkpoints'],['checkpoint','branch_unit_snapshots']] as const){
     for(const cp of db.prepare(`SELECT id,snapshot_json,content_hash FROM ${table} WHERE execution_id=? ORDER BY id`).all(e.id) as Row[]){if(sha(cp.snapshot_json)!==cp.content_hash)throw Error('Runtime checkpoint integrity failure');add(kind,String(cp.id),cp.snapshot_json);}
    }

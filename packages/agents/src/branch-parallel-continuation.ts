@@ -92,7 +92,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
    for(const map of m.maps!)sealedMaps.add(map.id);
    for(const item of m.items!)if(['arrived','canceled'].includes(find('paths',item.path_id).state))completedItems.add(item.id);
    for(const gate of m.gates!)if(gate.state==='resolved')gateDecisions.set(gate.id,JSON.parse(gate.response_json).decision);
-   for(const a of m.attempts!)if(context?.children[a.id]){if(!context.foreignTreePrefix)admitted.add(a.id);if(context.foreignTreePrefix?['completed','failed'].includes(a.state):context.children[a.id]!.completed)completedChildren.add(a.id);}
+   for(const a of m.attempts!)if(context?.children[a.id]){if(!context.foreignTreePrefix)admitted.add(a.id);if(['completed','failed'].includes(a.state))completedChildren.add(a.id);}
   }else m.paths!.push({id:root.id,execution_id:e.id,parent_path_id:null,fork_invocation_id:null,edge_id:null,state:'active',node_id:d.entry,step_execution_id:null,input_text:e.input_text,result_json:null,traversals:0,handling_limit:0,last_result_id:null});
   const move=(p:Row,edge:BranchDefinition['edges'][number]|undefined,output:string,result:Row)=>{
    if(edge?.loop){const iteration=1+m.loops!.filter(row=>row.edge_id===edge.id).reduce((n,row)=>n+row.iterations,0);let row=m.loops!.find(row=>row.path_id===p.id&&row.edge_id===edge.id);if(!row){row={execution_id:e.id,path_id:p.id,edge_id:edge.id,iterations:0};m.loops!.push(row);}row.iterations++;pendingLoops.push({pathId:p.id,edgeId:edge.id,iteration});}

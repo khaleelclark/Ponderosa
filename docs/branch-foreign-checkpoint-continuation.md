@@ -193,7 +193,7 @@ This tree family supports serial human workflow gates and excludes issued/native
 custody, actions, bundles, Agents, execution-owned Chats, secrets, automatic,
 async/EXIT, changed historical definitions/configuration and external restoration.
 Supported held re-exports and admitted continuation generations retain exact proof
-as described below. Retained local-rewind tree combinations remain refused. Standalone gate/parallel and repeated
+as described below. Supported nongate local tree rewinds retain portable proof as described below; gate/rewind combinations remain refused. Standalone gate/parallel and repeated
 Script continuation retain their existing supported families; these are not a
 promise of every combination with Call trees.
 
@@ -295,3 +295,37 @@ local rewinds with gates, issued/resource/unknown/effectful work, automatic and
 async/EXIT trees remain refused. Standalone serial/parallel gate behavior is
 unchanged. Source review does not qualify live gate notifications, round trips,
 suffix scheduling or rollback.
+
+
+### Portable local tree rewind lineage
+
+Successful local historical rewinds of supported manual synchronous effect-free
+nongate Script/Call trees can use the existing foreign review/confirm/source and
+original-key recovery flow. The shared canonical tree composer reads either local
+private rows or their exact retained portable checkpoint/command facts. No foreign
+rows, synthetic Requests, replacement commands or admission system are introduced.
+
+The complete original source owners must remain in the exported Branch inventory.
+Export already retains all their private snapshots, root/child lineage records,
+commands (including key, input/result hashes/bytes and creation time), transitions
+and actual acceptance/admission facts. The walker verifies exact source checkpoint
+bytes/hash, original root command and child lineage, pins/configuration, all-owner
+map coverage/injectivity, mapped Call parent attempts/inputs and prefix seals.
+Historical children are recognized only through this validated rewind lineage; later
+children retain genuine normal Call provenance. Terminal restored children retain
+the original local acceptance without inventing a missing admission.
+
+Every retained source tree is replayed independently at its selected checkpoint
+and latest frontier. Completed prefix results/state are seeded once; unfinished
+suffix work and later children use their normal audit. Portable replay shares the
+16-link, 32 MiB manifest and 128 uncached-frame limits, active-cycle detection and
+memoization with held/admitted foreign generations. Missing, erased, corrupt,
+ambiguous or unsupported proof refuses continuation. Existing held-only validation
+stays separate from fresh admission, and current all-destination review and atomic
+acceptance/remapping remain mandatory for each destination generation. Existing
+review evidence includes the exact checkpoint and its lineage provenance.
+
+Gate/rewind, issued/resource/native/unknown/effectful, automatic and async/EXIT
+combinations remain refused. Original data, partial/failure evidence and existing
+standalone gate/parallel/rewind behavior are preserved. This is source support;
+round trips, suffix scheduling and rollback remain execution-unqualified.
