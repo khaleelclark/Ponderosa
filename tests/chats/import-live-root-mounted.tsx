@@ -24,7 +24,10 @@ export async function importLiveRootRegression():Promise<void>{
  api.listAgents=async()=>[];
  api.createChat=async(request,key)=>{creates.push({request,key});return {id:'new-chat',projectId:'new-project',title:'Restored',workingDirectory:'/managed/restored',createdAt:'now',updatedAt:'now'};};
  api.previewAgentAccess=async(projectId,_blob,metadata)=>{reviews.push({projectId,metadata});return {reviewSha256:'fixture-review',source:[],destination:{restrictedCapabilityIds:[],restrictionSources:{},layers:[]}};};
- api.startAgentPackageImport=async(projectId,_blob,metadata)=>{imports.push({projectId,metadata});throw new Error('Fixture stops after import metadata capture');};
+ api.startAgentPackageImport=async(projectId,_blob,metadata)=>{imports.push({projectId,metadata});return {
+  id:'failed-direct-import',requestId:'original-import',payloadHash:'f'.repeat(64),projectId,conversationId:'new-chat',product:'dev',sourceLabel:'fixture',phase:'failed',status:'failed',createdAt:'2026-11-03T00:00:00.000Z',updatedAt:'2026-11-03T00:00:00.000Z',error:'Fixture native apply failed',
+  result:{rootAgentId:'imported-root',agentIds:['imported-root'],reviewedUserDataApplications:[{ref:'root',path:'/recovery/restored',originalSha256:'f'.repeat(64),selection:{git:true,harness:false},state:'incomplete',error:{code:'ERR_NATIVE_PARTIAL_FIXTURE',partialStatePossible:true,observed:{path:'/recovery/restored/.git'}}}]}
+ } as Awaited<ReturnType<typeof api.startAgentPackageImport>>;};
  const button=(text:string)=>Array.from(host.querySelectorAll('button')).find(item=>item.textContent===text)!;
  const input=(label:string)=>host.querySelector<HTMLInputElement>(`#${CSS.escape(Array.from(host.querySelectorAll('label')).find(item=>item.textContent?.startsWith(label))!.htmlFor)}`)!;
  const change=(element:HTMLInputElement,value:string)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(element,value);element.dispatchEvent(new Event('input',{bubbles:true}));};
@@ -56,5 +59,9 @@ export async function importLiveRootRegression():Promise<void>{
   button('Import').click();await flush();
   assert(imports[0]?.projectId==='new-project'&&imports[0].metadata.conversationId==='new-chat','import uses actual created destination');
   assert(imports[0]?.metadata.workingFilesActivation?.sharedRoot==='/managed/restored'&&imports[0].metadata.workingRootDestinations?.root==='/recovery/restored','import preserves reviewed live activation and recovery paths');
+  assert(host.textContent?.includes('Git and provider settings: incomplete'),'direct failed operation retains native partial receipt');
+  assert(host.textContent?.includes('ERR_NATIVE_PARTIAL_FIXTURE')&&host.textContent?.includes('/recovery/restored/.git'),'partial code and observed native evidence remain visible');
+  await flush();assert(imports.length===1,'direct failed result never automatically replays import');
+
  }finally{root.unmount();client.clear();host.remove();window.Worker=OriginalWorker;Object.assign(api,original);}
 }

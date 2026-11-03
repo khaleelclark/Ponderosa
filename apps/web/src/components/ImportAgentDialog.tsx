@@ -232,6 +232,7 @@ export function ImportAgentForm({
     onSuccess: (operation) => {
       if(!operation)return;
       setLifecycleOperationId(operation.id);
+      if(operation.result)setPartialResult(operation.result);
       if(operation.status==='pending'){setRoleOperation(operation);return;}
       if(operation.status==='completed'){if(!operation.result)throw new Error('Import completed without a result receipt.');setImportResult(operation.result);return;}
       if(operation.status==='failed')throw new Error(operation.error??'Import failed');

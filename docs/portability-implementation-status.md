@@ -189,3 +189,12 @@ Agent and Branch result views preserve native-application receipts and distingui
 completed, applying/unconfirmed and incomplete results. Observed partial failures
 remain inspectable; no automatic retry is introduced. All these controls and
 regressions await consolidated final validation.
+
+The independent source review corrected native family summaries: Git originals in
+the shared provider-file array never count as Claude/Codex settings, and the
+original explicit harness selection is required. Direct failed import responses
+retain partial results just like polled failures. Branch summaries now follow the
+actual immutable package object rather than export labels or timestamps; replacing
+bytes clears the old preview immediately. Grouped metadata uses the server's
+canonical metadata-bearing root subset and remains unavailable until that subset
+is reviewed. Storage-only roots never receive a metadata grant.

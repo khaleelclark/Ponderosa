@@ -29,7 +29,9 @@ export async function nativeDataPreview(nodes:unknown[]):Promise<NativeDataPrevi
    const artifact=node.artifacts?.find((item:any)=>item.ref===file.artifactRef);if(!artifact)throw Error('Native review original is missing');
    const manifest=JSON.parse(await artifactText(artifact));
    if(manifest.version!==1||manifest.activation!=='inert_review_only')throw Error('Native review format is unsupported');
-   result.git ||= Boolean(manifest.git);result.harness ||= Boolean(manifest.providerFiles?.length||manifest.providerDirectories?.length);
+   result.git ||= manifest.selection?.git===true&&Boolean(manifest.git);
+   const harnessPath=(entry:{path?:unknown})=>typeof entry.path==='string'&&(entry.path==='.mcp.json'||entry.path==='.claude'||entry.path.startsWith('.claude/')||entry.path==='.codex'||entry.path.startsWith('.codex/'));
+   result.harness ||= manifest.selection?.harness===true&&Boolean(manifest.providerFiles?.some(harnessPath)||manifest.providerDirectories?.some(harnessPath));
    for(const binding of manifest.associationReview??[])for(const source of binding.capture?.roots??[]){
     if(typeof source.rootRef==='string'&&typeof source.sourcePath==='string'&&!result.sourceRoots.some(item=>item.rootRef===source.rootRef&&item.sourcePath===source.sourcePath))result.sourceRoots.push({rootRef:source.rootRef,sourcePath:source.sourcePath});
    }
@@ -66,4 +68,10 @@ export function nativeImportChoiceError(value:NativeImportChoices,summary?:Nativ
   if(!complete||summary&&(!source||metadata.sourceQualifier!==source.sourceQualifier||source.unsupportedNodes||source.fifoCount&&!metadata.fifo||source.rootRefs.length!==metadata.rootRefs.length||source.rootRefs.some(ref=>!metadata.rootRefs.includes(ref))||source.principals.some(principal=>!metadata.principalMappings.some(mapping=>mapping.kind===principal.kind&&mapping.sourceId===principal.sourceId))))return 'Choose distinct destination owners for all included permissions and confirm any named pipes.';
  }
 
+}
+
+/** Only the server-composed metadata subset can authorize grouped application roots. */
+export function nativePreviewForGroupedRoots(summary:NativeDataPreview|undefined,metadataRoots:readonly string[]|undefined):NativeDataPreview|undefined {
+ if(!summary?.metadata)return summary;
+ return {...summary,sourceRoots:[],metadata:{...summary.metadata,rootRefs:[...(metadataRoots??[])]},...(!metadataRoots?.length?{warning:'Review the grouped folders to identify metadata-bearing destinations.'}:{})};
 }
