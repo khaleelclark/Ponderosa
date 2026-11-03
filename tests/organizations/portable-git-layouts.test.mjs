@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,mkdir,writeFile,readFile,open,rm,realpath,rename} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,open,rm,realpath,rename,link,lstat,chmod} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {tmpdir} from 'node:os';
+import {deflateSync} from 'node:zlib';
 import path from 'node:path';
 import {
   createGitExportCapture,verifyGitExportAssociations,exportReviewedGit,exportReviewedUserData,
@@ -280,4 +281,37 @@ test('configured external module worktree read requires opt-in and an exact held
   const deinitialized=await exportReviewedGit(parent,undefined,true);
   assert.equal(deinitialized.git.modules[0].source.initialized,false);
   assert.deepEqual(deinitialized.git.modules[0].git.objects,module.git.objects);
+});
+
+test('held export reads content-verified hardlinked loose objects without altering other names',{skip:process.platform==='win32'},async t=>{
+  const root=await fixture(t),repo=path.join(root,'repo'),foreign=path.join(root,'foreign-original');
+  const oid=await repository(repo),object=path.join(repo,'.git','objects',oid.slice(0,2),oid.slice(2));
+  await link(object,foreign);
+  const original=await readFile(foreign),before=await lstat(foreign,{bigint:true});
+  const storage=path.join(repo,'.git');
+  const held=await heldCapture({work:repo,storage},[{id:'common',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:repo,storagePath:storage}]);
+  try{
+    const exported=await exportReviewedUserData(repo,{git:true,harness:false},held.capture);
+    assert.ok(exported.git.objects.some(item=>item.oid===oid));
+    const after=await lstat(foreign,{bigint:true});
+    assert.deepEqual(await readFile(foreign),original);
+    assert.equal(after.ino,before.ino);assert.equal(after.nlink,before.nlink);assert.equal(after.mtimeNs,before.mtimeNs);
+  }finally{await held.close();}
+  // A valid zlib stream with incorrect object identity is refused, without
+  // deleting or repairing either source name.
+  const forged=deflateSync(Buffer.from('blob 4\0fake'));await chmod(object,0o600);await writeFile(object,forged);
+  await assert.rejects(exportReviewedGit(repo),/loose Git object identity mismatch/i);
+  assert.deepEqual(await readFile(foreign),forged);assert.equal((await lstat(foreign)).nlink,2);
+});
+
+test('Git export bounds aggregate loose-object inflation and refuses hardlinked control files',{skip:process.platform==='win32',timeout:30000},async t=>{
+  const root=await fixture(t),repo=path.join(root,'repo');await repository(repo);
+  for(const [index,byte] of [[1,65],[2,66]]){
+    const file=path.join(root,'large-'+index);await writeFile(file,Buffer.alloc(17*1024*1024,byte));native(repo,'hash-object','-w','--',file);
+  }
+  await assert.rejects(exportReviewedGit(repo),/inflated aggregate bound|aggregate bound exceeded/i);
+  const control=path.join(repo,'.git','config'),alias=path.join(root,'control-alias'),original=await readFile(control);
+  await link(control,alias);
+  await assert.rejects(exportReviewedGit(repo),/bounded regular original|singly linked regular/i);
+  assert.deepEqual(await readFile(alias),original);assert.equal((await lstat(alias)).nlink,2);
 });

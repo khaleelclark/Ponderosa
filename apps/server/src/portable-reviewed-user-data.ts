@@ -18,7 +18,10 @@ import {openPortableRegular} from './portable-held-regular.js';
 import {applyNativeGitPermissions,type NativeGitPermissionNode} from './portable-git-permissions.js';
 
 const sourceFs=fs;
-type GitSourceFs=Pick<typeof sourceFs,'lstat'|'realpath'|'open'|'readdir'>;
+type GitSourceFs=Pick<typeof sourceFs,'lstat'|'realpath'|'open'|'readdir'> & {
+  /** Only captureGitRaw may authorize a selected, content-addressed Git object for read-only alias custody. */
+  permitGitObjectRead?:(target:string)=>void;
+};
 
 export const REVIEWED_USER_DATA_PATH='.ponderosa-portable-review/user-data.json';
 const limit=32*1024*1024;
@@ -682,20 +685,20 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
   }
   safe+=value.slice(kept);return {safe,removedSecretFields:removals.length>0};
 }
-async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:bigint,fsSource?:GitSourceFs):Promise<{data:Buffer;mode:number;mtimeNs:string;identity:string}> {
+async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:bigint,fsSource?:GitSourceFs,allowReadOnlyObjectAliases=false):Promise<{data:Buffer;mode:number;mtimeNs:string;identity:string}> {
   const fs=fsSource??sourceFs;
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');
   const observed=await fs.lstat(target,{bigint:true});
-  if(!observed.isFile()||observed.nlink!==1n||observed.size>BigInt(maxBytes)||expectedOwner!==undefined&&observed.uid!==expectedOwner)throw new Error('Reviewed data requires a bounded regular original');
+  if(!observed.isFile()||(!allowReadOnlyObjectAliases&&observed.nlink!==1n)||observed.nlink<1n||observed.size>BigInt(maxBytes)||expectedOwner!==undefined&&observed.uid!==expectedOwner)throw new Error('Reviewed data requires a bounded regular original');
   const handle=fs===sourceFs?await openPortableRegular(target):await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   let primary:unknown;
   try{
     const before=await handle.stat({bigint:true});
-    if(!before.isFile()||before.nlink!==1n||before.dev!==observed.dev||before.ino!==observed.ino||before.size>BigInt(maxBytes)||expectedOwner!==undefined&&before.uid!==expectedOwner)throw new Error('Reviewed original changed before reading');
+    if(!before.isFile()||before.nlink!==observed.nlink||before.dev!==observed.dev||before.ino!==observed.ino||before.size>BigInt(maxBytes)||expectedOwner!==undefined&&before.uid!==expectedOwner)throw new Error('Reviewed original changed before reading');
     const data=Buffer.alloc(Number(before.size));let offset=0;
     while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error('Reviewed original shortened');offset+=read.bytesRead;}
     const after=await handle.stat({bigint:true}),current=await fs.lstat(target,{bigint:true});
-    if(before.uid!==after.uid||current.uid!==after.uid||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||current.dev!==after.dev||current.ino!==after.ino||current.nlink!==1n)throw new Error('Reviewed original changed during reading');
+    if(before.uid!==after.uid||current.uid!==after.uid||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||current.dev!==after.dev||current.ino!==after.ino||after.nlink!==before.nlink||current.nlink!==before.nlink)throw new Error('Reviewed original changed during reading');
     return {data,mode:Number(before.mode)&0o7777,mtimeNs:before.mtimeNs.toString(),identity:originalIdentity(before)};
   }catch(error){primary=error;throw error;}finally{try{await handle.close();}catch(cleanup){throw Object.assign(new AggregateError([...(primary?[primary]:[]),cleanup],'Reviewed original descriptor cleanup failed'),{cause:primary,cleanupErrors:[cleanup]});}}
 }
@@ -857,7 +860,7 @@ function validateGitReflogData(encoded:string,format:'sha1'|'sha256',ids:Map<str
   if(original&&!original.endsWith('\n'))throw new Error('Incomplete Git reflog entry');
   for(const line of original?original.slice(0,-1).split('\n'):[]){
     if(++budget.entries>10000)throw new Error('Git reflog entry count exceeds its bound');
-    const entry=/^([a-f0-9]+) ([a-f0-9]+) ([^<>\x00-\x1f\x7f]+) <([^<>\x00-\x20\x7f]+)> ([0-9]{1,16}) ([+-][0-9]{4})\t([^\x00-\x1f\x7f]*)$/.exec(line);
+    const entry=/^([a-f0-9]+) ([a-f0-9]+) ([^<>\x00-\x1f\x7f]+) <([^<>\x00-\x20\x7f]+)> ([0-9]{1,16}) ([+-][0-9]{4})(?:\t([^\x00-\x1f\x7f]*))?$/.exec(line);
     if(!entry||!oidPattern.test(entry[1]!)||!oidPattern.test(entry[2]!)||Number(entry[6]!.slice(1,3))>23||Number(entry[6]!.slice(3))>59)throw new Error('Unsupported Git reflog entry; preserve source');
     const zero='0'.repeat(format==='sha1'?40:64);
     if(entry[1]===zero&&entry[2]===zero)throw new Error('Git reflog has no object endpoint');
@@ -1784,7 +1787,8 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
     return root;
   };
   type Held={handle:SelectedGitRoot['handle'];identity:string;owner:bigint;device:bigint;parent?:string;name?:string};
-  const held=new Map<string,Promise<Held>>(),files=new Map<string,Promise<{handle:SelectedGitRoot['handle'];identity:string}>>(),owned:SelectedGitRoot['handle'][]=[];
+  const held=new Map<string,Promise<Held>>(),files=new Map<string,Promise<{handle:SelectedGitRoot['handle'];identity:string;nlink:bigint}>>(),owned:SelectedGitRoot['handle'][]=[];
+  const permittedObjectReads=new Set<string>();
   const evidence=new Map<string,string>(),reviewHashes=new Map<string,string>(),rootIdentities=new Map<string,string>(),physicalDirectories=new Map<string,string>(),physicalFiles=new Map<string,string>();
   for(const root of roots)held.set(root.pathname,root.handle.stat({bigint:true}).then(stat=>{
     if(!stat.isDirectory()||stat.uid!==root.owner)throw new Error('Selected Git root custody changed');
@@ -1841,6 +1845,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
     return observed;
   };
   const io:GitSourceFs={
+    permitGitObjectRead(target:string){locate(target);permittedObjectReads.add(target);},
     lstat:(async(target:string,options?:{bigint?:boolean})=>{
       await stat(target);const root=locate(target);
       if(target===root.pathname)return options?.bigint?root.handle.stat({bigint:true}):root.handle.stat();
@@ -1859,23 +1864,25 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
     open:(async(target:string,flags:number)=>{
       if((flags&(constants.O_WRONLY|constants.O_RDWR|constants.O_CREAT|constants.O_TRUNC|constants.O_APPEND))!==0)throw new Error('Git capture custody is read only');
       const before=await stat(target);
-      if(!before.isFile()||before.nlink!==1n)throw new Error('Git original must be a singly linked regular file');
+      const objectRead=permittedObjectReads.has(target);
+      if(!before.isFile()||before.nlink<1n||!objectRead&&before.nlink!==1n)throw new Error('Git original must be a singly linked regular file');
       const physical=`${before.dev}:${before.ino}`,prior=physicalFiles.get(physical);
-      if(prior!==undefined&&prior!==target)throw new Error('Git file aliases require mount/view proof');
+      if(prior!==undefined&&prior!==target&&!(objectRead&&permittedObjectReads.has(prior)))throw new Error('Git file aliases require mount/view proof');
       physicalFiles.set(physical,target);
       let original=files.get(target);
       if(!original){
         if(files.size+held.size>=20000)throw new Error('Held Git source-node inventory exceeds its bound');
         original=(async()=>{
           const handle=await openPortableRegular(await node(target));owned.push(handle);
-          const identity=originalIdentity(await handle.stat({bigint:true}));
-          if(identity!==originalIdentity(before))throw new Error('Git original changed before descriptor read');
-          return {handle,identity};
+          const current=await handle.stat({bigint:true}),identity=originalIdentity(current);
+          if(identity!==originalIdentity(before)||current.nlink!==before.nlink)throw new Error('Git original changed before descriptor read');
+          return {handle,identity,nlink:current.nlink};
         })();
         files.set(target,original);
       }
       const entry=await original;
-      if(entry.identity!==originalIdentity(before)||entry.identity!==originalIdentity(await entry.handle.stat({bigint:true})))throw new Error('Held Git source original changed');
+      const current=await entry.handle.stat({bigint:true});
+      if(entry.identity!==originalIdentity(before)||entry.identity!==originalIdentity(current)||entry.nlink!==before.nlink||entry.nlink!==current.nlink)throw new Error('Held Git source original changed');
       // Readers borrow custody. The export scope closes each underlying descriptor exactly once.
       return new Proxy(entry.handle,{get(handle,key){
         if(key==='close')return async()=>undefined;
@@ -1900,7 +1907,8 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
       await proveNestedRoots();
       for(const [target,promise] of files){
         const entry=await promise;
-        if(originalIdentity(await entry.handle.stat({bigint:true}))!==entry.identity||originalIdentity(await stat(target))!==entry.identity)throw new Error('Held Git original or its directory entry changed during capture');
+        const current=await entry.handle.stat({bigint:true}),named=await stat(target);
+        if(originalIdentity(current)!==entry.identity||originalIdentity(named)!==entry.identity||current.nlink!==entry.nlink||named.nlink!==entry.nlink)throw new Error('Held Git original or its directory entry changed during capture');
       }
       for(const [target,promise] of held){
         let entry:Held;try{entry=await promise;}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
@@ -2078,6 +2086,29 @@ export async function selectedReviewedGitStorage(root:string,capture?:GitExportC
   return roots.filter(target=>!roots.some(parent=>parent!==target&&target.startsWith(parent+path.sep))).map(target=>path.relative(root,target).split(path.sep).join('/'));
 }
 
+/** Validate each captured loose object independently, including unreferenced
+ * objects, before the bytes enter Git's private reconstruction view. */
+function verifyCapturedLooseObject(name:string,compressed:Buffer,remainingBytes:number):number {
+  const match=/^objects\/([a-f0-9]{2})\/([a-f0-9]{38}(?:[a-f0-9]{24})?)$/.exec(name);
+  if(!match)throw new Error('Invalid loose Git object path');
+  const expected=match[1]!+match[2]!,format=expected.length===40?'sha1':'sha256';
+  let inflated:{buffer:Buffer;engine:{bytesWritten:number}};
+  if(remainingBytes<0)throw new Error('Inflated Git objects exceed their aggregate bound');
+  // Header is separately capped at 100 bytes. Charge only object bodies, as
+  // the public manifest does; this still bounds each inflation plus 20k headers.
+  try{inflated=inflateSync(compressed,{maxOutputLength:remainingBytes+101,info:true}) as unknown as typeof inflated;}
+  catch{throw new Error('Invalid loose Git object or inflated aggregate bound exceeded');}
+  if(inflated.engine.bytesWritten!==compressed.length)throw new Error('Trailing bytes in loose Git object');
+  const data=inflated.buffer,separator=data.indexOf(0);
+  if(separator<0||separator>100)throw new Error('Invalid loose Git object header');
+  const header=/^(blob|tree|commit|tag) (0|[1-9][0-9]*)$/.exec(data.subarray(0,separator).toString('ascii'));
+  if(!header||!data.subarray(0,separator).equals(Buffer.from(header[0],'ascii')))throw new Error('Invalid loose Git object header');
+  const body=data.subarray(separator+1),declared=Number(header[2]);
+  if(!Number.isSafeInteger(declared)||declared!==body.length||objectId(format,header[1]!,body)!==expected)throw new Error('Loose Git object identity mismatch');
+  if(body.length>remainingBytes)throw new Error('Inflated Git objects exceed their aggregate bound');
+  return body.length;
+}
+
 type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer;metadata?:{mode:number;mtimeNs:string}};
 /** Derived local caches are observed for drift, never parsed or supplied to native Git. */
 function derivedGitCache(name:string,format?:'sha1'|'sha256'):boolean {
@@ -2091,7 +2122,7 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
   const fs=fsSource??sourceFs;
   const {gitDir,commonDir,linked}=association,files:CapturedGitFile[]=[],inventory:Array<{name:string;source:'selected'|'shared';identity:string;digest?:string;absent?:true}>=[];
   const owner=(await fs.lstat(association.root,{bigint:true})).uid,names=new Set<string>();
-  let nodes=0,bytes=0,hookEntries=0;
+  let nodes=0,bytes=0,inflatedObjectBytes=0,hookEntries=0;
   const walk=async(target:string,name:string,source:'selected'|'shared',objects=false,optional=true):Promise<void>=>{
     const hook=name==='hooks'||name.startsWith('hooks/'),originalDirectory=gitDirectoryOriginalNames.some(root=>name===root||name.startsWith(root+'/')),gitOriginal=gitReviewOriginal('.git/'+name);
     if(gitOriginal&&source!==(gitSelectedOriginalNames.includes(name)?'selected':'shared'))throw new Error('Git review original differs from its common or selected-worktree provenance');
@@ -2102,6 +2133,11 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
     if(linked&&source==='shared'&&privateRef(refPath))return;
     if(linked&&source==='selected'&&(name.startsWith('refs/')||name.startsWith('logs/refs/'))&&!privateRef(refPath))throw new Error('Unsupported selected private Git ref storage');
     let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!originalDirectory||optional)){inventory.push({name,source,identity:'',absent:true});return;}throw error;}
+    // Ordinary local Git clones may hardlink content-addressed object files.
+    // This grants a held read of that exact object only, never metadata/write authority
+    // over its other names. Control files, hooks and cache records remain singly linked.
+    const objectData=objects&&before.isFile()&&/^objects\/[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?$/.test(name);
+    if(objectData)fsSource?.permitGitObjectRead?.(target);
     if(++nodes>20000||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git raw inventory is foreign, external or exceeds its bound');
     if(before.isDirectory()){
       if(!objects&&!originalDirectory&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
@@ -2121,8 +2157,9 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
       if(objects&&!cache&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap|keep|mtimes))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
       if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/')&&!(source==='selected'&&name==='logs/ORIG_HEAD'))reflogPath(name.slice(5));
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
-      const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:/^(?:selected-)?reftable\//.test(name)?4*1024*1024:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner,fs),after=await fs.lstat(target,{bigint:true});
+      const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:/^(?:selected-)?reftable\//.test(name)?4*1024*1024:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner,fs,objectData),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
+      if(objectData)inflatedObjectBytes+=verifyCapturedLooseObject(name,data,limit-inflatedObjectBytes);
       if(gitOriginal)inspectGitReviewOriginal(data,'.git/'+name);
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data,...(gitOriginal?{metadata:{mode:Number(after.mode&0o777n),mtimeNs:after.mtimeNs.toString()}}:{})});
