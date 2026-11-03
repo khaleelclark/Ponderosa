@@ -115,7 +115,7 @@ export function registerRequestSecurityHooks(
       // Mutations may still commit after body reception. Keep their reply alive
       // through processing; read/stream routes retain their own idle policy.
       if (request.method !== "GET" && request.method !== "HEAD") {
-        request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
+        request.raw.socket.setTimeout?.((request.routeOptions.config as {agentPackageOperation?:boolean}).agentPackageOperation ? 0 : app.server.requestTimeout || 120_000);
       }
       activeHandlers.add(request.raw);
       try {

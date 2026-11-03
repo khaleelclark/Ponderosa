@@ -1,4 +1,4 @@
-import { gzip, gunzip } from "node:zlib";
+import { gzip, gunzip, gunzipSync } from "node:zlib";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
@@ -245,4 +245,18 @@ export async function decodePortableArtifactData(artifact: ArtifactData): Promis
   } catch { throw new Error("Portable artifact gzip is corrupt or exceeds its declared decoded size"); }
   if (data.length !== expected) throw new Error("Portable artifact decoded size does not match its original");
   return { data, sha256: createHash("sha256").update(data).digest("hex") };
+}
+
+/** Canonical review metadata has synchronous validation callers. Inflate only
+ * its separately bounded original; hashing/parsing must never use gzip bytes. */
+export function decodePortableMetadataArtifact(artifact: ArtifactData): Buffer {
+  const expected = portableArtifactByteLength(artifact);
+  if (expected > 48 * 1024 * 1024) throw new Error("Reviewed user-data manifest exceeds 48 MiB");
+  let data = Buffer.from(artifact.dataBase64, "base64");
+  if (artifact.dataEncoding === "gzip") {
+    try { data = gunzipSync(data, { maxOutputLength: Math.max(1, expected) }); }
+    catch { throw new Error("Reviewed user-data gzip is corrupt or exceeds its declared original size"); }
+  }
+  if (data.length !== expected) throw new Error("Reviewed user-data original size differs");
+  return data;
 }

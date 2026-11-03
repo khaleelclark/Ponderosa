@@ -1,3 +1,4 @@
+import {decodePortableMetadataArtifact} from './agent-package-codec.js';
 import {createHash} from 'node:crypto';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
 import {portableWorkingPath,validateWorkingTopology} from './portable-working-files.js';
@@ -119,7 +120,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       let original=originalProofs.get(artifact.ref);
       if(!original){
         if(artifactBytes.get(artifact)!>48*1024*1024)throw new Error('Git association review original exceeds its bound');
-        const data=Buffer.from(artifact.dataBase64,'base64');
+        const data=decodePortableMetadataArtifact(artifact);
         original={sha256:createHash('sha256').update(data).digest('hex'),review:parseReviewedUserData(data)};originalProofs.set(artifact.ref,original);
       }
       if(original.sha256!==binding.capture.reviewSha256||original.review.git?.reftableReview!==null||!original.review.associationReview?.some(captured=>gitBindingSourceEvidence(captured)===gitBindingSourceEvidence(binding)))throw new Error('Git captured topology differs from the authoritative file-ref review original');

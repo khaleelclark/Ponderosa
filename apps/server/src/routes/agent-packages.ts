@@ -1,3 +1,4 @@
+import {decodePortableMetadataArtifact} from '../agent-package-codec.js';
 import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
 import {groupJournalAudit} from '../group-journal-audit.js';
 import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
@@ -246,7 +247,7 @@ export function registerAgentPackageRoutes(
     for(const node of owners){
       const file=node.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&node.artifacts?.find(artifact=>artifact.ref===file.artifactRef);
       if(!file||!artifact)throw new Error('Every activated root requires its authoritative reviewed original');
-      const data=Buffer.from(artifact.dataBase64,'base64');
+      const data=decodePortableMetadataArtifact(artifact);
       planReviewedUserDataActivation(data,createHash('sha256').update(data).digest('hex'),activation);
       if((selection.workingCopyMode??node.workingCopyMode??'shared')==='shared'&&selection.workingFilesActivation.sharedRoot!==project.hostPath)throw new Error('Confirm the unused NEW managed Shared root');
     }
