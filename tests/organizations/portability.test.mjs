@@ -1,3 +1,6 @@
+import {registerRequestSecurityHooks} from "../../apps/server/dist/server-request-hooks.js";
+import {withAgentImportAdmission} from "../../apps/server/dist/agent-package-codec.js";
+import {request as httpRequest} from "node:http";
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID, createHash } from 'node:crypto';
@@ -14,11 +17,12 @@ import { registerAgentPackageRoutes } from '../../apps/server/dist/routes/agent-
 
 // Reconciled from the October 16 17-assertion review. Actual routes/SQLite and
 // managed bytes, with no listener, scheduler, provider session or user profile.
-async function withPortability(t, run) {
+async function withPortability(t, run, requestLimits={handlerDeadlineMs:20,packageHandlerDeadlineMs:10000}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'ponderosa-portability-'));
   let store, assets, app, packageEngine, passed = false;
   const open = () => {
     store = new AgentStore(dataDir); assets = new AssetStore(dataDir); app = Fastify();
+    registerRequestSecurityHooks(app,{opts:{requestLimits:{maxRequestsPerMinute:100000,maxInflight:128,...requestLimits}},v3DispatchKey:'fixture',agentMessageCapabilities:new Map(),deletingAgentIds:new Set(),validLauncherSession:()=>false,artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>false});
     ({packageEngine}=registerAgentPackageRoutes(app, {
       dataDir, store, assets, workingCopies:new AgentWorkingCopyService(dataDir,store),
       coordination: { runtimeArtifact: () => undefined, handleAgentDeletion() {} },
@@ -78,7 +82,7 @@ async function withPortability(t, run) {
       headers: { 'idempotency-key': key }, payload: { package: pkg, conversationId: destination.id, engineMapping: { codex: 'codex' }, ...extra } });
     const projection = id => store.sqlite.prepare('SELECT role, text, source_kind AS sourceKind, created_at AS createdAt FROM imported_history_messages WHERE agent_id = ? ORDER BY sequence').all(id);
     await run({ dataDir, project, chat, destination, a, b, outside, artifactId, guidance, bytes, collaboration, request, ok,
-      exportAgent, copy, copyRequest, importRequest, projection, get packageEngine() { return packageEngine; }, get assets() { return assets; }, get store() { return store; },
+      exportAgent, copy, copyRequest, importRequest, projection, get packageEngine() { return packageEngine; }, get assets() { return assets; }, get store() { return store; }, get app(){return app;},
       async restart() { await close(); open(); await app.ready(); } });
     passed = true;
   } finally {
@@ -113,7 +117,7 @@ test('full organization round trips retain the reviewed contracts and one guidan
     const child = copy.agentIds.find(id => id !== copy.rootAgentId);
     assert.equal(f.store.getAgent(child).managerAgentId, copy.rootAgentId);
     assert.equal(f.store.getImportedHistory(child).messages.some(x => x.text === f.collaboration.text), true);
-    const artifact = f.store.getProjectArtifacts(f.project.id).find(x => x.originAgentId === copy.rootAgentId);
+    const artifact = f.store.getProjectArtifacts(f.project.id).find(x => x.originAgentId === copy.rootAgentId && x.sha256 === createHash('sha256').update(f.bytes).digest('hex'));
     const imported = f.store.getImportedHistory(copy.rootAgentId);
     assert.equal(imported.initialInstructions, `INITIAL_GUIDANCE ponderosa://artifact/${artifact.id}`);
     assert.equal(synthetic(f.projection(copy.rootAgentId))[0]?.text, imported.initialInstructions);
@@ -556,3 +560,34 @@ test('grouped organization import keeps explicit per-Agent access choices under 
   const child=result.agentIds.find(id=>id!==result.rootAgentId);
   assert.ok(!policies.resolveForAgent(child).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead));
 }));
+
+
+test('real global hooks retain slow owned intake and queued package processing beyond the ordinary deadline',{timeout:30000},t=>withPortability(t,async f=>{
+ const pkg=await f.exportAgent(f.a.id),key=randomUUID(),wire=Buffer.from(JSON.stringify({conversationId:f.destination.id,engineMapping:{codex:'codex'}})+'\n'+JSON.stringify(pkg));
+ const address=await f.app.listen({host:'127.0.0.1',port:0});
+ const intake=new Promise((resolve,reject)=>{const req=httpRequest(address+`/api/projects/${f.project.id}/import-agent-package`,{method:'POST',headers:{'content-type':'application/vnd.ponderosa.agent-import','content-length':wire.length,'idempotency-key':key}},response=>{const chunks=[];response.on('data',chunk=>chunks.push(chunk));response.on('end',()=>resolve({status:response.statusCode,body:Buffer.concat(chunks).toString()}));});req.on('error',reject);req.write(wire.subarray(0,32));setTimeout(()=>req.end(wire.subarray(32)),100);});
+ const response=await intake;assert.equal(response.status,201,response.body);
+ let release;const holding=withAgentImportAdmission(()=>new Promise(resolve=>{release=resolve;}));await delay(0);
+ const pending=f.request(f.copyRequest(f.a.id,randomUUID()));await delay(100);release();await holding;
+ const copied=f.ok(await pending);assert.ok(f.store.getAgent(copied.rootAgentId));
+}));
+
+test('bounded package deadline reports unknown outcome and resolves the exact durable key without duplicating copy',{timeout:30000},t=>withPortability(t,async f=>{
+ let release;const holding=withAgentImportAdmission(()=>new Promise(resolve=>{release=resolve;}));await delay(0);
+ const key=randomUUID(),input=f.copyRequest(f.a.id,key),pending=f.request(input);
+ const timed=await pending;assert.equal(timed.statusCode,504,timed.body);assert.equal(timed.json().outcome,'unknown');assert.equal(timed.json().idempotencyKey,key);
+ release();await holding;
+ let operation;for(let i=0;i<200;i++){operation=f.store.sqlite.prepare('SELECT status,result_json FROM agent_creation_operations WHERE idempotency_key=?').get(key);if(operation?.status==='completed')break;await delay(20);}
+ assert.equal(operation?.status,'completed');
+ const replay=f.ok(await f.request(input));assert.deepEqual(replay,JSON.parse(operation.result_json));
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM agent_creation_operations WHERE idempotency_key=?').get(key).n,1);
+},{handlerDeadlineMs:10,packageHandlerDeadlineMs:30}));
+
+test('oversized clipboard packages are cancelled and require the complete download path',async()=>{
+ const {readAgentPackageClipboard,AgentPackageDownloadRequired}=await import('../../apps/web/src/agent-package-clipboard.ts');
+ const original='雪🌲 exact package',bytes=new TextEncoder().encode(original);
+ assert.equal(await readAgentPackageClipboard(new Response(bytes),bytes.length),original);
+ let cancelled=false;const response=new Response(new ReadableStream({start(controller){controller.enqueue(new Uint8Array(64));},cancel(){cancelled=true;}}));
+ await assert.rejects(readAgentPackageClipboard(response,32),AgentPackageDownloadRequired);assert.equal(cancelled,true);
+ await assert.rejects(readAgentPackageClipboard(new Response('too large',{headers:{'Content-Length':'100'}}),32),AgentPackageDownloadRequired);
+});

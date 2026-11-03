@@ -1,3 +1,4 @@
+import {readAgentPackageClipboard} from "../agent-package-clipboard.js";
 import {productApiPath} from './productScope.js';
 import type { WorkspaceResourceKind } from "../resourcePreferences.js";
 import type { CollectionPageDto } from "@ponderosa/core";
@@ -297,13 +298,11 @@ async function collectCollectionPages<T>(path: string): Promise<T[]> {
   return items;
 }
 
-async function requestText(path: string, init?: RequestInit): Promise<string> {
-  const response = await fetch(productApiPath(`${API_BASE}${path}`), init);
-  if (!response.ok) {
-    throw await decodeHttpError(response, false);
-  }
-  return response.text();
+async function requestAgentPackageText(path:string):Promise<string>{
+ const response=await fetch(productApiPath(`${API_BASE}${path}`));if(!response.ok)throw await decodeHttpError(response,false);
+ return readAgentPackageClipboard(response);
 }
+
 
 function toQuery(params: Record<string, string | number | boolean | undefined>): string {
   const query = new URLSearchParams();
@@ -833,7 +832,7 @@ export const realApi = {
     return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), reviewedUserData: reviewedUserData ? JSON.stringify(reviewedUserData) : undefined, workingFiles: !organizationWorkingFolders && !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder ? 'true' : undefined, organizationWorkingFolders: mode==='full'&&organization&&organizationWorkingFolders?'true':undefined })}`);
   },
   exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false, reviewedUserData?: import('@ponderosa/core').ReviewedUserDataSelection): Promise<string> {
-    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), reviewedUserData: reviewedUserData ? JSON.stringify(reviewedUserData) : undefined, workingFiles: !organizationWorkingFolders && !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder ? 'true' : undefined, organizationWorkingFolders: mode==='full'&&organization&&organizationWorkingFolders?'true':undefined })}`);
+    return requestAgentPackageText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), reviewedUserData: reviewedUserData ? JSON.stringify(reviewedUserData) : undefined, workingFiles: !organizationWorkingFolders && !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder ? 'true' : undefined, organizationWorkingFolders: mode==='full'&&organization&&organizationWorkingFolders?'true':undefined })}`);
   },
   agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false, reviewedUserData?: import('@ponderosa/core').ReviewedUserDataSelection): string {
     return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), reviewedUserData: reviewedUserData ? JSON.stringify(reviewedUserData) : undefined, workingFiles: !organizationWorkingFolders && !wholeWorkingFolder && workingFiles.length ? JSON.stringify(workingFiles) : undefined, wholeWorkingFolder: mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder ? 'true' : undefined, organizationWorkingFolders: mode==='full'&&organization&&organizationWorkingFolders?'true':undefined, download: 1 })}`);

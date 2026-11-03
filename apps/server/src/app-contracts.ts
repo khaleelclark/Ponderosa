@@ -89,6 +89,8 @@ export interface CreateServerOptions {
     maxInflight: number;
     /** Response deadline; admission remains held until the handler settles. */
     handlerDeadlineMs?: number;
+    /** Bounded response deadline for owned package intake/queue/processing (max 20 minutes). */
+    packageHandlerDeadlineMs?: number;
   };
   /** Deterministic limits for the opaque localhost-preview transport. */
   linkPreviewScheduling?: {

@@ -215,18 +215,23 @@ export function registerRequestSecurityHooks(
     inflight += 1;
     admitted.add(request.raw);
     if (!/^\/api\/(?:workspace\/stream|agents\/[^/?]+\/stream)(?:\?|$)/u.test(request.url)) {
+      const packageOperation=(request.routeOptions.config as {agentPackageOperation?:boolean}).agentPackageOperation===true;
+      const deadlineMs=packageOperation?Math.min(20*60_000,Math.max(1,opts.requestLimits.packageHandlerDeadlineMs??20*60_000)):opts.requestLimits.handlerDeadlineMs??60_000;
       handlerDeadlines.set(request.raw, setTimeout(() => {
         if (!reply.sent) {
           deadlineResponses.add(request.raw);
           const send = reply.send;
-          void send.call(reply.code(504), { error: "request handler deadline exceeded" });
+          void send.call(reply.code(504), packageOperation?{
+            error:'Agent package response deadline exceeded. Its durable operation may still be processing. Do not start a new copy/import; retry with the same idempotency key to resolve the final result.',
+            outcome:'unknown',idempotencyKey:request.headers['idempotency-key']??null,
+          }:{ error: "request handler deadline exceeded" });
           // Explicit late sends receive the settled reply, not another send.
           // Apply only to deadline responses; ordinary double-send bugs remain
           // observable, and streams are not subject to this deadline.
           reply.send = () => reply;
           stopAttachmentUpload(request, "deadline");
         }
-      }, opts.requestLimits.handlerDeadlineMs ?? 60_000).unref());
+      }, deadlineMs).unref());
     }
   });
 

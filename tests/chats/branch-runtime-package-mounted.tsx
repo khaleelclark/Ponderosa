@@ -1,3 +1,4 @@
+import {readPackageCommand,savePackageCommand} from '../../apps/web/src/components/branches/branchPackageJournal';
 // Deferred DOM fixture. No Node/browser/provider execution or preparation authorized.
 import {createRoot} from 'react-dom/client';
 import {BranchRuntimeReadback,RuntimePrivateFacts} from '../../apps/web/src/components/branches/BranchRuntimePackageReview';
@@ -29,7 +30,7 @@ export async function branchTreePackageRecoveryRegression(){
  const owner={sourceExecutionId:'source-owner',sourceBranchId:'root-source',chatRefs:[],sha256:sha,facts:[{kind:'tree-import',key:'original',json:'{"private":"complete retained generation","state":"outcome_unknown"}',sha256:sha}]};
  const branchData:any={schema:'ponderosa.branch-runtime-data.v1',sourceBranchId:'root-source',sha256:sha,identities:{chats:{},agents:{}},owners:[owner]};
  const data:any={schema:'ponderosa.branch-runtime-tree.v1',rootSourceBranchId:'root-source',sha256:sha,branches:{'root-source':branchData,'child-source':{...branchData,sourceBranchId:'child-source',owners:[]}}};
- const pkg:any={schema:'ponderosa.branch-installation.v1',packageId:'tree-fixture',mode:'full',exportedAt:'2026-11-01T00:00:00Z',definition,parameters:{root:'original'},chats:[],agentBindings:{},limits:{},definitionTree:{rootSourceBranchId:'root-source',packageSha256:sha,sha256:treeSha,nodes:[rootNode,childNode]},executionTree:data};
+ const pkg:any={schema:'ponderosa.branch-installation.v1',packageId:'tree-fixture-'+crypto.randomUUID(),mode:'full',exportedAt:'2026-11-01T00:00:00Z',definition,parameters:{root:'original'},chats:[],agentBindings:{},limits:{},definitionTree:{rootSourceBranchId:'root-source',packageSha256:sha,sha256:treeSha,nodes:[rootNode,childNode]},executionTree:data};
  const receipt:any={schema:'ponderosa.branch-runtime-tree-import.v1',planId:'tree-plan',rootBranchId:'fresh-root',manifestSha256:sha,held:true,currentAuthority:false,dispatched:false,branchMap:{'root-source':'fresh-root','child-source':'fresh-child'},executionMap:{'source-owner':'fresh-owner'},chatMap:{},agentMap:{},frontiers:{'source-owner':{disposition:'evidence_only',reason:'Unknown native effects',idMap:{}}},reservedFrontiers:{'source-owner':{}},ownerPins:{'source-owner':{versionId:'fresh-v',bindingRevisionId:'fresh-b'}}};
  const key=`branch-package-command:${JSON.stringify([window.location.origin,currentProductScope(),pkg.packageId,null,treeSha,sha])}`,prior=localStorage.getItem(key);localStorage.removeItem(key);
  let posts=0,previews=0,statusReads=0,reads=0,opened=0,known=false,reviewed:any,definitionReceipt:any;
@@ -43,7 +44,7 @@ export async function branchTreePackageRecoveryRegression(){
    definitionReceipt={manifestSha256:treeSha,branchMap:receipt.branchMap,chatMap:{},agentMap:{},nodes:Object.fromEntries(pkg.definitionTree.nodes.map((n:any)=>[n.sourceBranchId,{...n,branchId:receipt.branchMap[n.sourceBranchId],versionId:'new-v',bindingRevisionId:'new-b',bindings:{...bindings[n.sourceBranchId],branches:Object.fromEntries(Object.entries(n.dependencies).map(([ref,source])=>[ref,receipt.branchMap[source as string]])),triggers:{}}}])),executionOwners:1,currentAuthority:false,dispatched:false,workflowEnabled:false};
    return new Response(JSON.stringify(reviewed));
   }
-  if(url.endsWith('/tree-plan/confirm')){posts++;const body=JSON.parse(String(init?.body)),saved=JSON.parse(localStorage.getItem(key)!);assert(saved.preview.id==='tree-plan'&&saved.body.acknowledgeDefinitionTreeSha256===digest&&saved.body.acknowledgeRuntimeDataSha256===sha,'original plan/body saved before effect');assert(body.acknowledgeDefinitionTreeSha256===digest&&body.acknowledgeRuntimeDataSha256===sha&&body.acknowledgeFullImport,'independent digests and full context');throw Error('Lost confirmation response');}
+  if(url.endsWith('/tree-plan/confirm')){posts++;const body=JSON.parse(String(init?.body)),saved=await readPackageCommand(key) as any;assert(saved.preview.id==='tree-plan'&&saved.body.acknowledgeDefinitionTreeSha256===digest&&saved.body.acknowledgeRuntimeDataSha256===sha,'original plan/body saved before effect');assert(body.acknowledgeDefinitionTreeSha256===digest&&body.acknowledgeRuntimeDataSha256===sha&&body.acknowledgeFullImport,'independent digests and full context');throw Error('Lost confirmation response');}
   if(url.includes('/runtime-data?branchId=fresh-root')){reads++;assert(!init?.method||init.method==='GET','saved readback is GET');return new Response(JSON.stringify({receipt,data}));}
   if(url.endsWith('/installations/tree-plan')){statusReads++;assert(!init?.method||init.method==='GET','unknown recovery is GET');if(!known)throw Error('Status temporarily unavailable');return new Response(JSON.stringify({state:'completed',branchId:'fresh-root',definitionTreeReceipt:definitionReceipt,runtimeTreeReceipt:receipt}));}
   if(url.endsWith('/branches/fresh-root'))return new Response(JSON.stringify({id:'fresh-root',name:'Tree',enabled:false}));
@@ -54,7 +55,7 @@ export async function branchTreePackageRecoveryRegression(){
   await mount();assert(!document.querySelector('input[value="original"]'),'no editable root parameters for hash-bound tree');
   for(const [source,directory] of [['root-source','/root-destination'],['child-source','/child-destination']]){const field=document.querySelector(`textarea[aria-label="Destination bindings JSON: ${source}"]`)??Array.from(document.querySelectorAll('textarea')).find(t=>t.id===document.querySelector(`label[for="${t.id}"]`)?.getAttribute('for')&&document.querySelector(`label[for="${t.id}"]`)?.textContent?.includes(source));assert(field,source);const value=JSON.stringify({agents:{},directories:{workspace:directory},engines:{default:'claude'}});Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(field,value);field!.dispatchEvent(new Event('input',{bubbles:true}));await settle();}
   await click('Review changes');const confirm=()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Confirm import')!;assert(confirm().disabled,'independent consents required');
-  await acknowledge('every Branch definition');assert(confirm().disabled,'definition alone is insufficient');await acknowledge('all private runtime facts');assert(confirm().disabled,'runtime hashes do not replace full context');await acknowledge('imported Agent context and files');await click('Confirm import');assert(posts===1&&localStorage.getItem(key),'unknown original retained');assert(opened===0,'unknown cannot open');
+  await acknowledge('every Branch definition');assert(confirm().disabled,'definition alone is insufficient');await acknowledge('all private runtime facts');assert(confirm().disabled,'runtime hashes do not replace full context');await acknowledge('imported Agent context and files');await click('Confirm import');assert(posts===1&&Boolean(await readPackageCommand(key)),'unknown original retained');assert(opened===0,'unknown cannot open');
   root.unmount();root=createRoot(host);known=true;await mount();assert(posts===1&&previews===1&&statusReads>0,'remount original status GET without preview/confirm replay');assert(opened===0,'completion does not adopt or open runtime data');await click('Acknowledge saved definition-tree receipt');assert(opened===0,'definition receipt alone cannot open');await click('Read saved runtime data');assert(reads===1&&document.body.textContent?.includes('complete retained generation'),'exact tree facts available');await click('Acknowledge held runtime receipt');assert(opened===1&&posts===1,'deliberate exact saved receipts permit navigation only');
  }finally{root.unmount();host.remove();globalThis.fetch=original;if(prior===null)localStorage.removeItem(key);else localStorage.setItem(key,prior);}
 }
@@ -66,4 +67,18 @@ export async function reopenedTreeOwnerReadbackRegression(){
  globalThis.fetch=async(input,init)=>{assert(!init?.method||init.method==='GET','reopened held owner has no mutation');gets++;const url=String(input);if(url.endsWith('/installations/owner-plan'))return new Response(JSON.stringify({state:'completed',runtimeTreeReceipt:receipt}));assert(url.includes('/runtime-data?branchId=fresh-root'),'child uses actual installation root from status; never guessed child root');return new Response(JSON.stringify({receipt,data}));};
  try{root.render(<BranchRuntimeOwnerReadback planId="owner-plan" branchId="fresh-child" executionId="fresh-owner" sourceExecutionId="old-child" manifestSha256={sha}/>);await settle();assert(gets===0,'no automatic private-data read');const click=async(text:string)=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent===text)!.click();await settle();};await click('Inspect original installation status');await click('Read saved runtime data');assert(gets===2&&document.body.textContent?.includes('Unknown leaf')&&document.body.textContent?.includes('counters'),'schema tree and complete private leaf retained with held semantics');assert(!Array.from(document.querySelectorAll('button')).some(b=>/Confirm import|Run|Resume/.test(b.textContent??'')),'no execution authority or import replay');}
  finally{root.unmount();host.remove();globalThis.fetch=original;}
+}
+
+export async function branchPackageJournalRegression(){
+ const key='package-journal-regression:'+crypto.randomUUID(),command={package:{history:'x'.repeat(6*1024*1024)},preview:{id:'original'},body:{confirm:true}};
+ await savePackageCommand(key,command,()=>false);
+ const retained=await readPackageCommand(key) as typeof command;
+ assert(retained.package.history===command.package.history,'complete package above localStorage quota survives');
+ let refused=false;
+ try{await savePackageCommand(key,{...command,preview:{id:'replacement'}},()=>false);}catch{refused=true;}
+ assert(refused&&(await readPackageCommand(key) as typeof command).preview.id==='original','conflicting command never replaces original');
+ const legacyKey=key+':legacy';
+ localStorage.setItem(legacyKey,JSON.stringify({original:'legacy'}));
+ try{assert((await readPackageCommand(legacyKey) as any).original==='legacy','earlier exact commands remain recoverable');}
+ finally{localStorage.removeItem(legacyKey);}
 }

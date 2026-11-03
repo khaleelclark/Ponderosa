@@ -67,3 +67,12 @@ test('definition receipt normalizes only omitted versus empty secret bindings',(
  assert.ok(definitionReceiptMatches(receipt,source,'fresh-root'));
  for(const configuration of [{limits:{different:true}},{limits:{},secretBindings:{unexpected:'secret-ref'}}]){const nodes={...receipt.nodes,'source-branch':{...receipt.nodes['source-branch'],configuration}};assert.equal(definitionReceiptMatches({...receipt,nodes},source,'fresh-root'),false)}
 });
+
+import {samePackageValue} from '../../apps/web/src/components/branches/branchRuntimePackage.ts';
+test('exact command equality traverses package data without whole-document strings',()=>{
+ const original={history:['unchanged'],nested:{z:1,a:[true,null]},__proto__:null};
+ assert.ok(samePackageValue(original,{nested:{a:[true,null],z:1},history:['unchanged']}));
+ assert.equal(samePackageValue(original,{nested:{a:[true,null],z:1},history:['changed']}),false);
+ assert.equal(samePackageValue([],{}),false);
+ assert.equal(samePackageValue([1],[1,2]),false);
+});

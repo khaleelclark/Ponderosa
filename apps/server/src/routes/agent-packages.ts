@@ -824,8 +824,7 @@ export function registerAgentPackageRoutes(
       // 10,000 separately admitted archives before the export can be refused.
       // These values are a lower bound of the eventual package's JSON bytes.
       const messages = mode === "template" ? [] : imported.messages;
-      const importedInstructions = (agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance) !== undefined
-        ? undefined : imported.initialInstructions;
+      const importedInstructions = imported.initialInstructions;
       if (mode !== "template") retainedImportedBytes += agentPackageJsonUtf8Bytes(messages);
       if (importedInstructions !== undefined) retainedImportedBytes += agentPackageJsonUtf8Bytes(importedInstructions);
       if (retainedImportedBytes > AGENT_PACKAGE_MAX_BYTES) throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} (${retainedImportedBytes} serialized UTF-8 bytes)`);
@@ -1030,8 +1029,8 @@ export function registerAgentPackageRoutes(
         ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?rootReviewedSelection:undefined,retainedOriginal,gitCapture):undefined;
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');for(const artifact of workingFiles.artifacts)artifacts.push(admitArtifact(artifact));reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
-      const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance
-        ?? importedHistories.get(agent.id)?.initialInstructions;
+      const initialInstructions = importedHistories.get(agent.id)?.initialInstructions
+        ?? agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance;
       const portableAgent: AgentPortablePackageDto["agents"][number] = {
         ref: agent.id,
         title: agent.title,
@@ -1207,7 +1206,7 @@ export function registerAgentPackageRoutes(
       reviewedUserData?:string;
       gitStorageBindings?:string;
     };
-  }>("/api/agents/:id/export", { onRequest: packageOperation }, async (request, reply) => withAgentImportAdmission(async () => {
+  }>("/api/agents/:id/export", { onRequest: packageOperation,config:{agentPackageOperation:true} }, async (request, reply) => withAgentImportAdmission(async () => {
     const requestedMode: AgentExportMode = ["template", "context", "full"]
       .includes(request.query.mode ?? "")
       ? request.query.mode!
@@ -2267,7 +2266,7 @@ export function registerAgentPackageRoutes(
     scope.addContentTypeParser("application/json", stagedImportParser(true));
     scope.post<{ Params: { id: string }; Headers: { "idempotency-key"?: string }; Body: StagedImportUpload }>(
       "/api/projects/:id/import-agents",
-      { bodyLimit: maximumJsonImportBytes, preHandler: claimUpload, onRequest: packageOperation },
+      { bodyLimit: maximumJsonImportBytes, preHandler: claimUpload, onRequest: packageOperation,config:{agentPackageOperation:true} },
       (request, reply) => importStagedPackage(request, reply, true),
     );
   });
@@ -2442,7 +2441,7 @@ export function registerAgentPackageRoutes(
       return finalized;
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
-  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-access-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation},async(request,reply)=>{
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-access-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
     try{
       if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
       const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
@@ -2453,7 +2452,7 @@ export function registerAgentPackageRoutes(
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
     finally{await cleanupUpload(request.body);}
   });
-  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-role-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation},async(request,reply)=>{
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-role-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
     try{
       if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
       const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
@@ -2472,7 +2471,7 @@ export function registerAgentPackageRoutes(
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/agent-import-operations",
-    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true} },
     async (request, reply) => withProjectImportLock(request.params.id, async () => {
       const staged = request.body;
       let transferredReservation = false;
@@ -2605,7 +2604,7 @@ export function registerAgentPackageRoutes(
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/import-agent-package",
-    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation,config:{agentPackageOperation:true} },
     (request, reply) => importStagedPackage(request, reply),
   );
 
@@ -2615,7 +2614,7 @@ export function registerAgentPackageRoutes(
     Body: CopyAgentPackageRequest;
   }>(
     "/api/projects/:id/copy-agent",
-    { bodyLimit: 64 * 1024, onRequest: packageOperation },
+    { bodyLimit: 64 * 1024, onRequest: packageOperation,config:{agentPackageOperation:true} },
     async (request, reply) => withAgentImportAdmission(async () => {
       await operationHydration;
       const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);

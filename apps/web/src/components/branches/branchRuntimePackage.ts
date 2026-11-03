@@ -59,6 +59,23 @@ export function definitionReceiptMatches(v:unknown,pkg:InstalledBranchPackage,ro
 }
 export type SavedPackageCommand={package:InstalledBranchPackage;branchId?:string;preview:BranchInstallationPreviewDto;treeBytes:Record<string,string>;body:{acknowledgeFullImport:boolean;acknowledgeMemoryUpdate:boolean;acknowledgeRuntimeDataSha256?:string;acknowledgeDefinitionTreeSha256?:string}};
 export function savedPackageCommandMatches(value:unknown,pkg:InstalledBranchPackage,branchId?:string):value is SavedPackageCommand{
- if(!object(value)||canonical(value.package)!==canonical(pkg)||value.branchId!==branchId||!object(value.preview)||!text(value.preview.id)||!object(value.treeBytes)||!Object.values(value.treeBytes).every(v=>typeof v==='string')||!object(value.body)||value.body.acknowledgeFullImport!==true)return false;
+ if(!object(value)||!samePackageValue(value.package,pkg)||value.branchId!==branchId||!object(value.preview)||!text(value.preview.id)||!object(value.treeBytes)||!Object.values(value.treeBytes).every(v=>typeof v==='string')||!object(value.body)||value.body.acknowledgeFullImport!==true)return false;
  try{const preview=value.preview as unknown as BranchInstallationPreviewDto;return !runtimePackageReviewError(pkg,preview,branchId,pkg.definitionTree?parseTreeBindings(pkg,value.treeBytes as Record<string,string>):undefined)&&(!preview.runtimeDataReview||value.body.acknowledgeRuntimeDataSha256===preview.runtimeDataReview.manifestSha256)&&(!preview.definitionTreeReview||value.body.acknowledgeDefinitionTreeSha256===preview.definitionTreeReview.reviewSha256)}catch{return false}
+}
+
+/** Compare admitted JSON without building a second whole-package string. */
+export function samePackageValue(left: unknown, right: unknown): boolean {
+ const pending: Array<[unknown,unknown]> = [[left,right]];
+ while(pending.length){
+  const [a,b]=pending.pop()!;
+  if(a===b)continue;
+  if(!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b))return false;
+  const ak=Object.keys(a),bk=Object.keys(b);
+  if(ak.length!==bk.length)return false;
+  for(const key of ak){
+   if(!Object.prototype.hasOwnProperty.call(b,key))return false;
+   pending.push([(a as Record<string,unknown>)[key],(b as Record<string,unknown>)[key]]);
+  }
+ }
+ return true;
 }

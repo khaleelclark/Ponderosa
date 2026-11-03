@@ -1,3 +1,4 @@
+import {AgentPackageDownloadRequired} from "../agent-package-clipboard";
 import { api } from "../api";
 import { copyDeferredText } from "../clipboard";
 import { useMutationNotification } from "./MutationNotifications";
@@ -30,6 +31,12 @@ export function useAgentPackageActions({
       );
       notify({ key: "copy-agent-package", message: "Copied" });
     } catch (error) {
+      if(error instanceof AgentPackageDownloadRequired){
+        await downloadAgentPackage(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData);
+        notify({key:'copy-agent-package',message:'Complete package download started. Import the downloaded file; nothing was truncated for the clipboard.'});
+        return;
+      }
+
       notify({ key: "copy-agent-package", severity: "error", message: error instanceof Error
         ? `Agent package JSON could not be copied: ${error.message}`
         : "Agent package JSON could not be copied." });
