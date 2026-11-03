@@ -5,7 +5,7 @@ import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import type {AgentPortablePackageDto,PortableGitStorageBinding,ReviewedUserData,ReviewedUserDataActivation,PortableArtifactDto} from '@ponderosa/core';
 import {compileReviewedGitConfiguration} from './portable-git-configuration.js';
-import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings} from './portable-reviewed-user-data.js';
+import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,planReviewedUserDataActivation,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings} from './portable-reviewed-user-data.js';
 
 type RecoveryTask={ref:string;destination:string;data:Buffer;sha256:string;value:ReviewedUserData;configuration?:ReturnType<typeof compileReviewedGitConfiguration>;layout?:{commonDir:string;privateDir:string;commonRoot:string}};
 type RecoveryReceipt={ref:string;path:string;originalSha256:string;selection:ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{code?:string;partialStatePossible:boolean;observed:unknown}};
@@ -45,6 +45,10 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
       if(path.dirname(privateDir)!==path.join(commonDir,'worktrees')||privateDir===task.destination||commonDir===task.destination)throw new Error('Destination Git storage must retain its declared common/worktrees/private topology');
       task.layout={commonDir,privateDir,commonRoot:destinations[common.storageRootRef]!};
     }else if(activation.git&&value.associationReview)throw new Error('Retained mapped originals require their complete original package binding set');
+    else if(activation.git&&selectedWorktreeReftable(value.git!)){
+      const commonDir=path.join(task.destination,'.ponderosa-portable-review','native-git-common');
+      task.layout={commonDir,privateDir:path.join(commonDir,'worktrees','imported'),commonRoot:task.destination};
+    }
     tasks.push(task);
   }
   if(activation.git){
@@ -64,7 +68,8 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
     const {commonDir,privateDir}=task.layout!;
     if(privatePaths.has(privateDir))throw new Error('Two selected worktrees cannot claim the same destination private Git directory');privatePaths.add(privateDir);
     const git=task.value.git!;
-    const signature=JSON.stringify({format:git.format,reftable:git.reftableReview,objects:git.objects,refs:git.refs.filter(ref=>!privateRef(ref.name)),reflogs:git.reflogs.filter(log=>log.path!=='HEAD'&&!privateRef(log.path)),configuration:git.configurationOriginalReview[0],activeConfiguration:task.configuration?.common.toString('base64'),includes:task.configuration?.includeFiles?.filter(file=>!file.private).map(file=>({path:file.path,data:file.data.toString('base64')})),info:git.infoReview,shallow:git.shallowReview,retention:git.packRetentionReview,originals:task.value.providerFiles.filter(file=>file.path.startsWith('.git/')&&!['COMMIT_EDITMSG','SQUASH_MSG','TAG_EDITMSG','MERGE_MSG','EDIT_DESCRIPTION'].includes(file.path.slice(5)))});
+    const sharedReftable=git.reftableReview?{source:git.reftableReview.source,tablesListBase64:git.reftableReview.tablesListBase64,tables:git.reftableReview.tables}:null;
+    const signature=JSON.stringify({format:git.format,reftable:sharedReftable,objects:git.objects,refs:git.refs.filter(ref=>!privateRef(ref.name)),reflogs:git.reflogs.filter(log=>log.path!=='HEAD'&&!privateRef(log.path)),configuration:git.configurationOriginalReview[0],activeConfiguration:task.configuration?.common.toString('base64'),includes:task.configuration?.includeFiles?.filter(file=>!file.private).map(file=>({path:file.path,data:file.data.toString('base64')})),info:git.infoReview,shallow:git.shallowReview,retention:git.packRetentionReview,originals:task.value.providerFiles.filter(file=>file.path.startsWith('.git/')&&!['COMMIT_EDITMSG','SQUASH_MSG','TAG_EDITMSG','MERGE_MSG','EDIT_DESCRIPTION'].includes(file.path.slice(5)))});
     if(signatures.has(commonDir)&&signatures.get(commonDir)!==signature)throw new Error('Selected common repository originals disagree; no destination has been changed');
     signatures.set(commonDir,signature);
   }

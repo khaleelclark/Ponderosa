@@ -267,9 +267,14 @@ function validateNativeGitSelection(value:ReviewedUserData,mapped=false,activati
 
 /** Create directly into an empty NEW owned root, never replace a generated .git. */
 export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>};
+type SelectedWorktreeReftable={tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
+export function selectedWorktreeReftable(value:ReviewedGitUserData):SelectedWorktreeReftable|undefined {
+  return (value.reftableReview as (NonNullable<ReviewedGitUserData['reftableReview']>&{selectedWorktree?:SelectedWorktreeReftable})|null)?.selectedWorktree;
+}
 export async function createReviewedNativeGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation,configuration?:NativeReviewedGitConfiguration):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
   const value=planReviewedUserDataActivation(original,sha256,activation);
   if(!activation.git||!value.git)throw new Error('Explicit native Git selection is required');
+  if(selectedWorktreeReftable(value.git))throw new Error('Selected-worktree reftable requires fresh common/private native initialization');
   if(!configuration&&reviewedGitConfiguration(value,activation).includes.length)throw new Error('Native external includes require their complete transported configuration closure');
   return writeReviewedGit(root,value.git,value,undefined,false,configuration??reviewedGitConfiguration(value,activation));
 }
@@ -2242,7 +2247,16 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     if(value.shallowReview.dataBase64!==null)await write('shallow',Buffer.from(value.shallowReview.dataBase64,'base64'));
     for(const log of value.reflogs)await write(`logs/${log.path}`,Buffer.from(log.dataBase64,'base64'));
     if(!value.reftableReview)for(const ref of value.refs)await write(ref.name,ref.symbolic?`ref: ${ref.symbolic}\n`:`${ref.oid}\n`);
-    if(value.reftableReview){await write('reftable/tables.list',Buffer.from(value.reftableReview.tablesListBase64,'base64'));for(const table of value.reftableReview.tables)await write('reftable/'+table.name,Buffer.from(table.dataBase64,'base64'));}
+    if(value.reftableReview){
+      await write('reftable/tables.list',Buffer.from(value.reftableReview.tablesListBase64,'base64'),undefined,true);
+      for(const table of value.reftableReview.tables)await write('reftable/'+table.name,Buffer.from(table.dataBase64,'base64'),undefined,true);
+      const selected=selectedWorktreeReftable(value);
+      if(native&&selected){
+        if(!layout)throw new Error('Selected-worktree reftable requires distinct common/private destination storage');
+        await write('reftable/tables.list',Buffer.from(selected.tablesListBase64,'base64'),undefined,false,true);
+        for(const table of selected.tables)await write('reftable/'+table.name,Buffer.from(table.dataBase64,'base64'),undefined,false,true);
+      }
+    }
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
     if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
     if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':'')]));else
