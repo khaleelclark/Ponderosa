@@ -1,3 +1,5 @@
+import {lifecycleDiscoveryPage} from './lifecycle-discovery.js';
+import type {LifecycleDiscoveryQuery} from '@ponderosa/core';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import fs from '@ponderosa/native-host/fs';
@@ -32,7 +34,10 @@ export function checkpointCustodyLifecycle(directory:string,proof:CustodyLifecyc
  };
  const sync=(name:string)=>{if(process.platform!=='win32'){const fd=fs.openSync(name,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}};
  return {
-  list:()=>[...new Set(fs.readdirSync(directory).flatMap(name=>/^([a-f0-9]{64})\./.exec(name)?.[1]??[]))].sort().slice(0,1000),
+  list:(query:LifecycleDiscoveryQuery={})=>{
+   let names:string[];try{names=fs.readdirSync(directory);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;names=[];}
+   return lifecycleDiscoveryPage('checkpoint-custody',[...new Set(names.flatMap(name=>/^([a-f0-9]{64})\./.exec(name)?.[1]??[]))].map(id=>({key:id,value:id})),query);
+  },
   review,
   reconcile(id:string,input:CheckpointCustodyReconcileInput):CheckpointCustodyReconcileReceipt{
    valid(id);if(typeof input.commandKey!=='string'||!input.commandKey||input.commandKey.length>256||typeof input.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(input.reviewSha256)||input.preserveEvidence!==true)throw Error('Explicit evidence-preserving reconciliation command required');

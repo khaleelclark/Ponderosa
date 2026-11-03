@@ -1,3 +1,4 @@
+import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
 import {groupJournalAudit} from '../group-journal-audit.js';
 import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
 import {lifecycleDiscovery} from '../lifecycle-discovery.js';
@@ -190,7 +191,9 @@ export function registerAgentPackageRoutes(
   const checkpointCustody=checkpointPackageCustody(context.dataDir);
   const lifecycle=checkpointCustodyLifecycle(path.join(context.dataDir,'checkpoint-package-custody'),(source,id)=>custodyLifecycleProof(context.store.sqlite,source,id,context.custodyOwner()));
   // Inherits the operator origin/capability boundary; reconciliation is never an Agent tool.
-  app.get('/api/lifecycle/checkpoint-custody',()=>lifecycle.list());
+  app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>('/api/lifecycle/checkpoint-custody',(request,reply)=>{
+    try{return lifecycle.list(request.query);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:{id:string}}>('/api/lifecycle/checkpoint-custody/:id',(request,reply)=>{
     try{return context.store.sqlite.transaction(()=>lifecycle.review(request.params.id))();}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
@@ -535,10 +538,9 @@ export function registerAgentPackageRoutes(
   app.get<{Params:{id:string}}>('/api/lifecycle/agent-imports/:id',async(request,reply)=>{
     try{return (await importLifecycleReview(request.params.id)).dto;}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
-  app.get('/api/lifecycle/agent-imports/orphan-evidence',async()=>{
-    await operationHydration;const directory=path.join(importOperationDirectory,'retained-orphans');
-    const names=await fs.readdir(directory).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error;});
-    return Promise.all(names.sort().slice(0,1000).map(async name=>{const stat=await fs.lstat(path.join(directory,name));return {name,byteLength:stat.size,regular:stat.isFile()&&!stat.isSymbolicLink(),state:'preserved_unresolved' as const};}));
+  app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>('/api/lifecycle/agent-imports/orphan-evidence',async(request,reply)=>{
+    try{await operationHydration;return await retainedOrphanDiscovery(path.join(importOperationDirectory,'retained-orphans'),request.query);}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.post<{Params:{id:string};Body:import('@ponderosa/core').AgentImportLifecycleReconcileInput}>('/api/lifecycle/agent-imports/:id/reconcile',(request,reply)=>withAgentImportAdmission(async()=>{
     try{

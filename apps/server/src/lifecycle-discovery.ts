@@ -7,20 +7,10 @@ import {lifecycleHash} from './lifecycle-journal.js';
 type Row=Record<string,any>;
 const text=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=512;
 const hash=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
-/** Read-only operator audit. No hydration/quarantine, policy changes, effect inference or package reads. */
-export function lifecycleDiscovery(context:{db:Database.Database;dataDir:string;validateImport:(value:unknown,id:string)=>AgentImportOperationDto;owner:()=>BranchCustodyLifecycle;readRetirement:(id:string,group:boolean)=>unknown}){
- const db=context.db;
- const rows=(table:string,where='1')=>{
-  const columns=(db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).filter(column=>/TEXT/i.test(column.type));
-  const lengths=columns.map(column=>{if(!/^[a-z0-9_]+$/.test(column.name))throw Error('Unknown audit column');return `COALESCE(length(${column.name}),0)`;}).join('+')||'0';
-  const size=db.prepare(`SELECT count(*) count,COALESCE(sum(${lengths}),0) bytes FROM ${table} WHERE ${where}`).get() as {count:number;bytes:number};
-  if(size.count>4096||size.bytes>16*1024*1024)throw Error('Lifecycle discovery inventory exceeds bound');
-  const result=db.prepare(`SELECT * FROM ${table} WHERE ${where} ORDER BY rowid LIMIT 4097`).all() as Row[];
-  if(result.length>4096||Buffer.byteLength(stableJson(result))>16*1024*1024)throw Error('Lifecycle discovery inventory exceeds bound');return result;
- };
- const parse=(bytes:string)=>{try{return JSON.parse(bytes);}catch{throw Error('Invalid retained lifecycle metadata; evidence remains held');}};
- const canonical=(bytes:string)=>{const value=parse(bytes);if(stableJson(value)!==bytes)throw Error('Noncanonical lifecycle discovery evidence');return value;};
- const page=<T>(kind:string,items:{key:string;value:T}[],query:LifecycleDiscoveryQuery):LifecycleDiscoveryPage<T>=>{
+/** Bounded read-only inventories share exact revision-bound cursors; overflow is explicit. */
+export function lifecycleDiscoveryPage<T>(kind:string,items:{key:string;value:T}[],query:LifecycleDiscoveryQuery):LifecycleDiscoveryPage<T>{
+ const parse=(bytes:string)=>{try{return JSON.parse(bytes);}catch{throw Error('Invalid lifecycle cursor');}};
+
   if(items.length>4096)throw Error('Lifecycle discovery inventory exceeds bound');
   const limit=query.limit===undefined?50:Number(query.limit);
   if(!Number.isSafeInteger(limit)||limit<1||limit>100||Object.keys(query).some(key=>!['cursor','limit'].includes(key)))throw Error('Bounded lifecycle cursor/limit required');
@@ -35,7 +25,22 @@ export function lifecycleDiscovery(context:{db:Database.Database;dataDir:string;
   }
   const selected=items.slice(start,start+limit),hasMore=start+selected.length<items.length;
   return {items:selected.map(item=>item.value),revision,...(hasMore?{nextCursor:Buffer.from(stableJson({kind,revision,after:selected.at(-1)!.key})).toString('base64url')}:{})};
+
+}
+/** Read-only operator audit. No hydration/quarantine, policy changes, effect inference or package reads. */
+export function lifecycleDiscovery(context:{db:Database.Database;dataDir:string;validateImport:(value:unknown,id:string)=>AgentImportOperationDto;owner:()=>BranchCustodyLifecycle;readRetirement:(id:string,group:boolean)=>unknown}){
+ const db=context.db;
+ const rows=(table:string,where='1')=>{
+  const columns=(db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).filter(column=>/TEXT/i.test(column.type));
+  const lengths=columns.map(column=>{if(!/^[a-z0-9_]+$/.test(column.name))throw Error('Unknown audit column');return `COALESCE(length(${column.name}),0)`;}).join('+')||'0';
+  const size=db.prepare(`SELECT count(*) count,COALESCE(sum(${lengths}),0) bytes FROM ${table} WHERE ${where}`).get() as {count:number;bytes:number};
+  if(size.count>4096||size.bytes>16*1024*1024)throw Error('Lifecycle discovery inventory exceeds bound');
+  const result=db.prepare(`SELECT * FROM ${table} WHERE ${where} ORDER BY rowid LIMIT 4097`).all() as Row[];
+  if(result.length>4096||Buffer.byteLength(stableJson(result))>16*1024*1024)throw Error('Lifecycle discovery inventory exceeds bound');return result;
  };
+ const parse=(bytes:string)=>{try{return JSON.parse(bytes);}catch{throw Error('Invalid retained lifecycle metadata; evidence remains held');}};
+ const canonical=(bytes:string)=>{const value=parse(bytes);if(stableJson(value)!==bytes)throw Error('Noncanonical lifecycle discovery evidence');return value;};
+ const page=lifecycleDiscoveryPage;
  const owner=(projectId:string,conversationId:string):LifecycleImportEntry['owner']=>{
   if(!text(projectId)||!text(conversationId))throw Error('Original lifecycle owner required');
   const project=db.prepare('SELECT id FROM projects WHERE id=?').get(projectId),projectDeletion=db.prepare('SELECT project_id FROM project_deletion_receipts WHERE project_id=?').get(projectId);
