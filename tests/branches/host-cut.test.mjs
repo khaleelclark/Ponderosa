@@ -529,12 +529,15 @@ test('historical question and fresh answer survive another import and recapture 
  assert.equal(replay().id,second.id);
 });
 for(const parallel of [false,true])test(`restored issued ${parallel?'parallel':'serial'} owner tree recaptures one shared canonical graph`,async t=>{
- const f=await treeIssuedFixture(t,{parallel,shared:parallel}),first=f.rewind(),capture=retainRecaptured(f,first.id);
+ const f=await treeIssuedFixture(t,{parallel,shared:parallel}),first=f.rewind();
+ await f.branches.unitSaver.drain(); // Every descendant must have a committed checkpoint before tree recapture.
+ const capture=retainRecaptured(f,first.id);
  const {retainedBranchHostGraph}=await import('../../packages/agents/dist/branch-tree-host-cut.js'),graph=retainedBranchHostGraph(capture.saved,first.id);
  assert.equal(graph.cut.provenance.restorations.length,1);
  if(f.dependency){const line=JSON.parse(f.db.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.tree-rewind-lineage.v1'").get(first.id).snapshot_json);f.coordination.updateRequest({requestId:line.coordination.requestMap[f.dependency.requestIds[0]],updateId:'recapture-tree-dependency',kind:'completed',actor:{kind:'agent',id:f.peer.id},payload:{text:'Dependency reconciled'}});}
  await f.finish(first.id);f.db.prepare("UPDATE agent_activations SET state='cancelled' WHERE state IN ('pending','retry_pending')").run();
  const rewind=rewindRecaptured(f,first.id,capture.selection,'recaptured-tree'),second=rewind();assert.equal(rewind().id,second.id);
+ await f.branches.unitSaver.drain();
  retainRecaptured(f,second.id);
 });
 for(const tamper of ['origin','receipt','source-cut','missing-proof','kind','payload'])test(`recapture refuses ${tamper} provenance before another restoration`,async t=>{
@@ -566,7 +569,9 @@ for(const shape of ['map','fork','mixed'])for(const mode of ['async','sync','exi
  await f.finish(second.id);assert.equal(rewind().id,second.id);
 });
 test('recaptured tree union refuses conflicting immutable origin evidence across owners',async t=>{
- const f=await treeIssuedFixture(t,{parallel:true,shared:true}),first=f.rewind(),capture=retainRecaptured(f,first.id),{payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js'),{retainedBranchHostGraph}=await import('../../packages/agents/dist/branch-tree-host-cut.js');
+ const f=await treeIssuedFixture(t,{parallel:true,shared:true}),first=f.rewind();
+ await f.branches.unitSaver.drain();
+ const capture=retainRecaptured(f,first.id),{payloadHash}=await import('../../packages/agents/dist/coordination-v3-canonical-json.js'),{retainedBranchHostGraph}=await import('../../packages/agents/dist/branch-tree-host-cut.js');
  const owners=capture.saved.continuation.owners.filter(o=>o.hostDependencies?.provenance?.origins.length);
  assert.ok(owners.length>=2);const shared=owners[0].hostDependencies.provenance.origins.find(e=>owners[1].hostDependencies.provenance.origins.some(other=>other.row.update_id===e.row.update_id));assert.ok(shared);
  const changed=owners[1].hostDependencies.provenance.origins.find(e=>e.row.update_id===shared.row.update_id);changed.row.source_payload_hash='0'.repeat(64);changed.sha256=payloadHash(changed.row);owners[1].hostDependenciesHash=payloadHash(owners[1].hostDependencies);
