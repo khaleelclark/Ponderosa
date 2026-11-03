@@ -2482,6 +2482,12 @@ napi_value ApplyExactFileMetadata(napi_env env, napi_callback_info info) {
       !ReadUtf8(env, kind_value, &kind) || (kind != "file" && kind != "directory")) {
     ThrowCode(env, "ERR_EXACT_METADATA_INPUT", "Invalid exact file metadata input"); return nullptr;
   }
+  uint64_t selected_links=1;bool has_selected_links=false;
+  if(napi_has_named_property(env,args[0],"expectedLinkCount",&has_selected_links)!=napi_ok){ThrowCode(env,"ERR_EXACT_METADATA_INPUT","Invalid selected link count");return nullptr;}
+  if(has_selected_links){
+    napi_value value;bool exact=false;
+    if(napi_get_named_property(env,args[0],"expectedLinkCount",&value)!=napi_ok||napi_get_value_bigint_uint64(env,value,&selected_links,&exact)!=napi_ok||!exact||selected_links<1||selected_links>10000){ThrowCode(env,"ERR_EXACT_METADATA_INPUT","Invalid bounded selected link count");return nullptr;}
+  }
 #ifdef _WIN32
   // Node/retained descriptors use libuv's handle table, never this addon's CRT.
   if (RuntimeDescriptorHandle(static_cast<int>(fd_number)) == -1) {
@@ -2515,7 +2521,7 @@ napi_value ApplyExactFileMetadata(napi_env env, napi_callback_info info) {
   if (fstat(fd, &before) != 0) { ThrowCode(env, "ERR_EXACT_METADATA_STAT", std::string("fstat before metadata: ") + std::strerror(errno)); return nullptr; }
   auto identity_matches = [&](const struct stat& st) {
     return static_cast<uint64_t>(st.st_dev) == device && static_cast<uint64_t>(st.st_ino) == inode &&
-        (kind == "file" ? S_ISREG(st.st_mode) && st.st_nlink == 1 : S_ISDIR(st.st_mode));
+        (kind == "file" ? S_ISREG(st.st_mode) && static_cast<uint64_t>(st.st_nlink) == selected_links : S_ISDIR(st.st_mode));
   };
   if (!identity_matches(before)) {
     ThrowCode(env, "ERR_EXACT_METADATA_IDENTITY", "Descriptor kind, device, inode or single-link requirement differs"); return nullptr;

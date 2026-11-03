@@ -9,6 +9,8 @@ import {crc32,deflateSync,inflateSync} from 'node:zlib';
 import type {ReviewedGitUserData,ReviewedUserData,ReviewedUserDataSelection,ReviewedUserDataActivation,ReviewedMetadataActivation,GitStorageSelection,PortableGitStorageBinding} from '@ponderosa/core';
 import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnostic,withoutPortableSecrets} from './portable-secrets.js';
 
+import {captureFilesystemMetadata,validateFilesystemMetadata} from './portable-filesystem-metadata.js';
+
 const sourceFs=fs;
 type GitSourceFs=Pick<typeof sourceFs,'lstat'|'realpath'|'open'|'readdir'>;
 
@@ -147,10 +149,9 @@ export function validateReviewedMetadataActivation(value:unknown):asserts value 
   }
 }
 
-/** Fail before mutation until authoritative evidence and current provenance/custody are connected. */
-export function requireReviewedMetadataApplication(value:unknown):never {
+/** The caller still binds this human choice to original evidence and a fresh destination. */
+export function requireReviewedMetadataApplication(value:unknown):asserts value is ReviewedMetadataActivation {
   validateReviewedMetadataActivation(value);
-  throw new Error('Reviewed metadata application is unsupported: authoritative per-node metadata, observed destination provenance and exclusive custody are not yet connected');
 }
 export function validateReviewedUserDataActivation(value:unknown):asserts value is ReviewedUserDataActivation {
   fields(value,['git','harness'],['gitPathMappings']);
@@ -736,7 +737,7 @@ function configSource(data:Buffer,source?:'config.worktree'):{items:ReviewedGitU
 export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   if(data.length>48*1024*1024)throw new Error('Reviewed user-data manifest exceeds its bound');
   const value=JSON.parse(text(data)) as ReviewedUserData;
-  fields(value,['version','activation','selection','recreationScope','providerFiles','providerDirectories','exclusions'],['git','associationReview']);
+  fields(value,['version','activation','selection','recreationScope','providerFiles','providerDirectories','exclusions'],['git','associationReview','filesystemMetadata']);
   if(value.associationReview!==undefined){
     if(!value.selection?.git||!Array.isArray(value.associationReview))throw new Error('Git association evidence requires the original Git selection');
     const roots=new Set(value.associationReview.flatMap(binding=>binding.capture?.roots.map(root=>root.rootRef)??[]));
@@ -746,7 +747,10 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   if(!value||value.version!==1||value.activation!=='inert_review_only'||!Array.isArray(value.providerFiles)||value.providerFiles.length>1000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid reviewed user-data manifest');
   fields(value.selection,['git','harness'],['extendedMetadata','persistentNodes']);
   validateReviewedUserDataSelection(value.selection);
-  if(value.selection.extendedMetadata||value.selection.persistentNodes)throw new Error('Selected metadata requires authoritative per-node evidence; omitted evidence is not absence');
+  if(value.selection.extendedMetadata||value.selection.persistentNodes){
+    if(!value.filesystemMetadata)throw new Error('Selected metadata requires authoritative per-node evidence; omitted evidence is not absence');
+    validateFilesystemMetadata(value.filesystemMetadata,value.selection);
+  }else if(value.filesystemMetadata!==undefined)throw new Error('Unselected filesystem metadata');
   if(Object.hasOwn(value,'git')&&!value.git)throw new Error('Invalid selected Git data');
   if(!value.selection.git&&value.git||value.selection.git&&!value.git)throw new Error('Reviewed data differs from its explicit family selection');
   if(!value.recreationScope||Object.keys(value.recreationScope).length!==Object.keys(recreationScope).length||Object.entries(recreationScope).some(([key,status])=>(key==='cyclicLinks'? !['refuse','passive_in_root'].includes(value.recreationScope.cyclicLinks):(value.recreationScope as Record<string,string>)[key]!==status)))throw new Error('Required recreation semantics cannot be silently downgraded');
@@ -2308,10 +2312,9 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
 }
 
 /** Only configuration families, never provider sessions, login databases, caches or ownership receipts. */
-export async function exportReviewedUserData(root:string,selection:ReviewedUserDataSelection,capture?:GitExportCapture):Promise<ReviewedUserData> {
+export async function exportReviewedUserData(root:string,selection:ReviewedUserDataSelection,capture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:import('./portable-working-files.js').WorkingFolderInventory):Promise<ReviewedUserData> {
   validateReviewedUserDataSelection(selection);
   if(selection.source==='retained_originals')throw new Error('Retained originals require their canonical artifact binding');
-  if(selection.extendedMetadata||selection.persistentNodes)throw new Error('Metadata capture requires source-qualified held-node inspection and a complete evidence carrier; no metadata values were captured or published');
   const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness,...(selection.extendedMetadata?{extendedMetadata:selection.extendedMetadata}:{}),...(selection.persistentNodes?{persistentNodes:selection.persistentNodes}:{})},recreationScope:{...recreationScope},providerFiles:[],providerDirectories:[],exclusions:[]};let bytes=0;
   const fixed=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.claude/AGENTS.md','.codex/config.toml','.codex/instructions.md'],selected=[...fixed];
   const capturedProvider=new Map<string,string>(),absentProvider=new Set<string>();
@@ -2397,6 +2400,10 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
   for(const relative of absentProvider){
     try{await fs.lstat(path.join(root,relative));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
     throw new Error('Absent provider selection appeared during capture');
+  }
+  if(selection.extendedMetadata||selection.persistentNodes){
+    result.filesystemMetadata=await captureFilesystemMetadata(root,selection,rootMappings,capture,capturedInventory);
+    result.exclusions.push('Filesystem metadata covers selected user attributes and Linux POSIX ACLs only; hidden namespaces and coherent independent-writer snapshots are not claimed');
   }
   result.exclusions.push('Exported provider originals are inert evidence; native installation requires a separate reviewed activation choice, and export never grants execution','Other provider files and custom formats require explicit inventory; sessions/auth/profile ownership remain excluded');
   return result;

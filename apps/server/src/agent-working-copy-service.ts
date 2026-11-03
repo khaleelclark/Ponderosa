@@ -1,7 +1,9 @@
 import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
+import {planFilesystemMetadata} from './portable-filesystem-metadata.js';
+import {parseReviewedUserData} from './portable-reviewed-user-data.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
-import {importWorkingFiles} from './portable-working-files.js';
+import {importWorkingFiles,finalizeWorkingFolderMetadata} from './portable-working-files.js';
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath, rmdir, readdir, open } from "@ponderosa/native-host/fs/promises";
@@ -298,11 +300,16 @@ export class AgentWorkingCopyService {
   }
 
   /** Fresh local ownership is checked before any imported file enters a live root. */
-  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse',activation?:import('@ponderosa/core').ReviewedUserDataActivation):Promise<void> {
+  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse',activation?:import('@ponderosa/core').ReviewedUserDataActivation,metadataActivation?:import('@ponderosa/core').ReviewedMetadataActivation,rootDestinations?:Readonly<Record<string,string>>,deferFinalMetadata=false):Promise<void> {
     if(!this.modeChanges.has(agent.id))throw new Error('Live import was not fenced');
     const resolved=await this.resolve(agent,project);
     const activationRoot=activation?await lstat(resolved.rootPath,{bigint:true}):undefined;
-    const original=activation?files.find(file=>file.path===REVIEWED_USER_DATA_PATH):undefined;
+    const original=activation||metadataActivation?files.find(file=>file.path===REVIEWED_USER_DATA_PATH):undefined;
+    const metadataPlan=metadataActivation&&original?parseReviewedUserData(original.data):undefined;
+    if(metadataActivation){
+      if(!this.store.isManagedProjectImportDestination(project.id)||!original||!metadataPlan?.filesystemMetadata||createHash('sha256').update(original.data).digest('hex')!==original.sha256)throw new Error('Native metadata requires the original and a NEW managed destination');
+      planFilesystemMetadata(metadataPlan.filesystemMetadata,metadataPlan.selection,metadataActivation);
+    }
     if(activation){
       if(!original||createHash('sha256').update(original.data).digest('hex')!==original.sha256)throw new Error('Native activation original is unavailable or changed');
       const plan=planReviewedUserDataActivation(original.data,original.sha256,activation);
@@ -310,13 +317,13 @@ export class AgentWorkingCopyService {
       if(activation.git)await this.verifyImportedGitRoot(project,original.sha256,resolved.rootPath);
       if(!this.store.isManagedProjectImportDestination(project.id))throw new Error('Native activation requires the NEW managed import destination');
     }
-    await importWorkingFiles(resolved.rootPath,files,directories,activation?undefined:metadata,{backupRoot},links,cyclicLinks);
+    await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot},links,cyclicLinks,metadataActivation,!!metadataActivation,rootDestinations);
     if(activation&&original){
       const current=await this.resolve(agent,project);
       if(current.rootPath!==resolved.rootPath||!this.modeChanges.has(agent.id))throw new Error('Native activation root membership changed');
       if(activation.git)await this.verifyImportedGitRoot(project,original.sha256,current.rootPath);
       if(activation.harness)await applyReviewedProviderData(resolved.rootPath,original.data,original.sha256,activation);
-      if(metadata){
+      if(metadata&&!metadataActivation){
         const root=await open(current.rootPath,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);
         let finalizationError:Error|undefined;
         try{
@@ -335,6 +342,17 @@ export class AgentWorkingCopyService {
         if(finalizationError)throw finalizationError;
       }
     }
+    if(metadataActivation&&!deferFinalMetadata&&metadataPlan?.filesystemMetadata){
+      const current=await this.resolve(agent,project);
+      if(current.rootPath!==resolved.rootPath||!this.modeChanges.has(agent.id))throw new Error('Metadata root membership changed');
+      await finalizeWorkingFolderMetadata(current.rootPath,files,directories,metadata,links,metadataActivation);
+    }
+  }
+
+  async finalizeImportedRootMetadata(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],links:Parameters<typeof importWorkingFiles>[5],activation:import('@ponderosa/core').ReviewedMetadataActivation,counts?:ReadonlyMap<string,bigint>):Promise<void>{
+    if(!this.modeChanges.has(agent.id)||!this.store.isManagedProjectImportDestination(project.id))throw new Error('Final live metadata requires its fenced NEW managed destination');
+    const root=await this.resolve(agent,project);
+    await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts);
   }
 
   private async verifyImportedGitRoot(project:ProjectDto,sha256:string,rootPath:string):Promise<void> {

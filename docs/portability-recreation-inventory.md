@@ -1281,3 +1281,19 @@ No UI or Runtime custody/staging source was edited.
 
 This bounded source candidate makes no native parity, roundtrip, durability,
 atomicity, review, release, integration or whole-Bible acceptance claim.
+
+## Codex completion: filesystem metadata and selected-root links
+
+The source caller/manifest gaps in rows 8, 9 and 10 above are superseded by
+[the current filesystem contract](portable-filesystem-recreation.md).
+This tranche connects selected Linux user attributes/POSIX ACLs and FIFO
+inspection/creation, full reviewed POSIX modes, complete selected-root hardlink
+aliases, absolute/mapped symbolic relocation, current principal choices and
+durable incomplete-result receipts. Metadata is finalized after all aliases and
+provider/Git children. Branch preview carries canonical metadata-bearing root
+refs and Branch results preserve metadata receipts.
+
+Non-Linux ACL dialects, FIFO extended metadata, native device/socket service
+recreation and independent-writer coherent acquisition remain explicit boundaries.
+These are not approved Bible exceptions. No tests/builds/typechecks or production
+operations were run in this tranche; final combined qualification remains required.

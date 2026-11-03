@@ -39,18 +39,21 @@ napi_value Failure(napi_env env, const char* code, const std::string& message) {
   ThrowCode(env,code,message); return nullptr;
 }
 #ifdef __linux__
-struct Target { int fd; uint64_t dev, ino; bool directory; };
+struct Target { int fd; uint64_t dev, ino; bool directory; uint64_t links=1; };
 Target ReadTarget(napi_env env, napi_value input) {
   Target t;
   t.fd = Integer(env,Property(env,input,"fd"),INT_MAX);
   t.dev = Identity(env,Property(env,input,"expectedDevice")); t.ino = Identity(env,Property(env,input,"expectedInode"));
   const std::string kind = String(env,Property(env,input,"kind"));
   if (kind != "file" && kind != "directory") throw std::runtime_error("unsupported target kind");
+  bool hasLinks=false;
+  if(napi_has_named_property(env,input,"expectedLinkCount",&hasLinks)!=napi_ok)throw std::runtime_error("invalid selected link count");
+  if(hasLinks){t.links=Identity(env,Property(env,input,"expectedLinkCount"));if(t.links<1||t.links>10000)throw std::runtime_error("selected link count exceeds its bound");}
   t.directory = kind == "directory"; return t;
 }
 bool Matches(const Target& t, const struct stat& s) {
   return uint64_t(s.st_dev) == t.dev && uint64_t(s.st_ino) == t.ino &&
-      (t.directory ? S_ISDIR(s.st_mode) : S_ISREG(s.st_mode) && s.st_nlink == 1);
+      (t.directory ? S_ISDIR(s.st_mode) : S_ISREG(s.st_mode) && uint64_t(s.st_nlink) == t.links);
 }
 struct stat Stat(const Target& t) {
   struct stat s{};
@@ -183,7 +186,7 @@ std::string MapAcl(const std::string& raw,const std::vector<Mapping>& maps,bool 
     if(e.tag==16){group=e.permissions;mask=true;}
     if(e.tag==32)other=e.permissions;
   }
-  if(access && ((owner<<6)|(group<<3)|other)!=mode)throw std::runtime_error("mode differs from mapped ACL owner/mask/other");
+  if(access && ((owner<<6)|(group<<3)|other)!=(mode&0777))throw std::runtime_error("mode differs from mapped ACL owner/mask/other");
   std::sort(entries.begin(),entries.end(),[](const AclEntry& a,const AclEntry& b){return a.tag!=b.tag ? a.tag<b.tag:a.id<b.id;});
   std::string out=raw;
   for(size_t i=0;i<entries.size();++i){const auto& e=entries[i];size_t p=4+i*8;out[p]=char(e.tag);out[p+1]=0;out[p+2]=char(e.permissions);out[p+3]=0;Put32(out,p+4,e.id);}
@@ -227,8 +230,8 @@ napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
     destinationQualifier=String(env,Property(env,input,"destinationQualifier"));if(destinationQualifier.empty())throw std::runtime_error("destination host/user namespace qualifier required");
     const uint32_t sourceOwner=Integer(env,Property(env,input,"sourceOwnerId"),UINT32_MAX-1),sourceGroup=Integer(env,Property(env,input,"sourceGroupId"),UINT32_MAX-1);
     const uint32_t owner=Integer(env,Property(env,input,"destinationOwnerId"),UINT32_MAX-1),group=Integer(env,Property(env,input,"destinationGroupId"),UINT32_MAX-1);
-    const uint32_t mode=Integer(env,Property(env,input,"mode"),0777);
-    if(before.st_uid!=owner || before.st_gid!=group || (before.st_mode&07000))throw std::runtime_error("destination ownership differs or special mode bits unsupported; no chown performed");
+    const uint32_t mode=Integer(env,Property(env,input,"mode"),07777);
+    if(before.st_uid!=owner || before.st_gid!=group)throw std::runtime_error("destination ownership differs; no chown performed");
     std::vector<Mapping> maps;auto mapping=Property(env,input,"principalMappings");uint32_t count;bool array=false;
     if(napi_is_array(env,mapping,&array)!=napi_ok || !array || napi_get_array_length(env,mapping,&count)!=napi_ok || count>2*kCount+2)throw std::runtime_error("invalid bounded principal mappings");
     for(uint32_t i=0;i<count;++i){napi_value item;napi_get_element(env,mapping,i,&item);Mapping m;
@@ -242,7 +245,7 @@ napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
     auto access=acl("accessAcl",true),defaults=acl("defaultAcl",false);
     if(!target.directory && !defaults.absent)throw std::runtime_error("default ACL requires directory");
     auto attrs=Property(env,input,"attributes");array=false;
-    if(napi_is_array(env,attrs,&array)!=napi_ok || !array || napi_get_array_length(env,attrs,&count)!=napi_ok || count>kCount-2)throw std::runtime_error("invalid bounded user attributes");
+    if(napi_is_array(env,attrs,&array)!=napi_ok || !array || napi_get_array_length(env,attrs,&count)!=napi_ok || count>kCount)throw std::runtime_error("invalid bounded user attributes");
     Inventory wanted;size_t total=access.value.size()+defaults.value.size();
     for(uint32_t i=0;i<count;++i){napi_value item;napi_get_element(env,attrs,i,&item);Attribute a;
       a.name=Buffer(env,Property(env,item,"name"),255);a.value=Buffer(env,Property(env,item,"value"),kValue);
@@ -350,7 +353,7 @@ napi_value CreatePersistentNode(napi_env env,napi_callback_info info) {
     size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);if(argc!=1)throw std::runtime_error("one persistent node creation input required");
     auto input=args[0];parent=ReadParent(env,input);CheckParent(parent);
     if(!Literal(env,input,"kind","fifo"))throw std::runtime_error("only FIFO creation supported; sockets need service ownership, devices need explicit device mapping/grant");
-    const uint32_t mode=Integer(env,Property(env,input,"mode"),0777);const auto modified=Time(env,Property(env,input,"mtimeNs"));
+    const uint32_t mode=Integer(env,Property(env,input,"mode"),07777);const auto modified=Time(env,Property(env,input,"mtimeNs"));
     // Probe only invalid descriptors; never chmod/touch the parent to discover support.
     errno=0;const long chmod_probe=syscall(SYS_fchmodat2,-1,"",0,AT_EMPTY_PATH);
     if(chmod_probe!=-1 || errno!=EBADF)throw std::runtime_error("descriptor-only fchmodat2 AT_EMPTY_PATH unavailable");

@@ -1,4 +1,4 @@
-import {validateReviewedUserDataActivation,requireReviewedMetadataApplication} from './portable-reviewed-user-data.js';
+import {validateReviewedUserDataActivation,requireReviewedMetadataApplication,parseReviewedUserData} from './portable-reviewed-user-data.js';
 import {validateReviewedUserDataSelection,validateGitStorageSelections} from './portable-reviewed-user-data.js';
 import {composeBranchChat} from './branch-package-group.js';
 import {isAbsolute,resolve,sep} from 'node:path';
@@ -41,7 +41,7 @@ export class BranchInstallationService {
  private outputApps?:OutputAgentApps;
  setOutputApps(owner:OutputAgentApps){this.outputApps=owner;}
  private roleBinding(pkg:InstalledBranchPackage,bindings:BranchBindings,branchId?:string){return createHash('sha256').update(stableJson({package:pkg,bindings,destination:branchId??'new'})).digest('hex');}
- private rolePlan(plan:Row):{tree?:TreePlan;treeReceipt?:import('@ponderosa/core').BranchDefinitionTreeReceipt;runtimeTreeReceipt?:import('@ponderosa/core').BranchRuntimeTreeReceipt;review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;pendingWorkingRoot?:PendingWorkingRoot;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'|'reviewedUserDataApplications'>>;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
+ private rolePlan(plan:Row):{tree?:TreePlan;treeReceipt?:import('@ponderosa/core').BranchDefinitionTreeReceipt;runtimeTreeReceipt?:import('@ponderosa/core').BranchRuntimeTreeReceipt;review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;pendingWorkingRoot?:PendingWorkingRoot;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'|'reviewedUserDataApplications'|'reviewedMetadataApplications'>>;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
  private finishRoles(plan:Row){
   const state=this.rolePlan(plan);if(state.review){if(!this.outputApps)throw new Error('Output role service unavailable');this.outputApps.finalizeImport(state.review.id,state.binding!,plan.id,state.mapping!);}
   this.compactPlan(plan.id,'completed');
@@ -58,7 +58,7 @@ export class BranchInstallationService {
  private refreshRuntime?:()=>Promise<void>;
  private runtimeRefreshPending=false;
  setPublisher(publish:(input:DeployBranchRequest,configuration?:import('@ponderosa/core').BranchConfiguration)=>BranchDto,refreshRuntime?:()=>Promise<void>):void{this.publish=publish;this.refreshRuntime=refreshRuntime;}
- status(id:string):{runtimeTreeReceipt?:import('@ponderosa/core').BranchRuntimeTreeReceipt;definitionTreeReceipt?:import('@ponderosa/core').BranchDefinitionTreeReceipt;runtimeDataReceipt?:import('@ponderosa/core').BranchRuntimeDataReceipt;branchId?:string;state:string;error?:string;accessSettingsReview?:PendingAccess;workingRootReview?:PendingWorkingRoot;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'|'reviewedUserDataApplications'>>}|undefined{
+ status(id:string):{runtimeTreeReceipt?:import('@ponderosa/core').BranchRuntimeTreeReceipt;definitionTreeReceipt?:import('@ponderosa/core').BranchDefinitionTreeReceipt;runtimeDataReceipt?:import('@ponderosa/core').BranchRuntimeDataReceipt;branchId?:string;state:string;error?:string;accessSettingsReview?:PendingAccess;workingRootReview?:PendingWorkingRoot;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'|'reviewedUserDataApplications'|'reviewedMetadataApplications'>>}|undefined{
   const p=this.row('SELECT * FROM branch_installation_plans WHERE id=?',id);if(!p)return;
   const state=this.rolePlan(p),runtimeDataReceipt=p.branch_id?this.branches.runtimeData(p.id,p.branch_id)?.receipt:undefined;
   const runtimeTree=state.runtimeTreeReceipt?this.branches.runtimeTreeData(id,p.branch_id):undefined;
@@ -133,7 +133,7 @@ export class BranchInstallationService {
  private retainImportResult(planId:string,key:string,result:ImportAgentPackageResponse){
   const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',planId)!;
   const state=this.rolePlan(current);
-  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,importResults:{...state.importResults,[key]:{workingFilesDestination:result.workingFilesDestination,workingRoots:result.workingRoots,accessSettingsToReview:result.accessSettingsToReview,liveWorkingRoots:result.liveWorkingRoots,reviewedUserDataApplications:result.reviewedUserDataApplications}}}),planId);
+  this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,importResults:{...state.importResults,[key]:{workingFilesDestination:result.workingFilesDestination,workingRoots:result.workingRoots,accessSettingsToReview:result.accessSettingsToReview,liveWorkingRoots:result.liveWorkingRoots,reviewedUserDataApplications:result.reviewedUserDataApplications,reviewedMetadataApplications:result.reviewedMetadataApplications}}}),planId);
  }
  private definitionClosure(root:string):string[]{
   const visited=new Set<string>(),pending=[root];
@@ -482,7 +482,13 @@ export class BranchInstallationService {
    const [chatRef,agentRef]=JSON.parse(key) as string[];
    if(selection.newManagedChatFolderName&&existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef))throw new Error('Choose a NEW installation Chat for managed live activation');
    if(existing.some(r=>r.package_id===pkg.packageId&&r.chat_ref===chatRef&&r.agent_ref===agentRef))throw new Error('Existing Agents retain their working roots; choose a new Agent for imported folder content');
-   operations.push({kind:'retain-content',resource:'Working folder',label:selection.workingFilesActivation!==undefined?'Retain NEW recovery copies and activate fresh locally owned working roots':'Retain NEW recovery copies only',after:{target:key,...selection,...(selection.newManagedChatFolderName&&pkg.chats.find(c=>c.ref===chatRef)!.agents.length>1?{groupedAgentRefs:pkg.chats.find(c=>c.ref===chatRef)!.agents.map(a=>a.ref),workingRootRefs:[...new Set((await composeBranchChat(pkg.chats.find(c=>c.ref===chatRef)!,this.engine!)).agents.flatMap(a=>a.workingRootRef?[a.workingRootRef]:[]))]}:{})}});
+   const grouped=selection.newManagedChatFolderName&&pkg.chats.find(c=>c.ref===chatRef)!.agents.length>1?await composeBranchChat(pkg.chats.find(c=>c.ref===chatRef)!,this.engine!):undefined;
+   const metadataWorkingRootRefs=grouped?.agents.flatMap(node=>{
+    if(!node.workingFolder||!node.workingRootRef)return [];
+    const original=node.workingFiles?.find(file=>file.path==='.ponderosa-portable-review/user-data.json'),artifact=node.artifacts?.find(artifact=>artifact.ref===original?.artifactRef);
+    return artifact&&parseReviewedUserData(Buffer.from(artifact.dataBase64,'base64')).filesystemMetadata?[node.workingRootRef]:[];
+   });
+   operations.push({kind:'retain-content',resource:'Working folder',label:selection.workingFilesActivation!==undefined?'Retain NEW recovery copies and activate fresh locally owned working roots':'Retain NEW recovery copies only',after:{target:key,...selection,...(grouped?{groupedAgentRefs:pkg.chats.find(c=>c.ref===chatRef)!.agents.map(a=>a.ref),workingRootRefs:[...new Set(grouped.agents.flatMap(a=>a.workingRootRef?[a.workingRootRef]:[]))],metadataWorkingRootRefs:[...new Set(metadataWorkingRootRefs)]}:{})}});
   }
   const compare=(resource:string,label:string,before:unknown,after:unknown)=>{if(stableJson(before??null)!==stableJson(after??null))operations.push({kind:'change',resource,label,before:before??null,after:after??null});};
   for(const c of pkg.chats){const ownNode=pkg.definitionTree?.nodes.find(n=>n.chatRefs.includes(c.ref)),ownBindings=ownNode&&tree?tree.bindings[ownNode.sourceBranchId]!:bindings;for(const a of [{ref:'',title:c.title},...c.agents.map(a=>({ref:a.ref,title:a.definition.agents[0]!.title}))]){

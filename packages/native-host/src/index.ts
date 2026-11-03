@@ -72,6 +72,8 @@ export interface HeldMetadataTarget {
   expectedDevice: bigint;
   expectedInode: bigint;
   kind: "file" | "directory";
+  /** Default one; callers prove complete selected aliases before supplying another bound. */
+  expectedLinkCount?: bigint;
 }
 export interface MetadataPrincipalMapping {
   sourceQualifier: string;
@@ -116,7 +118,7 @@ export interface ExtendedMetadataRestore extends HeldMetadataTarget {
   /** Exact Linux v2 wire bytes or explicit absence; named IDs are remapped. */
   accessAcl: Buffer | null;
   defaultAcl: Buffer | null;
-  mode: number; // 0..0o777; special bits unsupported here
+  mode: number; // 0..0o7777; OS permission checks and exact readback remain mandatory
 }
 /** Linux only. Bounded complete visible names, per-value read state and explicit ACL probes.
  * Limits: 64 KiB names/value, 256 names/ACL entries, 1 MiB aggregate values.
@@ -161,6 +163,8 @@ export function createPersistentNode(input: PersistentNodeParent & { kind: "fifo
 }
 
 export interface ExactFileMetadataInput {
+  /** Defaults to one; complete caller-owned alias graph required for a larger count. */
+  expectedLinkCount?: bigint;
   fd: number;
   expectedDevice: bigint;
   expectedInode: bigint;

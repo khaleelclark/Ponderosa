@@ -15,9 +15,11 @@ import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPackageReceipt,type CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
-import {withoutPortableSecrets} from '../portable-secrets.js';
+import {withoutPortableSecrets,redactPortableDiagnostic} from '../portable-secrets.js';
 import {planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,validateReviewedUserDataActivation,validateReviewedUserDataSelection,validateReviewedMetadataActivation,requireReviewedMetadataApplication,validateGitStorageSelections,createGitExportCapture,verifyGitExportAssociations,validatePortableGitStorageBindings,type GitExportCapture,type SelectedGitBinding} from '../portable-reviewed-user-data.js';
-import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder} from '../portable-working-files.js';
+import {filesystemMetadataProvenance,planFilesystemMetadata} from '../portable-filesystem-metadata.js';
+import {parseReviewedUserData} from '../portable-reviewed-user-data.js';
+import {exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,type WorkingFolderInventory} from '../portable-working-files.js';
 import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
 import {CapabilityPolicyStore} from '@ponderosa/agents';
 import {portableCommunicationVisible,portableCommunicationMessage} from '../portable-communication.js';
@@ -193,6 +195,7 @@ export function registerAgentPackageRoutes(
   const checkpointCustody=checkpointPackageCustody(context.dataDir);
   const lifecycle=checkpointCustodyLifecycle(path.join(context.dataDir,'checkpoint-package-custody'),(source,id)=>custodyLifecycleProof(context.store.sqlite,source,id,context.custodyOwner()));
   // Inherits the operator origin/capability boundary; reconciliation is never an Agent tool.
+  app.get('/api/portable-metadata/provenance',()=>filesystemMetadataProvenance());
   app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>('/api/lifecycle/checkpoint-custody',(request,reply)=>{
     try{return lifecycle.list(request.query);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
@@ -236,7 +239,21 @@ export function registerAgentPackageRoutes(
     createOperationalNotification,
   } = context;
   const validateNativeSelection=(pkg:AgentPortablePackageDto,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>,projectId:string)=>{
-    if(selection.reviewedMetadataActivation!==undefined)requireReviewedMetadataApplication(selection.reviewedMetadataActivation);
+    if(selection.reviewedMetadataActivation!==undefined){
+      const metadataActivation=selection.reviewedMetadataActivation;requireReviewedMetadataApplication(metadataActivation);
+      if(pkg.mode!=='full')throw new Error('Metadata restoration requires a full package');
+      const refs=new Set(pkg.agents.filter(node=>node.workingFolder).map(node=>node.workingRootRef??node.ref));
+      for(const ref of metadataActivation.rootRefs){
+        if(!refs.has(ref))throw new Error('Metadata activation names an absent complete working root');
+        const node=pkg.agents.find(node=>(node.workingRootRef??node.ref)===ref&&node.workingFolder)!;
+        const file=node.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&node.artifacts?.find(artifact=>artifact.ref===file.artifactRef);
+        if(!artifact)throw new Error('Metadata restoration requires its authoritative original');
+        const manifest=parseReviewedUserData(decodePortableMetadataArtifact(artifact));
+        if(!manifest.filesystemMetadata)throw new Error('Per-node metadata evidence is absent');
+        planFilesystemMetadata(manifest.filesystemMetadata,manifest.selection,metadataActivation);
+      }
+      if(selection.workingFilesActivation&&!store.isManagedProjectImportDestination(projectId))throw new Error('Live metadata application requires a NEW managed destination');
+    }
     const activation=selection.reviewedUserDataActivation;if(!activation)return;
     validateReviewedUserDataActivation(activation);
     if(!selection.workingFilesActivation){
@@ -795,6 +812,19 @@ export function registerAgentPackageRoutes(
       await verifyGitExportAssociations(gitCapture);
       await verifySelectedRoots();
     }
+    const folderInventories=new Map<string,WorkingFolderInventory>(),hardlinkCapture=organizationWorkingFolders||wholeWorkingFolder?createWorkingHardlinkCapture():undefined;
+    const reviewedSelectionForRoot=async(sourceRoot:string)=>{
+      if(!gitCapture||!reviewedUserData||await gitCapture.usesGit(sourceRoot))return reviewedUserData;
+      return reviewedUserData.harness||reviewedUserData.extendedMetadata||reviewedUserData.persistentNodes?{...reviewedUserData,git:false}:undefined;
+    };
+    if(organizationWorkingFolders)for(const sourceRoot of workingRoots.keys()){
+      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,workingRoots,hardlinkCapture));
+    }
+    if(!organizationWorkingFolders&&wholeWorkingFolder){
+      const sourceRoot=path.resolve(root.workingCopy.rootPath);
+      folderInventories.set(sourceRoot,await inventoryWorkingFolder(sourceRoot,await reviewedSelectionForRoot(sourceRoot),gitCapture,new Map([[sourceRoot,root.id]]),hardlinkCapture));
+    }
+    if(hardlinkCapture)await verifyWorkingHardlinkCapture(hardlinkCapture);
     const included = new Set(nodes.map((agent) => agent.id));
     const chat = store.getConversation(root.conversationId);
     const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
@@ -1010,9 +1040,8 @@ export function registerAgentPackageRoutes(
       const firstRoot=organizationWorkingFolders&&!exportedRoots.has(workingRoots.get(sourceRoot)!);
       if(firstRoot)exportedRoots.add(workingRoots.get(sourceRoot)!);
       if(gitCapture?.exclusions(sourceRoot).includes('.')&&reviewedUserData?.harness)throw new Error('Whole-root Git storage cannot also carry harness working-file review; select separate storage and working roots');
-      const rootReviewedSelection=gitCapture&&reviewedUserData&&!(await gitCapture.usesGit(sourceRoot))
-        ? reviewedUserData.harness?{...reviewedUserData,git:false}:undefined:reviewedUserData;
-      const folderInventory=firstRoot||!organizationWorkingFolders&&agent.id===root.id&&wholeWorkingFolder?await inventoryWorkingFolder(sourceRoot,rootReviewedSelection,gitCapture):undefined;
+      const rootReviewedSelection=await reviewedSelectionForRoot(sourceRoot);
+      const folderInventory=firstRoot?folderInventories.get(sourceRoot):!organizationWorkingFolders&&agent.id===root.id&&wholeWorkingFolder?folderInventories.get(sourceRoot):undefined;
       let retainedOriginal:{data:Buffer;mode?:number;mtime?:string}|undefined;
       if(folderInventory&&reviewedUserData?.source==='retained_originals'){
         // Shared-root originals may belong to a peer excluded from this Agent export.
@@ -1037,7 +1066,7 @@ export function registerAgentPackageRoutes(
       }
       const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
       const workingFiles=(organizationWorkingFolders?firstRoot:agent.id===root.id)&&(selectedPaths.length||folderInventory)
-        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?rootReviewedSelection:undefined,retainedOriginal,gitCapture):undefined;
+        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?rootReviewedSelection:undefined,retainedOriginal,gitCapture,workingRoots,folderInventory):undefined;
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');for(const artifact of workingFiles.artifacts)artifacts.push(admitArtifact(artifact));reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = importedHistories.get(agent.id)?.initialInstructions
@@ -1102,6 +1131,8 @@ export function registerAgentPackageRoutes(
       validatePortableAgentPackage(portable);
       await verifyGitExportAssociations(gitCapture);await verifySelectedRoots();
     }
+    if(portable.agents.some(node=>node.workingFolder?.links?.some(link=>link.targetRootRef)))validateMappedWorkingLinks(portable.agents.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[],cyclicLinks:node.workingFolder!.cyclicLinks})));
+    if(hardlinkCapture)await verifyWorkingHardlinkCapture(hardlinkCapture);
     agentPackageJsonUtf8Bytes(portable);
     return portable;
     }catch(error){captureError=error;throw error;}
@@ -1485,6 +1516,20 @@ export function registerAgentPackageRoutes(
       let reviewedDestinationPolicy:string|undefined;
       let retainedWorkingFiles=false;
       const reviewedApplications:NonNullable<ImportAgentPackageResponse['reviewedUserDataApplications']>=[];
+      const metadataApplications:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>=[];
+      const pendingFolderMetadata:Array<{receipt?:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
+      const pendingLiveMetadata:Array<{receipt:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
+      let metadataPrimaryError:unknown;
+      const saveMetadataApplications=()=>{
+        try{return store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedMetadataApplications:metadataApplications}});}
+        catch(receiptError){throw Object.assign(new Error('Metadata receipt persistence failed; preserve destination and original: '+(metadataPrimaryError instanceof Error?metadataPrimaryError.message:String(receiptError)),{cause:metadataPrimaryError??receiptError}),{code:(metadataPrimaryError as {code?:string}|undefined)?.code??'ERR_METADATA_RECEIPT_PERSISTENCE',partialStatePossible:true,receiptError});}
+      };
+      const metadataFailure=(error:unknown)=>{
+        const failure=error as {code?:string;observed?:Record<string,unknown>};
+        const raw=failure.observed?.identity??failure.observed;
+        const identity=raw&&typeof raw==='object'?Object.fromEntries(['device','inode','kind','mode','mtimeNs','ownerId','groupId','parentDevice','parentInode','deviceMajor','deviceMinor'].filter(key=>Object.hasOwn(raw,key)).map(key=>[key,(raw as Record<string,unknown>)[key]])):null;
+        return {message:redactPortableDiagnostic(error instanceof Error?error.message:String(error)),code:failure.code,partialStatePossible:true,observed:failure.observed?JSON.parse(JSON.stringify({identity,inventoryState:failure.observed.inventoryState??null},(_key,value)=>typeof value==='bigint'?value.toString():value)):null};
+      };
       const liveWorkingRoots:NonNullable<ImportAgentPackageResponse['liveWorkingRoots']>=[];
       try {
       await onPhase?.("creating_records");
@@ -1492,6 +1537,7 @@ export function registerAgentPackageRoutes(
 
       let portablePackage: AgentPortablePackageDto;
       let importNodes: PlannedNode[];
+      const metadataRootLinks=()=>importNodes.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[]}));
       let importSourceLabel: string;
       const artifactRefMap = new Map<string, string>();
       try {
@@ -1923,15 +1969,22 @@ export function registerAgentPackageRoutes(
         });
       }
 
-      const folderImports=body.workingRootDestinations
+      const folderImports=orderWorkingRoots((body.workingRootDestinations
         ? Object.entries(body.workingRootDestinations).map(([ref,destination])=>({destination,nodes:importNodes.filter(node=>node.workingRootRef===ref)}))
-        : body.workingFilesDestination?[{destination:body.workingFilesDestination,nodes:importNodes}]:[];
+        : body.workingFilesDestination?[{destination:body.workingFilesDestination,nodes:importNodes}]:[]).map(item=>({...item,ref:item.nodes.find(node=>node.workingFolder)?.workingRootRef??item.nodes[0]!.ref,links:item.nodes.find(node=>node.workingFolder)?.workingFolder?.links??[]})));
       for(const {destination,nodes} of folderImports){
         const files=nodes.flatMap(node=>(node.workingFiles??[]).map(file=>{const artifact=node.artifacts.find(a=>a.destinationId===file.artifactRef)!;return {path:file.path,data:artifact.data,sha256:artifact.sha256,mode:file.mode,mtime:file.mtime};}));
         store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),workingFilesDestination:body.workingFilesDestination,workingRootDestinations:body.workingRootDestinations}});
         const folder=nodes.find(node=>node.workingFolder)?.workingFolder;
         retainedWorkingFiles=true;
-        await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,undefined,folder?.links,folder?.cyclicLinks);
+        const ref=nodes.find(node=>node.workingFolder)?.workingRootRef??nodes[0]!.ref;
+        const metadataActivation=body.reviewedMetadataActivation?.rootRefs.includes(ref)?body.reviewedMetadataActivation:undefined;
+        const original=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
+        const receipt=metadataActivation&&original?{ref,path:destination,originalSha256:original.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
+        if(receipt){metadataApplications.push(receipt);saveMetadataApplications();}
+        try{await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,undefined,folder?.links,folder?.cyclicLinks,metadataActivation,true,body.workingRootDestinations);pendingFolderMetadata.push({receipt,apply:()=>finalizeWorkingFolderMetadata(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,folder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()))});}
+        catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+        finally{if(receipt)saveMetadataApplications();}
       }
       if(body.reviewedUserDataActivation&&!body.workingFilesActivation){
         const owner=portablePackage.agents.find(node=>node.workingFolder||node.workingFiles?.length);
@@ -1941,6 +1994,11 @@ export function registerAgentPackageRoutes(
           if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
           store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
         });
+      }
+      for(const pending of pendingFolderMetadata){
+        try{await pending.apply();if(pending.receipt)pending.receipt.state='completed';}
+        catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+        finally{if(pending.receipt)saveMetadataApplications();}
       }
       signal?.throwIfAborted();
       if(body.workingFilesActivation?.sharedRoot!==undefined){
@@ -1981,7 +2039,8 @@ export function registerAgentPackageRoutes(
       }
 
       if(body.workingFilesActivation){
-        const owners=importNodes.filter(node=>node.workingFolder||node.workingFiles?.length);
+        const liveLinkDestinations=Object.fromEntries(importNodes.map(node=>[node.workingRootRef??node.ref,created.get(node.ref)!.workingCopy.rootPath]));
+        const owners=orderWorkingRoots(importNodes.filter(node=>node.workingFolder||node.workingFiles?.length).map(node=>({node,ref:node.workingRootRef??node.ref,links:node.workingFolder?.links??[]}))).map(item=>item.node);
         for(const node of owners){
           const agent=created.get(node.ref)!;
           const members=importNodes.filter(member=>created.get(member.ref)!.workingCopy.rootPath===agent.workingCopy.rootPath);
@@ -1994,9 +2053,18 @@ export function registerAgentPackageRoutes(
           const reviewedOriginal=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
           const application=body.reviewedUserDataActivation&&reviewedOriginal?{ref,path:root.path,originalSha256:reviewedOriginal.sha256,selection:body.reviewedUserDataActivation,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as {code?:string;partialStatePossible:boolean;observed:unknown}|undefined}:undefined;
           if(application){reviewedApplications.push(application);store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});}
+          const metadataActivation=body.reviewedMetadataActivation?.rootRefs.includes(ref)?body.reviewedMetadataActivation:undefined;
+          const metadataApplication=metadataActivation&&reviewedOriginal?{ref,path:root.path,originalSha256:reviewedOriginal.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
+          if(metadataApplication){metadataApplications.push(metadataApplication);saveMetadataApplications();}
           const release=context.workingCopies!.beginModeChange(agent.id);
-          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links,node.workingFolder?.cyclicLinks,body.reviewedUserDataActivation);if(application)application.state='completed';}catch(error){if(application){application.state='incomplete';const failure=error as {code?:string;partialStatePossible?:boolean;observed?:unknown};application.error={code:failure.code,partialStatePossible:true,observed:failure.observed===undefined?null:JSON.parse(JSON.stringify(failure.observed,(_key,value)=>typeof value==='bigint'?value.toString():value))};}throw error;}finally{release();if(application)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});}
+          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links,node.workingFolder?.cyclicLinks,body.reviewedUserDataActivation,metadataActivation,liveLinkDestinations,true);if(application)application.state='completed';if(metadataApplication&&metadataActivation)pendingLiveMetadata.push({receipt:metadataApplication,apply:async()=>{const release=context.workingCopies!.beginModeChange(agent.id);try{await context.workingCopies!.finalizeImportedRootMetadata(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,node.workingFolder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()));}finally{release();}}});}catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}if(application){application.state='incomplete';const failure=error as {code?:string;partialStatePossible?:boolean;observed?:unknown};application.error={code:failure.code,partialStatePossible:true,observed:failure.observed===undefined?null:JSON.parse(JSON.stringify(failure.observed,(_key,value)=>typeof value==='bigint'?value.toString():value))};}throw error;}finally{release();if(metadataApplication)saveMetadataApplications();if(application)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});}
         }
+      }
+
+      for(const pending of pendingLiveMetadata){
+        try{await pending.apply();pending.receipt.state='completed';}
+        catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+        finally{saveMetadataApplications();}
       }
 
       const catalogArtifacts: Array<{
@@ -2083,6 +2151,7 @@ export function registerAgentPackageRoutes(
         agentRefs:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id])),
         ...(body.workingFilesActivation?{liveWorkingRoots}:{}),
         ...(body.reviewedUserDataActivation?{reviewedUserDataApplications:reviewedApplications}:{}),
+        ...(body.reviewedMetadataActivation?{reviewedMetadataApplications:metadataApplications}:{}),
         ...(body.workingFilesDestination?{workingFilesDestination:body.workingFilesDestination}:{}),
         ...(roleIntent?{outputRoleFinalization:{...roleIntent,mapping:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id]))}}:{}),
         accessSettingsToReview:importNodes.filter(node=>node.accessSettings&&(node.accessSettings.readGlobalMemory!==undefined||node.accessSettings.savedBrowserAllowed!==undefined||node.accessSettings.browserMode!==undefined)).map(node=>({agentId:created.get(node.ref)!.id,source:node.accessSettings!,conversationId:conversation.id})),

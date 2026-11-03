@@ -140,7 +140,7 @@ export interface PortableArtifactDto {
   decodedSize?: number;
 }
 /** Passive topology inside one selected root; never imports an external/native owner. */
-export interface PortableWorkingLinkDto {path:string;kind:'symlink'|'hardlink';target:string;mtime?:string}
+export interface PortableWorkingLinkDto {path:string;kind:'symlink'|'hardlink';target:string;mtime?:string;sourceTarget?:string;targetRootRef?:string}
 export interface PortableAgentNodeDto {
   ref: string;
   title: string;
@@ -256,7 +256,8 @@ export interface CopyAgentPackageRequest {
   acknowledgeElevatedManagementPermissions?: boolean;
 }
 export interface ImportAgentPackageResponse {
-  reviewedUserDataApplications?:Array<{ref:string;path:string;originalSha256:string;selection:import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{code?:string;partialStatePossible:boolean;observed:unknown}}>;
+  reviewedMetadataApplications?:Array<{ref:string;path:string;originalSha256:string;state:'applying'|'completed'|'incomplete';error?:{message?:string;code?:string;partialStatePossible:boolean;observed:unknown}}>;
+  reviewedUserDataApplications?:Array<{ref:string;path:string;originalSha256:string;selection:import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{message?:string;code?:string;partialStatePossible:boolean;observed:unknown}}>;
   rootAgentId: string; agentIds: string[]; agentRefs?:Record<string,string>; workingFilesDestination?:string;
   liveWorkingRoots?:Array<{ref:string;path:string;agentIds:string[]}>;
   workingRoots?:Array<{ref:string;destination:string;agentIds:string[]}>;

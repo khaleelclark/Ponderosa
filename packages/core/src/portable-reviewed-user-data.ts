@@ -30,6 +30,13 @@ export interface PortableGitStorageBinding {
   capture?:{version:1;currentAuthority:false;reviewSha256?:string;roots:Array<{rootRef:string;sourcePath:string;identity:string}>;
     records:Array<{rootRef:string;relativePath:string;identity:string;dataBase64?:string;absent?:true}>};
 }
+/** Selected visible filesystem metadata. Historical IDs require an explicit destination map. */
+export interface PortableFilesystemMetadata {
+  version:1;sourceQualifier:string;allNamespacesComplete:false;
+  nodes:Array<{path:string;kind:'file'|'directory';mode:number;mtimeNs:string;ownerId:string;groupId:string;
+    userAttributes:Array<{nameBase64:string;valueBase64:string}>;accessAclBase64:string|null;defaultAclBase64:string|null}>;
+  persistentNodes:Array<{path:string;kind:'fifo'|'socket'|'character'|'block';mode:number;mtimeNs:string;ownerId:string;groupId:string;deviceMajor:number;deviceMinor:number}>;
+}
 /** Inert user-data transport. No source runtime, credential or worktree authority. */
 export interface ReviewedGitUserData {
   version:1;format:'sha1'|'sha256';
@@ -71,6 +78,7 @@ export interface ReviewedUserData {
   /** Retained verbatim with the canonical original; never activates or recaptures source paths. */
   associationReview?:PortableGitStorageBinding[];
   selection:Omit<ReviewedUserDataSelection,'source'>;git?:ReviewedGitUserData;
+  filesystemMetadata?:PortableFilesystemMetadata;
   recreationScope:{absoluteLinks:'refuse';crossRootLinks:'refuse';cyclicLinks:'refuse'|'passive_in_root';specialNodes:'refuse';acl:'not_inspected_preserve_source';xattrs:'not_inspected_preserve_source'};
   /** Selected harness metadata is evidence, never permission to apply executable modes. */
   providerDirectories:Array<{path:string;mode:number;mtimeNs:string}>;

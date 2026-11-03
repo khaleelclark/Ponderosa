@@ -4,14 +4,14 @@ This is a native source contract, not a product import grant or a tested platfor
 claim. Public functions and exact TypeScript types are exported from
 `packages/native-host/src/index.ts`. Implementation is in the adjacent
 `portable-metadata.inc`, included by `native.cc`. The earlier
-`applyExactFileMetadata` API is unchanged. No importer calls these new APIs yet.
+`applyExactFileMetadata` API is unchanged. The product caller in portable-filesystem-metadata.ts now uses these APIs under explicit reviewed metadata activation; see portable-filesystem-recreation.md.
 
 ## Supported boundary
 
 | Family | Implemented source | Unsupported or still required |
 | --- | --- | --- |
 | Extended inspection | Linux held regular-file/directory descriptors; bounded visible name/value inventory; explicit POSIX ACL probes and v2 parser | Linux may hide privileged names. `allNamespacesComplete` is always false. Other platforms throw a specific unsupported error; they are not empty inventories. |
-| Selected extended restore | Linux exact selected `user.*` plus POSIX access/default ACL state, explicit principal remapping and full selected readback | No security/trusted/capability/SELinux/unknown namespace application, chown, special bits or alternate ACL dialect. A destination with other visible namespaces refuses before mutation. Hidden namespaces cannot be proved absent. |
+| Selected extended restore | Linux exact selected `user.*` plus POSIX access/default ACL state, explicit principal remapping and full selected readback | No security/trusted/capability/SELinux/unknown namespace application, chown or alternate ACL dialect. A destination with other visible namespaces refuses before mutation. Hidden namespaces cannot be proved absent. |
 | Persistent inspection | Linux O_PATH descriptor and held parent/one leaf binding for FIFO, socket, character/block node | No content open, socket communication or service adoption. Exact device numbers are evidence, never destination mapping authority. |
 | Persistent creation | Linux no-replace FIFO creation, descriptor-only mode/time and exact readback | Requires headers/kernel supporting fchmodat2/AT_EMPTY_PATH and utimensat/AT_EMPTY_PATH. No device/socket creation; no ownership recreation or extended-metadata equivalence claim. |
 | Independent writer snapshot | Contract assessment below | No backend was found in current native/server/agent source. No acquire API is invented. |
@@ -27,7 +27,7 @@ are not identities verified by the kernel or permission tokens.
 
 `inspectExtendedMetadata({fd,expectedDevice,expectedInode,kind,sourceQualifier})`
 accepts a caller-held no-follow regular-file/directory descriptor. It checks exact
-bigint device/inode and kind; a regular file must have one link. No path is opened.
+bigint device/inode and kind; a regular file defaults to one link. A complete selected/caller-owned alias graph may supply expectedLinkCount in 1..10000; exact count is checked before and after. No path is opened.
 The qualifier is required and bounded to 256 UTF-8 bytes. Named ACL entries carry
 that qualifier and observed numeric source ID; owner/group IDs are also observed.
 
@@ -76,8 +76,7 @@ recreation is not established by this implementation.
 
 The native helper preflights all input buffers, caps, mappings, ACLs and current
 destination metadata before mutation. Destination owner/group must already equal
-the explicitly mapped owner/group: no chown or privilege helper exists. Special
-mode bits refuse. Only `user.*` names are accepted in the input array; ACLs use the
+the explicitly mapped owner/group: no chown or privilege helper exists. Full POSIX mode bits require the separate explicit metadata restore choice; native permission checks and exact readback remain. Only `user.*` names are accepted in the input array; ACLs use the
 separate parsed fields. All destination visible names/values must be readable;
 security/trusted/other visible namespaces refuse without attempted application.
 Kernel/LSM permissions remain effective. Hidden namespace absence and filesystem
@@ -125,8 +124,7 @@ unreadable default ACL refuses, because O_PATH cannot use fd xattr restoration.
 It then exclusively creates a FIFO with initial 0600 mode, opens O_PATH only,
 applies exact timestamp with utimensat AT_EMPTY_PATH and mode with fchmodat2
 AT_EMPTY_PATH, and verifies the same single-link FIFO, rdev zero, owner/group,
-mode, timestamp and parent/name association. mode is limited to 0..0o777; special
-bits refuse. Exact negative nanoseconds use floor seconds. An OS/filesystem
+mode, timestamp and parent/name association. mode is limited to 0..0o7777; native permission checks and exact readback remain. Exact negative nanoseconds use floor seconds. An OS/filesystem
 refusal or truncation is failure. Parent directory timestamps naturally change
 when its entry is created; restore parent metadata last.
 

@@ -2384,6 +2384,22 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server/native host, disposable local Git repositories; mapped capture case requires Linux descriptor custody",
       "origin": "Bible #8 fresh native Git, mapped common/private roots, transported nested configuration and hook metadata"
+    },
+    {
+      "path": "tests/organizations/portable-filesystem-metadata.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native workspaces; pure metadata evidence checks; no provider or live data",
+      "origin": "Bible8 selected filesystem metadata, explicit principal maps and FIFO authority"
+    },
+    {
+      "path": "tests/organizations/portable-filesystem-links.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; disposable local working roots; no provider or live data",
+      "origin": "Bible8 absolute and mapped cross-root symbolic link relocation"
     }
   ],
   "retainedReleasePayload": [

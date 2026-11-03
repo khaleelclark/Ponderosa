@@ -1,7 +1,7 @@
 import {decodePortableMetadataArtifact} from './agent-package-codec.js';
 import {createHash} from 'node:crypto';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
-import {portableWorkingPath,validateWorkingTopology} from './portable-working-files.js';
+import {portableWorkingPath,validateWorkingTopology,validateMappedWorkingLinks,orderWorkingRoots,validateWorkingFileData} from './portable-working-files.js';
 import {BUILT_IN_CAPABILITIES,parseConnectorCapabilityId} from '@ponderosa/core';
 import {validatePortableCommunication} from './portable-communication.js';
 import {validateOutputRoles} from './portable-output-roles.js';
@@ -57,7 +57,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
     if(node.workingFolder!==undefined){
       const folder=validatedObject(node.workingFolder,'Working folder');exactObjectFields(folder,['mode','mtime','directories','excludedPaths','links','cyclicLinks'],'Working folder');if(folder.mode!==undefined&&(!Number.isInteger(folder.mode)||Number(folder.mode)<0||Number(folder.mode)>0o777)||folder.mtime!==undefined&&(typeof folder.mtime!=='string'||!Number.isFinite(Date.parse(folder.mtime))))throw new Error('Invalid root-folder metadata');
       if(portable.mode!=='full'||!Array.isArray(folder.directories)||folder.directories.length>10000||!Array.isArray(folder.excludedPaths)||folder.excludedPaths.some(p=>typeof p!=='string'))throw new Error('Invalid working-folder manifest');
-      if(folder.links!==undefined){if(!Array.isArray(folder.links)||folder.links.length>10000)throw new Error('Invalid working links');for(const candidate of folder.links)exactObjectFields(validatedObject(candidate,'Working link'),['path','kind','target','mtime'],'Working link');}
+      if(folder.links!==undefined){if(!Array.isArray(folder.links)||folder.links.length>10000)throw new Error('Invalid working links');for(const candidate of folder.links)exactObjectFields(validatedObject(candidate,'Working link'),['path','kind','target','mtime','sourceTarget','targetRootRef'],'Working link');}
       if(folder.cyclicLinks!==undefined&&!['refuse','passive_in_root'].includes(String(folder.cyclicLinks)))throw new Error('Invalid working-link cycle policy');
       validateWorkingTopology((node.workingFiles??[]) as {path:string}[],folder.directories as {path:string}[],(folder.links??[]) as import('@ponderosa/core').PortableWorkingLinkDto[],folder.cyclicLinks as 'refuse'|'passive_in_root'|undefined);
       const paths=new Set<string>();
@@ -108,6 +108,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
     }
   }
   const rootRefs=new Set(portable.agents.flatMap(node=>node.workingRootRef?[node.workingRootRef]:[]));
+  for(const node of portable.agents)for(const link of node.workingFolder?.links??[])if(link.targetRootRef&&!rootRefs.has(link.targetRootRef))throw new Error('Mapped symbolic target requires complete included root closure');
   if(portable.gitStorageBindings!==undefined){
     if(portable.mode!=='full')throw new Error('Git storage bindings require full selected working-root evidence');
     validatePortableGitStorageBindings(portable.gitStorageBindings,rootRefs);
@@ -129,6 +130,16 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
         if(node.workingFiles?.some(file=>inStorage(file.path))||node.workingFolder?.directories.some(directory=>inStorage(directory.path))||node.workingFolder?.links?.some(link=>inStorage(link.path)))throw new Error('Captured Git storage cannot also be ordinary working-file topology');
       }
     }
+  }
+  if(portable.agents.some(node=>node.workingFolder?.links?.some(link=>link.targetRootRef)))validateMappedWorkingLinks(portable.agents.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[],cyclicLinks:node.workingFolder!.cyclicLinks})));
+  if(portable.agents.some(node=>node.workingFolder?.links?.some(link=>link.kind==='hardlink'&&link.targetRootRef))){
+    for(const node of portable.agents)for(const link of node.workingFolder?.links??[])if(link.kind==='hardlink'&&link.targetRootRef){
+      const target=portable.agents.find(owner=>owner.workingRootRef===link.targetRootRef&&owner.workingFolder);
+      const original=target?.workingFiles?.find(file=>file.path===link.target),artifact=original&&target?.artifacts?.find(artifact=>artifact.ref===original.artifactRef);
+      if(!original||!artifact)throw new Error('Mapped hardlink requires an included regular original');
+      validateWorkingFileData(link.path,decodePortableMetadataArtifact(artifact,64*1024*1024));
+    }
+    orderWorkingRoots(portable.agents.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[]})));
   }
   for(const ref of rootRefs){const members=portable.agents.filter(node=>node.workingRootRef===ref);if(members.filter(node=>node.workingFolder).length!==1||members.filter(node=>node.workingFiles?.length).length>1)throw new Error('A working root needs exactly one folder manifest and one originals owner');}
   if(rootRefs.size&&portable.agents.some(node=>!node.workingRootRef))throw new Error('Organization folder bundles must identify every Agent root');

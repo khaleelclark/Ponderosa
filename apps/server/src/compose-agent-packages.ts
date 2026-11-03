@@ -77,6 +77,10 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
     }
     const rootKey=node.workingCopyMode==='shared'&&node.sourceChat?identity('root','shared',node.sourceChat.ref):identity('root',input.ref,node.workingRootRef??oldRef);
     workingRootRefs[input.ref]=rootKey;
+    for(const link of node.workingFolder?.links??[])if(link.targetRootRef){
+      if(link.targetRootRef!==node.workingRootRef)throw new Error('Mapped symbolic composition requires complete root closure');
+      link.targetRootRef=rootKey;
+    }
     if(pkg.gitStorageBindings){
       const finalRoots=new Map(node.workingRootRef?[[node.workingRootRef,rootKey]]:[]);
       for(const binding of pkg.gitStorageBindings){
