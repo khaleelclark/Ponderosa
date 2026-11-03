@@ -132,7 +132,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
    switch(event.kind){
     case 'trigger_accepted':require(!accepted&&!started&&v.versionId===e.version_id&&v.bindingRevisionId===e.binding_revision_id&&v.inputHash===e.input_hash);accepted=true;break;
     case 'workflow_started':require(accepted&&!started);started=true;break;
-    case 'restored_prefix':case 'historical_rewind':require(seed&&accepted&&!started);break;
+    case 'foreign_selected_prefix':case 'restored_prefix':case 'historical_rewind':require(seed&&accepted&&!started);break;
     case 'tree_restored_prefix':case 'tree_historical_rewind':require(context&&seed&&accepted&&!started);if(event.kind==='tree_historical_rewind'&&context.restoredTerminal)started=true;break;
     case 'step_prepared':{
      require(started&&!interruption&&!m.steps!.some(row=>row.id===v.stepExecutionId));

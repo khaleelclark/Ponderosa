@@ -18,7 +18,7 @@ Current choices are established through the existing destination configuration/b
 
 ## Authority and atomicity
 
-Only standalone manual, sync-mode, serial Script definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` controls are accepted; secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices and traversal/loop counters. The latest cut may be running or canonically terminal, but the selected resumable cut must be running. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
+Only standalone manual, sync-mode, effect-free Script definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted. Workflow and per-step failure policies must stop; retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The latest cut may be running or canonically terminal, but the selected resumable cut must be running. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
 
 The preview independently verifies the actual recreated-held imported native frontier/maps/participant ownership through existing runtime-data readback. It checks the imported owner remains waiting/unaccepted, current destination availability/pins/configuration/policy and accessible directories. Any unknown custody or native authority on the held owner refuses. `not_applicable` means no selected/latest source or native resource exists; it never means an unavailable receipt was treated as released.
 
@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining: tree/called owners and multi-owner current admission; automatic/issued/unknown/resource/bundle/Agent frontiers; exit/async modes; secret choices; parallel/Map/Join controls and human gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining: tree/called owners and multi-owner current admission; automatic/issued/unknown/resource/bundle/Agent frontiers; exit/async modes; secret choices; human gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -44,9 +44,9 @@ This UI change is source-only and has not been run, built or typechecked.
 
 ## Selected state and routing continuation
 
-The same export facts/private checkpoints, reviewed held import and runtime-data readback carry state seals and serial condition/route frontiers. No extra import format, endpoint, acceptance system or mutable state store is introduced. Source definitions are canonically validated; current definition and nonsecret configuration must still match exactly. A selected cut can stop before or after a supported control, or at an unstarted Script invocation. Unknown, issued, resource, gate, parallel, called/tree, automatic, bundle and secret families remain refused by this standalone consumer.
+The same export facts/private checkpoints, reviewed held import and runtime-data readback carry state seals and condition/route/fork/Map/Join frontiers. No extra import format, endpoint, acceptance system or mutable state store is introduced. Source definitions are canonically validated; current definition and nonsecret configuration must still match exactly. A selected cut can stop before or after a supported control, or at an unstarted Script invocation. Unknown, issued, resource, gate, called/tree, automatic, bundle and secret families remain refused by this standalone consumer.
 
-Human review includes the declared channels/reducers, selected state projection and latest saved source projection, each with revision and evidence hash, plus the actual condition/route definitions. These fields join the existing review digest and are rechecked atomically on confirmation. The UI shows which state revision will resume and reveals the values/reducers and control definitions for review. A later saved state is evidence only; continuation resumes the selected state, never the latest state by accident.
+Human review includes the declared channels/reducers, selected state projection and latest saved source projection, each with revision and evidence hash, plus the actual control definitions. These fields join the existing review digest and are rechecked atomically on confirmation. The UI shows which state revision will resume and reveals the values/reducers and control definitions for review. A later saved state is evidence only; continuation resumes the selected state, never the latest state by accident.
 
 Canonical replay verifies each original immutable result seal and its state revision in actual settlement order, applies the existing reducers and verifies Script lease state hashes plus routing/loop evidence. The existing frontier remapper changes native identities while retaining canonical result bytes, state updates, seal hashes and selected counters. Before transaction completion the new owner’s state must equal the selected projection. Prefix writes are not settled again: normal suffix settlement allocates the next revision from the retained seals.
 
@@ -89,10 +89,49 @@ one portable validation permits at most 128 uncached replay frames. Missing,
 changed, corrupt, cyclic, ambiguous or oversized evidence refuses continuation.
 Unsupported chains may remain imported as evidence-only data; this grants no
 continuation authority. Tree/called, issued/Agent/resource/automatic/unknown,
-parallel/Map/Join/gate/bundle/secret, changed-definition and external-file-proof
+gate/bundle/secret, changed-definition and external-file-proof
 families remain excluded from this standalone continuation path.
 
 Source review only. No tests, new fixtures, test preparation, Node, build,
 typechecking, runtime/native/browser/provider work or live database access was
 performed for this extension. The earlier uncertain operation is not settled or
 replayed by this successor work.
+
+## Parallel, Map and Join continuation
+
+The standalone consumer also accepts the effect-free Script subset of the existing
+parallel graph codec. It uses the same definition, frontier and full audit replay
+validators as local continuation; repeated-generation lineage validation is
+unchanged. No alternate graph replay or foreign database authority is introduced.
+
+Selected cuts may precede a fork or Map, retain an open fork with completed arrivals
+and unfinished paths, retain a sealed Map with undispatched or partially settled
+items, or follow a completed fork/Map/Join while another eligible suffix remains.
+Empty Maps are supported only when canonical audit proves their item seal and
+Join resolution. Selected owners must remain resumable; latest owners may be
+running or canonically completed/failed. Cuts between required arrival, item-seal,
+item-settlement or loop observations are refused by canonical replay. Active
+Script processes, unknown outcomes, retries, gates, issued work, resources,
+bundles and other excluded families remain unsupported.
+
+Fork/path ownership, ordered selected Join arrivals, Map identities, item indices,
+input hashes, dispatch order/concurrency bounds, loop counts and state-seal
+settlement order are replayed from original evidence. Fresh Map item IDs retain
+the existing remapper's `<new Map ID>:<original index>` rule. Restoring a prefix
+copies its exact sealed item inventory and dispatch markers: completed items are
+not expanded or dispatched again, resolved Joins are not resolved again, and
+completed branch/item reducers are not applied again. Only unfinished eligible
+paths/items proceed through the normal scheduler under current destination
+acceptance, policy, directories and admission.
+
+Original-key receipt recovery verifies mapped control ownership, immutable Map
+inventory and item content, settled Join choices/arrivals, terminal paths and
+prefix state seals. Open controls, dispatch markers and loop counts may advance;
+settled prefix evidence cannot change. These checks allow later legitimate suffix
+progress without demanding the destination stay at its selected checkpoint.
+The existing runtime-data, Shared/export/import, review digest and full retained
+lineage carry the same control rows; no additional format or endpoint is needed.
+
+Source-only extension: no tests, fixtures, test preparation, builds, types, Node,
+runtime/native/browser/provider or live database checks were performed. Parallel
+round trips and failure rollback still require execution qualification.

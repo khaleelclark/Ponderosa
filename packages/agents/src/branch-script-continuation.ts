@@ -24,6 +24,10 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
   return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||!calls&&!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop'&&!(resourceGeneration&&s.kind==='agent'&&s.target.kind==='ephemeral_organization'&&s.failure.action==='retry'&&s.failure.freshContext===true&&Number.isSafeInteger(s.failure.maxAttempts)&&s.failure.maxAttempts>=resourceGeneration+1&&Number.isSafeInteger(s.failure.delayMs)&&s.failure.delayMs>=0))&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
+/** Portable replay admits only the effect-free subset of the canonical graph codec. */
+export function portableScriptDefinitionSupported(definition:BranchDefinition):boolean {
+  return definition.trigger.kind==='manual'&&definition.steps.every(step=>step.kind==='script'&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
+}
 /** Exact supported subset; all other dependency families remain ineligible. */
 export type ScriptOwnerContext={resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
@@ -583,7 +587,7 @@ export function portableScriptCutSupported(db:Database.Database,data:import("@po
   budget.cache.set(cacheKey,false);
   const read=(kind:string)=>JSON.parse(owner.facts.find(f=>f.kind===kind)!.json);
   const definition=read('definition'),configuration=read('configuration'),e=selected.execution?.[0];
-  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||definition.trigger.kind!=='manual'||definition.steps.some((s:Row)=>s.kind!=='script')||definition.controls.some((c:Row)=>!['condition','route'].includes(c.kind))||configuration.requiredSecretRefs.length||configuration.configuration.checkpointMode!=='sync'||
+  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||configuration.configuration.checkpointMode!=='sync'||
     owner.chatRefs.length||owner.facts.some(f=>f.kind==='custody'||f.kind==='tree-import')||
     [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.length||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
   if(continuation&&(continuation.schema!=='ponderosa.branch.script-continuation.v1'||continuation.checkpoint||stableJson(continuation.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||

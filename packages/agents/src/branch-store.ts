@@ -22,7 +22,7 @@ import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} f
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
-import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
+import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts,readBranchLiveOutputs} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
@@ -683,8 +683,8 @@ export class BranchStore {
     if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!=='sync'||c?.schema!=='ponderosa.branch.script-continuation.v1'
       ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||c.checkpoint
       ||!e||e.id!==sourceOwner.sourceExecutionId||e.branch_id!==resolved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.admission_source!=='manual'
-      ||definition.trigger.kind!=='manual'||definition.steps.some(step=>step.kind!=='script')||definition.controls.some(control=>!['condition','route'].includes(control.kind))
-      ||configuration.configuration.checkpointMode!=='sync'||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only supported standalone manual sync Script cuts with declared JSON state and condition/route controls, without secrets, are supported');
+      ||!portableScriptDefinitionSupported(definition)
+      ||configuration.configuration.checkpointMode!=='sync'||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only supported standalone manual sync effect-free Script cuts with JSON state and condition/route/fork/Map/Join controls, without secrets, are supported');
     const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.length
       &&!cut.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state));
     if(!effectFree(selected)||!effectFree(current)||sourceOwner.facts.some(f=>f.kind==='custody')||sourceOwner.chatRefs.length)throw Error('Issued, unknown, bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
@@ -741,9 +741,37 @@ export class BranchStore {
     const accepted=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='accepted' AND kind='trigger_accepted'",next.id);
     if(!accepted||accepted.evidence_json!==stableJson({versionId:next.version_id,bindingRevisionId:next.binding_revision_id,inputHash:next.input_hash}))throw Error('Canonical fresh acceptance receipt unavailable');
     const restored=remapBranchFrontier(snapshot.selected,receipt.idMap,e.id,next.id);
-    for(const p of restored.paths!)if(!this.row('SELECT 1 FROM branch_paths WHERE id=? AND execution_id=?',p.id,next.id))throw Error('Continuation mapped path unavailable');
-    for(const step of restored.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',step.id,next.id);if(!row||['path_id','step_id','invocation','input_text'].some(key=>row[key]!==step[key])||step.state==='completed'&&(row.state!==step.state||row.result_json!==step.result_json))throw Error('Continuation mapped prefix differs');}
-    for(const attempt of restored.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',attempt.id);if(!row||['step_execution_id','number','input_hash'].some(key=>row[key]!==attempt[key])||row.request_id||attempt.state==='completed'&&['state','result_json','fence','runtime_outcome_json'].some(key=>row[key]!==attempt[key]))throw Error('Continuation mapped attempt differs');}
+    const prefix=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='foreign-prefix' AND kind='foreign_selected_prefix'",next.id);
+    if(prefix?.evidence_json!==stableJson({importedExecutionId:importedId,manifestSha256:receipt.review.manifestSha256,checkpointSha256:receipt.review.selection.checkpointSha256,idMap:receipt.idMap,reviewSha256:receipt.review.reviewSha256}))throw Error('Continuation prefix evidence differs');
+    for(const p of restored.paths!){
+      const row=this.row('SELECT * FROM branch_paths WHERE id=? AND execution_id=?',p.id,next.id);
+      if(!row||['parent_path_id','fork_invocation_id','edge_id'].some(key=>row[key]!==p[key])||row.traversals<p.traversals||
+        ['arrived','completed','failed','canceled','skipped'].includes(p.state)&&Object.keys(p).some(key=>row[key]!==p[key]))throw Error('Continuation mapped path differs');
+    }
+    // Control identities and settled choices stay immutable; open controls may advance normally.
+    for(const fork of restored.forks!){
+      const row=this.row('SELECT * FROM branch_forks WHERE id=? AND execution_id=?',fork.id,next.id);
+      if(!row||['parent_path_id','fork_id','join_id'].some(key=>row[key]!==fork[key])||fork.state==='closed'&&['state','selected_paths_json','result_json'].some(key=>row[key]!==fork[key]))throw Error('Continuation mapped Fork differs');
+    }
+    for(const join of restored.joins!){
+      const row=this.row('SELECT * FROM branch_join_arrivals WHERE execution_id=? AND fork_invocation_id=? AND path_id=?',next.id,join.fork_invocation_id,join.path_id);
+      if(!row||Object.keys(join).some(key=>row[key]!==join[key]))throw Error('Continuation mapped Join arrival differs');
+    }
+    for(const map of restored.maps!){
+      const row=this.row('SELECT * FROM branch_map_invocations WHERE id=? AND execution_id=?',map.id,next.id);
+      if(!row||['map_id','parent_path_id','join_id','source_result_id','item_count','items_hash'].some(key=>row[key]!==map[key])||map.state==='completed'&&row.state!==map.state||
+        this.row('SELECT COUNT(*) n FROM branch_map_items WHERE map_invocation_id=?',map.id)!.n!==map.item_count)throw Error('Continuation mapped Map differs');
+    }
+    for(const item of restored.items!){
+      const row=this.row('SELECT * FROM branch_map_items WHERE id=?',item.id);
+      if(!row||['map_invocation_id','item_index','path_id','input_text','input_hash'].some(key=>row[key]!==item[key])||![0,1].includes(row.dispatched)||row.dispatched<item.dispatched)throw Error('Continuation mapped Map item differs');
+    }
+    for(const loop of restored.loops!){
+      const row=this.row('SELECT * FROM branch_loop_counts WHERE execution_id=? AND path_id=? AND edge_id=?',next.id,loop.path_id,loop.edge_id);
+      if(!row||!Number.isSafeInteger(row.iterations)||row.iterations<loop.iterations)throw Error('Continuation mapped loop differs');
+    }
+    for(const step of restored.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',step.id,next.id);if(!row||['path_id','step_id','invocation','input_text'].some(key=>row[key]!==step[key])||['completed','failed','canceled'].includes(step.state)&&(row.state!==step.state||row.result_json!==step.result_json))throw Error('Continuation mapped prefix differs');}
+    for(const attempt of restored.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',attempt.id);if(!row||['step_execution_id','number','input_hash'].some(key=>row[key]!==attempt[key])||row.request_id||['completed','failed','canceled'].includes(attempt.state)&&['state','result_json','fence','runtime_outcome_json'].some(key=>row[key]!==attempt[key]))throw Error('Continuation mapped attempt differs');}
     // Prefix seals are immutable even after legitimate suffix progress. Never fold a copied update twice.
     for(const seal of restored.sealedResults!){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=? AND execution_id=?',seal.id,next.id);if(!row||['path_id','step_execution_id','terminal_attempt_id','result_json','content_hash'].some(key=>row[key]!==seal[key]))throw Error('Continuation mapped state seal differs');}
     if(receipt.review.sharedState){
@@ -769,6 +797,7 @@ export class BranchStore {
         {source:'foreign_checkpoint_continuation',importedExecutionId:importedId,reviewSha256:review.reviewSha256,commandKey:input.commandKey},now,'manual');
       if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Current continuation capacity/budget admission unavailable');
       const ids=Object.fromEntries(branchContinuationIds(cut.selected).map(id=>[id,randomUUID()]));
+      for(const item of cut.selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
       const restored=remapBranchFrontier(cut.selected,ids,cut.e.id,next.id);
       insertBranchFrontier(this.sqlite,next.id,restored,now);
       if(cut.sharedState&&stableJson(this.sharedState(next.id))!==stableJson(cut.sharedState.selected))throw Error('Fresh continuation state differs from selected prefix');
