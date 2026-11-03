@@ -1,3 +1,4 @@
+import {nativeDataPreview} from './nativeDataPreview';
 import type { PortableAgentPreview } from "./agent-package-preview.types";
 import { AgentPackageJsonParser, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 interface PreviewRequest {
@@ -106,6 +107,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     const response: PreviewResponse = {
       id,
       preview: {
+        nativeData:await nativeDataPreview(value.agents),
         hasWorkingFiles: value.agents.some(node=>Boolean(node.workingFolder)||(Array.isArray(node.workingFiles)&&node.workingFiles.length>0)),
         hasOutputRoles: Array.isArray(value.outputRoles)&&value.outputRoles.length>0,
         sourceLabel: value.sourceLabel.slice(0, 240),
