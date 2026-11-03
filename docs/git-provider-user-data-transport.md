@@ -926,8 +926,8 @@ still requires separate human review/action.
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
-| Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| Git default common hook/support originals | Explicit Git selection carries bounded regular UTF-8 originals from the validated common repository `hooks/` through `providerFiles` as virtual `.git/hooks/...` paths, never active hooks. Configured `core.hooksPath` targets are not followed; their nonsecret setting remains inactive configuration text. See [scope and limits](#inactive-default-common-git-hook-originals). |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...` records require explicit Git selection and its required Git manifest; all provider records require harness selection. Git hook/support originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -1030,7 +1030,7 @@ to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal pres
 the source instead of truncating data.
 
 The existing source fence and before/after checks do not drain independent native
-writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; Git hook files are never read. Known-secret inspection detects recognized fields/syntax,
+writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; only default common hook/support originals are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
 not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
@@ -1405,3 +1405,62 @@ sensitive prose and concealed secrets remain outside the text-file guarantee.
 Existing sensitive-data warnings and independent-writer limits remain. Source
 review only: no tests, round-trip, native equivalence, atomicity or whole-portability
 acceptance is claimed.
+
+### Inactive default common Git hook originals
+
+Explicit `git: true` selection includes optional `<validated commonDir>/hooks/`
+regular UTF-8 originals and bounded contained support subdirectories. This applies
+to a normal repository and the already authorized, reciprocally validated selected
+linked worktree/common repository. Every original maps to a virtual
+`.git/hooks/...` path in existing `providerFiles` slots, with exact base64 bytes
+and `removedSecretFields: false`. The path denotes common-repository provenance,
+even when the selected private gitdir is elsewhere; no absolute physical path or
+source ownership authority is transported. Main/other/private worktree hook
+locations are not read. The ordinary working-file lane still refuses `.git`.
+
+The [Git hooks manual](https://git-scm.com/docs/githooks) identifies the default
+hook directory and the separate `core.hooksPath` override. The
+[repository-layout manual](https://git-scm.com/docs/gitrepository-layout)
+identifies common-repository hook storage. These references identify the data
+family, not native activation or runtime equivalence. Configured hook paths are
+never expanded or followed, even if relative or contained; their nonsecret config
+text remains inactive. External/configured hook targets remain a preservation gap.
+
+The existing raw snapshot walker captures this exact common root with same-owner
+canonical directories, regular single-link no-follow bounded reads, exact identity/
+hash/absence evidence and whole-capture before/after association checks. Only
+initial root absence is optional; discovered directory/file disappearance fails.
+Malformed/empty/dot/dot-dot/null/backslash/escaping/credential paths, links,
+special nodes, foreign owners, invalid UTF-8, NUL binary text, observed drift or
+exceeded bounds refuse while preserving source bytes. Existing contained names,
+noncredential dot-prefixed components, `.sample` files and support text remain
+accepted without hook-name or extension requirements. UTF-8/BOM bytes remain exact
+regardless of extension; known secrets refuse instead of rewriting JSON or scripts.
+
+The hook inventory is bounded to 1,000 descendant entries. Hook and harness
+originals share the existing 1,000-file / 32 MiB aggregate review-original limits,
+with 1 MiB per original; hooks also count within existing 20,000-node / 32 MiB Git
+raw limits. Nothing is silently truncated. Parser family binding permits Git-only
+and mixed selections but rejects Git hook records without Git selection and a
+valid required Git manifest, or provider records without harness selection.
+Imported file/ancestor collisions refuse through the shared opaque classifier.
+
+Hook originals are skipped before native read-view copying, native parsing or
+pack pairing. They never enter the recreated Git repository. Both isolated Git
+plumbing and the recreated review repository keep hooks disabled with
+`core.hooksPath=/dev/null` and fsmonitor disabled. Shared working export validates
+the complete manifest; import parses before numbered mode0600 nonexecutable
+`.review` copies and exact original path/removal mappings. Retained re-export
+validates authoritative original manifest bytes, never generated repositories or
+review copies. The local Git capture return carries the Git manifest and hook
+originals together to its sole shared export caller; no DTO/format/schema/version,
+dependency, cap, checkbox or additional codec changes are needed.
+
+No shell, shebang, JSON, instruction or reference interpretation, path/environment/
+import expansion, global/ancestor/home/managed/session discovery, binding,
+installation, executable chmod, activation, reload, grant, network, hook/provider
+execution or source write is added. Other Git and provider families are unchanged.
+Empty directories, binary resources, original executable mode/mtime, arbitrary
+sensitive prose/concealed secrets and independent-writer atomicity remain outside
+the guarantee. Existing sensitive-data warnings remain. Source review only: no
+capture execution, tests, native equivalence, round-trip or whole-Bible acceptance.

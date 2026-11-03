@@ -36,7 +36,11 @@ function claudeOpaqueOriginal(value:string,directory=false):boolean {
 function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
+function gitHookOriginal(value:string):boolean {
+  return value.startsWith('.git/hooks/')&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
+}
 function opaqueProviderOriginal(value:string,directory=false):boolean {
+  if(gitHookOriginal(value))return true;
   if(claudeOpaqueOriginal(value,directory)||['.claude/CLAUDE.md','.claude/AGENTS.md','.codex/instructions.md'].includes(value))return true;
   return /^\.(?:claude\/(?:commands|agents|rules)|codex\/(?:skills|rules))\//.test(value)&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
 }
@@ -297,13 +301,16 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   fields(value.selection,['git','harness']);
   validateReviewedUserDataSelection(value.selection);
   if(Object.hasOwn(value,'git')&&!value.git)throw new Error('Invalid selected Git data');
-  if(!value.selection.git&&value.git||!value.selection.harness&&value.providerFiles.length||value.selection.git&&!value.git)throw new Error('Reviewed data differs from its explicit family selection');
+  if(!value.selection.git&&value.git||value.selection.git&&!value.git)throw new Error('Reviewed data differs from its explicit family selection');
   if(!value.recreationScope||Object.keys(value.recreationScope).length!==Object.keys(recreationScope).length||Object.entries(recreationScope).some(([key,status])=>(key==='cyclicLinks'? !['refuse','passive_in_root'].includes(value.recreationScope.cyclicLinks):(value.recreationScope as Record<string,string>)[key]!==status)))throw new Error('Required recreation semantics cannot be silently downgraded');
   const paths=new Set<string>();let bytes=0;
   for(const file of value.providerFiles){
     fields(file,['path','dataBase64','removedSecretFields']);
     if(typeof file.path!=='string'||!providerPath(file.path)||file.path.split('/').some(part=>!part||part==='.'||part==='..')||credentialPath(file.path)||file.path.includes('\\')||file.path.includes('\0')||typeof file.dataBase64!=='string'||typeof file.removedSecretFields!=='boolean'||paths.has(file.path))throw new Error('Invalid reviewed provider original');
+    const hook=gitHookOriginal(file.path);
+    if(hook?!value.selection.git||!value.git||file.removedSecretFields:!value.selection.harness)throw new Error('Reviewed original differs from its explicit family selection');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
+    if(hook&&data.includes(0))throw new Error('Git hook originals require UTF-8 text, not binary data');
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
     if(codexReviewToml(file.path)&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
     safeText(text(data),'Reviewed provider configuration');
@@ -1050,25 +1057,29 @@ function derivedGitCache(name:string,format?:'sha1'|'sha256'):boolean {
 async function captureGitRaw(association:GitAssociation) {
   const {gitDir,commonDir,linked}=association,files:CapturedGitFile[]=[],inventory:Array<{name:string;source:'selected'|'shared';identity:string;digest?:string;absent?:true}>=[];
   const owner=(await fs.lstat(association.root,{bigint:true})).uid,names=new Set<string>();
-  let nodes=0,bytes=0;
-  const walk=async(target:string,name:string,source:'selected'|'shared',objects=false):Promise<void>=>{
+  let nodes=0,bytes=0,hookEntries=0;
+  const walk=async(target:string,name:string,source:'selected'|'shared',objects=false,optional=true):Promise<void>=>{
+    const hook=name==='hooks'||name.startsWith('hooks/');
+    if(hook&&(source!=='shared'||name!=='hooks'&&!gitHookOriginal('.git/'+name)))throw new Error('Invalid common Git hook original path');
+    if(hook&&name!=='hooks'&&++hookEntries>1000)throw new Error('Git hook inventory exceeds 1000 entries');
     const refPath=name.startsWith('logs/')?name.slice(5):name;
     // Common private names belong to the main worktree: do not even stat or open them.
     if(linked&&source==='shared'&&privateRef(refPath))return;
     if(linked&&source==='selected'&&(name.startsWith('refs/')||name.startsWith('logs/refs/'))&&!privateRef(refPath))throw new Error('Unsupported selected private Git ref storage');
-    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name,source,identity:'',absent:true});return;}throw error;}
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!hook||optional)){inventory.push({name,source,identity:'',absent:true});return;}throw error;}
     if(++nodes>20000||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git raw inventory is foreign, external or exceeds its bound');
     if(before.isDirectory()){
-      if(!objects&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
+      if(!objects&&!hook&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
       if(objects&&!['objects','objects/pack','objects/info','objects/info/commit-graphs','objects/pack/multi-pack-index.d'].includes(name)&&!/^objects\/[a-f0-9]{2}$/.test(name))throw new Error('Unsupported Git object directory');
       inventory.push({name,source,identity:originalIdentity(before)});
       const entries=(await fs.readdir(target)).sort();
-      for(const entry of entries)await walk(path.join(target,entry),name+'/'+entry,source,objects);
+      for(const entry of entries)await walk(path.join(target,entry),name+'/'+entry,source,objects,false);
       const optional=name==='objects'?['info','pack']:name==='objects/info'?['commit-graph','commit-graphs','packs']:name==='objects/info/commit-graphs'?['commit-graph-chain']:name==='objects/pack'?['multi-pack-index','multi-pack-index.d']:name==='objects/pack/multi-pack-index.d'?['multi-pack-index-chain']:[];
       for(const entry of optional)if(!entries.includes(entry))await walk(path.join(target,entry),name+'/'+entry,source,objects);
       if(name==='objects/pack')for(const entry of entries.filter(entry=>/^pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.pack$/.test(entry)))for(const suffix of ['keep','mtimes']){const companion=entry.slice(0,-4)+suffix;if(!entries.includes(companion))await walk(path.join(target,companion),name+'/'+companion,source,objects);}
       const after=await fs.lstat(target,{bigint:true});if(originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw directory changed');
     }else{
+      if(name==='hooks')throw new Error('Common Git hook root must be a directory');
       if(['refs','logs/refs'].includes(name)||linked&&source==='selected'&&['refs/bisect','refs/rewritten','refs/worktree'].includes(refPath))throw new Error('Git ref namespace must be a directory');
       if(['objects/info/commit-graphs','objects/pack/multi-pack-index.d'].includes(name))throw new Error('Git derived-cache namespace must be a directory');
       const cache=derivedGitCache(name),retention=objects&&/\.(?:keep|mtimes)$/.test(name);
@@ -1077,6 +1088,10 @@ async function captureGitRaw(association:GitAssociation) {
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
       const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
+      if(hook){
+        if(data.includes(0))throw new Error('Git hook originals require UTF-8 text, not binary data');
+        safeText(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data),'Git hook original');
+      }
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
     }
@@ -1095,7 +1110,7 @@ async function captureGitRaw(association:GitAssociation) {
   for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
-  for(const name of ['config','shallow','packed-refs','refs','objects'])await walk(path.join(commonDir,name),name,'shared',name==='objects');
+  for(const name of ['config','shallow','packed-refs','refs','objects','hooks'])await walk(path.join(commonDir,name),name,'shared',name==='objects');
   for(const directory of new Set([gitDir,commonDir])){
     const target=path.join(directory,'logs');
     const source=directory===gitDir?'selected':'shared';
@@ -1134,10 +1149,11 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
     // Object enumeration needs no traversal boundary: shallow and grafts stay out of this read view.
     // Nothing copied here can route Git to a live repository or settings file.
     await mkdir(path.join(root,'.git','refs'));await mkdir(path.join(root,'.git','objects'));
-    await write('config',Buffer.from(format==='sha256'?'[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nobjectformat = sha256\n':'[core]\nrepositoryformatversion = 0\nbare = true\n'));
+    await write('config',Buffer.from(format==='sha256'?'[core]\nrepositoryformatversion = 1\nbare = true\nhooksPath = /dev/null\nfsmonitor = false\n[extensions]\nobjectformat = sha256\n':'[core]\nrepositoryformatversion = 0\nbare = true\nhooksPath = /dev/null\nfsmonitor = false\n'));
     const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
     const expectedRefs=new Map<string,{oid?:string;symbolic?:string}>();
     for(const file of files){
+      if(file.name.startsWith('hooks/'))continue;
       if(file.name==='ORIG_HEAD'||file.name==='logs/ORIG_HEAD'||file.name==='FETCH_HEAD')continue;
       if(derivedGitCache(file.name)){
         if(!derivedGitCache(file.name,format))throw new Error('Git derived cache name differs from the declared format');
@@ -1206,7 +1222,7 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
 }
 
 /** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
-export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData|undefined> {
+export async function exportReviewedGit(root:string):Promise<{git:ReviewedGitUserData;hookOriginals:ReviewedUserData['providerFiles']}|undefined> {
   const association=await gitAssociation(root);if(!association)return undefined;
   const {gitDir,commonDir,linked}=association;
   const assertTopology=async()=>{
@@ -1257,7 +1273,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
   const headText=text(captured.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: derived local commit-graph, multi-pack-index and server-info advertisements (info/refs, objects/info/packs); rebuild from verified objects/refs if needed','Excluded: derived Git index UNTR/FSMN caches; rebuild local observations if needed','Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
+  const exclusions=['Excluded: derived local commit-graph, multi-pack-index and server-info advertisements (info/refs, objects/info/packs); rebuild from verified objects/refs if needed','Excluded: derived Git index UNTR/FSMN caches; rebuild local observations if needed','Excluded: Git credentials, external include contents, configured hook targets beyond default common hooks and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
   for(const item of before.sparse.configuration){
     const {key,value}=item;
@@ -1284,7 +1300,9 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
   result.index.push(...expandSparseDirectories(directories,new Map(objects.map(object=>[object.oid,object])),format));
-  result.index.sort(indexOrder);validateReviewedGit(result);return result;
+  result.index.sort(indexOrder);validateReviewedGit(result);
+  const hookOriginals=before.raw.files.filter(file=>file.source==='shared'&&file.name.startsWith('hooks/')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false}));
+  return {git:result,hookOriginals};
 }
 
 /** Recreate a separate review repository, never the native-owned destination .git. No Git command or hook runs. */
@@ -1366,7 +1384,17 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
       result.providerFiles.push({path:relative,dataBase64:Buffer.from(safe).toString('base64'),removedSecretFields});
     }
   }
-  if(selection.git)result.git=await exportReviewedGit(root);
+  if(selection.git){
+    const captured=await exportReviewedGit(root);
+    if(captured){
+      result.git=captured.git;
+      for(const original of captured.hookOriginals){
+        bytes+=Buffer.from(original.dataBase64,'base64').length;
+        if(result.providerFiles.length>=1000||bytes>limit)throw new Error('Combined review originals exceed their bound');
+        result.providerFiles.push(original);
+      }
+    }
+  }
   if(selection.git&&!result.git)throw new Error('Selected Git data is unavailable in this working root');
   result.exclusions.push('Provider settings are inert review data: commands, hooks, MCP servers and permissions are never installed or executed','Other provider files and custom formats require explicit inventory; sessions/auth/profile ownership remain excluded');
   return result;
