@@ -430,7 +430,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         }
         case 'gate_checkpoint_closed':{
           const gate=selected.gates!.find(g=>g.id===v.gateId);
-          if(context||!gate||!openedGates.has(gate.id)||resolvedGates.has(gate.id)||typeof v.invocationId!=='string'||!Number.isSafeInteger(v.ordinal)||v.ordinal<1
+          if(!standaloneGateContext(context)||!gate||!openedGates.has(gate.id)||resolvedGates.has(gate.id)||typeof v.invocationId!=='string'||!Number.isSafeInteger(v.ordinal)||v.ordinal<1
             ||v.mode!==(configuration.checkpointMode??'async')||event.transition_key!==`gate-invocation:${v.invocationId}`)return false;
           gateClosing=v;break;
         }
