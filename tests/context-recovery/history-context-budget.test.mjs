@@ -198,7 +198,9 @@ test('unknown capacity uses explicit policy and one budget for complete instruct
 }));
 
 test('oversized omitted history remains completely readable in authorized Unicode chunks', fixtureTestOptions, t => withBudgetFixture(t, async f => {
-  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 75000 }));
+  // Leave room for the current immutable tool contract and one recent note;
+  // the oversized historical message still exceeds the entire budget.
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 90000 }));
   const chat = await f.createChat('Oversized historical evidence'), agent = await f.createIdleAgent(chat, 'Chunk reader');
   const content = `OVERSIZED_BUDGET_ORCHARD_BEGIN\n${'東京 🌲 café\0\n'.repeat(10000)}OVERSIZED_BUDGET_ORCHARD_END`;
   const old = authored(f.store, chat, agent, content), recent = authored(f.store, chat, agent, 'COMPLETE_RECENT_BUDGET_NOTE', 1);
@@ -397,12 +399,15 @@ for (const maxIdleSessions of [0, 2]) test(`Capulin ordinary continuation preser
 }));
 
 test('a compatible short continuation does not require its fresh reconstruction fallback to fit', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
-  const instructions = 'KEEP_THESE_RETAINED_RULES '.repeat(1800);
+  const instructions = 'KEEP_THESE_RETAINED_RULES '.repeat(1600);
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false, globalInstructions: instructions }));
   const chat = await f.createChat('Retained large instructions'), agent = await f.createIdleAgent(chat, 'Compatible reader');
   let session = await f.hold(agent.id); const generation = session.engineAgentId;
   const original = accepted(f.store, agent.id), frozen = JSON.stringify(original);
   assert.ok(budget(original).estimatedInputTokens > 45000, 'The fixture must exceed the later reconstruction target');
+  assert.ok(budget(original).estimatedInputTokens <= 90000, 'The initial reconstruction must fit its unchanged ceiling');
+  assert.ok(original.exactSystemPrompt.includes(instructions.trim()), 'All instruction content reaches the original session');
+  assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).globalInstructions, instructions, 'The saved authored value is not changed');
   await checkpoint(f, agent, session, 115910, 0); await finish(f, agent, session);
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 75000 }));
   f.usage.set(agent.id, { usedTokens: 115910, providerSessionGeneration: generation });
@@ -416,10 +421,16 @@ test('a compatible short continuation does not require its fresh reconstruction 
 
 for (const unavailableFallback of [false, true]) test(`pre-sampling error cannot reset ${unavailableFallback ? 'an over-budget fallback' : 'a session with automatic rollover disabled'}`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false,
-    ...(unavailableFallback ? { globalInstructions: 'KEEP_THESE_RETAINED_RULES '.repeat(1800) } : {}) }));
+    ...(unavailableFallback ? { globalInstructions: 'KEEP_THESE_RETAINED_RULES '.repeat(1600) } : {}) }));
   const chat = await f.createChat('Guarded provider fallback'), agent = await f.createIdleAgent(chat, 'Fallback owner');
   const session = await f.hold(agent.id), generation = session.engineAgentId;
   const original = accepted(f.store, agent.id), frozen = JSON.stringify(original);
+  if (unavailableFallback) {
+    const instructions = 'KEEP_THESE_RETAINED_RULES '.repeat(1600);
+    assert.ok(budget(original).estimatedInputTokens <= 90000, 'The original packet fits its initial ceiling');
+    assert.ok(original.exactSystemPrompt.includes(instructions.trim()), 'All instruction content reaches the original session');
+    assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).globalInstructions, instructions);
+  }
   await checkpoint(f, agent, session, 25000, 0); await finish(f, agent, session);
   if (unavailableFallback) {
     assert.ok(budget(original).estimatedInputTokens > 45000);
@@ -439,6 +450,24 @@ for (const unavailableFallback of [false, true]) test(`pre-sampling error cannot
   assert.equal(JSON.stringify(f.store.getProviderInput(original.executionId, true)), frozen);
   assert.equal(f.store.getProviderInput(attempted.executionId, true).promptHash, attempted.promptHash, 'Failed retained input cannot be rewritten as a fresh attempt');
   assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n, 0);
+}));
+
+test('over-budget initial input refuses before dispatch and preserves all authored data', fixtureTestOptions, t => withBudgetFixture(t, async f => {
+  // Preserve the former 46,800-byte synthetic instruction payload and exact
+  // initial 90,000-estimated-token ceiling.  The current required host contract makes
+  // this packet too large; refusal is the correct outcome, not truncation.
+  const instructions = 'KEEP_THESE_RETAINED_RULES '.repeat(1800);
+  assert.equal(Buffer.byteLength(instructions), 46800);
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false, globalInstructions: instructions }));
+  const chat = await f.createChat('Oversized required input'), agent = await f.createIdleAgent(chat, 'No dispatch owner');
+  const message = 'Do not truncate or dispatch this original request';
+  await refusedContinuation(f, agent, message);
+  const activation = f.store.sqlite.prepare("SELECT state,last_delivery_error FROM agent_activations WHERE agent_id=? ORDER BY rowid DESC LIMIT 1").get(agent.id);
+  assert.match(activation.last_delivery_error, /context_recovery_required/);
+  assert.match(activation.last_delivery_error, /Required provider input exceeds/);
+  assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).globalInstructions, instructions);
+  const messages = (await f.detail(agent.id)).messages.filter(row => row.role === 'user' && row.text === message);
+  assert.equal(messages.length, 1, 'The original authored message remains available exactly once');
 }));
 
 test('verified capacity refusal preserves the original message and same-key supported retry delivers once in its session', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
