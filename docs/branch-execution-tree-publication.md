@@ -158,6 +158,15 @@ held-only generations are validated separately and never treated as admission.
 Re-export checks immutable held evidence even after current enablement and fresh
 continuation owners; the ordinary disabled DATA readback contract is unchanged.
 Tree proof is bounded to 16 nested links, 32 MiB manifests and 128 uncached
-manifest/replay frames per traversal. Local-rewind and gates/issued/EXIT/resource/
+manifest/replay frames per traversal. Local-rewind and parallel-gate/issued/EXIT/resource/
 unknown combinations remain outside this consumer. This change has source review only, with no runtime
 round-trip or rollback qualification.
+
+Serial workflow approval gates are supported in the manual synchronous effect-free
+foreign Script/Call consumer, including root gates before the first Call, completed
+selected decisions, newly mapped pending decisions and later suffix gates. Each
+owner review separates selected/latest gate evidence; fresh pending notifications
+belong to fresh destination owners. Existing bounded held/admitted generation
+proof and atomic owner restoration apply. Parallel gate/Call, canceled serial and
+recovery-purpose gates remain unsupported. See the foreign continuation guide for
+the exact scope. Live notification delivery and rollback remain unqualified.

@@ -88,7 +88,7 @@ import/foreign chains and each retained rewind chain are limited to 16 links, an
 one portable validation permits at most 128 uncached replay frames. Missing,
 changed, corrupt, cyclic, ambiguous or oversized evidence refuses continuation.
 Unsupported chains may remain imported as evidence-only data; this grants no
-continuation authority. Tree/gate combinations, issued/Agent/resource/automatic/unknown,
+continuation authority. Parallel tree/gate combinations, issued/Agent/resource/automatic/unknown,
 recovery-gate/bundle/secret, changed-definition and external-file-proof
 families remain excluded from this standalone continuation path.
 
@@ -189,7 +189,7 @@ completed/failed children are immutable prefix data. Latest source owner evidenc
 is independently replayed, including terminal latest roots. The selected child
 inventory comes from the historical checkpoint boundary, never from later work.
 
-This tree family excludes human gates, issued/native/unknown work, resources,
+This tree family supports serial human workflow gates and excludes issued/native/unknown work, resources,
 custody, actions, bundles, Agents, execution-owned Chats, secrets, automatic,
 async/EXIT, changed historical definitions/configuration and external restoration.
 Supported held re-exports and admitted continuation generations retain exact proof
@@ -268,3 +268,30 @@ cycles, missing owners, ambiguous commands, unsupported or oversized proof refus
 No source effects or old acceptance authority are replayed. Ordinary disabled DATA
 readers remain unchanged. Repeated round trips, suffix dispatch, rendered recovery
 and rollback are source-reviewed behavior only until separately executed.
+
+
+### Serial human gates in Call trees
+
+Manual synchronous effect-free Script/Call owners may contain ordinary
+`human_gate` steps, including a root gate before the first child is admitted.
+Selected and latest trees independently replay prompt, proposal, choices,
+response/revision, checkpoint closure, routing and sealed results. A pending
+selected gate stays pending even when the latest source gate has resolved.
+Completed selected decisions remain historical prefix data, restored once.
+Review includes selected/latest gate details for each owner and pending/completed
+decision counts; all current destination choices remain in the same review digest.
+
+Each selected pending gate receives a fresh mapped destination ID and notification
+owned by its newly accepted execution. Normal destination human responses resolve
+it; imported decisions grant no host, recovery or native approval authority.
+Suffix gates use the normal workflow gate path. Original-key recovery verifies
+immutable prefix gates and genuine later destination resolution/settlement and
+notification ownership. Held re-exports and admitted continuation generations use
+the same bounded retained lineage and canonical replay. All owners and gate
+notifications are written in the existing acceptance transaction.
+
+Parallel gate/Call combinations, canceled serial gates, recovery-purpose gates,
+local rewinds with gates, issued/resource/unknown/effectful work, automatic and
+async/EXIT trees remain refused. Standalone serial/parallel gate behavior is
+unchanged. Source review does not qualify live gate notifications, round trips,
+suffix scheduling or rollback.
