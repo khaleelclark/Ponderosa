@@ -188,8 +188,7 @@ partially rewriting a table. Arrays support comments/newlines/trailing commas;
 inline tables refuse layout comments/newlines and trailing commas. Duplicate
 members and later extension of closed inline tables refuse. Value depth is capped
 at 32 below the root and total value nodes at 10,000, alongside existing byte,
-statement and static-table bounds. Unsupported array-table declarations, dates,
-nondecimal/special numbers remain explicit limits. Decoded
+statement and static-table bounds. Additional scalar/header families are described below. Decoded
 string-leaf and raw-text secret checks both remain. Source-only implementation;
 no tests, builds, types, native capture or runtime qualification performed.
 
@@ -206,3 +205,17 @@ credential tables/retained inline subtrees, without partial unrelated loss.
 Accepted nonsecret source spans and existing raw/decoded string inspection remain.
 See the [exact structured contract](git-provider-user-data-transport.md#bounded-toml-syntax).
 No general TOML completeness or runtime qualification is claimed.
+
+
+The same inactive TOML reader now accepts array-table headers with independent
+ordered element namespaces, latest-parent static/nested subtables and explicit
+static-array/table/closed-value redefinition refusal. An undeclared implicit parent
+cannot later be reinterpreted as an array. Every element charges the existing
+namespace bound. Base-prefixed unsigned hex/octal/binary integers are grammar- and
+signed-64-range checked; decimal bounds remain. Lowercase signed `inf`/`nan` tokens
+stay source text. Gregorian date/time/offset validation supports local and offset
+forms, lowercase/space delimiters and up to nine fractional digits without Date
+conversion, timezone normalization or truncation. Leap seconds, greater fractional
+precision and overflowing decimal floats explicitly refuse. All original bytes,
+secret-path removal/refusal, raw/decoded checks and source retention remain; no
+parser certification or runtime qualification is claimed. See the exact contract.

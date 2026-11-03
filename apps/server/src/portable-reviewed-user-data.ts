@@ -52,25 +52,33 @@ function safeText(value:string,label:string):void {
 function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean} {
   if(Buffer.byteLength(value)>1024*1024||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|\r(?!\n)/.test(value))throw new Error('Invalid or oversized review TOML');
   let offset=0,kept=0,safe='',removedSecretFields=false,entries=0,namespaceNodes=0;
-  type Namespace={kind:'implicit'|'explicit'|'dotted'|'value';children:Map<string,Namespace>};
+  type Namespace={kind:'implicit'|'explicit'|'dotted'|'value'|'array';children:Map<string,Namespace>;latest?:Namespace};
   const namespace=(kind:Namespace['kind']):Namespace=>{if(++namespaceNodes>10000)throw new Error('Review TOML namespace exceeds its bound');return {kind,children:new Map()};};
   const root=namespace('explicit');let scope=root,scopeDepth=0;
   const fail=():never=>{throw new Error('Invalid, ambiguous or unsupported review TOML value syntax');};
   const horizontal=()=>{while(value[offset]===' '||value[offset]==='\t')offset++;};
   const newline=()=>{if(value[offset]==='\r')offset++;if(value[offset]!=='\n')fail();offset++;};
   const endLine=()=>{horizontal();if(value[offset]==='#')while(offset<value.length&&value[offset]!=='\n'&&value[offset]!=='\r')offset++;if(offset<value.length)newline();};
-  const registerPath=(base:Namespace,parts:string[],declaration:boolean):Namespace=>{
+  const registerPath=(base:Namespace,parts:string[],declaration:false|'table'|'array'):Namespace=>{
     let parent=base;
     for(const [index,part] of parts.entries()){
       const last=index===parts.length-1;let child=parent.children.get(part);
       if(declaration){
+        if(last&&declaration==='array'){
+          if(child&&child.kind!=='array')fail();
+          if(!child){child=namespace('array');parent.children.set(part,child);}
+          child.latest=namespace('explicit');return child.latest;
+        }
+        if(child?.kind==='array'){
+          if(last||!child.latest)fail();parent=child.latest!;continue;
+        }
         if(child?.kind==='value'||last&&child&&child.kind!=='implicit')fail();
         if(!child){child=namespace(last?'explicit':'implicit');parent.children.set(part,child);}
         else if(last)child.kind='explicit';
       }else{
         if(last){if(child)fail();child=namespace('value');parent.children.set(part,child);}
         else{
-          if(child?.kind==='value'||child?.kind==='explicit')fail();
+          if(child?.kind==='value'||child?.kind==='explicit'||child?.kind==='array')fail();
           if(!child){child=namespace('dotted');parent.children.set(part,child);}else child.kind='dotted';
         }
       }
@@ -163,23 +171,46 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
       }
       fail();
     }
-    const begin=offset;while(offset<value.length&&!/[ \t,#\r\n\]}]/.test(value[offset]!))offset++;
-    const scalar=value.slice(begin,offset);
-    // shortcut: dates, nondecimal numbers and array-table declarations remain unsupported.
-    if(!/^(?:true|false|[+-]?(?:0|[1-9](?:_?[0-9])*)(?:\.[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?)$/.test(scalar))fail();
-    const numeric=scalar.replaceAll('_','');
-    if(!['true','false'].includes(scalar)){
-      if(!Number.isFinite(Number(numeric)))fail();
-      if(!/[.eE]/.test(numeric)&&(BigInt(numeric)<-(1n<<63n)||BigInt(numeric)>(1n<<63n)-1n))fail();
+    const begin=offset;while(offset<value.length&&!/[,#\r\n\]}]/.test(value[offset]!))offset++;
+    const scalar=value.slice(begin,offset).replace(/[ \t]+$/,'');
+    if(/^(?:true|false|[+-]?(?:inf|nan))$/.test(scalar))return;
+    const based=/^0(?:x[0-9a-fA-F](?:_?[0-9a-fA-F])*|o[0-7](?:_?[0-7])*|b[01](?:_?[01])*)$/.test(scalar);
+    const decimal=/^[+-]?(?:0|[1-9](?:_?[0-9])*)(?:\.[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?$/.test(scalar);
+    if(based||decimal){
+      const numeric=scalar.replaceAll('_','');
+      if(based||!/[.eE]/.test(numeric)){
+        const digits=(based?numeric.slice(2):numeric.replace(/^[+-]/,'')).replace(/^0+/,'');
+        const maxDigits=based?(numeric[1]==='x'?16:numeric[1]==='o'?21:63):19;
+        if(digits.length>maxDigits)fail();
+        const integer=based?BigInt(numeric.slice(0,2)+(digits||'0')):BigInt((numeric.startsWith('-')?'-':'')+(digits||'0'));
+        if(integer<-(1n<<63n)||integer>(1n<<63n)-1n)fail();
+      }else if(!Number.isFinite(Number(numeric)))fail();
+      return;
     }
+    const dated=/^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:\d{2})?)?$/.exec(scalar);
+    const timed=/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/.exec(scalar);
+    if(dated){
+      const year=Number(dated[1]),month=Number(dated[2]),day=Number(dated[3]);
+      const days=[31,year%4===0&&(year%100!==0||year%400===0)?29:28,31,30,31,30,31,31,30,31,30,31];
+      if(month<1||month>12||day<1||day>days[month-1]!)fail();
+      if(dated[4]===undefined)return;
+      if(Number(dated[4])>23||Number(dated[5])>59||Number(dated[6])>59)fail();
+      const zone=dated[8];
+      if(zone&&zone!=='Z'&&zone!=='z'&&(Number(zone.slice(1,3))>23||Number(zone.slice(4,6))>59))fail();
+      return;
+    }
+    if(timed){if(Number(timed[1])>23||Number(timed[2])>59||Number(timed[3])>59)fail();return;}
+    // Leap seconds and fractional precision beyond nanoseconds require explicit separate support.
+    fail();
   };
   while(offset<value.length){
     if(++entries>10000)fail();const start=offset;horizontal();
     if(value[offset]==='#'||value[offset]==='\r'||value[offset]==='\n'||offset===value.length){endLine();continue;}
     if(value[offset]==='['){
-      offset++;const parts=keyPath();if(value[offset++]!==']')fail();
+      offset++;const array=value[offset]==='[';if(array)offset++;
+      const parts=keyPath();if(value[offset++]!==']'||array&&value[offset++]!==']')fail();
       if(parts.some(isPortableSecretField))throw new Error('Credential TOML tables require separate preservation');
-      scope=registerPath(root,parts,true);scopeDepth=parts.length;endLine();continue;
+      scope=registerPath(root,parts,array?'array':'table');scopeDepth=parts.length;endLine();continue;
     }
     const parts=keyPath();if(scopeDepth+parts.length>64)fail();
     horizontal();if(value[offset++]!=='=')fail();horizontal();

@@ -302,8 +302,9 @@ decoded segments, so equivalent escaped/bare spellings cannot bypass duplicates
 or secret filtering. Duplicate keys/tables, value/table collisions,
 invalid escapes/controls, unterminated strings and trailing syntax refuse.
 
-Other accepted scalars are booleans, signed 64-bit decimal integers and finite
-decimal/exponent numbers. [Arrays](https://toml.io/en/v1.0.0#array) and
+Other accepted scalars include booleans, signed 64-bit decimal integers, unsigned
+hex/octal/binary integers within the positive signed-64 range, finite decimal/
+exponent numbers and lowercase optionally signed `inf`/`nan` tokens. [Arrays](https://toml.io/en/v1.0.0#array) and
 [inline tables](https://toml.io/en/v1.0.0#inline-table) may nest supported values.
 Arrays accept mixed types, layout comments/newlines and a trailing comma. Inline
 tables allow horizontal layout whitespace, no layout comments/newlines and no
@@ -317,8 +318,13 @@ its own header; duplicate explicit/dotted redefinition and scalar/closed-table
 extension refuse. Dotted assignments cannot reopen explicitly declared tables,
 while new static subtable headers under dotted-key parents are supported. Dotted
 inline members share the same collision checks within their closed local namespace.
+Array-table declarations append ordered independent elements; static/nested array
+headers traverse the latest defined parent element. Namespace checks include every
+element. Static-array append, table/array conversion, closed-value extension and
+retroactive conversion of an implicit parent into an array refuse. Source order and
+bytes carry the elements; parsed namespaces are inspection-only.
 Any decoded secret segment removes the whole safely delimited assignment; a secret
-static-table path or retained inline-member path refuses the complete selection.
+static/array-table path or retained inline-member path refuses the complete selection.
 
 A recognized secret assignment may contain any supported value; the complete
 assignment is parsed before removal. A recognized secret member nested within an
@@ -327,12 +333,17 @@ message; no partial member rewrite or unrelated-setting loss is performed. Every
 retained string leaf is decoded and inspected, including leaves nested in arrays
 or inline tables. The remaining raw-text scan is unchanged.
 
-Array-of-table declarations, dates/times, nondecimal integers, infinities/NaNs
-and malformed key/header forms still refuse. This
-subset may reject valid TOML; no general-language completeness is claimed. Input
+Offset/local date-times, local dates and local times accept valid Gregorian
+calendar days (four-digit years), hours 00–23, minutes/seconds 00–59 and numeric
+offsets with hour/minute bounds. Date/time separators may be `T`, `t` or one space;
+UTC `Z`/`z` and fractional seconds of 1–9 digits are supported. No `Date`, timezone
+conversion, floating NaN/Infinity serialization or source normalization occurs.
+Leap seconds, fractional precision beyond nine digits, overflowing decimal floats
+and malformed grammar still refuse. This bounded reader is not parser-certified
+or a claim of universal TOML acceptance. Input
 is capped at 1 MiB, 64 static table segments, 10,000 outer statement/line iterations,
 10,000 total value nodes (including containers), 10,000 namespace nodes
-(including inline roots), 64 decoded segments per key path and 32 nested value levels below
+(including inline roots and every array-table element), 64 decoded segments per key path and 32 nested value levels below
 the root. Parsing advances through bounded source spans and visits each value
 once; namespace checks use segment maps, with root-relative static/assignment paths
 capped at 64 segments. Existing decoded-inspection/package bounds, inactive settings and source
