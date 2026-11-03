@@ -73,6 +73,7 @@ test('exact command equality traverses package data without whole-document strin
  const original={history:['unchanged'],nested:{z:1,a:[true,null]},__proto__:null};
  assert.ok(samePackageValue(original,{nested:{a:[true,null],z:1},history:['unchanged']}));
  assert.equal(samePackageValue(original,{nested:{a:[true,null],z:1},history:['changed']}),false);
+ assert.ok(samePackageValue({body:{ack:true},branchId:undefined},{body:{ack:true}}));
  assert.equal(samePackageValue([],{}),false);
  assert.equal(samePackageValue([1],[1,2]),false);
 });

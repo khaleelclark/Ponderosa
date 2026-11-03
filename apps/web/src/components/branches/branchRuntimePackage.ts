@@ -70,10 +70,11 @@ export function samePackageValue(left: unknown, right: unknown): boolean {
   const [a,b]=pending.pop()!;
   if(a===b)continue;
   if(!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b))return false;
-  const ak=Object.keys(a),bk=Object.keys(b);
+  const keys=(value:object)=>Object.keys(value).filter(key=>Array.isArray(value)||(value as Record<string,unknown>)[key]!==undefined);
+  const ak=keys(a),bk=keys(b);
   if(ak.length!==bk.length)return false;
   for(const key of ak){
-   if(!Object.prototype.hasOwnProperty.call(b,key))return false;
+   if(!Object.prototype.hasOwnProperty.call(b,key)||(b as Record<string,unknown>)[key]===undefined&&!Array.isArray(b))return false;
    pending.push([(a as Record<string,unknown>)[key],(b as Record<string,unknown>)[key]]);
   }
  }
