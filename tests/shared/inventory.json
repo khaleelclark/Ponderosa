@@ -2499,6 +2499,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native-host addon; Linux owned symlink O_PATH descriptors and exact nanosecond filesystem; other OS explicit unsupported branch; no provider or live data",
       "origin": "Bible8/12/15 descriptor-only exact symlink timestamps, inode/type/link-count preflight, signed nanoseconds, target preservation and pathname replacement"
+    },
+    {
+      "path": "tests/organizations/portable-native-git-snapshot.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; isolated owned Git fixtures, no live data or provider",
+      "origin": "Exact native Git storage and declared alias snapshot custody"
     }
   ],
   "retainedReleasePayload": [
