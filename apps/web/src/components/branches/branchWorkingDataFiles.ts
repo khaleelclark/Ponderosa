@@ -8,7 +8,7 @@ export function branchWorkingDataRoots(pkg:InstalledBranchPackage){
   return {ref,node,members,owner,key:workingOwnerKey(owner.chatRef,owner.agentRef),boundary:data.package.workingRootNesting?.find(boundary=>boundary.childRootRef===ref)};
  });
 }
-export function branchWorkingDataDestinations(pkg:InstalledBranchPackage,choices:BranchImportFileSelections):Record<string,string>{
+export function branchWorkingDataDestinations(_pkg:InstalledBranchPackage,choices:BranchImportFileSelections):Record<string,string>{
  const result:Record<string,string>={};for(const choice of Object.values(choices))Object.assign(result,choice.workingRootDestinations??{});return result;
 }
 export function branchWorkingDataDerivedChat(pkg:InstalledBranchPackage,chatRef:string):{kind:'shared'|'contained';sourceChatRef:string;path?:string}|undefined{
