@@ -83,7 +83,10 @@ for(const stage of ['active','requested refresh','handoff','replacement'])test(`
   if(stage==='active'){
    const recoveredPacket=store.sqlite.prepare('SELECT provider_prompt,source_manifest_json FROM provider_inputs WHERE scheduler_run_id=?').get(resumed.id);
    assert.match(recoveredPacket.provider_prompt,/dynamicToolsReference/,'recovery references obsolete definitions instead of resubmitting them');
-   const entry=JSON.parse(recoveredPacket.source_manifest_json).sources.find(source=>source.kind==='pause_checkpoint');
+   assert.match(recoveredPacket.provider_prompt,/pause-original/,'the original tracked objective survives recovery');
+   const recoveredManifest=JSON.parse(recoveredPacket.source_manifest_json);
+   assert.ok(recoveredManifest.normalRuntimeContract.dynamicTools.length>0,'current runtime tools remain available');
+   const entry=recoveredManifest.sources.find(source=>source.kind==='pause_checkpoint');
    assert.equal(entry.hash,createHash('sha256').update(projectPauseCheckpointForProvider(durableCheckpoint)).digest('hex'),'ledger hashes delivered checkpoint bytes');
    assert.equal(entry.sourceHash,createHash('sha256').update(durableCheckpoint).digest('hex'),'ledger retains the exact source checkpoint hash');
    assert.equal(entry.projection,'pause_historical_tools_reference_v1');
