@@ -68,7 +68,7 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
   const checkParents=async()=>{for(const held of pins.values()){const current=await fs.lstat(held.native,{bigint:true}),retained=held.handle?await held.handle.stat({bigint:true}):await fs.lstat(held.path,{bigint:true});if(current.dev!==retained.dev||current.ino!==retained.ino||!current.isDirectory()||await fs.realpath(held.native)!==held.native)throw new Error('Git dependency parent membership changed: '+held.native);}};
   const safeData=(data:Buffer,name=''):Buffer=>{
     const text=data.toString('utf8');
-    if(/-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/.test(text))throw new Error('Configured Git dependency contains a private key; re-enter it on the destination');
+    if(/-----BEGIN (?:(?:[A-Z0-9]+ )*PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/.test(text))throw new Error('Configured Git dependency contains a private key; re-enter it on the destination');
     if(/\.(?:key|pem)$/i.test(name)&&!/-----BEGIN (?:RSA )?PUBLIC KEY-----|-----BEGIN CERTIFICATE-----/.test(text))throw new Error('Configured Git key material must be re-entered on the destination; public PEM certificates and keys are supported');
     if(!Buffer.from(text).equals(data)||!/^\s*[\[{]/.test(text))return data;
     try{const value=JSON.parse(text),safe=withoutPortableSecrets(value,maxBytes);return JSON.stringify(value)===JSON.stringify(safe)?data:Buffer.from(JSON.stringify(safe,null,2)+'\n');}catch(error){if(error instanceof SyntaxError)return data;throw error;}
@@ -128,6 +128,7 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
       identities.set(key,{native:path.join(parent.native,path.basename(native)),stamp:stamp(before)});
       const held=await pin(path.join(parent.native,path.basename(native))),names=(await fs.readdir(held.path)).sort();
       if(names.length+entries>maxEntries)throw new Error('Git dependency inventory exceeds 10000 entries');
+      if(!names.includes('.git')&&['HEAD','config','objects'].every(name=>names.includes(name)))throw new Error('Configured dependency contains a bare Git repository; a typed bare repository capsule is required before transporting its configuration');
       if(names.includes('.git')&&!knownRepositories.has(sourcePathKey(canonical))&&!knownModules.has(sourcePathKey(canonical))){
         const repository=await readers.exportGit(path.join(parent.native,path.basename(native)));
         if(!repository)throw new Error('Configured dependency Git repository cannot be captured: '+canonical);
@@ -193,7 +194,7 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
     for(const [source,evidence] of identities){
       await checkParents();const current=await fs.lstat(evidence.native,{bigint:true});if(stamp(current)!==evidence.stamp)throw new Error('Configured Git dependency changed after capture: '+source);
       if(evidence.target!==undefined&&await fs.readlink(evidence.native)!==evidence.target)throw new Error('Configured Git link changed after capture');
-      if(evidence.hash){const parent=await pin(path.dirname(evidence.native)),handle=await openDependency(path.join(parent.path,path.basename(evidence.native)));try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stamp(stat)!==evidence.stamp||createHash('sha256').update(await readBounded(handle,stat.size)).digest('hex')!==evidence.hash)throw new Error('Configured Git file identity changed after capture');}finally{await handle.close();}}
+      if(evidence.hash){const parent=await pin(path.dirname(evidence.native)),handle=await openDependency(path.join(parent.path,path.basename(evidence.native)));try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stamp(stat)!==evidence.stamp)throw new Error('Configured Git file identity changed after capture');const data=await readBounded(handle,stat.size);if(stamp(await handle.stat({bigint:true}))!==evidence.stamp||createHash('sha256').update(data).digest('hex')!==evidence.hash)throw new Error('Configured Git file identity changed after capture');}finally{await handle.close();}}
     }
     for(const [source,repository] of repositories){const current=await readers.exportGit(repository.native);if(!current||JSON.stringify(current.git)!==JSON.stringify(repository.git)||JSON.stringify(current.gitOriginals)!==JSON.stringify(repository.originals))throw new Error('Configured dependency repository changed during capture: '+source);}
     for(const source of result.absentPaths)try{await fs.lstat(nativeName(source));throw new Error('An absent configured Git dependency appeared during capture');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
@@ -241,7 +242,7 @@ export function validateGitExternalDependencies(
       if(data.length>1024*1024||!readers.parseConfiguration(data).data.equals(data))fail('Included Git configuration retains excluded fields or exceeds its bound');
     }else{
       const text=data.toString('utf8');
-      if(/-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/.test(text))fail('Configured Git data retains private key material');
+      if(/-----BEGIN (?:(?:[A-Z0-9]+ )*PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/.test(text))fail('Configured Git data retains private key material');
       if(/\.(?:key|pem)$/i.test(file.sourcePath)&&!/-----BEGIN (?:RSA )?PUBLIC KEY-----|-----BEGIN CERTIFICATE-----/.test(text))fail('Configured Git key material must be re-entered on the destination');
       if(Buffer.from(text).equals(data)&&/^\s*[\[{]/.test(text)){
         try{const parsed=JSON.parse(text);if(JSON.stringify(withoutPortableSecrets(parsed,maxBytes))!==JSON.stringify(parsed))fail('Configured Git data retains credential fields');}
