@@ -438,12 +438,14 @@ Exact remaining implementation: unsupported linked/common-directory layouts and 
 unsupported index flags/extensions and combined split/sparse or other unsupported sparse forms; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats; general multiline TOML
 secret separation; explicit reviewed activation into a native-owned live Git or
-provider configuration; recursive re-export of already recreated review data.
-Whole-folder re-export of an existing review namespace refuses rather than
-silently replacing its original transport; selected review originals remain
-exportable. Existing canonical package-history re-export retains the original
-manifest/artifact bindings through its normal path; it does not traverse or adopt
-the generated repository. Required absolute/cross-root links, unsupported symbolic chains, ACL/xattrs, special nodes,
+provider configuration. Whole-folder re-export of imported inactive originals is
+implemented through the [explicit retained-original consumer](#re-exporting-imported-inactive-originals).
+It requires exact family selection, one canonical artifact binding and matching
+original bytes; missing, ambiguous, changed or unknown evidence refuses. Live
+capture cannot replace an existing review namespace. Selected-file and canonical
+package-history re-export keep their existing paths. Generated review repositories
+are never traversed or adopted as originals. Required absolute/cross-root links,
+unsupported symbolic chains, ACL/xattrs, special nodes,
 and other extended filesystem semantics remain concrete recreation gaps. Native
 process/kernel state, authentication, profiles and source ownership are not data
 formats that this transport can grant.
