@@ -6,6 +6,10 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
+  inspectExtendedMetadata(input: HeldMetadataTarget & { sourceQualifier: string }): ExtendedMetadataEvidence;
+  applyExtendedMetadata(input: ExtendedMetadataRestore): ExtendedMetadataEvidence;
+  inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence;
+  createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint }): PersistentNodeEvidence;
   applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence;
   offlineMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineWorkspaceMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
@@ -59,6 +63,101 @@ interface NativeJobBinding {
     quarantineLeaf: string,
     expectedIdentity: string,
   ): boolean;
+}
+
+/** Native evidence only: the caller supplies a source host/user-namespace qualifier.
+ * Numeric IDs are observations, never cross-host principal authority. */
+export interface HeldMetadataTarget {
+  fd: number;
+  expectedDevice: bigint;
+  expectedInode: bigint;
+  kind: "file" | "directory";
+}
+export interface MetadataPrincipalMapping {
+  sourceQualifier: string;
+  kind: "user" | "group";
+  sourceId: number;
+  destinationId: number;
+}
+export interface ExtendedAttributeEvidence {
+  name: Buffer;
+  state: "value" | "absent" | "error" | "unsupported";
+  value?: Buffer;
+  errorNumber?: number;
+}
+export interface PosixAclEvidence extends ExtendedAttributeEvidence {
+  dialect: "linux-posix-acl-v2";
+  entries?: Array<{ tag: "owner" | "user" | "owning-group" | "group" | "mask" | "other"; permissions: number; sourceId?: number; sourceQualifier?: string }>;
+}
+export interface ExtendedMetadataEvidence {
+  supported: boolean;
+  identity: ExactFileMetadataEvidence & { ownerId: number; groupId: number };
+  sourceQualifier: string;
+  inventoryState: "complete-visible" | "error" | "unsupported";
+  inventoryErrorNumber?: number;
+  /** Linux may hide trusted.*; this is deliberately never a full-namespace claim. */
+  allNamespacesComplete: false;
+  namespaces: Array<{ name: string; state: "visible-only" | "not-enumerable" | "unsupported" }>;
+  attributes: ExtendedAttributeEvidence[];
+  accessAcl: PosixAclEvidence;
+  defaultAcl: PosixAclEvidence;
+}
+export interface ExtendedMetadataRestore extends HeldMetadataTarget {
+  restore: "replace-user-and-posix-acl";
+  sourceQualifier: string;
+  destinationQualifier: string;
+  sourceOwnerId: number;
+  sourceGroupId: number;
+  destinationOwnerId: number;
+  destinationGroupId: number;
+  principalMappings: MetadataPrincipalMapping[];
+  /** Full selected user.* namespace; omitted inherited user attributes are removed. */
+  attributes: Array<{ name: Buffer; value: Buffer }>;
+  /** Exact Linux v2 wire bytes or explicit absence; named IDs are remapped. */
+  accessAcl: Buffer | null;
+  defaultAcl: Buffer | null;
+  mode: number; // 0..0o777; special bits unsupported here
+}
+/** Linux only. Bounded complete visible names, per-value read state and explicit ACL probes.
+ * Limits: 64 KiB names/value, 256 names/ACL entries, 1 MiB aggregate values.
+ * Does not prove a coherent snapshot or authorize secret retention. */
+export function inspectExtendedMetadata(input: HeldMetadataTarget & { sourceQualifier: string }): ExtendedMetadataEvidence {
+  return binding().inspectExtendedMetadata(input);
+}
+/** Fresh owned no-follow fd; caller proves membership/grant and sole node ownership.
+ * No chown: explicit owner/group mappings must match current destination ownership.
+ * Replaces selected user.* + ACL state only; other visible namespaces refuse.
+ * Result principal IDs are qualified by destinationQualifier, never the source.
+ * Apply directories after children. Final chmod must agree with access ACL mask.
+ * Failure after mutation attempt: code ERR_PORTABLE_METADATA_PARTIAL,
+ * partialStatePossible:true, observed:ExtendedMetadataEvidence|null. No rollback/retry.
+ */
+export function applyExtendedMetadata(input: ExtendedMetadataRestore): ExtendedMetadataEvidence {
+  return binding().applyExtendedMetadata(input);
+}
+export interface PersistentNodeParent {
+  parentFd: number;
+  expectedParentDevice: bigint;
+  expectedParentInode: bigint;
+  leaf: string;
+}
+export interface PersistentNodeEvidence {
+  device: bigint; inode: bigint; kind: "fifo" | "socket" | "character" | "block";
+  mode: number; mtimeNs: bigint; linkCount: bigint; ownerId: number; groupId: number;
+  deviceMajor: number; deviceMinor: number;
+  parentDevice: bigint; parentInode: bigint;
+}
+/** Linux O_PATH metadata only; never opens content or connects a socket/device. */
+export function inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence {
+  return binding().inspectPersistentNode(input);
+}
+/** Linux FIFO only, requires fchmodat2 AT_EMPTY_PATH and utimensat AT_EMPTY_PATH.
+ * Caller owns the destination directory/name and separately proves current grant.
+ * No replacement; inherited default ACL must be absent. Refuses special mode bits.
+ * Creation changes parent directory metadata. Partial error retains the node and
+ * reports observed evidence|null; no rollback or automatic retry. */
+export function createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint }): PersistentNodeEvidence {
+  return binding().createPersistentNode(input);
 }
 
 export interface ExactFileMetadataInput {

@@ -2561,10 +2561,16 @@ napi_value ApplyExactFileMetadata(napi_env env, napi_callback_info info) {
 #endif
 }
 
+#include "portable-metadata.inc"
+
 #include "portable-storage.inc"
 
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
+      {"inspectExtendedMetadata", nullptr, InspectExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"applyExtendedMetadata", nullptr, ApplyExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"inspectPersistentNode", nullptr, InspectPersistentNode, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"createPersistentNode", nullptr, CreatePersistentNode, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"applyExactFileMetadata", nullptr, ApplyExactFileMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"darwinProcessBirthMarker", nullptr, DarwinProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
