@@ -611,16 +611,17 @@ export function registerQueuedMessageRoutes(
   }>("/api/projects/:projectId/message-deliveries/:activationId/retry", async (request, reply) => {
     const projectId = request.params.projectId?.trim() ?? "";
     const activationId = request.params.activationId?.trim() ?? "";
-    const parsed = exactStringBody(request.body, ["idempotencyKey"]);
+    const parsed = exactStringBody(request.body, ["idempotencyKey", "expectedRolloverAttemptId"]);
     if ("error" in parsed) return reply.code(400).send({ error: parsed.error });
     const idempotencyKey = parsed.value.idempotencyKey?.trim() ?? "";
+    const expectedRolloverAttemptId = parsed.value.expectedRolloverAttemptId?.trim() || undefined;
     if (!projectId) return reply.code(400).send({ error: "projectId is required" });
     if (!activationId) return reply.code(400).send({ error: "activationId is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) {
       return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     }
     try {
-      const replay = coordinationV3.replayRetryMessageDelivery({ projectId, activationId, idempotencyKey });
+      const replay = coordinationV3.replayRetryMessageDelivery({ projectId, activationId, idempotencyKey, expectedRolloverAttemptId });
       if (replay) return reply.code(replay.accepted ? 202 : replay.rejectionReason === "not_found" ? 404 : 409)
         .send(replay satisfies RetryMessageDeliveryResponse);
     } catch (error) {
@@ -658,7 +659,7 @@ export function registerQueuedMessageRoutes(
             currentConversation.projectId !== projectId))) {
         return reply.code(409).send({ error: "message delivery participants are no longer available" });
       }
-      const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey });
+      const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey, expectedRolloverAttemptId });
       if (!result.accepted || !result.targetAgentId) {
         const status = result.rejectionReason === "not_found" ? 404 : 409;
         return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);

@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 import { CoordinationV3Store } from '../../packages/agents/dist/index.js';
+import { CoordinationV3RequiredReplyAuthority } from '../../packages/agents/dist/coordination-v3-required-reply-authority.js';
 
 const Database = createRequire(new URL("../../apps/server/package.json", import.meta.url))('better-sqlite3');
 
@@ -175,18 +176,26 @@ for(const phase of ['before packet commit','after packet commit']) test(`failed 
     const recoveries=db.prepare("SELECT COUNT(*) AS n FROM agent_activations WHERE kind='required_reply_recovery' AND json_extract(payload_json,'$.requiredReplyRecovery.sourceRunId')=?").get(candidate.id).n;
     assert.equal(recoveries,0,'no ordinary recovery may resume the old session');
     assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,3,'only opening, held task and handoff ran');
+    const message=(await f.detail(agent.id)).messages.find(row=>row.role==='user'&&row.text==='Controlled held task');
+    const receipt=f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{communicationEventIds:[message.communicationEventId],activationIds:[]})).items.flatMap(item=>item.deliveryReceipts).find(row=>row.targetAgentId===agent.id);
+    assert.equal(receipt.contextRolloverHold,'review_required');assert.notEqual(receipt.canRetry,true);
+    assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${receipt.activationId}/retry`,{idempotencyKey:randomUUID(),expectedRolloverAttemptId:receipt.contextRolloverAttemptId})).status,409);
   } finally {db.close();}
 }));
 
 
 test('rollover continuation compilation failure holds original task and handoff',options,t=>withFixture(t,async f=>{
   const chat=await f.createChat('Invalid continuation input'),agent=await f.createAgent(chat,'Task owner');
-  const session=await f.hold(agent.id);
+  const session=await f.hold(agent.id),steering='Also preserve this human correction.';
+  await f.send(agent.id,steering,{activeRunDelivery:'steer'});
+  await until(()=>f.steers.some(turn=>turn.agentId===agent.id&&turn.input.prompt.includes(steering)),'human correction acknowledged');
   f.plans.set(agent.id,[{run:async s=>s.events.push({type:'text',delta:'The original task remains unfinished.'})}]);
-  const originalLease=CoordinationV3Store.prototype.leaseNextRun;
+  const originalLease=CoordinationV3Store.prototype.leaseNextRun;let corruptRemaining=2,blockLease=false;
   CoordinationV3Store.prototype.leaseNextRun=function(...args){
+    if(blockLease)return undefined;
     const lease=originalLease.apply(this,args);
-    if(!lease||!lease.activations.some(a=>a.kind==='context_rollover_continuation'))return lease;
+    if(!lease||corruptRemaining===0||!lease.activations.some(a=>a.kind==='context_rollover_continuation'))return lease;
+    corruptRemaining--;
     return {...lease,activations:lease.activations.map(a=>a.kind==='context_rollover_continuation'?{...a,payload:{...a.payload,controlledOversized:'x'.repeat(1024*1024)}}:a)};
   };
   t.after(()=>{CoordinationV3Store.prototype.leaseNextRun=originalLease;});
@@ -204,5 +213,88 @@ test('rollover continuation compilation failure holds original task and handoff'
     await new Promise(resolve=>setTimeout(resolve,1500));
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_activations WHERE kind='required_reply_recovery' AND json_extract(payload_json,'$.requiredReplyRecovery.sourceRunId')=?").get(candidate.id).n,0);
     assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,3);
+    const messages=(await f.detail(agent.id)).messages;
+    const message=messages.find(row=>row.role==='user'&&row.text==='Controlled held task');
+    const correction=messages.find(row=>row.role==='user'&&row.text===steering);
+    assert.ok(message?.communicationEventId&&correction?.communicationEventId);
+    const receiptItems=f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{
+      communicationEventIds:[message.communicationEventId,correction.communicationEventId],activationIds:[],
+    })).items;
+    const receipts=receiptItems.flatMap(item=>item.deliveryReceipts);
+    assert.equal(receiptItems.length,2);
+    assert.ok(receiptItems.every(item=>item.deliveryReceipts.some(row=>row.contextRolloverHold==='retry_available')),'both original and steering show the same held rollover');
+    const receipt=receipts.find(row=>row.targetAgentId===agent.id);
+    assert.equal(receipt.contextRolloverHold,'retry_available');assert.equal(receipt.canRetry,true);
+    assert.equal(receipt.retryMayDuplicate,true);
+    let replacement;
+    f.plans.set(agent.id,[{run:async(s,input)=>{
+      replacement=s.engineAgentId;assert.notEqual(replacement,session.engineAgentId);
+      assert.ok(input.prompt.includes('Controlled held task'));assert.ok(input.prompt.includes(steering));
+      assert.match(input.prompt,/Inspect the original task and any uncertain external effects before acting/);
+      s.events.push({type:'context_usage',providerSessionId:replacement,providerSessionGeneration:replacement,usedTokens:1000,windowTokens:200000});
+      await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='completed'").get(agent.id),'retry session verified');
+      f.ok(await f.tool(s,'ponderosa_message',{text:'Original task resumed after review'}));
+    }}]);
+    const url=`/api/projects/${chat.projectId}/message-deliveries/${receipt.activationId}/retry`,body={idempotencyKey:randomUUID(),expectedRolloverAttemptId:receipt.contextRolloverAttemptId};
+    blockLease=true;
+    const retry=f.ok(await f.api('POST',url,body)),replay=f.ok(await f.api('POST',url,body));
+    assert.equal(retry.accepted,true);assert.equal(replay.replayed,true);assert.equal(retry.activationId,replay.activationId);
+    assert.equal((await f.api('POST',url,{idempotencyKey:randomUUID(),expectedRolloverAttemptId:receipt.contextRolloverAttemptId})).status,409,'a second click cannot create another continuation');
+    const writer=new Database(path.join(f.dataDir,'ponderosa.db'),{fileMustExist:true});
+    try{
+      const authority=new CoordinationV3RequiredReplyAuthority(writer,()=>{throw Error('ordinary reply replay forbidden');},()=>{});
+      assert.doesNotThrow(()=>authority.recoverPending(candidate.id,new Date().toISOString()),'queued retry retains the prior hold');
+      assert.ok(writer.prepare("SELECT 1 FROM required_reply_obligations WHERE run_id=? AND state='pending'").get(candidate.id));
+    } finally {writer.close();}
+    const queued=f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{communicationEventIds:[message.communicationEventId],activationIds:[]})).items.flatMap(item=>item.deliveryReceipts).find(row=>row.targetAgentId===agent.id);
+    assert.notEqual(queued.state,'processed','queued continuation must remain visible as unfinished');
+    await f.reopen();
+    const reopened=f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{communicationEventIds:[message.communicationEventId],activationIds:[]})).items.flatMap(item=>item.deliveryReceipts).find(row=>row.targetAgentId===agent.id);
+    assert.notEqual(reopened.state,'processed','restart preserves queued continuation status');
+    blockLease=false;
+    await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='failed' AND continuation_activation_id<>?").get(agent.id,receipt.contextRolloverAttemptId),'second failed continuation held');
+    const second=f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{communicationEventIds:[message.communicationEventId],activationIds:[]})).items.flatMap(item=>item.deliveryReceipts).find(row=>row.targetAgentId===agent.id);
+    assert.equal(second.contextRolloverHold,'retry_available');assert.notEqual(second.contextRolloverAttemptId,receipt.contextRolloverAttemptId);
+    assert.equal((await f.api('POST',url,{idempotencyKey:randomUUID(),expectedRolloverAttemptId:receipt.contextRolloverAttemptId})).status,409,'stale client cannot retry a newer attempt');
+    assert.equal(f.ok(await f.api('POST',url,body)).activationId,retry.activationId,'lost response replays only its original attempt');
+    const secondBody={idempotencyKey:randomUUID(),expectedRolloverAttemptId:second.contextRolloverAttemptId};
+    const retry2=f.ok(await f.api('POST',url,secondBody)),replay2=f.ok(await f.api('POST',url,secondBody));
+    assert.equal(retry2.accepted,true);assert.equal(replay2.activationId,retry2.activationId);assert.notEqual(retry2.activationId,retry.activationId);
+    await until(()=>replacement,'explicit retry reaches one new provider session');
+    await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='completed'").get(agent.id),'retry completed');
+    assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,4);
+    const carried=db.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').all(candidate.id);
+    assert.ok(carried.every(row=>row.state==='superseded'),'the exact old pending task transfers to the new Run');
   }finally{db.close();}
+}));
+
+test('a newer human instruction fences an older held rollover retry',options,t=>withFixture(t,async f=>{
+  const chat=await f.createChat('Newer direction'),agent=await f.createAgent(chat,'Task owner');
+  const session=await f.hold(agent.id);
+  f.plans.set(agent.id,[{run:async s=>s.events.push({type:'text',delta:'Original work is unfinished.'})}]);
+  const originalLease=CoordinationV3Store.prototype.leaseNextRun;let corruptOnce=true,blockLease=false;
+  CoordinationV3Store.prototype.leaseNextRun=function(...args){
+    if(blockLease)return undefined;
+    const lease=originalLease.apply(this,args);
+    if(!lease||!corruptOnce||!lease.activations.some(a=>a.kind==='context_rollover_continuation'))return lease;
+    corruptOnce=false;
+    return {...lease,activations:lease.activations.map(a=>a.kind==='context_rollover_continuation'?{...a,payload:{...a.payload,controlledOversized:'x'.repeat(1024*1024)}}:a)};
+  };
+  t.after(()=>{CoordinationV3Store.prototype.leaseNextRun=originalLease;});
+  session.events.push({type:'context_usage',providerSessionId:session.engineAgentId,providerSessionGeneration:session.engineAgentId,usedTokens:160000,windowTokens:200000});
+  const db=new Database(path.join(f.dataDir,'ponderosa.db'),{readonly:true,fileMustExist:true});
+  try{
+    await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'rollover requested');
+    session.finish();
+    await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='failed'").get(agent.id),'failed continuation held');
+    const message=(await f.detail(agent.id)).messages.find(row=>row.role==='user'&&row.text==='Controlled held task');
+    const readReceipt=async()=>f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{communicationEventIds:[message.communicationEventId],activationIds:[]})).items.flatMap(item=>item.deliveryReceipts).find(row=>row.targetAgentId===agent.id);
+    const prior=await readReceipt();assert.equal(prior.contextRolloverHold,'retry_available');
+    blockLease=true;
+    await f.send(agent.id,'Newer human direction that must be considered.');
+    const current=await readReceipt();assert.equal(current.contextRolloverHold,'review_required');assert.notEqual(current.canRetry,true);
+    const response=await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${prior.activationId}/retry`,{idempotencyKey:randomUUID(),expectedRolloverAttemptId:prior.contextRolloverAttemptId});
+    assert.equal(response.status,409);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM agent_activations WHERE dedupe_key LIKE 'rollover-human-retry:%'").get().n,0);
+  }finally{blockLease=false;db.close();}
 }));

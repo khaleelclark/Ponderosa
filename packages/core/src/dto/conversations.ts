@@ -178,6 +178,10 @@ export interface MessageDeliveryReceiptDto {
   /** Exact provider execution reached by a recovery activation, when distinct. */
   recoveryExecutionId?: string;
   state: MessageDeliveryReceiptState;
+  /** Exact unfinished task held by an unverified context rollover. */
+  contextRolloverHold?: "retry_available" | "review_required";
+  /** Stable exact continuation attempt for idempotent operator retry. */
+  contextRolloverAttemptId?: string;
   /** This exact activation is still waiting for its explicitly queued next Run. */
   queuedForNextRun?: true;
   updatedAt: string;
@@ -264,6 +268,7 @@ export interface LetCurrentRunFinishResponse {
 
 export interface RetryMessageDeliveryRequest {
   idempotencyKey: string;
+  expectedRolloverAttemptId?: string;
 }
 
 export type RetryMessageDeliveryRejectionReason =

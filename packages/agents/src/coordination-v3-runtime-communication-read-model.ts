@@ -1,3 +1,4 @@
+import {heldHumanRollovers,heldHumanRolloverKey,canRetryHeldHumanRollover} from './coordination-v3-rollover-held-task.js';
 import { providerResetAt, PROVIDER_QUOTA_LIMITS, type ProviderQuotaLimit, PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
 import type Database from "better-sqlite3";
 import type {
@@ -569,6 +570,9 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     };
     const selected = [...latestByCommunication.values()].flatMap(recipients =>
       [...recipients.values()].map(({ activation }) => activation));
+    const heldRollovers = heldHumanRollovers(this.sqlite,projectId,selected.map(activation=>({
+      activationId:activation.id,communicationEventId:activation.communication_event_id,
+    })));
     const injections = latestInjections(selected.map(activation => activation.id));
     const failures = this.deliveryProviderFailures(projectId, selected.map(activation => activation.id));
     const recoveries = new Map(selected.map(activation => {
@@ -607,8 +611,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         const recovery = recoveries.get(activation.id);
         const recoveryInjection = recovery?.recovery_activation_id
           ? recoveryInjections.get(recovery.recovery_activation_id) : undefined;
+        const heldRollover = heldRollovers.get(heldHumanRolloverKey(activation.id,activation.communication_event_id));
         let state: MessageDeliveryReceiptDto["state"];
-        if (requiredReplyExhausted) state = "retry_exhausted";
+        if (heldRollover) state = "run_unconfirmed";
+        else if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
           if (!recovery) state = injection?.state === "acknowledged" ? "run_unconfirmed" : "undelivered";
           else if (recovery.state === "grace_period") state = "unconfirmed";
@@ -639,7 +645,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         const liveProgress = injection && recipientCurrentlyAuthorized && state === "delivered"
           ? this.liveProgress(projectId, activation.agent_id, activation.id, injection) : undefined;
         return {
-          activationId: activation.id,
+          activationId: heldRollover?.root_activation_id ?? activation.id,
           targetAgentId: activation.agent_id,
           ...(failures.has(activation.id) ? { providerFailure: { ...failures.get(activation.id)!, ...(requiredReplyExhausted ? { recovery: "stopped" as const, nextRetryAt: undefined } : {}) } } : {}),
           ...(runtime ? { runtime } : {}),
@@ -648,6 +654,9 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             ? { recoveryExecutionId: recoveryInjection.execution_id }
             : {}),
           state,
+          ...(heldRollover ? {contextRolloverHold:canRetryHeldHumanRollover(heldRollover)
+            ? "retry_available" as const : "review_required" as const,
+            contextRolloverAttemptId:heldRollover.continuation_activation_id} : {}),
           ...(activation.dispatch_policy === "next_run" && ["pending", "retry_pending"].includes(activation.state)
             ? { queuedForNextRun: true as const } : {}),
           ...(steeringWaitReason ? { steeringWaitReason } : {}),
@@ -669,6 +678,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           } : {}),
           ...(
             (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")
+            && (!heldRollover || canRetryHeldHumanRollover(heldRollover))
             && recipientCurrentlyAuthorized
             && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
               activation.project_id,
@@ -677,7 +687,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             )
               ? {
                 canRetry: true as const,
-                ...(activation.state === "outcome_unknown"
+                ...(heldRollover || activation.state === "outcome_unknown"
                   ? { retryMayDuplicate: true as const }
                   : {}),
               }

@@ -33,6 +33,8 @@ function deliveryLabel(
   recipientName: string,
   now: number,
 ): string {
+  if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
+  if (receipt.contextRolloverHold === "review_required") return `Context refresh could not safely continue. ${recipientName}'s unfinished work is held; review activity before recovery.`;
   const waiting = deliveryWaitLabel(receipt);
   if (waiting) return receipt.steeringWaitReason
     ? `Steer for ${recipientName}: ${waiting.detail} Provider acceptance does not guarantee immediate reconsideration or stop a running tool.`
@@ -254,7 +256,8 @@ export function MessageDeliveryStatus({
     setPendingRetryId(receipt.activationId);
     try {
       await api.retryMessageDelivery(projectId, receipt.activationId, {
-        idempotencyKey: `operator-delivery-retry:${receipt.activationId}`,
+        idempotencyKey: `operator-delivery-retry:${receipt.activationId}${receipt.contextRolloverAttemptId ? `:${receipt.contextRolloverAttemptId}` : ""}`,
+        ...(receipt.contextRolloverAttemptId ? {expectedRolloverAttemptId:receipt.contextRolloverAttemptId} : {}),
       });
       setConfirmRetry(undefined);
       await Promise.all([
@@ -364,7 +367,7 @@ export function MessageDeliveryStatus({
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >{pendingRetryId === receipt.activationId ? "Trying Again…" : receipt.providerAcknowledged ? "Try Work Again" : "Try Delivery Again"}</Button> : null}
-        {!readOnly && !hideCancelAction && receipt.canRetry && projectId ? <Button
+        {!readOnly && !hideCancelAction && !receipt.contextRolloverHold && receipt.canRetry && projectId ? <Button
           color="inherit"
           variant="text"
           size="small"

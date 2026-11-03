@@ -566,6 +566,7 @@ export class CoordinationV3Store {
     projectId: string;
     activationId: string;
     idempotencyKey: string;
+    expectedRolloverAttemptId?: string;
     now?: string;
   }): RetryMessageDeliveryResponse {
     return this.activationCommandAuthority.retryMessageDelivery(input);

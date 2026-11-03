@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
+import {heldHumanRollover,canRetryHeldHumanRollover} from "./coordination-v3-rollover-held-task.js";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
@@ -60,6 +61,7 @@ export class CoordinationV3ActivationCommandAuthority {
     projectId: string;
     activationId: string;
     idempotencyKey: string;
+    expectedRolloverAttemptId?: string;
     now?: string;
   }): RetryMessageDeliveryResponse {
     if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
@@ -77,7 +79,8 @@ export class CoordinationV3ActivationCommandAuthority {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_found",
       };
 
-      const hash = payloadHash({ projectId: input.projectId, activationId: original.id });
+      const hash = payloadHash({ projectId: input.projectId, activationId: original.id,
+        ...(input.expectedRolloverAttemptId ? {expectedRolloverAttemptId:input.expectedRolloverAttemptId} : {}) });
       const replay = this.idempotentReplay<Omit<RetryMessageDeliveryResponse, "replayed">>(
         input.projectId, "user:local-operator", "retry_message_delivery", input.idempotencyKey, hash,
       );
@@ -135,6 +138,44 @@ export class CoordinationV3ActivationCommandAuthority {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "recipient_unavailable",
       };
 
+      const held = heldHumanRollover(this.sqlite,input.projectId,original.id);
+      if (held) {
+        if (!canRetryHeldHumanRollover(held) || input.expectedRolloverAttemptId !== held.continuation_activation_id) return {
+          accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+        };
+        const prior = this.sqlite.prepare(`SELECT kind,priority,dispatch_policy,prompt_class,payload_json
+          FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND scope_key=?`)
+          .get(held.continuation_activation_id,original.agent_id,original.project_id,original.scope_key) as {
+            kind:string;priority:number;dispatch_policy:ActivationDispatchPolicy;prompt_class:ActivationPromptClass;payload_json:string
+          } | undefined;
+        if (!prior || prior.kind !== 'context_rollover_continuation') throw Error('Held rollover continuation is unavailable');
+        const activationId=this.createActivation({
+          projectId:original.project_id,agentId:original.agent_id,scopeKey:original.scope_key,
+          kind:prior.kind,priority:prior.priority,dispatchPolicy:prior.dispatch_policy,promptClass:prior.prompt_class,
+          dedupeKey:`rollover-human-retry:${held.id}:${input.idempotencyKey}`,
+          payload:{...JSON.parse(prior.payload_json),humanRetry:{instruction:
+            'This continuation was requested by the human after an unstarted replacement. Inspect the original task and any uncertain external effects before acting. Do not repeat completed or uncertain actions.'}},
+          sourceKind:'context_rollover',sourceId:held.id,now,
+        });
+        // Preserve the exact original communication/request lineage for delivery
+        // projection and authority; only the new continuation ID is allocated.
+        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+          SELECT ?,source_kind,source_id FROM activation_sources WHERE activation_id=?`)
+          .run(activationId,held.continuation_activation_id);
+        const rebound=this.sqlite.prepare(`UPDATE context_rollovers SET state='continuation_ready',
+          continuation_activation_id=?,last_error=NULL,terminal_at=NULL,updated_at=?
+          WHERE id=? AND state='failed' AND continuation_activation_id=? AND replacement_run_id IS NULL`)
+          .run(activationId,now,held.id,held.continuation_activation_id);
+        if(rebound.changes!==1)throw Error('Held rollover changed before retry');
+        const result: Omit<RetryMessageDeliveryResponse,"replayed">={
+          accepted:true,state:'queued',activationId,targetAgentId:original.agent_id,retryMayDuplicate:true,
+        };
+        this.recordIdempotency(input.projectId,'user:local-operator','retry_message_delivery',input.idempotencyKey,hash,result,now);
+        return {...result,replayed:false};
+      }
+      if (input.expectedRolloverAttemptId) return {
+        accepted:false,replayed:false,state:"not_retryable",rejectionReason:"stale_attempt",
+      };
       const payload = JSON.parse(original.payload_json) as Record<string, unknown>;
       const lineage = this.sqlite.prepare(`
         SELECT root_activation_id, attempt_number
@@ -243,6 +284,7 @@ export class CoordinationV3ActivationCommandAuthority {
     projectId: string;
     activationId: string;
     idempotencyKey: string;
+    expectedRolloverAttemptId?: string;
   }): RetryMessageDeliveryResponse | undefined {
     if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
     return this.sqlite.transaction(() => {
@@ -251,7 +293,8 @@ export class CoordinationV3ActivationCommandAuthority {
         "user:local-operator",
         "retry_message_delivery",
         input.idempotencyKey,
-        payloadHash({ projectId: input.projectId, activationId: input.activationId }),
+        payloadHash({ projectId: input.projectId, activationId: input.activationId,
+          ...(input.expectedRolloverAttemptId ? {expectedRolloverAttemptId:input.expectedRolloverAttemptId} : {}) }),
       );
       return replay ? { ...replay, replayed: true } : undefined;
     })();
