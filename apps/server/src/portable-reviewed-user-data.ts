@@ -190,7 +190,7 @@ export function validateReviewedUserDataActivation(value:unknown):asserts value 
 }
 
 /** Values stay native configuration; only explicit whole path prefixes relocate. */
-export function reviewedGitConfiguration(value:ReviewedUserData,activation:ReviewedUserDataActivation,includeOverrides:ReadonlyMap<string,string>=new Map(),sourceDirectories?:{common:string;private:string;home?:string}):{common:Buffer;private:Buffer|null;targets:string[];includes:Array<{source:string;destination:string}>} {
+export function reviewedGitConfiguration(value:ReviewedUserData,activation:ReviewedUserDataActivation,includeOverrides:ReadonlyMap<string,string>=new Map(),sourceDirectories?:{common:string;private:string;home?:string},pathProjection?:(key:string,rawValue:string)=>{source:string;destination:string;value:string}|undefined):{common:Buffer;private:Buffer|null;targets:string[];includes:Array<{source:string;destination:string}>} {
   const mappings=[...(activation.gitPathMappings??[])].sort((a,b)=>b.source.length-a.source.length),targets:string[]=[],includes:Array<{source:string;destination:string}>=[];
   const map=(source:string):string=>{
     const match=mappings.find(mapping=>sourcePathWithin(mapping.source,source));
@@ -230,9 +230,10 @@ export function reviewedGitConfiguration(value:ReviewedUserData,activation:Revie
         if(absolute)key='includeif.'+conditional[1]+map(absolute)+suffix+'.path';
         else if(windows)key='includeif.'+conditional[1]+condition+suffix+'.path';
       }
-      const include=/^(?:include|includeif\..+)\.path$/i.test(key);
+      const include=/^(?:include|includeif\..+)\.path$/i.test(key),projected=pathProjection?.(original.key,original.value);
+      if(projected){setting=projected.value;targets.push(projected.destination);if(include){includes.push({source:projected.source,destination:projected.destination});setting=includeOverrides.get(projected.destination)??setting;}}
       const pathSetting=include||/^core\.(?:hookspath|attributesfile|excludesfile)$/i.test(key)||/^(?:remote|submodule)\..+\.url$/i.test(key)&&absoluteSource(setting,worktree)!==undefined;
-      if(pathSetting&&setting!=='/dev/null'){
+      if(!projected&&pathSetting&&setting!=='/dev/null'){
         setting=expandHome(setting);
         const absolute=absoluteSource(setting,worktree),source=include?absolute??resolveSourcePath(sourceDirectory(worktree),setting):absolute??setting;
         if(absolute)setting=map(absolute);
