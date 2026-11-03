@@ -237,3 +237,43 @@ Configured external Git originals are also copied under
 files with a readable mapping manifest. Git repository capsules retain their
 inert Git metadata and original bytes there. The review copy never creates
 source links or activates hooks or configuration.
+
+## Native external Git graph application
+
+The native Git writer consumes a finite, closed graph of directory, regular-file
+and symbolic/hardlink nodes. Paths are canonical relative names tagged with an
+owned Git-directory or working-tree context; link targets name declared nodes.
+Working-tree placement requires the original import-root device/inode proof
+injected by its caller, including the original byte-phase directory map for every
+reused child directory. Historical source paths never become write authority.
+Existing destinations are reused only after exact original-byte/target, owner
+and inode checks. Differing bytes and aliases outside the declared graph remain
+untouched and cause an incomplete receipt. No external original is overwritten.
+
+New aliases are placed after Git shared-permission processing, with complete
+existing and final hardlink-count checks. File metadata is restored on held
+regular descriptors with the complete known link count. Symbolic-link timestamps
+use the exact native held-link helper, retaining parent/name custody; no floating
+point timestamp conversion is used. Explicit source directory mode/timestamps
+are finalized deepest first after sharing and children, with each held directory
+synced before closure. Unsupported native metadata operations refuse explicitly.
+The dedicated regression source covers both contexts, same-inode byte retention,
+exact nanoseconds, stale/missing root proof, changed bytes and undeclared aliases.
+Execution remains deferred to the consolidated validation pass.
+
+Generated active Git support trees remain under `.ponderosa-portable-review`; native `info/exclude` receives that scoped ignore once, while source `infoReview` remains unchanged in the retained canonical package.
+
+Linked storage also supports a selected private-Git context, kept separate from
+common storage when only a private slot is being initialized. Recursive repository
+capsules reuse the native common/private layout writer. Generated hook views may
+reference the constant top-owner graph through a read-only `owner` target context;
+the writer carries the exact parent directory proof internally. Owner-node writes and undeclared owner targets are refused. Captured source
+hardlinks may cross native scopes only inside the fully predeclared owned graph. Capsule worktree
+custody can be issued from the parent's own newly created, retained directory map,
+never from a late observation of an unrelated directory. Parent sharing finishes
+before child repository creation. One top-level queue waits for every recursive
+copy, sharing step and bounded content readback before materializing the complete
+alias graph and restoring any restrictive source file/directory mode. Descriptors
+remain bounded, and exact readback stamps bind the metadata pass. The shared
+runtime-only `directoryProofs` map exposes issued common/private/module/working
+parents to the caller without promoting a later observation to authority.

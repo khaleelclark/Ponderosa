@@ -1,8 +1,8 @@
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
-import {applyExactFileMetadata} from '@ponderosa/native-host';
-import {promises as fs} from '@ponderosa/native-host/fs';
+import {applyExactFileMetadata,applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
+import {closeSync,promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {crc32,deflateSync,inflateSync} from 'node:zlib';
@@ -300,8 +300,14 @@ function validateNativeGitSelection(value:ReviewedUserData,mapped=false):void {
 /** Create directly into an empty NEW owned root, never replace a generated .git. */
 export interface ReviewedGitModuleData {name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string;configurationSha256:string;initialized:boolean;embedded?:true};worktreeRelativePath:string|null;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}
 export function reviewedGitModules(value:ReviewedGitUserData):readonly ReviewedGitModuleData[] {return (value as ReviewedGitUserData&{modules?:ReviewedGitModuleData[]}).modules??[];}
-export interface NativeReviewedGitModulePlan {gitDir:string;worktreePath:string;initialized:boolean;value:ReviewedUserData;activation:ReviewedUserDataActivation;configuration:NativeReviewedGitConfiguration}
-export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>;modules?:NativeReviewedGitModulePlan[]};
+export interface NativeReviewedGitModulePlan {gitDir:string;worktreePath:string;initialized:boolean;value:ReviewedUserData;activation:ReviewedUserDataActivation;configuration:NativeReviewedGitConfiguration;layout?:{commonDir:string;privateDir:string;writeCommon:true}}
+export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{directoryProofs?:Map<string,{device:string;inode:string}>;includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>;modules?:NativeReviewedGitModulePlan[];external?:{
+  /** Original import custody, injected by the caller; never inferred by the planner. */
+  worktreeIdentity?:import('./portable-working-files.js').WorkingRootIdentity;
+  directories:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner';mode:number;mtimeNs:string}>;
+  files:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner';data:Buffer;mode:number;mtimeNs:string}>;
+  links:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner';target:string;targetContext?:'gitdir'|'private'|'worktree'|'owner';kind:'symlink'|'hardlink';mtimeNs?:string}>;
+}};
 export interface NativeReviewedGitStorage {gitDir:string;worktreePath:string;initialized:boolean;existingRoot?:boolean}
 type SelectedWorktreeReftable={tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
 export function selectedWorktreeReftable(value:ReviewedGitUserData):SelectedWorktreeReftable|undefined {
@@ -2502,12 +2508,63 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
   await writeReviewedGit(destination,value,undefined,{commonDir,privateDir:path.join(commonDir,'worktrees','selected'),writeCommon:true},true);
 }
 
-async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration,storage?:NativeReviewedGitStorage):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
+type NativeGitWriteFinalization={
+  files:Map<string,{device:bigint;inode:bigint;data:Buffer;sha256:string;mode:number;mtimeNs:string;mutate:boolean}>;
+  links:Map<string,{path:string;target:string;kind:'symlink'|'hardlink';mtimeNs?:string;mutate:boolean}>;
+  directories:Map<string,{device:bigint;inode:bigint;mode:number;mtimeNs:string}>;
+  checks:Array<()=>Promise<void>>;
+  receipts:Map<string,{sha256:string;device:bigint;inode:bigint;expectedLinkCount?:bigint}>;
+  proofs:Map<string,{device:string;inode:string}>;
+};
+async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration,storage?:NativeReviewedGitStorage,ownerExternal?:{root:string;nodes:ReadonlyMap<string,'directory'|'file'|'symlink'|'hardlink'>;directories:ReadonlyMap<string,{device:bigint;inode:bigint}>},finalization?:NativeGitWriteFinalization):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint;expectedLinkCount?:bigint}>> {
   validateReviewedGit(value);
   if(native&&!configuration)throw new Error('Native Git requires its validated configuration plan');
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
+  const topLevel=!finalization,state:NativeGitWriteFinalization=finalization??{files:new Map(),links:new Map(),directories:new Map(),checks:[],receipts:new Map(),proofs:configuration?.directoryProofs??new Map()};
+  const ownerRoot=ownerExternal?.root??layout?.commonDir??storage?.gitDir??path.join(destination,'.git');
+  const declaredOwnerNodes=new Map<string,'directory'|'file'|'symlink'|'hardlink'>(ownerExternal?.nodes);
+  if(!ownerExternal){
+    const visited=new Set<NativeReviewedGitConfiguration>();let count=0;
+    const collect=(plan:NativeReviewedGitConfiguration|undefined,common:string,worktree:string,privateDir:string,depth:number)=>{
+      if(!plan)return;if(depth>32||visited.has(plan)||++count>1000)throw new Error('Native external repository graph is cyclic or exceeds its capture bound');visited.add(plan);
+      for(const [kind,nodes] of [['directory',plan.external?.directories??[]],['file',plan.external?.files??[]],['link',plan.external?.links??[]]] as const)for(const node of nodes){
+        storageRelativePath(node.path);const context=node.context??'gitdir',base=context==='worktree'?worktree:context==='private'?privateDir:common,target=path.join(base,node.path),relative=path.relative(ownerRoot,target);
+        if(relative&&!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)){const key=relative.split(path.sep).join('/'),type=kind==='link'?(node as NonNullable<NativeReviewedGitConfiguration['external']>['links'][number]).kind:kind,prior=declaredOwnerNodes.get(key);if(prior&&prior!==type)throw new Error('Native external owner graph has conflicting node kinds');declaredOwnerNodes.set(key,type);}
+      }
+      for(const module of plan.modules??[])collect(module.configuration,module.gitDir,module.worktreePath,module.layout?.privateDir??module.gitDir,depth+1);visited.delete(plan);
+    };collect(configuration,ownerRoot,storage?.worktreePath??destination,layout?.privateDir??ownerRoot,0);
+  }
+  const external=native?configuration?.external:undefined;
+  type ExternalContext='gitdir'|'private'|'worktree'|'owner';
+  const externalContext=(value:ExternalContext|undefined):ExternalContext=>{if(value!==undefined&&value!=='gitdir'&&value!=='private'&&value!=='worktree'&&value!=='owner')throw new Error('Invalid external Git root context');return value??'gitdir';};
+  const externalKey=(name:string,context?:ExternalContext)=>externalContext(context)+':'+name;
+  const externalNodes=new Map<string,'directory'|'file'|'symlink'|'hardlink'>();
+  const externalPath=(name:string)=>{storageRelativePath(name);if(name==='.')throw new Error('External Git nodes require a named owned path');};
+  const externalMetadata=(node:{mode:number;mtimeNs:string})=>{if(!Number.isInteger(node.mode)||node.mode<0||node.mode>0o7777||typeof node.mtimeNs!=='string'||! /^-?(?:0|[1-9][0-9]{0,19})$/.test(node.mtimeNs))throw new Error('External Git metadata is not canonical');};
+  if(external){
+    if(!Array.isArray(external.directories)||!Array.isArray(external.files)||!Array.isArray(external.links)||external.directories.length+external.files.length+external.links.length>10000)throw new Error('External Git graph is incomplete or exceeds its capture bound');
+    for(const node of external.directories){externalPath(node.path);externalMetadata(node);const key=externalKey(node.path,node.context);if(externalNodes.has(key))throw new Error('External Git graph has colliding nodes');externalNodes.set(key,'directory');}
+    for(const node of external.files){externalPath(node.path);externalMetadata(node);const key=externalKey(node.path,node.context);if(externalNodes.has(key)||!Buffer.isBuffer(node.data))throw new Error('External Git file original is absent or colliding');externalNodes.set(key,'file');}
+    for(const node of external.links){externalPath(node.path);externalPath(node.target);const key=externalKey(node.path,node.context);if(externalNodes.has(key)||!['symlink','hardlink'].includes(node.kind))throw new Error('External Git alias is invalid or colliding');externalNodes.set(key,node.kind);if(node.mtimeNs!==undefined&&! /^-?(?:0|[1-9][0-9]{0,19})$/.test(node.mtimeNs))throw new Error('External Git link timestamp is not canonical');}
+    for(const key of externalNodes.keys())if(key.startsWith('owner:'))throw new Error('External owner context is a reference-only declared closure');
+    for(const link of external.links){
+      const target=externalKey(link.target,link.targetContext);
+      if(link.targetContext==='owner'){const kind=declaredOwnerNodes.get(link.target);if(!kind||link.kind==='hardlink'&&kind!=='file')throw new Error('External owner references require a named declared original target');continue;}
+      if(!externalNodes.has(target)||link.kind==='hardlink'&&externalNodes.get(target)!=='file')throw new Error('External Git alias escapes its named original closure');
+      if(link.kind==='hardlink'&&link.mtimeNs!==undefined&&link.mtimeNs!==external.files.find(file=>externalKey(file.path,file.context)===target)!.mtimeNs)throw new Error('External hardlink metadata differs from its shared original inode');
+    }
+    for(const [key] of externalNodes){const separator=key.indexOf(':'),context=key.slice(0,separator) as ExternalContext;let parent=path.posix.dirname(key.slice(separator+1));while(parent!=='.'){if(externalNodes.has(externalKey(parent,context))&&externalNodes.get(externalKey(parent,context))!=='directory')throw new Error('External Git node traverses an alias or file parent');parent=path.posix.dirname(parent);}}
+  }
+  const externalWorktree=storage?.worktreePath??destination;
+  if(external&&[...externalNodes.keys()].some(key=>key.startsWith('worktree:'))){
+    const expected=external.worktreeIdentity;
+    if(!expected||![expected.device,expected.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('External worktree nodes require the original issued import-root identity');
+    const stat=await fs.lstat(externalWorktree,{bigint:true});
+    if(!stat.isDirectory()||stat.isSymbolicLink()||stat.dev.toString()!==expected.device||stat.ino.toString()!==expected.inode||await fs.realpath(externalWorktree)!==externalWorktree)throw new Error('External worktree lost its original import-root custody');
+  }
   const posixPermissions=!!native&&process.platform==='linux'&&['x64','arm64','ppc64','s390x','loong64'].includes(process.arch);
   const permissionFiles:NativeGitPermissionNode[]=[],permissionDirectories=new Map<string,number>();
+  const createdByWriterDirectories=new Map<string,{device:bigint;inode:bigint}>();
   const createDirectory=async(target:string)=>{
     // Observe the kernel's normal creation mode (including default ACL effects)
     // before restricting the empty owned directory for the copy phase.
@@ -2516,6 +2573,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       const handle=await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
       try{const stat=await handle.stat({bigint:true});if(!stat.isDirectory()||stat.uid!==BigInt(process.geteuid!()))throw new Error('New Git permission directory is not currently owned');permissionDirectories.set(target,Number(stat.mode)&0o7777);const mode=(Number(stat.mode)&0o7000)|0o700,observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'directory',mode,mtimeNs:stat.mtimeNs});if(observed.mode!==mode||observed.mtimeNs!==stat.mtimeNs)throw new Error('Git copy directory permissions differ after exact application');}finally{await handle.close();}
     }
+    const issued=await fs.lstat(target,{bigint:true});if(!issued.isDirectory()||await fs.realpath(target)!==target)throw new Error('Created Git directory lost its local identity');createdByWriterDirectories.set(target,{device:issued.dev,inode:issued.ino});
   };
   if(native||recovery){if(await fs.realpath(destination)!==destination||!recovery&&(await fs.readdir(destination)).length)throw new Error('Git recreation requires its freshly owned canonical destination');}else await fs.mkdir(destination,{mode:0o700});
   const gitDir=layout?.commonDir??storage?.gitDir??path.join(destination,'.git');
@@ -2529,11 +2587,44 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     if(layout.writeCommon)await createDirectory(path.join(gitDir,'worktrees'));
     await createDirectory(layout.privateDir);
   }
-  const created:Array<{path:string;sha256:string;device:bigint;inode:bigint}>=[];
+  const created:Array<{path:string;sha256:string;device:bigint;inode:bigint;expectedLinkCount?:bigint}>=[];
   const initialPermissionTargets=new Set<string>([...(!layout||layout.writeCommon?[gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs')]:[]),...(layout?[...(layout.writeCommon?[path.join(gitDir,'worktrees')]:[]),layout.privateDir]:[])]);
   const directories=new Map<string,{device:bigint;inode:bigint}>();
   for(const target of [destination,gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs'),...(layout?[path.join(gitDir,'worktrees'),layout.privateDir]:[])]){const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});if(posixPermissions&&initialPermissionTargets.has(target)&&!permissionDirectories.has(target))permissionDirectories.set(target,Number(stat.mode)&0o7777);}
   const checkDirectories=async()=>{for(const [target,identity] of directories){const stat=await fs.lstat(target,{bigint:true});if(!stat.isDirectory()||stat.dev!==identity.device||stat.ino!==identity.inode||await fs.realpath(target)!==target)throw new Error('Git destination directory identity changed');}};
+  const externalRoot=(context?:ExternalContext)=>externalContext(context)==='worktree'?storage?.worktreePath??destination:externalContext(context)==='private'?layout?.privateDir??gitDir:externalContext(context)==='owner'?ownerExternal?.root??gitDir:gitDir;
+  if(external&&[...externalNodes.keys()].some(key=>key.startsWith('worktree:'))){
+    const expected=external.worktreeIdentity,root=externalRoot('worktree');
+    if(!expected||![expected.device,expected.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('External worktree nodes require the original issued import-root identity');
+    const stat=await fs.lstat(root,{bigint:true});
+    if(!stat.isDirectory()||stat.isSymbolicLink()||stat.dev.toString()!==expected.device||stat.ino.toString()!==expected.inode||await fs.realpath(root)!==root)throw new Error('External worktree lost its original import-root custody');
+    const prior=directories.get(root);if(prior&&(prior.device!==stat.dev||prior.inode!==stat.ino))throw new Error('External worktree conflicts with retained native custody');directories.set(root,{device:stat.dev,inode:stat.ino});
+  }
+  const owningExternal=ownerExternal??{root:gitDir,nodes:declaredOwnerNodes,directories};
+  const activeExternal=(context?:ExternalContext)=>externalContext(context)!=='gitdir'||!layout||layout.writeCommon;
+  const externalTarget=(name:string,context?:ExternalContext)=>path.join(externalRoot(context),...name.split('/'));
+  if(external){const physical=new Set<string>();for(const key of externalNodes.keys()){const separator=key.indexOf(':'),target=externalTarget(key.slice(separator+1),key.slice(0,separator) as ExternalContext);if(physical.has(target))throw new Error('External Git root contexts collide on one physical node');physical.add(target);}}
+
+  const externalFiles=new Map<string,{file:NonNullable<NativeReviewedGitConfiguration['external']>['files'][number];target:string;device:bigint;inode:bigint;sha256:string}>();
+  const createdExternalWorktreeDirectories=new Set<string>();
+  const ensureExternalDirectory=async(relative:string,context?:ExternalContext)=>{
+    let target=externalRoot(context);await checkDirectories();
+    if(relative==='.')return;
+    for(const component of relative.split('/')){
+      target=path.join(target,component);
+      const worktree=externalContext(context)==='worktree';
+      let stat=await fs.lstat(target,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});
+      if(!stat){await createDirectory(target);if(worktree){permissionDirectories.delete(target);createdExternalWorktreeDirectories.add(target);}stat=await fs.lstat(target,{bigint:true});}
+      else if(worktree&&!createdExternalWorktreeDirectories.has(target)){
+        const relative=path.relative(externalRoot('worktree'),target).split(path.sep).join('/'),issued=external?.worktreeIdentity?.directories;
+        if(!issued||!Object.hasOwn(issued,relative))throw new Error('Existing external worktree directory has no original byte-phase custody');
+        const expected=issued[relative]!;if(stat.dev.toString()!==expected.device||stat.ino.toString()!==expected.inode)throw new Error('Existing external worktree directory lost its original byte-phase custody');
+      }
+      const prior=directories.get(target);
+      if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(target)!==target||typeof process.geteuid!=='function'||stat.uid!==BigInt(process.geteuid())||prior&&(prior.device!==stat.dev||prior.inode!==stat.ino))throw new Error('External Git parent is not an owned canonical directory');directories.set(target,{device:stat.dev,inode:stat.ino});
+    }
+  };
+
   const write=async(relative:string,data:Buffer|string,metadata?:{mode:number;mtimeNs:string},common=false,forcePrivate=false)=>{
     const readOnly=/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]+|pack\/pack-[a-f0-9]+\.(?:pack|idx|mtimes))$/.test(relative);
     const privateName=forcePrivate||!common&&(relative==='HEAD'||relative==='index'||relative==='commondir'||relative==='gitdir'||relative==='config.worktree'||relative==='info/sparse-checkout'||relative==='ORIG_HEAD'||relative==='FETCH_HEAD'||relative==='logs/HEAD'||relative==='logs/ORIG_HEAD'||gitSelectedOriginalNames.includes(relative)||privateRef(relative.startsWith('logs/')?relative.slice(5):relative));
@@ -2545,7 +2636,20 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Git destination parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});
     }
     await checkDirectories();const handle=await fs.open(target,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,posixPermissions?(readOnly?0o444:0o666):0o600);
-    try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n)throw new Error('Git destination file is not exclusive');if(posixPermissions){if(stat.uid!==BigInt(process.geteuid!()))throw new Error('New Git permission file is not currently owned');const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:0o600,mtimeNs:stat.mtimeNs});if(observed.mode!==0o600||observed.mtimeNs!==stat.mtimeNs)throw new Error('Git copy file permissions differ after exact application');}await handle.writeFile(data);if(metadata){const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:metadata.mode,mtimeNs:BigInt(metadata.mtimeNs)});if(observed.mode!==metadata.mode||observed.mtimeNs!==BigInt(metadata.mtimeNs))throw new Error('Git original metadata differs after application');}await handle.sync();created.push({path:relative,sha256:createHash('sha256').update(data).digest('hex'),device:stat.dev,inode:stat.ino});permissionFiles.push({path:target,device:stat.dev,inode:stat.ino,creationMode:Number(stat.mode)&0o7777,...(metadata?{originalMode:metadata.mode}:{})});}finally{await handle.close();}
+    try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n)throw new Error('Git destination file is not exclusive');if(posixPermissions){if(stat.uid!==BigInt(process.geteuid!()))throw new Error('New Git permission file is not currently owned');const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:0o600,mtimeNs:stat.mtimeNs});if(observed.mode!==0o600||observed.mtimeNs!==stat.mtimeNs)throw new Error('Git copy file permissions differ after exact application');}await handle.writeFile(data);if(metadata){const bytes=Buffer.isBuffer(data)?data:Buffer.from(data);state.files.set(target,{device:stat.dev,inode:stat.ino,data:bytes,sha256:createHash('sha256').update(bytes).digest('hex'),mode:metadata.mode,mtimeNs:metadata.mtimeNs,mutate:true});}await handle.sync();const receipt={sha256:createHash('sha256').update(data).digest('hex'),device:stat.dev,inode:stat.ino};created.push({path:relative,...receipt});state.receipts.set(target,receipt);permissionFiles.push({path:target,device:stat.dev,inode:stat.ino,creationMode:Number(stat.mode)&0o7777});}finally{await handle.close();}
+  };
+  const verifyCreated=async()=>{
+    for(const file of created){
+      const target=path.join(gitDir,file.path),handle=await openPortableRegular(target);
+      try{
+        const before=await handle.stat({bigint:true}),expectedLinks=file.expectedLinkCount??1n;
+        if(before.dev!==file.device||before.ino!==file.inode||before.nlink!==expectedLinks||before.size>BigInt(limit))throw new Error('Created Git data identity or complete alias count changed');
+        const hash=createHash('sha256'),buffer=Buffer.alloc(1024*1024);let position=0;
+        while(BigInt(position)<before.size){const result=await handle.read(buffer,0,Number(before.size-BigInt(position)>BigInt(buffer.length)?BigInt(buffer.length):before.size-BigInt(position)),position);if(!result.bytesRead)throw new Error('Created Git data shortened');hash.update(buffer.subarray(0,result.bytesRead));position+=result.bytesRead;}
+        const after=await handle.stat({bigint:true}),named=await fs.lstat(target,{bigint:true});
+        if((await handle.read(buffer,0,1,position)).bytesRead||hash.digest('hex')!==file.sha256||after.dev!==before.dev||after.ino!==before.ino||after.size!==before.size||after.mtimeNs!==before.mtimeNs||after.ctimeNs!==before.ctimeNs||after.nlink!==expectedLinks||named.dev!==before.dev||named.ino!==before.ino)throw new Error('Created Git data changed; preserve partial state');
+      }finally{await handle.close();}
+    }
   };
   try{
     for(const object of value.objects){const data=Buffer.from(object.dataBase64,'base64');await write(`objects/${object.oid.slice(0,2)}/${object.oid.slice(2)}`,deflateSync(Buffer.concat([Buffer.from(`${object.type} ${data.length}\0`),data])));}
@@ -2572,7 +2676,13 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       const worktreeConfig=configuration!.private;
       if(layout||worktreeConfig!==null)await write('config.worktree',Buffer.concat([worktreeConfig??Buffer.alloc(0),Buffer.from(layout?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(destination)}\n`:'')]));
       if(value.sparseReview.patternsBase64!==null)await write('info/sparse-checkout',Buffer.from(value.sparseReview.patternsBase64,'base64'));
-      for(const info of value.infoReview)if(info.dataBase64!==null)await write(info.path,Buffer.from(info.dataBase64,'base64'));
+      for(const info of value.infoReview){
+        if(info.path==='info/exclude'){
+          const original=info.dataBase64===null?Buffer.alloc(0):Buffer.from(info.dataBase64,'base64'),line='/.ponderosa-portable-review/';
+          const bytes=original.toString('utf8').split(/\r?\n/).includes(line)?original:Buffer.concat([original,Buffer.from((original.length&&original.at(-1)!==10?'\n':'')+line+'\n')]);
+          await write(info.path,bytes);
+        }else if(info.dataBase64!==null)await write(info.path,Buffer.from(info.dataBase64,'base64'));
+      }
       if(value.origHeadReview.dataBase64!==null)await write('ORIG_HEAD',Buffer.from(value.origHeadReview.dataBase64,'base64'));
       if(value.origHeadReview.reflogDataBase64!==null)await write('logs/ORIG_HEAD',Buffer.from(value.origHeadReview.reflogDataBase64,'base64'));
       if(value.fetchHeadReview.dataBase64!==null)await write('FETCH_HEAD',Buffer.from(value.fetchHeadReview.dataBase64,'base64'));
@@ -2584,6 +2694,42 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       }
       for(const file of native.providerFiles.filter(file=>gitReviewOriginal(file.path)))await write(file.path.slice(5),Buffer.from(file.dataBase64,'base64'),file.metadata);
       for(const file of configuration!.includeFiles??[])await write(file.path,file.data,undefined,!file.private,!!file.private);
+      if(external){
+        for(const folder of [...external.directories].sort((a,b)=>a.path.split('/').length-b.path.split('/').length)){if(activeExternal(folder.context))await ensureExternalDirectory(folder.path,folder.context);}
+        for(const file of external.files){
+          if(activeExternal(file.context))await ensureExternalDirectory(path.posix.dirname(file.path),file.context);else if(await fs.realpath(path.dirname(externalTarget(file.path,file.context)))!==path.dirname(externalTarget(file.path,file.context)))throw new Error('Shared external Git original parent changed');await checkDirectories();
+          const target=externalTarget(file.path,file.context),existing=await fs.lstat(target,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});
+          if(!existing&&!activeExternal(file.context))throw new Error('Shared external Git original is missing from its completed common closure');
+          if(!existing){
+            if(externalContext(file.context)==='gitdir')await write(file.path,file.data,undefined,true);
+            else if(externalContext(file.context)==='private')await write(file.path,file.data,undefined,false,true);
+            else{const handle=await fs.open(target,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{await handle.writeFile(file.data);await handle.sync();}finally{await handle.close();}}
+          }
+          // Equal transported originals may already exist in a fresh worktree or
+          // shared common Git directory. Retain their bytes and exact held inode.
+          const handle=await openPortableRegular(target);
+          try{
+            const stat=await handle.stat({bigint:true}),named=await fs.lstat(target,{bigint:true});
+            if(stat.size!==BigInt(file.data.length)||typeof process.geteuid!=='function'||stat.uid!==BigInt(process.geteuid())||stat.dev!==named.dev||stat.ino!==named.ino)throw new Error('External Git original differs from its owned destination');
+            const buffer=Buffer.alloc(Math.min(1024*1024,file.data.length+1)),hash=createHash('sha256');let position=0;
+            while(position<file.data.length){const read=await handle.read(buffer,0,Math.min(buffer.length,file.data.length-position),position);if(!read.bytesRead)break;hash.update(buffer.subarray(0,read.bytesRead));position+=read.bytesRead;}
+            const after=await handle.stat({bigint:true}),sha256=createHash('sha256').update(file.data).digest('hex');
+            if(position!==file.data.length||(await handle.read(buffer,0,1,position)).bytesRead||hash.digest('hex')!==sha256||after.mtimeNs!==stat.mtimeNs||after.ctimeNs!==stat.ctimeNs)throw new Error('External Git destination bytes differ; preserve the existing original');
+            externalFiles.set(externalKey(file.path,file.context),{file,target,device:stat.dev,inode:stat.ino,sha256});
+          }finally{await handle.close();}
+        }
+        for(const link of external.links)if(activeExternal(link.context))await ensureExternalDirectory(path.posix.dirname(link.path),link.context);
+
+      }
+    }
+
+    if(external){
+      for(const original of externalFiles.values()){
+        const next={device:original.device,inode:original.inode,data:original.file.data,sha256:original.sha256,mode:original.file.mode,mtimeNs:original.file.mtimeNs,mutate:activeExternal(original.file.context)},prior=state.files.get(original.target);
+        if(prior&&(prior.device!==next.device||prior.inode!==next.inode||prior.sha256!==next.sha256||prior.mode!==next.mode||prior.mtimeNs!==next.mtimeNs))throw new Error('Native external scopes disagree about one owned original');state.files.set(original.target,{...next,mutate:next.mutate||!!prior?.mutate});
+      }
+      for(const link of external.links){const next={path:externalTarget(link.path,link.context),target:externalTarget(link.target,link.targetContext),kind:link.kind,mutate:activeExternal(link.context),...(link.mtimeNs!==undefined?{mtimeNs:link.mtimeNs}:{})},prior=state.links.get(next.path);if(prior&&(prior.target!==next.target||prior.kind!==next.kind||prior.mtimeNs!==next.mtimeNs))throw new Error('Native external scopes disagree about one alias');state.links.set(next.path,{...next,mutate:next.mutate||!!prior?.mutate});}
+      for(const folder of external.directories)if(activeExternal(folder.context)){const target=externalTarget(folder.path,folder.context),proof=directories.get(target)!;const next={...proof,mode:folder.mode,mtimeNs:folder.mtimeNs},prior=state.directories.get(target);if(prior&&(prior.device!==next.device||prior.inode!==next.inode||prior.mode!==next.mode||prior.mtimeNs!==next.mtimeNs))throw new Error('Native external scopes disagree about one directory');state.directories.set(target,next);}
     }
     const entries:Buffer[]=[];
     const extendedIndex=value.index.some(entry=>entry.intentToAdd||entry.skipWorktree);
@@ -2607,6 +2753,12 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       try{const before=await handle.stat({bigint:true});await handle.writeFile(pointerData);await handle.sync();const current=await fs.lstat(pointer,{bigint:true});if(!current.isFile()||current.nlink!==1n||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Mapped Git worktree pointer changed');permissionFiles.push({path:pointer,device:before.dev,inode:before.ino,creationMode:Number(before.mode)&0o7777,unshared:true});}finally{await handle.close();}
     }
     if(native&&(!layout||layout.writeCommon))for(const module of configuration!.modules??[]){
+      const relative=path.relative(gitDir,module.gitDir);if(!relative||path.isAbsolute(relative)||relative==='..'||relative.startsWith('..'+path.sep))throw new Error('Native module storage escapes its selected parent repository');
+      let target=gitDir;for(const component of relative.split(path.sep).slice(0,-1)){target=path.join(target,component);if(!directories.has(target)){await createDirectory(target);const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});}}
+    }
+    await checkDirectories();await verifyCreated();
+    if(native){await applyNativeGitPermissions({gitDir,privateDir:layout?.privateDir,worktreePath:storage?.worktreePath??destination},[...permissionDirectories].map(([target,creationMode])=>({path:target,creationMode,...directories.get(target)!})),permissionFiles);await checkDirectories();}
+    if(native&&(!layout||layout.writeCommon))for(const module of configuration!.modules??[]){
       const relative=path.relative(gitDir,module.gitDir);
       if(!relative||path.isAbsolute(relative)||relative==='..'||relative.startsWith('..'+path.sep))throw new Error('Native module storage escapes its selected parent repository');
       let parent=gitDir;
@@ -2616,7 +2768,23 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       }
       await checkDirectories();
       validateNativeGitSelection(module.value);
-      const children=await writeReviewedGit(destination,module.value.git!,module.value,undefined,true,module.configuration,{gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized});
+      let childConfiguration=module.configuration;const childExternal=childConfiguration.external;
+      if(childExternal&&!childExternal.worktreeIdentity&&([...childExternal.directories,...childExternal.files,...childExternal.links].some(node=>node.context==='worktree')||childExternal.links.some(node=>node.targetContext==='worktree'))){
+        const issued=createdByWriterDirectories.get(module.worktreePath),held=directories.get(module.worktreePath);
+        if(!issued||!held||issued.device!==held.device||issued.inode!==held.inode)throw new Error('Repository capsule worktree has no exact parent-created directory custody');
+        const descendants:Record<string,{device:string;inode:string}>=Object.create(null);
+        for(const [target,proof] of createdByWriterDirectories){const relative=path.relative(module.worktreePath,target);if(relative&&!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)){const current=directories.get(target);if(current?.device===proof.device&&current.inode===proof.inode)descendants[relative.split(path.sep).join('/')]={device:proof.device.toString(),inode:proof.inode.toString()};}}
+        childConfiguration={...childConfiguration,external:{...childExternal,worktreeIdentity:{device:issued.device.toString(),inode:issued.inode.toString(),directories:descendants}}};
+      }
+      let children:Awaited<ReturnType<typeof writeReviewedGit>>;
+      if(module.layout){
+        if(!module.initialized||module.layout.commonDir!==module.gitDir)throw new Error('Repository capsule layout differs from its owned common directory');
+        // Preserve the normal kernel/default-ACL creation mode for the child
+        // writer to observe; every ancestor is still restricted and owned.
+        await fs.mkdir(module.gitDir,{mode:posixPermissions?0o777:0o700});const issued=await fs.lstat(module.gitDir,{bigint:true});
+        if(!issued.isDirectory()||await fs.realpath(module.gitDir)!==module.gitDir||posixPermissions&&issued.uid!==BigInt(process.geteuid!()))throw new Error('Repository capsule common directory changed');directories.set(module.gitDir,{device:issued.dev,inode:issued.ino});
+        children=await writeReviewedGit(module.worktreePath,module.value.git!,module.value,module.layout,true,childConfiguration,undefined,owningExternal,state);
+      }else children=await writeReviewedGit(destination,module.value.git!,module.value,undefined,true,childConfiguration,{gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized},owningExternal,state);
       const moduleStat=await fs.lstat(module.gitDir,{bigint:true});if(!moduleStat.isDirectory()||await fs.realpath(module.gitDir)!==module.gitDir)throw new Error('Created module storage identity changed');directories.set(module.gitDir,{device:moduleStat.dev,inode:moduleStat.ino});
       for(const file of children)created.push({...file,path:path.relative(gitDir,module.gitDir).split(path.sep).join('/')+'/'+file.path});
     }
@@ -2639,9 +2807,71 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     }
     if(!native)await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',reftableReview:value.reftableReview,configuration:value.configurationReview,configurationOriginalReview:value.configurationOriginalReview,reflogMissingObjects:value.reflogMissingObjects,indexOptionalReview:value.indexOptionalReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,fetchHeadReview:value.fetchHeadReview,packRetentionReview:value.packRetentionReview,modules:value.modules??[],exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
     await checkDirectories();
-    for(const file of created){const target=path.join(gitDir,file.path),{data}=await regularOriginal(target,limit),stat=await fs.lstat(target,{bigint:true});if(stat.dev!==file.device||stat.ino!==file.inode||createHash('sha256').update(data).digest('hex')!==file.sha256)throw new Error('Created Git data changed; preserve partial state');}
-    if(native){await applyNativeGitPermissions({gitDir,privateDir:layout?.privateDir,worktreePath:storage?.worktreePath??destination},[...permissionDirectories].map(([target,creationMode])=>({path:target,creationMode,...directories.get(target)!})),permissionFiles);await checkDirectories();}
-    for(const target of directories.keys()){const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{await handle.sync();}finally{await handle.close();}}
+    await verifyCreated();
+    state.checks.push(checkDirectories);
+    for(const [target,proof] of directories){const prior=state.proofs.get(target);if(prior&&(prior.device!==proof.device.toString()||prior.inode!==proof.inode.toString()))throw new Error('Native issued directory proofs disagree');state.proofs.set(target,{device:proof.device.toString(),inode:proof.inode.toString()});}if(configuration)configuration.directoryProofs=state.proofs;
+    // All native scope bytes and sharing are complete before any source mode can
+    // remove read/traversal permission. A child never seals early.
+    if(topLevel){
+      for(const check of state.checks)await check();
+      const links=[...state.links.values()],expectedCounts=new Map<string,bigint>();
+      for(const [target,original] of state.files){
+        let existing=1n;
+        for(const link of links.filter(link=>link.kind==='hardlink'&&link.target===target)){
+          const stat=await fs.lstat(link.path,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});
+          if(stat){if(!stat.isFile()||stat.dev!==original.device||stat.ino!==original.inode)throw new Error('Existing native alias differs from its declared original');existing++;}
+        }
+        const stat=await fs.lstat(target,{bigint:true});if(!stat.isFile()||stat.dev!==original.device||stat.ino!==original.inode||stat.nlink!==existing)throw new Error('Native original has aliases outside its complete declared graph');expectedCounts.set(target,1n+BigInt(links.filter(link=>link.kind==='hardlink'&&link.target===target).length));
+      }
+      for(const link of links.sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
+        if(!link.mutate){const named=await fs.lstat(link.path,{bigint:true});if(link.kind==='symlink'&&(!named.isSymbolicLink()||await fs.readlink(link.path)!==(path.relative(path.dirname(link.path),link.target).split(path.sep).join('/')||'.')))throw new Error('Shared native symbolic-link original changed');continue;}
+        for(const check of state.checks)await check();
+        const parent=path.dirname(link.path),issued=state.proofs.get(parent),proof=issued?{device:BigInt(issued.device),inode:BigInt(issued.inode)}:undefined;
+        if(!proof)throw new Error('Native alias parent has no exact writer-issued custody');
+        const heldParent=await fs.open(parent,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);let descriptor:number|undefined,primary:unknown;
+        try{
+          const stat=await heldParent.stat({bigint:true});if(stat.dev!==proof.device||stat.ino!==proof.inode||await fs.realpath(parent)!==parent)throw new Error('Native alias parent changed');
+          const existing=await fs.lstat(link.path,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});
+          if(link.kind==='hardlink'){
+            const original=state.files.get(link.target);if(!original)throw new Error('Native hardlink lacks its declared regular original');
+            const named=await fs.lstat(link.target,{bigint:true});if(!named.isFile()||named.dev!==original.device||named.ino!==original.inode||stat.dev!==original.device)throw new Error('Native hardlink original changed or destinations cross devices');
+            if(!existing)await fs.link(link.target,link.path);const alias=await fs.lstat(link.path,{bigint:true});if(!alias.isFile()||alias.dev!==original.device||alias.ino!==original.inode)throw new Error('Native hardlink identity changed');state.receipts.set(link.path,{sha256:original.sha256,device:alias.dev,inode:alias.ino,expectedLinkCount:expectedCounts.get(link.target)});
+            if(link.mtimeNs!==undefined&&link.mtimeNs!==original.mtimeNs)throw new Error('Native hardlink source timestamp conflicts with its original');
+          }else{
+            const text=path.relative(parent,link.target).split(path.sep).join('/')||'.';if(!existing)await fs.symlink(text,link.path);const before=await fs.lstat(link.path,{bigint:true});
+            if(!before.isSymbolicLink()||await fs.readlink(link.path)!==text||typeof process.geteuid!=='function'||before.uid!==BigInt(process.geteuid()))throw new Error('Native symbolic link differs; preserve its original');
+            if(link.mtimeNs!==undefined){descriptor=pinPortableSymlink({parentFd:heldParent.fd,leaf:path.basename(link.path),expectedParentDevice:proof.device,expectedParentInode:proof.inode,expectedDevice:before.dev,expectedInode:before.ino}).fd;const observed=applyExactSymlinkMetadata({fd:descriptor,expectedDevice:before.dev,expectedInode:before.ino,mtimeNs:link.mtimeNs}),after=await fs.lstat(link.path,{bigint:true});if(observed.mtimeNs!==BigInt(link.mtimeNs)||after.dev!==before.dev||after.ino!==before.ino||after.mtimeNs!==BigInt(link.mtimeNs)||await fs.readlink(link.path)!==text)throw new Error('Native symbolic-link metadata or named custody changed');}
+          }
+        }catch(error){primary=error;throw error;}
+        finally{const cleanup:unknown[]=[];if(descriptor!==undefined)try{closeSync(descriptor);}catch(error){cleanup.push(error);}try{await heldParent.close();}catch(error){cleanup.push(error);}if(cleanup.length)throw Object.assign(new Error('Native alias descriptor cleanup failed',{cause:primary??cleanup[0]}),{partialStatePossible:true,cleanupErrors:cleanup});}
+      }
+      const withHandle=async<T>(handle:Awaited<ReturnType<typeof fs.open>>,action:(handle:Awaited<ReturnType<typeof fs.open>>)=>Promise<T>):Promise<T>=>{
+        let primary:unknown;try{return await action(handle);}catch(error){primary=error;throw error;}finally{try{await handle.close();}catch(cleanup){throw Object.assign(new Error('Native finalization descriptor cleanup failed',{cause:primary??cleanup}),{partialStatePossible:true,cleanupErrors:[cleanup]});}}
+      };
+      const verified=new Map<string,{size:bigint;mtimeNs:bigint;ctimeNs:bigint;uid:bigint;gid:bigint}>();
+      // Read every original before applying any source file or directory mode.
+      // Descriptors stay bounded: one at a time, while all directories retain
+      // copy-phase traversal and every source original remains readable.
+      for(const [target,original] of state.files)await withHandle(await openPortableRegular(target),async handle=>{
+        const before=await handle.stat({bigint:true}),count=expectedCounts.get(target)!;
+        if(before.dev!==original.device||before.ino!==original.inode||before.nlink!==count||before.size!==BigInt(original.data.length))throw new Error('Native original or complete alias count changed');
+        const hash=createHash('sha256'),buffer=Buffer.alloc(Math.min(1024*1024,original.data.length+1));let offset=0;while(offset<original.data.length){const read=await handle.read(buffer,0,Math.min(buffer.length,original.data.length-offset),offset);if(!read.bytesRead)break;hash.update(buffer.subarray(0,read.bytesRead));offset+=read.bytesRead;}
+        const after=await handle.stat({bigint:true});if(offset!==original.data.length||(await handle.read(buffer,0,1,offset)).bytesRead||hash.digest('hex')!==original.sha256||after.mtimeNs!==before.mtimeNs||after.ctimeNs!==before.ctimeNs||after.nlink!==count)throw new Error('Native original changed during global readback');verified.set(target,{size:after.size,mtimeNs:after.mtimeNs,ctimeNs:after.ctimeNs,uid:after.uid,gid:after.gid});
+      });
+      for(const [target,original] of state.files)await withHandle(await openPortableRegular(target),async handle=>{
+        const count=expectedCounts.get(target)!,stat=await handle.stat({bigint:true}),proof=verified.get(target)!;if(stat.dev!==original.device||stat.ino!==original.inode||stat.nlink!==count||stat.size!==proof.size||stat.mtimeNs!==proof.mtimeNs||stat.ctimeNs!==proof.ctimeNs||stat.uid!==proof.uid||stat.gid!==proof.gid)throw new Error('Native original custody changed before final metadata');
+        if(original.mutate){const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:original.device,expectedInode:original.inode,expectedLinkCount:count,kind:'file',mode:original.mode,mtimeNs:BigInt(original.mtimeNs)});if(observed.mode!==original.mode||observed.mtimeNs!==BigInt(original.mtimeNs))throw new Error('Native original metadata differs');await handle.sync();}else if(Number(stat.mode&0o7777n)!==original.mode||stat.mtimeNs!==BigInt(original.mtimeNs))throw new Error('Shared native original metadata changed');
+        for(const receipt of state.receipts.values())if(receipt.device===original.device&&receipt.inode===original.inode)receipt.expectedLinkCount=count;
+      });
+      for(const check of state.checks)await check();
+      // Physical deepest-first order keeps each parent traversable until every
+      // descendant is complete. Retain this directory fd through chmod+sync.
+      for(const [target,proof] of [...state.directories].sort(([a],[b])=>b.split(path.sep).length-a.split(path.sep).length||a.localeCompare(b)))await withHandle(await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW),async handle=>{
+        const stat=await handle.stat({bigint:true}),named=await fs.lstat(target,{bigint:true});if(stat.dev!==proof.device||stat.ino!==proof.inode||named.dev!==proof.device||named.ino!==proof.inode||typeof process.geteuid!=='function'||stat.uid!==BigInt(process.geteuid()))throw new Error('Native directory lost its issued custody');
+        const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:proof.device,expectedInode:proof.inode,kind:'directory',mode:proof.mode,mtimeNs:BigInt(proof.mtimeNs)});if(observed.mode!==proof.mode||observed.mtimeNs!==BigInt(proof.mtimeNs))throw new Error('Native source directory metadata differs');await handle.sync();
+      });
+      return [...state.receipts].flatMap(([target,receipt])=>{const relative=path.relative(gitDir,target);return relative&&!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)?[{path:relative.split(path.sep).join('/'),...receipt}]:[];});
+    }
     return created;
   }catch(error){throw Object.assign(new Error(`Git recreation incomplete; preserve all bytes at ${destination}: ${redactPortableDiagnostic((error as Error).message??String(error))}`,{cause:error}),{code:(error as {code?:string}).code??'ERR_GIT_RECREATION_PARTIAL',partialStatePossible:true,observed:(error as {observed?:unknown}).observed??null});}
 }
