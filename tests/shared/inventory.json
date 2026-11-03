@@ -2424,6 +2424,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native/server workspaces; Linux disposable regular/FIFO inode replacements and a bounded child; no provider or live data",
       "origin": "Bible8/12/15 regular-to-FIFO replacement: metadata-only inode gate before data open"
+    },
+    {
+      "path": "tests/organizations/package-export-transport.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built core/agents/server and TypeScript; isolated Fastify and owned temporary staging; no provider account",
+      "origin": "Body-bearing shared Agent/Branch exports, bounded staged native download with finite same-byte retries and origin-owned browser handoff"
     }
   ],
   "retainedReleasePayload": [

@@ -1,3 +1,4 @@
+import {packageExportDownloads} from '../package-export-downloads.js';
 import {collectBranchGitStorageSelections} from '../branch-export-selections.js';
 import {decodePortableMetadataArtifact} from '../agent-package-codec.js';
 import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
@@ -1253,79 +1254,28 @@ export function registerAgentPackageRoutes(
     return result;
   });
 
-  app.get<{
-    Params: { id: string };
-    Querystring: {
-      mode?: AgentExportMode;
-      organization?: string;
-      download?: string;
-      workingFiles?: string;
-      wholeWorkingFolder?: string;
-      organizationWorkingFolders?:string;
-      reviewedUserData?:string;
-      gitStorageBindings?:string;
-    };
-  }>("/api/agents/:id/export", { onRequest: packageOperation,config:{agentPackageOperation:true} }, async (request, reply) => withAgentImportAdmission(async () => {
-    const requestedMode: AgentExportMode = ["template", "context", "full"]
-      .includes(request.query.mode ?? "")
-      ? request.query.mode!
-      : "full";
-    let selectedWorkingFiles:unknown=[];
-    try{if(request.query.workingFiles)selectedWorkingFiles=JSON.parse(request.query.workingFiles);}catch{throw new AssetError(400,'Selected working files must be a JSON array');}
+  const downloads=packageExportDownloads(app);
+  const exportPackage=async(agentId:string,input:Record<string,unknown>,reply:FastifyReply,attachment=false)=>withAgentImportAdmission(async()=>{
+    exactObjectFields(input,['mode','organization','download','workingFiles','wholeWorkingFolder','organizationWorkingFolders','reviewedUserData','gitStorageBindings'],'Agent export');
+    for(const key of ['organization','download','wholeWorkingFolder','organizationWorkingFolders'])if(input[key]!==undefined&&typeof input[key]!=='boolean')throw new AssetError(400,'Export choices must be explicit booleans');
+    if(input.mode!==undefined&&!['template','context','full'].includes(input.mode as string))throw new AssetError(400,'Choose a supported Agent export mode');
+    const requestedMode=(input.mode??'full') as AgentExportMode,selectedWorkingFiles=input.workingFiles??[];
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Selected working files must be relative paths');
-    let reviewedUserData:import('@ponderosa/core').ReviewedUserDataSelection|undefined;
-    if(request.query.reviewedUserData!==undefined){try{const value:unknown=JSON.parse(request.query.reviewedUserData);validateReviewedUserDataSelection(value);reviewedUserData=value;}catch{throw new AssetError(400,'Choose explicit Git/settings review data');}}
-    let gitStorageBindings:import('@ponderosa/core').GitStorageSelection[]|undefined;
-    if(request.query.gitStorageBindings!==undefined){try{const value:unknown=JSON.parse(request.query.gitStorageBindings);validateGitStorageSelections(value);gitStorageBindings=value;}catch{throw new AssetError(400,'Choose canonical selected-Agent Git storage bindings');}}
-    const result = await buildPortablePackage(
-      request.params.id,
-      requestedMode,
-      request.query.organization === "true",
-      selectedWorkingFiles as string[],
-      request.query.wholeWorkingFolder==='true',
-      request.query.organizationWorkingFolders==='true',
-      reviewedUserData,
-      gitStorageBindings,
-    );
-    if (result.mode === "full") reply.header("x-ponderosa-export-warning", FULL_PACKAGE_EXPORT_WARNING);
-    if (request.query.download === "1") {
-      const safeTitle = result.sourceLabel
-        .normalize("NFKD")
-        .replace(/[^\p{L}\p{N}]+/gu, "-")
-        .replace(/^-+|-+$/gu, "")
-        .toLocaleLowerCase()
-        .slice(0, 80);
-      reply.header(
-        "content-disposition",
-        `attachment; filename="${safeTitle || "agent"}-${result.mode}.ponderosa.json"`,
-      );
-    }
-    // Serialize to admitted, owned staging before starting the response so an
-    // over-limit export fails honestly; the download then streams with backpressure.
-    await operationHydration;
-    const reservationId = `export:${randomUUID()}`;
-    const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
-    const handle = await fs.open(pathname, "wx", 0o600);
-    try {
-      for await (const chunk of portablePackageJsonChunks(result)) {
-        const bytes = Buffer.from(chunk, "utf8");
-        reserveStagedBytes(reservationId, bytes.length);
-        await handle.writeFile(bytes);
-      }
-      await handle.close();
-    } catch (error) {
-      await handle.close().catch(() => undefined);
-      const removed = await fs.unlink(pathname).then(() => true).catch(() => false);
-      if (removed) releaseStagedReservation(reservationId);
-      throw error;
-    }
-    const stream = createReadStream(pathname);
-    stream.once("close", () => {
-      void fs.unlink(pathname).then(() => releaseStagedReservation(reservationId)).catch(() => undefined);
-    });
-    reply.raw.once("close", () => stream.destroy());
-    return reply.type("application/json; charset=utf-8").send(stream);
-  }));
+    let reviewedUserData:import('@ponderosa/core').ReviewedUserDataSelection|undefined,gitStorageBindings:import('@ponderosa/core').GitStorageSelection[]|undefined;
+    if(input.reviewedUserData!==undefined){validateReviewedUserDataSelection(input.reviewedUserData);reviewedUserData=input.reviewedUserData;}
+    if(input.gitStorageBindings!==undefined){validateGitStorageSelections(input.gitStorageBindings);gitStorageBindings=input.gitStorageBindings;}
+    const result=await buildPortablePackage(agentId,requestedMode,input.organization===true,selectedWorkingFiles as string[],input.wholeWorkingFolder===true,input.organizationWorkingFolders===true,reviewedUserData,gitStorageBindings);
+    if(result.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);
+    const safeTitle=result.sourceLabel.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-+|-+$/gu,'').toLocaleLowerCase().slice(0,80);
+    return downloads.send(result,`${safeTitle||'agent'}-${result.mode}.ponderosa.json`,reply,input.download===true,attachment);
+  });
+  app.post<{Params:{id:string};Body:unknown}>('/api/agents/:id/export',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{try{return await exportPackage(request.params.id,validatedObject(request.body,'Agent export'),reply);}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}});
+  app.get<{Params:{id:string};Querystring:Record<string,string|undefined>}>('/api/agents/:id/export',{onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
+    const q=request.query,input:Record<string,unknown>={mode:q.mode,organization:q.organization==='true',wholeWorkingFolder:q.wholeWorkingFolder==='true',organizationWorkingFolders:q.organizationWorkingFolders==='true'};
+    try{for(const key of ['workingFiles','reviewedUserData','gitStorageBindings'])if(q[key]!==undefined)input[key]=JSON.parse(q[key]!);}catch{throw new AssetError(400,'Export selections must be valid JSON');}
+    // Legacy direct links keep their direct response and attachment behavior.
+    try{return await exportPackage(request.params.id,input,reply,q.download==='1');}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}
+  });
 
   const validChatInstructionsResolution = (value: unknown): boolean => {
     if (value === undefined) return true;

@@ -186,7 +186,7 @@ export async function decodePortableArtifact(dataBase64: string): Promise<{ data
 }
 
 /** Chunk boundaries preserve surrogate pairs and UTF-8. */
-export async function* portablePackageJsonChunks(portable: AgentPortablePackageDto): AsyncGenerator<string> {
+export async function* portablePackageJsonChunks(portable: unknown): AsyncGenerator<string> {
   let bytes = 0;
   let batchBytes = 0;
   let batch: string[] = [];

@@ -88,6 +88,17 @@ test('shared export captures all selected source roots once across separate Chat
   await assert.rejects(packageEngine.exportAgentSet([a.id],'full',{[a.id]:choices[a.id]}),/every source\/storage root/);
   const retainedBinding={id:'retained',worktreeAgentId:a.id,storageAgentId:b.id,relativePath:'.',role:'common'};
   await assert.rejects(packageEngine.exportAgentSet([b.id,a.id],'full',{[b.id]:{wholeWorkingFolder:true},[a.id]:{wholeWorkingFolder:true,reviewedUserData:{git:true,harness:false,source:'retained_originals'},gitStorageBindings:[retainedBinding]}}),/explicitly selected live whole-folder Git roots/);
+  const selected=Array.from({length:80},(_,index)=>String(index).padStart(3,'0')+'-'+ 'x'.repeat(180));
+  for(const filename of selected)await writeFile(path.join(first,filename),'selected');
+  const body={mode:'full',workingFiles:selected,download:true};
+  assert.ok(Buffer.byteLength(JSON.stringify(body))>14000,'accepted choices exceed ordinary URL/header budgets');
+  const preparedResponse=await app.inject({method:'POST',url:'/api/agents/'+a.id+'/export',payload:body});
+  assert.equal(preparedResponse.statusCode,200,preparedResponse.body);
+  const prepared=preparedResponse.json(),downloaded=await app.inject(prepared.downloadUrl);
+  assert.equal(downloaded.statusCode,200);assert.deepEqual(downloaded.json().agents[0].workingFiles.map(file=>file.path).sort(),selected.sort());
+  assert.equal((await app.inject(prepared.downloadUrl)).body,downloaded.body,'native retry reuses one exact original snapshot');
+  assert.equal((await app.inject({method:'POST',url:'/api/agents/'+a.id+'/export',payload:{mode:'full',organization:'true'}})).statusCode,400);
+  assert.equal((await app.inject({method:'POST',url:'/api/agents/'+a.id+'/export',payload:{mode:'full',gitStorageBindings:[]}})).statusCode,400);
   complete=true;
  }finally{await app.close();store.close();if(complete)await rm(root,{recursive:true,force:true});else t.diagnostic('Retained failed Branch closure fixture: '+root);}
 });

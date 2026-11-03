@@ -1,3 +1,4 @@
+import {packageExportDownloads} from '../package-export-downloads.js';
 import {BranchIssuedGroupDestinationService} from '../branch-issued-group-destination.js';
 import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
@@ -268,9 +269,21 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   app.post<{Params:{id:string}}>('/api/branches/installations/:id/cancel',async(request,reply)=>{
     try{const result=await context.installations.cancel(request.params.id);await sources.refresh();notify();return result}catch(error){return reply.code(409).send({error:(error as Error).message})}
   });
-  app.get<{Params:{id:string};Querystring:{mode?:'template'|'full';includeValues?:string;fileSelections?:string}}>('/api/branches/:id/package',async(request,reply)=>{
-    try{const result=await context.installations.export(request.params.id,request.query.mode==='full'?'full':'template',request.query.includeValues==='true',request.query.fileSelections?JSON.parse(request.query.fileSelections):undefined);if(request.query.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);return result}catch(error){return reply.code(400).send({error:(error as Error).message})}
+  const packageDownloads=packageExportDownloads(app);
+  const exportPackage=async(id:string,input:Record<string,unknown>,reply:import('fastify').FastifyReply)=>{
+    try{
+      exactObjectFields(input,['mode','includeValues','fileSelections','download'],'Branch export');
+      if(input.mode!==undefined&&!['template','full'].includes(input.mode as string)||input.includeValues!==undefined&&typeof input.includeValues!=='boolean'||input.download!==undefined&&typeof input.download!=='boolean')throw Error('Choose explicit Branch export mode and values');
+      const mode=input.mode==='full'?'full':'template',result=await context.installations.export(id,mode,input.includeValues===true,input.fileSelections as import('@ponderosa/core').BranchExportFileSelections|undefined);
+      if(mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);
+      return await packageDownloads.send(result,'workflow-'+mode+'.ponderosa.json',reply,input.download===true);
+    }catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}
+  };
+  app.post<{Params:{id:string};Body:unknown}>('/api/branches/:id/package',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout(0);}},async(request,reply)=>{try{return await exportPackage(request.params.id,validatedObject(request.body,'Branch export'),reply);}catch(error){return reply.code(400).send({error:(error as Error).message});}});
+  app.get<{Params:{id:string};Querystring:{mode?:'template'|'full';includeValues?:string;fileSelections?:string}}>('/api/branches/:id/package',{config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout(0);}},async(request,reply)=>{
+    try{return await exportPackage(request.params.id,{mode:request.query.mode,includeValues:request.query.includeValues==='true',fileSelections:request.query.fileSelections?JSON.parse(request.query.fileSelections):undefined},reply);}catch(error){return reply.code(400).send({error:(error as Error).message});}
   });
+
   app.post<{Body:{name:string;idempotencyKey:string}}>('/api/branches',async(request,reply)=>{
     try{return branches.create(request.body.name,request.body.idempotencyKey)}catch(error){return reply.code(400).send({error:(error as Error).message})}
   });

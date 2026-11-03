@@ -300,9 +300,9 @@ test('Agent package copy retains deferred clipboard transfer and downloads have 
   const exact = '{"agent":"Original","content":"café 🌲\\nunchanged"}';
   let exportText = Promise.withResolvers();
   const anchor = { dataset: {}, style: {}, click() { links.push({ href: this.href, download: this.download, feedback: this.dataset.ponderosaDownloadFeedback }); }, remove() {} };
-  const imports = { '../api': { api: {
+  const imports = { '../agent-package-clipboard':{AgentPackageDownloadRequired:class extends Error{}},'../api': { api: {
     exportAgentText: (...args) => { requests.push(args); return exportText.promise; },
-    agentExportDownloadUrl: (...args) => { requests.push(args); return '/api/agents/agent-a/export?mode=full&organization=true'; },
+    downloadAgentPackage: async (...args) => { requests.push(args); links.push({download:args[1]}); return {downloadUrl:'/api/package-exports/'+ 'a'.repeat(48)}; },
   } }, '../clipboard': { copyDeferredText: async pending => { assert.equal(pending, exportText.promise, 'Safari deferred clipboard receives the original export Promise'); copied.push(await pending); } },
     './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
     './AgentDetail.helpers': { portablePackageFileName: (title, organization, mode) => `${title}-${organization}-${mode}.json` } };
@@ -316,9 +316,9 @@ test('Agent package copy retains deferred clipboard transfer and downloads have 
   exportText = Promise.withResolvers(); const failure = actions.copyAgentPackage('template'); exportText.reject(Error('Export failed')); await failure;
   assert.equal(notices[1].severity, 'error'); assert.match(notices[1].message, /Export failed/);
   await actions.downloadAgentPackage('full', true);
-  assert.deepEqual(links, [{ href: '/api/agents/agent-a/export?mode=full&organization=true', download: 'Original-true-full.json', feedback: 'handled' }]);
+  assert.deepEqual(links, [{ download: 'Original-true-full.json' }]);
   assert.equal(notices[2].message, 'Download started'); assert.equal(notices[2].persistent, undefined);
-  assert.deepEqual(requests.map(args => [...args]), [['agent-a', 'full', true], ['agent-a', 'template', false], ['agent-a', 'full', true]]);
+  assert.deepEqual(requests.map(args => [...args]), [['agent-a', 'full', true, [], false, false, undefined, undefined], ['agent-a', 'template', false, [], false, false, undefined, undefined], ['agent-a', 'Original-true-full.json', 'full', true, [], false, false, undefined, undefined]]);
 });
 
 test('Agent provider commands keep meaningful output and errors in their existing owner', async () => {

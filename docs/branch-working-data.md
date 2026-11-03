@@ -59,3 +59,12 @@ execution were performed during this implementation tranche. Consolidated final
 validation must exercise the integrated physical importer, native/module root
 layout, receipt recovery, live activation and re-export; source presence is not a
 Bible True verdict.
+
+
+## Export transport
+
+Normal Agent copy/export and Branch export send selections in a JSON POST to the existing export path. Source count, path, family and closure validation remain shared with the legacy GET exporter. The request byte ceiling is the existing 2 GiB package ceiling; selections are never placed in download URLs.
+
+JSON/copy responses and native downloads use the same incremental package serializer and private staging. Staging holds at most 16 prepared or active exports and 4 GiB of serialized bytes. A native download is prepared completely before the UI receives its short same-origin ticket. Preparation failures remain visible in the existing export action. The ticket retries the exact staged bytes for 15 minutes, including after a partial transfer; retrying does not recapture a changed source. Active streams retain their file until close. Expired tickets return 410, and owned temporary files are removed after use/expiry or server shutdown. Tickets do not survive a server restart.
+
+The browser hands downloads directly to its native download manager, avoiding a whole-package Blob or JSON.stringify allocation. Clipboard copies retain their existing bounded streaming reader and switch to complete file download when the clipboard limit is exceeded. Legacy GET links continue to work, using the same staging and serializer.

@@ -24,17 +24,17 @@ export function useAgentPackageActions({
     wholeWorkingFolder = false,
     organizationWorkingFolders = false,
     reviewedUserData?: import("@ponderosa/core").ReviewedUserDataSelection,
-    gitStorageBindings?: import("@ponderosa/core").GitStorageSelection[],
+    gitStorageBindings?:import("@ponderosa/core").GitStorageSelection[],
   ) => {
     try {
       await copyDeferredText(
-        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData, gitStorageBindings),
+        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData,gitStorageBindings),
       );
       notify({ key: "copy-agent-package", message: "Copied" });
     } catch (error) {
       if(error instanceof AgentPackageDownloadRequired){
-        await downloadAgentPackage(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings);
-        notify({key:'copy-agent-package',message:'Complete package download started. Import the downloaded file; nothing was truncated for the clipboard.'});
+        const started=await downloadAgentPackage(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings);
+        if(started)notify({key:'copy-agent-package',message:'Complete package download started. Import the downloaded file; nothing was truncated for the clipboard.'});
         return;
       }
 
@@ -50,21 +50,16 @@ export function useAgentPackageActions({
     wholeWorkingFolder = false,
     organizationWorkingFolders = false,
     reviewedUserData?: import("@ponderosa/core").ReviewedUserDataSelection,
-    gitStorageBindings?: import("@ponderosa/core").GitStorageSelection[],
+    gitStorageBindings?:import("@ponderosa/core").GitStorageSelection[],
   ) => {
-    const anchor = document.createElement("a");
-    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData, gitStorageBindings);
-    anchor.download = portablePackageFileName(
-      title ?? "agent",
-      organization,
-      mode,
-    );
-    anchor.dataset.ponderosaDownloadFeedback = "handled";
-    anchor.style.display = "none";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    notify({ key: "agent-package-download", message: "Download started" });
+    try{
+      await api.downloadAgentPackage(agentId,portablePackageFileName(title??'agent',organization,mode),mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings);
+      notify({key:'agent-package-download',message:'Download started'});
+      return true;
+    }catch(error){
+      notify({key:'agent-package-download',severity:'error',message:error instanceof Error?error.message:'Agent package download could not start.'});
+      return false;
+    }
   };
   return {
     copyAgentPackage,
