@@ -568,6 +568,68 @@ test('cold native compact refuses before a throwaway command session while read-
   assert.equal(f.store.resumeSessionState(agent.id).sessionId, generation);
 }));
 
+
+test('cold native compact uses the provider-confirmed saved session', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 0, async f => {
+  const chat=await f.createChat('Verified cold compact'),agent=await f.createIdleAgent(chat,'Verified owner');
+  f.capabilities.commands=[compactCommand];
+  const session=await f.hold(agent.id),generation=session.engineAgentId;
+  await checkpoint(f,agent,session,25000);await finish(f,agent,session);
+  await until(()=>!session.isAlive(),'original idle runtime exited');
+  f.commandResults.set(agent.id,()=>({outcome:'completed',contextUsage:{usedTokens:1000,providerSessionGeneration:generation}}));
+  const result=f.ok(await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'compact'}));
+  assert.equal(result.invoked,true);
+  assert.deepEqual(f.commands.map(command=>[command.name,command.sessionId]),[['compact',generation]]);
+  assert.equal(f.store.resumeSessionState(agent.id).sessionId,generation);
+}, {providerValidatesResumeBeforeTurn:true}));
+
+
+test('cold command barrier stays held while transient process cleanup is unconfirmed', fixtureTestOptions, async t => {
+  let holdCleanup=false;
+  try {
+    await withRuntimePoolBudgetFixture(t,0,async f=>{
+      const chat=await f.createChat('Unconfirmed command cleanup'),agent=await f.createIdleAgent(chat,'Command owner');
+      f.capabilities.commands=[compactCommand,{...compactCommand,name:'status',insertText:'/status'}];
+      const session=await f.hold(agent.id);await checkpoint(f,agent,session,25000);await finish(f,agent,session);
+      await until(()=>!session.isAlive(),'original runtime exited');
+      holdCleanup=true;
+      const compact=await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'compact'});
+      assert.equal(compact.status,409);
+      const blocked=await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'status'});
+      assert.equal(blocked.status,409);assert.equal(f.commands.length,0,'no command executes while cleanup is uncertain');
+      holdCleanup=false;
+      await until(async()=>{
+        const result=await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'status'});
+        return result.status===200;
+      },'owned transient process cleanup confirmed');
+      assert.deepEqual(f.commands.map(command=>command.name),['status']);
+    },{beforeRuntimeClose:async()=>{if(holdCleanup)throw Error('controlled transient cleanup hold');}});
+  } finally { holdCleanup=false; }
+});
+
+
+test('completed cold command reports pending cleanup without replaying the command', fixtureTestOptions, async t=>{
+  let holdCleanup=false;
+  try {
+    await withRuntimePoolBudgetFixture(t,0,async f=>{
+      const chat=await f.createChat('Completed command cleanup'),agent=await f.createIdleAgent(chat,'Command owner');
+      f.capabilities.commands=[compactCommand,{...compactCommand,name:'status',insertText:'/status'}];
+      const session=await f.hold(agent.id),generation=session.engineAgentId;
+      await checkpoint(f,agent,session,25000);await finish(f,agent,session);
+      await until(()=>!session.isAlive(),'original runtime exited');
+      f.commandResults.set(agent.id,()=>({outcome:'completed',contextUsage:{usedTokens:1000,providerSessionGeneration:generation}}));
+      holdCleanup=true;
+      const compact=f.ok(await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'compact'}));
+      assert.equal(compact.invoked,true);assert.equal(compact.outcome,'completed');
+      assert.equal(compact.cleanupPending,true);assert.match(compact.message,/cleanup is still pending/i);
+      assert.deepEqual(f.commands.map(command=>command.name),['compact']);
+      assert.equal((await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'status'})).status,409);
+      holdCleanup=false;
+      await until(async()=>(await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'status'})).status===200,'completed command cleanup confirmed');
+      assert.deepEqual(f.commands.map(command=>command.name),['compact','status']);
+    },{providerValidatesResumeBeforeTurn:true,beforeRuntimeClose:async()=>{if(holdCleanup)throw Error('controlled transient cleanup hold');}});
+  } finally {holdCleanup=false;}
+});
+
 for (const mode of ['stale', 'malformed', 'wrong_generation', 'leased_race']) test(`native compact keeps success without trusting ${mode} telemetry`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Rejected compact evidence'), agent = await f.createIdleAgent(chat, 'Guarded compact owner');

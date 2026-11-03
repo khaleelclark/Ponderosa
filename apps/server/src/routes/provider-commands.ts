@@ -569,8 +569,9 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
     if (!agent) return reply.code(404).send({ error: "agent not found" });
     if(coordinationV3.contextRecovery.active(agent.id)) return reply.code(409).send({code:"context_recovery_held",error:"An explicit context recovery hold is active"});
     if(new NativeHistoryAuthority(store).held(agent.id))return reply.code(409).send({error:"Native history operation is prepared or uncertain"});
-    if(activeAgentProviderCommands.has(agent.id)) return reply.code(409).send({error:"An Agent provider command is already active"});
+    if(activeAgentProviderCommands.has(agent.id)) return reply.code(409).send({error:"An Agent provider command is already active",retryable:false});
     activeAgentProviderCommands.add(agent.id);
+    let holdAgentCommandBarrier = false;
     try {
     if(store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id))
       return reply.code(409).send({error:'Agent is paused; Resume or Stop before a provider command'});
@@ -819,16 +820,23 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       }));
       const session = providerSessionFacade(rawSession);
       if (resumeSessionId) assertRetainedCommand(agent.id, session, acceptedInput!.executionId);
+      // A session ID echoed from our own resume request is not provider proof.
+      // The adapter must confirm the requested saved session before any native
+      // mutation can execute; read-only commands remain available.
+      if (name === "compact" && resumeSessionId && session.validatesResumeBeforeTurn !== true)
+        throw new NativeContextUnavailableError("Native /compact requires provider confirmation of the saved session. Use Context Refresh after resolving any unfinished work.");
       invocation = await invoke(session, Boolean(resumeSessionId));
       return invocation.catalog;
       });
       authority.operation = operation;
       engineCapabilityDiscoveryAuthorities.add(authority);
       cleanupOwnsWorkingCopyUse = true;
+      let commandFailure: ReturnType<typeof publicProviderCommandFailure> | undefined;
+      let commandSuccess: { invoked: true; name: string; catalogVersion?: string; outcome?: "completed" | "failed" | "outcome_unknown"; message?: string } | undefined;
       try {
         await operation;
         reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
-        return {
+        commandSuccess = {
           invoked: true,
           name,
           catalogVersion: invocation?.catalog.catalogVersion,
@@ -836,7 +844,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           ...(invocation?.message ? { message: invocation.message } : {}),
         };
       } catch (error) {
-        return reply.code(409).send(publicProviderCommandFailure(error));
+        commandFailure = publicProviderCommandFailure(error);
       } finally {
         authority.settled = true;
         try {
@@ -848,7 +856,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
             providerError: restrictedProviderExceptionLogDetail(error),
             agentId: agent.id,
           }, "transient provider-command process cleanup remains pending and blocks working-folder changes");
-          // Keep the use lease until process-group exit is actually confirmed.
+          holdAgentCommandBarrier = true;
+          // Keep the command barrier and use lease until process-group exit is actually confirmed.
           // Retrying in the background lets a transient teardown failure heal
           // without ever making destructive folder replacement unsafe.
           void (async () => {
@@ -861,6 +870,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
               try {
                 await closeCapabilityDiscoveryAuthority(authority);
                 releaseWorkingCopyUse();
+                activeAgentProviderCommands.delete(agent.id);
                 return;
               } catch (retryError) {
                 retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
@@ -873,10 +883,14 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           })();
         }
       }
+      if (commandFailure) return reply.code(409).send({...commandFailure,...(holdAgentCommandBarrier ? {cleanupPending:true} : {})});
+      if (!commandSuccess) throw new Error("Provider command outcome unavailable");
+      return holdAgentCommandBarrier ? {...commandSuccess, cleanupPending:true,
+        message:[commandSuccess.message,"Command cleanup is still pending. Do not repeat it while cleanup is unresolved."].filter(Boolean).join(" ")} : commandSuccess;
     } finally {
       if (!cleanupOwnsWorkingCopyUse) releaseWorkingCopyUse();
     }
-    } finally { activeAgentProviderCommands.delete(agent.id); }
+    } finally { if (!holdAgentCommandBarrier) activeAgentProviderCommands.delete(agent.id); }
   },
 );
 
