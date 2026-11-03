@@ -1,4 +1,4 @@
-import {automaticScriptDefinitionSupported} from './branch-script-origin.js';
+import {automaticScriptDefinitionSupported,automaticScriptOriginSupported} from './branch-script-origin.js';
 import {captureForeignTreeGeneration,heldTreeSource,treeFact,portableTreeOwners} from './branch-tree-generation.js';
 import {validateBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
 import {validateBranchDefinition} from './branch-definition.js';
@@ -13,7 +13,7 @@ import type Database from 'better-sqlite3';
 import type {BranchPortableExecutionTree,BranchPortableRuntimeOwner,BranchDefinition} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {replayScriptCut,scriptDefinitionSupported,manualSerialTreeDefinitionSupported,scriptRetryWaiting,resourceReservationSupported,type Selected,type ScriptOwnerContext} from './branch-script-continuation.js';
+import {replayScriptCut,scriptDefinitionSupported,manualSerialTreeDefinitionSupported,automaticSerialTreeDefinitionSupported,scriptRetryWaiting,resourceReservationSupported,type Selected,type ScriptOwnerContext} from './branch-script-continuation.js';
 type Row=Record<string,any>;
 export const TREE_SCHEMA='ponderosa.branch.script-tree-continuation.v1';
 export const TREE_COMPATIBILITY={format:'completed-child-script-tree.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
@@ -89,11 +89,12 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
   if(!Array.isArray(owners)||owners.length<1||new Set(owners.map(o=>o.executionId)).size!==owners.length||stableJson(c.compatibility)!==stableJson(TREE_COMPATIBILITY))return false;
   const root=owners.find(o=>o.executionId===c.rootExecutionId);if(!root)return false;
   const rootDefinition=evidence?treeFact(evidence.get(c.rootExecutionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(root.versionId) as Row).definition_json);
-  const automaticTree=automaticScriptDefinitionSupported(rootDefinition,true);
   const serialTreeRetries=c.issuedResources!==true&&owners.every(o=>{
     const definition=evidence?treeFact(evidence.get(o.executionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row).definition_json);
-    return manualSerialTreeDefinitionSupported(definition)&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&!o.selected.bundles.length&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
+    return (manualSerialTreeDefinitionSupported(definition)||o.executionId===c.rootExecutionId&&automaticSerialTreeDefinitionSupported(definition))&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&!o.selected.bundles.length&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
   });
+  const automaticTree=automaticScriptDefinitionSupported(rootDefinition,true,false,false,serialTreeRetries);
+  if(root.selected.execution[0].admission_source==='automatic'&&(!automaticTree||!automaticScriptOriginSupported(db,root.selected.execution[0],rootDefinition,evidence?evidence.get(c.rootExecutionId)??null:undefined,true,false,false,serialTreeRetries)))return false;
   const allIds=treeIds(owners);if(new Set(allIds).size!==allIds.length)return false;
   const boundary=owners.reduce((last,o)=>Math.max(last,o.audit.at(-1)?.id??NaN),0);if(!Number.isSafeInteger(boundary))return false;
   if(owners.some(o=>o.selected.attempts.some((a:Row)=>a.request_id)))retainedBranchHostGraph({selected:root.selected,hostDependencies:root.hostDependencies,continuation:c},c.rootExecutionId,true,c.issuedResources===true);
@@ -118,8 +119,8 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     }
     if(source&&treeFact(source,'provenance').source==='historical_child'&&(!seeds?.has(o.executionId)||!o.audit.some((a:Row)=>a.kind==='tree_historical_rewind')))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
-    if(automaticTree&&(o.executionId!==c.rootExecutionId&&definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind)||s.failure&&s.failure.action!=='stop')))return false;
-    const automaticRootTree=o.executionId===c.rootExecutionId&&automaticScriptDefinitionSupported(definition,true)&&c.issuedResources!==true&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&!o.selected.bundles.length&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
+    if(automaticTree&&(o.executionId!==c.rootExecutionId&&definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind)||s.failure&&s.failure.action!=='stop'&&!(serialTreeRetries&&s.kind==='script'&&s.failure.action==='retry')))return false;
+    const automaticRootTree=o.executionId===c.rootExecutionId&&automaticScriptDefinitionSupported(definition,true,false,false,serialTreeRetries)&&c.issuedResources!==true&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&!o.selected.bundles.length&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
     if(observing&&(definition.trigger.kind!=='manual'&&!automaticRootTree||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||!['sync','async','exit'].includes(o.configuration.checkpointMode??'async')||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
     const issuedResource=c.issuedResources===true;
     const workflowGates=definition.steps.some(s=>s.kind==='human_gate');
@@ -285,7 +286,7 @@ export function portableScriptTreeSupported(db:Database.Database,data:BranchPort
    const d=validateBranchDefinition(fact(o,'definition')),config=fact(o,'configuration'),s=fact(o,'frontier');
    const origin=fact(o,'provenance');if(o.sourceExecutionId===rootId&&((origin.source==='trigger')!==(s.execution[0].admission_source==='automatic')))return;
    if(o.sourceExecutionId===rootId?!['manual','trigger','foreign_tree_continuation'].includes(origin.source):!['branch_call','historical_child'].includes(origin.source))return;
-   if(o.chatRefs.length||o.facts.some(f=>['custody','tree-import','import','continuation'].includes(f.kind))||config.requiredSecretRefs.length||!['sync','async','exit'].includes(config.configuration.checkpointMode??'async')||d.trigger.kind!=='manual'&&!(o.sourceExecutionId===rootId&&automaticScriptDefinitionSupported(d,true))||d.steps.some((s:Row)=>!['script','branch_call','human_gate'].includes(s.kind))||!(scriptDefinitionSupported(d,true)||manualSerialTreeDefinitionSupported(d))||
+   if(o.chatRefs.length||o.facts.some(f=>['custody','tree-import','import','continuation'].includes(f.kind))||config.requiredSecretRefs.length||!['sync','async','exit'].includes(config.configuration.checkpointMode??'async')||d.trigger.kind!=='manual'&&!(o.sourceExecutionId===rootId&&automaticScriptDefinitionSupported(d,true,false,false,true))||d.steps.some((s:Row)=>!['script','branch_call','human_gate'].includes(s.kind))||!(scriptDefinitionSupported(d,true)||manualSerialTreeDefinitionSupported(d)||o.sourceExecutionId===rootId&&automaticSerialTreeDefinitionSupported(d))||
     s.resources.length||s.actions.length||s.bundles.length||s.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))||o.facts.filter(f=>f.kind==='transition').some(f=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(JSON.parse(f.json).kind)))return;
   }
   const latestOwners:Row[]=related.map(o=>{const s=fact(o,'frontier'),e=s.execution[0],config=fact(o,'configuration').configuration;return {executionId:o.sourceExecutionId,versionId:e.version_id,versionHash:payloadHash(fact(o,'definition')),bindingRevisionId:e.binding_revision_id,bindingHash:payloadHash(fact(o,'bindings')),configuration:config,selected:s,audit:o.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json))};});

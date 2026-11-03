@@ -18,7 +18,7 @@ Current choices are established through the existing destination configuration/b
 
 ## Authority and atomicity
 
-Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source standalone Script/approval-gate subset described below. Workflow failure policy must stop. Per-step policies also stop, except canonical Script retries in manual standalone serial or parallel graphs and proven automatic-source standalone serial or parallel graphs as described below, plus the manual serial Call-tree successor below; automatic tree retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work, a proven prepared retry or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
+Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source standalone Script/approval-gate subset described below. Workflow failure policy must stop. Per-step policies also stop, except canonical Script retries in manual standalone serial or parallel graphs and proven automatic-source standalone serial or parallel graphs as described below, plus the manual and proven automatic-root serial Call-tree successors below; automatic parallel tree retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work, a proven prepared retry or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
 
 The preview independently verifies the actual recreated-held imported native frontier/maps/participant ownership through existing runtime-data readback. It checks the imported owner remains waiting/unaccepted, current destination availability/pins/configuration/policy and accessible directories. Any unknown custody or native authority on the held owner refuses. `not_applicable` means no selected/latest source or native resource exists; it never means an unavailable receipt was treated as released.
 
@@ -710,7 +710,7 @@ Calls to supported **manual-definition children**. The root keeps its original
 trigger/configRef and all owners retain their exact configuration, including mixed
 sync, async, omitted-default async and genuinely closed EXIT. State, condition,
 route, loops and existing fork/Map/Join replay are reused. Workflow and step policies
-must stop throughout this automatic-root family; no retries are added. This is an
+must stop throughout this initial automatic-root family; the serial successor below separately admits proven per-Script retries. This is an
 explicit tree eligibility path, separate from standalone eligibility, called-child
 admission and issued/resource contexts.
 
@@ -915,7 +915,7 @@ The serial retry codec also accepts proven original `schedule`, `webhook` or
 `filesystem` standalone effect-free Node Script/ordinary approval-gate histories.
 Definitions may retain JSON state, condition/route controls and loop edges, with
 workflow/gate failure policies set to stop and per-Script retry policies. The automatic parallel successor below separately extends its existing codec;
-The manual serial Call-tree successor below uses a separate tree context; automatic
+The manual and automatic-root serial Call-tree successors below use separate tree contexts; automatic parallel
 Call-tree, issued/Agent/resource/native/effectful/unknown families do not gain this
 standalone automatic opt-in.
 
@@ -972,14 +972,14 @@ approval-gate graphs can also retain canonical per-Script retry histories throug
 the existing parallel codec. Existing fork/Map/Join, condition/route/loop, JSON state
 and reducer semantics remain supported only with full canonical proof. Workflow
 and gate failure policies still stop. Manual serial/parallel and automatic serial
-behavior is unchanged; automatic Call-tree, issued/Agent/resource/native/effectful/
+behavior is unchanged; automatic parallel Call-tree, issued/Agent/resource/native/effectful/
 unknown retry families gain no eligibility.
 
 `automaticScriptDefinitionSupported` adds a fourth `parallelRetries=false` flag;
 `automaticScriptOriginSupported` adds the matching seventh flag. The serial flag
 remains serial-only. Parallel retry opt-in requires no Calls and an actual fork or
 Map, and permits only Node Script retries within the supported controls. Default
-and tree callers retain their prior stop-only automatic eligibility. Structural
+and parallel-tree callers retain their prior stop-only automatic eligibility. The serial-tree successor below has a separate opt-in. Structural
 parallel frontier opts in only for a parentless, no-Call-depth standalone owner or
 its exact terminal context. It grants no automatic origin or execution authority.
 
@@ -1094,3 +1094,70 @@ Source review only: no tests, typechecks, builds, preparation, Node/parser/nativ
 runtime/browser/provider/liveDB or integration actions were performed. Timing,
 durability, notifications, round trips, scheduling, rollback, atomicity and
 whole-Bible/portability acceptance remain unvalidated.
+
+
+## Proven automatic-root serial Call-tree Script retries
+
+The serial-tree codec now also accepts a proven schedule, webhook or filesystem
+root with manual-definition, actually Call-admitted descendants. Every owner must
+qualify as an effect-free serial Node Script/ordinary approval-gate/branch_call
+owner, with no controls or existing condition/route controls, loop counters and
+JSON state. Workflow, gate and Call failure policies stay stop; only Script steps
+may retry. Automatic parallel Call trees retain their prior stop-only boundary.
+Manual trees and standalone manual/automatic serial/parallel families retain
+their separate eligibility. Issued, Agent, resource, native, effectful, unknown,
+bundle, secret and execution-owned Chat families gain no retry support.
+
+`automaticScriptDefinitionSupported` and `automaticScriptOriginSupported` have a
+separate default-off serial-tree retry opt-in. The shared consumer exposes an
+explicit automatic serial tree structural helper, while whole-tree validation
+and runtime-tree recreation enable serial retries only if every owner qualifies
+and carries no host/issued/resource/action/bundle evidence. Only the parentless
+root may have an automatic definition; children require manual definitions and
+actual native Call ownership. Structural eligibility never proves an origin.
+
+Before whole-tree causal replay, an original automatic root must pass the existing
+occurrence proof for the selected cut and independently for latest evidence:
+exact occurrence, payload/media/provenance, trigger snapshot, input/hash,
+activated occurrence, accepted event and workflow-started native admission.
+Foreign proof reads retained owner facts and refuses missing evidence without
+foreign-owner SQL fallback. Runtime-tree structural recreation checks retained
+root origin facts with no database handle; it still grants no dispatch authority.
+Existing bounded held/admitted/re-exported/local-rewind manifests, maps, original
+commands and causal generations remain required. A fresh destination root retains
+the original definition but has real human/manual acceptance; descendants have
+real Call acceptance. Original automatic proof supplies history only: no source
+trigger advancement, scheduler/lease/response adoption or missed-trigger replay.
+
+The unchanged serial retry replay proves each owner's consecutive consumed attempt
+numbers, exact input/purpose/hash/fence, lease/authorization, actual process exit,
+settlement/results, ceilings/delays/event times and absolute `available_at`.
+Failure-edge precedence and absence of intermediate state writes/seals remain
+mandatory. A genuine delayed prepared retry remains distinct from a waiting Call
+with its actual unfinished child. Complete owner inventory, parent/attempt/input/
+hash, mapped bindings, acceptance/admission, depth/ceiling and descendant counters
+remain mandatory. Completed prefixes and historical terminal children seed once;
+legitimate suffix children remain possible. Future attempts use `MAX(number)+1`,
+with current destination time/readiness/capacity/policy controlling claims.
+
+Selected sync/async/default or closed EXIT cuts still require committed exact
+saver bytes/hash/invocation and independent latest whole-tree replay. Every
+required child save remains mandatory, including sync children of automatic-root
+trees. A root save cannot replace missing or pending child bytes. EXIT requires
+authentic interruption or gate closure, actual process-group/pipe drain and
+current authority; latest-only terminal observations cannot become selected cuts
+or invented closure history. The necessary EXIT producer ancestor and owner-origin
+checks and current foreign graph review use the explicit structural family while
+retaining their separate current pins/configuration/authority/saver checks.
+
+Existing review/confirm/receipt, per-owner budgets, Script/Call permissions,
+capacity, current choices/directories/no-secrets, exact original-key recovery
+after legitimate suffix progress and pending-gate destination notifications stay
+in their existing paths. Serial canceled-source-gate semantics are unchanged.
+Missing, running, unknown, undrained or effectful proof stays held.
+
+This is source implementation and independent source review only. No tests,
+builds, typechecks or runtime qualification were performed. Execution, timing,
+durability, notification delivery, round trips, scheduling, rollback, atomicity
+and whole-Bible/full-portability acceptance remain unvalidated. No schema,
+storage-version, DTO, format or dependency changes are introduced.

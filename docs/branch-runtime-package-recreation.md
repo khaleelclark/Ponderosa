@@ -327,7 +327,7 @@ notifications, round trips, scheduling, rollback or whole-Bible portability.
 The existing serial retry continuation now includes original schedule/webhook/
 filesystem standalone effect-free Node Script/ordinary approval-gate owners, with
 JSON state, condition/route/loop paths, workflow/gate stop policy and per-Script
-retry. The parallel successor below separately extends its existing codec; automatic tree retries and called/issued/Agent/resource/native/
+retry. The parallel successor below separately extends its existing codec; automatic parallel tree retries and issued/Agent/resource/native/
 effectful/unknown work remain outside this extension; manual behavior is unchanged.
 
 Automatic definition/origin validators require an explicit serial retry opt-in,
@@ -375,7 +375,7 @@ The existing parallel retry consumer also accepts proven original schedule/webho
 filesystem standalone effect-free Node Script/ordinary approval-gate graphs with
 fork/Map/Join, condition/route/loop and JSON state/reducers. Workflow/gate failure
 policy stays stop; only per-Script retries opt in. Manual serial/parallel and
-automatic serial behavior stays unchanged. Automatic tree/Call/issued/Agent/resource/
+automatic serial behavior stays unchanged. Automatic parallel tree/Call and issued/Agent/resource/
 native/effectful/unknown retry families remain excluded.
 
 Automatic definition/origin validators add a separate parallel retry flag defaulting
@@ -479,3 +479,70 @@ This is source-only. No tests, builds, typechecks, preparation, Node/parser/nati
 runtime/browser/provider/liveDB or integration actions were performed. Execution,
 timing/durability, notifications, round trips, scheduling, rollback, atomicity and
 whole-Bible/portability acceptance remain unvalidated.
+
+
+## Proven automatic-root serial Call-tree Script retries
+
+The serial-tree codec now also accepts a proven schedule, webhook or filesystem
+root with manual-definition, actually Call-admitted descendants. Every owner must
+qualify as an effect-free serial Node Script/ordinary approval-gate/branch_call
+owner, with no controls or existing condition/route controls, loop counters and
+JSON state. Workflow, gate and Call failure policies stay stop; only Script steps
+may retry. Automatic parallel Call trees retain their prior stop-only boundary.
+Manual trees and standalone manual/automatic serial/parallel families retain
+their separate eligibility. Issued, Agent, resource, native, effectful, unknown,
+bundle, secret and execution-owned Chat families gain no retry support.
+
+`automaticScriptDefinitionSupported` and `automaticScriptOriginSupported` have a
+separate default-off serial-tree retry opt-in. The shared consumer exposes an
+explicit automatic serial tree structural helper, while whole-tree validation
+and runtime-tree recreation enable serial retries only if every owner qualifies
+and carries no host/issued/resource/action/bundle evidence. Only the parentless
+root may have an automatic definition; children require manual definitions and
+actual native Call ownership. Structural eligibility never proves an origin.
+
+Before whole-tree causal replay, an original automatic root must pass the existing
+occurrence proof for the selected cut and independently for latest evidence:
+exact occurrence, payload/media/provenance, trigger snapshot, input/hash,
+activated occurrence, accepted event and workflow-started native admission.
+Foreign proof reads retained owner facts and refuses missing evidence without
+foreign-owner SQL fallback. Runtime-tree structural recreation checks retained
+root origin facts with no database handle; it still grants no dispatch authority.
+Existing bounded held/admitted/re-exported/local-rewind manifests, maps, original
+commands and causal generations remain required. A fresh destination root retains
+the original definition but has real human/manual acceptance; descendants have
+real Call acceptance. Original automatic proof supplies history only: no source
+trigger advancement, scheduler/lease/response adoption or missed-trigger replay.
+
+The unchanged serial retry replay proves each owner's consecutive consumed attempt
+numbers, exact input/purpose/hash/fence, lease/authorization, actual process exit,
+settlement/results, ceilings/delays/event times and absolute `available_at`.
+Failure-edge precedence and absence of intermediate state writes/seals remain
+mandatory. A genuine delayed prepared retry remains distinct from a waiting Call
+with its actual unfinished child. Complete owner inventory, parent/attempt/input/
+hash, mapped bindings, acceptance/admission, depth/ceiling and descendant counters
+remain mandatory. Completed prefixes and historical terminal children seed once;
+legitimate suffix children remain possible. Future attempts use `MAX(number)+1`,
+with current destination time/readiness/capacity/policy controlling claims.
+
+Selected sync/async/default or closed EXIT cuts still require committed exact
+saver bytes/hash/invocation and independent latest whole-tree replay. Every
+required child save remains mandatory, including sync children of automatic-root
+trees. A root save cannot replace missing or pending child bytes. EXIT requires
+authentic interruption or gate closure, actual process-group/pipe drain and
+current authority; latest-only terminal observations cannot become selected cuts
+or invented closure history. The necessary EXIT producer ancestor and owner-origin
+checks and current foreign graph review use the explicit structural family while
+retaining their separate current pins/configuration/authority/saver checks.
+
+Existing review/confirm/receipt, per-owner budgets, Script/Call permissions,
+capacity, current choices/directories/no-secrets, exact original-key recovery
+after legitimate suffix progress and pending-gate destination notifications stay
+in their existing paths. Serial canceled-source-gate semantics are unchanged.
+Missing, running, unknown, undrained or effectful proof stays held.
+
+This is source implementation and independent source review only. No tests,
+builds, typechecks or runtime qualification were performed. Execution, timing,
+durability, notification delivery, round trips, scheduling, rollback, atomicity
+and whole-Bible/full-portability acceptance remain unvalidated. No schema,
+storage-version, DTO, format or dependency changes are introduced.
