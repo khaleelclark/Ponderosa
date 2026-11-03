@@ -6,6 +6,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
+  applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence;
   offlineMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineWorkspaceMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineDirectoryBatch(descriptor: number, cookie: bigint): { names: Buffer[]; next: bigint; done: boolean };
@@ -58,6 +59,44 @@ interface NativeJobBinding {
     quarantineLeaf: string,
     expectedIdentity: string,
   ): boolean;
+}
+
+export interface ExactFileMetadataInput {
+  fd: number;
+  expectedDevice: bigint;
+  expectedInode: bigint;
+  kind: "file" | "directory";
+  /** Exact low twelve POSIX mode bits, including special bits: 0..0o7777. */
+  mode: number;
+  mtimeNs: bigint;
+}
+
+export interface ExactFileMetadataEvidence {
+  device: bigint;
+  inode: bigint;
+  kind: "file" | "directory";
+  mode: number;
+  mtimeNs: bigint;
+}
+
+/** A mutation/verification failure retains the caller's node without rollback. */
+export interface ExactFileMetadataPartialError extends Error {
+  code: "ERR_EXACT_METADATA_PARTIAL";
+  partialStatePossible: true;
+  observed: (Omit<ExactFileMetadataEvidence, "kind"> & { kind: "file" | "directory" | "other" }) | null;
+}
+
+/** Apply and read back mode/mtime on a caller-held, freshly created no-follow fd.
+ * Caller must prove destination membership and keep sole ownership of the fd/node
+ * throughout this synchronous call. This grants no import/access authority.
+ * Linux/macOS use fstat/futimens/fchmod; atime is preserved with UTIME_OMIT where
+ * available. Windows refuses before mutation: POSIX mode bits are not portable.
+ * Negative ns use floor seconds; out-of-range native times refuse before mutation.
+ * Filesystem rounding/refusal throws; ERR_EXACT_METADATA_PARTIAL carries observed
+ * evidence (or null if unreadable), never an atomicity, durability or rollback claim.
+ */
+export function applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence {
+  return binding().applyExactFileMetadata(input);
 }
 
 export interface SecureDirectoryEntry {
