@@ -95,11 +95,12 @@ test('mapped common/private recreation rewrites destination pointers and does no
 test('native Separate import owns a fresh independent repository, preserves staged state and leaves destination Shared unchanged',async()=>{
  const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-owned-separate-')));let store;
  try{
-  const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data');
-  await initialize(source);await initialize(shared);await mkdir(data);
+  const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data'),moduleSource=path.join(base,'module-source');
+  await initialize(source);await initialize(shared);await initialize(moduleSource);await mkdir(data);
+  await git(source,'-c','protocol.file.allow=always','submodule','add',moduleSource,'child');await git(source,'commit','--no-gpg-sign','-m','Add initialized child');
   await writeFile(path.join(source,'file.txt'),'source staged\n');await git(source,'add','file.txt');await writeFile(path.join(source,'file.txt'),'source working\n');
   await git(source,'tag','retained-source-tag');
-  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest,{'file.txt':'source working\n'});
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest,{'file.txt':'source working\n','.gitmodules':await readFile(path.join(source,'.gitmodules'),'utf8'),'child/file.txt':await readFile(path.join(source,'child','file.txt'),'utf8')});
   const oldHead=await git(shared,'rev-parse','HEAD'),oldConfig=await readFile(path.join(shared,'.git','config')),oldIndex=await readFile(path.join(shared,'.git','index'));
   store=new AgentStore(data);const project=store.createProject({label:'Existing Shared',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Imported Separate'});
   const agent=store.createAgent(project.id,{title:'Imported owner',engine:'codex',conversationId:chat.id}),service=new AgentWorkingCopyService(data,store);
@@ -121,6 +122,10 @@ test('native Separate import owns a fresh independent repository, preserves stag
   assert.equal(await readFile(path.join(resolved.rootPath,'file.txt'),'utf8'),'source working\n');
   assert.equal(await git(resolved.rootPath,'rev-parse','refs/tags/retained-source-tag'),await git(source,'rev-parse','refs/tags/retained-source-tag'));
   assert.equal(await git(shared,'rev-parse','HEAD'),oldHead);assert.deepEqual(await readFile(path.join(shared,'.git','config')),oldConfig);assert.deepEqual(await readFile(path.join(shared,'.git','index')),oldIndex);
+  const childPointer=path.join(resolved.rootPath,'child','.git'),originalPointer=await readFile(childPointer);
+  await writeFile(childPointer,'gitdir: /unselected/outside/repository\n');
+  await assert.rejects(service.verifyImportedGitRoot(project,createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),resolved.rootPath),/differs/,'Native ownership proof must detect a replaced child .git pointer outside the parent Git directory');
+  await writeFile(childPointer,originalPointer);
   const preservedIndex=await readFile(path.resolve(resolved.rootPath,await git(resolved.rootPath,'rev-parse','--git-path','index')));
   const removed=await service.cleanupRetained(agent.id,ready.workingCopy,project);
   assert.equal(removed.state,'removed');assert.equal(removed.repositoryRoot,resolved.rootPath);

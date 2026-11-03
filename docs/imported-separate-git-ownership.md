@@ -21,7 +21,7 @@ The physical sequence is explicit:
    Existing source branches, tags, objects and staged index remain intact. An
    unborn source receives only a local empty ownership commit; its staged index
    is preserved. No source branch/worktree ownership receipt is adopted.
-5. Verify local directory/pointer Git storage and mark the Agents ready. Only
+5. Verify local directory/pointer Git storage and every initialized child module's exact `.git` anchor and mark the Agents ready. Only
    then apply final ordinary permissions, timestamps and selected ACL/xattrs.
 
 Git path choices are reviewed against the user's selected recovery root map and

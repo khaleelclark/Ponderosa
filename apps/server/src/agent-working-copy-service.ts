@@ -1,3 +1,4 @@
+import {getNativeGitModuleAnchors} from './portable-git-configuration.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
 import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,parseReviewedUserData,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 import {planFilesystemMetadata} from './portable-filesystem-metadata.js';
@@ -217,7 +218,7 @@ async function gitWorktreeRootRegistered(
 }
 
 export class AgentWorkingCopyService {
-  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[]}>();
+  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[];anchors:string[]}>();
   private readonly importedRootCustody=new Map<string,{device:bigint;inode:bigint;agentId:string}>();
   private readonly stagedImportedGitRoots=new Map<string,{device:bigint;inode:bigint;phase:'allocated'|'populating'|'populated'|'adopting';agentId?:string}>();
   private readonly managedRoot: string;
@@ -292,7 +293,8 @@ export class AgentWorkingCopyService {
     if(original){
       if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Git requires the unused NEW managed Project');
       await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,original.configuration);
-      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,snapshot:await this.importedGitSnapshot(project.hostPath),allowedRoots:[project.hostPath]});return;
+      const anchors=getNativeGitModuleAnchors(original.configuration);
+      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,snapshot:await this.importedGitSnapshot(project.hostPath,[project.hostPath],anchors),allowedRoots:[project.hostPath],anchors});return;
     }
     await runGit(project.hostPath,['init','--template=','--initial-branch=main']);
     await runGit(project.hostPath,['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit','--allow-empty','--no-gpg-sign','-m','Initialize imported working roots']);
@@ -371,7 +373,7 @@ export class AgentWorkingCopyService {
 
   /** Capture directory or locally recreated pointer layouts without assuming
    * source Git paths are destination authority. No hooks or filters execute. */
-  private async importedGitSnapshot(rootPath:string,allowedRoots:string[]=[rootPath]):Promise<string> {
+  private async importedGitSnapshot(rootPath:string,allowedRoots:string[]=[rootPath],anchors:string[]=[]):Promise<string> {
     const root=await lstat(rootPath,{bigint:true});
     if(!root.isDirectory()||await realpath(rootPath)!==rootPath)throw new Error('Imported Git root changed');
     const gitDir=path.resolve(rootPath,await runGit(rootPath,['rev-parse','--absolute-git-dir']));
@@ -397,13 +399,17 @@ export class AgentWorkingCopyService {
       }
     };
     await inspect(path.join(rootPath,'.git'));await inspect(commonDir);await inspect(gitDir);
+    for(const anchor of anchors){
+      if(!path.isAbsolute(anchor)||path.resolve(anchor)!==anchor||!allowedRoots.some(root=>inside(root,anchor)))throw new Error('Native module pointer is outside the exact imported root closure');
+      await inspect(anchor);
+    }
     const after=await lstat(rootPath,{bigint:true});if(root.dev!==after.dev||root.ino!==after.ino)throw new Error('Imported Git root replaced');
     return JSON.stringify(entries,(_key,value)=>typeof value==='bigint'?value.toString():value);
   }
 
   private async verifyImportedGitRoot(_project:ProjectDto,sha256:string,rootPath:string):Promise<void> {
     const proof=this.importedGitRoots.get(rootPath);
-    if(!proof||proof.sha256!==sha256||proof.snapshot!==await this.importedGitSnapshot(rootPath,proof.allowedRoots))throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
+    if(!proof||proof.sha256!==sha256||proof.snapshot!==await this.importedGitSnapshot(rootPath,proof.allowedRoots,proof.anchors))throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
   }
 
   private async stageImportedGitRoot(rootPath:string,agentId?:string):Promise<void> {
@@ -477,7 +483,7 @@ export class AgentWorkingCopyService {
     }
     // Seal after every local branch is established: common Git storage can be
     // shared by multiple selected roots, so earlier snapshots would be obsolete.
-    for(const task of tasks)this.importedGitRoots.set(task.destination,{sha256:task.sha256,snapshot:await this.importedGitSnapshot(task.destination,roots),allowedRoots:roots});
+    for(const task of tasks){const anchors=getNativeGitModuleAnchors(task.configuration);this.importedGitRoots.set(task.destination,{sha256:task.sha256,snapshot:await this.importedGitSnapshot(task.destination,roots,anchors),allowedRoots:roots,anchors});}
     for(const root of roots)this.stagedImportedGitRoots.delete(root);
     for(const receipt of receipts.values())onReceipt({...receipt,state:'completed'});
     }catch(error){
