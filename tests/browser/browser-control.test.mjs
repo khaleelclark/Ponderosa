@@ -8,6 +8,7 @@ import { startBrowserService, BrowserServiceClient } from '../../apps/server/dis
 import { BrowserSessionError } from '../../apps/server/dist/browser-security.js';
 import { BrowserSessionManager } from '../../apps/server/dist/browser-session-manager.js';
 import {BrowserObservationBuffer} from '../../apps/server/dist/browser-observation-buffer.js';
+import {chatBrowserOwnerId} from '../../packages/core/dist/index.js';
 
 test('check 4: native manual conflicts remain typed across the real broker/client and resume in the same session', { skip: process.platform === 'win32' ? 'Unix socket transport; native Windows transport needs qualification' : false }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pbr-'));
@@ -206,7 +207,7 @@ test('operator shared browser console is available without a grant, but recordin
   cancelPendingFileChooser:async()=>{},consoleQuery:async()=>({entries:[],next:0,truncated:false}),recordingStart:async()=>{started++;}
  }),()=>{});
  t.after(async()=>{await manager.closeAll('fixture_complete');await rm(root,{recursive:true,force:true});});
- const conversationId=randomUUID(),scope={projectId:randomUUID(),agentId:`chat:v1:${conversationId}`,runId:`chat:v1:${conversationId}`,conversationId,owner:{version:1,kind:'chat',conversationId}};
+ const conversationId=randomUUID(),scope={projectId:randomUUID(),agentId:chatBrowserOwnerId(conversationId),runId:`chat:v1:${conversationId}`,conversationId,owner:{version:1,kind:'chat',conversationId}};
  const opened=await manager.open(scope,undefined,'operator');const context={sessionId:opened.id,expectedControlEpoch:opened.controlEpoch};
  assert.equal((await manager.operatorConsole(scope,context,{pageId:'page'})).next,0);
  await assert.rejects(manager.operatorRecordingStart(scope,context,'page'),e=>e.code==='operator_recording_unavailable');assert.equal(started,0);

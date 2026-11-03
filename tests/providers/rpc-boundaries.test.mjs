@@ -241,12 +241,15 @@ test('persistent Claude root diagnostics disclose discarded stderr and retain th
   writeFileSync(bin, '#!' + process.execPath + '\nprocess.stdin.resume();process.stderr.write("😀"+"x".repeat(8191)+"END!",()=>process.exit(7));\n');
   chmodSync(bin, 0o700);
   const roots = [];
+  let notifyDrained;
+  const drainedRoot = new Promise(resolve => { notifyDrained = resolve; });
   let runtime;
   try {
     runtime = new ClaudeStreamSession({ bin, cwd: root, history: [], sandboxMode: 'danger-full-access', permissionMode: 'bypassPermissions',
-      killGraceMs: 100, signal: new AbortController().signal, onRuntimeSpawned() {}, onRuntimeRootExit: value => roots.push(value) });
+      killGraceMs: 100, signal: new AbortController().signal, onRuntimeSpawned() {}, onRuntimeRootExit: value => { roots.push(value); if (typeof value.stderr === 'string') notifyDrained(); } });
     const events = [];
     for await (const event of runtime.events) events.push(event);
+    await drainedRoot;
     const drained = roots.find(value => typeof value.stderr === 'string');
     assert.match(drained.stderr, /^\[stderr truncated: 5 UTF-16 code units omitted;/u);
     assert.ok(drained.stderr.endsWith('END!'));
@@ -284,17 +287,19 @@ for (const persistent of [false, true]) test(`Claude native launch emits partial
   const { chmodSync } = await import('node:fs');
   const root = mkdtempSync(path.join(os.tmpdir(), 'claude-partial-launch-'));
   const bin = path.join(root, 'fake-claude');
-  const emit = value => `console.log(${JSON.stringify(JSON.stringify(value))});`;
+  const emit = value => `{const event=JSON.parse(${JSON.stringify(JSON.stringify(value))});if('session_id' in event)event.session_id=fixtureSession;console.log(JSON.stringify(event));}`;
   const envelope = event => ({ type: 'stream_event', session_id: 'fixture-session', parent_tool_use_id: null, event });
   writeFileSync(bin, '#!' + process.execPath + '\n' +
     'if(!process.argv.includes("--include-partial-messages"))throw Error("Native partials were not requested");\n' +
-    emit({ type: 'system', subtype: 'init', session_id: 'fixture-session' }) +
+    'const fixtureSession = process.argv.includes("--session-id") ? process.argv[process.argv.indexOf("--session-id")+1] : "fixture-session";\n' +
+    'const launch=()=>{console.log(JSON.stringify({type:"system",subtype:"init",session_id:fixtureSession}));\n' +
     emit(envelope({ type: 'message_start', message: { id: 'fixture-message' } })) +
     emit(envelope({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })) +
     emit(envelope({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Early native text. ' } })) +
     'setTimeout(()=>{' + emit({ type: 'assistant', session_id: 'fixture-session', parent_tool_use_id: null,
       message: { id: 'fixture-message', content: [{ type: 'text', text: 'Early native text. Completed tail.' }] } }) +
-    emit({ type: 'result', subtype: 'success', is_error: false }) + 'process.exit(0);},100);\n');
+    emit({ type: 'result', subtype: 'success', is_error: false, session_id: 'fixture-session' }) + 'process.exit(0);},100);};\n' +
+    'if(process.argv.includes("--input-format")){require("node:readline").createInterface({input:process.stdin}).on("line",line=>{if(JSON.parse(line).type==="user")launch();});}else launch();\n');
   chmodSync(bin, 0o700);
   let runtime;
   const handles = [];
@@ -302,6 +307,7 @@ for (const persistent of [false, true]) test(`Claude native launch emits partial
     onRuntimeSpawned: handle => handles.push(handle), onRuntimeRootExit() {} };
   try {
     runtime = persistent ? new ClaudeStreamSession({ ...options, bin, permissionMode: 'bypassPermissions', killGraceMs: 100 }) : undefined;
+    if (runtime) await runtime.startTurn({prompt:'Synthetic input',kind:'user_message'});
     const source = runtime?.events ?? new ClaudeAdapter({ bin, killGraceMs: 100 }).seed(options);
     const events = [];
     for await (const event of source) {

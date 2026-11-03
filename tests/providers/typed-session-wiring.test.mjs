@@ -43,8 +43,8 @@ test('oversized unrelated/foreign/mismatched/repeated echoes still refuse', asyn
 
 test('compact stays text-only and does not reserve a media echo', async () => {
   const frames = [];
-  const session = { closed: false, child: { stdin: { destroyed: false } },
-    engineAgentId: 'session', writeFrame: async frame => frames.push(frame) };
+  const session = Object.assign(Object.create(ClaudeStreamSession.prototype), { closed: false, child: { stdin: { destroyed: false } },
+    engineAgentId: 'session', writeFrame: async frame => frames.push(frame) });
   await ClaudeStreamSession.prototype.writeInput.call(session, '/compact', 'compact');
   assert.deepEqual(frames[0].message.content, [{ type: 'text', text: '/compact' }]);
   assert.equal(frames[0].uuid, 'compact');

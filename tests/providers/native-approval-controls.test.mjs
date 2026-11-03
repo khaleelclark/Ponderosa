@@ -83,10 +83,10 @@ test('Claude session live methods dispatch structured controls, apply typed turn
   Object.assign(session,{engineAgentId:'session',opts:{resumeSessionId:'session',model:'old',handleElicitation:async()=>({action:'decline'})},
     fileHistory:new ClaudeFileHistory('session',async()=>{}),taskLifetime:new ClaudeTaskLifetime('session'),selectedModel:'old',controls,approvals:new Map(),seenApprovalIds:new Set(),seedHistory:[],
     contextObservations:{beginTurn(){},endTurn(){},contextUsage:()=>({usedTokens:999})},
-    writeInput:async(text,id)=>{frames.push({text,id});},close:async()=>{closed=true;}});
+    writeInputFrame:async frame=>{frames.push(frame);},close:async()=>{closed=true;}});
   await session.startTurn({prompt:'new work',kind:'user_message',model:'exact',clientMessageId:'turn'});
   assert.equal(frames[0].request.subtype,'set_model');assert.equal(frames[0].request.model,'exact');
-  assert.equal(frames[1].text,'new work');assert.equal(session.contextUsage(),undefined,'Old model occupancy is invalidated');
+  assert.equal(frames[1].message.content[0].text,'new work');assert.equal(frames[1].uuid,'turn');assert.equal(session.contextUsage(),undefined,'Old model occupancy is invalidated');
   const permission=await session.invokeCommand('native-permission-mode','plan');assert.equal(permission.outcome,'completed');
   assert.equal(frames[2].request.subtype,'set_permission_mode');
   await session.interrupt();assert.equal(frames[3].request.subtype,'interrupt');assert.equal(closed,false);
