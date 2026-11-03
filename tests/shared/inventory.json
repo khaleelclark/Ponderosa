@@ -2432,6 +2432,41 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built core/agents/server and TypeScript; isolated Fastify and owned temporary staging; no provider account",
       "origin": "Body-bearing shared Agent/Branch exports, bounded staged native download with finite same-byte retries and origin-owned browser handoff"
+    },
+    {
+      "path": "tests/branches/native-data-preview.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/working-data-import.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-working-data-files.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/git-storage-selection.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-history-json.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
     }
   ],
   "retainedReleasePayload": [
