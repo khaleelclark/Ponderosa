@@ -125,3 +125,36 @@ test('checks 46, 47, 48, 50, 51: manager consumes blocked/failed children before
   assert.equal(d.coordinationV3.joins.find(x => x.id === coordinated.joinId).state, 'satisfied');
   assert.deepEqual(d.coordinationV3.requests.filter(x => coordinated.requestIds.includes(x.id)).map(x => x.state).sort(), ['blocked','failed']);
 }));
+
+test('fresh delegated continuation restores the whole human objective and later steering instead of relying on peer summaries', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Whole objective reconstruction');
+  const manager = await f.createAgent(chat, 'Objective owner'), worker = await f.createAgent(chat, 'Scoped worker');
+  const objective = `Complete ALL implementation before combining and testing the whole product ${randomUUID()}`;
+  const correction = `Preserve every requirement and report exact remaining blockers ${randomUUID()}`;
+  f.plans.set(manager.id, [{ hold: true }]);
+  const before = f.turns.filter(x => x.agentId === manager.id).length;
+  await f.send(manager.id, objective);
+  await until(() => f.turns.filter(x => x.agentId === manager.id).length > before, 'original human task accepted');
+  const session = f.sessions.get(manager.id), oldSession = session.engineAgentId;
+  f.plans.set(worker.id, [{ hold: true }]);
+  f.ok(await f.tool(session, 'ponderosa_coordinate', { recipientAgentId: worker.id, text: 'Implement this scoped piece only.' }));
+  await until(() => f.turns.filter(x => x.agentId === worker.id).length === 2, 'scoped worker accepted');
+  await f.send(manager.id, correction);
+  await until(() => f.steers.some(x => x.agentId === manager.id && x.input.prompt.includes(correction)), 'later human steering delivered');
+  assert.equal((await f.tool(session, 'ponderosa_message', { text: 'More implementation remains.', taskDelivery: 'blocked' })).status, 409);
+  // A changed system contract requires a fresh seed on the next legitimate
+  // joined wake. Nothing starts an extra task or retries external effects.
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { globalInstructions: 'Keep the whole user objective intact.' }));
+  let result;
+  f.plans.set(manager.id, [{ run: async (resumed, input, turn) => {
+    assert.notEqual(resumed.engineAgentId, oldSession);
+    assert.ok(input.prompt.includes('[UNFINISHED HUMAN REQUESTS'));
+    assert.ok(input.prompt.includes(objective)); assert.ok(input.prompt.includes(correction));
+    result = await f.tool(resumed, 'ponderosa_message', { text: 'All requested work and verification complete.', taskDelivery: 'final' });
+    f.ok(result);
+  } }]);
+  session.finish();
+  f.ok(await f.tool(f.sessions.get(worker.id), 'ponderosa_update_request', { text: 'Scoped piece complete.' }));
+  f.sessions.get(worker.id).finish();
+  await until(() => result, 'whole objective reconstructed on fresh canonical wake');
+}));

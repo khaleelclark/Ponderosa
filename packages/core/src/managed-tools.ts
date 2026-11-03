@@ -273,7 +273,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         description: "Optional passive delivery. Omit for immediate communication.",
       },
       text: { type: "string", minLength: 1, description: `Complete message text. Content above 10,000 Unicode code points is stored as one durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
-      taskDelivery: { type: "string", enum: ["final", "blocked"], description: "Explicit operator-task delivery outcome. Ordinary messages are interim while a delegated task remains open. Use final only after integrating all tracked results; use blocked for a truthful operator-facing incomplete/blocked outcome. Does not grant permissions or cancel delegated work." },
+      taskDelivery: { type: "string", enum: ["final", "blocked"], description: "Explicit operator-task outcome. Use final only when the whole human objective is complete and all tracked results are integrated. Use blocked only after creating an actionable blocking Decision; the task stays waiting for its answer. Batch completion or remaining implementation is progress, not a blocker: continue working. Does not grant permissions or cancel delegated work." },
       artifactIds: {
         type: "array", minItems: 1, maxItems: 20, uniqueItems: true,
         items: { type: "string", pattern: "^[A-Za-z0-9_-]{1,128}$" },

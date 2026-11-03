@@ -452,6 +452,9 @@ export function registerAgentCommunicationRoutes(
       if (taskDelivery === 'final' && blockers.length) {
         return reply.code(409).send({ error: 'task_delivery_dependencies_pending: answer the exact blocking Decision first' });
       }
+      if (taskDelivery === 'blocked' && !blockers.length) {
+        return reply.code(409).send({ error: 'task_delivery_blocker_required: create an actionable blocking Decision; otherwise continue the unfinished task and use an ordinary progress message' });
+      }
     }
     const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
     const replyRequest = requiredReplyRequest(coordinationV3, capability.runId, selectedReplyAuthority);

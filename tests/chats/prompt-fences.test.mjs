@@ -113,6 +113,89 @@ test('current prompt identity does not relax operator-final delivery or communic
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM runtime_communications').get().n,0);
 });
 
+function taskRoot(f, text = 'Implement the whole objective, then validate everything together.') {
+  const id = randomUUID(), now = new Date().toISOString();
+  const communication = { schemaVersion: 2, eventId: randomUUID(), projectId: f.projectId,
+    conversationId: f.conversationId, sender: { kind: 'user', userId: 'local-operator' },
+    intent: 'user_dm', audience: { kind: 'user_agent', userId: 'local-operator', agentId: f.agentId }, text, createdAt: now };
+  f.sqlite.prepare(`INSERT INTO agent_activations
+    (id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+    VALUES (?,?,?,'human_message',100,'next_run','human','consumed',?,?,?,?,?,?)`)
+    .run(id, f.projectId, f.agentId, id, JSON.stringify({ communication }), now, now, now, f.scopeKey);
+  f.sqlite.prepare(`INSERT INTO required_reply_obligations
+    (run_id,source_activation_id,project_id,agent_id,scope_key,reply_authority_json,state,created_at,updated_at,delivery_phase)
+    VALUES (?,?,?,?,?,?,'pending',?,?,'final')`)
+    .run(f.authorization.runId, id, f.projectId, f.agentId, f.scopeKey, '{"intent":"direct_to_user"}', now, now);
+  return { id, communication };
+}
+
+function retireForTask(f, root) {
+  const generation = 'session:' + f.authorization.runId;
+  const { rollover } = f.store.requestContextRollover({ projectId: f.projectId, agentId: f.agentId,
+    oldProviderSessionId: generation, providerSessionGeneration: generation, detectedOccupancy: 160000,
+    threshold: 150000, lowWaterMark: 90000, sourceRunId: f.authorization.runId,
+    compactionCutoffOrdinal: 1, compactionCutoffEventId: root.communication.eventId,
+    recentTail: [{ communicationEventId: root.communication.eventId, contentSha256: 'a'.repeat(64) }],
+    sourceActivationIds: [root.id], scopeKey: f.scopeKey, conversationId: f.conversationId,
+    replyAuthority: { intent: 'direct_to_user' }, visibleResponseCommitted: true });
+  f.store.commitContextRolloverHandoff(rollover.id, randomUUID());
+  f.store.beginContextRolloverRetirement(rollover.id);
+  return f.store.prepareContextRolloverContinuation({ id: rollover.id });
+}
+
+test('an unfinished batch cannot claim blocked completion; a progress reply still allows one rollover continuation', t => {
+  const f = fixture(t), turn = f.injection(), root = taskRoot(f);
+  assert.throws(() => f.publish(turn, { satisfiesRequiredReply: true, taskDelivery: 'blocked',
+    payload: { text: 'Batch finished; much implementation remains.', taskDelivery: 'blocked' } }), /task_delivery_blocker_required/);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM runtime_communications').get().n, 0,
+    'Rejected closure and its receipt roll back together');
+  f.publish(turn, { satisfiesRequiredReply: true, payload: { text: 'Batch finished; continuing implementation.' } });
+  assert.equal(f.store.requiredReplyObligationsForRun(f.authorization.runId)[0].state, 'pending');
+  const rollover = retireForTask(f, root);
+  assert.equal(rollover.state, 'continuation_ready');
+  assert.ok(rollover.continuationActivationId);
+  assert.equal(f.store.prepareContextRolloverContinuation({ id: rollover.id }).continuationActivationId, rollover.continuationActivationId);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='context_rollover_continuation'").get().n, 1);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM runtime_communications').get().n, 1,
+    'Continuation reconstructs inputs; it never replays communication or unknown external effects');
+});
+
+test('a genuine blocking Decision keeps the task waiting instead of completing it or retrying forever', t => {
+  const f = fixture(t), turn = f.injection(), root = taskRoot(f), decisionId = randomUUID();
+  f.store.waitForTaskDecision({ runAuthorization: f.authorization, decisionId, scopeKey: f.scopeKey });
+  f.publish(turn, { satisfiesRequiredReply: true, taskDelivery: 'blocked',
+    payload: { text: 'Waiting for the exact prerequisite in the Decision.', taskDelivery: 'blocked' } });
+  const obligation = f.store.requiredReplyObligationsForRun(f.authorization.runId)[0];
+  assert.equal(obligation.state, 'pending'); assert.equal(obligation.blockingDecisionId, decisionId);
+  const rollover = retireForTask(f, root);
+  assert.equal(rollover.state, 'completed'); assert.equal(rollover.continuityWaiting, true);
+  assert.equal(rollover.continuationActivationId, undefined);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+});
+
+test('true whole-task completion permits rollover retirement without a replacement loop', t => {
+  const f = fixture(t), turn = f.injection(), root = taskRoot(f);
+  f.publish(turn, { satisfiesRequiredReply: true, taskDelivery: 'final',
+    payload: { text: 'All required implementation and final checks complete.', taskDelivery: 'final' } });
+  assert.equal(f.store.requiredReplyObligationsForRun(f.authorization.runId)[0].state, 'satisfied');
+  const rollover = retireForTask(f, root);
+  assert.equal(rollover.state, 'completed'); assert.equal(rollover.completionReason, 'no_continuation_required');
+  assert.equal(rollover.continuationActivationId, undefined);
+  assert.deepEqual(f.store.unfinishedHumanSourceActivationIds(f.authorization.runId), []);
+});
+
+test('unfinished task reconstruction preserves the original objective and acknowledged human steering, excluding peer prose and other owners', t => {
+  const f = fixture(t), turn = f.injection(), root = taskRoot(f), correction = taskRoot(f, 'Do not test until ALL implementation is combined.');
+  f.sqlite.prepare("UPDATE required_reply_obligations SET state='satisfied',delivery_phase='initial' WHERE source_activation_id=?").run(correction.id);
+  f.sqlite.prepare('UPDATE scheduler_prompt_injections SET activation_ids_json=? WHERE id=?')
+    .run(JSON.stringify([root.id, correction.id]), turn);
+  assert.deepEqual(f.store.unfinishedHumanSourceActivationIds(f.authorization.runId), [root.id, correction.id]);
+  f.sqlite.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.communication.sender.kind','agent') WHERE id=?").run(correction.id);
+  assert.deepEqual(f.store.unfinishedHumanSourceActivationIds(f.authorization.runId), [root.id]);
+  f.sqlite.prepare('UPDATE agent_activations SET agent_id=? WHERE id=?').run(f.otherAgentId, root.id);
+  assert.deepEqual(f.store.unfinishedHumanSourceActivationIds(f.authorization.runId), []);
+});
+
 
 const providerOptions = { timeout: 30000 };
 const acknowledgedPrompt = (f, agentId) => {

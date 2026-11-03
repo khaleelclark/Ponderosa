@@ -912,6 +912,37 @@ export class CoordinationV3RequiredReplyAuthority {
     ).values()];
   }
 
+  /** Original human inputs remain required reconstruction material while their
+   * exact task is unfinished. Follow bounded delivery recovery, never peer prose,
+   * and never widen the Run's Agent/Chat ownership. UNION also rejects cycles. */
+  unfinishedHumanSourceActivationIds(runId: string): string[] {
+    return (this.sqlite.prepare(`WITH RECURSIVE roots AS (
+      SELECT * FROM required_reply_obligations WHERE run_id=? AND state IN ('pending','recovery_pending')
+    ), task_runs(id) AS (
+      SELECT run_id FROM roots UNION
+      SELECT prior.run_id FROM roots root JOIN required_reply_obligations prior
+        ON root.delivery_phase='final' AND prior.source_activation_id=root.source_activation_id
+        AND prior.agent_id=root.agent_id AND prior.project_id=root.project_id AND prior.scope_key=root.scope_key
+    ), sources(id) AS (
+      SELECT source_activation_id FROM roots
+      UNION
+      SELECT member.value FROM task_runs task JOIN scheduler_prompt_injections injection ON injection.run_id=task.id
+        AND injection.state='acknowledged' JOIN json_each(injection.activation_ids_json) member
+      UNION
+      SELECT prior.source_activation_id FROM sources
+      JOIN required_reply_obligations prior ON prior.recovery_activation_id=sources.id
+      JOIN scheduler_runs current ON current.id=?
+      WHERE prior.agent_id=current.agent_id AND prior.project_id=current.project_id
+        AND prior.scope_key=current.scope_key
+    ) SELECT activation.id FROM sources JOIN agent_activations activation ON activation.id=sources.id
+      JOIN scheduler_runs current ON current.id=?
+      WHERE activation.kind='human_message' AND activation.agent_id=current.agent_id
+        AND activation.project_id=current.project_id AND activation.scope_key=current.scope_key
+        AND json_extract(activation.payload_json,'$.communication.sender.kind')='user'
+      ORDER BY activation.created_at, activation.rowid`)
+      .all(runId, runId, runId) as Array<{ id: string }>).map(row => row.id);
+  }
+
   markSatisfied(input: {
     runId: string;
     communicationId: string;
@@ -940,13 +971,16 @@ export class CoordinationV3RequiredReplyAuthority {
       if (obligation.state !== "pending" ||
           !communicationSatisfiesReplyAuthority(obligation.replyAuthority, input.intent, input.audience)) continue;
       if (obligation.deliveryPhase === 'final' && obligation.interimCommunicationId === input.communicationId) continue;
+      if (input.taskDelivery === 'blocked' && !obligation.blockingDecisionId) {
+        throw new Error('task_delivery_blocker_required: create an actionable blocking Decision; unfinished work or a completed batch is not a task blocker');
+      }
       if (obligation.deliveryPhase === 'final' && input.taskDelivery === 'final' &&
           (obligation.blockingDecisionId || hasOutstandingDelegation(this.sqlite, obligation))) {
         throw new Error('task_delivery_dependencies_pending: integrate the exact pending results or publish an explicit blocked outcome');
       }
       // A blocked status can accompany an actionable Decision, but must not
       // sever the exact answer's continuation from its unfinished task.
-      if (obligation.deliveryPhase === "final" && (!input.taskDelivery || obligation.blockingDecisionId)) {
+      if (obligation.blockingDecisionId || (obligation.deliveryPhase === "final" && !input.taskDelivery)) {
         this.sqlite.prepare(`UPDATE required_reply_obligations SET interim_communication_id = ?, updated_at = ?
           WHERE run_id = ? AND source_activation_id = ? AND state = 'pending'`)
           .run(input.communicationId, input.now, input.runId, obligation.sourceActivationId);

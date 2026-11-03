@@ -1271,6 +1271,10 @@ export class CoordinationV3Store {
     return this.requiredReplyAuthority.forRun(runId);
   }
 
+  unfinishedHumanSourceActivationIds(runId: string): string[] {
+    return this.requiredReplyAuthority.unfinishedHumanSourceActivationIds(runId);
+  }
+
   requiredReplyAuthoritiesForRun(runId: string): CoordinationReplyAuthority[] {
     return this.requiredReplyAuthority.authoritiesForRun(runId);
   }
