@@ -542,9 +542,9 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];r
   if(end<12||data.toString('latin1',0,4)!=='DIRC'||!createHash(format).update(data.subarray(0,end)).digest().equals(data.subarray(end)))throw new Error('Invalid Git index header/checksum');
   const version=data.readUInt32BE(4),count=data.readUInt32BE(8);
   if(![2,3,4].includes(version)||count>10000)throw new Error('Only bounded v2/v3/v4 Git index storage is supported');
-  const entries:IndexEntry[]=[];let offset=12,decodedBytes=0;let previous:Buffer=Buffer.alloc(0);
+  const entries:IndexEntry[]=[],entryStarts:number[]=[],fullPaths:boolean[]=[];let offset=12,decodedBytes=0;let previous:Buffer=Buffer.alloc(0);
   for(let i=0;i<count;i++){
-    const start=offset;
+    const start=offset;entryStarts.push(start);
     if(offset+42+width>end)throw new Error('Truncated Git index entry');
     const mode=data.readUInt32BE(offset+24).toString(8),oid=data.subarray(offset+40,offset+40+width).toString('hex'),flags=data.readUInt16BE(offset+40+width);
     offset+=42+width;let extended=0;
@@ -560,6 +560,7 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];r
       }
       if(remove>previous.length)throw new Error('V4 Git path prefix exceeds previous original');
     }
+    fullPaths.push(version!==4||remove===previous.length);
     const nul=data.indexOf(0,offset);
     if(nul<offset||nul>=end)throw new Error('Unterminated Git index path');
     const length=(version===4?previous.length-remove:0)+nul-offset;
@@ -572,12 +573,34 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];r
     if(!['40000','100644','100755','120000','160000'].includes(mode))throw new Error('Unsupported Git index mode');
     entries.push({path:name,mode,oid,stage:(flags>>>12)&3,assumeUnchanged:Boolean(flags&0x8000),intentToAdd:Boolean(extended&0x2000),skipWorktree:Boolean(extended&0x4000)});
   }
+  const entriesEnd=offset,extensionHeaders=createHash(format);
   let link:Buffer|undefined,resolveUndo:ReviewedGitUserData['resolveUndo']|undefined;const seen=new Set<string>();
   while(offset<end){
     if(offset+8>end)throw new Error('Truncated Git index extension');
-    const signature=data.toString('latin1',offset,offset+4),size=data.readUInt32BE(offset+4);offset+=8;
+    const header=data.subarray(offset,offset+8),signature=header.toString('latin1',0,4),size=header.readUInt32BE(4);offset+=8;
     if(size>end-offset||seen.has(signature))throw new Error('Invalid or duplicate Git index extension');seen.add(signature);
     const body=data.subarray(offset,offset+size);offset+=size;
+    if(signature==='EOIE'){
+      if(size!==4+width||offset!==end||body.readUInt32BE(0)!==entriesEnd||!body.subarray(4).equals(extensionHeaders.digest()))throw new Error('Invalid Git end-of-entry offset/hash/order');
+      continue;
+    }
+    extensionHeaders.update(header);
+    if(signature==='IEOT'){
+      if(size<4||(size-4)%8||body.readUInt32BE(0)!==1)throw new Error('Invalid Git index offset-table version/grammar');
+      const blocks=(size-4)/8;
+      if(blocks>count+1||count===0&&blocks!==0||count>0&&blocks===0)throw new Error('Invalid Git index offset-table block count');
+      let covered=0;
+      for(let block=0;block<blocks;block++){
+        const start=body.readUInt32BE(4+block*8),nr=body.readUInt32BE(8+block*8);
+        // Git's writer can emit one leading empty block when earlier entries were removed.
+        if(nr===0&&(block!==0||blocks<2)||nr>count-covered||start!==entryStarts[covered])throw new Error('Invalid Git index offset-table partition');
+        // V4 block starts discard the whole preceding name; decode sequentially, never seek via IEOT.
+        if(!fullPaths[covered])throw new Error('Git v4 offset-table block lacks a full restart path');
+        covered+=nr;
+      }
+      if(covered!==count)throw new Error('Incomplete Git index offset-table coverage');
+      continue;
+    }
     if(signature==='link'){link=body;continue;}
     if(signature==='sdir'){if(body.length)throw new Error('Unsupported sparse-index extension payload');continue;}
     if(signature==='REUC'){resolveUndo=decodeResolveUndo(body,format);continue;}

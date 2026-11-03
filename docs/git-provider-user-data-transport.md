@@ -212,13 +212,41 @@ well as the complete logical inventory. Unreferenced shared files are neither
 read nor transported. A missing required shared file or observed drift refuses.
 These checks do not drain independent writers or guarantee an atomic snapshot.
 
-Only `link`, `REUC` resolve-undo, the empty `sdir` marker and the known derived `TREE` cache extension are accepted; combined split/sparse storage refuses. TREE's
-complete count/length grammar is checked and its cache is not adopted. Other
-extensions, including untracked/fsmonitor caches and offset tables,
+Only `link`, `REUC` resolve-undo, the empty `sdir` marker and the derived `TREE`,
+`EOIE` and `IEOT` extensions are accepted; combined split/sparse storage refuses.
+TREE's complete count/length grammar is checked and its cache is not adopted. Other
+extensions, including untracked/fsmonitor caches,
 refuse rather than silently lose semantics. Unknown layouts remain unsupported. Both logical and storage entry inventories are bounded to
 10,000. Resolve-undo belongs only to the selected index/overlay; any `REUC` in a
 required shared base refuses, even an empty one. Base and overlay undo records
 are never blended or inherited. Unsupported originals remain at source.
+
+EOIE must be last, with exact format-width length/hash and the end-of-entries
+offset found by sequential decoding. Its hash covers every preceding extension
+signature/size header in order, excluding payloads and EOIE itself. IEOT version 1
+must consume complete offset/count pairs: offsets match actual raw entry starts,
+counts partition all entries in order, and block count is bounded by entry count
+plus one. Neither extension supplies parsing authority. Each v4 block start must
+discard the entire preceding path and carry its full path suffix; sequential
+decoding therefore handles native block restarts without seeking or guessing.
+The pinned writer can produce a version-only IEOT for an empty index and one
+leading zero-count block after removed entries; these are accepted. Other empty
+blocks, missing coverage, duplicate extensions, malformed offsets/hashes/grammar
+and unsupported versions refuse.
+
+These checks apply independently to each required physical index file, including
+selected split overlays and their exact shared base. They never use merged
+logical offsets or inherit an accelerator from another file. Git writes these
+accelerators even for shared storage; the existing shared-base REUC and
+combined split/sparse refusals remain. Raw files and before/after checks remain
+unchanged. No DTO or transport version change is needed: only validated logical
+user data travels into the manifest; derived layout is omitted on recreation.
+
+Format references: [EOIE and IEOT](https://git-scm.com/docs/gitformat-index#_end_of_index_entry)
+and [pinned Git v2.43.0 writer/reader](https://github.com/git/git/blob/v2.43.0/read-cache.c)
+(`do_write_index`, `ce_write_entry`, `write_eoie_extension`,
+`write_ieot_extension`). This is source-only support, without native or runtime
+qualification.
 
 Recovery writes the existing exclusive **full** v2/v3 review index into a new
 inactive standalone review repository. Split/shared storage layout, raw stat
