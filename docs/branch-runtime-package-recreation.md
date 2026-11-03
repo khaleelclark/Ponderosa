@@ -768,10 +768,11 @@ remain unvalidated. No schema, storage-version, DTO, format or dependency change
 Foreign continuation now accepts authentic same-owner Join result bundles in
 manual standalone effect-free parallel Node Script/ordinary approval-gate graphs.
 Existing fork/Map/Join, conditions/routes/loops, JSON state and canonical Script
-retries remain available under their existing replay rules. This extension does
-not admit automatic roots, Call trees, issued/Agent/resource/native/effectful or
-cross-owner bundles. Secret, custody, execution-Chat and unknown/in-flight effects
-retain their existing exclusions. Definition literals and gate choices that name
+retries remain available under their existing replay rules. Proven automatic
+standalone origins use the additional contract below. Call trees,
+issued/Agent/resource/native/effectful and cross-owner bundles remain excluded.
+Secret, custody, execution-Chat and unknown/in-flight effects retain their existing
+exclusions. Definition literals and gate choices that name
 bundle references are refused in this family; authored literals are not remapped.
 
 The shared eligibility check requires exact owned bundle rows, unique typed IDs,
@@ -823,3 +824,48 @@ browser/provider/live database execution or executed reproduction. Timing/durabi
 notifications, round trips, scheduling, rollback, native equivalence, atomicity and
 whole-Bible/full-portability acceptance remain unvalidated. No schema, storage-version,
 DTO, format or dependency changes.
+
+
+## Proven automatic standalone Join bundle origins
+
+The same owned Join bundle consumer also supports original schedule, webhook and
+filesystem standalone effect-free parallel Node Script/ordinary approval-gate
+workflows when the existing automatic-origin and full causal replay qualify.
+The manual family above remains supported. The shared bundle helper only checks
+structural eligibility: an automatic definition and admission are not origin proof.
+Every executable foreign cut still passes canonical selected and independent latest
+replay, and the held planner requires original latest replay before native bundle
+recreation. Missing, forged or changed occurrence evidence stays held.
+
+Automatic origin proof requires the retained activated occurrence, exact canonical
+payload/provenance/trigger snapshot, original input bytes and hash, and unique
+trigger_accepted/workflow_started evidence. The retained occurrence must remain
+historical data without current authority. Private facts supply proof without a
+source SQL fallback. Existing bundle production, size/hash/ownership/topology,
+Script lease/process/settlement, retry/state and selected saver/closed EXIT rules
+are unchanged; structural bundle checks never replace authentic Join replay.
+
+Fresh destination acceptance remains manual even when its matching definition
+contains an automatic trigger. Current human confirmation, policy, permissions,
+matching configuration, budget, readiness and capacity are checked again. No source
+schedule grant, timer, occurrence regeneration, trigger replay or redispatch is
+inherited. Only the proven unfinished suffix can run. The existing held resolver
+unwraps original facts; admitted/re-exported/local-rewind lineage verifies original
+selected and latest cuts, the fresh manual acceptance and exact mapped prefix.
+Bundle eligibility permits those manual generations of automatic definitions so
+retained proof remains usable without relabeling a destination as automatic.
+
+Existing typed remapping, native insertion/readback, immutable prefix receipt and
+current Script bundle resolution are reused. Original facts and bundle content/hash
+stay immutable; only owned references and dependent hashes change. Calls and Call
+ancestry/descendants, issued/Agent/resource/native/effectful/cross-owner bundles,
+secrets, execution-Chat/custody dependencies and unknown/in-flight attempts remain
+excluded. Authored literals/choices and arbitrary text or JSON state gain no global
+substitution. Latest-only terminal observations remain evidence, not executable cuts.
+
+Source implementation only. No tests or preparation, builds, types, Node/parser,
+native/runtime/browser/provider/live database execution or executed reproduction.
+Execution, timing/durability, notifications, round trips, scheduling, rollback,
+native equivalence, atomicity and whole-Bible/full-portability acceptance remain
+unvalidated. No new trigger engine, codec, schema, storage-version, DTO, format,
+size limit or dependency.

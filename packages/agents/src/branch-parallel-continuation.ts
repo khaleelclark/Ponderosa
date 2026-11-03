@@ -30,7 +30,9 @@ export function portableScriptBundlesSupported(s:Selected,d:BranchDefinition):bo
   const texts=[e.input_text,e.output_text,...s.paths!.map(p=>p.input_text),...s.steps!.map(p=>p.input_text),...s.joins!.map(p=>p.output_text),...s.items!.map(p=>p.input_text),...s.gates!.map(g=>g.proposal_text),...s.gates!.map(g=>g.response_json===null?undefined:JSON.parse(g.response_json).output),...outputs(s.paths!),...outputs(s.steps!),...outputs(s.attempts!),...outputs(s.sealedResults!),...outputs(s.forks!)];
   const references=texts.filter(t=>typeof t==='string'&&t.startsWith('branch-result-bundle:'));
   if(!s.bundles!.length&&!references.length)return true;
-  if(d.trigger.kind!=='manual'||!parallelDefinitionSupported(d)||d.steps.some(step=>!['script','human_gate'].includes(step.kind))||e.admission_source!=='manual'||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
+  // Automatic origins need separate occurrence replay; their admitted descendants are fresh manual owners.
+  const automatic=automaticScriptDefinitionSupported(d,false,false,true);
+  if(d.trigger.kind!=='manual'&&!automatic||!parallelDefinitionSupported(d)||d.steps.some(step=>!['script','human_gate'].includes(step.kind))||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
   if(branchContinuationIds(s).includes(e.id))return false;
   const producers=new Set<string>();
   for(const bundle of s.bundles!){
