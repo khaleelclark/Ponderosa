@@ -2603,6 +2603,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"createPersistentNode", nullptr, CreatePersistentNode, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"applyExactFileMetadata", nullptr, ApplyExactFileMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"applyExactSymlinkMetadata", nullptr, ApplyExactSymlinkMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"pinPortableSymlink", nullptr, PinPortableSymlink, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"darwinProcessBirthMarker", nullptr, DarwinProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsProcessBirthMarker", nullptr, WindowsProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},

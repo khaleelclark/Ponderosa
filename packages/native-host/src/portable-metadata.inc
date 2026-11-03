@@ -584,3 +584,40 @@ napi_value ApplyExactSymlinkMetadata(napi_env env,napi_callback_info info) {
   return portable_metadata::Failure(env,"ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED","Exact symlink timestamps require Linux O_PATH and utimensat AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW; no metadata changed");
 #endif
 }
+
+
+// Online metadata-only pin. Unlike offline clone inspection this never reads
+// link bytes/xattrs or requires a read-only/noatime mount.
+napi_value PinPortableSymlink(napi_env env,napi_callback_info info) {
+#if defined(__linux__) && defined(O_PATH)
+  using namespace portable_metadata;
+  int fd=-1;
+  try{
+    size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+    if(argc!=1)throw std::runtime_error("one held-parent symlink pin input required");
+    const auto input=args[0];const auto parent=ReadParent(env,input);
+    const auto device=Identity(env,Property(env,input,"expectedDevice")),inode=Identity(env,Property(env,input,"expectedInode"));
+    CheckParent(parent);
+    fd=openat(parent.fd,parent.leaf.c_str(),O_PATH|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0)throw std::runtime_error(std::string("metadata-only symlink pin open failed: ")+std::strerror(errno));
+    struct stat held{},named{},after{};
+    if(fstat(fd,&held)!=0||!S_ISLNK(held.st_mode)||held.st_nlink!=1||
+       uint64_t(held.st_dev)!=device||uint64_t(held.st_ino)!=inode||
+       fstatat(parent.fd,parent.leaf.c_str(),&named,AT_SYMLINK_NOFOLLOW)!=0||!SameObservation(held,named))
+      throw std::runtime_error("held symlink identity/kind/link/name differs");
+    CheckParent(parent);
+    if(fstat(fd,&after)!=0||!SameObservation(held,after)||
+       fstatat(parent.fd,parent.leaf.c_str(),&named,AT_SYMLINK_NOFOLLOW)!=0||!SameObservation(after,named))
+      throw std::runtime_error("held symlink changed during metadata-only pin");
+    CheckParent(parent);
+    auto result=Object(env);Set(env,result,"fd",Number(env,fd));Set(env,result,"device",Big(env,after.st_dev));Set(env,result,"inode",Big(env,after.st_ino));
+    fd=-1;return result; // Transfer only this owned descriptor; parent stays borrowed.
+  }catch(const std::exception& error){
+    std::string message=error.what();
+    if(fd>=0){const int owned=fd;fd=-1;if(close(owned)!=0)message+=std::string("; owned pin descriptor cleanup failed: ")+std::strerror(errno);}
+    return Failure(env,"ERR_PORTABLE_SYMLINK_PIN",message);
+  }
+#else
+  return portable_metadata::Failure(env,"ERR_PORTABLE_SYMLINK_PIN_UNSUPPORTED","Online symlink metadata pins require Linux O_PATH; no target opened");
+#endif
+}

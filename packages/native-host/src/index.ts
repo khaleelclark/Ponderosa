@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
   pinPortableRegularFile(input:{path:string;expectedDevice:bigint;expectedInode:bigint}):{fd:number;readPath:string};
+  pinPortableSymlink(input:PortableSymlinkPinInput):{fd:number;device:bigint;inode:bigint};
   inspectExtendedMetadata(input: HeldMetadataTarget & { sourceQualifier: string }): ExtendedMetadataEvidence;
   applyExtendedMetadata(input: ExtendedMetadataRestore): ExtendedMetadataEvidence;
   inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence;
@@ -214,6 +215,24 @@ export function applyExactFileMetadata(input: ExactFileMetadataInput): ExactFile
   return binding().applyExactFileMetadata(input);
 }
 
+
+
+export interface PortableSymlinkPinInput {
+  parentFd:number;
+  leaf:string;
+  expectedParentDevice:bigint;
+  expectedParentInode:bigint;
+  expectedDevice:bigint;
+  expectedInode:bigint;
+}
+/** Pin this exact single-name symlink under a borrowed held parent, without
+ * reading link bytes, xattrs or target content. Linux only; no offline mount
+ * policy is implied. Caller owns/closes the returned fd and retains parent/name
+ * custody independently through later readlink/metadata checks.
+ */
+export function pinPortableSymlink(input:PortableSymlinkPinInput):{fd:number;device:bigint;inode:bigint}{
+  return binding().pinPortableSymlink(input);
+}
 
 export interface ExactSymlinkMetadataInput {
   /** Caller-held Linux O_PATH|O_NOFOLLOW descriptor; caller retains and closes it. */
