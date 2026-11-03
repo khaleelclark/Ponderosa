@@ -251,32 +251,42 @@ test('unconfirmed pause cleanup blocks resume and remains visible after restart'
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,renameSync,rmSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {initializePredecessorSchema} from '../../packages/agents/dist/db.js';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 
-for(const shape of ['0029','0028','0027','foreign table','partial pause schema'])test(`pause migration admits only exact supported predecessor: ${shape}`,()=>{
- const root=mkdtempSync(path.join(tmpdir(),'ponderosa-pause-schema-'));let store;
+const require=createRequire(new URL('../../packages/agents/package.json',import.meta.url));
+const Database=require('better-sqlite3');
+const predecessorVersion={'0029':'0029_assistant_workspace.sql','0028':'0028_capability_policy_history.sql','0027':'0027_schedule_work_lookup.sql'};
+
+for(const shape of ['0029','0028','0027','foreign table','partial pause schema'])test(`pause migration admits only exact supported predecessor: ${shape}`,async()=>{
+ const root=mkdtempSync(path.join(tmpdir(),'ponderosa-pause-schema-')),data=path.join(root,'data');let store;
  try{
-  store=new AgentStore(root);
+  store=new AgentStore(data);
   if(shape==='foreign table')store.sqlite.exec('CREATE TABLE unauthorized_schema_change(id TEXT)');
   else if(shape==='partial pause schema')store.sqlite.exec('DROP TABLE agent_pause_recoveries');
   else {
-   store.sqlite.exec('DROP TABLE agent_pause_recoveries; DROP TABLE agent_run_pauses');
-   store.sqlite.prepare('DELETE FROM _schema_version WHERE name=?').run('0030_agent_run_pauses.sql');
-   if(shape==='0028'||shape==='0027'){
-    store.sqlite.exec("DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'");
-    store.sqlite.prepare('DELETE FROM _schema_version WHERE name=?').run('0029_assistant_workspace.sql');
-   }
-   if(shape==='0027'){
-    store.sqlite.exec('DROP TABLE capability_policy_history');
-    store.sqlite.prepare('DELETE FROM _schema_version WHERE name=?').run('0028_capability_policy_history.sql');
-   }
-
+   // Reconstruct the real additive predecessor, rather than dropping two
+   // tables from a later schema which still contains migrations after 0030.
+   const older=new Database(':memory:');
+   try {
+    initializePredecessorSchema(older,predecessorVersion[shape]);
+    older.exec(store.sqlite.prepare("SELECT sql FROM sqlite_master WHERE name='_state_generation'").get().sql);
+    const generation=store.sqlite.prepare('SELECT singleton,state_epoch,generation_id,schema_contract FROM _state_generation').get();
+    older.prepare('INSERT INTO _state_generation VALUES (?,?,?,?)').run(generation.singleton,generation.state_epoch,generation.generation_id,generation.schema_contract);
+    await older.backup(path.join(root,'predecessor.db'));
+   } finally {older.close();}
   }
   store.close();store=undefined;
-  if(shape==='foreign table'||shape==='partial pause schema')assert.throws(()=>new AgentStore(root),/unsupported|schema|admission|incomplete/i);
-  else {store=new AgentStore(root);assert.ok(store.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='agent_pause_recoveries'").get());}
+  if(predecessorVersion[shape]){
+   // Keep the task-owned original outside the admitted data root.
+   renameSync(path.join(data,'ponderosa.db'),path.join(root,'original-current.db'));
+   renameSync(path.join(root,'predecessor.db'),path.join(data,'ponderosa.db'));
+  }
+  if(shape==='foreign table'||shape==='partial pause schema')assert.throws(()=>new AgentStore(data),/unsupported|schema|admission|incomplete/i);
+  else {store=new AgentStore(data);assert.ok(store.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='agent_pause_recoveries'").get());}
  }finally{store?.close();rmSync(root,{recursive:true,force:true});}
 });
 
