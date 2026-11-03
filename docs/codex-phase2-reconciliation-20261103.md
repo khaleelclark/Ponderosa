@@ -86,6 +86,6 @@ data comparison; triggers/clock behavior; notification bursts; seeded combined
 memory and misuse trials; public-client/comparator runs; complete stream recordings;
 call latency measurements; keyboard/reader/axe/theme/text-size; eight fresh sessions
 per product/device at the exact active-load/Event Timing profile; and at least
-three independent different-model blind judges using pinned comparator apps and
+three independent blind judge agents using pinned comparator apps and
 written rubrics. Human-only account/device actions are the only handoff exceptions;
 emulators qualify. No such execution was performed by this reconciliation lane.
