@@ -4,7 +4,7 @@ import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,renameSync,rmdirSync,re
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {AgentStore,managedWorkspacePath} from '@ponderosa/agents';
+import {AgentStore,managedWorkspacePath,resolveAgentWorkingCopy} from '@ponderosa/agents';
 import {destinationAdmissionHeld} from '../../packages/agents/dist/coordination-v3-destination-staging.js';
 
 const read=filename=>JSON.parse(readFileSync(filename,'utf8'));
@@ -87,5 +87,21 @@ test('a Shared contained child can bind beneath its same-Project preparing Separ
   for(const id of f.ids)assert.equal(read(f.agentFile(id)).workingCopy.rootPath,f.newRoot,'All pending Shared owners are updated');
   assert.equal(read(f.agentFile(owner.id)).workingCopy.rootPath,f.parentRoot,'Independent parent ownership is preserved');
   assert.deepEqual(read(f.projectFile).importedRootBinding.memberIds,ids);
+ }finally{f.dispose();}
+});
+
+test('Shared import custody stays unavailable until the exact metadata operation finishes',()=>{
+ const f=fixture();try{
+  const agent=f.store.getAgent(f.ids[0]),project=f.store.getProject(f.project.id);
+  const pending={...agent.workingCopy,state:'unavailable',failure:'Native import metadata proof pending'};
+  f.store.updateAgentWorkingCopy(agent.id,pending);
+  const held=f.store.getAgent(agent.id);
+  assert.equal(held.workingCopy.state,'unavailable');
+  assert.throws(()=>resolveAgentWorkingCopy(held,project),/metadata proof pending/);
+  assert.throws(()=>f.store.updateAgentWorkingCopy(agent.id,{...pending,rootPath:f.newRoot}),/Shared folder identity/);
+  assert.throws(()=>f.store.updateAgentWorkingCopy(agent.id,{...pending,failure:undefined}),/Shared folder identity/);
+  assert.throws(()=>f.store.updateAgentWorkingCopy(agent.id,{...pending,state:'ready'}),/Shared folder identity/);
+  f.store.updateAgentWorkingCopy(agent.id,{...pending,state:'ready',failure:undefined});
+  assert.equal(resolveAgentWorkingCopy(f.store.getAgent(agent.id),project).rootPath,project.hostPath);
  }finally{f.dispose();}
 });

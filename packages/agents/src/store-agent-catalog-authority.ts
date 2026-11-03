@@ -123,14 +123,15 @@ function validateWorkingCopy(
     workingCopy.id !== `shared:${project.id}` ||
     workingCopy.rootPath !== project.hostPath ||
     workingCopy.repositoryRoot !== undefined ||
-    workingCopy.state !== "ready" ||
+    !["ready", "unavailable"].includes(workingCopy.state) ||
+    (workingCopy.state === "ready" && workingCopy.failure !== undefined) ||
+    (workingCopy.state === "unavailable" && !workingCopy.failure) ||
     workingCopy.branch !== undefined ||
     workingCopy.baseHead !== undefined ||
     workingCopy.branchOwned !== undefined ||
     workingCopy.branchCreationIntent !== undefined ||
     workingCopy.branchCreationReceipt !== undefined ||
-    workingCopy.cleanupReceipt !== undefined ||
-    workingCopy.failure !== undefined
+    workingCopy.cleanupReceipt !== undefined
   )) throw new Error("invalid Shared folder identity");
   const cleanupReceipt = workingCopy.cleanupReceipt;
   const validCleanupReceipt = cleanupReceipt !== undefined &&
