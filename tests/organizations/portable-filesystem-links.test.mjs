@@ -4,7 +4,7 @@ import {mkdtemp,mkdir,writeFile,symlink,readlink,readFile,rm} from 'node:fs/prom
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {inventoryWorkingFolder,exportWorkingFiles,importWorkingFiles,validateMappedWorkingLinks} from '../../apps/server/dist/portable-working-files.js';
+import {inventoryWorkingFolder,exportWorkingFiles,importWorkingFiles,importWorkingLinks,finalizeWorkingFolderMetadata,workingLinkCounts,orderWorkingRoots,validateMappedWorkingLinks} from '../../apps/server/dist/portable-working-files.js';
 
 const imported=exported=>exported.files.map(file=>{const data=Buffer.from(exported.artifacts.find(artifact=>artifact.ref===file.artifactRef).dataBase64,'base64');return {...file,data,sha256:createHash('sha256').update(data).digest('hex')};});
 test('absolute in-root symbolic targets relocate while source spelling remains evidence',async()=>{
@@ -61,11 +61,37 @@ test('all selected hardlink aliases choose earliest root originals and recreate 
     const firstExport=await exportWorkingFiles(first,firstInventory.paths,1024,firstInventory.links,undefined,undefined,undefined,roots,firstInventory);
     const secondExport=await exportWorkingFiles(second,secondInventory.paths,1024,secondInventory.links,undefined,undefined,undefined,roots,secondInventory);
     const order=orderWorkingRoots([{ref:'second',links:secondInventory.links,inventory:secondInventory,exported:secondExport,destination:destSecond},{ref:'first',links:firstInventory.links,inventory:firstInventory,exported:firstExport,destination:destFirst}]);
-    assert.deepEqual(order.map(item=>item.ref),['first','second']);
-    for(const item of order)await importWorkingFiles(item.destination,imported(item.exported),item.inventory.directories,undefined,undefined,item.links,'passive_in_root',undefined,false,{first:destFirst,second:destSecond});
+    assert.deepEqual(new Set(order.map(item=>item.ref)),new Set(['first','second']));
+    for(const item of order)await importWorkingFiles(item.destination,imported(item.exported),item.inventory.directories,undefined,undefined,item.links,'passive_in_root',undefined,true,{first:destFirst,second:destSecond},true);
+    for(const item of order)await importWorkingLinks(item.destination,item.links,{first:destFirst,second:destSecond});
+    for(const item of order)await finalizeWorkingFolderMetadata(item.destination,imported(item.exported),item.inventory.directories,undefined,item.links,undefined,workingLinkCounts(item.ref,order));
     assert.equal((await stat(path.join(destFirst,'a'))).ino,(await stat(path.join(destSecond,'alias-a'))).ino);
     assert.equal((await stat(path.join(destFirst,'alias-b'))).ino,(await stat(path.join(destSecond,'b'))).ino);
     assert.equal(await readFile(path.join(destSecond,'b'),'utf8'),'second inode');
     await verifyWorkingHardlinkCapture(capture);
   }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('two-phase restore preserves valid cyclic root dependencies and retained baseline files',async()=>{
+ const {stat,readdir}=await import('node:fs/promises');
+ const root=await mkdtemp(path.join(tmpdir(),'portable-cyclic-root-links-'));
+ try{
+  const destinations={a:path.join(root,'a'),b:path.join(root,'b')};
+  const roots=[
+   {ref:'a',links:[{kind:'hardlink',path:'from-b',target:'b-original',targetRootRef:'b'}],file:{path:'a-original',data:Buffer.from('a retained')}},
+   {ref:'b',links:[{kind:'hardlink',path:'from-a',target:'a-original',targetRootRef:'a'}],file:{path:'b-original',data:Buffer.from('b retained')}},
+  ];
+  const ordered=orderWorkingRoots(roots),files=Object.fromEntries(roots.map(item=>[item.ref,[{...item.file,sha256:createHash('sha256').update(item.file.data).digest('hex')}]]));
+  for(const item of ordered)await importWorkingFiles(destinations[item.ref],files[item.ref],[],undefined,undefined,item.links,'passive_in_root',undefined,true,destinations,true);
+  for(const item of ordered)await importWorkingLinks(destinations[item.ref],item.links,destinations);
+  for(const item of ordered)await finalizeWorkingFolderMetadata(destinations[item.ref],files[item.ref],[],undefined,item.links,undefined,workingLinkCounts(item.ref,roots));
+  assert.equal((await stat(path.join(destinations.a,'from-b'))).ino,(await stat(path.join(destinations.b,'b-original'))).ino);
+  assert.equal((await stat(path.join(destinations.b,'from-a'))).ino,(await stat(path.join(destinations.a,'a-original'))).ino);
+  const fresh=path.join(root,'fresh'),backupRoot=path.join(fresh,'.ponderosa-import-backups');
+  await mkdir(fresh);await mkdir(backupRoot);await writeFile(path.join(fresh,'alias'),'baseline retained');
+  await importWorkingLinks(fresh,[{kind:'symlink',path:'alias',target:'missing'}],undefined,{backupRoot});
+  assert.equal(await readlink(path.join(fresh,'alias')),'missing');
+  const backups=(await readdir(backupRoot)).filter(name=>!name.endsWith('.path.json'));
+  assert.equal(backups.length,1);assert.equal(await readFile(path.join(backupRoot,backups[0]),'utf8'),'baseline retained');
+ }finally{await rm(root,{recursive:true,force:true});}
 });

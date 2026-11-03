@@ -32,13 +32,10 @@ export function orderWorkingRoots<T extends {ref:string;links:readonly PortableW
   const byRef=new Map(roots.map(root=>[root.ref,root])),done=new Set<string>(),pending=new Set<string>(),ordered:T[]=[];
   const visit=(root:T)=>{
     if(done.has(root.ref))return;
-    if(pending.has(root.ref))throw new Error('Cyclic cross-root hardlink originals');
+    if(pending.has(root.ref))throw new Error('Cyclic selected working-root nesting');
     pending.add(root.ref);
     for(const boundary of nesting.filter(boundary=>boundary.childRootRef===root.ref)){const parent=byRef.get(boundary.parentRootRef);if(!parent)throw Error('Nested child requires its included parent root');visit(parent);}
-    for(const link of root.links)if(link.kind==='hardlink'&&link.targetRootRef){
-      const original=byRef.get(link.targetRootRef);if(!original)throw new Error('Hardlink original lacks included root closure');
-      visit(original);
-    }
+    for(const link of root.links)if(link.kind==='hardlink'&&link.targetRootRef&&!byRef.has(link.targetRootRef))throw new Error('Hardlink original lacks included root closure');
     pending.delete(root.ref);done.add(root.ref);ordered.push(root);
   };
   for(const root of roots)visit(root);
@@ -247,11 +244,32 @@ async function placeWorkingLinks(destination:string,links:readonly PortableWorki
       }
     }
 }
+async function preserveWorkingBaseline(destination:string,relative:string,freshRoot?:{backupRoot:string}):Promise<void>{
+    if(freshRoot){
+        const target=path.join(destination,relative);
+        let stat;try{stat=await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+        if(stat){
+          if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Fresh baseline path is not a regular original');
+          // Preserve even racing local bytes; never unlink a displaced baseline.
+          const backup=path.join(freshRoot.backupRoot,randomUUID());
+          await fs.writeFile(backup+'.path.json',JSON.stringify({path:relative}),{flag:'wx',mode:0o600});
+          await fs.rename(target,backup);
+        }
+      }
+
+}
+
 /** Existing imported root only. A collision preserves the observed entry and refuses, never overwrites it. */
-export async function importWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations?:Readonly<Record<string,string>>):Promise<void>{
+export async function importWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations?:Readonly<Record<string,string>>,freshRoot?:{backupRoot:string}):Promise<void>{
  if(await fs.realpath(destination)!==destination)throw new Error('Imported link root changed');
  for(const link of links){portableLinkTarget(link);if(link.targetRootRef&&!rootDestinations?.[link.targetRootRef])throw new Error('Mapped link target root is missing');}
- await placeWorkingLinks(destination,links,rootDestinations,async()=>{});
+ const identity=await fs.lstat(destination,{bigint:true});
+ if(!identity.isDirectory()||identity.isSymbolicLink())throw new Error('Imported link root is not a directory');
+ if(freshRoot&&(freshRoot.backupRoot!==path.join(destination,'.ponderosa-import-backups')||await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot))throw new Error('Fresh link recovery folder changed');
+ const check=async()=>{const current=await fs.lstat(destination,{bigint:true});if(!current.isDirectory()||current.dev!==identity.dev||current.ino!==identity.ino||await fs.realpath(destination)!==destination)throw new Error('Imported link root identity changed');};
+ await check();
+ await placeWorkingLinks(destination,links,rootDestinations,async relative=>{await check();await preserveWorkingBaseline(destination,relative,freshRoot);});
+ await check();
 }
 
 export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[],cyclicLinks:'refuse'|'passive_in_root'='refuse',metadataActivation?:ReviewedMetadataActivation,deferMetadataApplication=false,rootDestinations?:Readonly<Record<string,string>>,deferLinks=false):Promise<void>{
@@ -283,19 +301,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     await fs.mkdir(freshRoot.backupRoot,{mode:0o700});
     if(await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot)throw new Error('Recovery folder changed');
   }else await fs.mkdir(destination,{mode:0o700});
-  const preserveBaseline=async(relative:string)=>{
-    if(freshRoot){
-        const target=path.join(destination,relative);
-        let stat;try{stat=await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-        if(stat){
-          if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Fresh baseline path is not a regular original');
-          // Preserve even racing local bytes; never unlink a displaced baseline.
-          const backup=path.join(freshRoot.backupRoot,randomUUID());
-          await fs.writeFile(backup+'.path.json',JSON.stringify({path:relative}),{flag:'wx',mode:0o600});
-          await fs.rename(target,backup);
-        }
-      }
-  };
+  const preserveBaseline=(relative:string)=>preserveWorkingBaseline(destination,relative,freshRoot);
   try{
     for(const folder of [...directories].sort((a,b)=>a.path.split('/').length-b.path.split('/').length)){
       const relative=portableWorkingPath(folder.path);

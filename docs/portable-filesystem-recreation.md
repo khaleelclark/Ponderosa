@@ -134,3 +134,5 @@ establishes inode-only metadata dispatch and the FIFO user-namespace prohibition
 [POSIX ACL implementation](https://raw.githubusercontent.com/torvalds/linux/v7.0/fs/posix_acl.c)
 defines non-directory/default and access ACL semantics.
 The added FIFO ACL round-trip regression is unexecuted pending combined validation.
+
+Generic Agent and Branch imports both stage every regular original before any root's links. Only nesting imposes parent-first root order; cross-inode root dependency cycles remain supported. Deferred live links reuse baseline retention, so displaced fresh-checkout files survive in the exact import backup folder.
