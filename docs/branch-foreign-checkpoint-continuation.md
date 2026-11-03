@@ -189,7 +189,7 @@ completed/failed children are immutable prefix data. Latest source owner evidenc
 is independently replayed, including terminal latest roots. The selected child
 inventory comes from the historical checkpoint boundary, never from later work.
 
-This tree family supports serial human workflow gates and excludes issued/native/unknown work, resources,
+This tree family supports serial and parallel human workflow gates and excludes issued/native/unknown work, resources,
 custody, actions, bundles, Agents, execution-owned Chats, secrets, automatic,
 async/EXIT, changed historical definitions/configuration and external restoration.
 Supported held re-exports and admitted continuation generations retain exact proof
@@ -270,7 +270,7 @@ readers remain unchanged. Repeated round trips, suffix dispatch, rendered recove
 and rollback are source-reviewed behavior only until separately executed.
 
 
-### Serial human gates in Call trees
+### Human gates in serial and parallel Call trees
 
 Manual synchronous effect-free Script/Call owners may contain ordinary
 `human_gate` steps, including a root gate before the first child is admitted.
@@ -290,7 +290,24 @@ notification ownership. Held re-exports and admitted continuation generations us
 the same bounded retained lineage and canonical replay. All owners and gate
 notifications are written in the existing acceptance transaction.
 
-Parallel gate/Call combinations, canceled serial gates, recovery-purpose gates,
+Fork/Map/Join owners use the existing parallel frontier and audit replay for
+ordinary workflow gates alongside Calls. Selected and latest owner cuts independently
+validate exact fork selections, Map items, Join arrivals, state seals and gate
+evidence. Selected canceled gates require authentic path/Join cancellation and
+matching gate/item cancellation events; a terminal child is never cancellation
+proof. Active parallel paths remain running while only dependent gate/Call paths
+wait. Fresh pending notifications and normal later responses use the same atomic
+acceptance and original-key recovery paths as serial gates. Completed prefix
+decisions are copied once; suffix gates and genuine later children follow normal
+workflow execution. Held and admitted repeated generations retain these proofs.
+Original-key recovery after a selected pending gate is canceled additionally
+replays the complete current destination tree through the shared composer,
+including the mapped prefix, real child contexts and causal Join/item/gate
+cancellation events and attempt fences. Missing destination audit refuses recovery.
+This proof requires a supported quiescent frontier; an in-flight Script process or
+unknown outcome does not qualify, and never authorizes a replacement command.
+
+Canceled serial gates, recovery-purpose gates,
 local rewinds with gates, issued/resource/unknown/effectful work, automatic and
 async/EXIT trees remain refused. Standalone serial/parallel gate behavior is
 unchanged. Source review does not qualify live gate notifications, round trips,

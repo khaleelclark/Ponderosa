@@ -51,7 +51,7 @@ function checkpoint(o:Row):Row|undefined {
   const v=o.invocation;return {invocationId:v.id,mode:v.mode,closing:true,invocation:{id:v.id,ordinal:v.ordinal,mode:v.mode,state:v.state,primaryOutcome:v.primaryOutcome,interruptionId:v.interruptionId}};
 }
 /** Quiescent Script/control owners only; unfinished calls retain their waiting frontier. */
-export function encodeScriptTreeContinuation(db:Database.Database,id:string,selected:Selected,issuedResources=false):Row|undefined {
+function captureScriptTreeContinuation(db:Database.Database,id:string,selected:Selected,issuedResources=false,latest=false):Row|undefined {
     if(selected.execution![0]?.parent_execution_id)return;
     const ids=db.prepare(`WITH RECURSIVE tree(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN tree p ON e.parent_execution_id=p.id) SELECT id FROM tree ORDER BY id`).all(id) as Row[];
     // An unstarted reservation owns no released Chat/import effect or external identity.
@@ -59,7 +59,14 @@ export function encodeScriptTreeContinuation(db:Database.Database,id:string,sele
     const owners=ids.map(row=>owner(db,row.id,row.id===id?selected:selectBranchUnit(db,row.id)));
     if(owners.some(row=>!row))return;
     const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[],...(issuedResources?{issuedResources:true}:{})};
-    const provenance=compose(db,c,true);return provenance?{...c,provenance}:undefined;
+    const provenance=compose(db,c,true,undefined,undefined,0,latest);return provenance?{...c,provenance}:undefined;
+}
+export function encodeScriptTreeContinuation(db:Database.Database,id:string,selected:Selected,issuedResources=false):Row|undefined {
+  return captureScriptTreeContinuation(db,id,selected,issuedResources);
+}
+/** Receipt recovery proves destination cancellation through the same complete tree replay. */
+export function scriptTreeLatestSupported(db:Database.Database,id:string):boolean {
+  try {return captureScriptTreeContinuation(db,id,selectBranchUnit(db,id),false,true)!==undefined;}catch{return false;}
 }
 function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>,encoding=false,evidence?:Map<string,BranchPortableRuntimeOwner>,latest=false):boolean {
   const owners=c.owners as Row[];
@@ -91,7 +98,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     const issuedResource=c.issuedResources===true;
     const workflowGates=definition.steps.some(s=>s.kind==='human_gate');
-    if(workflowGates&&(c.provenance.some((p:Row)=>p.lineageId)||o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))||issuedResource||hasParallelControls(definition)||o.configuration.checkpointMode!=='sync'||definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
+    if(workflowGates&&(c.provenance.some((p:Row)=>p.lineageId)||o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))||issuedResource||o.configuration.checkpointMode!=='sync'||definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
     if(issuedResource&&(hasParallelControls(definition)||o.selected.resources.length!==1||o.configuration.checkpointMode==='exit'))return false;
     const resourceFrontier=issuedResource?issuedResourceFrontierSupported(o.selected,definition,o.hostDependencies,false,true):resourceReservationSupported(o.selected,definition);
     if(issuedResource&&!resourceFrontier)return false;

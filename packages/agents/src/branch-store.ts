@@ -22,7 +22,7 @@ import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {TREE_SCHEMA,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
+import {TREE_SCHEMA,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts,readBranchLiveOutputs} from './branch-run-status.js';
@@ -695,7 +695,7 @@ export class BranchStore {
       const branch=this.getBranch(id);if(!branch?.enabled||!branch.versionId||!branch.bindingRevisionId||this.row('SELECT deleting FROM branches WHERE id=?',id)?.deleting)throw Error('Enable every current Call destination before review');
       if(branch.chatId)this.chat(branch.chatId);
       const definition=this.version(id,branch.versionId)!.definition,bindings=this.localConfiguration(id)!,configuration=this.configuration(id),{secretBindings,...nonsecret}=configuration;
-      if(definition.trigger.kind!=='manual'||configuration.checkpointMode!=='sync'||!scriptDefinitionSupported(definition,true)||definition.steps.some(s=>s.kind==='human_gate')&&definition.controls.some(c=>!['condition','route'].includes(c.kind))||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret synchronous Script/Call family');
+      if(definition.trigger.kind!=='manual'||configuration.checkpointMode!=='sync'||!scriptDefinitionSupported(definition,true)||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret synchronous Script/Call family');
       for(const o of all.filter(o=>destination(o.sourceBranchId)===id)){
         const get=(kind:string)=>JSON.parse(o.facts.find(f=>f.kind===kind)!.json);
         if(payloadHash(definition)!==payloadHash(get('definition'))||stableJson(nonsecret)!==stableJson(get('configuration').configuration))throw Error('Current tree definition/configuration differs from source');
@@ -748,6 +748,7 @@ export class BranchStore {
   private foreignTreeReceipt(receipt:import('@ponderosa/core').BranchForeignContinuationReceipt):import('@ponderosa/core').BranchForeignContinuationReceipt {
     const review=receipt.review,{reviewSha256,...value}=review,cut=this.foreignTreeCut(receipt.branchId,review.selection),c=cut.c;
     if(reviewSha256!==this.foreignReviewHash(value)||receipt.inputSha256!==payloadHash({...review.selection,commandKey:receipt.commandKey,reviewSha256,acceptCurrentAuthority:true})||stableJson(cut.saved.receipt)!==stableJson(review.nativeMaps)||cut.saved.data.sha256!==review.manifestSha256||cut.owner.sha256!==review.ownerSha256||stableJson(cut.snapshot)!==stableJson(review.checkpoint)||!receipt.treeOwners||stableJson(Object.keys(receipt.treeOwners).sort())!==stableJson(c.owners.map((o:Row)=>o.executionId).sort())||!treeIdMapSupported(c.owners,receipt.idMap,c.rootExecutionId,receipt.executionId)||stableJson(receipt.admission)!==stableJson(receipt.treeOwners[c.rootExecutionId]?.admission))throw Error('Foreign tree receipt/source lineage differs');
+    let canceledGate=false;
     for(const o of c.owners){
       const e=o.selected.execution[0],mapped=receipt.treeOwners[o.executionId]!,choice=review.tree!.owners.find(p=>p.sourceExecutionId===o.executionId),pins=review.tree!.branches.find(b=>b.branchId===choice?.branchId),next=this.row('SELECT * FROM branch_executions WHERE id=?',mapped.executionId),parent=e.parent_execution_id?receipt.idMap[e.parent_execution_id]:null,attempt=e.parent_attempt_id?receipt.idMap[e.parent_attempt_id]:null;
       if(!pins||!next||mapped.executionId!==receipt.idMap[o.executionId]||next.branch_id!==pins.branchId||next.version_id!==pins.versionId||next.binding_revision_id!==pins.bindingRevisionId||next.configuration_json!==stableJson(pins.configuration)||!next.admitted_at||next.admission_json!==stableJson(mapped.admission)||next.parent_execution_id!==parent||next.parent_attempt_id!==attempt||next.call_depth!==e.call_depth||next.depth_ceiling!==e.depth_ceiling||next.input_text!==e.input_text||next.input_hash!==(attempt?payloadHash({parentAttempt:attempt,input:e.input_text}):e.input_hash)||next.admission_source!==(parent?'call':'manual')||next.occurrence_key!==(attempt?`call:${attempt}`:`foreign-continuation:${receipt.importedExecutionId}:${payloadHash(receipt.commandKey)}`)||next.provenance_json!==stableJson(parent?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:{source:'foreign_tree_continuation',importedExecutionId:receipt.importedExecutionId,reviewSha256,commandKey:receipt.commandKey}))throw Error('Foreign tree fresh owner acceptance/admission differs');
@@ -758,7 +759,9 @@ export class BranchStore {
       if(['completed','failed'].includes(e.state)&&(next.state!==e.state||next.output_text!==e.output_text))throw Error('Foreign tree terminal prefix differs');
       const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,receipt.idMap[id]!])),o.executionId,next.id);
       this.verifyForeignPrefix(next,restored,choice?.sharedState);
+      canceledGate ||= restored.gates!.some(g=>g.state==='waiting'&&this.row('SELECT state FROM branch_gates WHERE id=?',g.id)?.state==='canceled');
     }
+    if(canceledGate&&!scriptTreeLatestSupported(this.sqlite,receipt.executionId))throw Error('Destination tree gate cancellation lacks complete canonical replay');
     return receipt;
   }
   private foreignCut(branchId:string,selection:import('@ponderosa/core').BranchForeignContinuationSelection) {
