@@ -27,14 +27,14 @@ function codexReviewToml(value:string):boolean {
 function claudeOutputStyle(value:string):boolean {
   return /^\.claude\/output-styles\/[^/]+\.md$/.test(value);
 }
-const claudeMemoryRoots=['.claude/agent-memory','.claude/agent-memory-local'];
+const claudeNamedRoots=['.claude/agent-memory','.claude/agent-memory-local','.claude/skills'];
 function claudeOpaqueOriginal(value:string,directory=false):boolean {
   const parts=value.split('/'),family=parts.slice(0,2).join('/');
-  const minimum=claudeMemoryRoots.includes(family)?(directory?3:4):family==='.claude/hooks'?3:Infinity;
+  const minimum=claudeNamedRoots.includes(family)?(directory?3:4):family==='.claude/hooks'?3:Infinity;
   return parts.length>=minimum&&parts.slice(2).every(part=>!!part&&!part.startsWith('.')&&!/[\\\0]/.test(part))&&!credentialPath(value);
 }
 function providerPath(value:string):boolean {
-  return codexReviewToml(value)||claudeOutputStyle(value)||claudeOpaqueOriginal(value)||['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|skills|rules)|codex\/(?:skills|rules))\//.test(value);
+  return codexReviewToml(value)||claudeOutputStyle(value)||claudeOpaqueOriginal(value)||['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|rules)|codex\/(?:skills|rules))\//.test(value);
 }
 function credentialPath(value:string):boolean {
   return value.split('/').some(part=>['.ssh','.aws','.gnupg','browser-profiles'].includes(part.toLowerCase())||/^\.env(?:\.|$)/i.test(part)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(part));
@@ -1322,7 +1322,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
   let entries=0,outputStyleOwner:bigint|undefined,opaqueOwner:bigint|undefined;
   const walk=async(relative:string,opaque=false):Promise<void>=>{
     const target=path.join(root,relative);
-    let stat;try{stat=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!opaque||claudeMemoryRoots.includes(relative)||relative==='.claude/hooks'))return;throw error;}
+    let stat;try{stat=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!opaque||claudeNamedRoots.includes(relative)||relative==='.claude/hooks'))return;throw error;}
     if(!stat.isDirectory()||await fs.realpath(target)!==target)throw new Error('Custom provider configuration must have canonical directory parents');
     if(opaque){
       opaqueOwner??=(await fs.lstat(root,{bigint:true})).uid;
@@ -1335,14 +1335,14 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     for(const entry of (await fs.readdir(target,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>1000)throw new Error('Custom provider configuration inventory exceeds 1000 entries');
       const name=`${relative}/${entry.name}`;
-      if(opaque&&(!claudeOpaqueOriginal(name,entry.isDirectory())||claudeMemoryRoots.includes(relative)&&!entry.isDirectory()))throw new Error('Opaque provider originals require contained regular text files; Agent memory also requires named Agent directories');
+      if(opaque&&(!claudeOpaqueOriginal(name,entry.isDirectory())||claudeNamedRoots.includes(relative)&&!entry.isDirectory()))throw new Error('Opaque provider originals require contained regular text files; memory and skills also require named directories');
       if(relative==='.claude/output-styles'&&(!entry.isFile()||!claudeOutputStyle(name)||name.includes('\\')||credentialPath(name)))throw new Error('Output styles require top-level regular noncredential Markdown originals');
       if(relative==='.codex/agents'&&(!entry.isFile()||!codexReviewToml(name)||name.includes('\\')||credentialPath(name)))throw new Error('Custom Codex agents require top-level regular noncredential TOML originals');
       if(entry.isDirectory())await walk(name,opaque);else if(entry.isFile())selected.push(name);else throw new Error('Custom provider configuration links/special nodes require separate recreation');
     }
     const after=await fs.lstat(target,{bigint:true});if(stat.ino!==after.ino||stat.mtimeNs!==after.mtimeNs||stat.ctimeNs!==after.ctimeNs)throw new Error('Custom provider configuration inventory changed');
   };
-  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/skills','.claude/rules','.codex/skills','.codex/rules','.codex/agents','.claude/output-styles',...claudeMemoryRoots,'.claude/hooks']:[]))await walk(directory,claudeMemoryRoots.includes(directory)||directory==='.claude/hooks');
+  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/rules','.codex/skills','.codex/rules','.codex/agents','.claude/output-styles',...claudeNamedRoots,'.claude/hooks']:[]))await walk(directory,claudeNamedRoots.includes(directory)||directory==='.claude/hooks');
   for(const relative of selection.harness?selected:[]){
     const target=path.join(root,relative);
     let originalFile;try{originalFile=await regularOriginal(target,1024*1024,claudeOpaqueOriginal(relative)?opaqueOwner:claudeOutputStyle(relative)?outputStyleOwner:undefined);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&!relative.startsWith('.codex/agents/')&&!claudeOutputStyle(relative)&&!claudeOpaqueOriginal(relative))continue;throw error;}

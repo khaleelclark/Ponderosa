@@ -1279,3 +1279,49 @@ and caps need no change. Other provider families remain unchanged, including
 memory/output-style/Codex/TOML/Git/settings behavior. Existing sensitive-data
 warning and independent-writer limits remain. Source-only review; no native
 execution/equivalence, round-trip, atomicity or whole-portability acceptance.
+
+### Inactive project Claude skill-support originals
+
+Explicit `harness: true` selection carries selected-root
+`.claude/skills/<skill>/...` regular UTF-8 originals, including `SKILL.md` and
+bounded recursive supporting text. The shared live/import opaque classification
+requires a nonempty non-dot skill directory followed by a contained file; files
+directly in `.claude/skills` refuse. No `SKILL.md` presence, frontmatter or manifest
+parser is required for this inactive data transport.
+
+Skill text now retains exact accepted bytes, including BOM, regardless of
+extension. JSON support files are no longer parsed, scrubbed or reformatted as
+provider settings. Existing known-secret inspection still checks recognizable
+and embedded credentials and refuses them instead of rewriting skill originals;
+live `removedSecretFields` remains false. Actual settings JSON retains its
+existing structural secret removal. Arbitrary concealed secrets and sensitive
+prose remain outside the inspection guarantee.
+
+The existing owner checks now cover every traversed skill directory and original
+against the selected-root owner. Canonical parents, single-link no-follow bounded
+reads, inventory/read drift checks and shared 1,000-entry / 1 MiB original /
+32 MiB aggregate limits remain. Dot/empty/escaping/null/backslash/credential paths,
+links/special nodes, foreign owners, invalid UTF-8, exceeded bounds and imported
+file/ancestor collisions refuse. Only absent family roots are optional;
+discovered directories/files disappearing fail with source bytes preserved.
+Binary resources remain unsupported; this is not full native skill preservation.
+Empty directories and original executable mode/mtime remain unrepresented by the
+existing file DTO and are not recreated.
+
+The [official skills documentation](https://code.claude.com/docs/en/skills#add-supporting-files)
+describes named project skill directories with `SKILL.md`, reference files and
+support scripts. This transport captures only selected-root contained text.
+It does not interpret SKILL/frontmatter/Markdown/JSON/script instructions or
+expand references, imports, paths or environment variables. No home, ancestor,
+managed, nested-project, session/history/credential discovery, native binding,
+installation, activation, executable chmod, reload, grants, spawning, script/
+skill/provider execution or source write occurs.
+
+Shared callers and the generic DTO/schema/version/dependencies/caps are unchanged.
+Working export validates the manifest; import parses it before numbered mode0600
+nonexecutable `.review` copies with exact original path/removal metadata.
+Retained-original re-export validates and returns original manifest bytes, never
+generated copies. Other provider families, including Claude memory/hooks/output
+styles and Codex/TOML/Git/settings, retain their behavior. Existing sensitive-data
+warning and independent-writer limits remain. Source review only: no tests,
+native equivalence, round-trip, atomicity or whole-portability acceptance.

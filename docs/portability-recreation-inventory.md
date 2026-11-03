@@ -324,3 +324,32 @@ the existing DTO and are not recreated. See the
 [contract and primary reference](git-provider-user-data-transport.md#inactive-project-claude-hook-support-originals).
 No caller/DTO/schema/version/dependency/cap change or native equivalence,
 round-trip, independent-writer atomicity or whole-portability acceptance is claimed.
+
+### Project Claude skill-support text originals
+
+Explicit harness selection carries selected-root `.claude/skills/<skill>/...`
+regular UTF-8 originals and bounded supporting subdirectories through shared
+opaque live/import classification. A named non-dot skill directory and contained
+file are required; root-level files refuse. No mandatory `SKILL.md` or frontmatter
+parser is introduced. Exact accepted bytes including BOM survive regardless of
+extension; JSON support text is no longer rewritten as settings. Known-secret
+inspection refuses recognizable/embedded credentials instead, while actual
+settings JSON keeps structural secret removal. Sensitive prose may still remain.
+
+Traversed directories/files require selected-root ownership, canonical parents,
+single-link no-follow bounded reads and existing inventory/read drift checks.
+Malformed/dot/escaping/null/backslash/credential paths, links/special nodes,
+foreign owners, invalid UTF-8, imported file/ancestor collisions and exceeded
+1,000-entry / 1 MiB original / 32 MiB aggregate limits refuse. Only absent family
+roots are optional; discovered disappearance fails. Binary resources remain an
+unsupported gap. Empty directories and original executable mode/mtime remain
+outside the existing DTO.
+
+No reference chasing, SKILL/frontmatter/JSON/script interpretation, native
+binding, installation, activation, executable chmod, reload, grants, spawning,
+skill/provider execution, source writes or discovery outside the selected root
+occurs. Existing numbered mode0600 nonexecutable review copies retain exact
+path/removal metadata; only validated original manifest bytes supply re-export.
+See the [contract and primary reference](git-provider-user-data-transport.md#inactive-project-claude-skill-support-originals).
+No caller/DTO/schema/version/dependency/cap changes or native equivalence,
+round-trip, independent-writer atomicity or whole-portability acceptance is claimed.
