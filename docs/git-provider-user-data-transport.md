@@ -276,15 +276,26 @@ as bytes or explicit null absence for each retained pack; a pack with neither ha
 no retention record. Raw capture also observes missing companions for every pack.
 
 Required `packRetentionReview` records retain the source pack checksum identity,
-exact pack and v2 index bytes, exact companion bytes, and index-ordered object IDs
+exact pack and v1/v2 index bytes, exact companion bytes, and index-ordered object IDs
 with unsigned epoch-second mtimes or null when the timestamp companion is absent.
 The shared validator independently derives and compares that mapping on live
 export, import, recreation and retained-original re-export. Exact declared
 SHA-1/SHA-256 width, canonical base64, pack/header/count/trailer/self-checksum,
-v2 index fanout/sorted IDs/offsets/CRCs/trailer/self-checksum and complete packed
-entry boundaries must agree. Each packed entry is inflated within a bound and
+v1/v2 index fanout/sorted IDs/offsets/trailer/self-checksum (plus exact v2 CRCs)
+and complete packed entry boundaries must agree. Each packed entry is inflated within a bound and
 compared with the captured hash/secret/graph-verified canonical object, including
 unreachable objects. No missing or previously pruned object is invented.
+
+One shared decoder reads original v1 interleaved offset/OID entries and v2
+separate OID/CRC/offset tables on capture and validation. Both use the declared
+SHA-1 or SHA-256 width, as specified by [pack-format](https://git-scm.com/docs/pack-format#_original_version_1_pack_idx_files_have_the_following_format)
+and [Git v2.54.0's hash-width-aware `load_idx` reader](https://github.com/git/git/blob/v2.54.0/packfile.c#L178-L251). Exact length, sorted unique
+OIDs, cumulative fanout and pack/index checksums are required. V1 has no CRC
+table: absence is explicit, never a fabricated zero CRC. Complete entry framing,
+zlib consumption, pack checksum and canonical object proof still apply; v2 CRCs
+remain mandatory, including a stored zero CRC. A recognized index signature with
+an unsupported version refuses without falling back to v1. Malformed/mixed
+layouts, duplicate offsets and out-of-pack offsets refuse.
 
 Supported [MTME v1](https://git-scm.com/docs/pack-format#_pack_mtimes_files_have_the_format)
 requires exact magic/version/declared hash ID, network-order length/count, index
@@ -294,7 +305,7 @@ deltas and REF deltas to earlier or later entries in the same complete pack are
 supported, including mixed delta chains. An iterative dependency walk checks each
 complete indexed base before its dependent entry, without repeated expansion;
 self-references, cycles and external or missing bases refuse even when a matching
-canonical object exists outside the pack. V1/large-offset index forms and unsupported
+canonical object exists outside the pack. V2 large-offset index forms and unsupported
 MTME forms refuse; this is not universal pack/cruft support. Delta instructions
 validate original/target sizes, copy/insert ranges, reserved opcodes and complete
 output. No external base lookup or native index command is used for this check.
@@ -749,7 +760,7 @@ still requires separate human review/action.
 | `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
 | `git.shallowReview.{path,source,dataBase64}` | Required exact common-repository `shallow` bytes or explicit null absence (empty-present stays distinct). Bounded canonical ASCII/OID validation requires captured verified commits; only those commit parents may be missing. Recreated exclusively as `.git/shallow` inside the new separate review repository, with original bytes retained for re-export. No native working-root adoption, fetch/deepening, grafts or partial/promisor support; source-only, runtime unverified. |
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
-| `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
+| `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
 | `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. JSON known secret fields are removed structurally. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |

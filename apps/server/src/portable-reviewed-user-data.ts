@@ -300,6 +300,30 @@ function reflogPath(value:string):void {
   if(value!=='HEAD')refName(value);
 }
 
+/** Decode either original index layout without guessing missing CRCs or hash widths. */
+function decodeRetentionPackIndex(idx:Buffer,format:'sha1'|'sha256',packChecksum:Buffer):Array<{oid:string;offset:number;crc:number|null}> {
+  const width=format==='sha1'?20:32;
+  const fail=():never=>{throw new Error('Unsupported or inconsistent Git retention pack index; preserve originals');};
+  if(idx.length<1024+2*width||idx.length>1024*1024||packChecksum.length!==width)fail();
+  const v2=idx.readUInt32BE(0)===0xff744f63;
+  if(v2&&idx.readUInt32BE(4)!==2)fail();
+  const fanoutStart=v2?8:0,names=fanoutStart+1024,count=idx.readUInt32BE(fanoutStart+1020);
+  if(count>10000||idx.length!==names+count*(width+(v2?8:4))+2*width||!idx.subarray(-2*width,-width).equals(packChecksum)||!createHash(format).update(idx.subarray(0,-width)).digest().equals(idx.subarray(-width)))fail();
+  safeText(idx.toString('latin1'),'Git retention pack index');
+  const entries:Array<{oid:string;offset:number;crc:number|null}>=[],fanout=Array<number>(256).fill(0);let last='';
+  for(let i=0;i<count;i++){
+    const name=v2?names+i*width:names+i*(width+4)+4,oid=idx.subarray(name,name+width).toString('hex');
+    if(oid<=last)fail();last=oid;
+    const bucket=parseInt(oid.slice(0,2),16);fanout[bucket]=fanout[bucket]!+1;
+    const offset=idx.readUInt32BE(v2?names+count*(width+4)+i*4:names+i*(width+4));
+    // All retained packs fit below 32 MiB; v2 large-offset encodings stay refused.
+    if(offset<12||offset>=limit)fail();
+    entries.push({oid,offset,crc:v2?idx.readUInt32BE(names+count*width+i*4):null});
+  }
+  let cumulative=0;for(let i=0;i<256;i++){cumulative+=fanout[i]!;if(idx.readUInt32BE(fanoutStart+i*4)!==cumulative)fail();}
+  return entries;
+}
+
 /** Verify retention against exact bounded pack/index originals, independently of native Git. */
 function validatePackRetention(records:ReviewedGitUserData['packRetentionReview'],format:'sha1'|'sha256',objects:Map<string,GitObject>,availableBytes:number):void {
   if(!Array.isArray(records)||records.length>1000)throw new Error('Invalid Git pack retention inventory');
@@ -316,20 +340,14 @@ function validatePackRetention(records:ReviewedGitUserData['packRetentionReview'
     if(typeof record.packOid!=='string'||!new RegExp('^[a-f0-9]{'+width*2+'}$').test(record.packOid)||record.packOid<=previous||record.keepDataBase64===null&&record.mtimesDataBase64===null)fail();previous=record.packOid;
     const pack=raw(record.packDataBase64,limit),idx=raw(record.indexDataBase64,1024*1024);
     if(pack.length<12+width||pack.toString('latin1',0,4)!=='PACK'||![2,3].includes(pack.readUInt32BE(4))||!checksum(pack)||pack.subarray(-width).toString('hex')!==record.packOid)fail();
-    if(idx.length<1032+2*width||idx.readUInt32BE(0)!==0xff744f63||idx.readUInt32BE(4)!==2||!checksum(idx)||!idx.subarray(-2*width,-width).equals(pack.subarray(-width)))fail();
-    safeText(idx.toString('latin1'),'Git retention pack index');
-    const count=idx.readUInt32BE(1028),names=1032,crcs=names+count*width,offsets=crcs+count*4;
-    // The raw pack bound is below 2 GiB; large-offset and v1 index forms stay refused.
-    if(count>10000||pack.readUInt32BE(8)!==count||idx.length!==offsets+count*4+2*width||!Array.isArray(record.objects)||record.objects.length!==count)fail();
-    const entries:Array<{oid:string;offset:number;crc:number;object:GitObject}>=[];let last='';const fanout=Array<number>(256).fill(0);
-    for(let i=0;i<count;i++){
-      const oid=idx.subarray(names+i*width,names+(i+1)*width).toString('hex'),object=objects.get(oid),entry=record.objects[i]!;
+    const decoded=decodeRetentionPackIndex(idx,format,pack.subarray(-width)),count=decoded.length;
+    if(pack.readUInt32BE(8)!==count||!Array.isArray(record.objects)||record.objects.length!==count)fail();
+    const entries=decoded.map((item,i)=>{
+      const object=objects.get(item.oid),entry=record.objects[i]!;
       fields(entry,['oid','mtime']);
-      if(oid<=last||!object||entry.oid!==oid)fail();last=oid;
-      const bucket=parseInt(oid.slice(0,2),16);fanout[bucket]=fanout[bucket]!+1;
-      entries.push({oid,object:object!,offset:idx.readUInt32BE(offsets+i*4),crc:idx.readUInt32BE(crcs+i*4)});
-    }
-    let cumulative=0;for(let i=0;i<256;i++){cumulative+=fanout[i]!;if(idx.readUInt32BE(8+i*4)!==cumulative)fail();}
+      if(!object||entry.oid!==item.oid)fail();
+      return {...item,object:object!};
+    });
     if(record.keepDataBase64!==null)safeText(raw(record.keepDataBase64,1024*1024).toString('latin1'),'Git pack keep original');
     let mtimes:Buffer|undefined;
     if(record.mtimesDataBase64!==null){
@@ -343,7 +361,7 @@ function validatePackRetention(records:ReviewedGitUserData['packRetentionReview'
     for(let i=0;i<count;i++){
       const entry=ordered[i]!,end=i+1<count?ordered[i+1]!.offset:pack.length-width;
       if(entry.offset<12||entry.offset>=end||end>pack.length-width)fail();
-      if(crc32(pack.subarray(entry.offset,end))!==entry.crc)fail();
+      if(entry.crc!==null&&crc32(pack.subarray(entry.offset,end))!==entry.crc)fail();
       let cursor=entry.offset;
       const byte=()=>{if(cursor>=end)fail();return pack[cursor++]!;};
       let head=byte(),size=head&15,multiplier=16,parts=0;const type=(head>>>4)&7;
@@ -1133,10 +1151,10 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     if(packRetentionReview.some(record=>record.packOid===packOid))continue;
     const find=(suffix:string)=>before.raw.files.find(item=>item.name===stem+suffix)?.data;
     const pack=find('.pack'),idx=find('.idx');
-    if(!pack||!idx||idx.length<1032||idx.readUInt32BE(0)!==0xff744f63||idx.readUInt32BE(4)!==2)throw new Error('Pack retention requires complete supported v2 index originals');
-    const count=idx.readUInt32BE(1028),width=format==='sha1'?20:32,mtimes=find('.mtimes');
-    if(count>10000||idx.length!==1032+count*(width+8)+2*width||mtimes&&mtimes.length!==12+count*4+2*width)throw new Error('Unsupported pack retention index/timestamp layout');
-    packRetentionReview.push({packOid,packDataBase64:pack.toString('base64'),indexDataBase64:idx.toString('base64'),keepDataBase64:find('.keep')?.toString('base64')??null,mtimesDataBase64:mtimes?.toString('base64')??null,objects:Array.from({length:count},(_,i)=>({oid:idx.subarray(1032+i*width,1032+(i+1)*width).toString('hex'),mtime:mtimes?mtimes.readUInt32BE(12+i*4):null}))});
+    if(!pack||!idx)throw new Error('Pack retention requires complete pack/index originals');
+    const width=format==='sha1'?20:32,entries=decodeRetentionPackIndex(idx,format,pack.subarray(-width)),count=entries.length,mtimes=find('.mtimes');
+    if(mtimes&&mtimes.length!==12+count*4+2*width)throw new Error('Unsupported pack retention timestamp layout');
+    packRetentionReview.push({packOid,packDataBase64:pack.toString('base64'),indexDataBase64:idx.toString('base64'),keepDataBase64:find('.keep')?.toString('base64')??null,mtimesDataBase64:mtimes?.toString('base64')??null,objects:entries.map((entry,i)=>({oid:entry.oid,mtime:mtimes?mtimes.readUInt32BE(12+i*4):null}))});
   }
   packRetentionReview.sort((a,b)=>a.packOid<b.packOid?-1:a.packOid>b.packOid?1:0);
   const result:ReviewedGitUserData={version:1,format,objects,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')).map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,configurationReview,exclusions};
