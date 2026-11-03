@@ -13,7 +13,7 @@ function fixture(t){
  CREATE TABLE branch_unit_snapshots(id INTEGER PRIMARY KEY); CREATE TABLE conversations(id TEXT);
  CREATE TABLE agents(id TEXT,conversation_id TEXT,deleted_at TEXT); CREATE TABLE scheduler_runs(agent_id TEXT,status TEXT);
  CREATE TABLE agent_activations(agent_id TEXT,state TEXT);
- CREATE TABLE agent_creation_operations(id TEXT,conversation_id TEXT,status TEXT);`);
+ CREATE TABLE agent_creation_operations(id TEXT,conversation_id TEXT,status TEXT,result_json TEXT);`);
  for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql','0039_coordination_destination_group_chats.sql'])
   db.exec(readFileSync(new URL('../../packages/agents/src/schema/'+name,import.meta.url),'utf8'));
  db.exec("INSERT INTO branches VALUES('b'); INSERT INTO branch_executions VALUES('source'); INSERT INTO branch_unit_snapshots VALUES(1)");
@@ -44,7 +44,7 @@ test('review CAS, unresolved reference refusal, immutable receipt replay and ret
 });
 test('unknown import and surviving identities preserve pins; approval mutation rolls back',t=>{
  const f=fixture(t);
- f.db.exec("INSERT INTO agent_creation_operations VALUES('import','fresh','preparing')");
+ f.db.exec("INSERT INTO agent_creation_operations(id,conversation_id,status) VALUES('import','fresh','preparing')");
  assert.throws(()=>f.review(),/rolled back/);
  f.db.exec("UPDATE agent_creation_operations SET status='rolled_back'; INSERT INTO conversations VALUES('fresh')");
  assert.throws(()=>f.review(),/canonical deletion/);
