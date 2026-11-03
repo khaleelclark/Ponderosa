@@ -200,7 +200,9 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
 export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[]}):boolean {
   try {
     // Foreign evidence can validate an effect-free first-generation cut, never supply authority.
-    if(foreign&&(seed||context||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script')||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','tree_historical_rewind','restored_prefix','tree_restored_prefix'].includes(e.kind))))return false;
+    const foreignTerminal=context?.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0
+      &&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
+    if(foreign&&(seed||context&&!foreignTerminal||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script')||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','tree_historical_rewind','restored_prefix','tree_restored_prefix'].includes(e.kind))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(!context||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');

@@ -670,15 +670,15 @@ export class BranchStore {
     const fact=owner.facts.find(f=>f.kind==='checkpoint'&&f.key===selection.checkpointKey&&f.sha256===selection.checkpointSha256);
     if(!fact)throw Error('Original private selected checkpoint unavailable');
     const snapshot=JSON.parse(fact.json),c=snapshot.continuation,selected=snapshot.selected as Selected,e=selected?.execution?.[0];
-    const definition=JSON.parse(owner.facts.find(f=>f.kind==='definition')!.json) as BranchDefinition;
+    const definition=validateBranchDefinition(JSON.parse(owner.facts.find(f=>f.kind==='definition')!.json));
     const bindingFact=owner.facts.find(f=>f.kind==='bindings')!,configuration=JSON.parse(owner.facts.find(f=>f.kind==='configuration')!.json),current=JSON.parse(owner.facts.find(f=>f.kind==='frontier')!.json) as Selected;
     const origin=JSON.parse(owner.facts.find(f=>f.kind==='provenance')!.json);
     if(origin.source==='portable_runtime_data'||origin.source==='foreign_checkpoint_continuation')throw Error('Continuation of re-export generations is not supported by the first-generation Script consumer');
     if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||c?.schema!=='ponderosa.branch.script-continuation.v1'
       ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||c.checkpoint||stableJson(c.provenance??[])!==stableJson([])
       ||!e||e.id!==owner.sourceExecutionId||e.branch_id!==saved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.admission_source!=='manual'
-      ||definition.trigger.kind!=='manual'||definition.steps.some(step=>step.kind!=='script')||definition.controls.length||definition.state
-      ||configuration.configuration.checkpointMode!=='sync'||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only first-generation standalone manual sync Script cuts without secrets, controls or shared state are supported');
+      ||definition.trigger.kind!=='manual'||definition.steps.some(step=>step.kind!=='script')||definition.controls.some(control=>!['condition','route'].includes(control.kind))
+      ||configuration.configuration.checkpointMode!=='sync'||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only first-generation standalone manual sync Script cuts with declared JSON state and condition/route controls, without secrets, are supported');
     const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.length
       &&!cut.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state));
     if(!effectFree(selected)||!effectFree(current)||owner.facts.some(f=>f.kind==='custody')||owner.chatRefs.length)throw Error('Issued, unknown, bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
@@ -686,6 +686,12 @@ export class BranchStore {
       ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||c.versionHash!==payloadHash(definition)||c.bindingHash!==payloadHash(JSON.parse(bindingFact.json))||stableJson(c.configuration)!==stableJson(configuration.configuration))throw Error('Original selected checkpoint pins differ');
     const audit=owner.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json));
     if(!replayScriptCut(this.sqlite,e.id,selected,definition,c.configuration,c.audit,undefined,undefined,undefined,undefined,{owner:{...e,configuration_json:stableJson(c.configuration)},audit}))throw Error('Original selected checkpoint failed canonical Script audit replay');
+    // Independently replay latest source evidence; a valid selected prefix cannot bless a corrupted later cut.
+    const latest=current.execution![0]!;
+    if(latest.id!==e.id||latest.branch_id!==e.branch_id||latest.version_id!==e.version_id||latest.binding_revision_id!==e.binding_revision_id||latest.depth_ceiling!==e.depth_ceiling)throw Error('Latest source frontier pins differ');
+    const latestContext=['completed','failed'].includes(latest.state)?{terminal:true,terminalState:latest.state as 'completed'|'failed',descendantTraversals:0,descendantLoops:0,children:{}}:undefined;
+    if(!replayScriptCut(this.sqlite,e.id,current,definition,c.configuration,audit,undefined,undefined,latestContext,undefined,{owner:{...latest,configuration_json:stableJson(c.configuration)},audit}))throw Error('Latest source frontier failed canonical Script audit replay');
+    const sharedState=definition.state?{channels:definition.state,selected:branchSharedState(definition,selected.steps!,selected.sealedResults!),latest:branchSharedState(definition,current.steps!,current.sealedResults!)}:undefined;
     const branch=this.getBranch(branchId);
     if(!branch?.enabled||!branch.versionId||!branch.bindingRevisionId||this.row('SELECT deleting FROM branches WHERE id=?',branchId)?.deleting)throw Error('Enable a current published destination before reviewing continuation');
     if(branch.chatId)this.chat(branch.chatId);
@@ -697,7 +703,7 @@ export class BranchStore {
     // No source/native resource exists in this cut, so custody is established as not applicable.
     // Any current resource or native authority on the held owner is a refusal, never an inferred release.
     if(this.row('SELECT 1 FROM branch_resources WHERE execution_id=?',importedId))throw Error('Current custody is unknown; imported data remains held');
-    return {saved,owner,snapshot,selected,e,definition,branch,bindings,config,importedId};
+    return {saved,owner,snapshot,selected,e,definition,branch,bindings,config,importedId,sharedState};
   }
   reviewForeignContinuation(branchId:string,selection:import('@ponderosa/core').BranchForeignContinuationSelection,now=new Date().toISOString()):import('@ponderosa/core').BranchForeignContinuationReview {
     return this.unitTransaction(()=>{
@@ -705,7 +711,7 @@ export class BranchStore {
       const directoryChoices=Object.fromEntries(Object.entries(cut.bindings.directories).map(([ref,value])=>{const path=interpolateBranchText(value,cut.definition,cut.config),realpath=realpathSync(path),stat=statSync(realpath);if(!stat.isDirectory())throw Error('Current destination directory unavailable');accessSync(realpath,fsConstants.R_OK|fsConstants.X_OK);return [ref,{path,realpath,device:stat.dev,inode:stat.ino}];}));
       const value={schema:'ponderosa.branch-foreign-review.v1' as const,selection,branchId,importedExecutionId:cut.importedId,manifestSha256:cut.saved.data.sha256,ownerSha256:cut.owner.sha256,
         checkpoint:cut.snapshot,nativeMaps:cut.saved.receipt,versionId:cut.branch.versionId!,bindingRevisionId:cut.branch.bindingRevisionId!,configurationRevision:this.row('SELECT configuration_revision FROM branches WHERE id=?',branchId)!.configuration_revision,definitionSha256:payloadHash(cut.definition),bindings:cut.bindings,configuration:cut.config,
-        directoryChoices,capabilityPolicy:{effective:this.capabilityPolicies.resolveForBranch(branchId),records:[this.capabilityPolicies.get('global','ponderosa')??null,this.capabilityPolicies.get('product','branches')??null,this.capabilityPolicies.get('branch',branchId)??null]},budget,custody:'not_applicable' as const,engine:'node' as const,secretChoice:'none' as const,accessChoice:'current_destination' as const};
+        ...(cut.sharedState?{sharedState:cut.sharedState}:{}),controls:cut.definition.controls,directoryChoices,capabilityPolicy:{effective:this.capabilityPolicies.resolveForBranch(branchId),records:[this.capabilityPolicies.get('global','ponderosa')??null,this.capabilityPolicies.get('product','branches')??null,this.capabilityPolicies.get('branch',branchId)??null]},budget,custody:'not_applicable' as const,engine:'node' as const,secretChoice:'none' as const,accessChoice:'current_destination' as const};
       return {...value,reviewSha256:payloadHash({...value,budget:Object.fromEntries(Object.entries(budget).filter(([key])=>key!=='observedAt'))})};
     }).immediate();
   }
@@ -729,7 +735,16 @@ export class BranchStore {
     const restored=remapBranchFrontier(snapshot.selected,receipt.idMap,e.id,next.id);
     for(const p of restored.paths!)if(!this.row('SELECT 1 FROM branch_paths WHERE id=? AND execution_id=?',p.id,next.id))throw Error('Continuation mapped path unavailable');
     for(const step of restored.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',step.id,next.id);if(!row||['path_id','step_id','invocation','input_text'].some(key=>row[key]!==step[key])||step.state==='completed'&&(row.state!==step.state||row.result_json!==step.result_json))throw Error('Continuation mapped prefix differs');}
-    for(const attempt of restored.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',attempt.id);if(!row||['step_execution_id','number','input_hash'].some(key=>row[key]!==attempt[key])||row.request_id)throw Error('Continuation mapped attempt differs');}
+    for(const attempt of restored.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',attempt.id);if(!row||['step_execution_id','number','input_hash'].some(key=>row[key]!==attempt[key])||row.request_id||attempt.state==='completed'&&['state','result_json','fence','runtime_outcome_json'].some(key=>row[key]!==attempt[key]))throw Error('Continuation mapped attempt differs');}
+    // Prefix seals are immutable even after legitimate suffix progress. Never fold a copied update twice.
+    for(const seal of restored.sealedResults!){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=? AND execution_id=?',seal.id,next.id);if(!row||['path_id','step_execution_id','terminal_attempt_id','result_json','content_hash'].some(key=>row[key]!==seal[key]))throw Error('Continuation mapped state seal differs');}
+    if(receipt.review.sharedState){
+      const definition=this.version(branchId,next.version_id)!.definition;
+      const prefixSteps=restored.steps!.map(step=>this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',step.id,next.id)!);
+      const prefixSeals=restored.sealedResults!.map(seal=>this.row('SELECT * FROM branch_sealed_results WHERE id=? AND execution_id=?',seal.id,next.id)!);
+      if(stableJson(branchSharedState(definition,prefixSteps,prefixSeals))!==stableJson(receipt.review.sharedState.selected))throw Error('Continuation selected state projection differs');
+      branchSharedState(definition,this.rows('SELECT * FROM branch_step_executions WHERE execution_id=?',next.id),this.rows('SELECT * FROM branch_sealed_results WHERE execution_id=?',next.id));
+    }
     return receipt;
   }
   continueForeignCheckpoint(branchId:string,importedId:string,input:import('@ponderosa/core').BranchForeignContinuationInput,now=new Date().toISOString()):import('@ponderosa/core').BranchForeignContinuationReceipt {
@@ -748,6 +763,7 @@ export class BranchStore {
       const ids=Object.fromEntries(branchContinuationIds(cut.selected).map(id=>[id,randomUUID()]));
       const restored=remapBranchFrontier(cut.selected,ids,cut.e.id,next.id);
       insertBranchFrontier(this.sqlite,next.id,restored,now);
+      if(cut.sharedState&&stableJson(this.sharedState(next.id))!==stableJson(cut.sharedState.selected))throw Error('Fresh continuation state differs from selected prefix');
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',cut.e.traversals,cut.e.loop_iterations,cut.e.depth_ceiling,next.id);
       const admission=JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',next.id)!.admission_json);
       this.checkpoint(next.id,'foreign-prefix','foreign_selected_prefix',{importedExecutionId:importedId,manifestSha256:review.manifestSha256,checkpointSha256:selection.checkpointSha256,idMap:ids,reviewSha256:review.reviewSha256},now);
