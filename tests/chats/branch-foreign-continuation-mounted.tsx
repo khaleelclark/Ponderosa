@@ -37,3 +37,7 @@ export async function foreignContinuationRegression(mode:'normal'|'quota'|'secur
   return {mode,posts,gets,reviews};
  }finally{Storage.prototype.setItem=setItem;window.fetch=transport;root.unmount();host.remove();if(prior===null)localStorage.removeItem(key);else localStorage.setItem(key,prior)}
 }
+
+export async function foreignContinuationQuotaRegression(){await foreignContinuationRegression('quota');}
+export async function foreignContinuationSecurityRegression(){await foreignContinuationRegression('security');}
+export async function foreignContinuationStaleRegression(){await foreignContinuationRegression('stale');}

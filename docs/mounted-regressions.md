@@ -3,8 +3,9 @@
 `pnpm verify` runs the ordinary build/typecheck/Node verification, then
 `pnpm test:mounted`. The latter builds one maintained browser entry and runs every
 exported function from the registered `*-mounted.tsx` fixture modules once on a
-desktop viewport and once on an emulated phone. The current entry covers 36 cases
-from 22 modules. These are mounted production components with controlled fixture
+desktop viewport and once on an emulated phone. The current entry covers 39 cases
+from 22 modules, including explicit normal, quota, security and stale-authority
+foreign-continuation paths. These are mounted production components with controlled fixture
 APIs; this does not claim a real provider session or full production integration.
 
 The Node inventory bridge in `tests/chats/mounted-regression-inventory.test.mjs`
@@ -48,9 +49,15 @@ all case names, both viewport outcomes, durations, page/network errors and clean
 failures. Failed cells also attempt screenshots. Optional
 `PONDEROSA_MOUNTED_VIDEO=1` records video using the existing Playwright ffmpeg
 cache; no installation is attempted. Each case has a 30 second limit, configurable
-between 1 and 120 seconds with `PONDEROSA_MOUNTED_CASE_TIMEOUT_MS`; the single
+between 1 and 120 seconds with `PONDEROSA_MOUNTED_CASE_TIMEOUT_MS`. This bounds
+setup, the fixture and its final animation-frame flush together. Failure screenshots
+and context cleanup each have a separate five second bound; the single
 harness build has a three minute limit. Failed cases are recorded without retries,
-and independent later cells still execute. Browser/context/listener cleanup
+and independent later cells still execute. A timed out cell reclaims its exact
+Playwright-owned browser before later cells; close has a bounded owned-server
+kill fallback. No Chrome PID/name scanning is used. Unresolved owned cleanup
+blocks later cells, records the known owned PID and exits only this runner after
+evidence persistence, without claiming cleanup success. Browser/context/listener cleanup
 errors fail verification while preserving the primary failure evidence.
 
 This change supplies the previously missing execution wiring. No browser,

@@ -8,6 +8,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {mountedRegressionInventory,mountedRegressionEntryImports} from './mounted-regression-inventory.mjs';
+import {runMountedCase,withinMountedDeadline} from './mounted-regression-lifetime.mjs';
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
@@ -24,10 +25,26 @@ for(const directory of [build,out]){
 }
 const timeout=Number(process.env.PONDEROSA_MOUNTED_CASE_TIMEOUT_MS??30_000);
 assert(Number.isSafeInteger(timeout)&&timeout>=1000&&timeout<=120_000,'Case timeout must be between 1 and 120 seconds');
-const results=[],globalErrors=[];let server,browser,origin;
+const results=[],globalErrors=[];let server,browser,browserServer,origin,forceExit=false;
 console.log(`Mounted regression evidence: ${out}`);
 const record=async()=>writeFile(path.join(out,'results.json'),JSON.stringify({inventory,expected,cells:results,errors:globalErrors},null,2)+'\n');
-const bounded=async(work,milliseconds)=>{let timer;try{return await Promise.race([work,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Mounted regression exceeded its finite timeout')),milliseconds);})]);}finally{clearTimeout(timer);}};
+const describe=error=>error?.stack??String(error);
+const launchOwnedBrowser=async()=>{
+ browserServer=await withinMountedDeadline(()=>chromium.launchServer({executablePath:process.env.PONDEROSA_CHROME_PATH||'/usr/bin/google-chrome',headless:true,args:['--no-sandbox'],timeout:15_000}),20_000,'owned browser launch');
+ browser=await withinMountedDeadline(()=>chromium.connect(browserServer.wsEndpoint()),10_000,'owned browser connection');
+};
+const closeOwnedBrowser=async()=>{
+ const owned=browserServer,client=browser,pid=owned?.process()?.pid;browser=undefined;browserServer=undefined;
+ if(client)try{await withinMountedDeadline(()=>client.close(),5000,'browser client cleanup');}catch(error){globalErrors.push({stage:'browser client cleanup',ownedPid:pid,error:describe(error)});process.exitCode=1;}
+ if(!owned)return true;
+ try{await withinMountedDeadline(()=>owned.close(),5000,'owned browser cleanup');return true;}
+ catch(error){globalErrors.push({stage:'owned browser cleanup',ownedPid:pid,error:describe(error)});process.exitCode=1;}
+ // Playwright owns this exact launched server/process. Never search for or kill
+ // Chrome by name, a guessed PID, another user profile or an unrelated group.
+ try{await withinMountedDeadline(()=>owned.kill(),5000,'owned browser kill');return true;}
+ catch(error){globalErrors.push({stage:'owned browser kill unresolved',ownedPid:pid,error:describe(error)});process.exitCode=1;forceExit=true;return false;}
+};
+const persist=()=>withinMountedDeadline(record,5000,'evidence persistence');
 try{
  const compiled=spawnSync(process.execPath,[path.join(root,'apps/web/node_modules/@rsbuild/core/bin/rsbuild.js'),'build','--config',path.join(root,'tests/shared/mounted-regressions.config.mjs')],{cwd:root,env:{...process.env,PONDEROSA_MOUNTED_BUILD:build},stdio:'inherit',timeout:180_000});
  if(compiled.error)throw compiled.error;assert.equal(compiled.status,0,'The complete mounted entry must compile before browser cases begin');
@@ -41,37 +58,47 @@ try{
    response.writeHead(200,{'content-type':mime[path.extname(target)]??'application/octet-stream','cache-control':'no-store'});response.end(bytes);
   }catch(error){response.writeHead(500,{'content-type':'text/plain'});response.end(String(error));}
  });
- await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});origin='http://127.0.0.1:'+server.address().port;
- browser=await chromium.launch({executablePath:process.env.PONDEROSA_CHROME_PATH||'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
+ await withinMountedDeadline(()=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);}),5000,'owned listener setup');origin='http://127.0.0.1:'+server.address().port;
+ await launchOwnedBrowser();
  for(const mobile of [false,true])for(const name of expected){
-  const cell=mobile?'phone':'desktop',pageErrors=[],network=[],secondary=[];let context,page,failure;
-  const startedAt=Date.now();
-  try{
-   context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:962},isMobile:mobile,hasTouch:mobile,...(process.env.PONDEROSA_MOUNTED_VIDEO==='1'?{recordVideo:{dir:path.join(out,cell+'-video')}}:{})});
-   await context.route('**/*',route=>{
-    const url=new URL(route.request().url());
-    if(url.origin!==origin||url.pathname.startsWith('/api/')){network.push({url:url.href,method:route.request().method()});return route.abort('blockedbyclient');}
-    return route.continue();
-   });
-   page=await context.newPage();page.setDefaultTimeout(timeout);page.on('pageerror',error=>pageErrors.push(error.stack??error.message));
-   await page.goto(origin);await page.waitForFunction(()=>Boolean(window.ponderosaMountedRegression));
-   assert.deepEqual(await page.evaluate(()=>window.ponderosaMountedRegression.list()),expected,'Browser must expose every inventoried export');
-   await bounded(page.evaluate(name=>window.ponderosaMountedRegression.run(name),name),timeout);
-   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-   assert.deepEqual(pageErrors,[],'Uncaught browser errors invalidate a cell');assert.deepEqual(network,[],'A mounted fixture must own every API/network effect');
-  }catch(error){
-   failure=error;
-   if(page)try{await page.screenshot({path:path.join(out,cell+'-'+name+'-failure.png'),fullPage:true,timeout:5000});}catch(error){secondary.push({stage:'failure screenshot',error:error.stack??String(error)});}
-  }finally{
-   if(context)try{await context.close();}catch(error){secondary.push({stage:'context cleanup',error:error.stack??String(error)});}
-   const result={cell,name,status:failure||secondary.length?'FAIL':'PASS',durationMs:Date.now()-startedAt,...(failure?{error:failure.stack??String(failure)}:{}),secondary,pageErrors,network};results.push(result);await record();console.log(`${result.status} ${cell} ${name}`);
+  const cell=mobile?'phone':'desktop',pageErrors=[],network=[];let context,page,stopped=false;
+  const startedAt=Date.now(),checkpoint=()=>{if(stopped)throw Error('Mounted cell ended; no late browser action is allowed');};
+  const outcome=await runMountedCase({timeout,stop:()=>{stopped=true;},
+   run:async()=>{
+    context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:962},isMobile:mobile,hasTouch:mobile,...(process.env.PONDEROSA_MOUNTED_VIDEO==='1'?{recordVideo:{dir:path.join(out,cell+'-video')}}:{})});checkpoint();
+    await context.route('**/*',route=>{
+     const url=new URL(route.request().url());
+     if(url.origin!==origin||url.pathname.startsWith('/api/')){network.push({url:url.href,method:route.request().method()});return route.abort('blockedbyclient');}
+     return route.continue();
+    });checkpoint();
+    page=await context.newPage();checkpoint();page.setDefaultTimeout(timeout);page.on('pageerror',error=>pageErrors.push(describe(error)));
+    await page.goto(origin);checkpoint();await page.waitForFunction(()=>Boolean(window.ponderosaMountedRegression));checkpoint();
+    assert.deepEqual(await page.evaluate(()=>window.ponderosaMountedRegression.list()),expected,'Browser must expose every inventoried export');checkpoint();
+    await page.evaluate(name=>window.ponderosaMountedRegression.run(name),name);checkpoint();
+    // This flush is inside the same case deadline as setup and fixture actions.
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));checkpoint();
+    assert.deepEqual(pageErrors,[],'Uncaught browser errors invalidate a cell');assert.deepEqual(network,[],'A mounted fixture must own every API/network effect');
+   },
+   diagnose:async()=>{if(page)await page.screenshot({path:path.join(out,cell+'-'+name+'-failure.png'),fullPage:true,timeout:5000});},
+   close:async()=>{if(context)await context.close();},
+  });
+  if(!outcome.failure&&(pageErrors.length||network.length))outcome.failure=Error('Late browser errors or unmocked effects invalidated the mounted cell');
+  const result={cell,name,status:outcome.failure||outcome.secondary.length?'FAIL':'PASS',durationMs:Date.now()-startedAt,...(outcome.failure?{error:describe(outcome.failure)}:{}),secondary:outcome.secondary.map(row=>({stage:row.stage,error:describe(row.error)})),pageErrors,network};results.push(result);await persist();console.log(`${result.status} ${cell} ${name}`);
+  if(outcome.timedOut||outcome.secondary.some(row=>row.stage==='context cleanup')||!browser.isConnected()){
+   // A timeout can leave a late context-creation/evaluate promise. Reclaim only
+   // this owned browser before later independent cells; never replay this case.
+   if(!await closeOwnedBrowser())throw Error('Owned browser cleanup is unresolved; remaining cells are blocked');
+   if(results.length<expected.length*2)await launchOwnedBrowser();
   }
  }
  assert.equal(results.length,expected.length*2,'Every exported regression must complete one desktop and one phone cell');
  assert.ok(results.every(result=>result.status==='PASS'),'Mounted regressions failed; inspect results.json and failure evidence');
-}catch(error){globalErrors.push({stage:'qualification',error:error.stack??String(error)});process.exitCode=1;}
+}catch(error){globalErrors.push({stage:'qualification',error:describe(error)});process.exitCode=1;if(error?.code==='ERR_MOUNTED_TIMEOUT')forceExit=true;}
 finally{
- if(browser)try{await browser.close();}catch(error){globalErrors.push({stage:'browser cleanup',error:error.stack??String(error)});process.exitCode=1;}
- if(server)try{server.closeAllConnections();await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}catch(error){globalErrors.push({stage:'server cleanup',error:error.stack??String(error)});process.exitCode=1;}
- await record();
+ await closeOwnedBrowser();
+ if(server)try{server.closeAllConnections();await withinMountedDeadline(()=>new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve())),5000,'owned listener cleanup');}catch(error){globalErrors.push({stage:'server cleanup',error:describe(error)});process.exitCode=1;forceExit=true;}
+ try{await persist();}catch(error){console.error('Mounted evidence could not be persisted:',describe(error));process.exitCode=1;forceExit=true;}
+ // A broken transport/cleanup promise may keep Node alive. Evidence has been
+ // attempted and only this runner exits; unknown browser processes are untouched.
+ if(forceExit)process.exit(1);
 }
