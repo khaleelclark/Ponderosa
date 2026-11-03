@@ -142,3 +142,17 @@ retained file and active-Agent outcome beside the confirmation. The scan also
 found remaining multi-sentence errors, status messages and previews. Those
 require individual review and rendered checking; this scan does not establish
 zero informational blocks.
+
+## Further source review
+
+A follow-up reviewed 34 static multi-sentence JSX text candidates and additional
+literal status, helper and warning candidates. Errors, recovery guidance, preview
+limitations, user content and consequential confirmation text retain their
+specific facts; their presence does not by itself establish an informational
+tutorial block. Additional Map setup and import binding instructions now use
+short labelled hints. Cron format, notification retention, sensitive-file
+selection and saved-browser reopening retain their conditions in concise copy.
+
+This is a static source review, not evidence that all dynamic text has been
+enumerated or that the desktop and mobile renderings are free of wrapping,
+overlap or informational blocks. The remaining rendered audit is still required.

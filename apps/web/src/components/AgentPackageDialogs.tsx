@@ -142,7 +142,7 @@ export function AgentPackageExportDialog({
       {mode==='full'&&<NativePortableExportChoices available={reviewAvailable} disabled={copying} value={nativeSelection} onChange={setNativeSelection}/>}
       {mode==='full'&&<GitStorageBindingsEditor agents={bindingAgents} value={gitBindings} onChange={setGitBindings} available={bindingsAvailable} disabled={copying}/>}
       {bindingError&&<Alert severity="warning">{bindingError}</Alert>}
-      {mode==='full'&&!wholeWorkingFolder&&!allFolders&&<TextField fullWidth multiline minRows={2} label="Working files to include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path relative to the Agent working folder per line. Selected files may contain sensitive information." sx={{mt:2}}/>}
+      {mode==='full'&&!wholeWorkingFolder&&!allFolders&&<TextField fullWidth multiline minRows={2} label="Working files to include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path per line, relative to the Agent working folder · selected files may contain sensitive information" sx={{mt:2}}/>}
     </DialogContent>
     <DialogActions sx={{ flexWrap: "wrap", p: 2 }}>
       <Button onClick={onClose} disabled={copying}>Close</Button>

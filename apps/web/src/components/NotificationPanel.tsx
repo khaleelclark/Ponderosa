@@ -562,7 +562,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </List>
           </Box>;
         })}
-        {firstPage && !loadFailed && !loading && visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Questions stay here until answered or skipped. Other alerts can be dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
+        {firstPage && !loadFailed && !loading && visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Questions remain until answered or skipped; other alerts can be dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
         {reconcilingOlder ? <Typography variant="caption" color="text.secondary" role="status">
           Refreshing loaded notification history…
         </Typography> : null}

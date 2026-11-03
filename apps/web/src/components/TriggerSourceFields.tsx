@@ -64,7 +64,7 @@ export function useTriggerSourceDraft(initial?:TriggerSourceConfig){
   const filesystemErrors=filesystemWindowErrors(quietSeconds,maxWindowSeconds);
   const intervalMs=Number(intervalValue)*INTERVAL_UNIT_MS[intervalUnit];
   const intervalInvalid=!intervalValue.trim()||!Number.isFinite(intervalMs)||intervalMs<MIN_INTERVAL_MS||intervalMs>MAX_INTERVAL_MS;
-  const cronFormatError = cronExpression.trim().split(/\s+/u).length !== 5 ? "Use five fields: minute, hour, day, month, weekday. The minimum interval is one minute." : undefined;
+  const cronFormatError = cronExpression.trim().split(/\s+/u).length !== 5 ? "Five fields: minute, hour, day, month, weekday · minimum interval: one minute" : undefined;
   let timezoneError: string | undefined;
   try { if (!timezone.trim()) throw new Error(); new Intl.DateTimeFormat(undefined, { timeZone: timezone.trim() }); }
   catch { timezoneError = "Enter a valid IANA timezone, such as America/New_York or UTC."; }
