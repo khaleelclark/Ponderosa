@@ -14,6 +14,7 @@ import {validateWorkingRootNesting} from './portable-working-files.js';
 
 type RecoveryTask={externalPlan?:PlannedGitExternalApplication;workingAliases?:Array<{path:string;target:string;rootPath:string}>;ref:string;destination:string;roots:readonly string[];activation:ReviewedUserDataActivation;data:Buffer;sha256:string;value:ReviewedUserData;configuration?:ReturnType<typeof compileReviewedGitConfiguration>;layout?:{commonDir:string;privateDir:string;commonRoot:string};storage?:NativeReviewedGitStorage&{root:string};moduleOwner?:{ref:string;gitDir:string}};
 type RecoveryReceipt={ref:string;path:string;originalSha256:string;selection:ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{code?:string;message?:string;partialStatePossible:boolean;observed:unknown}};
+const recoveryOwnedScopes=new WeakSet<object>();
 const privateRef=(name:string)=>['refs/bisect/','refs/rewritten/','refs/worktree/'].some(prefix=>name.startsWith(prefix));
 
 /** No source identity is adopted: the caller supplies the exact newly imported root map. */
@@ -170,13 +171,14 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
   const opened:Array<{path:string;handle:Awaited<ReturnType<typeof fs.open>>;device:bigint;inode:bigint}>=[];
   const commonCreated=new Set<string>();
   let failure:unknown;
-  const receipts:RecoveryReceipt[]=[],callerDeferred=tasks.some(task=>task.configuration?.deferNativeMetadata===true);
+  const receipts:RecoveryReceipt[]=[],callerDeferred=tasks.some(task=>task.configuration?.deferNativeMetadata===true&&(!task.configuration.nativeMetadataScope||!recoveryOwnedScopes.has(task.configuration.nativeMetadataScope)));
   const configurations=tasks.filter(task=>task.activation.git).map(task=>task.configuration!);
   const callerScopes=new Set(configurations.map(config=>config.nativeMetadataScope).filter((scope):scope is object=>scope!==undefined));
   if(callerDeferred&&(configurations.some(config=>config.deferNativeMetadata!==true||!config.nativeMetadataScope)||callerScopes.size!==1))throw new Error('Native caller must supply one deferred scope for every selected Git root');
   const scope=callerDeferred?[...callerScopes][0]!:{},proofFor=(target:string):WorkingRootIdentity|undefined=>{
     const root=Object.keys(expectedRoots??{}).filter(root=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b.length-a.length)[0];if(!root)return;const issued=expectedRoots![root]!,relative=path.relative(root,target).split(path.sep).join('/');if(relative&&!Object.hasOwn(issued.directories??{},relative))return;return workingDirectoryIdentity(root,issued,target);
   };
+  if(!callerDeferred)recoveryOwnedScopes.add(scope);
   const configure=(config:NonNullable<RecoveryTask['configuration']>,worktree:string)=>{
     config.nativeMetadataScope=scope;config.deferNativeMetadata=true;config.nativeMetadata=nativeMetadata;config.fileProofs=nativeMetadata.files;config.directoryMetadataProofs=nativeMetadata.directories;
     if(config.external){const issued=proofFor(worktree);if(issued)config.external.worktreeIdentity=issued;}

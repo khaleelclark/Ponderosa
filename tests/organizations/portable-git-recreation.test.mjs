@@ -505,3 +505,16 @@ test('retained-original export ignores only exact generated hook links backed by
   assert.deepEqual(await readFile(path.join(review,'user-data.json')),original,'Canonical source bytes are never mutated');
  }finally{await rm(base,{recursive:true,force:true});}
 });
+
+test('an internally deferred direct plan stays direct after a confirmed preflight-only failure',{skip:process.platform==='win32'},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-direct-scope-'));
+  try{
+    const source=path.join(root,'source'),destination=path.join(root,'destination');await initialize(source);await mkdir(destination);
+    const manifest=await exportReviewedUserData(source,{git:true,harness:false}),activation={git:true,harness:false},tasks=planReviewedRecoveryRoots(packageFor(manifest,{'file.txt':'committed\n'}),{work:destination},activation);
+    const stat=await lstat(destination,{bigint:true}),identity={device:String(stat.dev),inode:String(stat.ino)},receipts=[];
+    await assert.rejects(applyReviewedRecoveryRoots(tasks,activation,()=>{}, {[destination]:{...identity,inode:String(stat.ino+1n)}}),/original issued identity/);
+    await assert.rejects(lstat(path.join(destination,'.git')),{code:'ENOENT'});
+    await applyReviewedRecoveryRoots(tasks,activation,receipt=>receipts.push(structuredClone(receipt)),{[destination]:identity});
+    assert.deepEqual(receipts.map(receipt=>receipt.state),['applying','completed']);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
