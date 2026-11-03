@@ -13,3 +13,5 @@ Imported originals are published to their exact canonical owners and attached to
 Regression sources: tests/branches/working-data-import.test.mjs, tests/organizations/portable-history-json.test.mjs and tests/chats/branch-working-data-files.test.mjs. Implementation first: none were executed in this lane; integrated validation belongs to the parent.
 
 An interrupted final namespace bind retains an exact Project-local intent with the local parent/child inode receipt and Shared owner IDs. Startup may reconcile only those known canonical metadata paths before rebuilding views; it never creates roots or repeats native writes. The outer physical outcome remains incomplete and held.
+
+If an interrupted local root no longer matches its original inode or staged owner, startup records the exact failure on that Project and installation plan. Only that Project is quarantined from projections; the whole still-owned physical plan has an explicit durable no-dispatch admission fence. Unrelated Projects and Agents remain available. The intent, original bytes and partial application receipts are preserved, and subsequent restarts do not retry held physical work.

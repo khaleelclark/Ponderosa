@@ -129,6 +129,7 @@ export class AgentProjectionRebuilder {
       const pj = projectJsonPath(this.dataDir, projectId);
       if (!existsSync(pj)) continue;
       const p = readJson<ProjectJson>(pj);
+      if(p.importedRootBinding?.recoveryError)throw new Error(p.importedRootBinding.recoveryError.message);
       if (!isBoundedRecordId(projectId) || p.id !== projectId) {
         throw new Error(`Project record ${p.id} does not match containing directory ${projectId}`);
       }

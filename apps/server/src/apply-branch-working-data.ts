@@ -20,6 +20,7 @@ export interface BranchWorkingDataApplication {
  roots:Array<{ref:string;recoveryPath:string;livePath?:string;agentIds:string[];state:'planned'|'recovered'|'populated'|'completed'}>;
  artifacts:Array<{sourceRef:string;nodeRef:string;agentId:string;projectId:string;id:string;path:string;sha256:string;size:number}>;
  reviewedUserDataApplications:NativeReceipt[];reviewedMetadataApplications:MetadataReceipt[];
+ recoveryHolds?:Record<string,{state:'unavailable';message:string;code:string;at:string;memberIds?:string[];agentIds:string[];conversationId?:string}>;
  error?:ReturnType<typeof portableApplicationFailure>;
 }
 export interface BranchWorkingDataPreparation {

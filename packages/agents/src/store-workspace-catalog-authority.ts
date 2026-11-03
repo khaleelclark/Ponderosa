@@ -168,7 +168,7 @@ export class AgentWorkspaceCatalogAuthority {
     }
     for (const projectId of readdirSync(projectsRoot)) {
       if (projectId.startsWith(".")) continue;
-      this.reconcileImportedProjectBinding(projectId);
+      try{this.reconcileImportedProjectBinding(projectId);}catch(error){this.holdImportedProjectBinding(projectId,error);}
       const root = conversationsDir(this.dataDir, projectId);
       if (!existsSync(root)) continue;
       for (const entry of readdirSync(root)) {
@@ -181,11 +181,29 @@ export class AgentWorkspaceCatalogAuthority {
     }
   }
 
+  /** A local import failure quarantines only its owner, never unrelated work. */
+  private holdImportedProjectBinding(projectId:string,error:unknown):void {
+    const filename=projectJsonPath(this.dataDir,projectId),record=readJson<ProjectJson>(filename),intent=record.importedRootBinding;
+    if(!intent||intent.state!=='binding')throw error;
+    const failure=intent.recoveryError??{code:'ERR_IMPORTED_ROOT_RECOVERY_HELD',message:'Imported working-folder binding is unavailable; preserve its exact intent and partial folders. '+(error instanceof Error?error.message:String(error)),at:new Date().toISOString()};
+    // This canonical marker forces per-Project projection quarantine. If it
+    // cannot be persisted, fail closed instead of exposing partially bound actors.
+    if(!intent.recoveryError)writeJson(filename,{...record,importedRootBinding:{...intent,recoveryError:failure}});
+    const plan=this.client.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(intent.planId) as {preview_json:string}|undefined;
+    if(plan){
+      const state=JSON.parse(plan.preview_json),application=state.workingDataApplication??{schema:'ponderosa.branch-working-application.v1',state:'incomplete',phase:'binding-contained-project'};
+      const memberIds=[...new Set([...intent.sharedAgents.map(member=>member.id),intent.parent.parentAgentId,...(record.ownerConversationId?[record.ownerConversationId]:[]),...(this.client.prepare("SELECT local_id FROM branch_installation_resources WHERE staging_plan_id=? AND state!='deleted'").all(intent.planId) as Array<{local_id:string}>).map(member=>member.local_id)])];
+      const recoveryHolds={...application.recoveryHolds,[projectId]:{...failure,state:'unavailable',memberIds,agentIds:intent.sharedAgents.map(member=>member.id),conversationId:record.ownerConversationId}};
+      this.client.prepare('UPDATE branch_installation_plans SET preview_json=?,error=?,next_attempt_at=NULL,updated_at=? WHERE id=?').run(JSON.stringify({...state,workingDataApplication:{...application,state:'incomplete',error:{...failure,partialStatePossible:true},recoveryHolds}}),failure.message,failure.at,intent.planId);
+    }
+  }
+
   /** Complete only interrupted canonical metadata projection, never physical work. */
   private reconcileImportedProjectBinding(projectId:string):void {
     const filename=projectJsonPath(this.dataDir,projectId);if(!existsSync(filename))return;
     const record=readJson<ProjectJson>(filename),intent=record.importedRootBinding;
     if(!intent||intent.state!=='binding')return;
+    if(intent.recoveryError){this.holdImportedProjectBinding(projectId,new Error(intent.recoveryError.message));return;}
     const owner=record.ownerConversationId,proof=intent.parent;
     if(!owner||record.hostPath!==intent.path||!proof||join(proof.parentPath,proof.relativePath)!==intent.path||
        !this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state!='active'").get(owner,intent.planId))throw new Error('Interrupted imported-root metadata binding has no exact staged owner');

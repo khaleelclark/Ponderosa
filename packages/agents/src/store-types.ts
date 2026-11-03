@@ -75,7 +75,7 @@ export interface ProjectJson {
   lastConversationId?: string;
   instructions?: string;
   /** Internal final working-root bind; original managed creation remains provenance only. */
-  importedRootBinding?: {planId:string;previousPath:string;path:string;managedWorkspaceName?:string;state:'binding'|'completed';updatedAt:string;sharedAgents:Array<{id:string;workingCopyId:string}>;parent:NonNullable<AgentDto['workingCopy']['importedParent']>};
+  importedRootBinding?: {planId:string;previousPath:string;path:string;managedWorkspaceName?:string;state:'binding'|'completed';updatedAt:string;sharedAgents:Array<{id:string;workingCopyId:string}>;recoveryError?:{code:string;message:string;at:string};parent:NonNullable<AgentDto['workingCopy']['importedParent']>};
   /** Durable identity for an HTTP create retry. Missing on pre-idempotency Projects. */
   creationIdempotencyKey?: string;
   creationPayloadHash?: string;
