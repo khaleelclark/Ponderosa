@@ -12,6 +12,7 @@ import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { unfinishedHumanSourceActivationIds } from "./coordination-v3-required-reply-authority.js";
+import { renderUnfinishedHumanTaskContext } from "./coordination-v3-task-objective.js";
 import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
@@ -1058,11 +1059,13 @@ export class CoordinationV3ContextRolloverAuthority {
         const source = this.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND scope_key=?')
           .get(id, row.agent_id, row.project_id, row.scope_key) as {payload_json:string} | undefined;
         const communication = source && (JSON.parse(source.payload_json) as {communication?: {eventId?:unknown; text?:unknown; sender?:{kind?:unknown}}}).communication;
-        if (!communication || communication.sender?.kind !== 'user' || typeof communication.eventId !== 'string' || typeof communication.text !== 'string' ||
-            !row.provider_prompt.includes(JSON.stringify({sourceActivationId:id, communication})))
+        if (!communication || communication.sender?.kind !== 'user' || typeof communication.eventId !== 'string' || typeof communication.text !== 'string')
           throw new Error('context rollover original human objective is unavailable');
-        return {id, eventId:communication.eventId as string, hash:createHash('sha256').update(communication.text).digest('hex')};
+        return {id, eventId:communication.eventId as string, communication, hash:createHash('sha256').update(communication.text).digest('hex')};
       });
+      const taskBlock = renderUnfinishedHumanTaskContext(taskSources.map(source => ({sourceActivationId:source.id,communication:source.communication})));
+      if (taskBlock && row.provider_prompt.split('\n\n').filter(section => section === taskBlock).length !== 1)
+        throw new Error('context rollover original human objective is unavailable');
       const recentTail = JSON.parse(row.recent_tail_event_ids_json) as string[];
       const recentTailHashes = JSON.parse(row.recent_tail_hashes_json) as string[];
       if (manifest.historyMessageCount !== recentTail.length) {

@@ -92,6 +92,10 @@ for (const windowTokens of [200000, undefined]) test(`checks 93, 94: automatic p
         {kind:'activation',ref:randomUUID(),delivery:'submitted'}]}};
       assert.throws(()=>originalCommit.call(this,forged),/source multiset/);
       assert.throws(()=>originalCommit.call(this,{...input,prompt:input.prompt.replaceAll(objective,'forged objective')}),/original human objective is unavailable/);
+      const block=input.prompt.split('\n\n').find(section=>section.startsWith('[UNFINISHED HUMAN REQUESTS · CANONICAL SOURCE DATA]'));
+      assert.ok(block);
+      const disguised=input.prompt.replace(block,'Original objective block omitted')+'\n\n'+JSON.stringify(block);
+      assert.throws(()=>originalCommit.call(this,{...input,prompt:disguised}),/original human objective is unavailable/);
       rejectedForeign=true;
     }
     return originalCommit.call(this,input);

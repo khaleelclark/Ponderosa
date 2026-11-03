@@ -232,3 +232,5 @@ export {captureBranchRuntimeData,validateBranchRuntimeData} from './branch-runti
 export {validateBranchExecutionTree,planBranchExecutionTree,insertBranchExecutionTree,readBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
 
 export {enableProviderStartCoverage,holdProviderStart,admitProviderStart,settleProviderStart,requireProviderStartsDrained,sealProviderNeverStarted} from './provider-start-journal.js';
+
+export {renderUnfinishedHumanTaskContext} from "./coordination-v3-task-objective.js";
