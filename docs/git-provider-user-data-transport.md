@@ -284,6 +284,44 @@ nodes, foreign-owner/multiple-link files, alternates, promisor, unsupported rete
 storage still refuse. No runtime/capture, round-trip, native-equivalence or
 arbitrary-writer atomicity acceptance is claimed.
 
+### Derived dumb-transport server-info advertisements
+
+The existing cache observation and explicit omission path also accepts exactly
+common-repository `info/refs` and `objects/info/packs`. Git documents these as
+regenerable advertisements for dumb transports in the pinned
+[repository layout](https://github.com/git/git/blob/v2.54.0/Documentation/gitrepository-layout.adoc).
+The pinned [server-info writer](https://github.com/git/git/blob/v2.54.0/server-info.c)
+uses the common `info/refs` path (`update_info_refs`) and object-directory
+`info/packs` path (`update_info_packs`). Their presence after ordinary
+`update-server-info` or repack no longer makes otherwise supported object
+storage fail export.
+
+Both present bytes and explicit absence join raw before/after identity/hash
+observations. Existing canonical same-owner directory, single-link regular
+no-follow file checks, 4 MiB cache-file and lossless Latin-1 known-secret
+inspection bounds, and shared 32 MiB/20,000-node raw limits apply unchanged.
+Only the exact common info parent and allowlisted attributes, exclude and refs
+files are inspected; its other contents are not enumerated. No selected private,
+main-worktree private or other-worktree path is added. Existing private namespace
+exclusions still happen before stat/descent. Grafts, alternates/http-alternates,
+locks, unknown object-storage names and unsupported topologies still refuse.
+
+Advertisement bodies remain opaque, even if stale or inconsistent. Text is
+never interpreted as pack lists, refs, object IDs, paths, URLs or external
+locations. The shared cache helper skips both files before native read-view
+copying or pack pairing. Canonical verified local objects and refs are captured
+independently; complete pack/index/retention and ref/log/index/REUC/sparse/shallow/
+ORIG_HEAD/FETCH_HEAD checks remain. Export exclusions explicitly name these
+rebuildable omissions. No advertisement bytes enter a DTO, original manifest,
+recreated repository or native working metadata. Existing shared live/import/
+recreation/re-export callers need no changes: retained-original re-export keeps
+the exact original manifest and exclusions, never generated caches.
+
+No update-server-info, repack, rebuild, network lookup, source write or ownership
+adoption occurs. No cap, schema, version or dependency change. Source and partial
+bytes remain preserved. Source-only: native behavior, capture, recreation,
+round trips and atomicity have not been qualified.
+
 ### Pack retention originals (`.keep`, `.mtimes`)
 
 Selected normal and linked-worktree common repositories preserve bounded exact

@@ -1023,7 +1023,7 @@ type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer};
 function derivedGitCache(name:string,format?:'sha1'|'sha256'):boolean {
   const width=format==='sha1'?'{40}':format==='sha256'?'{64}':'{40}(?:[a-f0-9]{24})?';
   const midx=new RegExp('^objects/pack/(?:multi-pack-index-[a-f0-9]'+width+'\\.(?:bitmap|rev)|multi-pack-index\\.d/multi-pack-index-[a-f0-9]'+width+'\\.(?:midx|bitmap|rev))$');
-  return name==='objects/pack/multi-pack-index'||name==='objects/pack/multi-pack-index.d/multi-pack-index-chain'||midx.test(name)||name==='objects/info/commit-graph'||name==='objects/info/commit-graphs/commit-graph-chain'||new RegExp('^objects/info/commit-graphs/graph-[a-f0-9]'+width+'\\.graph$').test(name);
+  return name==='info/refs'||name==='objects/info/packs'||name==='objects/pack/multi-pack-index'||name==='objects/pack/multi-pack-index.d/multi-pack-index-chain'||midx.test(name)||name==='objects/info/commit-graph'||name==='objects/info/commit-graphs/commit-graph-chain'||new RegExp('^objects/info/commit-graphs/graph-[a-f0-9]'+width+'\\.graph$').test(name);
 }
 
 /** Complete exact allowed roots only; never enumerate common/worktrees or main-worktree private files. */
@@ -1044,14 +1044,14 @@ async function captureGitRaw(association:GitAssociation) {
       inventory.push({name,source,identity:originalIdentity(before)});
       const entries=(await fs.readdir(target)).sort();
       for(const entry of entries)await walk(path.join(target,entry),name+'/'+entry,source,objects);
-      const optional=name==='objects'?['info','pack']:name==='objects/info'?['commit-graph','commit-graphs']:name==='objects/info/commit-graphs'?['commit-graph-chain']:name==='objects/pack'?['multi-pack-index','multi-pack-index.d']:name==='objects/pack/multi-pack-index.d'?['multi-pack-index-chain']:[];
+      const optional=name==='objects'?['info','pack']:name==='objects/info'?['commit-graph','commit-graphs','packs']:name==='objects/info/commit-graphs'?['commit-graph-chain']:name==='objects/pack'?['multi-pack-index','multi-pack-index.d']:name==='objects/pack/multi-pack-index.d'?['multi-pack-index-chain']:[];
       for(const entry of optional)if(!entries.includes(entry))await walk(path.join(target,entry),name+'/'+entry,source,objects);
       if(name==='objects/pack')for(const entry of entries.filter(entry=>/^pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.pack$/.test(entry)))for(const suffix of ['keep','mtimes']){const companion=entry.slice(0,-4)+suffix;if(!entries.includes(companion))await walk(path.join(target,companion),name+'/'+companion,source,objects);}
       const after=await fs.lstat(target,{bigint:true});if(originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw directory changed');
     }else{
       if(['refs','logs/refs'].includes(name)||linked&&source==='selected'&&['refs/bisect','refs/rewritten','refs/worktree'].includes(refPath))throw new Error('Git ref namespace must be a directory');
       if(['objects/info/commit-graphs','objects/pack/multi-pack-index.d'].includes(name))throw new Error('Git derived-cache namespace must be a directory');
-      const cache=objects&&derivedGitCache(name),retention=objects&&/\.(?:keep|mtimes)$/.test(name);
+      const cache=derivedGitCache(name),retention=objects&&/\.(?:keep|mtimes)$/.test(name);
       if(objects&&!cache&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap|keep|mtimes))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
       if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/')&&!(source==='selected'&&name==='logs/ORIG_HEAD'))reflogPath(name.slice(5));
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
@@ -1061,7 +1061,7 @@ async function captureGitRaw(association:GitAssociation) {
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
     }
   };
-  // Inspect only the exact common info parent and two allowlisted files, never its other contents.
+  // Inspect only the exact common info parent and three allowlisted files, never its other contents.
   const info=path.join(commonDir,'info');
   const infoIdentity=async():Promise<string|null>=>{
     let stat;try{stat=await fs.lstat(info,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
@@ -1070,7 +1070,7 @@ async function captureGitRaw(association:GitAssociation) {
   };
   const infoBefore=await infoIdentity();
   inventory.push({name:'info',source:'shared',identity:infoBefore??'',...(infoBefore===null?{absent:true as const}:{})});
-  for(const name of gitInfoPaths)await walk(path.join(commonDir,name),name,'shared');
+  for(const name of [...gitInfoPaths,'info/refs'])await walk(path.join(commonDir,name),name,'shared');
   if(await infoIdentity()!==infoBefore)throw new Error('Git info parent changed during capture');
   for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
@@ -1237,7 +1237,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
   const headText=text(captured.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: derived local commit-graph and multi-pack-index caches; rebuild from verified objects if needed','Excluded: derived Git index UNTR/FSMN caches; rebuild local observations if needed','Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
+  const exclusions=['Excluded: derived local commit-graph, multi-pack-index and server-info advertisements (info/refs, objects/info/packs); rebuild from verified objects/refs if needed','Excluded: derived Git index UNTR/FSMN caches; rebuild local observations if needed','Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
   for(const item of before.sparse.configuration){
     const {key,value}=item;
