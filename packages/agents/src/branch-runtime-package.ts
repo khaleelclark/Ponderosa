@@ -1,12 +1,13 @@
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchPortableRuntimeData,BranchPortableRuntimeOwner,BranchPortableRuntimeFact} from '@ponderosa/core';
+import {remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {captureBranchHostCut} from './branch-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {validateBranchDefinition} from './branch-definition.js';
 type Row=Record<string,any>;
-const kinds=new Set(['frontier','definition','bindings','configuration','provenance','host','initial','checkpoint','transition','command','custody','import','trigger','tree-import']);
+const kinds=new Set(['frontier','definition','bindings','configuration','provenance','host','initial','checkpoint','transition','command','custody','import','trigger','tree-import','continuation']);
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 const exact=(v:unknown,keys:string[])=>!!v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('|')===keys.sort().join('|');
 function noCredentials(value:unknown,depth=0):void {
@@ -22,7 +23,8 @@ function parseFact(f:BranchPortableRuntimeFact):any {
  if(!exact(f,['kind','key','json','sha256'])||!kinds.has(f.kind)||typeof f.key!=='string'||!f.key||typeof f.json!=='string'||sha(f.json)!==f.sha256)throw Error('Runtime evidence bytes or identity differ');
  const parsed=JSON.parse(f.json);noCredentials(parsed);return parsed;
 }
-export function validateBranchRuntimeData(value:unknown,called=false):BranchPortableRuntimeData {
+export function validateBranchRuntimeData(value:unknown,called=false,depth=0):BranchPortableRuntimeData {
+ if(depth>16)throw Error('Runtime generation chain exceeds 16 retained generations');
  const d=value as BranchPortableRuntimeData;
  if(!exact(d,['schema','sourceBranchId','identities','owners','sha256'])||d.schema!=='ponderosa.branch-runtime-data.v1'||typeof d.sourceBranchId!=='string'||!d.sourceBranchId||!Array.isArray(d.owners)||(!called&&!d.owners.length)||d.owners.length>1000||Buffer.byteLength(stableJson(d))>32*1024*1024)throw Error('Invalid or oversized Branch runtime data');
  if(payloadHash({schema:d.schema,sourceBranchId:d.sourceBranchId,identities:d.identities,owners:d.owners})!==d.sha256)throw Error('Runtime manifest hash differs');
@@ -49,7 +51,7 @@ export function validateBranchRuntimeData(value:unknown,called=false):BranchPort
    if(imported.length!==1||e.admitted_at||e.admission_json)throw Error('Re-exported data owner has no original acceptance');
    const original=JSON.parse(imported[0]!.json),receipt=original.receipt;
    if(!exact(original,['receipt','data']))throw Error('Re-export source manifest differs');
-   const sourceData=validateBranchRuntimeData(original.data),sourceOwner=sourceData.owners.find(owner=>owner.sourceExecutionId===provenance.sourceExecutionId);
+   const sourceData=validateBranchRuntimeData(original.data,false,depth+1),sourceOwner=sourceData.owners.find(owner=>owner.sourceExecutionId===provenance.sourceExecutionId);
    const sourceExecution=sourceOwner&&JSON.parse(sourceOwner.facts.find(f=>f.kind==='frontier')!.json).execution[0];
    if(!sourceExecution||sourceExecution.input_text!==e.input_text||sourceExecution.input_hash!==e.input_hash||receipt.planId!==provenance.planId||receipt.branchId!==o.sourceBranchId)throw Error('Re-export source owner input or installation differs');
    if(receipt?.currentAuthority!==false||receipt.dispatched!==false||receipt.disposition!=='held'||receipt.manifestSha256!==provenance.manifestSha256||receipt.executionMap?.[provenance.sourceExecutionId]!==o.sourceExecutionId||original.data?.sha256!==provenance.manifestSha256)throw Error('Re-export source ownership differs');
@@ -65,6 +67,19 @@ export function validateBranchRuntimeData(value:unknown,called=false):BranchPort
     if(!e.parent_execution_id||!e.parent_attempt_id)throw Error('Call owner requires exact parent ancestry');
    }else if(e.admission_source!=='manual'||e.input_hash!==payloadHash({input:e.input_text,source:'manual'}))throw Error('Runtime original input identity differs');
   }
+  const generations=o.facts.filter(f=>f.kind==='continuation');
+  if(provenance.source==='foreign_checkpoint_continuation'){
+   if(generations.length!==1)throw Error('Retained continuation generation evidence missing');
+   const retained=JSON.parse(generations[0]!.json);
+   if(!exact(retained,['receipt','data','acceptance'])||retained.receipt.executionId!==e.id||retained.receipt.importedExecutionId!==provenance.importedExecutionId||retained.receipt.commandKey!==provenance.commandKey||retained.receipt.review.reviewSha256!==provenance.reviewSha256||!exact(retained.acceptance,['admittedAt','admissionJson'])||typeof retained.acceptance.admittedAt!=='string'||retained.acceptance.admissionJson!==stableJson(retained.receipt.admission))throw Error('Retained generation identity differs');
+   if(validateBranchRuntimeData(retained.data,false,depth+1).sha256!==retained.receipt.review.manifestSha256)throw Error('Retained generation source manifest differs');
+   const importedOwner=d.owners.find(prior=>prior.sourceExecutionId===provenance.importedExecutionId);
+   const importedFact=importedOwner?.facts.find(f=>f.kind==='import'),commandFact=importedOwner?.facts.find(f=>f.kind==='command'&&f.key===`foreign-continuation:${payloadHash(provenance.commandKey)}`);
+   if(!importedFact||!commandFact)throw Error('Complete retained import and continuation command owners required');
+   const importedSource=JSON.parse(importedFact.json),command=JSON.parse(commandFact.json);
+   if(stableJson(importedSource.data)!==stableJson(retained.data)||stableJson(importedSource.receipt)!==stableJson(retained.receipt.review.nativeMaps)||command.input_hash!==payloadHash(retained.receipt)||command.result_json!==stableJson(retained.receipt))throw Error('Retained generation original command/import bytes differ');
+
+  }else if(generations.length)throw Error('Unowned continuation evidence');
   const definitionFact=o.facts.find(f=>f.kind==='definition')!,bindingFact=o.facts.find(f=>f.kind==='bindings')!;
   if(definitionFact.key!==e.version_id||bindingFact.key!==e.binding_revision_id)throw Error('Runtime pin identity differs');
   const definition=validateBranchDefinition(JSON.parse(definitionFact.json));
@@ -108,6 +123,14 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
     if(!manifest||payloadHash(JSON.parse(manifest.result_json))!==manifest.input_hash)throw Error('Imported private runtime manifest unavailable or changed');
     add('import','original',manifest.result_json);
    }
+   if(origin.source==='foreign_checkpoint_continuation'){
+    const command=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(origin.importedExecutionId,`foreign-continuation:${payloadHash(origin.commandKey)}`) as Row|undefined;
+    const manifest=db.prepare("SELECT c.input_hash,c.result_json FROM branch_commands c JOIN branch_executions x ON x.id=c.execution_id WHERE x.branch_id=? AND c.command_key LIKE 'portable-runtime-manifest:%'").all(branchId) as Row[];
+    if(!command||!e.admitted_at||!e.admission_json||payloadHash(JSON.parse(command.result_json))!==command.input_hash)throw Error('Continuation command or admission evidence unavailable');
+    const receipt=JSON.parse(command.result_json),matches=manifest.filter(row=>payloadHash(JSON.parse(row.result_json))===row.input_hash&&JSON.parse(row.result_json).data.sha256===receipt.review.manifestSha256&&stableJson(JSON.parse(row.result_json).receipt)===stableJson(receipt.review.nativeMaps));
+    if(matches.length!==1)throw Error('Continuation original import evidence missing or ambiguous');
+    add('continuation','original',stableJson({receipt,data:JSON.parse(matches[0]!.result_json).data,acceptance:{admittedAt:e.admitted_at,admissionJson:e.admission_json}}));
+   }
    const host=captureBranchHostCut(db,e.id,selected);if(host)add('host','current',stableJson(host));
    for(const [kind,table] of [['initial','branch_initial_checkpoints'],['checkpoint','branch_unit_snapshots']] as const){
     for(const cp of db.prepare(`SELECT id,snapshot_json,content_hash FROM ${table} WHERE execution_id=? ORDER BY id`).all(e.id) as Row[]){if(sha(cp.snapshot_json)!==cp.content_hash)throw Error('Runtime checkpoint integrity failure');add(kind,String(cp.id),cp.snapshot_json);}
@@ -119,4 +142,33 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
   });
   const data={schema:'ponderosa.branch-runtime-data.v1' as const,sourceBranchId:branchId,identities:{chats:chatRefs,agents:agentRefs},owners};return validateBranchRuntimeData({...data,sha256:payloadHash(data)},called);
  }).deferred();
+}
+
+/** Unwrap held import generations as evidence; never recreate source authority. */
+export function resolveBranchRuntimeSource(data:BranchPortableRuntimeData,executionId:string) {
+ const chain:Array<{manifestSha256:string;ownerSha256:string;executionId:string}>=[],seen=new Set<string>();
+ for(let depth=0;depth<=16;depth++){
+  const owner=data.owners.find(o=>o.sourceExecutionId===executionId);
+  if(!owner||seen.has(data.sha256+':'+executionId))throw Error('Runtime generation owner missing or cyclic');
+  seen.add(data.sha256+':'+executionId);
+  const fact=(kind:string)=>JSON.parse(owner.facts.find(f=>f.kind===kind)!.json);
+  const origin=fact('provenance'),selected=fact('frontier'),e=selected.execution[0];
+  chain.push({manifestSha256:data.sha256,ownerSha256:owner.sha256,executionId});
+  if(origin.source!=='portable_runtime_data')return {data,owner,chain};
+  if(origin.tree)throw Error('Tree generation cannot use standalone continuation');
+  const imported=fact('import'),receipt=imported.receipt;
+  const original=validateBranchRuntimeData(imported.data),source=original.owners.find(o=>o.sourceExecutionId===origin.sourceExecutionId);
+  if(!source||receipt.frontiers?.[origin.sourceExecutionId]?.disposition!=='recreated_held')throw Error('Prior generation frontier is evidence-only');
+  if(stableJson(Object.keys(receipt.executionMap).sort())!==stableJson(original.owners.map(o=>o.sourceExecutionId).sort())||new Set(Object.values(receipt.executionMap)).size!==original.owners.length||stableJson(Object.keys(receipt.frontiers).sort())!==stableJson(Object.keys(receipt.executionMap).sort()))throw Error('Retained generation owner map differs');
+  const old=JSON.parse(source.facts.find(f=>f.kind==='frontier')!.json),ids=receipt.frontiers[origin.sourceExecutionId].idMap;
+  const expected=remapBranchFrontier(old,ids,origin.sourceExecutionId,e.id);
+  const normalize=(rows:Row[])=>rows.map(row=>stableJson(Object.fromEntries(Object.entries(row).filter(([key])=>!['created_at','updated_at'].includes(key))))).sort();
+  for(const key of Object.keys(expected))if(stableJson(normalize(expected[key]!))!==stableJson(normalize(selected[key])))throw Error('Held generation mapped frontier differs');
+  if(e.state!=='waiting'||e.cancel_requested||e.budget_exhausted||e.parent_execution_id||e.parent_attempt_id||e.admission_source!=='manual'||
+    ['traversals','loop_iterations','recovery_traversals','depth_ceiling'].some(key=>e[key]!==old.execution[0][key])||
+    payloadHash(fact('definition'))!==payloadHash(JSON.parse(source.facts.find(f=>f.kind==='definition')!.json))||
+    stableJson(fact('configuration'))!==stableJson(JSON.parse(source.facts.find(f=>f.kind==='configuration')!.json)))throw Error('Held generation pins or counters differ');
+  data=original;executionId=origin.sourceExecutionId;
+ }
+ throw Error('Runtime generation chain exceeds 16 retained generations');
 }

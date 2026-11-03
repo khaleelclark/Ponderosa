@@ -15,7 +15,16 @@ export function BranchForeignContinuationReview({saved,sourceExecutionId,executi
  const storageKey=foreignCommandStorageKey(location.origin,`${currentProductScope()}:${productApiPath('/api/branches')}`,branchId,executionId);
  const client=new BranchesClient(location.origin,(input,init)=>fetch(productApiPath(new URL(String(input)).pathname+new URL(String(input)).search),init));
  const owner=saved.data.owners.find(item=>item.sourceExecutionId===sourceExecutionId);
- const checkpoints=owner?.facts.filter(f=>{if(f.kind!=='checkpoint')return false;try{return JSON.parse(f.json).restore_supported===true}catch{return false}})??[];
+ let checkpointOwner=owner;
+ try {
+  for(let depth=0;depth<16&&checkpointOwner;depth++){
+   const origin=JSON.parse(checkpointOwner.facts.find(f=>f.kind==='provenance')!.json);
+   if(origin.source!=='portable_runtime_data')break;
+   const imported=JSON.parse(checkpointOwner.facts.find(f=>f.kind==='import')!.json);
+   checkpointOwner=(imported.data as BranchRuntimeDataReadback['data']).owners.find(o=>o.sourceExecutionId===origin.sourceExecutionId);
+  }
+ }catch{checkpointOwner=undefined}
+ const checkpoints=checkpointOwner?.facts.filter(f=>{if(f.kind!=='checkpoint')return false;try{return JSON.parse(f.json).restore_supported===true}catch{return false}})??[];
  const [selected,setSelected]=useState(''),[review,setReview]=useState<BranchForeignContinuationReview>(),[consent,setConsent]=useState(false),[command,setCommand]=useState<BranchForeignContinuationInput>(),[receipt,setReceipt]=useState<BranchForeignContinuationReceipt>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[storageBlocked,setStorageBlocked]=useState(true);
  const lock=useRef(false),epoch=useRef(0),loadedCommand=useRef<BranchForeignContinuationInput|undefined>(undefined);
  const originalMapsMatch=(value:BranchForeignContinuationReview)=>value.manifestSha256===saved.data.sha256&&value.ownerSha256===owner?.sha256&&canonical(value.nativeMaps)===canonical(saved.receipt);

@@ -280,7 +280,7 @@ export interface BranchDefinitionTreeReceipt {
 }
 
 /** Private evidence bytes never carry dispatch, grants, leases or provider ownership. */
-export interface BranchPortableRuntimeFact {kind:'frontier'|'definition'|'bindings'|'configuration'|'provenance'|'host'|'initial'|'checkpoint'|'transition'|'command'|'custody'|'import'|'trigger'|'tree-import';key:string;json:string;sha256:string}
+export interface BranchPortableRuntimeFact {kind:'frontier'|'definition'|'bindings'|'configuration'|'provenance'|'host'|'initial'|'checkpoint'|'transition'|'command'|'custody'|'import'|'trigger'|'tree-import'|'continuation';key:string;json:string;sha256:string}
 export interface BranchPortableRuntimeOwner {sourceExecutionId:string;sourceBranchId:string;chatRefs:string[];facts:BranchPortableRuntimeFact[];sha256:string}
 export interface BranchPortableRuntimeData {schema:'ponderosa.branch-runtime-data.v1';sourceBranchId:string;identities:{chats:Record<string,string>;agents:Record<string,{chatRef:string;agentRef:string}>};owners:BranchPortableRuntimeOwner[];sha256:string}
 export interface BranchPortableExecutionTree {schema:'ponderosa.branch-runtime-tree.v1';rootSourceBranchId:string;branches:Record<string,BranchPortableRuntimeData>;sha256:string}
@@ -468,6 +468,7 @@ export interface BranchGenerationHistoryPreview {
 export interface BranchForeignContinuationSelection {planId:string;sourceExecutionId:string;checkpointKey:string;checkpointSha256:string}
 export interface BranchForeignContinuationReview {
  schema:'ponderosa.branch-foreign-review.v1';selection:BranchForeignContinuationSelection;branchId:string;importedExecutionId:string;
+ generationChain?:Array<{manifestSha256:string;ownerSha256:string;executionId:string}>;
  sharedState?:{channels:NonNullable<BranchDefinition['state']>;selected:BranchSharedStateDto;latest:BranchSharedStateDto};controls?:BranchDefinition['controls'];
  manifestSha256:string;ownerSha256:string;checkpoint:unknown;nativeMaps:BranchRuntimeDataReceipt;
  versionId:string;bindingRevisionId:string;configurationRevision:number;definitionSha256:string;bindings:BranchBindings;configuration:BranchConfiguration;
