@@ -252,8 +252,8 @@ export function registerAgentPackageRoutes(
       const refs=new Set(pkg.agents.filter(node=>node.workingFolder).map(node=>node.workingRootRef??node.ref));
       for(const ref of metadataActivation.rootRefs){
         if(!refs.has(ref))throw new Error('Metadata activation names an absent complete working root');
-        const node=pkg.agents.find(node=>(node.workingRootRef??node.ref)===ref&&node.workingFolder)!;
-        const file=node.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&node.artifacts?.find(artifact=>artifact.ref===file.artifactRef);
+        const node=pkg.agents.find(node=>(node.workingRootRef??node.ref)===ref&&node.workingFiles?.some(file=>file.path===REVIEWED_USER_DATA_PATH));
+        const file=node?.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&node?.artifacts?.find(artifact=>artifact.ref===file.artifactRef);
         if(!artifact)throw new Error('Metadata restoration requires its authoritative original');
         const manifest=parseReviewedUserData(decodePortableMetadataArtifact(artifact));
         if(!manifest.filesystemMetadata)throw new Error('Per-node metadata evidence is absent');
@@ -1501,6 +1501,7 @@ export function registerAgentPackageRoutes(
         return {message:redactPortableDiagnostic(error instanceof Error?error.message:String(error)),code:failure.code,partialStatePossible:true,observed:failure.observed?JSON.parse(JSON.stringify({identity,inventoryState:failure.observed.inventoryState??null},(_key,value)=>typeof value==='bigint'?value.toString():value)):null};
       };
       const liveWorkingRoots:NonNullable<ImportAgentPackageResponse['liveWorkingRoots']>=[];
+      const liveModeReleases:Array<()=>void>=[];
       try {
       await onPhase?.("creating_records");
       signal?.throwIfAborted();
@@ -1975,11 +1976,9 @@ export function registerAgentPackageRoutes(
         finally{if(pending.receipt)saveMetadataApplications();}
       }
       signal?.throwIfAborted();
-      if(body.workingFilesActivation?.sharedRoot!==undefined){
+      if(body.workingFilesActivation&&importNodes.some(node=>(body.workingCopyMode??node.workingCopyMode??'shared')==='shared')){
         store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingProjectRoot:project.hostPath}});
-        if(body.reviewedUserDataActivation?.git)await context.workingCopies!.stageImportedSharedGit(project);
-        else await context.workingCopies!.initializeImportProject(project);
-
+        await context.workingCopies!.stageImportedSharedGit(project);
       }
       const created = new Map<string, AgentDto>();
       await onPhase?.("importing_agents");
@@ -1999,58 +1998,85 @@ export function registerAgentPackageRoutes(
         created.set(node.ref, agent);
         rollbackAgentIds.push(agent.id);
         const folderMode=body.workingCopyMode??node.workingCopyMode;
-        if(folderMode==='separate_git'){
+        if(folderMode==='separate_git'&&!body.workingFilesActivation){
           const release=context.workingCopies!.beginModeChange(agent.id);
-          try{const configured=body.workingFilesActivation&&body.reviewedUserDataActivation?.git?await context.workingCopies!.allocateImportedSeparateGit(agent,project):await context.workingCopies!.setMode(agent,project,folderMode);if(!body.reviewedUserDataActivation?.git&&configured.workingCopy.state!=='ready')throw new Error(configured.workingCopy.failure??'Imported working copy is unavailable');created.set(node.ref,configured);}finally{release();}
+          try{const configured=await context.workingCopies!.setMode(agent,project,folderMode);if(configured.workingCopy.state!=='ready')throw new Error(configured.workingCopy.failure??'Imported working copy is unavailable');created.set(node.ref,configured);}finally{release();}
         }
         deletingAgentIds.add(agent.id);
         await yieldToLoop();
       }
 
       if(body.workingFilesActivation){
-        const liveLinkDestinations=Object.fromEntries(importNodes.map(node=>[node.workingRootRef??node.ref,created.get(node.ref)!.workingCopy.rootPath]));
-        const owners=orderWorkingRoots(importNodes.filter(node=>node.workingFolder||node.workingFiles?.length).map(node=>({node,ref:node.workingRootRef??node.ref,links:node.workingFolder?.links??[]})),portablePackage.workingRootNesting).map(item=>item.node);
-        for(const node of owners){
+        let liveProject=project;
+        for(const agent of created.values())liveModeReleases.push(context.workingCopies!.beginModeChange(agent.id));
+        const rootRef=(node:PlannedNode)=>node.workingRootRef??node.ref;
+        const rows=[...new Set(importNodes.filter(node=>node.workingFolder||node.workingFiles?.length).map(rootRef))].map(ref=>{
+          const selected=importNodes.find(node=>rootRef(node)===ref)!;
+          const mode=body.workingCopyMode??selected.workingCopyMode??'shared';
+          const members=importNodes.filter(node=>rootRef(node)===ref||!selected.workingRootRef&&!node.workingRootRef&&mode==='shared'&&(body.workingCopyMode??node.workingCopyMode??'shared')==='shared'),node=members.find(member=>member.workingFolder)??members[0]!;
           const agent=created.get(node.ref)!;
-          const members=importNodes.filter(member=>created.get(member.ref)!.workingCopy.rootPath===agent.workingCopy.rootPath);
-          const ref=node.workingRootRef??node.ref;
-          const root={ref,path:agent.workingCopy.rootPath,agentIds:members.map(member=>created.get(member.ref)!.id)};
-          liveWorkingRoots.push(root);
-          const backupRoot=path.join(root.path,'.ponderosa-import-backups');
-          store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingRoots}});
-          const files=(node.workingFiles??[]).map(file=>{const artifact=node.artifacts.find(a=>a.destinationId===file.artifactRef)!;return {path:file.path,data:artifact.data,sha256:artifact.sha256,mode:file.mode,mtime:file.mtime};});
-          const reviewedOriginal=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
-          // Shared native task callbacks own per-family applying/completed receipts.
-          const metadataActivation=body.reviewedMetadataActivation?.rootRefs.includes(ref)?body.reviewedMetadataActivation:undefined;
-          const metadataApplication=metadataActivation&&reviewedOriginal?{ref,path:root.path,originalSha256:reviewedOriginal.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
-          if(metadataApplication){metadataApplications.push(metadataApplication);saveMetadataApplications();}
-          const release=context.workingCopies!.beginModeChange(agent.id);
-          try{const identity=await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links,node.workingFolder?.cyclicLinks,undefined,metadataActivation,liveLinkDestinations,true,true);liveRootIdentities[agent.workingCopy.rootPath]=identity;pendingLiveMetadata.push({destination:agent.workingCopy.rootPath,...(metadataApplication?{receipt:metadataApplication}:{}),apply:async()=>{const release=context.workingCopies!.beginModeChange(agent.id);try{await context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(agent.id)!,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,node.workingFolder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()));}finally{release();}}});}catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}finally{release();if(metadataApplication)saveMetadataApplications();}
-        }
-        for(const node of owners){
-          const agent=created.get(node.ref)!,release=context.workingCopies!.beginModeChange(agent.id);
-          try{await importWorkingLinks(agent.workingCopy.rootPath,node.workingFolder?.links??[],liveLinkDestinations,{backupRoot:path.join(agent.workingCopy.rootPath,'.ponderosa-import-backups')},liveRootIdentities[agent.workingCopy.rootPath]);}
-          catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
-          finally{release();}
-        }
-        if(body.reviewedUserDataActivation){
-          const liveDestinations=Object.fromEntries(owners.map(node=>[node.workingRootRef??node.ref,created.get(node.ref)!.workingCopy.rootPath]));
-          const recoveryDestinations=body.workingRootDestinations??{[owners[0]!.workingRootRef??owners[0]!.ref]:body.workingFilesDestination!};
-          const relocate=(target:string)=>{const entries=Object.entries(recoveryDestinations).filter(([,root])=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b[1].length-a[1].length);const entry=entries[0];if(!entry)throw new Error('Git activation path lost its included source root');return path.join(liveDestinations[entry[0]]!,path.relative(entry[1],target));};
-          const activation={...body.reviewedUserDataActivation,...(body.reviewedUserDataActivation.gitPathMappings?{gitPathMappings:body.reviewedUserDataActivation.gitPathMappings.map(mapping=>({...mapping,destination:relocate(mapping.destination)}))}:{})};
-          const releases=[...new Set([...created.values()].map(agent=>agent.id))].map(id=>context.workingCopies!.beginModeChange(id));
-          try{
-            const record=(receipt:NonNullable<ImportAgentPackageResponse['reviewedUserDataApplications']>[number])=>{
-              const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
-              if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
-              store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
-            };
-            if(activation.git)await context.workingCopies!.completeImportedGitRoots(project,portablePackage,liveDestinations,activation,record,[...created.values()].map(agent=>agent.id));
-            else await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,liveDestinations,activation),activation,record,liveRootIdentities);
-          }finally{for(const release of releases)release();}
+          const files=members.flatMap(member=>(member.workingFiles??[]).map(file=>{const original=member.artifacts.find(artifact=>artifact.destinationId===file.artifactRef)!;return {path:file.path,data:original.data,sha256:original.sha256,mode:file.mode,mtime:file.mtime};}));
+          return {ref,members,node,agent,mode,files,folder:node.workingFolder};
+        });
+        const byRef=new Map(rows.map(row=>[row.ref,row])),allocated=new Set<string>();
+        const remember=()=>{
+          for(const row of rows)row.agent=store.getAgent(row.agent.id)!;
           for(const [ref,agent] of created)created.set(ref,store.getAgent(agent.id)!);
-
+          liveProject=store.getProject(project.id)!;
+        };
+        const allocate=async(ref:string):Promise<void>=>{
+          if(allocated.has(ref))return;signal?.throwIfAborted();
+          const row=byRef.get(ref);if(!row)throw new Error('Nested live root lacks its complete source folder');
+          const boundary=portablePackage.workingRootNesting?.find(item=>item.childRootRef===ref);
+          if(boundary){
+            await allocate(boundary.parentRootRef);const parent=byRef.get(boundary.parentRootRef)!;
+            const reservation=await context.workingCopies!.reserveImportedContainedRoot(store.getAgent(parent.agent.id)!,liveProject,boundary.path);
+            store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveRootBindings:{...((store.getAgentCreationOperation(creationOperationId!)?.result as {liveRootBindings?:object}|undefined)?.liveRootBindings??{}),[ref]:{parentRootRef:boundary.parentRootRef,path:boundary.path,agentIds:row.members.map(member=>created.get(member.ref)!.id),reservation}}}});
+            row.agent=row.mode==='shared'&&liveProject.hostPath!==reservation.rootPath
+              ?await context.workingCopies!.bindImportedContainedProjectForCreation(store.getAgent(row.agent.id)!,liveProject,reservation,creationOperationId!)
+              :await context.workingCopies!.bindImportedContainedRoot(store.getAgent(row.agent.id)!,liveProject,reservation,row.mode);
+            remember();
+          }else if(row.mode==='separate_git'){
+            row.agent=await context.workingCopies!.allocateImportedSeparateGit(store.getAgent(row.agent.id)!,liveProject);remember();
+          }
+          allocated.add(ref);
+        };
+        // A Separate actor without selected originals still needs its own locally
+        // allocated ownership, never a source path or an existing Shared branch.
+        for(const node of importNodes)if((body.workingCopyMode??node.workingCopyMode??'shared')==='separate_git'&&!byRef.has(rootRef(node))){
+          created.set(node.ref,await context.workingCopies!.allocateImportedSeparateGit(created.get(node.ref)!,liveProject));
         }
+        for(const row of rows)await allocate(row.ref);
+        remember();
+        const liveLinkDestinations=Object.fromEntries(rows.map(row=>[row.ref,row.agent.workingCopy.rootPath]));
+        validateWorkingRootNesting(new Set(rows.map(row=>row.ref)),portablePackage.workingRootNesting??[],liveLinkDestinations);
+        for(const row of [...rows].sort((a,b)=>a.agent.workingCopy.rootPath.split(path.sep).length-b.agent.workingCopy.rootPath.split(path.sep).length)){
+          if(row.members.some(member=>created.get(member.ref)!.workingCopy.rootPath!==row.agent.workingCopy.rootPath))throw new Error('Live import split source working-root membership');
+          const root={ref:row.ref,path:row.agent.workingCopy.rootPath,agentIds:row.members.map(member=>created.get(member.ref)!.id)};
+          liveWorkingRoots.push(root);store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingRoots}});
+          const metadataActivation=body.reviewedMetadataActivation?.rootRefs.includes(row.ref)?body.reviewedMetadataActivation:undefined,original=row.files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
+          const receipt=metadataActivation&&original?{ref:row.ref,path:root.path,originalSha256:original.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
+          if(receipt){metadataApplications.push(receipt);saveMetadataApplications();}
+          try{
+            const identity=await context.workingCopies!.populateImportedRoot(row.agent,liveProject,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,path.join(root.path,'.ponderosa-import-backups'),row.folder?.links,row.folder?.cyclicLinks,undefined,metadataActivation,liveLinkDestinations,true,true);
+            liveRootIdentities[root.path]=identity;
+            pendingLiveMetadata.push({destination:root.path,...(receipt?{receipt}:{}),apply:()=>context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(row.agent.id)!,store.getProject(project.id)!,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,row.folder?.links??[],metadataActivation,workingLinkCounts(row.ref,metadataRootLinks()))});
+          }catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+          finally{if(receipt)saveMetadataApplications();}
+        }
+        for(const row of rows){
+          try{await importWorkingLinks(row.agent.workingCopy.rootPath,row.folder?.links??[],liveLinkDestinations,{backupRoot:path.join(row.agent.workingCopy.rootPath,'.ponderosa-import-backups')},liveRootIdentities[row.agent.workingCopy.rootPath]);}
+          catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
+        }
+        const recoveryDestinations=body.workingRootDestinations??{[rows[0]!.ref]:body.workingFilesDestination!};
+        const relocate=(target:string)=>{const entry=Object.entries(recoveryDestinations).filter(([,root])=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b[1].length-a[1].length)[0];if(!entry)throw new Error('Git activation path lost its included source root');return path.join(liveLinkDestinations[entry[0]]!,path.relative(entry[1],target));};
+        const requested=body.reviewedUserDataActivation,activation=requested?{...requested,...(requested.gitPathMappings?{gitPathMappings:requested.gitPathMappings.map(mapping=>({...mapping,destination:relocate(mapping.destination)}))}:{})}:undefined;
+        await context.workingCopies!.completeImportedGitRoots(liveProject,portablePackage,liveLinkDestinations,activation,receipt=>{
+          const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
+          if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
+          store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
+        },[...created.values()].map(agent=>agent.id));
+        remember();
       }
 
       for(const pending of [...pendingLiveMetadata].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
@@ -2059,6 +2085,7 @@ export function registerAgentPackageRoutes(
         finally{if(pending.receipt)saveMetadataApplications();}
       }
 
+      for(const release of liveModeReleases.splice(0).reverse())release();
       const catalogArtifacts: Array<{
         artifact: Parameters<AgentStore["recordProjectArtifact"]>[0];
       }> = [];
@@ -2177,7 +2204,7 @@ export function registerAgentPackageRoutes(
             for(const node of importNodes)if(node.accessSettings&&(body.accessSettingsResolution.agentActions?.[node.ref]??body.accessSettingsResolution.action)==='use_source')policies.put({scopeKind:'agent',scopeId:created.get(node.ref)!.id,expectedRevision:0,restrictedCapabilityIds:node.accessSettings.restrictedCapabilityIds,actor:'operator',reason:'Human-reviewed portable nonsecret access settings'});
           }
           const completeImport=()=>store.updateAgentCreationOperation(creationOperationId!, {
-            status: "completed", result: branchHooks?{...response,memoryPlan:(store.getAgentCreationOperation(creationOperationId!)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan}:response, lastError: null,
+            status: "completed", result: {...((store.getAgentCreationOperation(creationOperationId!)?.result as {importedProjectRootBindings?:object}|undefined)?.importedProjectRootBindings?{importedProjectRootBindings:(store.getAgentCreationOperation(creationOperationId!)!.result as {importedProjectRootBindings:object}).importedProjectRootBindings}:{}),...(branchHooks?{...response,memoryPlan:(store.getAgentCreationOperation(creationOperationId!)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan}:response)}, lastError: null,
           });
           if(branchHooks?.holdForDisclosure){
             if(!branchHooks.stage||operationAgentIds.some(id=>!destinationAdmissionHeld(store.sqlite,id)))throw new Error('Disclosure hold requires exact staged identities');
@@ -2216,6 +2243,12 @@ export function registerAgentPackageRoutes(
         if(retainedWorkingFiles)error=new Error(`${error instanceof Error?error.message:String(error)}; user working files retained at ${JSON.stringify(body.workingRootDestinations??body.workingFilesDestination)}`,{cause:error});
         if(creationOperationId&&['completed','canonical_committed'].includes(store.getAgentCreationOperation(creationOperationId)?.status??'')){
           return reply.code(409).send({error:'Imported resources committed; output role finalization needs recovery/review: '+(error as Error).message,operationId:creationOperationId});
+        }
+        const heldBindings=creationOperationId?(store.getAgentCreationOperation(creationOperationId)?.result as {importedProjectRootBindings?:Record<string,object>}|undefined)?.importedProjectRootBindings:undefined;
+        if(creationOperationId&&heldBindings&&Object.keys(heldBindings).length){
+          const message='Imported final working-root binding requires inspection; canonical members and partial roots are held without replay: '+(error instanceof Error?error.message:String(error));
+          store.updateAgentCreationOperation(creationOperationId,{result:{...(store.getAgentCreationOperation(creationOperationId)?.result as object??{}),importedProjectRootBindings:Object.fromEntries(Object.entries(heldBindings).map(([id,binding])=>[id,{...binding,state:'unavailable',error:{code:'ERR_IMPORT_PROJECT_BINDING_HELD',message,at:new Date().toISOString()}}]))},lastError:message});
+          throw Object.assign(new Error(message,{cause:error}),{statusCode:409,code:'ERR_IMPORT_PROJECT_BINDING_HELD',partialStatePossible:true});
         }
         let rollbackComplete = true;
         if(creationOperationId){
@@ -2304,6 +2337,7 @@ export function registerAgentPackageRoutes(
         }
         throw error;
       } finally {
+        for(const release of liveModeReleases.splice(0).reverse())release();
         for (const agentId of operationAgentIds.length ? operationAgentIds : rollbackAgentIds) {
           if (!store.getAgent(agentId)) deletingAgentIds.delete(agentId);
         }

@@ -245,7 +245,7 @@ export class AgentWorkingCopyService {
     private readonly store: Pick<
       AgentStore,
       "getAgent" | "listProjectWorkingCopies" | "updateAgentWorkingCopy" |
-      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents" | "getProject" | "bindStagedImportedProjectRoot"
+      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents" | "getProject" | "bindStagedImportedProjectRoot" | "bindPreparingImportedProjectRoot"
     >,
   ) {
     this.managedRoot = path.join(realpathSync(dataDir), "working-copies");
@@ -469,6 +469,18 @@ export class AgentWorkingCopyService {
     return bound;
   }
 
+  /** Generic import uses the same locally issued contained inode, with its original preparing operation. */
+  async bindImportedContainedProjectForCreation(agent:AgentDto,project:ProjectDto,reservation:ImportedContainedRootReservation,operationId:string):Promise<AgentDto> {
+    const owners=this.store.listAgents(project.id,{includePendingCreation:true});
+    if(owners.some(owner=>!this.modeChanges.has(owner.id)||this.activeUses.has(owner.id)))throw new Error('Final contained Project binding requires every preparing owner fence');
+    const parent=this.store.getAgent(reservation.parent.parentAgentId),issued=parent?.workingCopy.containedRootPreparations?.find(item=>item.id===reservation.id);
+    if(!parent||!this.modeChanges.has(parent.id)||issued?.phase!=='created'||issued.rootPath!==reservation.rootPath||issued.device!==reservation.parent.device||issued.inode!==reservation.parent.inode||await this.containedRootPath(reservation.parent)!==reservation.rootPath)throw new Error('Final Project binding requires its exact locally created contained-root receipt');
+    const rebound=this.store.bindPreparingImportedProjectRoot(project.id,operationId,project.hostPath,reservation.rootPath,owners.map(owner=>owner.id),reservation.parent);
+    const bound=await this.bindImportedContainedRoot(this.store.getAgent(agent.id)!,rebound,reservation,'shared');
+    for(const owner of owners)if(owner.id!==agent.id&&this.store.getAgent(owner.id)!.workingCopy.mode==='shared')this.requireUpdated(owner.id,{...this.store.getAgent(owner.id)!.workingCopy,importedParent:bound.workingCopy.importedParent});
+    return bound;
+  }
+
   /** Same captured Shared root may have several independently owned Chat namespaces. */
   async bindImportedContainedProjectAlias(agent:AgentDto,project:ProjectDto,rootOwner:AgentDto,planId:string):Promise<AgentDto> {
     const proof=rootOwner.workingCopy.importedParent,owners=this.store.listAgents(project.id);
@@ -591,13 +603,13 @@ export class AgentWorkingCopyService {
       const staged=this.stagedImportedGitRoots.get(root)!;if(!staged.agentId)continue;
       const agent=this.store.getAgent(staged.agentId);if(!agent||agent.workingCopy.repositoryRoot!==root||agent.workingCopy.state!=='unavailable')throw new Error('Imported Separate Git ownership changed before activation');
       const workingCopy=agent.workingCopy,branch=workingCopy.branch!;
-      if(!tasks.some(task=>task.destination===root))await runGit(root,['init','--template=','--initial-branch=main']);
+      if(!tasks.some(task=>task.destination===root&&task.activation.git))await runGit(root,['init','--template=','--initial-branch=main']);
       // An unborn source needs only a local empty ownership commit. The selected
       // source index and every imported branch/ref are retained unchanged.
       let baseHead:string;
       try{baseHead=await runGit(root,['rev-parse','--verify','HEAD^{commit}']);}
       catch(error){
-        const task=tasks.find(task=>task.destination===root),git=task?.value.git;
+        const task=tasks.find(task=>task.destination===root&&task.activation.git),git=task?.value.git;
         if(git&&(!('symbolic' in git.head)||git.refs.some(ref=>ref.name===('symbolic' in git.head?git.head.symbolic:''))))throw error;
         const emptyTree=execFileSync('git',['-c','core.hooksPath=/dev/null','hash-object','-t','tree','-w','--stdin'],{cwd:root,env:gitEnvironment(),input:'',encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
         baseHead=execFileSync('git',['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit-tree','--no-gpg-sign',emptyTree,'-m','Initialize imported Separate ownership'],{cwd:root,env:gitEnvironment(),encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();

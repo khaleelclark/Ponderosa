@@ -384,3 +384,21 @@ test('live native held-open rejects replacement after service precheck before an
   }finally{release();}
  }finally{restore?.();store?.close();await rm(base,{recursive:true,force:true});}
 });
+
+test('harness-only Separate activation ignores Git refs carried in the same original manifest',async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-harness-only-owned-')));let store;
+ try{
+  const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data');await initialize(source);await initialize(shared);await mkdir(data);await mkdir(path.join(source,'.claude'));await writeFile(path.join(source,'.claude','settings.json'),'{"permissions":{"allow":[]}}\n');await git(source,'tag','unrequested-source-tag');
+  const manifest=await exportReviewedUserData(source,{git:true,harness:true}),pkg=packageFor(manifest),bytes=Buffer.from(JSON.stringify(manifest)),activation={git:false,harness:true};
+  store=new AgentStore(data);const project=store.createProject({label:'Existing',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Harness only'}),agent=store.createAgent(project.id,{title:'Owner',engine:'codex',conversationId:chat.id}),service=new AgentWorkingCopyService(data,store),release=service.beginModeChange(agent.id);
+  try{
+   const created=await service.allocateImportedSeparateGit(agent,project),root=created.workingCopy.rootPath;
+   await service.populateImportedRoot(created,project,[{path:'.ponderosa-portable-review/user-data.json',data:bytes,sha256:createHash('sha256').update(bytes).digest('hex')}],[],undefined,path.join(root,'.ponderosa-import-backups'),[],'refuse',undefined,undefined,{work:root},true,true);
+   await assert.rejects(lstat(path.join(root,'.claude')),error=>error.code==='ENOENT');
+   const receipts=[];await service.completeImportedGitRoots(project,pkg,{work:root},activation,receipt=>receipts.push(structuredClone(receipt)),[agent.id]);
+   assert.equal(store.getAgent(agent.id).workingCopy.state,'ready');assert.equal(await readFile(path.join(root,'.claude','settings.json'),'utf8'),'{"permissions":{"allow":[]}}\n');
+   await assert.rejects(git(root,'rev-parse','--verify','refs/tags/unrequested-source-tag'));
+   assert.equal(receipts.at(-1).state,'completed');assert.deepEqual(receipts.at(-1).selection,{git:false,harness:true});assert.equal(await git(source,'tag','--list','unrequested-source-tag'),'unrequested-source-tag');
+  }finally{release();}
+ }finally{store?.close();await rm(base,{recursive:true,force:true});}
+});
