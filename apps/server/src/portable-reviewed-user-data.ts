@@ -1128,7 +1128,7 @@ function decodeReftable(data:Buffer,format:'sha1'|'sha256',budget:{records:numbe
   const leaves=(family:Block['family'])=>[...blocks.values()].filter(block=>block.family===family&&block.type!=='i');
   const checkIndex=(position:number,family:Block['family'],required:boolean)=>{
     if(!position){if(required)fail();return;}
-    const seen=new Set<number>(),visit=(at:number,depth=0)=>{if(depth>32)fail();const block=blocks.get(at);if(!block||block.family!==family||seen.has(at))fail();seen.add(at);for(const child of block.children)visit(child===0?header:child,depth+1);};
+    const seen=new Set<number>(),visit=(at:number,depth=0)=>{if(depth>32)fail();const block=blocks.get(at);if(!block)return fail();if(block.family!==family||seen.has(at))fail();seen.add(at);for(const child of block.children)visit(child===0?header:child,depth+1);};
     if(blocks.get(position)?.type!=='i')fail();let last:Buffer|undefined;for(const root of blocks.values())if(root.family===family&&root.position>=position){if(root.type!=='i'||last&&Buffer.compare(root.keys[0]!,last)<=0)fail();last=root.last;visit(root.position);}if(leaves(family).some(block=>!seen.has(block.position)))fail();
   };
   checkIndex(refIndex,'ref',!blockSize&&leaves('ref').length>1);checkIndex(objectIndex,'object',false);checkIndex(logIndex,'log',false);
@@ -2064,7 +2064,7 @@ export async function verifyGitExportAssociations(capture:GitExportCapture):Prom
     const module=selected.length===1&&selected[0]!.role==='module';
     if(!module&&(selected.length!==2||!selected.some(binding=>binding.role==='common')||!selected.some(binding=>binding.role==='private')))throw new Error('Select one module binding or the complete common/private binding pair');
     const association=await gitAssociation(root,capture);
-    if(module?!association?.module:!association?.linked)throw new Error('Mapped Git capture lacks its exact module or common/private association');
+    if(!association||(module?!association.module:!association.linked))throw new Error('Mapped Git capture lacks its exact module or common/private association');
     capture.record(root,association.evidence);
   }
   await capture.verify();

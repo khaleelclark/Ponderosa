@@ -329,6 +329,8 @@ export async function materializeGitExternalReview(folder:string,data:ReviewedGi
 /** Shared link phase; global root imports call this only after every original exists. */
 async function placeWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations:Readonly<Record<string,string>>|undefined,preserveBaseline:(relative:string)=>Promise<void>,assertCurrent?:()=>Promise<void>):Promise<void>{
     for(const link of [...links].sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
+      const mappedRoot=link.targetRootRef?rootDestinations?.[link.targetRootRef]:undefined;
+      if(link.targetRootRef&&!mappedRoot)throw new Error('Working-link target root is missing from the selected destination map');
       await assertCurrent?.();
       const target=path.join(destination,link.path),parent=path.dirname(target);
       let current=destination;
@@ -341,12 +343,11 @@ async function placeWorkingLinks(destination:string,links:readonly PortableWorki
       if(await fs.realpath(parent)!==parent)throw new Error('Working-link destination parent changed');
       await preserveBaseline(link.path);
       if(link.kind==='hardlink'){
-        const original=path.join(link.targetRootRef?rootDestinations![link.targetRootRef]:destination,link.target),stat=await fs.lstat(original);
+        const original=path.join(mappedRoot??destination,link.target),stat=await fs.lstat(original);
         if(!stat.isFile()||stat.isSymbolicLink()||await fs.realpath(original)!==original)throw new Error('Hardlink original changed');
         if(stat.dev!==(await fs.lstat(parent)).dev)throw new Error('Mapped hardlink destinations must use the same filesystem; partial originals retained');
         await fs.link(original,target);
       }else{
-        const mappedRoot=link.targetRootRef?rootDestinations![link.targetRootRef]:undefined;
         const symbolicTarget=mappedRoot?path.relative(parent,link.target==='.'?mappedRoot:path.join(mappedRoot,link.target)):link.target;
         await fs.symlink(symbolicTarget||'.',target);
         if(link.mtime)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
