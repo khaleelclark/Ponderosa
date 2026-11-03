@@ -22,7 +22,7 @@ import {withoutPortableSecrets,redactPortableDiagnostic} from '../portable-secre
 import {planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,validateReviewedUserDataActivation,validateReviewedUserDataSelection,validateReviewedMetadataActivation,requireReviewedMetadataApplication,validateGitStorageSelections,createGitExportCapture,verifyGitExportAssociations,validatePortableGitStorageBindings,type GitExportCapture,type SelectedGitBinding} from '../portable-reviewed-user-data.js';
 import {filesystemMetadataProvenance,planFilesystemMetadata} from '../portable-filesystem-metadata.js';
 import {parseReviewedUserData} from '../portable-reviewed-user-data.js';
-import {validateWorkingRootNesting,exportWorkingFiles,importWorkingFiles,importWorkingLinks,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,type WorkingFolderInventory,type WorkingRootIdentity} from '../portable-working-files.js';
+import {validateWorkingRootNesting,exportWorkingFiles,importWorkingFiles,importWorkingLinks,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,type WorkingFolderInventory,type WorkingRootIdentity} from '../portable-working-files.js';
 import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
 import {CapabilityPolicyStore} from '@ponderosa/agents';
 import {portableCommunicationVisible,portableCommunicationMessage} from '../portable-communication.js';
@@ -1490,6 +1490,26 @@ export function registerAgentPackageRoutes(
       const pendingFolderMetadata:Array<{destination:string;receipt?:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
       const pendingLiveMetadata:Array<{destination:string;receipt?:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
       let metadataPrimaryError:unknown;
+      const stagedFolderMetadata=new Set<(typeof pendingFolderMetadata)[number]>();
+      const stageFolderMetadata=async(pendingRows:typeof pendingFolderMetadata)=>{
+        for(const pending of [...pendingRows].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
+          if(stagedFolderMetadata.has(pending))continue;
+          try{await pending.apply();stagedFolderMetadata.add(pending);}
+          catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
+          finally{if(pending.receipt)saveMetadataApplications();}
+        }
+      };
+
+      const runNativeMetadataPhase=async(operation:()=>Promise<void>)=>{
+        try{await operation();}
+        catch(error){
+          metadataPrimaryError=error;
+          const pending=metadataApplications.filter(receipt=>receipt.state==='applying');
+          for(const receipt of pending){receipt.state='incomplete';receipt.error=metadataFailure(error);}
+          if(pending.length)saveMetadataApplications();
+          throw error;
+        }
+      };
       const saveMetadataApplications=()=>{
         try{return store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedMetadataApplications:metadataApplications}});}
         catch(receiptError){throw Object.assign(new Error('Metadata receipt persistence failed; preserve destination and original: '+(metadataPrimaryError instanceof Error?metadataPrimaryError.message:String(receiptError)),{cause:metadataPrimaryError??receiptError}),{code:(metadataPrimaryError as {code?:string}|undefined)?.code??'ERR_METADATA_RECEIPT_PERSISTENCE',partialStatePossible:true,receiptError});}
@@ -1939,7 +1959,7 @@ export function registerAgentPackageRoutes(
         });
       }
 
-      const recoveryRootIdentities:Record<string,WorkingRootIdentity>={},liveRootIdentities:Record<string,WorkingRootIdentity>={};
+      const recoveryRootIdentities:Record<string,WorkingRootIdentity>={},liveRootIdentities:Record<string,WorkingRootIdentity>={},nativeMetadata=createWorkingNativeMetadataEvidence();
       const folderImports=orderWorkingRoots((body.workingRootDestinations
         ? Object.entries(body.workingRootDestinations).map(([ref,destination])=>({destination,nodes:importNodes.filter(node=>node.workingRootRef===ref)}))
         : body.workingFilesDestination?[{destination:body.workingFilesDestination,nodes:importNodes}]:[]).map(item=>({...item,ref:item.nodes.find(node=>node.workingFolder)?.workingRootRef??item.nodes[0]!.ref,links:item.nodes.find(node=>node.workingFolder)?.workingFolder?.links??[]})),portablePackage.workingRootNesting);
@@ -1953,7 +1973,7 @@ export function registerAgentPackageRoutes(
         const original=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
         const receipt=metadataActivation&&original?{ref,path:destination,originalSha256:original.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
         if(receipt){metadataApplications.push(receipt);saveMetadataApplications();}
-        try{const identity=await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,undefined,folder?.links,folder?.cyclicLinks,metadataActivation,true,body.workingRootDestinations,true);recoveryRootIdentities[destination]=identity;pendingFolderMetadata.push({destination,receipt,apply:()=>finalizeWorkingFolderMetadata(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,folder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()),identity)});}
+        try{const identity=await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,undefined,folder?.links,folder?.cyclicLinks,metadataActivation,true,body.workingRootDestinations,true);recoveryRootIdentities[destination]=identity;pendingFolderMetadata.push({destination,receipt,apply:()=>finalizeWorkingFolderMetadata(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,folder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()),identity,nativeMetadata)});}
         catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
         finally{if(receipt)saveMetadataApplications();}
       }
@@ -1964,14 +1984,14 @@ export function registerAgentPackageRoutes(
       if(body.reviewedUserDataActivation&&!body.workingFilesActivation){
         const owner=portablePackage.agents.find(node=>node.workingFolder||node.workingFiles?.length);
         const destinations=body.workingRootDestinations??{[owner!.workingRootRef??owner!.ref]:body.workingFilesDestination!};
-        await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,destinations,body.reviewedUserDataActivation),body.reviewedUserDataActivation,receipt=>{
+        await runNativeMetadataPhase(()=>applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,destinations,body.reviewedUserDataActivation),body.reviewedUserDataActivation,receipt=>{
           const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
           if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
           store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
-        },recoveryRootIdentities);
+        },recoveryRootIdentities,nativeMetadata,()=>stageFolderMetadata(pendingFolderMetadata)));
       }
-      for(const pending of [...pendingFolderMetadata].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
-        try{await pending.apply();if(pending.receipt)pending.receipt.state='completed';}
+      for(const pending of [...(body.workingFilesActivation?[]:pendingFolderMetadata)].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
+        try{if(!stagedFolderMetadata.has(pending)){await pending.apply();stagedFolderMetadata.add(pending);}if(pending.receipt)pending.receipt.state='completed';}
         catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
         finally{if(pending.receipt)saveMetadataApplications();}
       }
@@ -2060,7 +2080,7 @@ export function registerAgentPackageRoutes(
           try{
             const identity=await context.workingCopies!.populateImportedRoot(row.agent,liveProject,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,path.join(root.path,'.ponderosa-import-backups'),row.folder?.links,row.folder?.cyclicLinks,undefined,metadataActivation,liveLinkDestinations,true,true);
             liveRootIdentities[root.path]=identity;
-            pendingLiveMetadata.push({destination:root.path,...(receipt?{receipt}:{}),apply:()=>context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(row.agent.id)!,store.getProject(project.id)!,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,row.folder?.links??[],metadataActivation,workingLinkCounts(row.ref,metadataRootLinks()))});
+            pendingLiveMetadata.push({destination:root.path,...(receipt?{receipt}:{}),apply:()=>context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(row.agent.id)!,store.getProject(project.id)!,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,row.folder?.links??[],metadataActivation,workingLinkCounts(row.ref,metadataRootLinks()),nativeMetadata)});
           }catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
           finally{if(receipt)saveMetadataApplications();}
         }
@@ -2071,16 +2091,16 @@ export function registerAgentPackageRoutes(
         const recoveryDestinations=body.workingRootDestinations??{[rows[0]!.ref]:body.workingFilesDestination!};
         const relocate=(target:string)=>{const entry=Object.entries(recoveryDestinations).filter(([,root])=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b[1].length-a[1].length)[0];if(!entry)throw new Error('Git activation path lost its included source root');return path.join(liveLinkDestinations[entry[0]]!,path.relative(entry[1],target));};
         const requested=body.reviewedUserDataActivation,activation=requested?{...requested,...(requested.gitPathMappings?{gitPathMappings:requested.gitPathMappings.map(mapping=>({...mapping,destination:relocate(mapping.destination)}))}:{})}:undefined;
-        await context.workingCopies!.completeImportedGitRoots(liveProject,portablePackage,liveLinkDestinations,activation,receipt=>{
+        await runNativeMetadataPhase(()=>context.workingCopies!.completeImportedGitRoots(liveProject,portablePackage,liveLinkDestinations,activation,receipt=>{
           const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
           if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
           store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
-        },[...created.values()].map(agent=>agent.id));
+        },[...created.values()].map(agent=>agent.id),nativeMetadata,()=>stageFolderMetadata([...pendingFolderMetadata,...pendingLiveMetadata])));
         remember();
       }
 
-      for(const pending of [...pendingLiveMetadata].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
-        try{await pending.apply();if(pending.receipt)pending.receipt.state='completed';}
+      for(const pending of [...(body.workingFilesActivation?pendingFolderMetadata:[]),...pendingLiveMetadata].sort((a,b)=>b.destination.split(path.sep).length-a.destination.split(path.sep).length)){
+        try{if(!stagedFolderMetadata.has(pending)){await pending.apply();stagedFolderMetadata.add(pending);}if(pending.receipt)pending.receipt.state='completed';}
         catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
         finally{if(pending.receipt)saveMetadataApplications();}
       }

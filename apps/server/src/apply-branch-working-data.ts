@@ -7,7 +7,7 @@ import type {AgentWorkingCopyService} from './agent-working-copy-service.js';
 import {portableApplicationFailure} from './portable-application-error.js';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 import {assertAgentPackageMemoryAvailable,decodePortableArtifactData} from './agent-package-codec.js';
-import {importWorkingFiles,importWorkingLinks,finalizeWorkingFolderMetadata,workingLinkCounts,validateWorkingRootNesting,type WorkingRootIdentity} from './portable-working-files.js';
+import {importWorkingFiles,importWorkingLinks,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,validateWorkingRootNesting,type WorkingRootIdentity} from './portable-working-files.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
 import {branchWorkingDataHash} from './branch-working-data.js';
 import {REVIEWED_USER_DATA_PATH} from './portable-reviewed-user-data.js';
@@ -163,7 +163,7 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
    await store.attachImportedWorkingStateAsync(agents.get(node.ref)!.id,planId,{workingFiles:originals,...(node.workingFolder?{workingFolder:node.workingFolder}:{})});
   }
   receipt.phase='recovery-folders';save();
-  const recoveryIdentity=new Map<string,WorkingRootIdentity>(),liveIdentity=new Map<string,WorkingRootIdentity>();
+  const recoveryIdentity=new Map<string,WorkingRootIdentity>(),liveIdentity=new Map<string,WorkingRootIdentity>(),nativeMetadata=createWorkingNativeMetadataEvidence();
   for(const root of ordered){
    signal?.throwIfAborted();
    const identity=await importWorkingFiles(root.destination,root.files,root.node.workingFolder?.directories??[],undefined,undefined,root.links,root.node.workingFolder?.cyclicLinks,root.metadata,true,destinations,true);
@@ -214,24 +214,31 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
    receipt.roots.find(item=>item.ref===root.ref)!.state='populated';save();
   }
   for(const root of liveRoots)await importWorkingLinks(root.livePath!,root.links,finalDestinations,{backupRoot:path.join(root.livePath!,'.ponderosa-import-backups')},liveIdentity.get(root.ref));
-  receipt.phase='native-settings';save();
-  if(liveRoots.length){
-   for(const root of roots.filter(root=>!root.live))await workingCopies.retainImportedRecoveryGitRoot(root.destination,recoveryIdentity.get(root.ref)!);
-   await workingCopies.completeImportedGitRoots(liveRoots[0]!.project,pkg,finalDestinations,liveActivation,nativeReceipt,[...new Set(liveRoots.flatMap(root=>root.members.map(member=>agents.get(member.ref)!.id)))]);
-  }else if(native)await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(pkg,finalDestinations,liveActivation??native),liveActivation??native,nativeReceipt,Object.fromEntries(roots.map(root=>[root.destination,recoveryIdentity.get(root.ref)!])));
+  let metadataStaged=false;
+  const stageWorkingMetadata=async()=>{
+   if(metadataStaged)return;
   receipt.phase='final-metadata';save();
   const links=roots.map(root=>({ref:root.ref,links:root.links}));
   for(const root of [...ordered].reverse()){
    const meta=root.node.workingFolder,original=root.files.find(file=>file.path===REVIEWED_USER_DATA_PATH),ordinary=meta?.mode!==undefined&&meta.mtime?{mode:meta.mode,mtime:meta.mtime}:undefined;
    const recovery=root.metadata&&original?metadataReceipt(root.ref,root.destination,original.sha256):undefined;
-   await finalizeWorkingFolderMetadata(root.destination,root.files,meta?.directories??[],ordinary,root.links,root.metadata,workingLinkCounts(root.ref,links),recoveryIdentity.get(root.ref));
-   if(recovery){recovery.state='completed';save();}
+   await finalizeWorkingFolderMetadata(root.destination,root.files,meta?.directories??[],ordinary,root.links,root.metadata,workingLinkCounts(root.ref,links),recoveryIdentity.get(root.ref),nativeMetadata);
+   if(recovery)save();
   }
   for(const root of [...liveRoots].sort((a,b)=>b.livePath!.split(path.sep).length-a.livePath!.split(path.sep).length)){
    const meta=root.node.workingFolder,original=root.files.find(file=>file.path===REVIEWED_USER_DATA_PATH),value=root.metadata&&original?metadataReceipt(root.ref,root.livePath!,original.sha256):undefined;
-   await workingCopies.finalizeImportedRootMetadata(store.getAgent(root.agent.id)!,root.project,root.files,meta?.directories??[],meta?.mode!==undefined&&meta.mtime?{mode:meta.mode,mtime:meta.mtime}:undefined,root.links,root.metadata,workingLinkCounts(root.ref,links));
-   if(value){value.state='completed';save();}
+   await workingCopies.finalizeImportedRootMetadata(store.getAgent(root.agent.id)!,root.project,root.files,meta?.directories??[],meta?.mode!==undefined&&meta.mtime?{mode:meta.mode,mtime:meta.mtime}:undefined,root.links,root.metadata,workingLinkCounts(root.ref,links),nativeMetadata);
+   if(value)save();
   }
+   metadataStaged=true;
+  };
+  receipt.phase='native-settings';save();
+  if(liveRoots.length){
+   for(const root of roots.filter(root=>!root.live))await workingCopies.retainImportedRecoveryGitRoot(root.destination,recoveryIdentity.get(root.ref)!);
+   await workingCopies.completeImportedGitRoots(liveRoots[0]!.project,pkg,finalDestinations,liveActivation,nativeReceipt,[...new Set(liveRoots.flatMap(root=>root.members.map(member=>agents.get(member.ref)!.id)))],nativeMetadata,stageWorkingMetadata);
+  }else if(native)await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(pkg,finalDestinations,liveActivation??native),liveActivation??native,nativeReceipt,Object.fromEntries(roots.map(root=>[root.destination,recoveryIdentity.get(root.ref)!])),nativeMetadata,stageWorkingMetadata);
+  if(!metadataStaged)await stageWorkingMetadata();
+  for(const value of receipt.reviewedMetadataApplications)if(value.state==='applying')value.state='completed';save();
   for(const root of receipt.roots)root.state='completed';receipt.phase='completed';receipt.state='completed';save();return receipt;
  }catch(error){
   receipt.state='incomplete';receipt.error=portableApplicationFailure(error);

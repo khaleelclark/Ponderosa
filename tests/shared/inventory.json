@@ -2378,6 +2378,14 @@
       "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
     },
     {
+      "path": "tests/organizations/portable-working-native-aliases.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native host; disposable filesystem fixtures, Linux descriptor checks",
+      "origin": "Bible8 whole working-data/native Git hardlink closure, exact metadata precedence and deferred restrictive mode staging"
+    },
+    {
       "path": "tests/organizations/portable-git-recreation.test.mjs",
       "feature": "organizations",
       "lane": "server",

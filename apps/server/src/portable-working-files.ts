@@ -2,10 +2,11 @@ import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core
 import {encodePortableArtifactData} from "./agent-package-codec.js";
 import {constants} from 'node:fs';
 import {openPortableRegular} from './portable-held-regular.js';
+import {applyExactFileMetadata} from '@ponderosa/native-host';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import type {PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies} from '@ponderosa/core';
+import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies} from '@ponderosa/core';
 import {applyFilesystemMetadata,planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
 import {captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
@@ -13,6 +14,27 @@ import {captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedU
 export interface WorkingHardlinkCapture {
   originals:Map<string,{root:string;ref?:string;path:string;nlink:bigint;count:number;identity:string;paths:string[]}>;
   aliases:Array<{root:string;path:string;key:string;identity:string}>;
+}
+/** Runtime-only proofs issued by native writers after complete alias/readback checks. */
+export interface WorkingNativeDirectoryProof {device:string;inode:string;mode:number;mtimeNs:string;ctimeNs?:string}
+export interface WorkingNativeFileProof extends WorkingNativeDirectoryProof {sha256:string;expectedLinkCount:string}
+export interface WorkingNativeMetadata {
+ files:Map<string,WorkingNativeFileProof>;directories:Map<string,WorkingNativeDirectoryProof>;
+ protectedFiles:Map<string,{mode:number;mtimeNs:string;sha256:string}>;protectedDirectories:Map<string,{mode:number;mtimeNs:string}>;
+ deferredMetadata:Map<string,{kind:'file'|'directory';mode:number;mtimeNs:string;apply:(held:{fd:number;expectedDevice:bigint;expectedInode:bigint;expectedLinkCount?:bigint})=>void|Promise<void>}>;
+}
+export type WorkingNativeMetadataEvidence=WorkingNativeMetadata;
+export type WorkingNativeMetadataSink=WorkingNativeMetadata;
+export function createWorkingNativeMetadataEvidence():WorkingNativeMetadata{return {files:new Map(),directories:new Map(),protectedFiles:new Map(),protectedDirectories:new Map(),deferredMetadata:new Map()};}
+function assertNativeMetadataProof(stat:{dev:bigint;ino:bigint;mode:bigint;mtimeNs:bigint;ctimeNs:bigint},proof:WorkingNativeDirectoryProof):void {
+  if(!Number.isInteger(proof.mode)||proof.mode<0||proof.mode>0o7777||String(stat.dev)!==proof.device||String(stat.ino)!==proof.inode||Number(stat.mode&0o7777n)!==proof.mode||String(stat.mtimeNs)!==proof.mtimeNs||proof.ctimeNs!==undefined&&String(stat.ctimeNs)!==proof.ctimeNs)throw new Error('Native metadata proof no longer matches the held working original; preserve all aliases');
+}
+function queueAncestorDirectoryMetadata(target:string,mode:number,mtime:string,native?:WorkingNativeMetadata):boolean {
+ if(!native||![...native.protectedFiles.keys(),...native.protectedDirectories.keys()].some(name=>name.startsWith(target+path.sep)))return false;
+ const finalMode=mode&0o777,mtimeNs=String(BigInt(Date.parse(mtime))*1000000n),prior=native.deferredMetadata.get(target);
+ if(prior&&(prior.kind!=='directory'||prior.mode!==finalMode||prior.mtimeNs!==mtimeNs))throw new Error('Deferred working directory metadata conflicts with another selected original');
+ if(!prior)native.deferredMetadata.set(target,{kind:'directory',mode:finalMode,mtimeNs,apply:held=>{applyExactFileMetadata({...held,kind:'directory',mode:finalMode,mtimeNs:BigInt(mtimeNs)});}});
+ return true;
 }
 export function createWorkingHardlinkCapture():WorkingHardlinkCapture{return {originals:new Map(),aliases:[]};}
 function hardlinkIdentity(stat:Awaited<ReturnType<typeof fs.lstat>>|{dev:bigint;ino:bigint;nlink:bigint;mode:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint}):string{
@@ -451,47 +473,60 @@ export async function importWorkingFiles(destination:string,files:readonly {path
 }
 
 /** Final ordinary/native metadata, after all root contents and cross-root aliases exist. */
-export async function finalizeWorkingFolderMetadata(destination:string,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],rootMetadata:Parameters<typeof importWorkingFiles>[3],links:readonly PortableWorkingLinkDto[]=[],activation?:ReviewedMetadataActivation,expectedLinkCounts?:ReadonlyMap<string,bigint>,expectedIdentity?:WorkingRootIdentity):Promise<void>{
+export async function finalizeWorkingFolderMetadata(destination:string,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],rootMetadata:Parameters<typeof importWorkingFiles>[3],links:readonly PortableWorkingLinkDto[]=[],activation?:ReviewedMetadataActivation,expectedLinkCounts?:ReadonlyMap<string,bigint>,expectedIdentity?:WorkingRootIdentity,nativeMetadata?:WorkingNativeMetadataEvidence):Promise<void>{
   const identity=expectedIdentity??await observedWorkingRootIdentity(destination),checkRoot=()=>assertWorkingRootIdentity(destination,identity);
   await checkRoot();
   const original=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
   const reviewed=original?parseReviewedUserData(original.data):undefined;
+  const finalLinkCounts=new Map(expectedLinkCounts);
+  for(const file of files){const target=path.join(destination,file.path),plan=nativeMetadata?.protectedFiles.get(target),proof=nativeMetadata?.files.get(target);if(plan&&plan.sha256!==file.sha256)throw new Error('Protected native and working original bytes disagree');if(proof){if(!/^[1-9][0-9]*$/.test(proof.expectedLinkCount)||proof.sha256!==file.sha256)throw new Error('Native and working original bytes or declared alias census disagree');finalLinkCounts.set(file.path,BigInt(proof.expectedLinkCount));}}
+  for(const relative of [...files.map(file=>file.path),...links.filter(link=>link.kind==='hardlink').map(link=>link.path)]){const target=path.join(destination,relative),proof=nativeMetadata?.files.get(target);if(!proof)continue;await checkRoot();if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Native working alias parent changed');const handle=await openPortableRegular(target,'metadata');try{const stat=await handle.stat({bigint:true});assertNativeMetadataProof(stat,proof);if(!stat.isFile()||String(stat.nlink)!==proof.expectedLinkCount)throw new Error('Native working alias identity or complete declared census changed');}finally{await handle.close();}}
+  // Exact user metadata may add ACL/principal choices, but cannot conflict with
+  // native Git evidence for the same physical source original.
+  if(activation&&reviewed?.selection.extendedMetadata)for(const node of reviewed.filesystemMetadata?.nodes??[]){const target=node.path==='.'?destination:path.join(destination,node.path),proof=node.kind==='file'?(nativeMetadata?.protectedFiles.get(target)??nativeMetadata?.files.get(target)):(nativeMetadata?.protectedDirectories.get(target)??nativeMetadata?.directories.get(target));if(proof&&(node.mode!==proof.mode||node.mtimeNs!==proof.mtimeNs))throw new Error('Selected filesystem and native Git metadata originals disagree');}
   if(activation){
     if(!original||createHash('sha256').update(original.data).digest('hex')!==original.sha256||!reviewed?.filesystemMetadata)throw new Error('Final metadata original changed or is absent');
     await checkRoot();
-    await applyFilesystemMetadata(destination,reviewed.filesystemMetadata,reviewed.selection,activation,links,expectedLinkCounts);
+    await applyFilesystemMetadata(destination,reviewed.filesystemMetadata,reviewed.selection,activation,links,finalLinkCounts,nativeMetadata);
   }
   if(!activation||!reviewed?.selection.extendedMetadata){
     for(const file of files){
       await checkRoot();
       const target=path.join(destination,portableWorkingPath(file.path));
+      // The shared native callback still owns readable descriptors for these
+      // exact originals. It verifies bytes/aliases before final selected modes.
+      if(nativeMetadata?.protectedFiles.has(target))continue;
       if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Final working-file parent changed');
-      const handle=await openPortableRegular(target);
+      const proof=nativeMetadata?.files.get(target),sealed=proof?.ctimeNs!==undefined,handle=await openPortableRegular(target,sealed?'metadata':'read');
       try{
-        const before=await handle.stat({bigint:true}),expectedLinks=expectedLinkCounts?.get(file.path)??BigInt(1+links.filter(link=>link.kind==='hardlink'&&!link.targetRootRef&&link.target===file.path).length);
+        const before=await handle.stat({bigint:true}),expectedLinks=finalLinkCounts.get(file.path)??BigInt(1+links.filter(link=>link.kind==='hardlink'&&!link.targetRootRef&&link.target===file.path).length);
         if(!before.isFile()||before.size!==BigInt(file.data.length)||before.nlink!==expectedLinks)throw new Error('Final working-file identity, size or complete aliases differ');
+        if(sealed)assertNativeMetadataProof(before,proof!);
         const hash=createHash('sha256'),buffer=Buffer.alloc(Math.min(file.data.length||1,65536));let offset=0;
-        while(offset<file.data.length){const read=await handle.read(buffer,0,Math.min(buffer.length,file.data.length-offset),offset);if(!read.bytesRead)throw new Error('Final working file shortened');hash.update(buffer.subarray(0,read.bytesRead));offset+=read.bytesRead;}
+        while(!sealed&&offset<file.data.length){const read=await handle.read(buffer,0,Math.min(buffer.length,file.data.length-offset),offset);if(!read.bytesRead)throw new Error('Final working file shortened');hash.update(buffer.subarray(0,read.bytesRead));offset+=read.bytesRead;}
         const after=await handle.stat({bigint:true});
-        if(hash.digest('hex')!==file.sha256||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Final working-file content changed; preserve current bytes');
+        if(!sealed&&hash.digest('hex')!==file.sha256||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Final working-file content changed; preserve current bytes');
         await checkRoot();
-        if(file.mode!==undefined)await handle.chmod(file.mode&0o777);
-        if(file.mtime)await handle.utimes(new Date(file.mtime),new Date(file.mtime));
-        await handle.sync();
+        if(proof)assertNativeMetadataProof(after,proof);
+        else{if(file.mode!==undefined)await handle.chmod(file.mode&0o777);if(file.mtime)await handle.utimes(new Date(file.mtime),new Date(file.mtime));}
+        if(!sealed)await handle.sync();
       }finally{await handle.close();}
     }
     for(const folder of [...(directories??[])].sort((a,b)=>b.path.split('/').length-a.path.split('/').length)){
       await checkRoot();
       const target=path.join(destination,portableWorkingPath(folder.path));
+      if(nativeMetadata?.protectedDirectories.has(target))continue;
+      if(queueAncestorDirectoryMetadata(target,folder.mode,folder.mtime,nativeMetadata))continue;
       if(await fs.realpath(target)!==target)throw new Error('Destination directory changed');
       const handle=await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-      try{await handle.chmod(folder.mode&0o777);await handle.utimes(new Date(folder.mtime),new Date(folder.mtime));}finally{await handle.close();}
+      try{const proof=nativeMetadata?.directories.get(target);if(proof)assertNativeMetadataProof(await handle.stat({bigint:true}),proof);else{await handle.chmod(folder.mode&0o777);await handle.utimes(new Date(folder.mtime),new Date(folder.mtime));}}finally{await handle.close();}
     }
     if(rootMetadata){
       await checkRoot();
+      if(nativeMetadata?.protectedDirectories.has(destination)||queueAncestorDirectoryMetadata(destination,rootMetadata.mode,rootMetadata.mtime,nativeMetadata)){await checkRoot();return;}
       if(await fs.realpath(destination)!==destination)throw new Error('Destination root changed');
       const handle=await fs.open(destination,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-      try{await handle.chmod(rootMetadata.mode&0o777);await handle.utimes(new Date(rootMetadata.mtime),new Date(rootMetadata.mtime));}finally{await handle.close();}
+      try{const proof=nativeMetadata?.directories.get(destination);if(proof)assertNativeMetadataProof(await handle.stat({bigint:true}),proof);else{await handle.chmod(rootMetadata.mode&0o777);await handle.utimes(new Date(rootMetadata.mtime),new Date(rootMetadata.mtime));}}finally{await handle.close();}
     }
   }
   await checkRoot();
@@ -500,6 +535,38 @@ export function workingLinkCounts(ref:string,roots:readonly {ref:string;links:re
   const counts=new Map<string,bigint>();
   for(const root of roots)for(const link of root.links)if(link.kind==='hardlink'&&(link.targetRootRef??root.ref)===ref)counts.set(link.target,(counts.get(link.target)??1n)+1n);
   return counts;
+}
+
+/** Hash-bound package declarations only: never discover aliases from current nlink. */
+export function workingNativeAliasEvidence(pkg:AgentPortablePackageDto,destinations:Readonly<Record<string,string>>):{aliases:Array<{path:string;target:string;root:string;targetRoot:string}>}{
+  if(pkg.mode!=='full')throw new Error('Native alias evidence requires whole working-folder originals');
+  const refs=new Set(pkg.agents.filter(node=>node.workingFolder||node.workingFiles?.length).map(node=>node.workingRootRef??node.ref));
+  validateWorkingRootNesting(refs,pkg.workingRootNesting??[],destinations);
+  const regular=new Set<string>(),links=new Map<string,{rootRef:string;link:PortableWorkingLinkDto}>(),folders=new Set<string>();
+  const key=(ref:string,name:string)=>JSON.stringify([ref,name]);
+  for(const node of pkg.agents){
+    const ref=node.workingRootRef??node.ref;if(!refs.has(ref))continue;
+    for(const file of node.workingFiles??[]){const name=portableWorkingPath(file.path),id=key(ref,name);if(links.has(id)||folders.has(id))throw new Error('Native alias original conflicts with working topology');regular.add(id);}
+    for(const directory of node.workingFolder?.directories??[]){const id=key(ref,portableWorkingPath(directory.path));if(regular.has(id)||links.has(id))throw new Error('Native alias folder conflicts with working topology');folders.add(id);}
+    for(const link of node.workingFolder?.links??[]){portableLinkTarget(link);const id=key(ref,link.path),prior=links.get(id);if(regular.has(id)||folders.has(id)||prior&&JSON.stringify(prior.link)!==JSON.stringify(link))throw new Error('Native alias declarations conflict');links.set(id,{rootRef:ref,link});}
+  }
+  if(regular.size+folders.size+links.size>10000*refs.size)throw new Error('Native working alias closure exceeds its selected-root format bound');
+  const aliases:Array<{path:string;target:string;root:string;targetRoot:string}>=[],physicalNames=new Set<string>();
+  for(const {rootRef,link} of links.values()){
+    if(link.kind!=='hardlink')continue;
+    let targetRef=link.targetRootRef??rootRef,target=link.target;const seen=new Set<string>();
+    for(let depth=0;;depth++){
+      const id=key(targetRef,target);if(depth>10000||seen.has(id))throw new Error('Native working hardlink chain is cyclic or exceeds its finite bound');seen.add(id);
+      if(!refs.has(targetRef))throw new Error('Native working hardlink target root is not included');
+      if(regular.has(id))break;
+      const next=links.get(id);if(!next||next.link.kind!=='hardlink')throw new Error('Native working hardlink requires a transported regular original');
+      targetRef=next.link.targetRootRef??next.rootRef;target=next.link.target;
+    }
+    const name=path.join(destinations[rootRef]!,link.path),original=path.join(destinations[targetRef]!,target);
+    if(name===original||physicalNames.has(name))throw new Error('Native working alias has duplicate physical destination names');physicalNames.add(name);
+    aliases.push({path:name,target:original,root:destinations[rootRef]!,targetRoot:destinations[targetRef]!});
+  }
+  return {aliases};
 }
 
 /** Explicit whole-folder selection. Omit native ownership/credential paths and report every omission. */
