@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,mkdir,writeFile,readFile,open,rm,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,open,rm,realpath,rename} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -180,4 +180,83 @@ test('automatic inactive review import preserves separate raw stacks and cross-w
   assert.equal(native(common,'rev-parse','HEAD'),mainOid);
   assert.equal(native(selected,'rev-parse','HEAD'),selectedOid);
   assert.deepEqual(await readFile(path.join(destination,REVIEWED_USER_DATA_PATH)),wire);
+});
+
+
+test('nested exact common storage retains one physical root and the reciprocal linked association',async t=>{
+  const root=await fixture(t),main=path.join(root,'main'),selected=path.join(root,'selected');
+  const oid=await repository(main);native(main,'worktree','add','-b','selected',selected);
+  const storage=path.join(main,'.git'),privatePath=native(selected,'rev-parse','--absolute-git-dir');
+  const bindings=[
+    {id:'common',worktreeRootRef:'selected',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:selected,storagePath:storage},
+    {id:'private',worktreeRootRef:'selected',storageRootRef:'storage',relativePath:path.relative(storage,privatePath).split(path.sep).join('/'),role:'private',worktreePath:selected,storagePath:storage},
+  ];
+  const held=await heldCapture({main,storage,selected},bindings);
+  try{
+    await verifyGitExportAssociations(held.capture);
+    const review=await exportReviewedUserData(selected,{git:true,harness:false},held.capture);
+    assert.ok(review.git.objects.some(object=>object.oid===oid));
+    await held.capture.verify();
+  }finally{await held.close();}
+});
+
+test('nested supporting files stay selected without granting native repository traversal',async t=>{
+  const root=await fixture(t),main=path.join(root,'main'),selected=path.join(root,'selected');
+  await repository(main);native(main,'worktree','add','-b','selected',selected);
+  const support=path.join(main,'support');await mkdir(support);await writeFile(path.join(support,'external.cfg'),'[core]\n');
+  const unrelated=path.join(main,'unrelated');await repository(unrelated);
+  const privatePath=native(selected,'rev-parse','--absolute-git-dir');
+  const bindings=[
+    {id:'common',worktreeRootRef:'selected',storageRootRef:'main',relativePath:'.git',role:'common',worktreePath:selected,storagePath:main},
+    {id:'private',worktreeRootRef:'selected',storageRootRef:'main',relativePath:path.relative(main,privatePath).split(path.sep).join('/'),role:'private',worktreePath:selected,storagePath:main},
+  ];
+  const held=await heldCapture({main,support,unrelated,selected},bindings);
+  try{
+    await verifyGitExportAssociations(held.capture);
+    assert.equal(await held.capture.usesGit(support),false);
+    await assert.rejects(held.capture.usesGit(unrelated),/nested.*module or storage binding/i);
+    await assert.rejects(held.capture.io.readdir(support),/nested.*module or storage binding/i);
+    await assert.rejects(held.capture.io.open(path.join(support,'external.cfg'),constants.O_RDONLY),/nested.*module or storage binding/i);
+    await held.capture.verify();
+  }finally{await held.close();}
+});
+
+test('an enclosing nested storage root is not an exact native storage boundary',async t=>{
+  const root=await fixture(t),parent=path.join(root,'parent'),box=path.join(parent,'box'),main=path.join(box,'main'),selected=path.join(root,'selected');
+  await mkdir(box,{recursive:true});await repository(main);native(main,'worktree','add','-b','selected',selected);
+  const privatePath=native(selected,'rev-parse','--absolute-git-dir');
+  const bindings=[
+    {id:'common',worktreeRootRef:'selected',storageRootRef:'box',relativePath:'main/.git',role:'common',worktreePath:selected,storagePath:box},
+    {id:'private',worktreeRootRef:'selected',storageRootRef:'box',relativePath:path.relative(box,privatePath).split(path.sep).join('/'),role:'private',worktreePath:selected,storagePath:box},
+  ];
+  const held=await heldCapture({parent,box,selected},bindings);
+  try{await assert.rejects(verifyGitExportAssociations(held.capture),/nested.*module or storage binding/i);}
+  finally{await held.close();}
+});
+
+test('nested source custody rejects a descriptor for a different canonical child before reading content',async t=>{
+  const root=await fixture(t),parent=path.join(root,'parent'),child=path.join(parent,'child'),foreign=path.join(root,'foreign');
+  await mkdir(child,{recursive:true});await mkdir(foreign);
+  const parentHandle=await open(parent,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  const foreignHandle=await open(foreign,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  const owner=(await parentHandle.stat({bigint:true})).uid;
+  const capture=createGitExportCapture([
+    {ref:'parent',pathname:parent,handle:parentHandle,owner},
+    {ref:'child',pathname:child,handle:foreignHandle,owner},
+  ],[{id:'module',worktreeRootRef:'child',storageRootRef:'parent',relativePath:'storage',role:'module',worktreePath:child,storagePath:parent}]);
+  try{await assert.rejects(capture.io.readdir(child),/descriptor.*canonical source path/i);}
+  finally{await capture.close();await Promise.all([parentHandle.close(),foreignHandle.close()]);}
+});
+
+test('nested selected child replacement invalidates retained parent membership instead of reopening it',async t=>{
+  const root=await fixture(t),source=path.join(root,'module-source'),parent=path.join(root,'parent');
+  await repository(source);await repository(parent);native(parent,'submodule','add',source,'libs/child');
+  const child=path.join(parent,'libs/child'),storage=native(child,'rev-parse','--absolute-git-dir');
+  const binding={id:'module',worktreeRootRef:'child',storageRootRef:'parent',relativePath:path.relative(parent,storage).split(path.sep).join('/'),role:'module',worktreePath:child,storagePath:parent};
+  const held=await heldCapture({parent,child},[binding]);
+  try{
+    await verifyGitExportAssociations(held.capture);
+    await rename(child,path.join(parent,'libs/old-child'));await mkdir(child);
+    await assert.rejects(held.capture.verify(),/held Git directory changed|directory entry no longer identifies/i);
+  }finally{await held.close();}
 });

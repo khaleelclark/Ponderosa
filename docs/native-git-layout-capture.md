@@ -102,3 +102,39 @@ only the shared writer's inert layout path and generated inert configuration,
 plus its regression and this contract. No tests/builds/typechecks have run in
 this implementation step. Source current ownership and native activation
 configuration/grants remain separate.
+
+
+## Nested source custody
+
+The package `workingRootNesting` carrier retains explicit ordinary filesystem
+ownership and prevents a selected child subtree from being counted again as its
+parent's working files. Git capture derives the same immediate selected ancestry
+from the actual held canonical roots. A Git read may enter a nested selected root
+only when that exact root is a declared module working root or an exact declared
+common/private/module storage target. An enclosing folder, an unrelated native
+repository, or imported capture provenance cannot supply this current grant.
+The normal reciprocal `.git`, `gitdir`, `commondir`, or module `core.worktree`
+checks still run before repository-family bytes are captured.
+
+Before any capture read, retained no-follow directory descriptors bind each nested
+selected child to its immediate parent's named directory chain. The final child
+entry must identify the already-held selected child; it is never reopened under
+a second physical alias. Every verification rechecks the same held parent/name
+relationship and original identity. A replaced or moved selected child fails the
+capture rather than adopting its replacement. Files-only supporting roots remain
+ordinary selected filesystem content: a held no-follow `.git` absence observation
+allows them to report no Git, without permitting native traversal or silently
+omitting an existing unqualified repository.
+
+Deferred regressions cover exact nested common storage, ordinary supporting
+files, enclosing-storage refusal, a foreign child descriptor, and child replacement.
+No build, typecheck, or test was run during implementation; final integrated
+validation remains with the root owner.
+
+Git originals now use the shared Linux O_PATH-first regular-file helper, including
+retained descriptor-relative reads. Type and inode identity are pinned before a
+readable descriptor is opened through the qualified procfs descriptor path. This
+closes the regular-name-to-FIFO swap endpoint-open window while keeping the
+existing same-owner, single-link, source identity, and parent custody checks.
+The helper is supplied by the portability lane; this commit depends on that
+integration before final build and validation.

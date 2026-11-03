@@ -10,6 +10,7 @@ import type {ReviewedGitUserData,ReviewedUserData,ReviewedUserDataSelection,Revi
 import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnostic,withoutPortableSecrets} from './portable-secrets.js';
 
 import {captureFilesystemMetadata,validateFilesystemMetadata} from './portable-filesystem-metadata.js';
+import {openPortableRegular} from './portable-held-regular.js';
 
 const sourceFs=fs;
 type GitSourceFs=Pick<typeof sourceFs,'lstat'|'realpath'|'open'|'readdir'>;
@@ -661,7 +662,7 @@ async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:b
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');
   const observed=await fs.lstat(target,{bigint:true});
   if(!observed.isFile()||observed.nlink!==1n||observed.size>BigInt(maxBytes)||expectedOwner!==undefined&&observed.uid!==expectedOwner)throw new Error('Reviewed data requires a bounded regular original');
-  const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  const handle=fs===sourceFs?await openPortableRegular(target):await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   let primary:unknown;
   try{
     const before=await handle.stat({bigint:true});
@@ -1726,9 +1727,30 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
   if(!roots.length||!bindings.length)throw new Error('Explicit selected Git storage bindings are required');
   if(new Set(roots.map(root=>root.pathname)).size!==roots.length||new Set(roots.map(root=>root.ref)).size!==roots.length)throw new Error('Selected Git roots must have distinct canonical paths and identities');
   const selected=[...roots].sort((a,b)=>b.pathname.length-a.pathname.length);
-  const locate=(target:string)=>{
+  const byRef=new Map(roots.map(root=>[root.ref,root]));
+  for(const root of roots)if(!path.isAbsolute(root.pathname)||path.resolve(root.pathname)!==root.pathname)throw new Error('Selected Git roots must be canonical absolute paths');
+  validatePortableGitStorageBindings(bindings.map(({worktreePath,storagePath,...binding})=>binding),new Set(byRef.keys()));
+  for(const binding of bindings){
+    const worktree=byRef.get(binding.worktreeRootRef)!,storage=byRef.get(binding.storageRootRef)!;
+    if(binding.capture!==undefined||worktree.pathname!==binding.worktreePath||storage.pathname!==binding.storagePath||worktree.owner!==storage.owner)throw new Error('Live Git bindings require exact held source roots, not imported capture authority');
+  }
+  // The package workingRootNesting carrier owns ordinary filesystem nesting. Git
+  // may cross a selected boundary only for an exact declared native role; the
+  // reciprocal pointer/configuration checks still precede repository reads.
+  const nested=selected.flatMap(child=>{
+    const parent=selected.find(root=>child.pathname.startsWith(root.pathname+path.sep));
+    if(!parent)return [];
+    const qualified=bindings.some(binding=>binding.role==='module'&&binding.worktreePath===child.pathname||path.join(binding.storagePath,binding.relativePath)===child.pathname);
+    return [{parent,child,qualified}];
+  });
+  const nativeRootAllowed=(root:SelectedGitRoot):boolean=>{
+    let current=root;
+    for(;;){const boundary=nested.find(item=>item.child===current);if(!boundary)return true;if(!boundary.qualified)return false;current=boundary.parent;}
+  };
+  const locate=(target:string,native=true)=>{
     const root=selected.find(root=>target===root.pathname||target.startsWith(root.pathname+path.sep));
     if(!root||path.resolve(target)!==target)throw new Error('Git read leaves the explicitly selected working roots');
+    if(native&&!nativeRootAllowed(root))throw new Error('Nested Git source requires an exact selected module or storage binding');
     return root;
   };
   type Held={handle:SelectedGitRoot['handle'];identity:string;owner:bigint;device:bigint;parent?:string;name?:string};
@@ -1743,7 +1765,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
   }));
   const descriptor=(entry:Held)=>`/proc/self/fd/${entry.handle.fd}`;
   const directory=(target:string):Promise<Held>=>{
-    locate(target);
+    locate(target,false);
     let entry=held.get(target);
     if(!entry){
       if(held.size+files.size>=20000)throw new Error('Held Git directory inventory exceeds its bound');
@@ -1763,12 +1785,26 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
     }
     return entry;
   };
+  let nestedProof:Promise<void>|undefined;
+  const proveNestedRoots=():Promise<void>=>nestedProof??=(async()=>{
+    // Roots were independently held by the caller. Bind each selected child to
+    // its immediate selected parent through retained no-follow intermediates,
+    // without reopening/counting the selected child under another pathname.
+    for(const root of roots){const entry=await directory(root.pathname);if(await fs.realpath(descriptor(entry))!==root.pathname)throw new Error('Selected Git root descriptor does not identify its canonical source path');}
+    for(const {child} of [...nested].sort((a,b)=>a.child.pathname.length-b.child.pathname.length)){
+      const parentPath=path.dirname(child.pathname),parent=await directory(parentPath),entry=await directory(child.pathname),name=path.basename(child.pathname);
+      const named=await fs.lstat(descriptor(parent)+'/'+name,{bigint:true});
+      if(!named.isDirectory()||named.uid!==entry.owner||originalIdentity(named)!==entry.identity)throw new Error('Nested selected Git root is not its held parent directory entry');
+      entry.parent=parentPath;entry.name=name;
+    }
+  })();
   const node=async(target:string)=>{
     const root=locate(target);
     if(target===root.pathname)return descriptor(await directory(target));
     return descriptor(await directory(path.dirname(target)))+'/'+path.basename(target);
   };
   const stat=async(target:string)=>{
+    await proveNestedRoots();
     const root=locate(target);
     const observed=target===root.pathname?await root.handle.stat({bigint:true}):await fs.lstat(await node(target),{bigint:true});
     if(observed.uid!==root.owner||observed.dev!==(await directory(root.pathname)).device||observed.isSymbolicLink())throw new Error('Git source node is foreign or symbolic');
@@ -1787,6 +1823,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
       return target;
     }) as typeof fs.realpath,
     readdir:(async(target:string)=>{
+      await proveNestedRoots();locate(target);
       const entry=await directory(target);return fs.readdir(descriptor(entry));
     }) as typeof fs.readdir,
     open:(async(target:string,flags:number)=>{
@@ -1800,7 +1837,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
       if(!original){
         if(files.size+held.size>=20000)throw new Error('Held Git source-node inventory exceeds its bound');
         original=(async()=>{
-          const handle=await fs.open(await node(target),flags|constants.O_NOFOLLOW|constants.O_NONBLOCK);owned.push(handle);
+          const handle=await openPortableRegular(await node(target));owned.push(handle);
           const identity=originalIdentity(await handle.stat({bigint:true}));
           if(identity!==originalIdentity(before))throw new Error('Git original changed before descriptor read');
           return {handle,identity};
@@ -1818,6 +1855,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
   };
   const context:GitExportCapture={io,bindings,
     async resolveDirectory(base,value){
+      await proveNestedRoots();
       if(!value||value.includes('\\')||/[\0\r\n]/.test(value)||value.split(path.sep).length>128)throw new Error('Invalid bounded Git association path');
       let target=path.isAbsolute(value)?path.parse(value).root:base;
       for(const part of value.split(path.sep)){
@@ -1829,6 +1867,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
       locate(target);await directory(target);return target;
     },
     async verify(){
+      await proveNestedRoots();
       for(const [target,promise] of files){
         const entry=await promise;
         if(originalIdentity(await entry.handle.stat({bigint:true}))!==entry.identity||originalIdentity(await stat(target))!==entry.identity)throw new Error('Held Git original or its directory entry changed during capture');
@@ -1844,6 +1883,18 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
       if(errors.length)throw Object.assign(new AggregateError([...(primary?[primary]:[]),...errors],'Git capture descriptor cleanup failed'),{cause:primary,cleanupErrors:errors});
     },
     async usesGit(root){
+      await proveNestedRoots();
+      const selectedRoot=locate(root,false);
+      if(root!==selectedRoot.pathname)throw new Error('Git family selection requires an exact selected root');
+      if(!nativeRootAllowed(selectedRoot)){
+        // Supporting files-only roots retain their ordinary filesystem grant.
+        // Observe only .git absence through the held root, never open native
+        // content or silently discard an existing unqualified repository.
+        const entry=await directory(root);
+        try{await fs.lstat(descriptor(entry)+'/.git');}
+        catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){await context.verify();return false;}throw error;}
+        throw new Error('Nested Git source requires an exact selected module or storage binding');
+      }
       if(bindings.some(binding=>binding.worktreePath===root))return true;
       try{await io.lstat(path.join(root,'.git'));return true;}
       catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&bindings.some(binding=>binding.storagePath===root))return false;throw error;}
