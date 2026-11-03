@@ -1,3 +1,4 @@
+import {selectBranchUnit} from './branch-unit-selection.js';
 import {validateBranchRuntimeData,resolveBranchRuntimeSource} from './branch-runtime-package.js';
 import {branchSharedState,validateBranchStateSeal,branchResultWithoutState} from './branch-shared-state.js';
 import type {generationOneReplay} from './branch-resource-generation-one.js';
@@ -168,7 +169,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
       const foreignPrefixes=cut.audit.filter(row=>row.kind==='foreign_selected_prefix');
       if(foreignPrefixes.length){
         const prefix=foreignPrefixes[0],v=JSON.parse(prefix!.evidence_json);
-        if(foreignPrefixes.length!==1||cut.audit[0]?.kind!=='trigger_accepted'||cut.audit[1]!==prefix||prefix!.transition_key!=='foreign-prefix'||configuration.checkpointMode!=='sync')return;
+        if(foreignPrefixes.length!==1||cut.audit[0]?.kind!=='trigger_accepted'||cut.audit[1]!==prefix||prefix!.transition_key!=='foreign-prefix'||!['sync','async'].includes(configuration.checkpointMode??'async'))return;
         const origin=evidence?fact(cut.executionId,'provenance'):JSON.parse((db.prepare('SELECT provenance_json FROM branch_executions WHERE id=?').get(cut.executionId) as Row).provenance_json);
         if(origin.source!=='foreign_checkpoint_continuation'||origin.importedExecutionId!==v.importedExecutionId||origin.reviewSha256!==v.reviewSha256)return;
         let retained:Row|undefined;
@@ -199,7 +200,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
           stableJson(review.configuration)!==stableJson(configuration)||stableJson(review.generationChain??resolved.chain)!==stableJson(resolved.chain)||
           stableJson(v)!==stableJson({importedExecutionId:origin.importedExecutionId,manifestSha256:review.manifestSha256,checkpointSha256:review.selection.checkpointSha256,idMap:receipt.idMap,reviewSha256}))return;
         const snapshot=review.checkpoint,c=snapshot.continuation;
-        if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!=='sync'||!c||!portableScriptCutSupported(db,resolved.data,sourceOwner,snapshot.selected,c,depth+1,budget)||
+        if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||!portableScriptSnapshotSupported(sourceOwner,snapshot,configuration)||!c||!portableScriptCutSupported(db,resolved.data,sourceOwner,snapshot.selected,c,depth+1,budget)||
           !portableScriptCutSupported(db,resolved.data,sourceOwner,JSON.parse(sourceOwner.facts.find(f=>f.kind==='frontier')!.json),undefined,depth+1,budget))return;
         const ids=branchContinuationIds(snapshot.selected);
         if(stableJson(Object.keys(receipt.idMap).sort())!==stableJson(ids.sort())||new Set(Object.values(receipt.idMap)).size!==ids.length||
@@ -225,6 +226,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
       const receipt=evidence?fact(line.sourceExecutionId,'command',`historical-rewind:${payloadHash(line.commandKey)}`):db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(line.sourceExecutionId,`historical-rewind:${payloadHash(line.commandKey)}`) as Row|undefined;
       if(!receipt||receipt.input_hash!==line.commandHash||receipt.result_json!==stableJson({executionId:cut.executionId,lineageId:origin.lineageId}))return;
       const snapshot=source.value,c=snapshot.continuation,se=snapshot.selected?.execution?.[0];
+      if(evidence&&(configuration.checkpointMode??'async')==='async'&&!portableScriptSnapshotSupported(evidenceOwner(line.sourceExecutionId)!,snapshot,configuration))return;
       if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||c?.schema!=='ponderosa.branch.script-continuation.v1'
         ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||!se||se.id!==line.sourceExecutionId||se.version_id!==c.versionId||se.binding_revision_id!==c.bindingRevisionId
         ||c.checkpoint&&(snapshot.invocationId!==c.checkpoint.invocationId||snapshot.mode!==c.checkpoint.mode||snapshot.closing!==c.checkpoint.closing)
@@ -264,7 +266,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
-    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
+    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!(foreign.tree?configuration.checkpointMode==='sync':['sync','async'].includes(configuration.checkpointMode??'async'))||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(workflowGateContext(context)||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');
@@ -583,6 +585,30 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   }catch{return false;}
 }
 
+/** Receipt recovery of a canceled copied gate requires the complete current causal replay. */
+export function scriptLatestSupported(db:Database.Database,executionId:string):boolean {
+ try {
+  const owner=db.prepare('SELECT configuration_json,checkpoint_invocation_json,version_id FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
+  if(!owner||JSON.parse(owner.checkpoint_invocation_json).durability==='failed')return false;
+  const configuration=JSON.parse(owner.configuration_json),version=db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(owner.version_id) as Row;
+  const selected=selectBranchUnit(db,executionId),e=selected.execution?.[0];
+  if(!e||selected.attempts!.some(a=>a.request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state)))return false;
+  const audit=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(executionId);
+  const context=['completed','failed'].includes(e.state)?{terminal:true,terminalState:e.state,descendantTraversals:0,descendantLoops:0,children:{}} as ScriptOwnerContext:undefined;
+  return composeScriptCut(db,executionId,selected,JSON.parse(version.definition_json),configuration,audit,undefined,undefined,true,undefined,undefined,0,context)!==undefined;
+ }catch{return false;}
+}
+
+/** Only committed saver bytes attest an async selection; pending process tickets never do. */
+export function portableScriptSnapshotSupported(owner:import("@ponderosa/core").BranchPortableRuntimeOwner,snapshot:Row,configuration:BranchConfiguration):boolean {
+ try {
+  const mode=configuration.checkpointMode??'async';
+  if(!['sync','async'].includes(mode)||snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!==mode||typeof snapshot.invocationId!=='string'||!snapshot.invocationId||typeof snapshot.closing!=='boolean'||snapshot.continuation?.checkpoint)return false;
+  const json=stableJson(snapshot);
+  return owner.facts.some(f=>f.kind==='checkpoint'&&f.json===json&&f.sha256===hash(json));
+ }catch{return false;}
+}
+
 /** Same lineage walker and replay as local checkpoints, with private fact readers only. */
 export function portableScriptCutSupported(db:Database.Database,data:import("@ponderosa/core").BranchPortableRuntimeData,owner:import("@ponderosa/core").BranchPortableRuntimeOwner,selected:Selected,continuation?:Row,depth=0,budget:PortableBudget={remaining:128,cache:new Map()}):boolean {
  try {
@@ -591,9 +617,13 @@ export function portableScriptCutSupported(db:Database.Database,data:import("@po
   budget.cache.set(cacheKey,false);
   const read=(kind:string)=>JSON.parse(owner.facts.find(f=>f.kind===kind)!.json);
   const definition=read('definition'),configuration=read('configuration'),e=selected.execution?.[0];
-  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||configuration.configuration.checkpointMode!=='sync'||
+  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async'].includes(configuration.configuration.checkpointMode??'async')||
     owner.chatRefs.length||owner.facts.some(f=>f.kind==='custody'||f.kind==='tree-import')||
     [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.some((g:Row)=>g.purpose!=='approval')||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
+  if(continuation&&(configuration.configuration.checkpointMode??'async')==='async'&&!owner.facts.some(f=>{
+    if(f.kind!=='checkpoint')return false;const snapshot=JSON.parse(f.json);
+    return stableJson(snapshot.selected)===stableJson(selected)&&stableJson(snapshot.continuation)===stableJson(continuation)&&portableScriptSnapshotSupported(owner,snapshot,configuration.configuration);
+  }))return false;
   if(continuation&&(continuation.schema!=='ponderosa.branch.script-continuation.v1'||continuation.checkpoint||stableJson(continuation.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||
     continuation.versionId!==e.version_id||continuation.bindingRevisionId!==e.binding_revision_id||continuation.versionHash!==payloadHash(definition)||continuation.bindingHash!==payloadHash(read('bindings'))||stableJson(continuation.configuration)!==stableJson(configuration.configuration)))return false;
   const context=['completed','failed'].includes(e.state)?{terminal:true,terminalState:e.state,descendantTraversals:0,descendantLoops:0,children:{}} as ScriptOwnerContext:undefined;

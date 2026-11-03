@@ -4,7 +4,7 @@ Source only, unqualified. No test, type, build, Node, native, browser, provider,
 
 ## Supported caller flow
 
-The existing full package exporter, reviewed installation preview/confirm and runtime-data GET first recreate a private standalone held data owner. Its receipt supplies no acceptance or execution authority. Preserve that installation receipt and original manifest; set current destination settings to the selected source configuration (including `checkpointMode: sync`) using existing settings GET/PUT, then enable the current destination explicitly using the existing availability action. Standalone import does not itself adopt the source checkpoint mode.
+The existing full package exporter, reviewed installation preview/confirm and runtime-data GET first recreate a private standalone held data owner. Its receipt supplies no acceptance or execution authority. Preserve that installation receipt and original manifest; set current destination settings to the selected source configuration (including its exact checkpoint mode; omitted mode retains the native async default) using existing settings GET/PUT, then enable the current destination explicitly using the existing availability action. Standalone import does not itself adopt the source checkpoint mode.
 
 On `/api/branches/:id/executions/:executionId/foreign-continuation`, `executionId` is the imported held owner, not the original foreign owner:
 
@@ -18,7 +18,7 @@ Current choices are established through the existing destination configuration/b
 
 ## Authority and atomicity
 
-Only standalone manual, sync-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted. Workflow and per-step failure policies must stop; retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work or a workflow gate. The latest cut may be running, canonically waiting or canonically completed/failed; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
+Only standalone manual, sync- or async-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted. Workflow and per-step failure policies must stop; retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work or a workflow gate. The latest cut may be running, canonically waiting or canonically completed/failed; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
 
 The preview independently verifies the actual recreated-held imported native frontier/maps/participant ownership through existing runtime-data readback. It checks the imported owner remains waiting/unaccepted, current destination availability/pins/configuration/policy and accessible directories. Any unknown custody or native authority on the held owner refuses. `not_applicable` means no selected/latest source or native resource exists; it never means an unavailable receipt was treated as released.
 
@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining beyond the supported Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; exit/async modes; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the supported Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; EXIT mode and async Call trees; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -358,3 +358,42 @@ Recovery-purpose gates, unproven coordination lineage, issued/resource/native/un
 combinations remain refused. Original data, partial/failure evidence and existing
 standalone gate/parallel/rewind behavior are preserved. This is source support;
 round trips, suffix scheduling and rollback remain execution-unqualified.
+
+
+## Durable standalone async checkpoints
+
+Standalone manual effect-free Script/human-gate continuation also accepts explicit
+`async` configuration and the native async default when mode is omitted. The
+original configuration is preserved exactly; omission is not rewritten to an
+explicit mode. The private selected snapshot must name that resolved mode and a
+nonempty saver invocation identity, carry canonical continuation evidence, and
+match an actual retained `checkpoint` fact byte for byte with its content hash.
+Only committed snapshot rows are exported as those facts. A pending saver ticket,
+failed write, missing snapshot or changed selected bytes cannot supply this proof.
+Export refuses a source whose current async invocation records durability failure.
+An older committed cut can qualify while a newer write is pending, but it must
+still independently pass selected replay and complete latest-frontier replay; the
+pending write is never claimed durable. Missing original command/lineage, active
+Script attempts and unknown outcomes remain refusals.
+
+The same proof applies to retained accepted generations and supported standalone
+local rewind links. Held generations remain data only. Selected pending decisions
+remain pending even if latest source evidence resolves them. Historical resolved
+prefix work is copied once, and new pending gates receive fresh destination-owned
+notifications. State reducers, condition/route and fork/Map/Join proof, current
+human choices, directory identity, capacity and real admission are unchanged.
+
+Acceptance still commits through `unitTransaction` and its existing mode-aware
+saver. Sync dispatch waits for saved matching bytes; async dispatch follows the
+native readiness rule after commit and remains subject to saver failure and
+pending-byte backpressure. Async acceptance is not a saved acknowledgement and
+makes no immediate durability promise. Receipt recovery reuses the original
+command and canonical later-progress checks; it never issues a replacement
+command. A copied pending gate later canceled in the destination additionally
+requires complete current Script replay, including causal Join/path/item/gate
+events and exact attempt fences. Recovery refuses a running/leased Script attempt
+or unknown outcome; it requires a supported quiescent current frontier. Serial
+canceled gates without supported canonical replay remain refused. Tree async, EXIT, automatic and effectful work remain excluded.
+
+This extension changes source support only. No async timing, durability, runtime,
+notification delivery, round-trip or rollback validation was performed.
