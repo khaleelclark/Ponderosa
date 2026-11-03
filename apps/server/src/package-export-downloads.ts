@@ -5,7 +5,8 @@ import path from 'node:path';
 import {createReadStream} from 'node:fs';
 import {constants,promises as fs} from '@ponderosa/native-host/fs';
 import type {FastifyInstance,FastifyReply} from 'fastify';
-import {stableJson,AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
+import {AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
+import {stableJson} from '@ponderosa/agents';
 import {portablePackageJsonChunks} from './agent-package-codec.js';
 
 export const PACKAGE_EXPORT_TICKET_LIFETIME_MS=15*60_000;
