@@ -462,15 +462,39 @@ export class AgentRunUsageReadModel {
     const reportedRuns = rows.filter(
       row => row.totalTokens !== undefined,
     ).length;
-    const providerRequests = rows.reduce((total, row) => {
-      if (!row.providerRequestUsageJson) return total;
+    const keys: TokenUsageMetric[] = [
+      "inputTokens",
+      "cachedInputTokens",
+      "cacheWriteInputTokens",
+      "outputTokens",
+      "reasoningOutputTokens",
+      "totalTokens",
+    ];
+    // A scope-wide request count is exact only when every finalized Run has
+    // valid explicit per-request receipts. Missing telemetry is not zero.
+    let providerRequests: number | undefined = 0;
+    for (const row of rows) {
       try {
-        const parsed = JSON.parse(row.providerRequestUsageJson) as unknown;
-        return total + (Array.isArray(parsed) ? parsed.length : 0);
+        const parsed: unknown = row.providerRequestUsageJson === null
+          ? undefined : JSON.parse(row.providerRequestUsageJson);
+        if (!Array.isArray(parsed) || parsed.some(entry =>
+          !entry || typeof entry !== "object" || Array.isArray(entry) ||
+          Object.entries(entry).some(([key, value]) =>
+            !keys.includes(key as TokenUsageMetric) ||
+            !Number.isSafeInteger(value) || (value as number) < 0))) {
+          providerRequests = undefined;
+          break;
+        }
+        providerRequests += parsed.length;
+        if (!Number.isSafeInteger(providerRequests)) {
+          providerRequests = undefined;
+          break;
+        }
       } catch {
-        return total;
+        providerRequests = undefined;
+        break;
       }
-    }, 0);
+    }
     const durationMs = rows.reduce((total, row) => {
       if (!row.completedAt) return total;
       return (
@@ -482,14 +506,6 @@ export class AgentRunUsageReadModel {
         )
       );
     }, 0);
-    const keys: TokenUsageMetric[] = [
-      "inputTokens",
-      "cachedInputTokens",
-      "cacheWriteInputTokens",
-      "outputTokens",
-      "reasoningOutputTokens",
-      "totalTokens",
-    ];
     const totals: TokenUsage = {};
     const metricAvailability = Object.fromEntries(
       keys.map(key => [
@@ -544,7 +560,7 @@ export class AgentRunUsageReadModel {
       finalizedRuns,
       reportedRuns,
       unreportedRuns: finalizedRuns - reportedRuns,
-      providerRequests,
+      ...(providerRequests !== undefined ? { providerRequests } : {}),
       durationMs,
       coverage: finalizedRuns ? reportedRuns / finalizedRuns : null,
       ...(range.from || range.to ? { range } : {}),

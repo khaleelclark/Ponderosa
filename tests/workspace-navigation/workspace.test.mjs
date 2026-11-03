@@ -1,3 +1,4 @@
+import {AgentStore} from '@ponderosa/agents';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -100,6 +101,24 @@ test('check 90: usage ranges and owner filters report known totals and unavailab
   assert.equal((await f.api('GET', `/api/agents/${agent.id}/usage?from=invalid`)).status, 400);
   assert.equal((await f.api('GET', `/api/agents/${agent.id}/usage?from=2026-01-02&to=2026-01-01`)).status, 400);
 }));
+
+test('check 90: provider request counts require exact receipt coverage instead of invented zeros', options, t => {
+ let store;
+ return withFixture(t,async f=>{
+  const chat=await f.createChat('Request telemetry scope'),first=await f.createAgent(chat,'First counted Agent'),second=await f.createAgent(chat,'Second counted Agent');
+  const save=(agent,json)=>store.sqlite.prepare('UPDATE runs SET provider_request_usage_json=? WHERE agent_id=?').run(json,agent.id);
+  const usage=async agent=>f.ok(await f.api('GET','/api/agents/'+agent.id+'/usage'));
+  const total=async()=>f.ok(await f.api('GET','/api/conversations/'+chat.id+'/usage'));
+  for(const invalid of [null,'','{','{}','null','[null]','[[]]','[{"unknown":1}]','[{"totalTokens":-1}]','[{"inputTokens":1.5}]','[{"totalTokens":"12"}]']){
+   save(first,invalid);const value=await usage(first);assert.equal(value.finalizedRuns,1);assert.equal(value.inputTokens,20);assert.equal(Object.hasOwn(value,'providerRequests'),false,'Unknown or malformed receipt must stay unavailable: '+invalid);
+  }
+  save(first,'[]');assert.equal((await usage(first)).providerRequests,0,'Explicit empty receipts establish zero');
+  save(first,'[{"inputTokens":20,"outputTokens":8,"totalTokens":28},{}]');assert.equal((await usage(first)).providerRequests,2,'Each actual receipt counts, even if that request did not expose token fields');
+  save(second,null);assert.equal(Object.hasOwn(await total(),'providerRequests'),false,'Known requests cannot disguise another finalized Run missing receipts');
+  save(second,'[{"totalTokens":28}]');assert.equal((await total()).providerRequests,3);
+  assert.equal(f.ok(await f.api('GET','/api/conversations/'+chat.id+'/usage?from=2099-01-01T00:00:00.000Z')).providerRequests,0,'An empty finalized scope has an exact zero count');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
 
 test('checks 59, 89: acknowledgement does not answer a Decision; resolution and category clearing affect the intended notification', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Needs attention'), a = await f.createIdleAgent(chat, 'Question A'), b = await f.createIdleAgent(chat, 'Question B');
