@@ -2,6 +2,12 @@ import type Database from 'better-sqlite3';
 
 /** Reservation can precede Chat/Agent existence and survives failed import/restart. */
 export function destinationAdmissionHeld(db:Database.Database,agentId?:string,conversationId?:string):boolean {
+  // Generic contained bindings retain their original preparing operation even
+  // when Project projections are unavailable. No dispatch or automatic rollback.
+  if(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_creation_operations'").get()&&db.prepare(`SELECT 1 FROM agent_creation_operations o WHERE o.status!='completed' AND o.status!='rolled_back'
+    AND EXISTS(SELECT 1 FROM json_each(o.result_json,'$.importedProjectRootBindings') b
+      WHERE json_extract(b.value,'$.conversationId')=? OR EXISTS(SELECT 1 FROM json_each(b.value,'$.memberIds') m WHERE m.value=?)) LIMIT 1`)
+    .get(conversationId??null,agentId??null))return true;
   // Import-only recovery quarantine precedes rebuildable Project/Agent rows.
   // A missing projection must never erase the exact durable no-dispatch fence.
   if((db.prepare("SELECT count(*) AS total FROM sqlite_master WHERE type='table' AND name IN ('branch_installation_plans','branch_installation_resources')").get() as {total:number}).total===2&&db.prepare(

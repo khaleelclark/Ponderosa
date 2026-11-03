@@ -197,3 +197,23 @@ a prior fresh allocation identity refuses replacement before backup creation.
 Execution remains deferred until all implementation is integrated.
 
 The original issued directory identity now crosses every deferred mutation boundary: link installation, native Git/provider recreation, and final metadata. Phase-entry observations cannot replace that authority. A replaced directory is refused before later-phase writes, retaining both the original and observed paths.
+
+## Generic contained Project binding
+
+Generic Agent-package imports reuse the same internal Project/Chat/Shared-owner
+path journal as Branch imports. The journal records exactly one owner authority:
+`creationOperationId` for a preparing generic import, or `planId` for a staged
+Branch import. The original managed creation identity and previous folder remain
+provenance; no source pathname or public host-path override grants this binding.
+
+The store requires the complete canonical preparing import membership, an unused
+NEW managed Chat without Runs, and the existing local parent/child inode proof
+and created reservation. The service still verifies all owner fences. A durable
+`result.importedProjectRootBindings` marker precedes the first Project write.
+It survives result updates and unavailable projections. Startup may repair only
+the exact recorded path metadata; interrupted generic work then stays preparing
+and unavailable, excluded from automatic rollback and physical replay. Admission
+checks read the original operation marker independently of Project projections.
+Unknown original and replacement folders, partial files, and source receipts stay
+retained. The authored regression covers membership, child replacement, restart
+repair, isolated holds and original-folder retention; execution is deferred.

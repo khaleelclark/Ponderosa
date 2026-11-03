@@ -2,7 +2,7 @@ import {requireGenerationExitDeletionReady} from './branch-generation-exit-delet
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
-import { join } from "node:path";
+import { join, isAbsolute, normalize } from "node:path";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type {
   AgentDto,
@@ -108,7 +108,7 @@ export class AgentWorkspaceCatalogAuthority {
     private readonly dataDir: string,
     private readonly db: Db,
     private readonly client: import("better-sqlite3").Database,
-    private readonly listAgents: (projectId: string) => AgentDto[],
+    private readonly listAgents: (projectId: string,options?:{includePendingCreation?:boolean}) => AgentDto[],
     private readonly getConversationMessages: (
       conversationId: string,
       channel?: ConversationChannel,
@@ -158,7 +158,7 @@ export class AgentWorkspaceCatalogAuthority {
 
   recoverCreationDirectories(): void {
     const projectsRoot = projectsDir(this.dataDir);
-    if (!existsSync(projectsRoot)) return;
+    if (!existsSync(projectsRoot)) {this.holdInterruptedPreparingBindings();return;}
     this.recoverConversationDeletionDirectories();
     for (const entry of readdirSync(projectsRoot)) {
       const projectMatch = /^\.(.+)\.creating$/u.exec(entry);
@@ -179,6 +179,19 @@ export class AgentWorkspaceCatalogAuthority {
       }
       this.recoverConversationRecency(projectId);
     }
+    this.holdInterruptedPreparingBindings();
+  }
+
+  /** The operation marker is written first, so even a missing Project journal
+   * retains a visible no-replay hold after an interrupted metadata commit. */
+  private holdInterruptedPreparingBindings():void {
+    const operations=this.client.prepare("SELECT id,result_json FROM agent_creation_operations WHERE status IN ('preparing','canonical_committed','rolling_back') AND EXISTS(SELECT 1 FROM json_each(result_json,'$.importedProjectRootBindings'))").all() as Array<{id:string;result_json:string}>;
+    for(const operation of operations){
+      const result=JSON.parse(operation.result_json),bindings=result.importedProjectRootBindings,at=new Date().toISOString();
+      const message='Contained import is unavailable after interruption; preserve its original creation operation and exact folders. Physical work and rollback are never replayed automatically.';
+      for(const [id,binding] of Object.entries(bindings))bindings[id]={...(binding as Record<string,unknown>),state:'unavailable',error:(binding as {error?:unknown}).error??{code:'ERR_IMPORTED_ROOT_RECOVERY_HELD',message,at}};
+      this.client.prepare('UPDATE agent_creation_operations SET result_json=?,last_error=COALESCE(last_error,?),updated_at=? WHERE id=?').run(JSON.stringify(result),message,at,operation.id);
+    }
   }
 
   /** A local import failure quarantines only its owner, never unrelated work. */
@@ -189,6 +202,7 @@ export class AgentWorkspaceCatalogAuthority {
     // This canonical marker forces per-Project projection quarantine. If it
     // cannot be persisted, fail closed instead of exposing partially bound actors.
     if(!intent.recoveryError)writeJson(filename,{...record,importedRootBinding:{...intent,recoveryError:failure}});
+    if(intent.creationOperationId){this.recordPreparingImportedBinding(record,intent,'unavailable',failure);return;}
     const plan=this.client.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(intent.planId) as {preview_json:string}|undefined;
     if(plan){
       const state=JSON.parse(plan.preview_json),application=state.workingDataApplication??{schema:'ponderosa.branch-working-application.v1',state:'incomplete',phase:'binding-contained-project'};
@@ -202,20 +216,23 @@ export class AgentWorkspaceCatalogAuthority {
   private reconcileImportedProjectBinding(projectId:string):void {
     const filename=projectJsonPath(this.dataDir,projectId);if(!existsSync(filename))return;
     const record=readJson<ProjectJson>(filename),intent=record.importedRootBinding;
-    if(!intent||intent.state!=='binding')return;
+    if(!intent)return;
+    if(intent.state==='completed'){if(intent.creationOperationId)this.recordPreparingImportedBinding(record,intent,'unavailable');return;}
     if(intent.recoveryError){this.holdImportedProjectBinding(projectId,new Error(intent.recoveryError.message));return;}
     const owner=record.ownerConversationId,proof=intent.parent;
-    if(!owner||record.hostPath!==intent.path||!proof||join(proof.parentPath,proof.relativePath)!==intent.path||
-       !this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state!='active'").get(owner,intent.planId))throw new Error('Interrupted imported-root metadata binding has no exact staged owner');
+    if(!owner||record.hostPath!==intent.path||!proof||join(proof.parentPath,proof.relativePath)!==intent.path)throw new Error('Interrupted imported-root metadata binding has no exact owner');
+    if(intent.creationOperationId)this.requirePreparingImportedMembers(record,intent.creationOperationId,intent.memberIds??[]);
+    else if(!this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state!='active'").get(owner,intent.planId))throw new Error('Interrupted imported-root metadata binding has no exact staged owner');
     const root=lstatSync(intent.path,{bigint:true}),parent=lstatSync(proof.parentPath,{bigint:true});
     if(!root.isDirectory()||root.isSymbolicLink()||realpathSync(intent.path)!==intent.path||root.dev.toString()!==proof.device||root.ino.toString()!==proof.inode||
        !parent.isDirectory()||parent.isSymbolicLink()||realpathSync(proof.parentPath)!==proof.parentPath||parent.dev.toString()!==proof.parentDevice||parent.ino.toString()!==proof.parentInode)throw new Error('Interrupted imported-root identity changed; preserve its exact plan');
+    if(intent.creationOperationId){const parentOwner=readJson<AgentJson>(agentJsonPath(this.dataDir,proof.parentProjectId,proof.parentAgentId));if(parentOwner.projectId!==proof.parentProjectId||parentOwner.workingCopy?.rootPath!==proof.parentPath)throw new Error('Interrupted generic import parent canonical owner changed');}
     const chatFile=conversationJsonPath(this.dataDir,projectId,owner),chat=readJson<ConversationJson>(chatFile);
     if(chat.projectId!==projectId||![intent.previousPath,intent.path].includes(chat.workingDirectory??''))throw new Error('Interrupted imported Chat binding changed');
     const writes=intent.sharedAgents.map(member=>{
       const file=agentJsonPath(this.dataDir,projectId,member.id),json=readJson<AgentJson>(file),copy=json.workingCopy;
       if(!copy||copy.id!==member.workingCopyId||copy.mode!=='shared'||![intent.previousPath,intent.path].includes(copy.rootPath)||
-         !this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND state!='active'").get(member.id,intent.planId)||
+         !intent.creationOperationId&&!this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND state!='active'").get(member.id,intent.planId)||
          this.client.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown')").get(member.id))throw new Error('Interrupted imported Shared owner changed');
       return {file,json,copy};
     });
@@ -224,6 +241,7 @@ export class AgentWorkspaceCatalogAuthority {
     writeJson(chatFile,{...chat,workingDirectory:intent.path,managedWorkspaceName:undefined});
     for(const item of writes)writeJson(item.file,{...item.json,workingCopy:{...item.copy,rootPath:intent.path,updatedAt:intent.updatedAt},updatedAt:intent.updatedAt});
     writeJson(filename,{...record,importedRootBinding:{...intent,state:'completed'}});
+    if(intent.creationOperationId)this.recordPreparingImportedBinding(record,intent,'unavailable');
   }
 
   private conversationDeletionIdentity(
@@ -536,10 +554,50 @@ export class AgentWorkspaceCatalogAuthority {
     return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
   }
 
+  /** The SQLite creation operation is canonical even if its Project projection is held. */
+  private requirePreparingImportedMembers(record:ProjectJson,operationId:string,exactAgentIds:readonly string[]):void {
+    const operation=this.client.prepare("SELECT project_id,conversation_id,kind,status FROM agent_creation_operations WHERE id=?").get(operationId) as {project_id:string;conversation_id:string;kind:string;status:string}|undefined;
+    const members=(this.client.prepare('SELECT agent_id FROM agent_creation_operation_members WHERE operation_id=?').all(operationId) as Array<{agent_id:string}>).map(row=>row.agent_id);
+    if(!operation||operation.kind!=='import'||operation.status!=='preparing'||operation.project_id!==record.id||operation.conversation_id!==record.ownerConversationId||!members.length||members.length!==exactAgentIds.length||new Set(exactAgentIds).size!==exactAgentIds.length||members.some(id=>!exactAgentIds.includes(id)))throw new Error('Contained import requires all exact members of its original preparing creation operation');
+    const current=readdirSync(agentsDir(this.dataDir,record.id)).filter(id=>!id.startsWith('.')).map(id=>readJson<AgentJson>(agentJsonPath(this.dataDir,record.id,id))).filter(agent=>!agent.deletedAt);
+    if(current.length!==members.length||current.some(agent=>!members.includes(agent.id)||agent.projectId!==record.id||agent.conversationId!==record.ownerConversationId)||members.some(id=>this.client.prepare('SELECT 1 FROM scheduler_runs WHERE agent_id=?').get(id)))throw new Error('Contained import requires unused canonical owners without Runs');
+  }
+
+  private recordPreparingImportedBinding(record:ProjectJson,intent:NonNullable<ProjectJson['importedRootBinding']>,state:'binding'|'completed'|'unavailable',failure?:{code:string;message:string;at:string}):void {
+    if(!intent.creationOperationId)return;
+    const operation=this.client.prepare('SELECT status,result_json FROM agent_creation_operations WHERE id=?').get(intent.creationOperationId) as {status:string;result_json:string|null}|undefined;
+    if(!operation||operation.status==='completed'||operation.status==='rolled_back')return;
+    const result=operation.result_json?JSON.parse(operation.result_json):{};
+    if(!result||typeof result!=='object'||Array.isArray(result))throw new Error('Original import operation has no object recovery receipt');
+    const error=failure??(state==='unavailable'?{code:'ERR_IMPORTED_ROOT_RECOVERY_HELD',message:'Contained import is unavailable after interruption; preserve the original creation operation and inspect its exact folders. Physical work is never replayed automatically.',at:new Date().toISOString()}:undefined);
+    const marker={projectId:record.id,conversationId:record.ownerConversationId,memberIds:intent.memberIds??intent.sharedAgents.map(member=>member.id),state,...(error?{error}:{})};
+    this.client.prepare('UPDATE agent_creation_operations SET result_json=?,last_error=?,updated_at=? WHERE id=?').run(JSON.stringify({...result,importedProjectRootBindings:{...result.importedProjectRootBindings,[record.id]:marker}}),error?.message??null,new Date().toISOString(),intent.creationOperationId);
+  }
+
+  /** Internal only: the service has already checked every owner fence and exact reservation. */
+  bindPreparingImportedProjectRoot(projectId:string,operationId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
+    const record=readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId));
+    this.requirePreparingImportedMembers(record,operationId,exactAgentIds);
+    if(record.id!==projectId||!this.isManagedProjectImportDestination(projectId)||record.hostPath!==oldRoot||!record.ownerConversationId||record.importedRootBinding)throw new Error('Contained import requires an unused NEW managed Chat');
+    const chat=readJson<ConversationJson>(conversationJsonPath(this.dataDir,projectId,record.ownerConversationId));
+    if(chat.projectId!==projectId||chat.workingDirectory!==oldRoot||this.getConversationMessages(record.ownerConversationId).length)throw new Error('Contained import Chat was already used or changed');
+    if(!isAbsolute(newRoot)||normalize(newRoot)!==newRoot||!parent||typeof parent.relativePath!=='string'||!parent.relativePath||isAbsolute(parent.relativePath)||parent.relativePath.includes('\\')||parent.relativePath.split('/').some(part=>!part||part==='..'||part==='.')||join(parent.parentPath,parent.relativePath)!==newRoot||parent.parentProjectId===projectId&&!exactAgentIds.includes(parent.parentAgentId))throw new Error('Contained import requires its exact local parent/child path proof');
+    const root=lstatSync(newRoot,{bigint:true}),parentStat=lstatSync(parent.parentPath,{bigint:true});
+    if(!root.isDirectory()||root.isSymbolicLink()||realpathSync(newRoot)!==newRoot||root.dev.toString()!==parent.device||root.ino.toString()!==parent.inode||!parentStat.isDirectory()||parentStat.isSymbolicLink()||realpathSync(parent.parentPath)!==parent.parentPath||parentStat.dev.toString()!==parent.parentDevice||parentStat.ino.toString()!==parent.parentInode)throw new Error('Contained import local parent/child identity changed');
+    const parentAgent=readJson<AgentJson>(agentJsonPath(this.dataDir,parent.parentProjectId,parent.parentAgentId));
+    const parentCopy=parentAgent.workingCopy;
+    if(parentAgent.projectId!==parent.parentProjectId||!parentCopy||parentCopy.rootPath!==parent.parentPath||!parentCopy.containedRootPreparations?.some(item=>item.phase==='created'&&item.rootPath===newRoot&&item.relativePath===parent.relativePath&&item.parentDevice===parent.parentDevice&&item.parentInode===parent.parentInode&&item.device===parent.device&&item.inode===parent.inode))throw new Error('Contained import parent canonical owner or exact local reservation changed');
+    const current=this.listAgents(projectId,{includePendingCreation:true}),shared=current.filter(agent=>agent.workingCopy.mode==='shared');
+    if(shared.some(agent=>agent.workingCopy.rootPath!==oldRoot||agent.workingCopy.importedParent))throw new Error('Contained import Shared members changed');
+    const intent:NonNullable<ProjectJson['importedRootBinding']>={creationOperationId:operationId,memberIds:[...exactAgentIds],previousPath:oldRoot,path:newRoot,managedWorkspaceName:record.managedWorkspaceName,state:'binding',updatedAt:new Date().toISOString(),sharedAgents:shared.map(agent=>({id:agent.id,workingCopyId:agent.workingCopy.id})),parent};
+    this.recordPreparingImportedBinding(record,intent,'binding');
+    return this.commitImportedProjectRootBinding(record,chat,shared,intent);
+  }
+
   /** Internal only: final binding of an inactive NEW Branch-import namespace. */
   bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
     const record=readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId));
-    const current=this.listAgents(projectId);
+    const current=this.listAgents(projectId,{includePendingCreation:true});
     if(!this.isManagedProjectImportDestination(projectId)||record.hostPath!==oldRoot||!record.ownerConversationId||
        current.length!==exactAgentIds.length||new Set(exactAgentIds).size!==exactAgentIds.length||current.some(agent=>!exactAgentIds.includes(agent.id)))throw new Error('Final imported root requires the complete unused managed Project');
     if(!this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state='staging'").get(record.ownerConversationId,planId))throw new Error('Final imported root requires its exact staged Chat');
@@ -552,6 +610,11 @@ export class AgentWorkspaceCatalogAuthority {
     const shared=current.filter(agent=>agent.workingCopy.mode==='shared');
     if(shared.some(agent=>agent.workingCopy.rootPath!==oldRoot||agent.workingCopy.importedParent))throw new Error('Provisional Shared owners changed before final binding');
     const intent:NonNullable<ProjectJson['importedRootBinding']>={planId,previousPath:oldRoot,path:newRoot,managedWorkspaceName:record.managedWorkspaceName,state:'binding',updatedAt:new Date().toISOString(),sharedAgents:shared.map(agent=>({id:agent.id,workingCopyId:agent.workingCopy.id})),parent};
+    return this.commitImportedProjectRootBinding(record,chat,shared,intent);
+  }
+
+  private commitImportedProjectRootBinding(record:ProjectJson,chat:ConversationJson,shared:AgentDto[],intent:NonNullable<ProjectJson['importedRootBinding']>):ProjectDto {
+    const projectId=record.id,newRoot=intent.path,chatFile=conversationJsonPath(this.dataDir,projectId,record.ownerConversationId!);
     const files=[projectJsonPath(this.dataDir,projectId),chatFile,...shared.map(agent=>agentJsonPath(this.dataDir,projectId,agent.id))];
     return this.progress.run(files,()=>{
       this.assertProjectMetadataMutable(projectId);
@@ -566,6 +629,7 @@ export class AgentWorkspaceCatalogAuthority {
         this.db.update(agents).set({workingCopyJson:JSON.stringify(workingCopy),updatedAt:workingCopy.updatedAt}).where(eq(agents.id,agent.id)).run();
       }
       writeJson(projectJsonPath(this.dataDir,projectId),{...readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId)),importedRootBinding:{...intent,state:'completed'}});
+      this.recordPreparingImportedBinding(record,intent,'completed');
       return this.getProject(projectId)!;
     });
   }

@@ -2483,6 +2483,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24 and existing web TypeScript dependency; source inventory only, no browser or provider",
       "origin": "Consolidated mounted regression entry coverage: every exported fixture module is included exactly once; browser execution runs explicitly in pnpm test:mounted and pnpm verify"
+    },
+    {
+      "path": "tests/organizations/generic-contained-project-store.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; isolated private stores and locally owned folders only",
+      "origin": "Generic contained Project canonical binding: exact preparing members, stale inode refusal, restart metadata repair and no-rollback/no-dispatch recovery hold"
     }
   ],
   "retainedReleasePayload": [

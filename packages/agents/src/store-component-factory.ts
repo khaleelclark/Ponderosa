@@ -56,7 +56,7 @@ type ProjectionIndex = {
 };
 
 export interface AgentStoreComponentPorts {
-  listAgents(projectId: string): AgentDto[];
+  listAgents(projectId: string, options?: {includePendingCreation?:boolean}): AgentDto[];
   getConversationMessages(
     conversationId: string,
     channel?: ConversationChannel,

@@ -241,7 +241,7 @@ export class AgentStore extends AgentEventSessionFacade {
       };
       this.support = new AgentStoreSupport(dataDir);
       const ports: AgentStoreComponentPorts = {
-        listAgents: projectId => this.listAgents(projectId),
+        listAgents: (projectId,options) => this.listAgents(projectId,options),
         getConversationMessages: (conversationId, channel) => this.getConversationMessages(conversationId, channel),
         getAgentPreset: presetId => this.getAgentPreset(presetId),
         getProject: projectId => this.getProject(projectId),
@@ -1195,6 +1195,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return (this.client.prepare(`
       SELECT id FROM agent_creation_operations
       WHERE status IN ('preparing', 'canonical_committed', 'rolling_back')
+        AND NOT EXISTS(SELECT 1 FROM json_each(result_json,'$.importedProjectRootBindings'))
       ORDER BY created_at, id
     `).all() as Array<{ id: string }>).flatMap(({ id }) => {
       const operation = this.getAgentCreationOperation(id);
@@ -1224,6 +1225,23 @@ export class AgentStore extends AgentEventSessionFacade {
     const current = this.getAgentCreationOperation(id);
     if (!current) throw new Error("Agent creation operation not found");
     const nextStatus = patch.status ?? current.status;
+    const retainedBindings=(current.result as {importedProjectRootBindings?:Record<string,{state?:string}>}|undefined)?.importedProjectRootBindings;
+    if(retainedBindings&&Object.keys(retainedBindings).length){
+      let bindings=retainedBindings;
+      if(patch.result!==undefined){
+        if(!patch.result||typeof patch.result!=='object'||Array.isArray(patch.result))throw new Error('Contained import must retain its original recovery receipt');
+        const result=patch.result as Record<string,unknown>,proposed=result.importedProjectRootBindings as Record<string,{state?:string;error?:unknown}>|undefined;
+        // Callers may downgrade to unavailable, never replace canonical member
+        // identity or turn an unknown physical outcome into completed custody.
+        bindings=Object.fromEntries(Object.entries(retainedBindings).map(([projectId,binding])=>[projectId,proposed?.[projectId]?.state==='unavailable'?{...binding,state:'unavailable',error:proposed[projectId]!.error}:binding]));
+        patch={...patch,result:{...result,importedProjectRootBindings:bindings}};
+      }
+      if(nextStatus==='rolling_back'||nextStatus==='rolled_back')throw new Error('Contained import retains uncertain physical custody; automatic rollback is forbidden');
+      if(Object.values(bindings).some(binding=>binding.state!=='completed')){
+        if(nextStatus==='completed')throw new Error('Contained import binding is unavailable; completion requires verified original custody');
+        if(patch.lastError===null)patch={...patch,lastError:current.lastError??'Contained import binding is unavailable; preserve its original operation and folders'};
+      }
+    }
     this.client.prepare(`
       UPDATE agent_creation_operations
       SET status = ?, communication_event_id = ?, artifact_ids_json = ?, artifact_identities_json = ?,
@@ -1269,6 +1287,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getManagedCreationHostPath(key: string, name: string): string | undefined {
     return this.workspaceCatalog.getManagedCreationHostPath(key, name);
+  }
+
+  bindPreparingImportedProjectRoot(projectId:string,operationId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
+    return this.workspaceCatalog.bindPreparingImportedProjectRoot(projectId,operationId,oldRoot,newRoot,exactAgentIds,parent);
   }
 
   bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
