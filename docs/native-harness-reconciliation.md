@@ -137,3 +137,14 @@ combined approval/control/stream/lifetime behavior and whole-product qualificati
 remain execution questions, not claims that those implementations are absent.
 No tests, fixtures, test preparation, builds, typechecks, native/browser/provider
 or database execution were performed for this change.
+
+
+### Owned external Git dependency application
+
+The native import planner now maps the sanitized external dependency family into newly owned Git storage and, when bytes already match transported working files, the current owned worktree. Source paths remain inert provenance. Configured include, attribute, exclude and hook values bind to exact captured declaring-file/context records, including source-resolved named-user and installation-prefix paths. Recursive includes read only transported originals and compile into generated owned configuration. Observed missing paths remain named negative evidence; omitted paths require an already transported reviewed replacement.
+
+Relative hooks retain distinct worktree and Git-directory contexts using declared symlink views under the reserved active-git-hooks namespace. These are inert owned aliases, not dispatch scripts. Prefix aliases used only for source path resolution are not copied as payload. Cross-scope references use typed top-Git or top-worktree contexts with closed named target evidence. Bare capsules are explicit; nonbare and linked reftable capsules use new local storage and fresh pointers. No imported ownership or source host path grants access.
+
+Recovery writes every Git/provider byte phase before one shared native preparation, the ordinary/extended metadata staging hook and final exact native metadata pass. Completion receipts follow finalization. A service-owned deferred scope keeps finalization and ready-state custody with the service. Working-file hardlink components supply explicit named verification aliases with original root identities; unknown inode aliases remain refusal conditions. Generated hook namespace exclusion on later export additionally requires canonical local issuance authority, handled by the owning service/store and retained-original verifier.
+
+The new pure planner regressions cover context separation, dangling symlinks with negative evidence, source-prefix alias handling, cross-scope worktree references, explicit bare capsules and omission/destination boundaries. They are registered but intentionally unexecuted until the complete implementation is integrated.

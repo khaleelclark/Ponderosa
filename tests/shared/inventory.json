@@ -2531,6 +2531,19 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native server workspaces and Git; disposable repositories; no provider account",
       "origin": "Typed configured bare repository capsules, source preservation, sanitized config and credential-file exclusions"
+    },
+    {
+      "path": "tests/organizations/portable-git-external-application.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F11.01",
+        "F13.04"
+      ],
+      "requirements": "Built server workspace; pure owned-path planner and closed graph; no filesystem, provider account or source-host reads",
+      "testBodiesSha256": "48dd84cfb49718bb58370b0427323209f883272ca5af3e45ea572c928b827dd2",
+      "afterSha256": "48dd84cfb49718bb58370b0427323209f883272ca5af3e45ea572c928b827dd2"
     }
   ],
   "retainedReleasePayload": [
