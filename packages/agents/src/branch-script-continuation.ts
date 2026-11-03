@@ -258,11 +258,11 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
 }
 
 /** The audit and inventory must describe the same committed single-path cut. */
-export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean}):boolean {
+export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean;tree?:boolean}):boolean {
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
-    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate')||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind))))return false;
+    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(!context||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');

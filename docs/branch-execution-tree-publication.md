@@ -140,3 +140,17 @@ historical-definition parents, native automatic frontiers and cross-owner bundle
 families need additional supported canonical consumers. External restoration/artifact
 proof expansion and erased/unavailable source bytes retain their earlier explicit
 dispositions. Current source APIs/SDK are usable code contracts, not executed proof.
+
+
+## Explicit checkpoint continuation after DATA import
+
+A separate reviewed consumer now supports first-generation effect-free synchronous
+Script/Call selected owner trees. See `branch-foreign-checkpoint-continuation.md`
+for its exact family and refusals. DATA publication/readback remains held and
+requires disabled unchanged destinations. Explicit enablement does not admit any
+held owner. Continuation separately checks immutable import/native evidence,
+reviews every current destination and allocates fresh acceptances, Call provenance,
+admissions and remapped frontiers in one transaction. Original DATA stays held.
+Repeated tree generations, gates/issued/EXIT/resource/unknown combinations are
+not covered by this consumer. This change has source review only, with no runtime
+round-trip or rollback qualification.

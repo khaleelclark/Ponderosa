@@ -1,4 +1,4 @@
-# Foreign selected Script continuation — source tranche
+# Foreign selected workflow continuation — source tranche
 
 Source only, unqualified. No test, type, build, Node, native, browser, provider, installation preparation, migration or deployment command was run for this tranche. The deferred fixture must pass after the execution hold is lifted before runtime behavior can be claimed.
 
@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining: tree/called owners and multi-owner current admission; automatic/issued/unknown/resource/bundle/Agent frontiers; exit/async modes; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the first-generation Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; exit/async modes; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -44,7 +44,7 @@ This UI change is source-only and has not been run, built or typechecked.
 
 ## Selected state and routing continuation
 
-The same export facts/private checkpoints, reviewed held import and runtime-data readback carry state seals and condition/route/fork/Map/Join frontiers. No extra import format, endpoint, acceptance system or mutable state store is introduced. Source definitions are canonically validated; current definition and nonsecret configuration must still match exactly. A selected cut can stop before or after a supported control, or at an unstarted Script invocation. Unknown, issued, resource, recovery-gate, called/tree, automatic, bundle and secret families remain refused by this standalone consumer.
+The same export facts/private checkpoints, reviewed held import and runtime-data readback carry state seals and condition/route/fork/Map/Join frontiers. No extra import format, endpoint, acceptance system or mutable state store is introduced. Source definitions are canonically validated; current definition and nonsecret configuration must still match exactly. A selected cut can stop before or after a supported control, or at an unstarted Script invocation. Unknown, issued, resource, recovery-gate, automatic, bundle and secret families remain refused by this standalone consumer; the separate first-generation Call-tree family is described below.
 
 Human review includes the declared channels/reducers, selected state projection and latest saved source projection, each with revision and evidence hash, plus the actual control definitions. These fields join the existing review digest and are rechecked atomically on confirmation. The UI shows which state revision will resume and reveals the values/reducers and control definitions for review. A later saved state is evidence only; continuation resumes the selected state, never the latest state by accident.
 
@@ -88,7 +88,7 @@ import/foreign chains and each retained rewind chain are limited to 16 links, an
 one portable validation permits at most 128 uncached replay frames. Missing,
 changed, corrupt, cyclic, ambiguous or oversized evidence refuses continuation.
 Unsupported chains may remain imported as evidence-only data; this grants no
-continuation authority. Tree/called, issued/Agent/resource/automatic/unknown,
+continuation authority. Repeated tree generations and tree/gate combinations, issued/Agent/resource/automatic/unknown,
 recovery-gate/bundle/secret, changed-definition and external-file-proof
 families remain excluded from this standalone continuation path.
 
@@ -176,3 +176,62 @@ Source only: no tests, fixtures/preparation, builds, types, Node, runtime/native
 browser/provider or live database actions were performed for this extension.
 Waiting/resolved/canceled round trips, notifications and failure rollback remain
 unqualified until execution checks are authorized.
+
+
+## First-generation foreign Call trees
+
+The existing foreign checkpoint review/confirmation/original-key receipt flow also
+accepts first-generation `ponderosa.branch.script-tree-continuation.v1` cuts from
+held execution-tree imports. Supported owners are manual synchronous, quiescent,
+effect-free Script/Call workflows using the canonical state/control/tree codec.
+The selected root must remain runnable or waiting on its selected children;
+completed/failed children are immutable prefix data. Latest source owner evidence
+is independently replayed, including terminal latest roots. The selected child
+inventory comes from the historical checkpoint boundary, never from later work.
+
+This tree family excludes human gates, issued/native/unknown work, resources,
+custody, actions, bundles, Agents, execution-owned Chats, secrets, automatic,
+async/EXIT, changed historical definitions/configuration and external restoration.
+Repeated imported or continued tree generations and retained rewind trees currently
+refuse rather than invent missing proof. Standalone gate/parallel and repeated
+Script continuation retain their existing supported families; these are not a
+promise of every combination with Call trees.
+
+`GET .../foreign-continuation/source?planId=...` and the SDK's
+`foreignContinuationSource` read original private evidence and immutable native
+held mappings after explicit enablement. Ordinary execution-tree DATA readback
+still requires disabled unchanged Branches and its complete owner inventory.
+Continuation uses a separate immutable-held check; it does not weaken DATA
+readback, adopt a source acceptance or release held owners. Reopening the imported
+root's installation panel can inspect continuation directly after enablement.
+The existing saved-command storage-before-POST and original-key GET remain in use.
+
+Review binds every mapped Branch's current exact definition/configuration,
+bindings and Call target graph, directory identity, policy records, revisions and
+budget; selected owners expose their selected state and selected/latest shared
+state seals. Definitions and nonsecret configuration match original source pins;
+Call references match the current imported Branch map. All mapped destinations
+must be explicitly enabled. A changed digest requires fresh human acknowledgment.
+
+One all-owner SQLite transaction topologically accepts a fresh manual root and
+fresh real child calls, remaps parent attempts/occurrences/input hashes/frontiers
+and Map indices, and admits every owner under current capacity/budget rules.
+Manual root admission retains the ordinary exemption; children use normal Call
+budget admission. Completed children/results and reducers restore once; only
+unfinished suffixes run. No source commands, notifications, Requests, leases or
+process identities are copied. Original held manifests, rows and private facts
+remain unchanged. Failure at any owner or the final receipt rolls back the entire
+fresh tree, including budget admission.
+
+Original-key recovery checks exact immutable source/held maps and the reviewed
+command, every fresh owner's acceptance/admission/provenance/pins, real mapped
+child admission, prefix paths/attempts/control rows/seals and selected state.
+Terminal selected children cannot change; unfinished owners may make legitimate
+suffix progress. Current policy need not remain unchanged after successful
+acceptance. The receipt's `treeOwners` and global `idMap` expose fresh owner and
+frontier mappings. No separate execution database or restoration authority exists.
+
+Source-only implementation: no tests, fixtures/preparation, builds, typechecks,
+Node/runtime/native/browser/provider or live database actions were performed.
+Tree round trips, saved-command recovery, capacity/budget failure and final-owner
+rollback remain execution-unqualified.

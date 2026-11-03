@@ -1,3 +1,4 @@
+import {validateBranchDefinition} from './branch-definition.js';
 import {issuedResourceFrontierSupported} from './branch-issued-continuation.js';
 import {retainedResourceCapture} from './branch-resource-capture.js';
 import {coordinationLineageSupported} from './branch-host-provenance.js';
@@ -6,7 +7,7 @@ import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {hasParallelControls} from './branch-parallel-continuation.js';
 import {branchContinuationIds} from './branch-continuation-remap.js';
 import type Database from 'better-sqlite3';
-import type {BranchDefinition} from '@ponderosa/core';
+import type {BranchPortableExecutionTree,BranchPortableRuntimeOwner,BranchDefinition} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {replayScriptCut,scriptDefinitionSupported,resourceReservationSupported,type Selected,type ScriptOwnerContext} from './branch-script-continuation.js';
@@ -43,7 +44,7 @@ function owner(db:Database.Database,id:string,selected:Selected):Row|undefined {
     invocation:{id:inv.id,ordinal:inv.ordinal,mode:inv.mode,state:inv.state,primaryOutcome:inv.primary_outcome??null,interruptionId:inv.interruptionId??null}};
 }
 function checkpoint(o:Row):Row|undefined {
-  if(o.invocation.mode!=='exit')return;
+  if(o.invocation?.mode!=='exit')return;
   const v=o.invocation;return {invocationId:v.id,mode:v.mode,closing:true,invocation:{id:v.id,ordinal:v.ordinal,mode:v.mode,state:v.state,primaryOutcome:v.primaryOutcome,interruptionId:v.interruptionId}};
 }
 /** Quiescent Script/control owners only; unfinished calls retain their waiting frontier. */
@@ -58,7 +59,7 @@ export function encodeScriptTreeContinuation(db:Database.Database,id:string,sele
     const c={schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:id,owners,provenance:[],...(issuedResources?{issuedResources:true}:{})};
     const provenance=compose(db,c,true);return provenance?{...c,provenance}:undefined;
 }
-function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>,encoding=false):boolean {
+function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>,encoding=false,evidence?:Map<string,BranchPortableRuntimeOwner>,latest=false):boolean {
   const owners=c.owners as Row[];
   if(!Array.isArray(owners)||owners.length<1||new Set(owners.map(o=>o.executionId)).size!==owners.length||stableJson(c.compatibility)!==stableJson(TREE_COMPATIBILITY))return false;
   const root=owners.find(o=>o.executionId===c.rootExecutionId);if(!root)return false;
@@ -66,16 +67,18 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
   const boundary=owners.reduce((last,o)=>Math.max(last,o.audit.at(-1)?.id??NaN),0);if(!Number.isSafeInteger(boundary))return false;
   if(owners.some(o=>o.selected.attempts.some((a:Row)=>a.request_id)))retainedBranchHostGraph({selected:root.selected,hostDependencies:root.hostDependencies,continuation:c},c.rootExecutionId,true,c.issuedResources===true);
   for(const o of owners){
-    const e=o.selected.execution[0],inv=o.invocation;
-    const prefix=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(o.executionId,boundary);
+    const e=o.selected.execution[0],inv=o.invocation??{};
+    const source=evidence?.get(o.executionId),fact=(kind:string)=>source?.facts.find(f=>f.kind===kind);
+    const fullAudit=source?.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json));
+    const prefix=evidence?fullAudit?.filter(a=>a.id<=boundary):db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(o.executionId,boundary);
     if(stableJson(prefix)!==stableJson(o.audit))return false;
-    const actual=db.prepare('SELECT * FROM branch_executions WHERE id=?').get(o.executionId) as Row|undefined;
-    const v=db.prepare('SELECT definition_json,content_hash FROM branch_versions WHERE id=? AND branch_id=?').get(o.versionId,e.branch_id) as Row|undefined;
-    const b=db.prepare('SELECT bindings_json,content_hash FROM branch_bindings WHERE id=? AND branch_id=?').get(o.bindingRevisionId,e.branch_id) as Row|undefined;
+    const actual=evidence?source?{...JSON.parse(fact('frontier')!.json).execution[0],configuration_json:stableJson(JSON.parse(fact('configuration')!.json).configuration),checkpoint_invocation_json:'{}'}:undefined:db.prepare('SELECT * FROM branch_executions WHERE id=?').get(o.executionId) as Row|undefined;
+    const v=evidence?fact('definition')?{definition_json:fact('definition')!.json,content_hash:fact('definition')!.sha256}:undefined:db.prepare('SELECT definition_json,content_hash FROM branch_versions WHERE id=? AND branch_id=?').get(o.versionId,e.branch_id) as Row|undefined;
+    const b=evidence?fact('bindings')?{bindings_json:fact('bindings')!.json,content_hash:fact('bindings')!.sha256}:undefined:db.prepare('SELECT bindings_json,content_hash FROM branch_bindings WHERE id=? AND branch_id=?').get(o.bindingRevisionId,e.branch_id) as Row|undefined;
     if(!actual||JSON.parse(actual.checkpoint_invocation_json).durability==='failed'||!v||!b||e.id!==o.executionId||e.version_id!==o.versionId||e.binding_revision_id!==o.bindingRevisionId
       ||['branch_id','version_id','binding_revision_id','parent_execution_id','parent_attempt_id','call_depth','depth_ceiling','input_hash'].some(k=>actual[k]!==e[k])
       ||v.content_hash!==o.versionHash||payloadHash(JSON.parse(v.definition_json))!==o.versionHash||b.content_hash!==o.bindingHash||payloadHash(JSON.parse(b.bindings_json))!==o.bindingHash
-      ||Object.hasOwn(o.configuration,'secretBindings')||Object.keys(JSON.parse(actual.configuration_json).secretBindings??{}).length)return false;
+      ||evidence&&(fact('definition')?.key!==o.versionId||fact('bindings')?.key!==o.bindingRevisionId)||Object.hasOwn(o.configuration,'secretBindings')||Object.keys(JSON.parse(actual.configuration_json).secretBindings??{}).length)return false;
     const {secretBindings,...safe}=JSON.parse(actual.configuration_json);if(stableJson(safe)!==stableJson(o.configuration))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     const issuedResource=c.issuedResources===true;
@@ -101,18 +104,18 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     }
 
     if(owners.length===1&&!resourceFrontier)return false;
-    if(!scriptDefinitionSupported(definition,true,resourceFrontier)||inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1)return false;
+    if(!scriptDefinitionSupported(definition,true,resourceFrontier)||!latest&&(inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1))return false;
     const descendant=o.executionId!==c.rootExecutionId,terminal=['completed','failed'].includes(e.state);
-    if(terminal?(!descendant||inv.state!=='terminal'||inv.primaryOutcome!==e.state):!['running','waiting'].includes(e.state))return false;
+    if(terminal?(!descendant&&!latest||!latest&&(inv.state!=='terminal'||inv.primaryOutcome!==e.state)):!['running','waiting'].includes(e.state))return false;
     if(!descendant&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
-    if(!terminal&&(inv.mode==='exit'?inv.state!=='interrupted'||!inv.interruptionId&&!o.selected.gates.some((g:Row)=>g.state==='waiting'):inv.state!=='active'))return false;
+    if(!latest&&!terminal&&(inv.mode==='exit'?inv.state!=='interrupted'||!inv.interruptionId&&!o.selected.gates.some((g:Row)=>g.state==='waiting'):inv.state!=='active'))return false;
     if(descendant&&!terminal&&inv.mode==='exit'&&!encoding){
       // The ancestor cut cannot acknowledge a failed or missing child closing save.
       const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:false,invocationId:inv.id,mode:'exit',closing:true,selected:o.selected,...(o.hostDependencies?{hostDependencies:o.hostDependencies}:{})});
       if(!db.prepare('SELECT 1 FROM branch_unit_snapshots WHERE execution_id=? AND content_hash=? AND snapshot_json=?').get(o.executionId,payloadHash(JSON.parse(content)),content))return false;
     }
     const direct=owners.filter(child=>child.selected.execution[0].parent_execution_id===o.executionId);
-    const actualChildren=db.prepare(`SELECT e.id FROM branch_executions e WHERE e.parent_execution_id=? AND EXISTS(SELECT 1 FROM branch_checkpoints a WHERE a.execution_id=e.id AND a.kind='trigger_accepted' AND a.id<=?) ORDER BY e.id`).all(o.executionId,boundary) as Row[];
+    const actualChildren=evidence?[...evidence.values()].filter(child=>JSON.parse(child.facts.find(f=>f.kind==='frontier')!.json).execution[0].parent_execution_id===o.executionId&&child.facts.some(f=>f.kind==='transition'&&JSON.parse(f.json).kind==='trigger_accepted'&&JSON.parse(f.json).id<=boundary)).map(child=>({id:child.sourceExecutionId})).sort((a,b)=>a.id.localeCompare(b.id)):db.prepare(`SELECT e.id FROM branch_executions e WHERE e.parent_execution_id=? AND EXISTS(SELECT 1 FROM branch_checkpoints a WHERE a.execution_id=e.id AND a.kind='trigger_accepted' AND a.id<=?) ORDER BY e.id`).all(o.executionId,boundary) as Row[];
     if(stableJson(actualChildren.map(r=>r.id))!==stableJson(direct.map(r=>r.executionId).sort()))return false;
     const children:ScriptOwnerContext['children']={};
     for(const child of direct){
@@ -135,7 +138,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const waiting=resourceFrontier&&!issuedResource||Object.values(children).some(child=>!child.completed);
     if(!terminal&&!hasParallelControls(definition)&&(e.state!==(waiting?'waiting':'running')))return false;
     const context:ScriptOwnerContext={resourceFrontier,...(issuedResource?{issuedResource:true,issuedOwnerTree:true}:{}),terminal,terminalState:terminal?e.state:undefined,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state===e.state};
-    if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context,o.hostDependencies))return false;
+    if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context,o.hostDependencies,evidence?{owner:actual,audit:fullAudit!,tree:true}:undefined))return false;
   }
   return true;
 }
@@ -197,4 +200,25 @@ export function scriptTreeSnapshotSupported(db:Database.Database,id:string,snaps
 /** Evidence-only replay of issued owner cuts; ordinary tree restore never opts in. */
 export function issuedScriptTreeSupported(db:Database.Database,c:Row):boolean {
   return c?.issuedResources===true&&compose(db,c)!==undefined;
+}
+
+/** Private fact readers feed the canonical owner-tree validator; no foreign rows are inserted. */
+export function portableScriptTreeSupported(db:Database.Database,data:BranchPortableExecutionTree,rootId:string,snapshot?:Row):Row|undefined {
+ try {
+  const all=Object.values(data.branches).flatMap(b=>b.owners),byId=new Map(all.map(o=>[o.sourceExecutionId,o]));
+  const fact=(o:BranchPortableRuntimeOwner,kind:string)=>JSON.parse(o.facts.find(f=>f.kind===kind)!.json);
+  const root=byId.get(rootId);if(!root||fact(root,'frontier').execution[0].parent_execution_id)return;
+  const related=all.filter(o=>{let e=fact(o,'frontier').execution[0];const seen=new Set<string>();for(;;){if(e.id===rootId)return true;if(!e.parent_execution_id||seen.has(e.id))return false;seen.add(e.id);const p=byId.get(e.parent_execution_id);if(!p)return false;e=fact(p,'frontier').execution[0];}});
+  for(const o of related){
+   const d=validateBranchDefinition(fact(o,'definition')),config=fact(o,'configuration'),s=fact(o,'frontier');
+   if(o.chatRefs.length||o.facts.some(f=>['custody','tree-import','import','continuation'].includes(f.kind))||config.requiredSecretRefs.length||config.configuration.checkpointMode!=='sync'||d.trigger.kind!=='manual'||d.steps.some((s:Row)=>!['script','branch_call'].includes(s.kind))||!scriptDefinitionSupported(d,true)||
+    s.resources.length||s.actions.length||s.bundles.length||s.gates.length||s.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))||o.facts.filter(f=>f.kind==='transition').some(f=>['tree_historical_rewind','tree_restored_prefix','historical_rewind','restored_prefix','foreign_selected_prefix'].includes(JSON.parse(f.json).kind)))return;
+  }
+  const latestOwners=related.map(o=>{const s=fact(o,'frontier'),e=s.execution[0],config=fact(o,'configuration').configuration;return {executionId:o.sourceExecutionId,versionId:e.version_id,versionHash:payloadHash(fact(o,'definition')),bindingRevisionId:e.binding_revision_id,bindingHash:payloadHash(fact(o,'bindings')),configuration:config,selected:s,audit:o.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json))};});
+  const c=snapshot?.continuation??{schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:rootId,owners:latestOwners,provenance:[]};
+  if(c.schema!==TREE_SCHEMA||c.rootExecutionId!==rootId||c.issuedResources||stableJson(c.provenance)!=='[]'||snapshot&&(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!=='sync'||!treeSnapshotMetadata(snapshot,c)))return;
+  if(c.owners.some((o:Row)=>!related.some(p=>p.sourceExecutionId===o.executionId)||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.gates.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return;
+  if(!validateOwners(db,c,undefined,false,byId,!snapshot))return;
+  return c;
+ }catch{return;}
 }

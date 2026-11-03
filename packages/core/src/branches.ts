@@ -466,17 +466,22 @@ export interface BranchGenerationHistoryPreview {
 
 /** Human-only continuation of a private imported Script cut; never import authority. */
 export interface BranchForeignContinuationSelection {planId:string;sourceExecutionId:string;checkpointKey:string;checkpointSha256:string}
+export interface BranchForeignTreeBranchReview {
+ branchId:string;versionId:string;bindingRevisionId:string;configurationRevision:number;definition:BranchDefinition;bindings:BranchBindings;configuration:BranchConfiguration;
+ directoryChoices:BranchForeignContinuationReview['directoryChoices'];capabilityPolicy:unknown;budget:BranchExecutionBudgetDto;
+}
 export interface BranchForeignContinuationReview {
  schema:'ponderosa.branch-foreign-review.v1';selection:BranchForeignContinuationSelection;branchId:string;importedExecutionId:string;
  generationChain?:Array<{manifestSha256:string;ownerSha256:string;executionId:string}>;
  gates?:{selected:BranchGateDto[];latest:BranchGateDto[]};
+ tree?:{branches:BranchForeignTreeBranchReview[];owners:Array<{sourceExecutionId:string;branchId:string;selectedState:string;sharedState?:BranchForeignContinuationReview['sharedState']}>};
  sharedState?:{channels:NonNullable<BranchDefinition['state']>;selected:BranchSharedStateDto;latest:BranchSharedStateDto};controls?:BranchDefinition['controls'];
- manifestSha256:string;ownerSha256:string;checkpoint:unknown;nativeMaps:BranchRuntimeDataReceipt;
+ manifestSha256:string;ownerSha256:string;checkpoint:unknown;nativeMaps:BranchRuntimeDataReceipt|BranchRuntimeTreeReceipt;
  versionId:string;bindingRevisionId:string;configurationRevision:number;definitionSha256:string;bindings:BranchBindings;configuration:BranchConfiguration;
  directoryChoices:Record<string,{path:string;realpath:string;device:number;inode:number}>;capabilityPolicy:unknown;budget:BranchExecutionBudgetDto;custody:'not_applicable';engine:'node';secretChoice:'none';accessChoice:'current_destination';reviewSha256:string;
 }
 export interface BranchForeignContinuationInput extends BranchForeignContinuationSelection {commandKey:string;reviewSha256:string;acceptCurrentAuthority:true}
 export interface BranchForeignContinuationReceipt {
  schema:'ponderosa.branch-foreign-continuation.v1';branchId:string;importedExecutionId:string;executionId:string;
- commandKey:string;inputSha256:string;review:BranchForeignContinuationReview;idMap:Record<string,string>;admission:unknown;createdAt:string;
+ commandKey:string;inputSha256:string;review:BranchForeignContinuationReview;idMap:Record<string,string>;admission:unknown;treeOwners?:Record<string,{executionId:string;admission:unknown}>;createdAt:string;
 }

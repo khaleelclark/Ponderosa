@@ -608,6 +608,10 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);const body=validatedObject(request.body,'Resource custody release');exactObjectFields(body,['commandKey','expectedGeneration','expectedCustodyId','expectedReceiptSha256'],'Resource custody release');return await context.resources.releaseCapture(p.stepId,body as unknown as import('@ponderosa/core').BranchResourceCustodyReleaseInput);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   const foreignPath='/api/branches/:id/executions/:executionId/foreign-continuation';
+  app.get<{Params:{id:string;executionId:string};Querystring:{planId:string}}>(foreignPath+'/source',(request,reply)=>{
+    try{const planId=request.query.planId;if(typeof planId!=='string'||!planId||planId.length>200)throw Error('Original installation required');const saved=branches.foreignContinuationSource(request.params.id,planId);if(!saved||!Object.values(saved.receipt.executionMap).includes(request.params.executionId))throw Error('Original held owner unavailable');return saved;}
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.post<{Params:{id:string;executionId:string};Body:import('@ponderosa/core').BranchForeignContinuationSelection}>(foreignPath+'/review',(request,reply)=>{
     try{const body=validatedObject(request.body,'Foreign checkpoint selection');exactObjectFields(body,['planId','sourceExecutionId','checkpointKey','checkpointSha256'],'Foreign checkpoint selection');const review=branches.reviewForeignContinuation(request.params.id,body as unknown as import('@ponderosa/core').BranchForeignContinuationSelection);if(review.importedExecutionId!==request.params.executionId)throw Error('Imported owner selection differs');return review;}
     catch(error){return reply.code(409).send({error:(error as Error).message});}
