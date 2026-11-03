@@ -593,7 +593,8 @@ test('cold command barrier stays held while transient process cleanup is unconfi
       await until(()=>!session.isAlive(),'original runtime exited');
       holdCleanup=true;
       const compact=await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'compact'});
-      assert.equal(compact.status,409);
+      assert.equal(compact.status,409);assert.equal(compact.body.cleanupPending,true);
+      assert.match(compact.body.error,/cleanup is still pending/i);assert.match(compact.body.error,/provider confirmation/i);
       const blocked=await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'status'});
       assert.equal(blocked.status,409);assert.equal(f.commands.length,0,'no command executes while cleanup is uncertain');
       holdCleanup=false;

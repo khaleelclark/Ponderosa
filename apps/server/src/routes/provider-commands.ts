@@ -883,7 +883,10 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           })();
         }
       }
-      if (commandFailure) return reply.code(409).send({...commandFailure,...(holdAgentCommandBarrier ? {cleanupPending:true} : {})});
+      if (commandFailure) return reply.code(409).send({...commandFailure,...(holdAgentCommandBarrier ? {
+        cleanupPending:true,
+        error:`${commandFailure.error} Command cleanup is still pending. Do not repeat it while cleanup is unresolved.`,
+      } : {})});
       if (!commandSuccess) throw new Error("Provider command outcome unavailable");
       return holdAgentCommandBarrier ? {...commandSuccess, cleanupPending:true,
         message:[commandSuccess.message,"Command cleanup is still pending. Do not repeat it while cleanup is unresolved."].filter(Boolean).join(" ")} : commandSuccess;
