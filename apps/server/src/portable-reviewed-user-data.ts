@@ -48,19 +48,96 @@ function safeText(value:string,label:string):void {
   assertPortableSecretsAbsent(value,label);
   if(redactPortableDiagnostic(value)!==value||/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value)||/(?:^|\n)\s*(?:export\s+)?(?:[A-Z0-9_]+_)?(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)\s*=/m.test(value))throw new Error(`${label} contains recognizable credentials; preserve source and remove secrets explicitly`);
 }
-function assertSupportedReviewToml(value:string):void {
-  if(/'''|"""/.test(value))throw new Error('Multiline provider TOML requires a structured format reader');
-  for(const line of value.split('\n')){
-    if(/^\s*(?:#|$)/.test(line))continue;
-    // This bounded reader cannot safely inspect nested assignments or decode escaped keys.
-    if(line.includes('{')||/^\s*["'][^=]*\\/.test(line)||/^\s*(?:"[^"\\]*"|'[^']*'|[A-Za-z0-9_-]+)\s*\./.test(line))throw new Error('Dotted keys, inline tables or escaped TOML keys require a structured format reader');
-    if(/^\s*\[/.test(line)){
-      if(/["'\\]/.test(line))throw new Error('Quoted or escaped TOML table paths require a structured format reader');
-      const table=/^\s*(\[\[?)\s*([A-Za-z0-9_-]+(?:\s*\.\s*[A-Za-z0-9_-]+)*)\s*(\]\]?)\s*(?:#.*)?$/.exec(line);
-      if(!table||table[1]!.length!==table[3]!.length)throw new Error('Unsupported or incomplete TOML table header requires a structured format reader');
-      if(table[2]!.split('.').some(part=>isPortableSecretField(part.trim())))throw new Error('Credential TOML tables require a structured format reader');
+/** Bounded scalar TOML subset; source spans survive unless their whole assignment is secret. */
+function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean} {
+  if(Buffer.byteLength(value)>1024*1024||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|\r(?!\n)/.test(value))throw new Error('Invalid or oversized review TOML');
+  let offset=0,scope:string[]=[],kept=0,safe='',removedSecretFields=false,entries=0;
+  const scalars=new Set<string>(),tables=new Set<string>(),declared=new Set<string>();
+  const fail=():never=>{throw new Error('Invalid, ambiguous or unsupported review TOML scalar syntax');};
+  const horizontal=()=>{while(value[offset]===' '||value[offset]==='\t')offset++;};
+  const newline=()=>{if(value[offset]==='\r')offset++;if(value[offset]!=='\n')fail();offset++;};
+  const endLine=()=>{horizontal();if(value[offset]==='#')while(offset<value.length&&value[offset]!=='\n'&&value[offset]!=='\r')offset++;if(offset<value.length)newline();};
+  const registerTable=(parts:string[])=>{
+    if(parts.length>64)fail();
+    for(let size=1;size<=parts.length;size++){
+      const name=JSON.stringify(parts.slice(0,size));if(scalars.has(name))fail();tables.add(name);
     }
+    const name=JSON.stringify(parts);if(declared.has(name))fail();declared.add(name);
+  };
+  const string=():string=>{
+    const quote=value[offset]!,basic=quote==='"',multiline=value.slice(offset,offset+3)===quote.repeat(3);
+    offset+=multiline?3:1;let decoded='',closed=false;
+    if(multiline&&(value[offset]==='\n'||value[offset]==='\r'))newline();
+    while(offset<value.length){
+      const character=value[offset]!;
+      if(character===quote){
+        let count=1;while(value[offset+count]===quote)count++;
+        if(!multiline){offset++;closed=true;break;}
+        if(count>=3){if(count>5)fail();decoded+=quote.repeat(count-3);offset+=count;closed=true;break;}
+        decoded+=quote.repeat(count);offset+=count;continue;
+      }
+      if(character==='\n'||character==='\r'){
+        if(!multiline)fail();newline();decoded+='\n';continue;
+      }
+      if(basic&&character==='\\'){
+        offset++;const escaped=value[offset];
+        if(multiline&&(escaped===' '||escaped==='\t'||escaped==='\n'||escaped==='\r')){
+          horizontal();if(value[offset]!=='\n'&&value[offset]!=='\r')fail();newline();
+          while(offset<value.length&&/[ \t\r\n]/.test(value[offset]!)){if(value[offset]==='\n'||value[offset]==='\r')newline();else offset++;}
+          continue;
+        }
+        const escapes:Record<string,string>={b:'\b',t:'\t',n:'\n',f:'\f',r:'\r','"':'"','\\':'\\'};
+        if(escaped!==undefined&&Object.hasOwn(escapes,escaped)){decoded+=escapes[escaped];offset++;continue;}
+        if(escaped==='u'||escaped==='U'){
+          const length=escaped==='u'?4:8,hex=value.slice(offset+1,offset+1+length);
+          if(hex.length!==length||!/^[0-9a-f]+$/i.test(hex))fail();
+          const code=Number.parseInt(hex,16);if(code>0x10ffff||code>=0xd800&&code<=0xdfff)fail();
+          decoded+=String.fromCodePoint(code);offset+=1+length;continue;
+        }
+        fail();
+      }
+      decoded+=character;offset++;
+    }
+    if(!closed)fail();return decoded;
+  };
+  while(offset<value.length){
+    if(++entries>10000)fail();const start=offset;horizontal();
+    if(value[offset]==='#'||value[offset]==='\r'||value[offset]==='\n'||offset===value.length){endLine();continue;}
+    if(value[offset]==='['){
+      const end=value.indexOf(']',offset+1);if(end<0)fail();
+      const header=value.slice(offset+1,end);
+      if(!/^[ \t]*[A-Za-z0-9_-]+(?:[ \t]*\.[ \t]*[A-Za-z0-9_-]+)*[ \t]*$/.test(header))fail();
+      scope=header.split('.').map(part=>part.trim());
+      if(scope.some(isPortableSecretField))throw new Error('Credential TOML tables require separate preservation');
+      registerTable(scope);offset=end+1;endLine();continue;
+    }
+    let key:string;
+    if(value[offset]==='"'||value[offset]==="'"){
+      const quote=value[offset++]!,end=value.indexOf(quote,offset);if(end<0)fail();
+      key=value.slice(offset,end);if(/[\\\r\n]/.test(key))fail();offset=end+1;
+    }else{
+      const match=/^[A-Za-z0-9_-]+/.exec(value.slice(offset));if(!match)fail();key=match![0];offset+=key.length;
+    }
+    horizontal();if(value[offset++]!=='=')fail();horizontal();
+    const name=JSON.stringify([...scope,key]);if(scalars.has(name)||tables.has(name))fail();scalars.add(name);
+    const secret=isPortableSecretField(key);let decoded:string|undefined;
+    if(value[offset]==='"'||value[offset]==="'")decoded=string();
+    else{
+      const begin=offset;while(offset<value.length&&!/[#\r\n]/.test(value[offset]!))offset++;
+      const scalar=value.slice(begin,offset).replace(/^[ \t]+|[ \t]+$/g,'');
+      // shortcut: compound/date/array-table forms refuse until a complete bounded reader is required.
+      if(secret||!/^(?:true|false|[+-]?(?:0|[1-9](?:_?[0-9])*)(?:\.[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?)$/.test(scalar))fail();
+      const numeric=scalar.replaceAll('_','');
+      if(!['true','false'].includes(scalar)){
+        if(!Number.isFinite(Number(numeric)))fail();
+        if(!/[.eE]/.test(numeric)&&(BigInt(numeric)<-(1n<<63n)||BigInt(numeric)>(1n<<63n)-1n))fail();
+      }
+    }
+    endLine();
+    if(secret){safe+=value.slice(kept,start);kept=offset;removedSecretFields=true;}
+    else if(decoded!==undefined)safeText(decoded,'Decoded provider TOML string');
   }
+  safe+=value.slice(kept);return {safe,removedSecretFields};
 }
 async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:bigint):Promise<{data:Buffer;mode:number}> {
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');
@@ -105,7 +182,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     if(typeof file.path!=='string'||!providerPath(file.path)||file.path.split('/').some(part=>!part||part==='.'||part==='..')||credentialPath(file.path)||file.path.includes('\\')||file.path.includes('\0')||typeof file.dataBase64!=='string'||typeof file.removedSecretFields!=='boolean'||paths.has(file.path))throw new Error('Invalid reviewed provider original');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
-    if(file.path==='.codex/config.toml')assertSupportedReviewToml(text(data));
+    if(file.path==='.codex/config.toml'&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
     safeText(text(data),'Reviewed provider configuration');
     if(file.path.endsWith('.json'))assertPortableSecretsAbsent(JSON.parse(text(data)),'Reviewed provider configuration');
     paths.add(file.path);
@@ -733,18 +810,10 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     let originalFile;try{originalFile=await regularOriginal(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
     {
       const {data}=originalFile;
-      const original=text(data);let safe=original,removedSecretFields=false;
+      const original=relative==='.codex/config.toml'?new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data):text(data);let safe=original,removedSecretFields=false;
       if(relative.endsWith('.json')){const parsed=JSON.parse(original),scrubbed=withoutPortableSecrets(parsed);removedSecretFields=JSON.stringify(parsed)!==JSON.stringify(scrubbed);safe=JSON.stringify(scrubbed,null,2);}
       else if(relative==='.codex/config.toml'){
-        assertSupportedReviewToml(original);
-        safe=original.split('\n').filter(line=>{
-          const key=/^\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*=/.exec(line);
-          if(!key||!isPortableSecretField((key[1]??key[2]??key[3])!))return true;
-          const scalar=line.slice(key[0].length).trim();
-          if(!/^(?:"(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/.test(scalar))throw new Error('Compound/multiline TOML credentials require a structured format reader');
-          return false;
-        }).join('\n');
-        removedSecretFields=safe!==original;
+        ({safe,removedSecretFields}=scrubReviewToml(original));
       }
       safeText(safe,'Provider configuration');bytes+=Buffer.byteLength(safe);if(bytes>limit)throw new Error('Provider configuration bound exceeded');
       result.providerFiles.push({path:relative,dataBase64:Buffer.from(safe).toString('base64'),removedSecretFields});

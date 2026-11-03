@@ -166,3 +166,15 @@ checks and import; no activation, source adoption, nested namespaces or lineage
 flattening. Agent and full Branch dialogs expose the source choice; API/SDK use the
 shared request DTO. Selected-file/package-history behavior and cycle policies stay
 unchanged. No runtime or platform qualification is claimed.
+
+
+Selected Codex TOML now uses one bounded scalar parser/scrubber for live capture
+and imported-original validation. Basic/literal multiline string assignments
+preserve accepted nonsecret source bytes; whole recognized secret-key string
+assignments are removed with honest `removedSecretFields`. Decoded nonsecret
+strings undergo recognizable-secret checks. Missing/invalid delimiters, duplicate
+keys/tables, scalar/table collisions and unsupported compound/key/table forms
+refuse; valid TOML outside this subset remains a recreation limit. See the
+[exact scalar contract](git-provider-user-data-transport.md#bounded-toml-syntax).
+Retained-original matching remains byte-exact and never re-sanitizes or substitutes
+live settings. No native/provider/runtime qualification was performed.
