@@ -1,4 +1,5 @@
-import {snapshotImportedNativeGit,importedNativeGitStorage,type ImportedNativeGitStorage,type ImportedNativeExternalProof} from './portable-native-git-snapshot.js';
+import {snapshotImportedNativeGit,importedNativeGitStorage,type ImportedNativeGitStorage,type ImportedNativeExternalProof,type ImportedNativeGitCustody} from './portable-native-git-snapshot.js';
+import {compileReviewedGitConfiguration} from './portable-git-configuration.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
 import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,parseReviewedUserData,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 import {planFilesystemMetadata} from './portable-filesystem-metadata.js';
@@ -224,7 +225,7 @@ async function gitWorktreeRootRegistered(
 }
 
 export class AgentWorkingCopyService {
-  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[];storage:ImportedNativeGitStorage;external:ImportedNativeExternalProof}>();
+  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[];storage:ImportedNativeGitStorage;external:ImportedNativeExternalProof;custody:ImportedNativeGitCustody}>();
   private readonly importedRootCustody=new Map<string,{device:bigint;inode:bigint;agentId:string;identity?:WorkingRootIdentity}>();
   private readonly containedReservations=new Map<string,ImportedContainedRootReservation>();
   private readonly containedParentDirectories=new Map<string,{device:bigint;inode:bigint}>();
@@ -301,9 +302,13 @@ export class AgentWorkingCopyService {
     if(await realpath(project.hostPath)!==project.hostPath||(await readdir(project.hostPath)).length)throw new Error('Live Shared import requires the empty NEW managed Chat folder');
     if(original){
       if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Git requires the unused NEW managed Project');
-      await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,original.configuration);
-      const storage=importedNativeGitStorage(project.hostPath,original.configuration),observed=await snapshotImportedNativeGit(project.hostPath,[project.hostPath],storage,original.configuration);
-      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,...observed,storage,allowedRoots:[project.hostPath]});return;
+      const issued=await lstat(project.hostPath,{bigint:true});if(!issued.isDirectory()||issued.isSymbolicLink())throw new Error('Fresh native Project root changed before initialization');
+      const configuration=original.configuration??compileReviewedGitConfiguration(parseReviewedUserData(original.data),original.activation,{common:path.join(project.hostPath,'.git'),private:path.join(project.hostPath,'.git')},new Map());
+      configuration.directoryProofs??=new Map();
+      await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,configuration);
+      const custody:ImportedNativeGitCustody={roots:{[project.hostPath]:{device:issued.dev.toString(),inode:issued.ino.toString()}},directories:configuration.directoryProofs};
+      const storage=importedNativeGitStorage(project.hostPath,configuration),observed=await snapshotImportedNativeGit(project.hostPath,[project.hostPath],storage,configuration,undefined,custody);
+      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,...observed,storage,custody,allowedRoots:[project.hostPath]});return;
     }
     await runGit(project.hostPath,['init','--template=','--initial-branch=main']);
     await runGit(project.hostPath,['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit','--allow-empty','--no-gpg-sign','-m','Initialize imported working roots']);
@@ -493,7 +498,7 @@ export class AgentWorkingCopyService {
 
   private async verifyImportedGitRoot(_project:ProjectDto,sha256:string,rootPath:string):Promise<void> {
     const proof=this.importedGitRoots.get(rootPath);
-    if(!proof||proof.sha256!==sha256||proof.snapshot!==(await snapshotImportedNativeGit(rootPath,proof.allowedRoots,proof.storage,undefined,proof.external)).snapshot)throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
+    if(!proof||proof.sha256!==sha256||proof.snapshot!==(await snapshotImportedNativeGit(rootPath,proof.allowedRoots,proof.storage,undefined,proof.external,proof.custody)).snapshot)throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
   }
 
   private async stageImportedGitRoot(rootPath:string,agentId?:string):Promise<void> {
@@ -561,7 +566,8 @@ export class AgentWorkingCopyService {
     }
     // The shared recreation engine validates included target/config closure and
     // records each applying/incomplete outcome for exactly the requested families.
-    const receipts=new Map<string,Parameters<typeof onReceipt>[0]>();
+    const receipts=new Map<string,Parameters<typeof onReceipt>[0]>(),nativeDirectories=new Map<string,{device:string;inode:string}>();
+    for(const task of tasks)if(task.configuration)task.configuration.directoryProofs=nativeDirectories;
     try{
     if(activation)await applyReviewedRecoveryRoots(tasks,activation,receipt=>{const current={...receipt,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);},originalRoots);
     for(const root of roots){
@@ -591,11 +597,13 @@ export class AgentWorkingCopyService {
     }
     // Seal after every local branch is established: common Git storage can be
     // shared by multiple selected roots, so earlier snapshots would be obsolete.
-    for(const task of tasks.filter(task=>task.activation.git&&task.value.git)){const gitDir=task.layout?.privateDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),commonDir=task.layout?.commonDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),storage=importedNativeGitStorage(task.destination,task.configuration,{gitDir,commonDir}),observed=await snapshotImportedNativeGit(task.destination,roots,storage,task.configuration);this.importedGitRoots.set(task.destination,{sha256:task.sha256,...observed,allowedRoots:roots,storage});}
+    for(const task of tasks.filter(task=>task.activation.git&&task.value.git)){const gitDir=task.layout?.privateDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),commonDir=task.layout?.commonDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),storage=importedNativeGitStorage(task.destination,task.configuration,{gitDir,commonDir}),custody:ImportedNativeGitCustody={roots:originalRoots,directories:nativeDirectories},observed=await snapshotImportedNativeGit(task.destination,roots,storage,task.configuration,undefined,custody);this.importedGitRoots.set(task.destination,{sha256:task.sha256,...observed,allowedRoots:roots,storage,custody});}
     for(const root of roots)this.stagedImportedGitRoots.delete(root);
     for(const receipt of receipts.values())onReceipt({...receipt,state:'completed'});
     }catch(error){
       const receiptErrors:unknown[]=[];
+      for(const root of roots){const staged=this.stagedImportedGitRoots.get(root),agent=staged?.agentId&&this.store.getAgent(staged.agentId);if(agent&&agent.workingCopy.repositoryRoot===root&&agent.workingCopy.state==='ready')try{this.requireUpdated(agent.id,{...agent.workingCopy,state:'unavailable',failure:'Native Git import proof is incomplete; preserve its exact root and original import operation.',updatedAt:new Date().toISOString()});}catch(storageError){receiptErrors.push(storageError);}}
+
       for(const receipt of receipts.values()){
         try{onReceipt({...receipt,state:'incomplete',error:{code:error&&typeof (error as {code?:unknown}).code==='string'?(error as {code:string}).code:'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots,cause:safeFailure(error)}}});}
         catch(storageError){receiptErrors.push(storageError);}

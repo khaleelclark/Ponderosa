@@ -455,3 +455,21 @@ test('configured dependency source capture is explicit, complete and keeps crede
     const excluded=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});assert.ok(excluded.gitExternalDependencies.omittedPaths.includes(path.join(external,'.aws','credentials')));assert.ok(!excluded.gitExternalDependencies.files.some(file=>file.sourcePath.includes('/.aws/')));
   }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('replacement after local branch readiness but before first native seal stays unavailable and never replays',async()=>{
+ const {rename,cp}=await import('node:fs/promises'),base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-native-first-seal-')));let store;
+ try{
+  const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data');await initialize(source);await initialize(shared);await mkdir(data);
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest),bytes=Buffer.from(JSON.stringify(manifest));
+  store=new AgentStore(data);const project=store.createProject({label:'Existing',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Seal custody'}),agent=store.createAgent(project.id,{title:'Owner',engine:'codex',conversationId:chat.id}),service=new AgentWorkingCopyService(data,store),release=service.beginModeChange(agent.id);
+  try{
+   const created=await service.allocateImportedSeparateGit(agent,project),root=created.workingCopy.rootPath,retained=root+'-retained';
+   await service.populateImportedRoot(created,project,[{path:'.ponderosa-portable-review/user-data.json',data:bytes,sha256:createHash('sha256').update(bytes).digest('hex')}],[],undefined,path.join(root,'.ponderosa-import-backups'),[],'refuse',undefined,undefined,{work:root},true,true);
+   const originalResolve=service.resolve.bind(service);let replaced=false;
+   service.resolve=async(...args)=>{const observed=await originalResolve(...args);if(!replaced&&args[0].id===agent.id&&args[0].workingCopy.state==='ready'){replaced=true;await rename(root,retained);await cp(retained,root,{recursive:true,verbatimSymlinks:true});}return observed;};
+   await assert.rejects(service.completeImportedGitRoots(project,pkg,{work:root},{git:true,harness:false},()=>{},[agent.id]),error=>/custody changed/.test(String(error.cause?.message)));
+   assert.equal(replaced,true);assert.equal(store.getAgent(agent.id).workingCopy.state,'unavailable');assert.equal(await readFile(path.join(retained,'.ponderosa-portable-review/user-data.json'),'utf8'),bytes.toString());
+   await assert.rejects(service.completeImportedGitRoots(project,pkg,{work:root},{git:true,harness:false},()=>{throw new Error('Never replay uncertain native actions');},[agent.id]),/exact populated phase/);
+  }finally{release();}
+ }finally{store?.close();await rm(base,{recursive:true,force:true});}
+});
