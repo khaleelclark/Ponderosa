@@ -198,3 +198,20 @@ actual immutable package object rather than export labels or timestamps; replaci
 bytes clears the old preview immediately. Grouped metadata uses the server's
 canonical metadata-bearing root subset and remains unavailable until that subset
 is reviewed. Storage-only roots never receive a metadata grant.
+
+### Mapped Git export folders
+
+Agent/organization and Branch full-export dialogs now share **Mapped Git folders**.
+After selecting all working folders and current Git data, the user chooses the
+working-folder Agent, storage-folder Agent, shared/private/module role and contained
+relative storage folder. No JSON or hash entry is required. Ordinary linked
+worktrees keep their existing automatic capture and need no manual mappings.
+Only included Agents can be chosen. A mapping cannot escape the selected folder;
+duplicates and incomplete choices show a clear error before export.
+
+Agent copy, JSON export and download forward the same explicit binding array.
+Branch selections carry one identical global array across included Agents so the
+server can capture one complete root closure rather than independent snapshots.
+These controls do not add source ownership or destination activation authority.
+The selector, real client forwarding and deferred rendered Branch regression
+await the consolidated verification pass.

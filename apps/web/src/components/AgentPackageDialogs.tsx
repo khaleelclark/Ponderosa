@@ -1,3 +1,5 @@
+import {GitStorageBindingsEditor} from './GitStorageBindingsEditor';
+import {gitStorageSelectionError} from './gitStorageSelections';
 import {NativePortableExportChoices} from './NativePortableDataChoices';
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
@@ -105,8 +107,8 @@ export function AgentPackageExportDialog({
   agents: AgentDto[];
   initialOrganization?: boolean;
   onClose(): void;
-  onCopy(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection): Promise<void>;
-  onDownload(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection): void;
+  onCopy(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): Promise<void>;
+  onDownload(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): void;
 }): JSX.Element {
   const [organization, setOrganization] = useState(initialOrganization);
   const [mode, setMode] = useState<PackageMode>("template");
@@ -115,13 +117,18 @@ export function AgentPackageExportDialog({
   const [wholeWorkingFolder,setWholeWorkingFolder]=useState(false);
   const [organizationWorkingFolders,setOrganizationWorkingFolders]=useState(false);
   const [nativeSelection,setNativeSelection]=useState<ReviewedUserDataSelection>({git:false,harness:false,source:'live'});
+  const [gitBindings,setGitBindings]=useState<import('@ponderosa/core').GitStorageSelection[]>([]);
   const allFolders=mode==='full'&&organization&&organizationWorkingFolders;
   const reviewAvailable=mode==='full'&&(wholeWorkingFolder||allFolders);
   const reviewedUserData=reviewAvailable&&(nativeSelection.git||nativeSelection.harness||nativeSelection.extendedMetadata||nativeSelection.persistentNodes?.fifo||nativeSelection.persistentNodes?.evidenceOnly)?nativeSelection:undefined;
+  const bindingAgents=selectedAgents(source,agents,organization);
+  const bindingsAvailable=allFolders&&nativeSelection.git&&nativeSelection.source!=='retained_originals';
+  const bindingError=bindingsAvailable?gitStorageSelectionError(gitBindings,new Set(bindingAgents.map(agent=>agent.id))):undefined;
+  const selectedBindings=bindingsAvailable&&gitBindings.length?gitBindings:undefined;
   const selectedPaths=mode==='full'&&!wholeWorkingFolder&&!allFolders?workingFiles.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
   const invalidPaths=selectedPaths.some(path=>path.startsWith('/')||path.split(/[\\/]/).includes('..'));
   useEffect(() => {
-    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setNativeSelection({git:false,harness:false,source:'live'}); }
+    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setNativeSelection({git:false,harness:false,source:'live'});setGitBindings([]); }
   }, [open, source.id, initialOrganization]);
   const agentCount = selectedAgents(source, agents, organization).length;
   return <Dialog open={open} onClose={copying ? undefined : onClose} fullWidth maxWidth="sm" aria-busy={copying || undefined}>
@@ -133,16 +140,18 @@ export function AgentPackageExportDialog({
       {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include every distinct organization working folder"/>}
       {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include the whole root Agent working folder"/>}
       {mode==='full'&&<NativePortableExportChoices available={reviewAvailable} disabled={copying} value={nativeSelection} onChange={setNativeSelection}/>}
+      {mode==='full'&&<GitStorageBindingsEditor agents={bindingAgents} value={gitBindings} onChange={setGitBindings} available={bindingsAvailable} disabled={copying}/>}
+      {bindingError&&<Alert severity="warning">{bindingError}</Alert>}
       {mode==='full'&&!wholeWorkingFolder&&!allFolders&&<TextField fullWidth multiline minRows={2} label="Working files to include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path relative to the Agent working folder per line. Selected files may contain sensitive information." sx={{mt:2}}/>}
     </DialogContent>
     <DialogActions sx={{ flexWrap: "wrap", p: 2 }}>
       <Button onClick={onClose} disabled={copying}>Close</Button>
-      <Button startIcon={<ContentCopyOutlinedIcon />} disabled={copying||invalidPaths} onClick={async () => {
+      <Button startIcon={<ContentCopyOutlinedIcon />} disabled={copying||invalidPaths||Boolean(bindingError)} onClick={async () => {
         setCopying(true);
-        try { await onCopy(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData); } finally { setCopying(false); }
+        try { await onCopy(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings); } finally { setCopying(false); }
       }}>{copying ? "Copying…" : "Copy JSON"}</Button>
-      <Button variant="contained" startIcon={<DownloadOutlinedIcon />} disabled={copying||invalidPaths}
-        onClick={() => onDownload(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData)}>Download JSON</Button>
+      <Button variant="contained" startIcon={<DownloadOutlinedIcon />} disabled={copying||invalidPaths||Boolean(bindingError)}
+        onClick={() => onDownload(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings)}>Download JSON</Button>
     </DialogActions>
   </Dialog>;
 }

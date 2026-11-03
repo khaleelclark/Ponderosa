@@ -1,3 +1,5 @@
+import {GitStorageBindingsEditor} from '../GitStorageBindingsEditor';
+import {gitStorageSelectionError} from '../gitStorageSelections';
 import {NativePortableExportChoices} from '../NativePortableDataChoices';
 import {useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
@@ -11,15 +13,20 @@ export function BranchPackageExportDialog({source,pending,error,onCancel,onConfi
  const [nativeSelection,setNativeSelection]=useState<ReviewedUserDataSelection>({git:false,harness:false,source:'live'});
  const reviewAvailable=allFolders||Object.values(choices).some(choice=>choice.wholeWorkingFolder);
  const reviewedUserData:ReviewedUserDataSelection|undefined=reviewAvailable&&(nativeSelection.git||nativeSelection.harness||nativeSelection.extendedMetadata||nativeSelection.persistentNodes?.fifo||nativeSelection.persistentNodes?.evidenceOnly)?nativeSelection:undefined;
+ const [gitBindings,setGitBindings]=useState<import('@ponderosa/core').GitStorageSelection[]>([]);
+ const bindingsAvailable=allFolders&&nativeSelection.git&&nativeSelection.source!=='retained_originals';
  const agents=useQuery({queryKey:['branch-export-agents',source.branchId],queryFn:()=>realApi.listBranchAgents(source.branchId),retry:false});
- const files=allFolders?Object.fromEntries((agents.data??[]).map(agent=>[agent.id,{wholeWorkingFolder:true,...(reviewedUserData?{reviewedUserData}:{})}])):Object.fromEntries(Object.entries(choices).map(([id,choice])=>[id,choice.selectedWorkingFiles?{selectedWorkingFiles:choice.selectedWorkingFiles.filter(path=>path.trim())}: {...choice,...(choice.wholeWorkingFolder&&reviewedUserData?{reviewedUserData}:{})}]));
- return <FullPackageExportDialog name={source.name} pending={pending} confirmDisabled={agents.isFetching||!agents.data||agents.isError} error={error??agents.error?.message} onCancel={onCancel} onConfirm={async()=>{if(!agents.data||agents.isError)return;await onConfirm(files);}}>
+ const bindingError=bindingsAvailable?gitStorageSelectionError(gitBindings,new Set((agents.data??[]).map(agent=>agent.id))):undefined;
+ const selectedBindings=bindingsAvailable&&gitBindings.length?gitBindings:undefined;
+ const files=allFolders?Object.fromEntries((agents.data??[]).map(agent=>[agent.id,{wholeWorkingFolder:true,...(reviewedUserData?{reviewedUserData}:{}),...(selectedBindings?{gitStorageBindings:selectedBindings}:{})}])):Object.fromEntries(Object.entries(choices).map(([id,choice])=>[id,choice.selectedWorkingFiles?{selectedWorkingFiles:choice.selectedWorkingFiles.filter(path=>path.trim())}: {...choice,...(choice.wholeWorkingFolder&&reviewedUserData?{reviewedUserData}:{})}]));
+ return <FullPackageExportDialog name={source.name} pending={pending} confirmDisabled={Boolean(bindingError)||agents.isFetching||!agents.data||agents.isError} error={error??bindingError??agents.error?.message} onCancel={onCancel} onConfirm={async()=>{if(!agents.data||agents.isError)return;await onConfirm(files);}}>
   <Stack spacing={1} sx={{mt:2}}>
    <Alert severity="info">Full package includes supported private runtime facts and execution-owned Chats · new installation recreates held data · no native authority</Alert>
    <Typography>Working files optional · credentials, native ownership and sessions excluded</Typography>
    {agents.isError&&<Alert severity="error" action={<Button onClick={()=>void agents.refetch()}>Retry</Button>}>Could not load Agents.</Alert>}
    <FormControlLabel control={<Checkbox disabled={pending||!agents.data} checked={allFolders} onChange={event=>setAllFolders(event.target.checked)}/>} label="Include all workflow Agent working folders"/>
    <NativePortableExportChoices available={reviewAvailable} disabled={pending} value={nativeSelection} onChange={setNativeSelection}/>
+   <GitStorageBindingsEditor agents={(agents.data??[]).map(agent=>({id:agent.id,title:agent.chatTitle+' · '+agent.title}))} value={gitBindings} onChange={setGitBindings} available={bindingsAvailable} disabled={pending}/>
    {!allFolders&&agents.data?.map(agent=><Stack key={agent.id} spacing={1}>
     <TextField select disabled={pending} label={`Working files: ${agent.chatTitle} · ${agent.title}`} value={choices[agent.id]?.wholeWorkingFolder?'whole':choices[agent.id]?.selectedWorkingFiles?'selected':''} onChange={event=>setChoices(current=>{const next={...current};if(!event.target.value)delete next[agent.id];else next[agent.id]=event.target.value==='whole'?{wholeWorkingFolder:true}:{selectedWorkingFiles:[]};return next;})}><MenuItem value="">No working files</MenuItem><MenuItem value="whole">Whole working folder</MenuItem><MenuItem value="selected">Select relative files</MenuItem></TextField>
     {choices[agent.id]?.selectedWorkingFiles&&<TextField multiline minRows={2} disabled={pending} label={`Relative file paths: ${agent.title}`} value={choices[agent.id]?.selectedWorkingFiles?.join('\n')} onChange={event=>setChoices(current=>({...current,[agent.id]:{selectedWorkingFiles:event.target.value.split('\n')}}))} helperText="One relative path per line · server path/credential checks required"/>}

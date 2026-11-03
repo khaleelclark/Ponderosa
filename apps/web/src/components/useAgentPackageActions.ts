@@ -24,15 +24,16 @@ export function useAgentPackageActions({
     wholeWorkingFolder = false,
     organizationWorkingFolders = false,
     reviewedUserData?: import("@ponderosa/core").ReviewedUserDataSelection,
+    gitStorageBindings?: import("@ponderosa/core").GitStorageSelection[],
   ) => {
     try {
       await copyDeferredText(
-        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData),
+        api.exportAgentText(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData, gitStorageBindings),
       );
       notify({ key: "copy-agent-package", message: "Copied" });
     } catch (error) {
       if(error instanceof AgentPackageDownloadRequired){
-        await downloadAgentPackage(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData);
+        await downloadAgentPackage(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings);
         notify({key:'copy-agent-package',message:'Complete package download started. Import the downloaded file; nothing was truncated for the clipboard.'});
         return;
       }
@@ -49,9 +50,10 @@ export function useAgentPackageActions({
     wholeWorkingFolder = false,
     organizationWorkingFolders = false,
     reviewedUserData?: import("@ponderosa/core").ReviewedUserDataSelection,
+    gitStorageBindings?: import("@ponderosa/core").GitStorageSelection[],
   ) => {
     const anchor = document.createElement("a");
-    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData);
+    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization, workingFiles, wholeWorkingFolder, organizationWorkingFolders, reviewedUserData, gitStorageBindings);
     anchor.download = portablePackageFileName(
       title ?? "agent",
       organization,
