@@ -64,8 +64,12 @@ at most 4 KiB, one line (optional final LF), with no CR/NUL. Same-owner, regular
 single-link and size gates run before any association-record content read; the
 no-follow open handle must independently satisfy ownership/type/link/size and
 identity checks before the first read. Ownership and identity are checked again
-afterward, including association re-reads. The backlink must be
-absolute and exact. Normal `.git` directories continue to refuse `gitdir` or
+afterward, including association re-reads. The backlink may be absolute or relative
+to the selected private gitdir, following [Git v2.54.0's linking contract](https://github.com/git/git/blob/v2.54.0/worktree.c#L1026-L1051).
+Its raw parent components are checked before normalization, and its final `.git`
+name must identify exactly the already observed selected pointer. No guessed
+backlink target is opened and no final regular file is treated as a directory.
+Raw association spelling and file identity remain before/after evidence. Normal `.git` directories continue to refuse `gitdir` or
 `commondir` indirection. Directory/pointer identity, bytes and change times are
 rechecked before repository-content reads and in the before/after capture.
 Association records alone may be read while establishing this authority; no
@@ -73,6 +77,21 @@ broad filesystem/repository search or other-worktree inventory is performed.
 Ambiguous, broken, foreign-owner, changed or unsupported topology refuses.
 Ownership supports association validation; explicit human selection supplies
 permission. This implementation batch performed no live external-repository reads.
+
+`extensions.relativeWorktrees` remains ordered inactive nonsecret configuration;
+no source links/config or destination native links are rewritten. A common-config declaration
+requires exactly one explicit common `core.repositoryFormatVersion = 1`, matching
+Git's [v1-only extension rule](https://github.com/git/git/blob/v2.54.0/setup.c#L822-L856).
+The bounded boolean forms are implicit true, true/yes/on/1, false/no/off/0 or an
+explicit empty false value (case-insensitive words); other numeric forms refuse.
+Malformed booleans and duplicate declarations within either config source refuse;
+worktree-local declarations remain inert and do not determine repository format.
+An absent or false setting does not invalidate a reciprocal relative association,
+and true does not require the selected worktree to use relative links: Git reads
+links independently, and the extension may describe another worktree. Unknown
+repository extensions still refuse. Live capture and shared import/recreation/
+retained-original validation enforce the same declaration rules. Fresh review
+repositories remain standalone; generated review files do not become authority.
 
 Only selected private `HEAD`, `index`, exact linked `sharedindex.<OID>` originals,
 `config.worktree`, `info/sparse-checkout`, `logs/HEAD`, loose

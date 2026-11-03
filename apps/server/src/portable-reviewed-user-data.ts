@@ -500,6 +500,7 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   }
   encodeResolveUndo(value.resolveUndo,value.format,ids);
   for(const item of value.configurationReview){fields(item,['key','value'],['implicitBoolean','source']);if(item.source!==undefined&&item.source!=='config.worktree')throw new Error('Invalid reviewed Git configuration source');if(typeof item.key!=='string'||typeof item.value!=='string'||item.implicitBoolean!==undefined&&(item.implicitBoolean!==true||item.value!=='')||excludedGitKey(item.key)||/:\/\/[^/]*@/.test(item.value))throw new Error('Invalid reviewed Git configuration');safeText(`${item.key}=${item.value}`,'Git configuration');}
+  validateRelativeWorktrees(value.configurationReview);
   validateGitInfoReview(value.infoReview);
   validateSparseReview(value,ids);
 }
@@ -667,6 +668,30 @@ function expandSparseDirectories(directories:IndexEntry[],objects:Map<string,Git
   return result.sort(indexOrder);
 }
 
+function gitConfigurationBoolean(items:ReviewedGitUserData['configurationReview'],key:string):boolean|undefined {
+  let result:boolean|undefined;
+  for(const item of items.filter(item=>item.key.toLowerCase()===key)){
+    if(item.implicitBoolean)result=true;
+    else if(/^(?:true|yes|on|1)$/i.test(item.value))result=true;
+    else if(/^(?:false|no|off|0|)$/i.test(item.value))result=false;
+    else throw new Error('Unsupported Git configuration boolean');
+  }
+  return result;
+}
+
+/** Relative linking is association evidence, not a setting to activate on recreation. */
+function validateRelativeWorktrees(configuration:ReviewedGitUserData['configurationReview']):void {
+  const declarations=configuration.filter(item=>item.key.toLowerCase()==='extensions.relativeworktrees');
+  if(!declarations.length)return;
+  const versions=configuration.filter(item=>!item.source&&item.key.toLowerCase()==='core.repositoryformatversion');
+  if(declarations.some(item=>!item.source)&&(versions.length!==1||versions[0]!.implicitBoolean||versions[0]!.value!=='1'))throw new Error('Relative worktree extension requires explicit Git repository format 1');
+  for(const source of [undefined,'config.worktree']){
+    const items=declarations.filter(item=>item.source===source);
+    if(items.length>1)throw new Error('Ambiguous relative worktree extension declarations');
+    gitConfigurationBoolean(items,'extensions.relativeworktrees');
+  }
+}
+
 function validateSparseReview(value:ReviewedGitUserData,objects:Map<string,GitObject>):void {
   fields(value.sparseReview,['patternsBase64','directories']);
   const {patternsBase64,directories}=value.sparseReview;
@@ -677,16 +702,7 @@ function validateSparseReview(value:ReviewedGitUserData,objects:Map<string,GitOb
     safeText(text(raw),'Git sparse patterns');
   }
   const local=value.configurationReview.filter(item=>!item.source),worktree=value.configurationReview.filter(item=>item.source==='config.worktree');
-  const boolean=(items:typeof local,key:string):boolean|undefined=>{
-    let result:boolean|undefined;
-    for(const item of items.filter(item=>item.key.toLowerCase()===key)){
-      if(item.implicitBoolean)result=true;
-      else if(/^(?:true|yes|on|1)$/i.test(item.value))result=true;
-      else if(/^(?:false|no|off|0|)$/i.test(item.value))result=false;
-      else throw new Error('Unsupported sparse Git configuration boolean');
-    }
-    return result;
-  };
+  const boolean=gitConfigurationBoolean;
   // Validate every declared sparse boolean, including dormant worktree settings, without inventing defaults.
   for(const items of [local,worktree])for(const key of ['core.sparsecheckout','core.sparsecheckoutcone','index.sparse','extensions.sparseindex','extensions.worktreeconfig'])boolean(items,key);
   const enabled=boolean(local,'extensions.worktreeconfig'),effective=enabled?[...local,...worktree]:local;
@@ -909,7 +925,9 @@ async function gitAssociation(root:string):Promise<GitAssociation|undefined> {
   if(!value.startsWith('gitdir: ')||!value.slice(8))throw new Error('Unsupported Git pointer');
   const gitDir=await associationDirectory(root,value.slice(8));await directory(gitDir);
   const backlink=await associationFile(path.join(gitDir,'gitdir'));
-  if(!path.isAbsolute(backlink)||backlink!==pointer)throw new Error('Git worktree backlink does not identify the selected root');
+  // Resolve only the raw parent components; the final .git is the already observed file.
+  const slash=backlink.lastIndexOf(path.sep);
+  if(backlink.split(path.sep).length>128||backlink.slice(slash+1)!=='.git'||await associationDirectory(gitDir,slash<0?'.':backlink.slice(0,slash)||path.sep)!==root)throw new Error('Git worktree backlink does not identify the selected root');
   const commonValue=await associationFile(path.join(gitDir,'commondir')),commonDir=await associationDirectory(gitDir,commonValue);
   if(!commonValue||commonDir===gitDir||path.dirname(gitDir)!==path.join(commonDir,'worktrees')||!path.basename(gitDir)||path.basename(gitDir).startsWith('.'))throw new Error('Unsupported Git common-directory association');
   await directory(commonDir);await directory(path.join(commonDir,'worktrees'));
@@ -1109,12 +1127,13 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     return {sparse,raw};
   };
   const initial=await snapshot();
+  validateRelativeWorktrees(initial.sparse.configuration);
   const local=initial.sparse.configuration.filter(item=>!item.source);
   const declared=local.filter(item=>item.key.toLowerCase()==='extensions.objectformat');
   if(declared.length>1||declared.some(item=>!['sha1','sha256'].includes(item.value)))throw new Error('Unsupported Git object format declaration');
   const format: 'sha1'|'sha256'=declared[0]?.value==='sha256'?'sha256':'sha1';
   const versions=local.filter(item=>item.key.toLowerCase()==='core.repositoryformatversion');
-  if(versions.length!==1||!['0','1'].includes(versions[0]!.value)||declared.length>0&&versions[0]!.value!=='1'||local.some(item=>/^extensions\./i.test(item.key)&&!['extensions.objectformat','extensions.worktreeconfig'].includes(item.key.toLowerCase())))throw new Error('Unsupported Git repository format or extension');
+  if(versions.length!==1||!['0','1'].includes(versions[0]!.value)||declared.length>0&&versions[0]!.value!=='1'||local.some(item=>/^extensions\./i.test(item.key)&&!['extensions.objectformat','extensions.worktreeconfig','extensions.relativeworktrees'].includes(item.key.toLowerCase())))throw new Error('Unsupported Git repository format or extension');
   const before={...initial,storage:await captureIndexStorage(gitDir,format)};
   validateGitShallowReview(before.raw.shallowReview,format);
   const captured=await readCapturedGit(before.raw.files,format),batch=captured.batch;
