@@ -4,8 +4,8 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {AgentStore,BranchStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
-import {replayParallelCut,parallelDefinitionSupported} from '../../packages/agents/dist/branch-parallel-continuation.js';
+import {AgentStore,BranchStore,CoordinationV3Store,branchSharedState,branchStateResult} from '../../packages/agents/dist/index.js';
+import {replayParallelCut,parallelDefinitionSupported,parallelFrontierSupported} from '../../packages/agents/dist/branch-parallel-continuation.js';
 import {stableJson} from '../../packages/agents/dist/coordination-v3-canonical-json.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const identity={pid:2147483647,pgid:2147483647,birthMarker:'controlled-no-process'};
@@ -47,6 +47,13 @@ for(const mode of ['async','sync'])for(const nested of [false,true])test(`actual
  await f.finish(next.id);assert.equal(f.branches.execution(next.id).output,f.branches.execution(f.source.id).output);
  const recut=f.points(next.id).find(cp=>cp.snapshot.selected.maps.length&&cp.snapshot.selected.steps.some(step=>step.state==='completed'));
  assert.ok(recut,'restored prefix is independently verified and can be selected again');
+ const lineage=f.store.sqlite.prepare("SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=? AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.rewind-lineage.v1'").get(next.id);
+ assert.ok(lineage,'the restored execution retains its exact prefix map');
+ const seed={selected:cut.snapshot.selected,idMap:JSON.parse(lineage.snapshot_json).idMap};
+ const resumed=recut.snapshot, replay=(saved)=>replayParallelCut(resumed.selected,f.definition,resumed.continuation.configuration,resumed.continuation.audit,resumed.continuation.checkpoint,saved);
+ assert.equal(replay(seed),true,'a replay seeded with the original prefix reaches the saved frontier');
+ const badSeed=structuredClone(seed),oldPath=seed.selected.paths[0].id;badSeed.idMap[oldPath]='foreign-seed-path';
+ assert.equal(replay(badSeed),false,'a changed seed identity cannot authorize the saved frontier');
  const third=f.branches.rewindHistorical(f.branch.id,next.id,recut.id,recut.contentHash,'again');await f.finish(third.id);
  assert.equal(f.branches.execution(third.id).output,f.branches.execution(next.id).output);assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
 });
@@ -66,6 +73,40 @@ test('Map dispatch, ordered Join and owned audit bytes cannot be replaced with a
   const value=good();mutate(value);assert.equal(replayParallelCut(value.selected,f.definition,value.continuation.configuration,value.continuation.audit),false);
  }
  assert.equal(replayParallelCut(original.selected,f.definition,original.continuation.configuration,original.continuation.audit),true);
+});
+
+test('parallel frontier refuses duplicate and orphaned identities before replay',async t=>{
+ const f=fixture(t,{nested:true});await f.finish(f.source.id);
+ const cut=f.points(f.source.id).find(cp=>cp.snapshot.selected.forks.some(row=>row.state==='closed')&&cp.snapshot.selected.steps.length&&cp.snapshot.selected.attempts.length&&cp.snapshot.selected.sealedResults.length);
+ assert.ok(cut);
+ const selected=cut.snapshot.selected;
+ assert.equal(parallelFrontierSupported(selected,f.definition),true);
+ for(const [name,mutate] of [
+  ['duplicate Step',s=>s.steps.push(structuredClone(s.steps[0]))],
+  ['duplicate Path',s=>s.paths.push(structuredClone(s.paths[0]))],
+  ['duplicate Attempt',s=>s.attempts.push(structuredClone(s.attempts[0]))],
+  ['duplicate seal',s=>s.sealedResults.push(structuredClone(s.sealedResults[0]))],
+  ['orphan Attempt',s=>{s.attempts[0].step_execution_id='missing-step';}],
+  ['orphan seal',s=>{s.sealedResults[0].step_execution_id='missing-step';}],
+  ['non-string Step identity',s=>{s.steps[0].id=NaN;}],
+ ]){
+  const bad=structuredClone(selected);mutate(bad);
+  assert.equal(parallelFrontierSupported(bad,f.definition),false,name);
+  assert.equal(replayParallelCut(bad,f.definition,cut.snapshot.continuation.configuration,cut.snapshot.continuation.audit),false,name);
+ }
+});
+
+test('shared state uses the first matching identity and rejects orphan or NaN ownership',()=>{
+ const definition={state:{count:{initial:0,reducer:'sum'}},steps:[{id:'write',stateWrites:['count']},{id:'write',stateWrites:[]},{id:'other',stateWrites:[]}]};
+ const steps=[{id:'same',step_id:'write'},{id:'same',step_id:'other'}];
+ const result=branchStateResult(definition,steps,[],'write',{failed:false,output:'{"count":2}'});
+ const make=(step,result)=>({step_execution_id:step,result_json:stableJson(result),content_hash:hash(stableJson(result))});
+ const seal=make('same',result);
+ assert.equal(branchSharedState(definition,steps,[seal]).values.count,2,'first matching Step and definition govern the seal');
+ assert.throws(()=>branchSharedState(definition,[{id:'same',step_id:'other'},...steps],[seal]),/Undeclared state update/);
+ assert.throws(()=>branchSharedState(definition,steps,[make('missing',result)]),/Step unavailable/);
+ assert.throws(()=>branchSharedState(definition,[{id:NaN,step_id:'write'}],[make(NaN,result)]),/Step unavailable/);
+ assert.throws(()=>branchSharedState({...definition,steps:[{id:NaN,stateWrites:['count']}]},[{id:'step',step_id:NaN}],[make('step',result)]),/Step unavailable/);
 });
 
 test('control insertion failure rolls back fresh owner, data and lineage before admission',async t=>{

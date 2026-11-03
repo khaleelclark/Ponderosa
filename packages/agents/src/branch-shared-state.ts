@@ -6,9 +6,13 @@ const object=(v:unknown):v is Record<string,BranchStateValue>=>!!v&&typeof v==='
 export function branchSharedState(definition:BranchDefinition,steps:Row[],seals:Row[]):BranchSharedStateDto {
  const values=Object.fromEntries(Object.entries(definition.state??{}).map(([key,c])=>[key,structuredClone(c.initial)]));
  const updates:{stepId:string;result:BranchResult}[]=[];
+ // Preserve Array.find's first-match and strict-equality semantics, including
+ // duplicate IDs and NaN, while avoiding a full Step scan for every seal.
+ const firstById=(rows:Row[])=>{const index=new Map<unknown,Row>();for(const row of rows)if(row.id===row.id&&!index.has(row.id))index.set(row.id,row);return index;};
+ const stepsById=firstById(steps),nodesById=firstById(definition.steps);
  for(const seal of seals){
   if(payloadHash(JSON.parse(seal.result_json))!==seal.content_hash)throw Error('State result hash differs');
-  const result=JSON.parse(seal.result_json) as BranchResult,step=steps.find(s=>s.id===seal.step_execution_id),node=definition.steps.find(s=>s.id===step?.step_id);
+  const result=JSON.parse(seal.result_json) as BranchResult,step=stepsById.get(seal.step_execution_id),node=nodesById.get(step?.step_id);
   if(!step||!node)throw Error('State result Step unavailable');
   if(!result.failed&&node.stateWrites?.length){
    if(!result.stateUpdate)throw Error('Declared state write is missing its immutable revision');

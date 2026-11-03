@@ -151,8 +151,13 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
   if(s.paths!.some(p=>p.execution_id!==e.id||p.handling_limit||!['active','waiting','joining','arrived','completed','canceled','failed','skipped'].includes(p.state)||!Number.isSafeInteger(p.traversals)||p.traversals<0))return false;
   if(!terminal&&(!s.paths!.some(p=>['active','waiting','joining'].includes(p.state))||e.state!==(s.paths!.some(p=>p.state==='active')?'running':'waiting')))return false;
   if(e.traversals!==s.paths!.reduce((n,p)=>n+p.traversals,0)+(context?.descendantTraversals??0))return false;
+  // branchContinuationIds above rejects aliased Step and Path IDs. Keep every
+  // attempt and seal in original order so duplicate evidence is still refused.
+  const byStep=(rows:Row[])=>{const index=new Map<unknown,Row[]>();for(const row of rows){const group=index.get(row.step_execution_id);if(group)group.push(row);else index.set(row.step_execution_id,[row]);}return index;};
+  const attemptsByStep=byStep(s.attempts!),sealsByStep=byStep(s.sealedResults!);
+  const stepsById=new Map(s.steps!.map(step=>[step.id,step])),pathsById=new Map(s.paths!.map(path=>[path.id,path]));
   for(const step of s.steps!){
-   const a=s.attempts!.filter(a=>a.step_execution_id===step.id).sort((a,b)=>a.number-b.number),r=s.sealedResults!.filter(r=>r.step_execution_id===step.id);
+   const a=[...(attemptsByStep.get(step.id)??[])].sort((a,b)=>a.number-b.number),r=sealsByStep.get(step.id)??[];
    const node=d.steps.find(node=>node.id===step.step_id),policy=node?.failure??d.policy.failure;
    if(step.execution_id!==e.id||!d.steps.some(node=>node.id===step.step_id)||!['prepared','waiting','completed','failed','canceled'].includes(step.state)||!a.length)return false;
    const attempt=a.at(-1)!;
@@ -166,7 +171,8 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
    if(Object.keys(attempt).some(key=>!['id','step_execution_id','number','state','request_id','fence','input_hash','result_json','available_at','purpose','recovery_of_request_id','cancel_requested','runtime_outcome_json','error','created_at','updated_at'].includes(key)))return false;
    if(attempt.state!==step.state||attempt.purpose!=='step'||attempt.error||attempt.request_id&&node?.kind!=='agent'||attempt.recovery_of_request_id||attempt.runtime_outcome_json||attempt.cancel_requested&&step.state!=='canceled'||attempt.input_hash!==hash(step.input_text)||attempt.result_json!==step.result_json||!Number.isSafeInteger(attempt.fence)||attempt.fence<0)return false;
    if(step.state==='prepared'||step.state==='waiting'||step.state==='canceled'){
-    if(step.state!=='canceled'&&attempt.fence||step.result_json!==null||r.length||!s.paths!.some(p=>p.id===step.path_id&&p.step_execution_id===step.id&&(p.state===(step.state==='prepared'||attempt.request_id?'active':step.state)||step.state==='prepared'&&a.length>1&&policy.action==='retry'&&policy.delayMs>0&&p.state==='waiting')))return false;
+    const p=pathsById.get(step.path_id);
+    if(step.state!=='canceled'&&attempt.fence||step.result_json!==null||r.length||!p||p.step_execution_id!==step.id||!(p.state===(step.state==='prepared'||attempt.request_id?'active':step.state)||step.state==='prepared'&&a.length>1&&policy.action==='retry'&&policy.delayMs>0&&p.state==='waiting'))return false;
     if(step.state==='waiting'&&!attempt.request_id&&!s.gates!.some(g=>g.step_execution_id===step.id&&g.state==='waiting')&&!context?.children[attempt.id])return false;
    }else{
     const result=JSON.parse(step.result_json);
@@ -174,7 +180,7 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
     if(r[0]!.execution_id!==e.id||r[0]!.path_id!==step.path_id||r[0]!.terminal_attempt_id!==attempt.id||r[0]!.result_json!==step.result_json||r[0]!.content_hash!==hash(step.result_json))return false;
    }
   }
-  if(s.attempts!.some(a=>!s.steps!.some(step=>step.id===a.step_execution_id))||s.sealedResults!.length!==s.steps!.filter(row=>row.state==='completed'||row.state==='failed').length)return false;
+  if(s.attempts!.some(a=>!stepsById.has(a.step_execution_id))||s.sealedResults!.length!==s.steps!.filter(row=>row.state==='completed'||row.state==='failed').length)return false;
   if(e.loop_iterations!==s.loops!.reduce((n,row)=>n+row.iterations,0)+(context?.descendantLoops??0))return false;
   for(const gate of s.gates!){const step=s.steps!.find(row=>row.id===gate.step_execution_id),node=d.steps.find(row=>row.id===step?.step_id);if(!step||node?.kind!=='human_gate'||!['waiting','resolved','canceled'].includes(gate.state))return false;}
   return true;
@@ -189,8 +195,17 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
   const e=s.execution![0]!,root=s.paths!.find(p=>p.parent_path_id===null)!;
   const m:Selected=Object.fromEntries(keys.map(k=>[k,[]]));
   function require(ok:unknown):asserts ok {if(!ok)throw Error('Parallel audit differs from selected frontier');}
-  const find=(key:string,id:string)=>{const r=m[key]!.find(r=>r.id===id);require(r);return r!;};
-  const final=(key:string,id:string)=>{const r=s[key]!.find(r=>r.id===id);require(r);return r!;};
+  // Replay tables are append-only (or replaced wholesale for the seed).
+  // Cache the first row per identity as rows arrive, matching Array.find even
+  // for duplicate IDs; malformed NaN never equals itself under strict equality.
+  const indexes=new WeakMap<Row[],{next:number;rows:Map<unknown,Row>}>();
+  const firstById=(rows:Row[],id:unknown)=>{
+   let index=indexes.get(rows);if(!index){index={next:0,rows:new Map()};indexes.set(rows,index);}
+   while(index.next<rows.length){const row=rows[index.next++]!;if(row.id===row.id&&!index.rows.has(row.id))index.rows.set(row.id,row);}
+   return id===id?index.rows.get(id):undefined;
+  };
+  const find=(key:string,id:string)=>{const r=firstById(m[key]!,id);require(r);return r!;};
+  const final=(key:string,id:string)=>{const r=firstById(s[key]!,id);require(r);return r!;};
   const text=(v:string)=>interpolateBranchText(v,d,c);
   const boundRequests=new Set<string>();
   const pendingArrivals=new Set<string>(),sealedMaps=new Set<string>(),completedItems=new Set<string>(),authorized=new Set<string>(),exited=new Set<string>();
