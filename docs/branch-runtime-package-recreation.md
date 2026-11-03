@@ -966,7 +966,7 @@ owned-bundle checks without widening its public default. Existing canonical tree
 replay independently checks complete child coverage, owner pins, acceptance,
 Call results, state seals and every causal Script/Join transition.
 
-Only the root can produce or consume a bundle. Every descendant must have no
+In this root-only family, only the root can produce or consume a bundle. Every descendant must have no
 bundle rows or typed bundle references. Every actual or prepared Call input and
 result must be ordinary inline text; exact child input/output and parent-attempt
 hashes remain mandatory. Returned references, forwarded bundles, child-owned
@@ -1019,3 +1019,58 @@ secret/custody/execution-Chat and unknown/in-flight families remain excluded.
 This is source implementation, not executed qualification. Saver timing,
 durability, scheduling, notifications, round trips, rollback, native equivalence,
 atomicity and whole-Bible/full-portability acceptance remain unvalidated.
+
+
+### Manual Call leaves with local Join bundles
+
+A separate all-manual actual Call-tree family permits authentic Join bundles
+inside nonroot parallel leaf owners. The root and every nonleaf remain free of
+bundle rows and typed references. Each bundle-bearing leaf has a manual definition
+with no Branch Call step anywhere, no Branch or Agent bindings, and no actual
+descendants in the complete related owner inventory. Multiple qualified leaves
+may own independent bundles. The existing manual/automatic root-only families and
+public standalone defaults are unchanged; root-plus-leaf bundles, automatic child
+bundles and nonleaf child bundles remain excluded.
+
+A leaf consumes only its own authentic Join bundle and returns ordinary inline
+output. Every actual or prepared Call input, result and attempt result, child
+execution input and terminal output remains inline. Returned, forwarded, adopted
+and cross-owner references are unsupported. The shared complete-family proof
+checks definitions, bindings, parent reachability and exact Call input/hash links;
+canonical replay separately verifies complete child coverage, depth, admission,
+owner pins, results and state. Foreign replay identifies the actual root and
+independently matches the current owner's selected bytes, definition, bindings
+and parent context before deriving this family. A tree/Call flag grants nothing.
+
+Owned row identities, typed references, exact UTF-8 bytes/hash, 8 MB and beyond-inline
+bounds, unique closed producers and authored-literal exclusions remain enforced.
+Existing per-owner causal replay reconstructs deterministic Join labels/order and
+bytes, then requires exact Script input bundle ID/hash, leases/fences, observed
+process exit/drain, settlement, Script retries and state seals. Ordinary approval
+gates retain their exact codec; Calls and gates gain no retry authority.
+
+Original selected and independent latest each derive their own complete family.
+An older selected cut can precede later children or local bundle production, but
+needs its own genuine committed TREE bytes/hash/invocation and required child
+saver coverage. Later owners or latest-only terminal observations cannot supply
+an executable selected cut. Missing child saves, exact closed EXIT evidence or
+observed exit/drain remain held; no adapter, backfill or source-SQL fallback is
+introduced. Every related planner owner resolves the original root through retained
+lineage and requires canonical original latest replay before bundle-bearing held
+recreation; publication repeats this check.
+
+Existing typed per-owner remapping, immutable receipt prefix checks, original-key
+recovery and bounded held/admitted/re-export/local-rewind lineage are reused.
+Current generations independently prove the same family, genuine suffix child
+admission and local bundle production. Prefix verification alone is not full
+suffix replay. Fresh human confirmation, manual destination root and ordinary
+Call child acceptance, current definitions/configuration/bindings, Script/Call
+policy, directories, permissions, readiness, budget and capacity remain required.
+Historical acceptance grants no current authority; automatic occurrence proof and
+root-only automatic support are unchanged. Effect/resource/Agent/secret/host/
+custody/execution-Chat and unknown/in-flight families remain excluded.
+
+Source implementation only: no tests, preparation, builds, typechecks or runtime
+execution. Timing, durability, scheduling, notifications, round trips, rollback,
+native equivalence, atomicity and whole-Bible/full-portability acceptance remain
+unqualified. No module, codec, schema, DTO, format, cap or dependency was added.

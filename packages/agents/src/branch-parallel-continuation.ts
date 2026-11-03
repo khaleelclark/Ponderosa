@@ -27,7 +27,7 @@ export function parallelDefinitionSupported(d:BranchDefinition,calls=false,issue
 export function portableScriptBundlesSupported(s:Selected,d:BranchDefinition):boolean {
  return ownedScriptBundlesSupported(s,d);
 }
-function ownedScriptBundlesSupported(s:Selected,d:BranchDefinition,calls=false):boolean {
+function ownedScriptBundlesSupported(s:Selected,d:BranchDefinition,calls=false,leaf=false):boolean {
  try {
   const e=s.execution![0]!,outputs=(rows:Row[])=>rows.map(row=>row.result_json===null?undefined:JSON.parse(row.result_json).output);
   const texts=[e.input_text,e.output_text,...s.paths!.map(p=>p.input_text),...s.steps!.map(p=>p.input_text),...s.joins!.map(p=>p.output_text),...s.items!.map(p=>p.input_text),...s.gates!.map(g=>g.proposal_text),...s.gates!.map(g=>g.response_json===null?undefined:JSON.parse(g.response_json).output),...outputs(s.paths!),...outputs(s.steps!),...outputs(s.attempts!),...outputs(s.sealedResults!),...outputs(s.forks!)];
@@ -35,7 +35,7 @@ function ownedScriptBundlesSupported(s:Selected,d:BranchDefinition,calls=false):
   if(!s.bundles!.length&&!references.length)return true;
   // Automatic origins need separate occurrence replay; their admitted descendants are fresh manual owners.
   const automatic=calls?automaticScriptDefinitionSupported(d,true,false,false,false,true):automaticScriptDefinitionSupported(d,false,false,true);
-  if(d.trigger.kind!=='manual'&&!automatic||!parallelDefinitionSupported(d,calls)||d.steps.some(step=>!['script','human_gate',...(calls?['branch_call']:[])].includes(step.kind))||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
+  if(d.trigger.kind!=='manual'&&!automatic||!parallelDefinitionSupported(d,calls)||d.steps.some(step=>!['script','human_gate',...(calls?['branch_call']:[])].includes(step.kind))||(leaf?d.trigger.kind!=='manual'||e.admission_source!=='call'||!e.parent_execution_id||!e.parent_attempt_id||!Number.isSafeInteger(e.call_depth)||e.call_depth<1:e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||e.parent_execution_id||e.parent_attempt_id||e.call_depth)||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
   if(branchContinuationIds(s).includes(e.id))return false;
   const producers=new Set<string>();
   for(const bundle of s.bundles!){
@@ -70,11 +70,15 @@ export function manualRootBundleTreeSupported(owners:ManualRootBundleOwner[],roo
 export function rootCallBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string):boolean {
  return manualRootBundleTreeSupported(owners,rootId)||rootBundleTreeSupported(owners,rootId,true);
 }
-function rootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string,automaticRoot=false):boolean {
+/** Separate all-manual family: only Call leaves without any future Call can own bundles. */
+export function manualLeafBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string):boolean {
+ return rootBundleTreeSupported(owners,rootId,false,true);
+}
+function rootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string,automaticRoot=false,leafBundles=false):boolean {
  try {
   const byId=new Map(owners.map(o=>[o.selected.execution![0]!.id,o])),root=byId.get(rootId);
   const inline=(value:unknown)=>value===null||value===undefined||typeof value==='string'&&!value.startsWith('branch-result-bundle:')&&branchText(value)===value;
-  if(!root||byId.size!==owners.length||!root.definition.steps.some(s=>s.kind==='branch_call')||!parallelDefinitionSupported(root.definition,true))return false;
+  if(!root||byId.size!==owners.length||!root.definition.steps.some(s=>s.kind==='branch_call')||!leafBundles&&!parallelDefinitionSupported(root.definition,true))return false;
   const automatic=automaticRoot&&automaticScriptDefinitionSupported(root.definition,true,false,false,false,true);
   if(automaticRoot&&!automatic)return false;
   for(const o of owners){
@@ -84,9 +88,10 @@ function rootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string,au
     ||d.controls.some(c=>!['condition','route','fork','map','join'].includes(c.kind))||Object.keys(o.bindings.agents??{}).length
     ||s.resources!.length||s.actions!.length||s.gates!.some(g=>g.purpose!=='approval')||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state)))return false;
    if(e.id===rootId){
-    if(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||!inline(e.input_text)||!ownedScriptBundlesSupported(s,d,true))return false;
+    if(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||!inline(e.input_text)||(leafBundles?s.bundles!.length||!portableScriptBundlesSupported(s,d):!ownedScriptBundlesSupported(s,d,true)))return false;
    }else{
-    if(e.admission_source!=='call'||!e.parent_execution_id||!e.parent_attempt_id||s.bundles!.length||!portableScriptBundlesSupported(s,d)||!inline(e.input_text)||!inline(e.output_text))return false;
+    const leaf=leafBundles&&!d.steps.some(step=>step.kind==='branch_call')&&!Object.keys(o.bindings.branches??{}).length&&!owners.some(child=>child.selected.execution![0]!.parent_execution_id===e.id)&&parallelDefinitionSupported(d);
+    if(e.admission_source!=='call'||!e.parent_execution_id||!e.parent_attempt_id||(leaf?!ownedScriptBundlesSupported(s,d,false,true):s.bundles!.length||!portableScriptBundlesSupported(s,d))||!inline(e.input_text)||!inline(e.output_text))return false;
     const seen=new Set<string>();let current=o;
     while(current!==root){
      const ce=current.selected.execution![0]!;if(seen.has(ce.id))return false;seen.add(ce.id);
@@ -102,7 +107,7 @@ function rootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string,au
     if(s.attempts!.filter(a=>a.step_execution_id===step.id).some(a=>!inline(a.result_json===null?undefined:JSON.parse(a.result_json).output)))return false;
    }
   }
-  return true;
+  return !leafBundles||owners.some(o=>o.selected.execution![0]!.id!==rootId&&parallelDefinitionSupported(o.definition)&&!o.definition.steps.some(step=>step.kind==='branch_call')&&!Object.keys(o.bindings.branches??{}).length&&!owners.some(child=>child.selected.execution![0]!.parent_execution_id===o.selected.execution![0]!.id));
  }catch{return false;}
 }
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
