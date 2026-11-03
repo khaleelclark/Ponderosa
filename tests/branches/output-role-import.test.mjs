@@ -2,8 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {AgentStore,WorkspaceStore} from '../../packages/agents/dist/index.js';
-import {withFixture,until} from '../shared/fixture.mjs';
+import {withFixture as withDefaultFixture,until} from '../shared/fixture.mjs';
 import {validatePortableAgentPackage} from '../../apps/server/dist/portable-agent-package-validation.js';
+// Import collision tests start with no selected speaker. The application now
+// provisions a default Assistant on a fresh instance; explicitly disable it via
+// the public control rather than silently changing production bootstrap behavior.
+const withFixture=(t,run,options)=>withDefaultFixture(t,async f=>{
+ f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+ return run(f);
+},options);
 const permission={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
 const pkg=(mode='template')=>({schema:'ponderosa.agent-package.v1',mode,kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Role import fixture',rootRef:'root',agents:[{ref:'root',title:'Portable speaker',engine:'codex',managementPermissions:permission,...(mode==='full'?{history:[{role:'user',text:'Retained imported context'}]}:{})},{ref:'child',title:'Portable child',engine:'codex',managerRef:'root',managementPermissions:permission}],outputRoles:[{ref:'root',output:true,speaker:true},{ref:'child',output:true,speaker:false}]});
 const installation=(portable=pkg())=>({schema:'ponderosa.branch-installation.v1',packageId:randomUUID(),mode:portable.mode,exportedAt:portable.exportedAt,definition:{schema:'ponderosa.branch.v1',name:'Role import',trigger:{kind:'manual'},entry:'worker',steps:[{id:'worker',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Perform controlled work'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[{ref:'chat',title:'Imported Chat',agents:portable.agents.map(node=>({ref:node.ref,...(node.managerRef?{managerRef:node.managerRef}:{}),definition:{...portable,kind:'agent',rootRef:node.ref,agents:[{...node,managerRef:undefined}],outputRoles:undefined}}))}],agentBindings:{worker:{chatRef:'chat',agentRef:'root'}},outputRoles:portable.outputRoles.map(({ref,...role})=>({chatRef:'chat',agentRef:ref,...role}))});
