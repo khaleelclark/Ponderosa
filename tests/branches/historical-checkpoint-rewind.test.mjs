@@ -611,9 +611,14 @@ test('completed-child tree current descendant policy/configuration and lineage r
  const lineage=f.store.sqlite.prepare("SELECT id FROM branch_unit_snapshots WHERE execution_id IN (SELECT id FROM branch_executions WHERE parent_execution_id=?) AND json_extract(snapshot_json,'$.schema')='ponderosa.branch.child-tree-lineage.v1'").get(next.id);assert.ok(lineage);assert.throws(()=>f.store.sqlite.prepare("UPDATE branch_unit_snapshots SET content_hash='bad' WHERE id=?").run(lineage.id),/immutable/);f.store.sqlite.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(lineage.id);const after=allocationCounts(f);assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'tree-once'),/lineage/);assert.deepEqual(allocationCounts(f),after);
  f.branches.configure(f.leaf.id,{...f.branches.configuration(f.leaf.id),checkpointMode:'sync'},1);assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,a.id,a.contentHash,'changed-child'),/pins changed/);assert.deepEqual(allocationCounts(f),after);
 });
+function assertNoRestorableLiveCallCuts(f){
+ const cuts=f.branches.historicalCheckpoints(f.root.id,f.source.id).filter(cp=>captureBytes(f,cp.id).selected.steps.some(step=>step.step_id==='call'));
+ assert.ok(cuts.length>0,'fixture must include a cut at or after the Branch call');
+ assert.ok(cuts.every(cp=>!cp.restoreSupported),'no live or uncertain child cut may be restored');
+}
 for(const unknown of [false,true])test(`completed-child tree live child remains unsupported and never invents completion, unknown=${unknown}`,async t=>{
  const f=treeFixture(t,'async',true,'async'),first=await f.claim();f.settle(first);const child=await f.claim();assert.notEqual(child.executionId,f.source.id);if(unknown){f.branches.authorizeScript(child,inertIdentity);f.branches.markScriptUnknown(child,'inert uncertain effect');}
- await f.branches.unitSaver.drain();assert.ok(f.branches.historicalCheckpoints(f.root.id,f.source.id).every(cp=>!cp.restoreSupported));assert.notEqual(f.branches.execution(child.executionId).state,'completed');assert.equal(f.branches.claimScript('cannot-repeat-child'),undefined);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results WHERE execution_id=?').get(child.executionId).n,0);
+ await f.branches.unitSaver.drain();assertNoRestorableLiveCallCuts(f);assert.notEqual(f.branches.execution(child.executionId).state,'completed');assert.equal(f.branches.claimScript('cannot-repeat-child'),undefined);assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results WHERE execution_id=?').get(child.executionId).n,0);
 });
 
 for(const mode of ['async','sync'])test(`completed-child tree ${mode} fresh suffix admits a new tracked child without reopening inherited children`,async t=>{
@@ -630,12 +635,17 @@ test('completed-child tree actual unresolved gate remains held without automatic
  f.branches.deploy({chatId:f.chat.id,branchId:f.leaf.id,expectedVersionId:version.id,idempotencyKey:'tree-real-gate',definition:{...version.definition,entry:'gate',steps:[{id:'gate',kind:'human_gate',prompt:'Explicit approval',editable:false}],edges:[]},bindings:{agents:{},directories:{root:f.dir}}});
  const prefix=await f.claim();f.settle(prefix);for(let n=0;n<15;n++){await f.branches.unitSaver.drain();f.branches.advance();}
  const child=f.branches.listExecutions(f.leaf.id)[0];assert.ok(child);const gate=f.branches.detail(child.id).gates[0];assert.equal(gate.state,'waiting');assert.equal(f.branches.claimScript('no-autoapproval'),undefined);
- const invocation=f.branches.execution(f.source.id).checkpointInvocation;assert.throws(()=>f.branches.checkpointInterruption(f.root.id,f.source.id,'interrupt',invocation.id,'live-tree-interrupt'),/supports only/);assert.equal(f.branches.detail(child.id).gates[0].state,'waiting');assert.ok(f.branches.historicalCheckpoints(f.root.id,f.source.id).every(cp=>!cp.restoreSupported));
+ const invocation=f.branches.execution(f.source.id).checkpointInvocation;
+ f.branches.checkpointInterruption(f.root.id,f.source.id,'interrupt',invocation.id,'live-tree-interrupt');await f.branches.unitSaver.completeExits();
+ const checkpoint=f.branches.historicalCheckpoints(f.root.id,f.source.id).find(cp=>cp.restoreSupported&&captureBytes(f,cp.id).continuation?.owners.some(owner=>owner.executionId===child.id&&owner.selected.gates.some(saved=>saved.id===gate.id&&saved.state==='waiting')));
+ assert.ok(checkpoint,'the saved cut retains the exact waiting gate');
+ assert.throws(()=>f.branches.rewindHistorical(f.root.id,f.source.id,checkpoint.id,checkpoint.contentHash,'live-gate-rewind'),/settled/);
+ assert.equal(f.branches.detail(child.id).gates[0].state,'waiting');assert.equal(f.branches.claimScript('still-no-autoapproval'),undefined);
 });
 test('completed-child tree failed child saver preserves known result and leaves independent owners usable',async t=>{
  const f=treeFixture(t,'async',false,'async'),prefix=await f.claim();f.settle(prefix);const child=await f.claim();assert.notEqual(child.executionId,f.source.id);
  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_tree_child_save BEFORE INSERT ON branch_unit_snapshots WHEN NEW.execution_id='${child.executionId}' BEGIN SELECT RAISE(ABORT,'tree child save failed'); END`);
- f.settle(child);await assert.rejects(()=>f.branches.unitSaver.drain(),/durability failed/);assert.equal(f.branches.detail(child.executionId).sealedResults.length,1);assert.equal(f.branches.detail(child.executionId).steps[0].state,'completed');assert.ok(f.branches.historicalCheckpoints(f.root.id,f.source.id).every(cp=>!cp.restoreSupported));
+ f.settle(child);await assert.rejects(()=>f.branches.unitSaver.drain(),/durability failed/);assert.equal(f.branches.detail(child.executionId).sealedResults.length,1);assert.equal(f.branches.detail(child.executionId).steps[0].state,'completed');assertNoRestorableLiveCallCuts(f);
  const other=f.branches.accept(f.root.id,'independent-tree','independent');let lease;for(let n=0;n<10&&!lease;n++){await f.branches.unitSaver.waitFor([other.id]);f.branches.advance();lease=f.branches.claimScript('independent-tree');}assert.ok(lease);assert.equal(lease.executionId,other.id);f.settle(lease);await f.branches.unitSaver.waitFor([other.id]);assert.equal(f.branches.detail(other.id).sealedResults.length,1);await assert.rejects(()=>f.branches.unitSaver.drain(),/durability failed/);
 });
 test('completed-child tree capture error stays a saver error after the primary known-result commit',async t=>{
@@ -1019,7 +1029,8 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
   const token=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'import');assert.ok(token);await branches.unitSaver.drain();
   const operation=store.beginAgentCreationOperation({projectId:p.id,conversationId:temporary.id,actorScope:'resource-history-inert',kind:'import',idempotencyKey:r.creation_key,payloadHash:'inert'}).operation,agentId=randomUUID();store.addAgentCreationOperationMember(operation.id,agentId,0);
   branches.observeResourceImportPlan(r.step_execution_id,token,operation.id);await branches.unitSaver.drain();branches.planResource(r.step_execution_id,[agentId],token);
-  if(proofFinal){const {enableProviderStartCoverage}=await import('../../packages/agents/dist/provider-start-journal.js');enableProviderStartCoverage(store.sqlite,'fixture-lifecycle-runtime');}
+  // Coverage is enabled before agent creation so issued checkpoints can use a real local final proof.
+  {const {enableProviderStartCoverage}=await import('../../packages/agents/dist/provider-start-journal.js');enableProviderStartCoverage(store.sqlite,'fixture-lifecycle-runtime');}
   const agent=store.createAgent(p.id,{title:'Inert fixture identity',engine:'codex',conversationId:temporary.id},undefined,agentId),result={rootAgentId:agent.id,agentIds:[agent.id]};
   branches.unitTransaction(()=>{branches.completeResourceOperation(r.step_execution_id,'import',token,result);store.updateAgentCreationOperation(operation.id,{status:'completed',result});})();await branches.unitSaver.drain();
   if(!parallel){
@@ -1035,7 +1046,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
   const suffix=await claim();assert.equal(suffix.executionId,id);assert.ok(suffix.source.includes('suffix'));assert.equal(suffix.fence,1);settle(suffix);await branches.unitSaver.drain();
   if(onIssued)await onIssued({stepId:r.step_execution_id,generation:r.generation,agentId:agent.id,chatId:temporary.id});
   // The local exit proof is real; this fixture's package custody adapter remains inert.
-  if(proofFinal&&branches.finalResourceExitRequired(r.step_execution_id)){
+  if(branches.finalResourceExitRequired(r.step_execution_id)){
    const {sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
    const fence=branches.finalResourceExitFence(r.step_execution_id);sealProviderNeverStarted(store.sqlite,'fixture-lifecycle-runtime',[agent.id]);branches.captureFinalResourceExit(fence);
   }
@@ -1468,6 +1479,7 @@ test('issued resource executable envelope replays original prefix and reconstruc
   const oldSnapshot={...saved.snapshot,issuedResourceCustody:receipt};delete oldSnapshot.issuedContinuation;
   const oldJson=stableJson(oldSnapshot),old=db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,oldJson,hash(oldJson));
   assert.throws(()=>readIssuedResourceContinuation(db,f.source.id,Number(old.lastInsertRowid),hash(oldJson)),/unsupported/);
+  db.prepare('DELETE FROM branch_unit_snapshots WHERE id=?').run(Number(old.lastInsertRowid));
  });
  await f.reopen();
  assert.deepEqual(reconstructIssuedResourceContinuation(f.store.sqlite,f.source.id,saved.checkpointId,saved.checkpointHash,destination,maps),reconstructed,'source progress and cleanup cannot substitute later audit or identities');
@@ -1923,7 +1935,9 @@ for(const mode of ['async','sync'])for(const parallel of [false,true])test(`fres
 
 // Full deferred serial producer->retry->current capture->human review->one admission source.
 async function completeGenerationOneDestination(t,f,mode){
- const db=f.store.sqlite,current=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
+ const db=f.store.sqlite,{enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ enableProviderStartCoverage(db,'fixture-gen1-final-runtime');
+ const current=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
  const preview=f.branches.previewGenerationOneCapture(f.source.id);
  assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:0`);assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/retirement linkage/);throw Error('restore retirement');})(),/restore retirement/);
  assert.equal(preview.historicalPartition[0].generation,0);assert.equal(preview.historicalPartition[0].stepId,current.stepId);
@@ -1937,6 +1951,7 @@ async function completeGenerationOneDestination(t,f,mode){
  const saved=f.branches.issuedResourceCapture(f.source.id,current.stepId,'gen1-cut');
  new CoordinationV3Store(db).updateRequest({requestId:current.requestId,updateId:'gen1-source-settled',kind:'completed',actor:{kind:'agent',id:current.agentId},payload:{text:'known gen1 result'}});
  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const finalFence=f.branches.finalResourceExitFence(current.stepId);sealProviderNeverStarted(db,'fixture-gen1-final-runtime',[current.agentId]);f.branches.captureFinalResourceExit(finalFence);
  const deletion=f.store.previewAgentDeletion([current.agentId]);f.store.deleteAgentSubtrees([current.agentId],deletion.previewHash,x=>new CoordinationV3Store(db).handleAgentDeletion(x));
  const chat=f.store.commitConversationDeletion(current.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(current.chatId);f.branches.resourceRetired(current.stepId);await f.branches.unitSaver.drain();
  const x=await issuedDestinationFixture(t,mode,false,{f,saved}),{composer,disclosure}=x.services();
@@ -2341,6 +2356,8 @@ for(const mode of ['async','sync'])for(const [parallel,generation,budgetOverride
   const deletion=f.store.previewAgentDeletion([agent.id]);f.store.deleteAgentSubtrees([agent.id],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
   const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);f.branches.resourceRetired(opened.stepId);await f.branches.unitSaver.drain();
  }
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ enableProviderStartCoverage(db,'fixture-chain-final-runtime');
  const current=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id),preview=f.branches.previewGenerationHistoryCapture(f.source.id);
  assert.equal(preview.generation,generation);assert.equal(preview.consumedAttempts,generation+1);assert.equal(preview.maxAttempts,maxAttempts);
  assert.deepEqual(preview.historicalPartition.map(v=>v.generation),Array.from({length:generation},(_,i)=>i));
@@ -2379,6 +2396,7 @@ for(const mode of ['async','sync'])for(const [parallel,generation,budgetOverride
 
  coordination.updateRequest({requestId:current.requestId,updateId:'current-chain-completed',kind:'completed',actor:{kind:'agent',id:current.agentId},payload:{text:'current chain result'}});
  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const finalFence=f.branches.finalResourceExitFence(current.stepId);sealProviderNeverStarted(db,'fixture-chain-final-runtime',[current.agentId]);f.branches.captureFinalResourceExit(finalFence);
  const deletion=f.store.previewAgentDeletion([current.agentId]);f.store.deleteAgentSubtrees([current.agentId],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
  const chat=f.store.commitConversationDeletion(current.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(current.chatId);f.branches.resourceRetired(current.stepId);await f.branches.unitSaver.drain();
  const x=await issuedDestinationFixture(t,mode,false,{f,saved}),{composer,disclosure}=x.services();
