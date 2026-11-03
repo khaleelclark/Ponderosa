@@ -1,6 +1,6 @@
 # Phase 2 remaining implementation inventory
 
-Current source reconciliation: `747c0eaa1baf4ced43c51fc5fe3effa5d4e2a30d`,
+Current source reconciliation: `ca49cf89f7b0ac7b574438c85fdf197587f4dc87`,
 2026-11-03. This includes reviewed Git/index/sparse/settings transport, selected
 linked-worktree support, standalone continuation UI and original-receipt recovery,
 Output automatic controls with corrected docs, and the paired auth selector-removal
@@ -277,10 +277,107 @@ inventory, including legitimate latest suffix children. Held generations verify
 every owner with distinct executable-remap versus unrelated evidence-only empty
 frontier contracts. Global package integrity and current authority stay separate;
 no evidence becomes executable and related unsupported owners still refuse.
-Both audited existing-flow failures now have reviewed, source-matched integrations.
-This snapshot assigns no further product implementation batch. Concrete remaining
-external contracts, unsupported recreation scope and deferred qualification below
-remain unresolved; no whole-Bible acceptance or unexecuted behavior is inferred.
+Both audited existing-flow failures have reviewed, source-matched integrations.
+Four later reviewed releases are now composed: inactive local Git include/includeIf
+declarations at `c2c3e603e`, manual standalone authentic Join bundles at `dff359738`,
+proven automatic standalone Join bundle origins at `bcf2fad17`, and common Git
+lost-found recovery originals at `f0189e636`. Root verified both latest ordered
+commits, their exact three-file source deltas (103 additions/9 removals, then
+92 additions/4 removals), the six-file union, all twenty-seven required physical
+files and every other tracked entry unchanged. The prior frozen include/manual
+bundle integration and both released automatic/lost-found sources remain clean.
+
+Manual and proven automatic standalone effect-free Node Script/ordinary-gate
+parallel workflows now use authentic same-owner Join bundles, including existing
+state/control/retry families under their existing proof. Complete owned rows,
+unique typed identities, exact UTF-8 content/hash and existing size bounds bind
+one legitimate closed producer fork; selected and independent latest causal replay
+reconstruct Join ordering, labels and exact bytes. Held insertion also requires
+canonical latest replay. Typed reference remapping preserves immutable content,
+authored text/choices/JSON state and original lineage; immutable-prefix receipts
+permit only authentic suffix bundles. Original automatic occurrence proof remains
+separate from fresh human/manual destination admission and current authority.
+Selected committed saver bytes/invocations or authentic closed EXIT and observed
+process-group exit/drain remain required. No foreign proof falls back to source SQL.
+Actual Call-tree/multi-owner/cross-owner bundles and other documented unsupported
+issued/resource/native/effectful/secret/custody/execution-Chat/unknown families
+remain held. Latest-only observations never become executable selected cuts.
+
+Inactive Git include/includeIf records preserve ordered repeated nonsecret parsed
+literals and source/implicit-Boolean data without reading or evaluating targets,
+conditions or external contents. Active destination configuration stays generated
+format-only. Optional exact associated COMMON lost-found regular UTF-8 recovery
+originals, including opaque commit/other/custom descendants and empty-present
+files, use existing manifest-bound inactive originals/maps and original-manifest
+re-export. Edited/pruned recovery files are distinct from captured objects; no
+OID naming/object match, fsck/regeneration/revival, ref creation or activation is
+introduced. Existing no-follow ownership/link/path/secret/bounds/drift/absence and
+common-versus-selected provenance checks remain. Selected-private lost-found,
+original mode/mtime/empty-directory/binary semantics remain unsupported. Recognized
+secret inspection does not establish general URL-userinfo refusal for opaque
+lost-found content, or detect arbitrary secrets in prose.
+
+The same supported ONE-OWNER standalone bundle family is now also integrated
+through the runtime-TREE package route at `ca49cf89f`, from independently reviewed
+frozen source `b5bca0ac7`. Root verified the exact ten-file 197-addition/28-removal
+source delta, all twenty-eight required physical files (Runtime twenty-three and
+Git five), thirteen unchanged Runtime consumers against both bases, and every other
+tracked entry unchanged. Source `b5bca0ac7` and predecessor `f0189e636` stay frozen
+clean. Exactly one genuinely standalone related owner qualifies: no Call ancestor,
+descendant, definition or Branch/Agent binding and no cross-owner bundle reference.
+Unrelated roots gain no authority. The native saver normally prefers standalone
+Script checkpoints; the tree adapter verifies their exact retained committed bytes,
+selected cut and causal proof, then exposes only an unsaved transient view to the
+existing tree consumer. It creates no checkpoint or invocation evidence. Original
+latest replay gates held recreation before insertion, with proof context passed by
+the sole production installation planner and rechecked at publication. Missing
+context remains evidence-only; foreign reads use retained private facts only.
+Shared typed remapping of whole owned execution-output bundle references reaches
+held insertion/readback, generations, admission, receipts and retained seeds;
+ordinary output text, bundle bytes, authored choices and JSON state stay exact.
+Selected/latest/save/closed EXIT/drain, bounded lineage, fresh human/manual current
+authority, immutable-prefix receipts and authentic suffix replay remain mandatory.
+Actual Call/multiowner/cross-owner bundles and other unsupported families stay held.
+
+Both feasibility traces have returned and two concrete implementations are now
+assigned to the existing specialists from frozen `ca49cf89f`. Runtime is assigned
+to implement all-manual effect-free actual Call trees whose root alone produces/consumes authentic
+owned Join bundles; descendants and every actual/prepared Call input/result must
+remain bundle/reference-free. Ordinary approval gates and proven Script retries
+retain their existing supported codecs and exact proof. An older selected tree cut
+before bundle production still needs its own actual committed TREE bytes and full
+historical owner inventory; independent latest replay proves later bundles and
+suffix children. A bundle-bearing selected tree cut needs its own actual committed
+TREE snapshot, invocation and required child saves. The one-owner Script adapter
+cannot supply missing actual-Call-tree saves. EXIT without exact closed saver
+coverage remains held, and latest-only observations never become executable cuts.
+Original topology, typed ownership, exact deterministic Join reconstruction, causal
+Script/process/retry/state proof, lineage and fresh manual destination authority
+remain mandatory. Cross-owner forwarding, child bundles and automatic expansion
+are excluded. This assignment is not yet a released, reviewed or integrated change.
+
+Portability's private lost-found candidate did not establish a native gap: pinned
+[Git v2.56.0 path handling](https://raw.githubusercontent.com/git/git/v2.56.0/path.c)
+marks lost-found common and redirects linked-worktree paths there. Native common
+support remains; manually placed private copies require a distinct product/storage
+contract. The existing carrier has no second provenance slot at the same virtual
+path; source gates and duplicate-path checks must not simply be relaxed. Instead,
+Portability is assigned exact optional SELECTED-gitdir `SQUASH_MSG` as inactive
+review data. The pinned [merge producer](https://raw.githubusercontent.com/git/git/v2.56.0/builtin/merge.c)
+and [commit consumer](https://raw.githubusercontent.com/git/git/v2.56.0/builtin/commit.c),
+with the selected path helper, establish this draft independently of objects/index
+and `COMMIT_EDITMSG`. Exact UTF-8/BOM and empty-present bytes use existing bounded
+original capture, association/drift/secret checks, Git-manifest binding, import
+parse-before-write, native-view skip, numbered0600 inactive review/maps and original
+manifest re-export. Source selection stays SELECTED even when commonDir equals
+gitDir; linked capture must not read the main worktree's draft. All existing active
+operation holds remain; no editor/merge/commit continuation or active installation,
+new traversal, schema/DTO/format/cap change or general opaque-secret guarantee.
+This assignment is not yet a released, reviewed or integrated change.
+
+Missing native contracts hold only their specific items; feasible implementation
+continues. No active peer tree is inspected. Further implementation and deferred
+qualification remain unresolved; no whole-Bible acceptance is inferred.
 These integrated changes are source, not new assignments or whole-Bible acceptance. Historical source/evidence
 entries below retain their original attribution.
 Basis: full `/tmp/ponderosa-phase2-upgrade-c8ace/published/bible-2.md`, all 32
@@ -362,6 +459,13 @@ justified limit. No whole-commandment True verdict follows from source presence.
 | Existing Portability specialist; Delivery composition specialist | Inactive common legacy Git remote shorthand originals. | Implemented and integrated at `16f453d88` from reviewed frozen owner-released source `d0423f1c3`, Quality SUPPORT `auto:0629ddbb657ec2ad180c8c19479615085895072fd4e791120f8c35add8cc206e`. Root verified complete three-file 115-addition/14-removal source-matched delta and all three required physical files. Optional bounded contained common `branches/` and `remotes/` regular UTF-8/BOM originals use the shared Git-selected, manifest-bound inactive carrier; recognizable URL userinfo refuses. No URL/refspec/config parsing or adoption, network, activation, format change or native-version equivalence. The official repository-layout reference documents legacy shorthand and Git 3.0 retirement of native reading. No execution acceptance. |
 | Existing Portability specialist; Delivery composition specialist | Common rerere resolution originals and selected failed-commit message draft. | Implemented and integrated at `ef9963a2c` from reviewed frozen owner-released source `4eb99b7d3`, Quality SUPPORT `auto:0c8a0dfa909c29680b06fa1fc9ae32bf3d684d94d78bb83cfdf754d7a6a7d54d`. Root verified complete three-file 122-addition/9-removal source-matched delta and all three required physical files. Optional bounded COMMON `rr-cache/` originals and exact SELECTED-gitdir `COMMIT_EDITMSG` UTF-8/BOM bytes remain opaque Git-selected, manifest-bound inactive records, including empty-present originals, with shared capture identity/hash/absence/association and import/re-export checks. Narrow linked draft allowlist retains actual operation holds; no MERGE_RR transport, resolution replay, native cache/draft installation, editor/commit resumption, mode/mtime or execution acceptance. |
 | Existing Runtime specialist; Delivery composition specialist | Selected-tree foreign review and held-generation evidence-history consumers. | Implemented and integrated at `747c0eaa1` from reviewed frozen owner-released source `7335e110f`, Quality SUPPORT `auto:d1d2798372bf7a53d5f9e727cfad72893e6329baad751041bc2126a89e2db254`. Root verified complete four-file 146-addition/11-removal source-matched delta and all twenty-two required physical files, eighteen unchanged against both bases. Shared complete selected-root inventory narrows historical pin/configuration/Call-binding comparisons, including legitimate latest suffix children; global current Branch/dependency/permission/budget/directory checks remain. Held-generation resolution retains exhaustive package identity/maps/provenance/original commands/held checks, exact executable remaps and actual empty native frontier/idMap for unrelated evidence-only leaves. Related evidence-only owners and evidence-only parents still refuse; original facts remain immutable and gain no admission. Selected/latest/saver/child-save/EXIT/drain/lineage and fresh destination authority remain required. No new codec/family, restoration writer or execution acceptance. |
+| Existing Portability specialist; Delivery composition specialist | Inactive local Git include/includeIf declarations. | Reviewed frozen source `e0cc7e164` is integrated at `c2c3e603e`. Root verified the complete three-file 87-addition/11-removal delta and all five required physical files. Isolated captured-stdin no-includes parsing retains ordered repeated nonsecret literals/source/implicit booleans in inactive review; targets/conditions/paths/environment/URLs are never resolved and external contents cannot supply missing graph/format/sparse evidence. Active configuration remains generated format-only. Exact source Quality support and owner release precede composition; no execution acceptance. |
+| Existing Runtime specialist; Delivery composition specialist | Authentic same-owner Join bundles for manual standalone parallel Script/ordinary-gate continuation. | Reviewed frozen source `24ae8c9f4` is integrated at `dff359738`. Root verified the complete six-file 162-addition/8-removal delta and all twenty-seven combined required physical files, including twenty-two Runtime files. Shared owned-row validation, exact deterministic Join replay, selected/latest causal/saver/EXIT/drain proof, typed remapping, held insertion, fresh destination admission, immutable-prefix receipt and authentic suffix resolution preserve existing state/control/retries and bounded lineage. Actual Call-tree/cross-owner and other documented unsupported families stay held; no execution acceptance. |
+| Existing Runtime specialist; Delivery composition specialist | Proven automatic standalone Join bundle origins. | Reviewed frozen source `6ee4fc856` is integrated at `bcf2fad17`. Root verified its complete three-file 103-addition/9-removal delta and all twenty-two required Runtime physical files, nineteen unchanged against both bases. Shared structural eligibility permits supported automatic definitions and their fresh manual generations; original selected/latest automatic occurrence/payload/input/hash/accepted-started proof remains mandatory before causal replay and held insertion. No schedule grant, timer/occurrence regeneration, trigger replay or redispatch; destination authority is fresh manual. No execution acceptance. |
+| Existing Portability specialist; Delivery composition specialist | Inactive common Git lost-found recovery originals. | Reviewed frozen source `9caa5ef83` is integrated at `f0189e636`. Root verified the complete three-file 92-addition/4-removal delta and all five required Git physical files, two unchanged against both bases. One shared directory-original classifier addition carries exact optional common UTF-8 commit/other/custom recovery originals through existing bounded capture, Git-manifest binding, import-before-write, numbered0600 inactive review/maps and authoritative original-manifest re-export. No object/name/hash equivalence requirement or native recovery/activation; selected-private storage stays held. Recognized-secret inspection has the existing opaque-text limits. No execution acceptance. |
+| Existing Runtime specialist; Delivery composition specialist | One-owner standalone authentic Join bundles through runtime-TREE packages. | Reviewed frozen source `b5bca0ac7` is integrated at `ca49cf89f`. Root verified the complete ten-file 197-addition/28-removal source-matched delta and all twenty-eight combined required physical files, including twenty-three Runtime consumers, thirteen unchanged against both bases. The sole production installation planner supplies proof context; original latest causal replay gates held insertion. An exact committed standalone Script snapshot may supply an unsaved transient tree-consumer view without inventing checkpoint bytes or invocation. Whole canonical owned output references use shared typed remapping through held readback, generations, admission and receipts. Exactly one standalone related owner qualifies; actual Call trees/multiowner/cross-owner and all other documented unsupported families stay held. Selected/latest/saver/EXIT/drain proof and fresh manual/current authority remain separate. Exact source Quality support and owner release precede composition; no execution acceptance. |
+| Existing Runtime specialist | Root-only authentic Join bundles in all-manual actual Call trees, with bundle-free descendants and Call boundaries. | Implementation Request `v3-request-10603c50ef93fc8c6a4a66fed4d4e71dbfb268655072b39935d594afc473f4fc` is assigned from frozen `ca49cf89f`. Reuse existing native tree codecs, complete topology/owned-bundle/causal replay and current admission; preserve gates/Script retries only under existing proof, actual selected/independent latest owner inventories, required committed TREE/child saves and EXIT closure. No cross-owner forwarding, child bundle, automatic family expansion or one-owner Script adapter for actual Call trees. No release, review, integration or execution acceptance yet. |
+| Existing Portability specialist | Exact selected-worktree SQUASH_MSG inactive draft original. | Implementation Request `v3-request-c0a366c0ff95ed5a2f7cb36a91bfe7b9901d3402a68ab330931a9f8a821a76dd` is assigned from frozen `ca49cf89f`. Reuse bounded UTF-8/BOM/empty-present opaque originals, selected provenance and capture, narrow linked allowlist, Git-manifest binding, import/re-export/native-view skip and inactive maps; no active operation resumption, source/main-worktree mixing or format change. Private lost-found trace establishes no native selected family for the pinned source; common support and unknown private-storage holds remain. No release, review, integration or execution acceptance yet. |
 | Quality | Independent exact-frozen-source review, including callers, evidence, docs and failure retention. | Existing Quality specialists provide tracked source review alongside implementation. Source clearance does not imply execution acceptance. |
 
 Patrick's current implementation-first direction defers broad testing and test
@@ -631,9 +735,10 @@ reviewed source/frozen original/HEAD, eighteen unchanged against both bases, exa
 clean branch/parent/tree/registration/no upstream/whitespace/fileset and every
 other tracked entry unchanged, including AGENTS and root inventory. Source and
 predecessor remain frozen clean with no postcommit edits. No execution followed.
-All implementation requests named in these two bounded audits have now returned
-reviewed releases and source-matched compositions. This source snapshot does not
-create another product implementation assignment. Inventory review/release and
+All implementation requests named in those two historical bounded audits returned
+reviewed releases and source-matched compositions. The subsequent include/manual
+bundle/automatic bundle/lost-found releases and one-owner tree-route integration
+are recorded above; the two successor implementation assignments remain separate. Inventory review/release and
 Delivery composition remain separate from product and whole-Bible acceptance;
 no active writer tree is inspected. Reporting lines remain unchanged. Source
 review/composition does not establish execution or whole-Bible acceptance.
@@ -656,6 +761,72 @@ originals and runtime per-root eligibility scope, then common rerere/selected dr
 originals and the adjacent Runtime historical-owner consumer correction. Both
 bounded audit batches are now integrated source; their execution and broader
 remaining native/recreation requirements remain unqualified.
+The later manual bundle source had direct Quality SUPPORT
+`auto:328da87d8a3d8636dd47909b11641e8ded0721e87015bfaae4e0e96362551d72`;
+automatic bundle and lost-found final source reviews were handed off together by
+Quality SUPPORT `auto:f4a9ec52711e8d4c2d33004677ebb9544b02bf96c78c069b45fc913baa9b7e98`.
+Each retained result was consumed once before the corresponding composition.
+Latest Delivery result `auto:94acd060deaf2ad7ef3ced4779fcc156ea767e83c3c4bc71ddb2bd0f5e912c01`
+was consumed once. Root independently verified intermediate `bcf2fad17e019ff95f954cd4cbc6dd3682f12c10`,
+sole parent `dff359738fda22af477c74b4f7451d6cc27caaaa`, tree
+`3d33961a33412cda4375cccbe47210debbf154a5`, and final
+`f0189e6365d9aa9ac582a56daf5b7aa6f62f1f03`, sole parent `bcf2fad17e019ff95f954cd4cbc6dd3682f12c10`,
+tree `a63100f168c7af39ae2b18cfc0f4fd997ad05c5d`, separately owned frozen
+`/tmp/ponderosa-delivery-integration-auto-lost-dff`. Each full binary/full-index
+committed delta equals its exact released source delta; the union is exactly six
+files, 195 additions/13 removals. All twenty-seven required physical files are
+nonempty and equal final HEAD, reviewed source HEAD and frozen source physicals;
+Runtime nineteen and Git two unchanged files additionally equal both bases.
+Every other tracked entry, including AGENTS and this prior inventory, is unchanged.
+Clean branch/registration/no upstream/whitespace and frozen sources/predecessor
+preservation were checked; no tests/preparation or product execution followed.
+The one-owner tree source received direct Quality handoff SUPPORT
+`auto:118a06020c58f266661d86a2f3ce81ebe4bd6df2f94f42b742cd4536c844086c`
+for the existing exact review. Its owner release
+`auto:52480113ac6e9cf588ff5143f031c01106bf0d4673818a004fc2447dfd0aec40`
+and Delivery result
+`auto:bc443a71739dfaded328305800d4fe18cb8326b1217674afbeb3a199e42a15d7`
+were each consumed once. Root verified integrated HEAD
+`ca49cf89f7b0ac7b574438c85fdf197587f4dc87`, sole parent
+`f0189e6365d9aa9ac582a56daf5b7aa6f62f1f03`, tree
+`ba4a23469247580b9039c4bb1728f5fb57382e49`, frozen registered
+`/tmp/ponderosa-delivery-integration-one-owner-tree-f018`, branch
+`phase2/delivery-integration-one-owner-tree-f018`, clean/no upstream/whitespace.
+Its complete binary/full-index ten-file 197-addition/28-removal delta equals
+`6ee4fc856` to `b5bca0ac7`, including both guides. All twenty-three Runtime
+physicals are nonempty and equal integrated HEAD, reviewed source HEAD and frozen
+source physicals; thirteen unchanged also equal both bases. All five Git physicals
+are unchanged and equal integrated HEAD, f018 HEAD and frozen f018 physicals.
+Every other tracked entry including AGENTS and the prior inventory is unchanged.
+Frozen sources and predecessor remain exact and clean. No product execution or
+whole-Bible acceptance follows. Runtime read-only feasibility Request
+`v3-request-63a8e412a4604f46544ef0b7d6c2d1b611e719a028637f6663ec072b0d20e46a`
+and Portability read-only feasibility Request
+`v3-request-63a0f589801eab3aa52a91a84e280eac02cd910691ca2656060ed19031abcead`
+returned feasibility results consumed once as
+`auto:58bc4dd8aea6f8dae3a96dbc3be9f237b90ec19629675e4c13daea27e7bd50c1`
+and `auto:c63ed15f26fb8b0c3b41507d90e20a092cdc0f3130eb866fadb32a467e575079`,
+respectively. Root independently checked the actual reusable consumers and pinned
+Git source before assigning the exact manual root-only Call-tree bundle and selected
+SQUASH_MSG implementations recorded above. No active writer tree was inspected.
+The returned feasibility reports establish source scope, not execution acceptance.
+
+The previous source-reconciled root inventory was composed at `7cd5b73bc`.
+Frozen docs-only `f6865b2fe` had exact Quality SUPPORT
+`auto:66664e8c0b063758db750baf93363c49605791e1b1d58fcd2b2c3969016db78f`
+but was not composed after source advanced; it stays frozen. This new root-owned
+successor safely reuses that complete delta after equal-preimage verification and
+records the verified tree-route integration. Frozen successor `a101d7562` then
+received exact Quality SUPPORT
+`auto:7c5abbe0e8f54898011522f5a3927a5d3e8cdfe235a09904b843257fcfa8f26a`;
+root consumed that result once and reverified its physical 220,265-byte inventory,
+SHA256 `e9e99ca215f6295e3310fc09442514eb7e6de34c2dc9baa34a76ef80a1d2e260`,
+HEAD/sole parent/tree/clean registration/no upstream/whitespace. It remains frozen
+and uncomposed because feasibility results and assignments advanced. This new
+root-owned successor reuses its complete file after checking the unchanged ca49
+preimage, then records those results and active implementation scopes. It retains
+the entire 84,171-byte U1/accounting/history/limits suffix. Its
+new exact docs review and Delivery composition remain separate pending steps.
 Earlier cleared inventory candidates are not composed independently.
 Documentation source clearance remains separate from writer release and composition.
 
@@ -670,7 +841,7 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 | M3 — host source delivered; external evidence unresolved | #12 work survives restart; #13 unfinished work retained; #17 reliability | Exact original outcome_unknown Run/fence and drained custody now support host-receipt GET inventory, hash/fence/key-bound POST reconciliation and exact-key GET receipt recovery. Communication, Request version, coordinate, artifact import and queued-information commits are identified; telemetry remains unknown. | Reliability + Runtime | [Host reconciliation](original-source-effect-reconciliation.md) is implemented in source. Unreceipted native/external effects still require exact external evidence. No scheduler/source Run/Request mutation, original replay or source settlement; sourceWork remains held_unknown. |
 | U1 — eight named implementation/disposition contracts | #4 **every** native harness capability | G1–G8 below identify native surfaces requiring implementation or an explicit source disposition; they are not eight proven missing features. G1 exact human native approval callbacks, G4 correlated Claude controls with Agent Settings, and G7 console/recording tools/API/SDK are delivered in bounded source; native tools/discovery and correlated compact paths do not establish universal parity. | Assigned owners below; G5 bounded backend/UI source delivered | Pinned native-surface mapping and exact contracts; compatibility execution remains separate. |
 | U2 — classified; unjustified cap removed | #5/#6/#32 limits | Removed maxAttempts<=33 restriction unrelated to retained proof size; original validated policies through100 preserve consumed attempts and remaining budget. Generation32/group32/byte/parser/scheduler bounds retained for documented stability; human budgets and access/proof boundaries distinguished. | Features source disposition | Exact bounds/purposes in branch-finite-contract-dispositions.md; not a universal core-limit audit or approved exception. |
-| U3 — explicit field/topology disposition; concrete limits remain | #8 everything needed to recreate Agent/org/workflow, excluding known secrets | [Current package-field/native/file inventory](portability-recreation-inventory.md) records implemented in-root relative/dangling links, complete hardlink sets, bounded full/split/v4/sparse Git logical state, selected linked-worktree Git and nonsecret project settings as inactive review data. Full installation carries bounded standalone runtime/private checkpoint/command data and execution-owned Chats into fresh held owners; supported called/cross-Branch held DATA trees have export/composer/readback/re-export. Tree review/readback and first-generation standalone Script continuation UI with original-receipt recovery are present. The bounded standalone foreign Script consumer now preserves declared JSON state/reducers, condition/route controls, repeated migration lineage, canonical fork/Map/Join frontiers and human workflow gates. Passive in-root cycles and explicit whole-folder re-export of imported inactive Git/provider review originals are implemented under their selected policies. Bounded multiline/compound TOML values, decoded key paths, ordered array tables and documented scalar families are implemented through shared live/import parsing. Selected-worktree loose private refs/reflogs are now integrated through the same inactive review transport, with common private namespaces excluded before descent. First-generation supported foreign Call/Script tree continuation is integrated at `6aea93c35`. Resolve-undo source is integrated at `6b4ecd32f` through the same inactive review transport, with the full four-file delta physically matched to its reviewed release. Repeated Call-tree migration generations are integrated at `2149d2a26` and index accelerator validation at `d275d29f3`, with all sixteen physical files and both full deltas matched to their reviewed releases. Call-tree ordinary workflow gates are integrated at `175e9fb78` and repository-local Git info files at `20547dc92`, with all required physical files and complete deltas matched to their reviewed releases. Ordinary shallow Git history is integrated at `97e251706`, with all four physical files and the complete delta matched to its reviewed release. Nongate Call-tree local historical-rewind migration is integrated at `e98b45a2e` and commit-graph cache observation/omission at `0b6e5e9e4`, with all required physical files and complete deltas matched to their independently reviewed releases. Multi-pack-index cache observation/omission is integrated at `9e2616cfe`, parallel gate/Call continuation at `b9bd55c20` and optional UNTR/FSMN index-cache omission at `31c935519`, with all eleven physical files and complete deltas matched to their independently reviewed releases. Gate-bearing local-rewind continuation is integrated at `0864531f2`, nested-known-secret TOML preservation at `9ccf9796c` and proven durable standalone async continuation at `a0ec06a9e`, with all required physical files and complete deltas matched to their independently reviewed releases. Proven async Call-tree continuation is integrated at `84e4373f6`, with all six required physical files and the complete delta matched to its independently reviewed release. Common pack-retention metadata is integrated at `7fe0bcb0b`, with all four required physical files and the complete delta matched to its independently reviewed release. Standalone closed EXIT continuation is integrated at `1061fc6b0`, and forward same-pack REF dependency validation at `3332a9d4d`, with all seven required physical files and both complete deltas matched to their independently reviewed releases. Original version-1 pack-index retention is integrated at `ede306f02` and proven closed EXIT Call-tree continuation at `27de0c6fb`; root verified all nine required physical files and both full source deltas. Native relative-worktree association/configuration is integrated at `e6b97288e` and genuine terminal-root latest-only tree observations at `29c8c01b8`; root verified all seven required changed physical files, the required unchanged runtime-tree-package and both full source deltas. Bounded v2 pack-index 64-bit offsets are integrated at `c13e25960`, proven automatic-source standalone serial continuation at `b6e9ed289`, selected ORIG_HEAD review at `ec1035aaa` and ordinary automatic serial approval gates at `2837d3c8f`; root verified all required changed/unchanged physical files and complete source deltas. Automatic standalone parallel continuation is integrated at `32d464e6b` and selected FETCH_HEAD inactive review at `ea6599109`; root verified all twelve required physical files and both full source deltas. Automatic-root effect-free Call-tree continuation is integrated at `a78834973`, common server-info advertisement observation/omission at `99c1ae1f4` and selected project Codex custom Agent TOML originals at `1a3c073c1`; root verified all required physical files and complete source deltas. Manual standalone parallel Script retries are integrated at `94fe28faa` and project Claude output-style originals at `62c023276`; root verified all twenty-one required physical files and both complete source deltas. Claude project/local memory is integrated at `46c3c252b`, hooks at `0de4d11cf`, manual serial Script retries at `e99e4ad3a` and proven automatic serial retries at `985ae2eb5`; root verified all required physical files and complete source deltas. Automatic parallel retries are integrated at `343e6f35a`, Claude skill text at `9ac04560e`, remaining selected text fidelity at `8ccb6d9a8` and manual serial Call-tree retries at `d1a008e57`; root verified all required physical files and complete source deltas. Selected `.claude/AGENTS.md` source `bbdb44095` is integrated at `136730c0a` and automatic-root serial Call-tree retry source `348682f29` at `4e53b9899`; root verified all required physical files and complete source deltas. Common Git hook originals are integrated at `af4210f98`, with all required physical files and complete source delta verified. Automatic-root parallel/mixed retry source `11c9d341e` is integrated at `7983a3208` and fixed common Gitweb source `932857bb9` at `815f89f71`; root verified all required physical files and complete source deltas. Manual mixed-tree retries are integrated at `3cf4f6794`, common legacy remote originals at `16f453d88` and runtime per-root eligibility scope at `e6d2b5c3c`; root verified all required physical files and complete source deltas. Common rerere/selected failed-commit draft originals are integrated at `ef9963a2c`; root verified all three required physical files and the complete source delta. Adjacent foreign-review and held-generation historical-owner consumer source `7335e110f` is integrated at `747c0eaa1`; root verified all twenty-two required physical files and the complete source delta, eighteen unchanged against both bases. No further product implementation batch is assigned in this snapshot; broader concrete requirements below remain unresolved. Unsupported issued/resource/bundle/effectful continuation families, remaining Git/layout/config/re-export cases and required absolute/cross-root/special-node/extended filesystem semantics remain concrete gaps; see the current transport docs rather than historical blanket Git/settings exclusions. | Portability + Delivery; Quality source review | Extend exact supported consumers and data semantics without foreign ownership adoption, invented evidence or unapproved traversal. Source-presence and source review do not establish fresh-machine/platform/runtime equivalence. |
+| U3 — explicit field/topology disposition; concrete limits remain | #8 everything needed to recreate Agent/org/workflow, excluding known secrets | [Current package-field/native/file inventory](portability-recreation-inventory.md) records implemented in-root relative/dangling links, complete hardlink sets, bounded full/split/v4/sparse Git logical state, selected linked-worktree Git and nonsecret project settings as inactive review data. Full installation carries bounded standalone runtime/private checkpoint/command data and execution-owned Chats into fresh held owners; supported called/cross-Branch held DATA trees have export/composer/readback/re-export. Tree review/readback and first-generation standalone Script continuation UI with original-receipt recovery are present. The bounded standalone foreign Script consumer now preserves declared JSON state/reducers, condition/route controls, repeated migration lineage, canonical fork/Map/Join frontiers and human workflow gates. Passive in-root cycles and explicit whole-folder re-export of imported inactive Git/provider review originals are implemented under their selected policies. Bounded multiline/compound TOML values, decoded key paths, ordered array tables and documented scalar families are implemented through shared live/import parsing. Selected-worktree loose private refs/reflogs are now integrated through the same inactive review transport, with common private namespaces excluded before descent. First-generation supported foreign Call/Script tree continuation is integrated at `6aea93c35`. Resolve-undo source is integrated at `6b4ecd32f` through the same inactive review transport, with the full four-file delta physically matched to its reviewed release. Repeated Call-tree migration generations are integrated at `2149d2a26` and index accelerator validation at `d275d29f3`, with all sixteen physical files and both full deltas matched to their reviewed releases. Call-tree ordinary workflow gates are integrated at `175e9fb78` and repository-local Git info files at `20547dc92`, with all required physical files and complete deltas matched to their reviewed releases. Ordinary shallow Git history is integrated at `97e251706`, with all four physical files and the complete delta matched to its reviewed release. Nongate Call-tree local historical-rewind migration is integrated at `e98b45a2e` and commit-graph cache observation/omission at `0b6e5e9e4`, with all required physical files and complete deltas matched to their independently reviewed releases. Multi-pack-index cache observation/omission is integrated at `9e2616cfe`, parallel gate/Call continuation at `b9bd55c20` and optional UNTR/FSMN index-cache omission at `31c935519`, with all eleven physical files and complete deltas matched to their independently reviewed releases. Gate-bearing local-rewind continuation is integrated at `0864531f2`, nested-known-secret TOML preservation at `9ccf9796c` and proven durable standalone async continuation at `a0ec06a9e`, with all required physical files and complete deltas matched to their independently reviewed releases. Proven async Call-tree continuation is integrated at `84e4373f6`, with all six required physical files and the complete delta matched to its independently reviewed release. Common pack-retention metadata is integrated at `7fe0bcb0b`, with all four required physical files and the complete delta matched to its independently reviewed release. Standalone closed EXIT continuation is integrated at `1061fc6b0`, and forward same-pack REF dependency validation at `3332a9d4d`, with all seven required physical files and both complete deltas matched to their independently reviewed releases. Original version-1 pack-index retention is integrated at `ede306f02` and proven closed EXIT Call-tree continuation at `27de0c6fb`; root verified all nine required physical files and both full source deltas. Native relative-worktree association/configuration is integrated at `e6b97288e` and genuine terminal-root latest-only tree observations at `29c8c01b8`; root verified all seven required changed physical files, the required unchanged runtime-tree-package and both full source deltas. Bounded v2 pack-index 64-bit offsets are integrated at `c13e25960`, proven automatic-source standalone serial continuation at `b6e9ed289`, selected ORIG_HEAD review at `ec1035aaa` and ordinary automatic serial approval gates at `2837d3c8f`; root verified all required changed/unchanged physical files and complete source deltas. Automatic standalone parallel continuation is integrated at `32d464e6b` and selected FETCH_HEAD inactive review at `ea6599109`; root verified all twelve required physical files and both full source deltas. Automatic-root effect-free Call-tree continuation is integrated at `a78834973`, common server-info advertisement observation/omission at `99c1ae1f4` and selected project Codex custom Agent TOML originals at `1a3c073c1`; root verified all required physical files and complete source deltas. Manual standalone parallel Script retries are integrated at `94fe28faa` and project Claude output-style originals at `62c023276`; root verified all twenty-one required physical files and both complete source deltas. Claude project/local memory is integrated at `46c3c252b`, hooks at `0de4d11cf`, manual serial Script retries at `e99e4ad3a` and proven automatic serial retries at `985ae2eb5`; root verified all required physical files and complete source deltas. Automatic parallel retries are integrated at `343e6f35a`, Claude skill text at `9ac04560e`, remaining selected text fidelity at `8ccb6d9a8` and manual serial Call-tree retries at `d1a008e57`; root verified all required physical files and complete source deltas. Selected `.claude/AGENTS.md` source `bbdb44095` is integrated at `136730c0a` and automatic-root serial Call-tree retry source `348682f29` at `4e53b9899`; root verified all required physical files and complete source deltas. Common Git hook originals are integrated at `af4210f98`, with all required physical files and complete source delta verified. Automatic-root parallel/mixed retry source `11c9d341e` is integrated at `7983a3208` and fixed common Gitweb source `932857bb9` at `815f89f71`; root verified all required physical files and complete source deltas. Manual mixed-tree retries are integrated at `3cf4f6794`, common legacy remote originals at `16f453d88` and runtime per-root eligibility scope at `e6d2b5c3c`; root verified all required physical files and complete source deltas. Common rerere/selected failed-commit draft originals are integrated at `ef9963a2c`; root verified all three required physical files and the complete source delta. Adjacent foreign-review and held-generation historical-owner consumer source `7335e110f` is integrated at `747c0eaa1`; root verified all twenty-two required physical files and the complete source delta, eighteen unchanged against both bases. Inactive include declarations, manual standalone Join bundles, proven automatic standalone bundle origins and common lost-found originals are integrated at `c2c3e603e`, `dff359738`, `bcf2fad17` and `f0189e636`, respectively; root verified all required physical files and complete source deltas. One-owner standalone bundles through the runtime-TREE package route are integrated at `ca49cf89f` from independently reviewed frozen `b5bca0ac7`; root verified all twenty-eight combined required physical files and the full ten-file source delta. Root-only-bundle all-manual actual Call trees and exact selected SQUASH_MSG are assigned implementations, not released or integrated support. The private lost-found trace establishes no native selected family for pinned Git v2.56.0: common placement and the existing carrier/provenance boundary remain, with manually placed private copies needing a separate product/storage contract. Broader concrete requirements below remain unresolved. Unsupported issued/resource/actual-Call-tree-or-cross-owner-bundle/effectful continuation families, remaining Git/layout/config/re-export cases and required absolute/cross-root/special-node/extended filesystem semantics remain concrete gaps; see the current transport docs rather than historical blanket Git/settings exclusions. | Portability + Delivery; Quality source review | Extend exact supported consumers and data semantics without foreign ownership adoption, invented evidence or unapproved traversal. Source-presence and source review do not establish fresh-machine/platform/runtime equivalence. |
 | U4 — named-capability contract recorded | #8/#32 recreation/checkpoints | Nine-operation matrix distinguishes portable workflow/Agent data, selected proven continuations, current human policy/secrets, missing/unknown evidence, and genuinely unimplemented codec/package combinations. Shared state now survives selected cuts. No mandatory Cartesian product inferred and no erased proof fabricated. | Features disposition; existing Runtime/Reliability dependencies retained | Details and exact composition limits in branch-finite-contract-dispositions.md. Bounded full installation exports exact execution/private checkpoint history as held data; runnable foreign-cut adoption, unsupported tree families and external-proof expansion remain explicit U3/#8 boundaries, not a migration claim. |
 | U5 — backend and UI preserve-unknown disposition implemented | #12 no silent data loss; #15 files; #30 memory | New operator `POST /api/local-memory/mutation-holds/:id/preserve-unknown` binds the original inventory hash, retains an immutable decision and untouched hold; works for legacy missing-effect metadata and known unavailable backends. Outcome stays unknown and capture stays held. [Exact receipt/field dispositions](portability-recreation-inventory.md). Existing evidence-bearing backend snapshot reconciliation stays separate. | Reliability + Runtime + UI source delivered | Distinct Preserve unknown dialog consumes preserveUnknownReviewSha256, persists the original hold/hash/key/reason before POST, separately confirms unchanged repeats and recovers exact disposition by GET without automatic replay. Existing Reconcile eligibility stays separate. Original-effect completion without exact backend/native receipt remains unavailable, never inferred from stable reads/exit. Independent shell writers and erased original evidence stay explicit unknown; no replay or cascade/disk cleanup. |
 | U6 — minimal shared/reducer state implemented | #32 pinned state | Pinned1.0.5/1.0.8 source disproves immutable-input/results equivalence. Added declared JSON channels/partial writes, sum/append/replace reducers, exact revisioned immutable projection, Script/Agent dispatch snapshots, public read/SDK, shared serial/parallel checkpoint replay and composed custom Script aggregate. | Features source complete for documented minimal contract | Settlement ordering differs from supersteps; message-ID/manual-edit/cross-Call state semantics and finer API parity remain unclaimed. See branch-finite-contract-dispositions.md; fixtures unexecuted. |
