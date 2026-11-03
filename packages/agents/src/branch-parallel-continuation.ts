@@ -23,6 +23,29 @@ export function parallelDefinitionSupported(d:BranchDefinition,calls=false,issue
   &&d.controls.every(c=>['fork','map','join','condition','route'].includes(c.kind))
   &&!Object.values(d.parameters??{}).some(p=>p.type==='secret');
 }
+/** Foreign bundles are owned Join results; causal replay separately proves their production. */
+export function portableScriptBundlesSupported(s:Selected,d:BranchDefinition):boolean {
+ try {
+  const e=s.execution![0]!,outputs=(rows:Row[])=>rows.map(row=>row.result_json===null?undefined:JSON.parse(row.result_json).output);
+  const texts=[e.input_text,e.output_text,...s.paths!.map(p=>p.input_text),...s.steps!.map(p=>p.input_text),...s.joins!.map(p=>p.output_text),...s.items!.map(p=>p.input_text),...s.gates!.map(g=>g.proposal_text),...s.gates!.map(g=>g.response_json===null?undefined:JSON.parse(g.response_json).output),...outputs(s.paths!),...outputs(s.steps!),...outputs(s.attempts!),...outputs(s.sealedResults!),...outputs(s.forks!)];
+  const references=texts.filter(t=>typeof t==='string'&&t.startsWith('branch-result-bundle:'));
+  if(!s.bundles!.length&&!references.length)return true;
+  if(d.trigger.kind!=='manual'||!parallelDefinitionSupported(d)||d.steps.some(step=>!['script','human_gate'].includes(step.kind))||e.admission_source!=='manual'||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
+  if(branchContinuationIds(s).includes(e.id))return false;
+  const producers=new Set<string>();
+  for(const bundle of s.bundles!){
+   const fork=s.forks!.find(f=>f.id===bundle.fork_invocation_id),ref=`branch-result-bundle:${e.id}:${bundle.id}`;
+   if(stableJson(Object.keys(bundle).sort())!==stableJson(['id','execution_id','fork_invocation_id','content_text','content_hash'].sort())||bundle.execution_id!==e.id||typeof bundle.content_text!=='string'||Buffer.byteLength(bundle.content_text)>8_000_000||hash(bundle.content_text)!==bundle.content_hash||!fork||fork.execution_id!==e.id||fork.state!=='closed'||producers.has(fork.id)||JSON.parse(fork.result_json).failed!==false||JSON.parse(fork.result_json).output!==ref)return false;
+   try{branchText(bundle.content_text);return false;}catch{/* Native Join bundles exist only beyond the inline contract. */}
+   producers.add(fork.id);
+  }
+  for(const value of references){const match=/^branch-result-bundle:([0-9a-f-]{36}):([0-9a-f-]{36})$/u.exec(value);if(!match||match[1]!==e.id||!s.bundles!.some(b=>b.id===match[2]))return false;}
+  // Definition literals and gate choices are authored values, never identity links to rewrite.
+  const literals=[...d.edges.map(edge=>edge.input?.kind==='literal'?edge.input.text:undefined),...d.controls.map(node=>node.kind==='condition'?node.predicate.equals:undefined),...d.edges.map(edge=>edge.choice),...d.steps.flatMap(step=>step.kind==='human_gate'?step.choices??[]:[])];
+  if(literals.some(v=>typeof v==='string'&&v.startsWith('branch-result-bundle:')))return false;
+  return true;
+ }catch{return false;}
+}
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
   branchSharedState(d,s.steps!,s.sealedResults!);

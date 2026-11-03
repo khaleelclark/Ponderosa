@@ -81,11 +81,12 @@ export function remapBranchFrontier(selected:Selected,ids:Record<string,string>,
   if(!selected.paths!.some(path=>path.id===row.path_id&&path.fork_invocation_id===row.map_invocation_id))throw Error('Map item escapes its Fork');
   const mapped=link(row.map_invocation_id,maps)!;
   if(ids[row.id]!==`${mapped}:${row.item_index}`)throw Error('Map item must retain its captured index');
-  row.id=ids[row.id];row.map_invocation_id=mapped;row.path_id=link(row.path_id,paths);
+  row.id=ids[row.id];row.map_invocation_id=mapped;row.path_id=link(row.path_id,paths);row.input_text=text(row.input_text);row.input_hash=hash(row.input_text);
  }
+ for(const map of out.maps!)map.items_hash=hash(stableJson(out.items!.filter(item=>item.map_invocation_id===map.id).sort((a,b)=>a.item_index-b.item_index).map(item=>item.input_text)));
  for(const row of out.bundles!){execution(row);if(hash(row.content_text)!==row.content_hash)throw Error('Result bundle integrity failure');row.id=ids[row.id];row.fork_invocation_id=link(row.fork_invocation_id,forks);}
  for(const row of out.loops!){execution(row);row.path_id=link(row.path_id,paths);}
- for(const row of out.gates!){row.id=ids[row.id];row.step_execution_id=link(row.step_execution_id,steps);row.attempt_id=link(row.attempt_id,attempts);}
+ for(const row of out.gates!){row.id=ids[row.id];row.step_execution_id=link(row.step_execution_id,steps);row.attempt_id=link(row.attempt_id,attempts);row.proposal_text=text(row.proposal_text);if(row.response_json!==null){const response=JSON.parse(row.response_json);if(typeof response.output==='string')response.output=text(response.output);row.response_json=stableJson(response);}}
  // No execution admission, Resources, Actions, leases or provider state is returned.
  return out;
 }

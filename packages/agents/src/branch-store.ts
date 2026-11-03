@@ -1,3 +1,4 @@
+import {portableScriptBundlesSupported} from './branch-parallel-continuation.js';
 import {automaticScriptDefinitionSupported,automaticScriptOriginSupported,branchTriggerInput} from './branch-script-origin.js';
 import {heldTreeSource,portableRootTreeOwners} from './branch-tree-generation.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
@@ -628,7 +629,8 @@ export class BranchStore {
         const resolvedContext=['completed','failed'].includes(resolvedState)?{terminal:true,terminalState:resolvedState as 'completed'|'failed',descendantTraversals:0,descendantLoops:0,children:{}}:undefined;
         const originalSelected=resolvedSelected??selected,originalOwner=resolved?.owner??owner;
         const supportedOrigin=originalSelected.execution![0]!.admission_source!=='automatic'||automaticScriptOriginSupported(this.sqlite,originalSelected.execution![0]!,definition,originalOwner,false,true,true);
-        const supportedFrontier=supportedOrigin&&!unresolvedGeneration&&(resolvedSelected?scriptFrontierSupported(resolvedSelected,definition,resolvedContext):scriptFrontierSupported(selected,definition,context));
+        const supportedBundles=portableScriptBundlesSupported(originalSelected,definition)&&(!originalSelected.bundles!.length||portableScriptCutSupported(this.sqlite,resolved?.data??data,originalOwner,originalSelected));
+        const supportedFrontier=supportedBundles&&supportedOrigin&&!unresolvedGeneration&&(resolvedSelected?scriptFrontierSupported(resolvedSelected,definition,resolvedContext):scriptFrontierSupported(selected,definition,context));
         if(noEffects&&!configuration.requiredSecretRefs.length&&sameDefinition&&supportedFrontier){
           const ids:Record<string,string>=Object.fromEntries(branchContinuationIds(selected).map(source=>[source,randomUUID()]));for(const item of selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
           const restored=remapBranchFrontier(selected,ids,owner.sourceExecutionId,id);
@@ -788,9 +790,9 @@ export class BranchStore {
       ||!e||e.id!==sourceOwner.sourceExecutionId||e.branch_id!==resolved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||!['manual','automatic'].includes(e.admission_source)
       ||!portableScriptDefinitionSupported(definition)
       ||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Supported standalone manual Script/gate graphs or proven automatic-source standalone Script/approval-gate/state/control cuts require exact sync/async or closed EXIT saver proof and no secrets');
-    const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.some(g=>g.purpose!=='approval')
+    const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&portableScriptBundlesSupported(cut,definition)&&!cut.gates!.some(g=>g.purpose!=='approval')
       &&!cut.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state));
-    if(!effectFree(selected)||!effectFree(current)||sourceOwner.facts.some(f=>f.kind==='custody')||sourceOwner.chatRefs.length)throw Error('Issued, unknown, bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
+    if(!effectFree(selected)||!effectFree(current)||sourceOwner.facts.some(f=>f.kind==='custody')||sourceOwner.chatRefs.length)throw Error('Issued, unknown, unproven bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
     if(e.input_text!==current.execution![0]!.input_text||e.input_hash!==current.execution![0]!.input_hash||e.version_id!==sourceOwner.facts.find(f=>f.kind==='definition')!.key||e.binding_revision_id!==bindingFact.key||c.versionId!==e.version_id||c.bindingRevisionId!==e.binding_revision_id
       ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||c.versionHash!==payloadHash(definition)||c.bindingHash!==payloadHash(JSON.parse(bindingFact.json))||stableJson(c.configuration)!==stableJson(configuration.configuration))throw Error('Original selected checkpoint pins differ');
     if(!portableScriptCutSupported(this.sqlite,resolved.data,sourceOwner,selected,c))throw Error('Original selected checkpoint failed canonical Script audit replay');
@@ -877,6 +879,10 @@ export class BranchStore {
     for(const item of restored.items!){
       const row=this.row('SELECT * FROM branch_map_items WHERE id=?',item.id);
       if(!row||['map_invocation_id','item_index','path_id','input_text','input_hash'].some(key=>row[key]!==item[key])||![0,1].includes(row.dispatched)||row.dispatched<item.dispatched)throw Error('Continuation mapped Map item differs');
+    }
+    for(const bundle of restored.bundles!){
+      const row=this.row('SELECT * FROM branch_result_bundles WHERE id=? AND execution_id=?',bundle.id,next.id);
+      if(!row||['fork_invocation_id','content_text','content_hash'].some(key=>row[key]!==bundle[key])||createHash('sha256').update(row.content_text).digest('hex')!==row.content_hash)throw Error('Continuation mapped result bundle differs');
     }
     for(const loop of restored.loops!){
       const row=this.row('SELECT * FROM branch_loop_counts WHERE execution_id=? AND path_id=? AND edge_id=?',next.id,loop.path_id,loop.edge_id);

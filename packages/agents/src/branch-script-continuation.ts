@@ -7,7 +7,7 @@ import {retainedResourceCapture} from './branch-resource-capture.js';
 import {hostRequestPayload,coordinationLineageSupported} from './branch-host-provenance.js';
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import {branchContinuationIds} from './branch-continuation-remap.js';
-import {hasParallelControls,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
+import {hasParallelControls,portableScriptBundlesSupported,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
@@ -295,7 +295,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
-    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
+    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||!portableScriptBundlesSupported(selected,definition)||foreign.tree&&selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(workflowGateContext(context)||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');
@@ -697,7 +697,7 @@ export function portableScriptCutSupported(db:Database.Database,data:import("@po
   const definition=read('definition'),configuration=read('configuration'),e=selected.execution?.[0];
   if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||!['manual','automatic'].includes(e.admission_source)||e.admission_source==='automatic'&&!automaticScriptOriginSupported(db,e,definition,owner,false,true,true)||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||
     owner.chatRefs.length||owner.facts.some(f=>f.kind==='custody'||f.kind==='tree-import')||
-    [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.some((g:Row)=>g.purpose!=='approval')||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
+    [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||!portableScriptBundlesSupported(cut,definition)||cut.gates.some((g:Row)=>g.purpose!=='approval')||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
   if(continuation&&['async','exit'].includes(configuration.configuration.checkpointMode??'async')&&!owner.facts.some(f=>{
     if(f.kind!=='checkpoint')return false;const snapshot=JSON.parse(f.json);
     return stableJson(snapshot.selected)===stableJson(selected)&&stableJson(snapshot.continuation)===stableJson(continuation)&&portableScriptSnapshotSupported(owner,snapshot,configuration.configuration);

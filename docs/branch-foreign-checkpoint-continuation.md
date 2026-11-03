@@ -1383,3 +1383,65 @@ browser/provider/live database actions or executed reproductions were performed.
 Execution, timing/durability, notification delivery, round trips, scheduling,
 rollback, native equivalence, atomicity and whole-Bible/full-portability acceptance
 remain unvalidated. No schema, storage-version, DTO, format or dependency changes.
+
+
+## Proven same-owner manual standalone Join bundles
+
+Foreign continuation now accepts authentic same-owner Join result bundles in
+manual standalone effect-free parallel Node Script/ordinary approval-gate graphs.
+Existing fork/Map/Join, conditions/routes/loops, JSON state and canonical Script
+retries remain available under their existing replay rules. This extension does
+not admit automatic roots, Call trees, issued/Agent/resource/native/effectful or
+cross-owner bundles. Secret, custody, execution-Chat and unknown/in-flight effects
+retain their existing exclusions. Definition literals and gate choices that name
+bundle references are refused in this family; authored literals are not remapped.
+
+The shared eligibility check requires exact owned bundle rows, unique typed IDs,
+one closed producing fork per bundle, exact UTF-8 content/hash, the existing
+8,000,000-byte cap and the native beyond-inline condition. Every typed bundle
+reference must use the canonical grammar and resolve within this owner. Root
+input cannot claim a Join-produced bundle. Missing, dangling, altered, injected,
+cross-owner or otherwise unproven bytes refuse; no source SQL fallback supplies
+them. Structural ownership never proves execution: selected and independent latest
+causal replay reconstruct ordered Join output, labels and partial-result text,
+introduce the bundle only at the genuine Join resolution and compare every byte.
+Script leases still prove the input bundle ID/hash, input hash, fence, source,
+authorization, observed process exit, settlement and immutable result. Retry
+numbers, delay/absolute deadlines, failure-edge precedence and state-seal order
+remain unchanged.
+
+Standalone held recreation uses the same owned-bundle check and canonical latest
+source replay before recreating bundle-bearing native rows. The existing selector,
+private manifest, identity map, typed remapper/inserter and readback preserve all
+original facts and exact bundle bytes; import remains held without admission.
+Held re-export follows the original proof, while admitted/re-exported/local-rewind
+lineage replays the original selected/latest cuts and seeds the proven prefix once.
+Existing root-scoped review and two-disposition tree-generation behavior is unchanged.
+
+Typed remapping rewrites exact owned references in paths, Step inputs and result
+outputs, fork/Join results, Map item inputs and gate proposals/explicit response
+outputs. It updates dependent input/result/item inventory hashes and keeps original
+bundle content/hash unchanged. Embedded strings, Script source, prompts, choices,
+JSON state and arbitrary authored text are not globally substituted. Receipt GET
+checks every copied bundle's owner, producer fork, exact content/hash and immutable
+prefix references after legitimate suffix progress. Later suffix bundles may be
+created normally; receipt recovery never creates replacement acceptance commands.
+
+Current human review/confirmation still binds the exact original checkpoint,
+manifest/maps, current matching definition/configuration, directories, policy,
+budget and capacity. Fresh manual acceptance/admission creates current authority;
+source facts grant none. Only unfinished suffix work runs, resolving copied owned
+bundle references through the existing Script claim path. Gates receive fresh
+pending identities/notifications and normal destination responses. Calls and gates
+gain no retry policy. Causal cancellation and serial canceled-gate boundaries stay
+unchanged.
+
+Exact committed sync/async/default selected saver bytes/hash/invocation and
+independent latest proof remain required. EXIT still needs authentic saved closure
+or interruption and observed process-group/pipe drain; pending writes and latest-only
+terminal observations cannot become selected executable cuts. Source implementation
+only: no tests, fixtures/preparation, builds, typechecks, Node/parser/native/runtime,
+browser/provider/live database execution or executed reproduction. Timing/durability,
+notifications, round trips, scheduling, rollback, native equivalence, atomicity and
+whole-Bible/full-portability acceptance remain unvalidated. No schema, storage-version,
+DTO, format or dependency changes.
