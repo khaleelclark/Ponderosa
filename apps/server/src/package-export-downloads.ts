@@ -19,7 +19,7 @@ const tokenPattern=/^[a-f0-9]{48}$/u;
 /** Shared Agent/Branch staging. Complete durable manifests retain exact bytes;
  * unconfirmed files are held and charged, never treated as completed exports. */
 export class PackageExportDownloads{
- private directory?:Promise<string>;private bytes=0;private pending=0;private held=0;private tickets=new Map<string,Ticket>();private closed=false;private hydration?:Promise<void>;private requests=new Map<string,ExportRequest>();private activeRequests=new WeakMap<FastifyReply,ExportRequest>();
+ private directory?:Promise<string>;private directoryHandle?:Awaited<ReturnType<typeof fs.open>>;private directoryNamed?:string;private directoryIdentity?:{device:string;inode:string};private bytes=0;private pending=0;private held=0;private tickets=new Map<string,Ticket>();private closed=false;private hydration?:Promise<void>;private requests=new Map<string,ExportRequest>();private activeRequests=new WeakMap<FastifyReply,ExportRequest>();
  constructor(app:FastifyInstance,private readonly dataDir?:string){
   app.get<{Params:{token:string}}>('/api/package-exports/:token',{config:{agentPackageOperation:true}},async(request,reply)=>{
    await this.ready();const ticket=this.tickets.get(request.params.token);
@@ -35,8 +35,10 @@ export class PackageExportDownloads{
   app.addHook('onClose',async()=>{
    this.closed=true;for(const ticket of this.tickets.values())clearTimeout(ticket.timer);
    // Confirmed tickets survive normal shutdown within their original TTL.
+   if(this.hydration)await this.hydration.catch(()=>undefined);
    if(!this.dataDir&&this.directory)await fs.rm(await this.directory,{recursive:true,force:true});
    this.tickets.clear();
+   await this.directoryHandle?.close();this.directoryHandle=undefined;
   });
  }
  private async readManifest(handle:Awaited<ReturnType<typeof fs.open>>):Promise<unknown>{
@@ -45,6 +47,7 @@ export class PackageExportDownloads{
   return JSON.parse(buffer.subarray(0,length).toString('utf8'));
  }
  private async unlinkOwned(pathname:string,identity:{device:string;inode:string}):Promise<void>{
+  await this.assertDirectory();
   const current=await fs.lstat(pathname,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});
   if(!current)return;
   if(!current.isFile()||current.nlink!==1n||current.dev.toString()!==identity.device||current.ino.toString()!==identity.inode)throw Error('Export cleanup custody changed; preserve retained staging');
@@ -80,9 +83,14 @@ export class PackageExportDownloads{
    throw error;
   }finally{this.activeRequests.delete(reply);}
  }
- private async syncDirectory():Promise<void>{if(process.platform!=='win32'){const handle=await fs.open(await this.directory!,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{await handle.sync();}finally{await handle.close();}}}
+ private async assertDirectory():Promise<void>{
+  if(!this.dataDir||!this.directoryNamed||!this.directoryIdentity)return;
+  const current=await fs.lstat(this.directoryNamed,{bigint:true});
+  if(!current.isDirectory()||current.isSymbolicLink()||current.dev.toString()!==this.directoryIdentity.device||current.ino.toString()!==this.directoryIdentity.inode||(process.platform!=='win32'&&(current.mode&0o077n)!==0n))throw Error('Package export staging custody changed; preserve retained packages');
+ }
+ private async syncDirectory():Promise<void>{if(process.platform!=='win32'){await this.assertDirectory();if(this.directoryHandle)await this.directoryHandle.sync();else{const handle=await fs.open(await this.directory!,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{await handle.sync();}finally{await handle.close();}}}}
  private async ready():Promise<void>{
-  this.hydration??=this.hydrate();await this.hydration;
+  this.hydration??=this.hydrate();await this.hydration;await this.assertDirectory();
  }
  private schedule(token:string,ticket:Ticket):void{
   ticket.timer=setTimeout(()=>{void this.remove(token,ticket);},Math.max(1,ticket.expiresAt-Date.now()));ticket.timer.unref();
@@ -91,8 +99,18 @@ export class PackageExportDownloads{
   this.directory??=(async()=>{
    if(!this.dataDir)return fs.mkdtemp(path.join(tmpdir(),'ponderosa-package-export-'));
    const directory=path.join(this.dataDir,'package-export-downloads');await fs.mkdir(directory,{recursive:true,mode:0o700});
-   const stat=await fs.lstat(directory);if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(directory)!==path.resolve(directory)||(process.platform!=='win32'&&(stat.mode&0o077)))throw Error('Package export staging must retain its private canonical directory');
-   return directory;
+   const root=await fs.realpath(this.dataDir),descriptorPrefix='/proc/self/fd/',descriptorRoot=process.platform==='linux'&&this.dataDir.startsWith(descriptorPrefix)&&/^[0-9]+$/u.test(this.dataDir.slice(descriptorPrefix.length));
+   if(!descriptorRoot&&root!==path.resolve(this.dataDir))throw Error('Package export staging requires its canonical data root');
+   if(descriptorRoot&&(await fs.statfs('/proc/self/fd')).type!==0x9fa0)throw Error('Package export staging requires qualified procfs');
+   const stat=await fs.lstat(directory,{bigint:true});
+   if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(directory)!==path.join(root,'package-export-downloads')||(process.platform!=='win32'&&(stat.mode&0o077n)!==0n))throw Error('Package export staging must retain its private canonical directory');
+   if(process.platform!=='linux'){this.directoryNamed=directory;this.directoryIdentity={device:stat.dev.toString(),inode:stat.ino.toString()};return directory;}
+   const handle=await fs.open(directory,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+   try{
+    const held=await handle.stat({bigint:true}),current=await fs.lstat(directory,{bigint:true}),heldPath='/proc/self/fd/'+handle.fd,proc=await fs.stat(heldPath,{bigint:true});
+    if(!held.isDirectory()||held.dev!==stat.dev||held.ino!==stat.ino||current.dev!==stat.dev||current.ino!==stat.ino||!current.isDirectory()||current.isSymbolicLink()||proc.dev!==held.dev||proc.ino!==held.ino)throw Error('Package export staging custody changed during allocation');
+    this.directoryNamed=directory;this.directoryIdentity={device:held.dev.toString(),inode:held.ino.toString()};this.directoryHandle=handle;return heldPath;
+   }catch(error){await handle.close();throw error;}
   })();
   const directory=await this.directory;if(!this.dataDir)return;
   const names=await fs.readdir(directory),recognized=new Set<string>();
@@ -142,6 +160,7 @@ export class PackageExportDownloads{
  private async remove(token:string,ticket:Ticket):Promise<void>{
   if(this.closed||ticket.readers||ticket.removing||this.tickets.get(token)!==ticket)return;ticket.removing=true;
   try{
+   await this.assertDirectory();
    const current=await fs.lstat(ticket.pathname,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});
    if(current&&(current.dev.toString()!==ticket.device||current.ino.toString()!==ticket.inode||!current.isFile()||current.nlink!==1n))throw Error('Export cleanup custody changed');
    if(current)await this.unlinkOwned(ticket.pathname,ticket);if(ticket.manifest&&ticket.manifestIdentity)await this.unlinkOwned(ticket.manifest,ticket.manifestIdentity);if(ticket.requestKey&&this.dataDir){const request=this.requests.get(ticket.requestKey);if(request?.identity)await this.unlinkOwned(await this.requestPath(ticket.requestKey),request.identity);}await this.syncDirectory();
@@ -181,7 +200,7 @@ export class PackageExportDownloads{
     manifestPath=path.join(directory,token+'.json');const file=await fs.open(manifestPath,'wx',0o600);
     try{const stat=await file.stat({bigint:true});manifestIdentity={device:stat.dev.toString(),inode:stat.ino.toString()};await file.writeFile(JSON.stringify(manifest));await file.sync();}finally{await file.close();}await this.syncDirectory();ticket.manifest=manifestPath;ticket.manifestIdentity=manifestIdentity;
    }
-   this.schedule(token,ticket);this.tickets.set(token,ticket);if(request){request.phase='completed';request.token=token;this.held--;}pathname=undefined;manifestPath=undefined;charged=0;
+   await this.assertDirectory();this.schedule(token,ticket);this.tickets.set(token,ticket);if(request){request.phase='completed';request.token=token;this.held--;}pathname=undefined;manifestPath=undefined;charged=0;
    if(download)return reply.header('cache-control','private, no-store').send(this.descriptor(token,ticket));
    clearTimeout(ticket.timer);ticket.expiresAt=0;return this.stream(ticket,reply,attachment);
   }catch(error){

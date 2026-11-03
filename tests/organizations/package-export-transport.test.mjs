@@ -2,13 +2,14 @@ import test from 'node:test';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdtemp,rm,unlink,realpath,readdir,rename} from 'node:fs/promises';
+import {readFile,writeFile,mkdtemp,rm,unlink,realpath,readdir,rename,open,mkdir,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import Fastify from 'fastify';
 import ts from 'typescript';
-import {stableJson,AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
+import {AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
+import {stableJson} from '@ponderosa/agents';
 import {packageExportDownloads} from '../../apps/server/dist/package-export-downloads.js';
 import {registerBranchRoutes} from '../../apps/server/dist/routes/branches.js';
 
@@ -59,8 +60,9 @@ test('browser handoff validates exact origin-owned ticket paths and sends select
 
 
 test('Branch body export passes complete selections through the existing installation exporter',async()=>{
- const app=Fastify(),calls=[],pkg={schema:'ponderosa.branch-installation.v1',mode:'full',chats:[],definition:{name:'source'}};
- registerBranchRoutes(app,{store:{},branches:{},workspace:{},coordination:{},resources:{},outputApps:{},sources:{},createChat(){},notify(){},installations:{async export(...args){calls.push(args);return pkg;}}});
+ const app=Fastify(),calls=[],pkg={schema:'ponderosa.branch-installation.v1',mode:'full',chats:[],definition:{name:'source'}};let publisher;
+ registerBranchRoutes(app,{store:{},branches:{},workspace:{},coordination:{},resources:{},outputApps:{},sources:{},createChat(){},notify(){},installations:{setPublisher(value){publisher=value;},async export(...args){calls.push(args);return pkg;}}});
+ assert.equal(typeof publisher,'function');
  await app.ready();
  try{
   const fileSelections=Object.fromEntries(Array.from({length:150},(_,index)=>['source-'+index,{wholeWorkingFolder:true,reviewedUserData:{git:true,harness:false}}]));
@@ -135,7 +137,8 @@ test('a lost prepare response recovers the original request ticket after restart
   const recovered=await scope.preparePackageExport('/prepare',{mode:'full',fileSelections:{source:{wholeWorkingFolder:true}}});
   assert.equal(captures,1);assert.equal(requests.filter(request=>request.input?.method==='POST').length,1);assert.match(requests[1].url,/package-export-requests\/lost-original-request$/);
   assert.deepEqual((await app.inject(recovered.downloadUrl)).json(),original);
-  const repeated=await app.inject({method:'POST',url:'/prepare',headers:{'x-ponderosa-export-request':'lost-original-request'},payload:{mode:'full',fileSelections:{source:{wholeWorkingFolder:true}}}});assert.equal(repeated.statusCode,200);assert.equal(repeated.json().downloadUrl,recovered.downloadUrl);assert.equal(captures,1);
+  const repeated=await app.inject({method:'POST',url:'/prepare',headers:{'x-ponderosa-export-request':'lost-original-request'},payload:{mode:'full',fileSelections:{source:{wholeWorkingFolder:true}},download:true}});assert.equal(repeated.statusCode,200);assert.equal(repeated.json().downloadUrl,recovered.downloadUrl);assert.equal(captures,1);
+  const changed=await app.inject({method:'POST',url:'/prepare',headers:{'x-ponderosa-export-request':'lost-original-request'},payload:{mode:'full',fileSelections:{source:{wholeWorkingFolder:true}},download:false}});assert.equal(changed.statusCode,409);assert.equal(captures,1);
   // An interrupted claim with no complete manifest cannot replay source capture.
   await app.close();const key='unconfirmed-source-request',selectionHash=createHash('sha256').update(stableJson({kind:'branch',id:'source',input:{mode:'full'}})).digest('hex');
   await writeFile(path.join(directory,'package-export-downloads','request-'+createHash('sha256').update(key).digest('hex')+'.json'),JSON.stringify({schema:'ponderosa.package-export-request.v1',key,selectionHash,createdAt:Date.now()}));
@@ -158,4 +161,23 @@ test('export readback rejects FIFO crash remnants and cleanup preserves replaced
   ticket.expiresAt=0;await downloads.remove(token,ticket);
   assert.equal(await readFile(path.join(staging,token+'.json'),'utf8'),'unknown replacement manifest');assert.ok(downloads.tickets.has(token),'Failed cleanup retains its capacity charge and does not adopt the replacement');
  }finally{await app?.close().catch(()=>{});await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('descriptor-backed data root retains private staging and refuses a replaced directory',{skip:process.platform!=='linux'},async()=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'package-export-held-root-'))),rootHandle=await open(root,'r'),app=Fastify();
+ const downloads=packageExportDownloads(app,'/proc/self/fd/'+rootHandle.fd);
+ app.post('/prepare',async(request,reply)=>downloads.send(request.body,'original.json',reply,true));
+ await app.ready();
+ try{
+  const value={text:'Original exact exported data'},prepared=await app.inject({method:'POST',url:'/prepare',payload:value});
+  assert.equal(prepared.statusCode,200,prepared.body);
+  const ticket=prepared.json(),first=await app.inject(ticket.downloadUrl);assert.equal(first.statusCode,200);assert.deepEqual(first.json(),value);
+  const original=path.join(root,'package-export-downloads'),retained=path.join(root,'original-retained'),outside=path.join(root,'outside');
+  await rename(original,retained);await mkdir(outside);await writeFile(path.join(outside,'sentinel'),'unrelated');
+  await symlink(outside,original);
+  const refused=await app.inject(ticket.downloadUrl);assert.equal(refused.statusCode,500);
+  assert.equal(await readFile(path.join(outside,'sentinel'),'utf8'),'unrelated');
+  assert.ok((await readdir(retained)).some(name=>name.endsWith('.bytes')),'Original package remains retained');
+ }finally{await app.close();await rootHandle.close();await rm(root,{recursive:true,force:true});}
 });
