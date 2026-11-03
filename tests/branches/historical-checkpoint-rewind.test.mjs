@@ -2709,3 +2709,40 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])for(
  const chat=f.store.commitConversationDeletion(current.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(current.chatId);f.branches.resourceRetired(current.stepId);await f.branches.unitSaver.drain();
  assert.equal(f.branches.requireFinalResourceExit(f.source.id,current.stepId).identity.generation,generation);
 });
+
+
+// A canceled issued frontier is unsupported; never install a permanent fence before replay proves it.
+for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test(`canceled generation-zero ${kind} final exit holds before fencing`,async t=>{
+ const f=await reservationHistoryFixture(t,'async',false,parallel,false),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ const db=f.store.sqlite,opened=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
+ const journal=f.branches.reserveIssuedResourceCapture(f.source.id,opened.stepId,0,'cancel-zero');
+ const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'inert-cancel-zero',sha256:hash('inert'),byteLength:1};
+ db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,opened.stepId,'cancel-zero',receipt))();
+ f.branches.cancel(f.source.id);await f.branches.unitSaver.drain();
+ assert.equal(f.branches.finalResourceExitRequired(opened.stepId),true);
+ assert.equal(f.branches.resourceCanRetire(opened.stepId,[opened.agentId]),true);
+ assert.throws(()=>f.branches.finalResourceExitFence(opened.stepId),/continuation.*unsupported/);
+ assert.equal(db.prepare("SELECT count(*) n FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND json_extract(receipt_json,'$.input.conversationId')=?").get(opened.chatId).n,0);
+});
+
+
+// A supported initial generation still captures and reads its exact local final exit.
+for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test(`settled generation-zero ${kind} final exit captures after drain`,async t=>{
+ const f=await reservationHistoryFixture(t,'async',false,parallel,false),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ const db=f.store.sqlite,coordination=new CoordinationV3Store(db);
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ enableProviderStartCoverage(db,'fixture-runtime');
+ const opened=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
+ const j=f.branches.reserveIssuedResourceCapture(f.source.id,opened.stepId,0,'settled-zero'),receipt={...j.source,version:1,custodyId:hash(j.source.checkpointId),boundaryId:'inert-settled-zero',sha256:hash('inert'),byteLength:1};
+ db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,opened.stepId,'settled-zero',receipt))();
+ coordination.updateRequest({requestId:opened.requestId,updateId:'settled-zero-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const pending=db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(opened.agentId);assert.ok(pending.length);
+ const fence=f.branches.finalResourceExitFence(opened.stepId);
+ assert.throws(()=>f.branches.captureFinalResourceExit(fence),/participant effects remain unresolved/);
+ for(const activation of pending)coordination.cancelPendingActivation({activationId:activation.id,projectId:f.store.getAgent(opened.agentId).projectId,idempotencyKey:`settled-zero:${activation.id}`});
+ sealProviderNeverStarted(db,'fixture-runtime',[opened.agentId]);f.branches.captureFinalResourceExit(fence);
+ const deletion=f.store.previewAgentDeletion([opened.agentId]);f.store.deleteAgentSubtrees([opened.agentId],deletion.previewHash,id=>coordination.handleAgentDeletion(id));
+ const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);
+ f.branches.resourceRetired(opened.stepId);assert.equal(f.branches.requireFinalResourceExit(f.source.id,opened.stepId).identity.generation,0);
+});

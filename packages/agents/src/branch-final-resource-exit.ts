@@ -6,7 +6,7 @@ import {captureFinalProviderStarts,verifyFinalProviderStarts} from './provider-s
 import {captureFinalProviderExits,verifyFinalProviderExits,verifyRetainedProviderExitEvidence} from './provider-exit-evidence.js';
 import {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {verifyBranchHostCut} from './branch-host-cut.js';
+import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {captureGenerationOneHost,generationOneEvidence} from './branch-resource-generation-one.js';
 type Row=Record<string,any>;
@@ -24,11 +24,12 @@ function scope(db:Database.Database,stepId:string){
  if(!chat||chat.branch_id!==r.branch_id||chat.branch_execution_id!==r.execution_id||!ids.length||stableJson(ids)!==stableJson(live)||db.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?').get(r.chat_id))throw Error('Final resource complete precleanup identity required');
  const context=db.prepare('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=? AND generation=?').get(stepId,r.generation) as Row|undefined;
  if(!context||context.chat_id!==r.chat_id||stableJson(JSON.parse(context.agent_ids_json).sort())!==stableJson(ids))throw Error('Final resource context differs');
- if(r.generation>0){
-  // A permanent fence must never be installed for a frontier that cannot yet be replayed.
-  const current=captureGenerationOneHost(db,selectBranchUnit(db,r.execution_id));
-  encodeIssuedResourceContinuation(db,r.execution_id,current.selected,current.host,false,current.generationRetry);
- }
+ // A permanent fence must never be installed for a frontier that cannot yet be replayed.
+ const selected=selectBranchUnit(db,r.execution_id);
+ const retry=r.generation>0?captureGenerationOneHost(db,selected):undefined;
+ const currentSelected=retry?.selected??selected,host=retry?.host??captureBranchHostCut(db,r.execution_id,currentSelected);
+ if(!host)throw Error('Final resource replay host unavailable');
+ encodeIssuedResourceContinuation(db,r.execution_id,currentSelected,host,false,retry?.generationRetry);
  return {executionId:r.execution_id,stepId,generation:r.generation,projectId:chat.project_id,chatId:r.chat_id,agentIds:ids,creationKey:r.creation_key,branchId:r.branch_id,versionId:r.version_id,bindingRevisionId:r.binding_revision_id,configurationSha256:payloadHash(JSON.parse(r.configuration_json))};
 }
 export function fenceFinalResourceExit(db:Database.Database,stepId:string){
