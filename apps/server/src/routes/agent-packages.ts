@@ -261,21 +261,15 @@ export function registerAgentPackageRoutes(
       const destinations=selection.workingRootDestinations??(selection.workingFilesDestination&&owner?{[owner.workingRootRef??owner.ref]:selection.workingFilesDestination}:{});
       planReviewedRecoveryRoots(pkg,destinations,activation);return;
     }
-    if(activation.git&&pkg.gitStorageBindings?.length)throw new Error('Mapped Git storage native recreation is unsupported; keep association originals inert');
-    const project=store.getProject(projectId);
-    if(activation.gitPathMappings?.some(mapping=>!project||mapping.destination!==project.hostPath&&!mapping.destination.startsWith(project.hostPath+path.sep)))throw new Error('Native Git path mappings must remain inside the explicitly confirmed NEW Shared root');
-    if(pkg.mode!=='full'||!project||!selection.workingFilesActivation||!store.isManagedProjectImportDestination(projectId)||store.listAgents(projectId).length)throw new Error('Native user-data activation requires a full package and unused NEW managed destination');
-    const owners=pkg.agents.filter(node=>node.workingFolder||node.workingFiles?.length);
-    if(activation.git&&(owners.length!==1||!owners[0]!.workingFolder||pkg.agents.some(node=>(selection.workingCopyMode??node.workingCopyMode??'shared')!=='shared')))throw new Error('Native Git supports one complete Shared root before initialization; Separate Git or multiple roots require distinct adoption contracts');
-    if(!owners.length)throw new Error('Native user-data activation requires selected working originals');
-    if(activation.git)planReviewedRecoveryRoots(pkg,{[owners[0]!.workingRootRef??owners[0]!.ref]:project.hostPath},activation);
-    for(const node of owners){
-      const file=node.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&node.artifacts?.find(artifact=>artifact.ref===file.artifactRef);
-      if(!file||!artifact)throw new Error('Every activated root requires its authoritative reviewed original');
-      const data=decodePortableMetadataArtifact(artifact);
-      planReviewedUserDataActivation(data,createHash('sha256').update(data).digest('hex'),activation);
-      if((selection.workingCopyMode??node.workingCopyMode??'shared')==='shared'&&selection.workingFilesActivation.sharedRoot!==project.hostPath)throw new Error('Confirm the unused NEW managed Shared root');
-    }
+    const project=store.getProject(projectId),owners=pkg.agents.filter(node=>node.workingFolder||node.workingFiles?.length);
+    if(pkg.mode!=='full'||!project||!owners.length)throw new Error('Native activation requires selected full-package working roots');
+    const shared=pkg.agents.filter(node=>(selection.workingCopyMode??node.workingCopyMode??'shared')==='shared');
+    if(shared.length&&(selection.workingFilesActivation.sharedRoot!==project.hostPath||!store.isManagedProjectImportDestination(projectId)||store.listAgents(projectId).length))throw new Error('Native Shared data requires the confirmed unused NEW managed Chat');
+    const first=owners[0]!,destinations=selection.workingRootDestinations??(selection.workingFilesDestination?{[first.workingRootRef??first.ref]:selection.workingFilesDestination}:{});
+    // Review against the user's selected recovery map. At application the same
+    // included paths relocate to server-issued live roots, never arbitrary hosts.
+    planReviewedRecoveryRoots(pkg,destinations,activation);
+
   };
   const reviewAccess = async(pkg:AgentPortablePackageDto,chatId:string,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>={}):Promise<AgentAccessImportReviewDto>=>{
     const portable=validatePortableAgentPackage(pkg).package;
@@ -1518,7 +1512,7 @@ export function registerAgentPackageRoutes(
       const reviewedApplications:NonNullable<ImportAgentPackageResponse['reviewedUserDataApplications']>=[];
       const metadataApplications:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>=[];
       const pendingFolderMetadata:Array<{receipt?:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
-      const pendingLiveMetadata:Array<{receipt:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
+      const pendingLiveMetadata:Array<{receipt?:NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];apply:()=>Promise<void>}>=[];
       let metadataPrimaryError:unknown;
       const saveMetadataApplications=()=>{
         try{return store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedMetadataApplications:metadataApplications}});}
@@ -2003,14 +1997,9 @@ export function registerAgentPackageRoutes(
       signal?.throwIfAborted();
       if(body.workingFilesActivation?.sharedRoot!==undefined){
         store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingProjectRoot:project.hostPath}});
-        const owner=body.reviewedUserDataActivation?.git?importNodes.find(node=>node.workingFolder||node.workingFiles?.length):undefined;
-        const file=owner?.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&owner?.artifacts.find(artifact=>artifact.destinationId===file.artifactRef);
-        if(body.reviewedUserDataActivation?.git&&(!file||!artifact))throw new Error('Native Git original binding changed before initialization');
-        const configuration=artifact?planReviewedRecoveryRoots(portablePackage,{[owner!.workingRootRef??owner!.ref]:project.hostPath},body.reviewedUserDataActivation!)[0]!.configuration:undefined;
-        const original=artifact?{data:artifact.data,sha256:artifact.sha256,activation:body.reviewedUserDataActivation!,configuration}:undefined;
-        const initialization=original?{path:project.hostPath,originalSha256:original.sha256,state:'applying' as 'applying'|'completed'|'incomplete'}:undefined;
-        if(initialization)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),nativeGitInitialization:initialization}});
-        try{await context.workingCopies!.initializeImportProject(project,original);if(initialization)initialization.state='completed';}catch(error){if(initialization)initialization.state='incomplete';throw error;}finally{if(initialization)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),nativeGitInitialization:initialization}});}
+        if(body.reviewedUserDataActivation?.git)await context.workingCopies!.stageImportedSharedGit(project);
+        else await context.workingCopies!.initializeImportProject(project);
+
       }
       const created = new Map<string, AgentDto>();
       await onPhase?.("importing_agents");
@@ -2032,7 +2021,7 @@ export function registerAgentPackageRoutes(
         const folderMode=body.workingCopyMode??node.workingCopyMode;
         if(folderMode==='separate_git'){
           const release=context.workingCopies!.beginModeChange(agent.id);
-          try{const configured=await context.workingCopies!.setMode(agent,project,folderMode);if(configured.workingCopy.state!=='ready')throw new Error(configured.workingCopy.failure??'Imported working copy is unavailable');created.set(node.ref,configured);}finally{release();}
+          try{const configured=body.workingFilesActivation&&body.reviewedUserDataActivation?.git?await context.workingCopies!.allocateImportedSeparateGit(agent,project):await context.workingCopies!.setMode(agent,project,folderMode);if(!body.reviewedUserDataActivation?.git&&configured.workingCopy.state!=='ready')throw new Error(configured.workingCopy.failure??'Imported working copy is unavailable');created.set(node.ref,configured);}finally{release();}
         }
         deletingAgentIds.add(agent.id);
         await yieldToLoop();
@@ -2057,7 +2046,21 @@ export function registerAgentPackageRoutes(
           const metadataApplication=metadataActivation&&reviewedOriginal?{ref,path:root.path,originalSha256:reviewedOriginal.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
           if(metadataApplication){metadataApplications.push(metadataApplication);saveMetadataApplications();}
           const release=context.workingCopies!.beginModeChange(agent.id);
-          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links,node.workingFolder?.cyclicLinks,body.reviewedUserDataActivation,metadataActivation,liveLinkDestinations,true);if(application)application.state='completed';if(metadataApplication&&metadataActivation)pendingLiveMetadata.push({receipt:metadataApplication,apply:async()=>{const release=context.workingCopies!.beginModeChange(agent.id);try{await context.workingCopies!.finalizeImportedRootMetadata(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,node.workingFolder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()));}finally{release();}}});}catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}if(application){application.state='incomplete';const failure=error as {code?:string;partialStatePossible?:boolean;observed?:unknown};application.error={code:failure.code,partialStatePossible:true,observed:failure.observed===undefined?null:JSON.parse(JSON.stringify(failure.observed,(_key,value)=>typeof value==='bigint'?value.toString():value))};}throw error;}finally{release();if(metadataApplication)saveMetadataApplications();if(application)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});}
+          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links,node.workingFolder?.cyclicLinks,body.reviewedUserDataActivation,metadataActivation,liveLinkDestinations,true);if(application&&!body.reviewedUserDataActivation?.git)application.state='completed';pendingLiveMetadata.push({...(metadataApplication?{receipt:metadataApplication}:{}),apply:async()=>{const release=context.workingCopies!.beginModeChange(agent.id);try{await context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(agent.id)!,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,node.workingFolder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()));}finally{release();}}});}catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}if(application){application.state='incomplete';const failure=error as {code?:string;partialStatePossible?:boolean;observed?:unknown};application.error={code:failure.code,partialStatePossible:true,observed:failure.observed===undefined?null:JSON.parse(JSON.stringify(failure.observed,(_key,value)=>typeof value==='bigint'?value.toString():value))};}throw error;}finally{release();if(metadataApplication)saveMetadataApplications();if(application)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});}
+        }
+        if(body.reviewedUserDataActivation?.git){
+          const liveDestinations=Object.fromEntries(owners.map(node=>[node.workingRootRef??node.ref,created.get(node.ref)!.workingCopy.rootPath]));
+          const recoveryDestinations=body.workingRootDestinations??{[owners[0]!.workingRootRef??owners[0]!.ref]:body.workingFilesDestination!};
+          const relocate=(target:string)=>{const entries=Object.entries(recoveryDestinations).filter(([,root])=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b[1].length-a[1].length);const entry=entries[0];if(!entry)throw new Error('Git activation path lost its included source root');return path.join(liveDestinations[entry[0]]!,path.relative(entry[1],target));};
+          const activation={...body.reviewedUserDataActivation,...(body.reviewedUserDataActivation.gitPathMappings?{gitPathMappings:body.reviewedUserDataActivation.gitPathMappings.map(mapping=>({...mapping,destination:relocate(mapping.destination)}))}:{})};
+          const releases=[...new Set([...created.values()].map(agent=>agent.id))].map(id=>context.workingCopies!.beginModeChange(id));
+          try{await context.workingCopies!.completeImportedGitRoots(project,portablePackage,liveDestinations,activation,receipt=>{
+            const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
+            if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
+            store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
+          },[...created.values()].map(agent=>agent.id));}finally{for(const release of releases)release();}
+          for(const [ref,agent] of created)created.set(ref,store.getAgent(agent.id)!);
+
         }
       }
 

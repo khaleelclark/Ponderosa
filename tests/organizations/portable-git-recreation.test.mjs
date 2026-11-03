@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,chmod,lstat,realpath,open,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -7,6 +8,8 @@ import {promisify} from 'node:util';
 import {execFile} from 'node:child_process';
 import {exportReviewedUserData,createGitExportCapture} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
+import {AgentStore} from '@ponderosa/agents';
+import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 
 const exec=promisify(execFile);
 const git=async(cwd,...args)=>(await exec('git',['--no-optional-locks',...args],{cwd,env:{...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}})).stdout.trim();
@@ -87,4 +90,43 @@ test('mapped common/private recreation rewrites destination pointers and does no
     assert.equal(await git(linked,'rev-parse','--absolute-git-dir'),privateDir,'source registration unchanged');
     assert.equal(await readFile(path.join(work,'file.txt'),'utf8'),'selected working tree\n');
   }finally{await capture?.close();for(const handle of handles)await handle.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('native Separate import owns a fresh independent repository, preserves staged state and leaves destination Shared unchanged',async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-owned-separate-')));let store;
+ try{
+  const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data');
+  await initialize(source);await initialize(shared);await mkdir(data);
+  await writeFile(path.join(source,'file.txt'),'source staged\n');await git(source,'add','file.txt');await writeFile(path.join(source,'file.txt'),'source working\n');
+  await git(source,'tag','retained-source-tag');
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest,{'file.txt':'source working\n'});
+  const oldHead=await git(shared,'rev-parse','HEAD'),oldConfig=await readFile(path.join(shared,'.git','config')),oldIndex=await readFile(path.join(shared,'.git','index'));
+  store=new AgentStore(data);const project=store.createProject({label:'Existing Shared',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Imported Separate'});
+  const agent=store.createAgent(project.id,{title:'Imported owner',engine:'codex',conversationId:chat.id}),service=new AgentWorkingCopyService(data,store);
+  let imported;let release=service.beginModeChange(agent.id);
+  try{imported=await service.allocateImportedSeparateGit(agent,project);}finally{release();}
+  assert.equal(imported.workingCopy.state,'unavailable');assert.equal(imported.workingCopy.repositoryRoot,imported.workingCopy.rootPath);
+  const files=pkg.agents[0].workingFiles.map(file=>{const artifact=pkg.agents[0].artifacts.find(artifact=>artifact.ref===file.artifactRef),bytes=Buffer.from(artifact.dataBase64,'base64');return {path:file.path,data:bytes,sha256:createHash('sha256').update(bytes).digest('hex')};});
+  release=service.beginModeChange(agent.id);
+  try{
+   await service.populateImportedRoot(imported,project,files,[],undefined,path.join(imported.workingCopy.rootPath,'.ponderosa-import-backups'),[],'refuse',{git:true,harness:false});
+   const receipts=[];
+   await service.completeImportedGitRoots(project,pkg,{work:imported.workingCopy.rootPath},{git:true,harness:false},receipt=>receipts.push(structuredClone(receipt)),[agent.id]);
+   assert.equal(receipts.at(-1).state,'completed');
+  }finally{release();}
+  const ready=store.getAgent(agent.id),resolved=await service.resolve(ready,project);
+  assert.equal(ready.workingCopy.state,'ready');assert.equal(ready.workingCopy.branchOwned,true);
+  assert.match(await git(resolved.rootPath,'branch','--show-current'),/^ponderosa\//);
+  assert.equal(await git(resolved.rootPath,'show',':file.txt'),'source staged');
+  assert.equal(await readFile(path.join(resolved.rootPath,'file.txt'),'utf8'),'source working\n');
+  assert.equal(await git(resolved.rootPath,'rev-parse','refs/tags/retained-source-tag'),await git(source,'rev-parse','refs/tags/retained-source-tag'));
+  assert.equal(await git(shared,'rev-parse','HEAD'),oldHead);assert.deepEqual(await readFile(path.join(shared,'.git','config')),oldConfig);assert.deepEqual(await readFile(path.join(shared,'.git','index')),oldIndex);
+  const preservedIndex=await readFile(path.resolve(resolved.rootPath,await git(resolved.rootPath,'rev-parse','--git-path','index')));
+  const removed=await service.cleanupRetained(agent.id,ready.workingCopy,project);
+  assert.equal(removed.state,'removed');assert.equal(removed.repositoryRoot,resolved.rootPath);
+  assert.equal(await readFile(path.join(resolved.rootPath,'file.txt'),'utf8'),'source working\n');
+  assert.deepEqual(await readFile(path.resolve(resolved.rootPath,await git(resolved.rootPath,'rev-parse','--git-path','index'))),preservedIndex,'Releasing Agent authority preserves original staged data');
+  assert.equal(await git(source,'branch','--show-current'),'main');
+  await assert.rejects(service.resolve({...ready,workingCopy:{...ready.workingCopy,repositoryRoot:shared}},project),/identity|ownership/);
+ }finally{store?.close();await rm(base,{recursive:true,force:true});}
 });

@@ -236,7 +236,7 @@ export class AgentWorkingCopyService {
     private readonly store: Pick<
       AgentStore,
       "getAgent" | "listProjectWorkingCopies" | "updateAgentWorkingCopy" |
-      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents"
+      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents" | "getProject"
     >,
   ) {
     this.managedRoot = path.join(realpathSync(dataDir), "working-copies");
@@ -314,10 +314,10 @@ export class AgentWorkingCopyService {
       planFilesystemMetadata(metadataPlan.filesystemMetadata,metadataPlan.selection,metadataActivation);
     }
     if(activation){
-      if(!original||createHash('sha256').update(original.data).digest('hex')!==original.sha256)throw new Error('Native activation original is unavailable or changed');
-      const plan=staged?parseReviewedUserData(original.data):planReviewedUserDataActivation(original.data,original.sha256,activation);
-      if(activation.harness)await assertReviewedProviderDestination(resolved.rootPath,plan);
-      if(activation.git&&!staged)await this.verifyImportedGitRoot(project,original.sha256,resolved.rootPath);
+      if(!original&&!staged||original&&createHash('sha256').update(original.data).digest('hex')!==original.sha256)throw new Error('Native activation original is unavailable or changed');
+      const plan=original?(staged?parseReviewedUserData(original.data):planReviewedUserDataActivation(original.data,original.sha256,activation)):undefined;
+      if(activation.harness&&plan)await assertReviewedProviderDestination(resolved.rootPath,plan);
+      if(activation.git&&!staged)await this.verifyImportedGitRoot(project,original!.sha256,resolved.rootPath);
       if(resolved.mode!=='separate_git'&&!this.store.isManagedProjectImportDestination(project.id))throw new Error('Native Shared activation requires the NEW managed import destination');
     }
     await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot},links,cyclicLinks,metadataActivation,deferFinalMetadata||!!activation||!!metadataActivation,rootDestinations);
@@ -436,16 +436,19 @@ export class AgentWorkingCopyService {
   }
 
   /** Files first, one complete Git closure next, and final ACLs/times last. */
-  async completeImportedGitRoots(project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2]):Promise<void> {
-    const roots=Object.values(destinations),tasks=planReviewedRecoveryRoots(pkg,destinations,activation);
+  async completeImportedGitRoots(project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2],agentIds:readonly string[]=[]):Promise<void> {
+    const roots=[...new Set([...Object.values(destinations),...[...this.stagedImportedGitRoots.entries()].filter(([root,staged])=>staged.agentId&&agentIds.includes(staged.agentId)&&root.startsWith(this.managedRoot+path.sep)).map(([root])=>root)])],tasks=planReviewedRecoveryRoots(pkg,destinations,activation);
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root),stat=await lstat(root,{bigint:true});
-      if(!staged||staged.phase!=='populated'||stat.dev!==staged.device||stat.ino!==staged.inode||await realpath(root)!==root)throw new Error('Native import root is not in its exact populated phase');
+      if(!staged||(staged.phase!=='populated'&&!(staged.phase==='allocated'&&!Object.values(destinations).includes(root)))||stat.dev!==staged.device||stat.ino!==staged.inode||await realpath(root)!==root)throw new Error('Native import root is not in its exact populated phase');
+      if(staged.agentId&&(!agentIds.includes(staged.agentId)||!this.modeChanges.has(staged.agentId)||this.activeUses.has(staged.agentId)))throw new Error('Git adoption lost exact current Agent custody');
       staged.phase='adopting';
     }
     // The shared recreation engine validates included target/config closure and
     // records each applying/incomplete outcome. Harness files are already placed.
-    await applyReviewedRecoveryRoots(tasks,{...activation,harness:false},receipt=>onReceipt({...receipt,selection:activation}));
+    const receipts=new Map<string,Parameters<typeof onReceipt>[0]>();
+    try{
+    await applyReviewedRecoveryRoots(tasks,{...activation,harness:false},receipt=>{const current={...receipt,selection:activation,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);});
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root)!;if(!staged.agentId)continue;
       const agent=this.store.getAgent(staged.agentId);if(!agent||agent.workingCopy.repositoryRoot!==root||agent.workingCopy.state!=='unavailable')throw new Error('Imported Separate Git ownership changed before activation');
@@ -468,12 +471,18 @@ export class AgentWorkingCopyService {
       await runGit(root,['symbolic-ref','HEAD','refs/heads/'+branch]);
       await runGit(root,['update-ref','-d',receipt.ownershipRef,baseHead]);
       const ready=this.requireUpdated(agent.id,{...workingCopy,state:'ready',baseHead,branchOwned:true,failure:undefined,updatedAt:new Date().toISOString()});
-      await this.resolve(ready,project);
+      const ownerProject=this.store.getProject(ready.projectId);if(!ownerProject)throw new Error('Imported Git owner Project disappeared');
+      await this.resolve(ready,ownerProject);
     }
     // Seal after every local branch is established: common Git storage can be
     // shared by multiple selected roots, so earlier snapshots would be obsolete.
     for(const task of tasks)this.importedGitRoots.set(task.destination,{sha256:task.sha256,snapshot:await this.importedGitSnapshot(task.destination,roots),allowedRoots:roots});
     for(const root of roots)this.stagedImportedGitRoots.delete(root);
+    for(const receipt of receipts.values())onReceipt({...receipt,state:'completed'});
+    }catch(error){
+      for(const receipt of receipts.values())onReceipt({...receipt,state:'incomplete',error:{code:(error as {code?:string}).code??'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots}}});
+      throw Object.assign(new Error('Imported Git adoption incomplete; preserve all local roots and exact import receipt',{cause:error}),{code:'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots}});
+    }
   }
 
   async setMode(
