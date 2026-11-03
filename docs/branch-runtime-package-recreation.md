@@ -222,3 +222,50 @@ children, retries, issued/native/effectful/Agent/resource/custody/bundle/secret/
 in-flight work and unproven source or EXIT closure remain unsupported. Source support
 has no execution, timing/durability, notification, round-trip, scheduling or rollback
 qualification.
+
+
+## Manual standalone parallel retry continuation successor
+
+Manual standalone effect-free Script/ordinary-approval-gate graphs with existing
+Fork/Map/Join controls can now pass the portable consumer with canonical Script
+retry histories. The shared portable definition guard permits retry only on Script
+steps in that family; serial retries, automatic-source retries and human-gate retry
+policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
+DTO, storage-version or scheduler format is added.
+
+Existing capture retains all attempt rows, failed results, retry transition bytes
+and private selected checkpoints. Held import already structurally recognizes the
+local parallel codec, remaps all attempts, preserves their consecutive numbers,
+input hashes and `available_at`, resets native fences under new IDs and verifies
+inserted rows. It creates no acceptance, lease, process or notification authority.
+Original creation/event timestamps and source fences stay in private evidence;
+native creation/update timestamps describe insertion. Re-exported held mappings
+retain exact original manifests and commands under the existing depth/work/cycle/
+cache/byte limits, without flattening retry history.
+
+Executable continuation separately replays the exact selected and latest source
+cuts using the existing local parallel codec: ordered failed attempts, original
+process exits/results, max-attempt policy, delay, retry scheduling, terminal seals,
+state revisions, gates and full graph causality. Missing/uncertain/in-flight or
+undrained proof stays held. Intermediate failed retries do not contribute state
+writes. Committed selected sync/async/default or closed EXIT saver evidence and
+actual latest EXIT closure/drain proof remain required.
+
+For a proven prepared retry the original absolute `available_at` survives import
+and fresh acceptance; destination claim enforces that deadline and existing
+readiness/capacity/policy. This neither restarts a delay nor claims time elapsed.
+Consumed attempt numbers remain consumed. Original-key receipt recovery now also
+verifies prefix attempt purpose/deadline while allowing legitimate suffix progress;
+complete current causal replay still governs copied-gate cancellation. Existing
+fresh human/manual acceptance, current configuration/budget/directory review,
+pending-gate destination ownership, local-rewind/generation replay and transactional
+receipt behavior are unchanged.
+
+Runtime-package capture/validation, saver, parallel codec, frontier remap/insertion,
+server/SDK/DTO and UI remain unchanged because they already carry and expose the
+complete retry evidence and selection. Only the shared portable eligibility and
+receipt integrity comparison change. See the
+[retry continuation proof](branch-foreign-checkpoint-continuation.md#manual-standalone-parallel-script-retries).
+No tests, preparation, builds, types, Node/native/runtime execution or live database
+work was performed. This is source support, not timing/durability, notification,
+round-trip, scheduling, rollback or whole-Bible acceptance.

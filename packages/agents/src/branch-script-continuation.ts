@@ -28,7 +28,8 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
 }
 /** Portable replay admits only the effect-free subset of the canonical graph codec. */
 export function portableScriptDefinitionSupported(definition:BranchDefinition):boolean {
-  return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
+  // Retry histories belong to the existing parallel codec; serial and automatic families stay stop-only.
+  return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'||definition.trigger.kind==='manual'&&hasParallelControls(definition)&&step.kind==='script'&&step.failure.action==='retry'))&&scriptDefinitionSupported(definition);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
 export type ScriptOwnerContext={automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
