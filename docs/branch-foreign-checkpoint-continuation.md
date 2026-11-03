@@ -1281,3 +1281,49 @@ held. No schema/storage-version/DTO/format/dependencies changed. Source only:
 no tests/builds/types or execution were run; timing/durability, notifications,
 round trips, scheduling, rollback, native equivalence, atomicity and whole-Bible/
 full-portability acceptance remain unvalidated.
+
+
+## Runtime recreation eligibility follows each complete root tree
+
+A runtime package may retain multiple original execution roots across its
+Branches. Recreation now derives an owner's root and every related owner from
+already validated parent links before checking any serial, manual mixed or
+automatic parallel tree family. The same complete related inventory supplies
+all family checks, original automatic-root occurrence proof and per-owner codec
+context. Unrelated histories neither provide a required serial/parallel mixture
+nor suppress an otherwise supported tree; unrelated automatic origins are not
+used as proof or a prerequisite for that tree. Manual and automatic admission
+and definition rules remain distinct. Only the root may retain an automatic
+definition, with actual Call descendants and the existing retained-origin proof
+without a database handle or foreign-owner SQL fallback.
+
+Whole-package integrity remains global and precedes eligibility: manifest hashes,
+versions/object shapes, owner and global identity inventories, all Branch/Call
+dependencies, complete parents, cycle checks and bounded lineage are unchanged.
+No owners or facts are removed or moved. Planning still allocates and stages
+every owner with its existing `recreated_held` or `evidence_only` disposition.
+Unsupported unrelated leaves can retain complete evidence without a native
+frontier. An unsupported parent with children still refuses before staging when
+native Call ancestry cannot be recreated; this does not make every package
+importable. Insertion/readback/re-export continue validating the entire package
+and original maps, commands, ancestry and held receipts. Recreation grants no
+acceptance, scheduler, lease, response or current execution authority.
+
+Existing definition/frontier/serial/parallel/tree codecs and automatic occurrence
+proof remain unchanged. Per-root selected and independent latest whole-tree
+replay, committed saver bytes/hash/invocation, every required child save and
+authentic EXIT interruption/gate closure/process-group and pipe drain/current
+authority remain mandatory. No trigger advancement or missed-trigger replay is
+introduced. Original manual root/actual Call children and fresh human/manual
+root/Call-child destination admission remain the existing paths. Retry attempts,
+deadlines, `MAX(number)+1`, full fork/Map/Join/state/gate/cancellation proof,
+bounded lineage, original-key receipts, pending-gate lifecycle, current choices,
+per-owner budgets/permissions/capacity/directories/no-secrets and scheduler claim
+behavior are unchanged. Unsupported issued/Agent/resource/native/effectful/
+unknown/secret/bundle/execution-owned Chat families and canceled serial gates
+gain no support.
+
+No schema/storage-version/DTO/format/dependency changes. Source only: no tests,
+builds, types or execution were run. Execution, timing/durability, notifications,
+round trips, scheduling, rollback, native equivalence, atomicity and whole-Bible/
+full-portability acceptance remain unvalidated.
