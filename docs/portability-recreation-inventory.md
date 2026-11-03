@@ -276,3 +276,26 @@ the validated original manifest supplies re-export. See the
 [contract and primary reference](git-provider-user-data-transport.md#inactive-project-claude-output-styles).
 No DTO/schema/dependency/cap change or native configuration, runtime, round-trip
 or atomicity acceptance is claimed.
+
+### Project Claude persistent-memory review files
+
+Explicit harness selection includes regular UTF-8 originals beneath named Agent
+directories in selected-root `.claude/agent-memory` and
+`.claude/agent-memory-local`, including `MEMORY.md` and supporting text in bounded
+recursive subdirectories. Shared live/import classification refuses root-level
+files, dot/empty/escaping/null/backslash paths, credential names and file/ancestor
+collisions. Traversed directories/files require selected-root ownership; existing
+canonical single-link no-follow reads, inventory/read drift checks and
+1,000-entry / 1 MiB original / 32 MiB aggregate bounds remain. Links/special nodes,
+disappearing originals and invalid UTF-8 refuse. Accepted bytes including BOM
+stay exact; extension does not trigger settings interpretation or rewriting.
+Known-secret inspection still refuses recognizable credentials; arbitrary prose
+may contain sensitive data. Empty directories are not represented by file entries.
+
+No native Agent binding, definition/reference expansion, home/ancestor/session
+discovery, activation, provider execution or Ponderosa memory database/permission
+change occurs. Existing numbered mode0600 review files retain exact path/removal
+metadata; only validated original manifest bytes supply re-export. See the
+[contract and primary reference](git-provider-user-data-transport.md#inactive-project-claude-subagent-memory).
+No DTO/schema/dependency/cap change, native memory/runtime, round-trip, independent
+writer atomicity or whole-portability acceptance is claimed.

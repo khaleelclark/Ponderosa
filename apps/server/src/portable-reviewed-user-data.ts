@@ -27,8 +27,13 @@ function codexReviewToml(value:string):boolean {
 function claudeOutputStyle(value:string):boolean {
   return /^\.claude\/output-styles\/[^/]+\.md$/.test(value);
 }
+const claudeMemoryRoots=['.claude/agent-memory','.claude/agent-memory-local'];
+function claudeAgentMemory(value:string,directory=false):boolean {
+  const parts=value.split('/');
+  return claudeMemoryRoots.includes(parts.slice(0,2).join('/'))&&parts.length>=(directory?3:4)&&parts.slice(2).every(part=>!!part&&!part.startsWith('.')&&!/[\\\0]/.test(part))&&!credentialPath(value);
+}
 function providerPath(value:string):boolean {
-  return codexReviewToml(value)||claudeOutputStyle(value)||['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|skills|rules)|codex\/(?:skills|rules))\//.test(value);
+  return codexReviewToml(value)||claudeOutputStyle(value)||claudeAgentMemory(value)||['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|skills|rules)|codex\/(?:skills|rules))\//.test(value);
 }
 function credentialPath(value:string):boolean {
   return value.split('/').some(part=>['.ssh','.aws','.gnupg','browser-profiles'].includes(part.toLowerCase())||/^\.env(?:\.|$)/i.test(part)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(part));
@@ -294,7 +299,8 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
     if(codexReviewToml(file.path)&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
     safeText(text(data),'Reviewed provider configuration');
-    if(file.path.endsWith('.json'))assertPortableSecretsAbsent(JSON.parse(text(data)),'Reviewed provider configuration');
+    if(!claudeAgentMemory(file.path)&&file.path.endsWith('.json'))assertPortableSecretsAbsent(JSON.parse(text(data)),'Reviewed provider configuration');
+    if(claudeAgentMemory(file.path)&&[...paths].some(existing=>existing.startsWith(file.path+'/')||file.path.startsWith(existing+'/')))throw new Error('Conflicting Agent-memory original topology');
     paths.add(file.path);
   }
   if(value.git)validateReviewedGit(value.git);
@@ -1312,11 +1318,15 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
   if(selection.source==='retained_originals')throw new Error('Retained originals require their canonical artifact binding');
   const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness},recreationScope:{...recreationScope},providerFiles:[],exclusions:[]};let bytes=0;
   const selected=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'];
-  let entries=0,outputStyleOwner:bigint|undefined;
-  const walk=async(relative:string):Promise<void>=>{
+  let entries=0,outputStyleOwner:bigint|undefined,memoryOwner:bigint|undefined;
+  const walk=async(relative:string,memory=false):Promise<void>=>{
     const target=path.join(root,relative);
-    let stat;try{stat=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+    let stat;try{stat=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!memory||claudeMemoryRoots.includes(relative)))return;throw error;}
     if(!stat.isDirectory()||await fs.realpath(target)!==target)throw new Error('Custom provider configuration must have canonical directory parents');
+    if(memory){
+      memoryOwner??=(await fs.lstat(root,{bigint:true})).uid;
+      if(stat.uid!==memoryOwner)throw new Error('Agent-memory directory owner differs from the selected root');
+    }
     if(relative==='.claude/output-styles'){
       outputStyleOwner=(await fs.lstat(root,{bigint:true})).uid;
       if(stat.uid!==outputStyleOwner)throw new Error('Output-style directory owner differs from the selected root');
@@ -1324,20 +1334,21 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     for(const entry of (await fs.readdir(target,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>1000)throw new Error('Custom provider configuration inventory exceeds 1000 entries');
       const name=`${relative}/${entry.name}`;
+      if(memory&&(!claudeAgentMemory(name,entry.isDirectory())||claudeMemoryRoots.includes(relative)&&!entry.isDirectory()))throw new Error('Agent memory requires named Agent directories and contained regular text originals');
       if(relative==='.claude/output-styles'&&(!entry.isFile()||!claudeOutputStyle(name)||name.includes('\\')||credentialPath(name)))throw new Error('Output styles require top-level regular noncredential Markdown originals');
       if(relative==='.codex/agents'&&(!entry.isFile()||!codexReviewToml(name)||name.includes('\\')||credentialPath(name)))throw new Error('Custom Codex agents require top-level regular noncredential TOML originals');
-      if(entry.isDirectory())await walk(name);else if(entry.isFile())selected.push(name);else throw new Error('Custom provider configuration links/special nodes require separate recreation');
+      if(entry.isDirectory())await walk(name,memory);else if(entry.isFile())selected.push(name);else throw new Error('Custom provider configuration links/special nodes require separate recreation');
     }
     const after=await fs.lstat(target,{bigint:true});if(stat.ino!==after.ino||stat.mtimeNs!==after.mtimeNs||stat.ctimeNs!==after.ctimeNs)throw new Error('Custom provider configuration inventory changed');
   };
-  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/skills','.claude/rules','.codex/skills','.codex/rules','.codex/agents','.claude/output-styles']:[]))await walk(directory);
+  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/skills','.claude/rules','.codex/skills','.codex/rules','.codex/agents','.claude/output-styles',...claudeMemoryRoots]:[]))await walk(directory,claudeMemoryRoots.includes(directory));
   for(const relative of selection.harness?selected:[]){
     const target=path.join(root,relative);
-    let originalFile;try{originalFile=await regularOriginal(target,1024*1024,claudeOutputStyle(relative)?outputStyleOwner:undefined);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&!relative.startsWith('.codex/agents/')&&!claudeOutputStyle(relative))continue;throw error;}
+    let originalFile;try{originalFile=await regularOriginal(target,1024*1024,claudeAgentMemory(relative)?memoryOwner:claudeOutputStyle(relative)?outputStyleOwner:undefined);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&!relative.startsWith('.codex/agents/')&&!claudeOutputStyle(relative)&&!claudeAgentMemory(relative))continue;throw error;}
     {
       const {data}=originalFile;
-      const original=codexReviewToml(relative)||claudeOutputStyle(relative)?new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data):text(data);let safe=original,removedSecretFields=false;
-      if(relative.endsWith('.json')){const parsed=JSON.parse(original),scrubbed=withoutPortableSecrets(parsed);removedSecretFields=JSON.stringify(parsed)!==JSON.stringify(scrubbed);safe=JSON.stringify(scrubbed,null,2);}
+      const original=codexReviewToml(relative)||claudeOutputStyle(relative)||claudeAgentMemory(relative)?new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data):text(data);let safe=original,removedSecretFields=false;
+      if(!claudeAgentMemory(relative)&&relative.endsWith('.json')){const parsed=JSON.parse(original),scrubbed=withoutPortableSecrets(parsed);removedSecretFields=JSON.stringify(parsed)!==JSON.stringify(scrubbed);safe=JSON.stringify(scrubbed,null,2);}
       else if(codexReviewToml(relative)){
         ({safe,removedSecretFields}=scrubReviewToml(original));
       }

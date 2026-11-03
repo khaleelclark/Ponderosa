@@ -1196,3 +1196,45 @@ metadata. Retained-original re-export validates and returns original manifest
 bytes, never generated review copies. Other provider families and existing
 Codex/TOML/Git/settings behavior remain unchanged. Source review only: no tests,
 builds, native configuration, runtime, round-trip or atomicity qualification.
+
+### Inactive project Claude subagent memory
+
+Explicit `harness: true` selection includes selected-root
+`.claude/agent-memory/<agent>/...` and
+`.claude/agent-memory-local/<agent>/...` regular UTF-8 originals. One shared
+classification requires a nonempty, non-dot Agent directory and contained file
+path; files directly in either family root refuse. Supporting text files may
+occupy bounded recursive subdirectories. Empty directories have no file entry in
+the existing DTO and are not recreated. Imported file/ancestor collisions refuse.
+No Agent identity is guessed or bound, and no Agent definition is dereferenced.
+
+Every traversed memory directory and regular original must share the selected
+root owner. Existing canonical-parent, single-link no-follow original reads,
+inventory/read drift checks and shared 1,000-entry / 1 MiB original / 32 MiB
+aggregate limits remain. Discovered directories or files disappearing refuse.
+Dot/empty/traversal/null/backslash path components, known credential names,
+links/special nodes, invalid UTF-8, changed inventory and exceeded bounds refuse
+with originals preserved. Accepted bytes, including BOM, stay exact. All memory
+files are opaque text regardless of extension: JSON-shaped text still receives
+existing recognizable-secret inspection but is neither rewritten nor treated as
+provider settings. Live `removedSecretFields` remains false; recognizable secrets
+refuse instead. Arbitrary concealed secrets remain outside this guarantee.
+
+The [official persistent-memory documentation](https://code.claude.com/docs/en/sub-agents#enable-persistent-memory)
+distinguishes project/local directories from user-home memory and describes
+`MEMORY.md` plus persistent supporting files. This transport reads only the two
+exact selected-root families. No home/managed/ancestor/nested-project discovery,
+native session/context/history reads, YAML/frontmatter/Markdown interpretation,
+include/path/reference expansion, startup-context qualification or tool grants
+occur. Files are never installed, activated or reloaded; no native spawn, provider
+invocation or source write occurs. Ponderosa local/global memory databases and
+permissions are unchanged.
+
+The generic DTO and shared consumers need no changes: working export validates
+the manifest; import parses before numbered mode0600 nonexecutable `.review`
+copies with exact original path/removal metadata; retained-original re-export
+validates and returns the original manifest bytes, never generated copies.
+Other provider families and existing output-style/Codex/TOML/Git/settings behavior
+remain unchanged. Existing sensitive-prose warning and independent-writer race
+limits remain. Source-only review: no tests, native memory/configuration/runtime,
+round-trip, atomicity or whole-portability acceptance.
