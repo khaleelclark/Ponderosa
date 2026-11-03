@@ -32,7 +32,7 @@ export function ChatDeletionDialog({
   if (conversation?.branchId) return <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
     <DialogTitle>Workflow-owned Chat</DialogTitle>
     <DialogContent>
-      <Typography>This Chat belongs to a workflow and cannot be deleted separately. To remove it, open workflow settings and review deleting the entire workflow, including its other Chats and Agents.</Typography>
+      <Typography>Workflow Chat: cannot be deleted separately</Typography><Typography>Deleting the workflow also removes its other Chats and Agents</Typography>
     </DialogContent>
     <DialogActions>
       <Button onClick={onClose}>Cancel</Button>

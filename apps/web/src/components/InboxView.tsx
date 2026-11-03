@@ -1674,7 +1674,7 @@ export function InboxView({
             }
             sx={{ mx: 1.5, mt: 1 }}
           >
-            Provider selection was not saved. The last saved selection was restored; choose a provider to retry.
+            Provider selection not saved · last selection restored · choose a provider to retry
           </Alert>
         ) : null}
         {queuedMessages.notice ? (

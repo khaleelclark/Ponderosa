@@ -35,7 +35,7 @@ function NativeTaskPanel({agent,scope}:{agent:AgentDto;scope:string}) {
   <Typography variant="subtitle1">Native tasks</Typography><Button onClick={()=>setOpen(true)}>Inspect native tasks</Button>
   <Dialog open={open} onClose={()=>!busy&&setOpen(false)} fullWidth maxWidth="md"><DialogTitle>Native tasks</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
    <Typography variant="body2">Per-task control · Run Stop remains in the Agent header.</Typography>
-   <Alert severity="info">Native acknowledgments do not settle source effects or complete the original Run. Process drain is unobserved.</Alert>
+   <Alert severity="info">Native acknowledgment: source effects unsettled · Run completion unproven · process drain unobserved</Alert>
    {notice&&<Alert severity="warning">{notice}</Alert>}{storageError&&<Alert severity="error">{storageError}</Alert>}
    <Button disabled={busy} onClick={inspect}>Refresh live inventory</Button>
    {inventory&&<><Typography sx={{overflowWrap:'anywhere'}}>Run {inventory.runId} · fence {inventory.sourceFence} · session {inventory.sessionId}</Typography>{!inventory.tasks.length&&<Typography>No tasks in this complete live inventory</Typography>}{inventory.tasks.map(task=>{

@@ -277,9 +277,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
           Delete trusted profile “{profileToDelete?.name}”?
         </DialogTitle>
         <DialogContent>
-          <DialogContentText>
-            This permanently deletes its cookies, logins, and site storage. Every Agent assigned to this profile will return to a disposable browser profile.
-          </DialogContentText>
+          <DialogContentText component="div"><Stack spacing={1}><Typography>Cookies, logins and site storage: permanently deleted</Typography><Typography>Assigned Agents: return to disposable browser profiles</Typography></Stack></DialogContentText>
           {deleteProfile.error ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProfile.error)}</Alert> : null}
         </DialogContent>
         <DialogActions>

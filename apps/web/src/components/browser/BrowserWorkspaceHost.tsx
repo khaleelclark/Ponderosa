@@ -104,6 +104,6 @@ export function BrowserWorkspaceHost({ projectId, conversationId, agent, request
       {projects.filter(project => project.id !== projectId && !panels.some(panel => panel.projectId === project.id) && project.id !== menuProjectId).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => setMenuProjectId(project.id)}>Chats in {project.label}</MenuItem>)}
       {chatQueries.flatMap(query => query.data ?? []).filter(chat => !chat.deletedAt && !panels.some(panel => panel.key === keyFor(chat.projectId, undefined, chat.id))).map(chat => <MenuItem key={chat.id} disabled={panels.length >= 4} onClick={() => { setMenu(null); openPanel({ key: keyFor(chat.projectId, undefined, chat.id), projectId: chat.projectId, conversationId: chat.id }); }}>{workspaceName(chat.projectId, chat.id)}</MenuItem>)}
     </Menu>
-    <Snackbar open={limitNotice} onClose={() => setLimitNotice(false)}><Alert severity="info" onClose={() => setLimitNotice(false)}>Four browser panels are already open. Close a panel before opening another; its browser and tabs will keep running.</Alert></Snackbar>
+    <Snackbar open={limitNotice} onClose={() => setLimitNotice(false)}><Alert severity="info" onClose={() => setLimitNotice(false)}>Four browser panels open · close one to open another · its browser and tabs keep running</Alert></Snackbar>
   </>;
 }

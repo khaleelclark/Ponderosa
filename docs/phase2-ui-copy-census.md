@@ -105,3 +105,30 @@ follows from this census. The existing owner-tree DTO limitation remains: Call
 attempt IDs, original Branch counters and numeric fresh acceptance budgets are
 unavailable; this copy cleanup adds no evidence or inference. Prior runtime,
 provider/native/filesystem and other Phase 2 qualification gates remain deferred.
+
+
+## Additional browser and runtime surfaces
+
+The later source census found instructional blocks in browser controls, local
+browser pause, unavailable browser, workflow deletion, imported runtime review
+and package binding. Those surfaces now use concise status and action labels.
+Browser access is granted by choosing an Agent; closing a browser panel leaves its
+tabs open. A private sign-in pauses Agent access until the user selects Done
+signing in; native sign-in controls require Linux. A paused paired browser may be
+used directly before resuming access in the extension without re-pairing. An
+Agent with no browser may open a temporary one in its next Run or receive
+permission to use the saved browser.
+
+Consequential decisions retain their facts beside the action: reopening replaces
+the failed session, closes its remaining window, reuses the saved profile when
+available, may require fresh website sign-ins and may not restore unsaved forms
+or tabs. Saved-browser promotion tells the user who can access the browser, that
+Agent access requires permission, and whether app restarts close tabs. Deleting a
+trusted profile permanently deletes its cookies, logins and site storage and
+returns assigned Agents to disposable browser profiles. Deleting a workflow may
+remove its other Chats and Agents. Imported runtime owner state and the limits of
+reserved frontier identifiers remain visible during review.
+
+This source-only census is not exhaustive or a visual verification. Errors and
+user-authored content retain their causes and context. Desktop/mobile rendering,
+accessibility and the full copy audit still require qualification.
