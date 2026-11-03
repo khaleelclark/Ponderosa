@@ -926,8 +926,9 @@ still requires separate human review/action.
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
+| Git fixed common Gitweb metadata originals | Explicit Git selection carries only optional common `description`, `category`, `cloneurl` and `README.html` as exact inactive `.git/{name}` originals. Empty present files survive; no HTML rendering, URL fetching or native Gitweb recreation. See [contract](#inactive-fixed-common-gitweb-metadata-originals). |
 | Git default common hook/support originals | Explicit Git selection carries bounded regular UTF-8 originals from the validated common repository `hooks/` through `providerFiles` as virtual `.git/hooks/...` paths, never active hooks. Configured `core.hooksPath` targets are not followed; their nonsecret setting remains inactive configuration text. See [scope and limits](#inactive-default-common-git-hook-originals). |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...` records require explicit Git selection and its required Git manifest; all provider records require harness selection. Git hook/support originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -1061,7 +1062,6 @@ Primary design references: [Git cat-file](https://git-scm.com/docs/git-cat-file)
 [Git index format](https://git-scm.com/docs/gitformat-index),
 [Git ls-files](https://git-scm.com/docs/git-ls-files). The source uses these documented plumbing contracts; no Git capture or recreation command was run in this batch.
 
-
 ### Passive in-root symbolic cycles
 
 Explicit whole-folder inventory and selected-link export preserve supported relative
@@ -1087,7 +1087,6 @@ hardlink inventories and source/partial destination retention remain.
 
 This batch has source review only. Runtime and platform link timestamp behavior
 remain unqualified; no tests, builds or native link-tree inspection were performed.
-
 
 ### Re-exporting imported inactive originals
 
@@ -1452,7 +1451,7 @@ plumbing and the recreated review repository keep hooks disabled with
 the complete manifest; import parses before numbered mode0600 nonexecutable
 `.review` copies and exact original path/removal mappings. Retained re-export
 validates authoritative original manifest bytes, never generated repositories or
-review copies. The local Git capture return carries the Git manifest and hook
+review copies. The local Git capture return carries the Git manifest and Git
 originals together to its sole shared export caller; no DTO/format/schema/version,
 dependency, cap, checkbox or additional codec changes are needed.
 
@@ -1464,3 +1463,52 @@ Empty directories, binary resources, original executable mode/mtime, arbitrary
 sensitive prose/concealed secrets and independent-writer atomicity remain outside
 the guarantee. Existing sensitive-data warnings remain. Source review only: no
 capture execution, tests, native equivalence, round-trip or whole-Bible acceptance.
+
+### Inactive fixed common Gitweb metadata originals
+
+Explicit `git: true` also includes exactly four optional files in the validated
+common repository: `description`, `category`, `cloneurl` and `README.html`.
+Normal repositories and already authorized reciprocally validated selected linked
+worktrees use the same capture. Virtual `.git/{exactname}` paths in `providerFiles`
+always mean common-repository provenance, never selected-private/main/other
+worktree copies or absolute physical storage. No repository-root enumeration or
+additional slot discovery is added.
+
+The [Gitweb manual](https://git-scm.com/docs/gitweb#_per_repository_gitweb_configuration)
+identifies these four per-repository files; description/category/cloneurl files
+can override corresponding configuration. The [Git manual](https://git-scm.com/docs/git#Documentation/git.txt-GITCOMMONDIR)
+describes common storage for non-worktree files. These references identify the
+selected data family, not native Gitweb lookup, rendering or precedence parity.
+
+All four bodies are opaque UTF-8 originals regardless of HTML, JSON or URL
+appearance. Exact accepted bytes/BOM survive with `removedSecretFields: false`;
+an empty present file is retained as a zero-byte record, distinctly from absence.
+No JSON/settings rewriting, HTML rendering/evaluation, clone-URL interpretation or
+fetching, template resolution, config-path expansion or reference chasing occurs.
+Recognizable secrets refuse rather than redact originals. Source configuration
+and inactive nonsecret `gitweb.*` values are unchanged.
+
+The existing raw walker reads only these exact common slots through canonical
+same-owner parents and regular single-link no-follow bounded reads. Optional
+absence and present identity/hash evidence join whole-capture before/after raw
+snapshot and reciprocal association checks, detecting observed appearance,
+disappearance or drift. Directories, links, special nodes, foreign owners,
+invalid UTF-8/NUL binary data and malformed/credential paths refuse. The shared
+Git-original classifier binds records to explicit Git selection and a required
+valid Git manifest; other provider families still require harness selection.
+Git-only/mixed flows share imported file/ancestor collision checks, complete
+manifest validation, numbered mode0600 nonexecutable `.review` copies with exact
+path/removal mappings, and authoritative-original-manifest re-export.
+
+These files are skipped before native read-view copying, parsing or pack pairing
+and never installed in recreated Git or native Gitweb. Existing hooks/fsmonitor
+disabling remains. Existing 1 MiB per original, 1,000 combined hook/metadata/harness
+review files, 32 MiB combined review bytes and 20,000-node/32 MiB raw Git bounds
+remain; no truncation, DTO/format/schema/version/dependency/checkbox change or
+parallel codec is introduced. Ordinary working-file `.git` refusal is unchanged.
+No global/home/ancestor/managed/nested/session discovery, native web server,
+network, installation, activation, executable chmod, grants, hook/provider
+execution or source writes are added. Original executable mode/mtime, empty
+directories, binary resources, arbitrary sensitive prose/concealed secrets and
+independent-writer atomicity remain outside the guarantee. Source-only review
+makes no capture-execution, round-trip, native-equivalence or whole-Bible claim.

@@ -36,11 +36,12 @@ function claudeOpaqueOriginal(value:string,directory=false):boolean {
 function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
-function gitHookOriginal(value:string):boolean {
-  return value.startsWith('.git/hooks/')&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
+const gitWebOriginalNames=['description','category','cloneurl','README.html'];
+function gitReviewOriginal(value:string):boolean {
+  return gitWebOriginalNames.some(name=>value==='.git/'+name)||value.startsWith('.git/hooks/')&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
 }
 function opaqueProviderOriginal(value:string,directory=false):boolean {
-  if(gitHookOriginal(value))return true;
+  if(gitReviewOriginal(value))return true;
   if(claudeOpaqueOriginal(value,directory)||['.claude/CLAUDE.md','.claude/AGENTS.md','.codex/instructions.md'].includes(value))return true;
   return /^\.(?:claude\/(?:commands|agents|rules)|codex\/(?:skills|rules))\//.test(value)&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
 }
@@ -307,10 +308,10 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   for(const file of value.providerFiles){
     fields(file,['path','dataBase64','removedSecretFields']);
     if(typeof file.path!=='string'||!providerPath(file.path)||file.path.split('/').some(part=>!part||part==='.'||part==='..')||credentialPath(file.path)||file.path.includes('\\')||file.path.includes('\0')||typeof file.dataBase64!=='string'||typeof file.removedSecretFields!=='boolean'||paths.has(file.path))throw new Error('Invalid reviewed provider original');
-    const hook=gitHookOriginal(file.path);
-    if(hook?!value.selection.git||!value.git||file.removedSecretFields:!value.selection.harness)throw new Error('Reviewed original differs from its explicit family selection');
+    const gitOriginal=gitReviewOriginal(file.path);
+    if(gitOriginal?!value.selection.git||!value.git||file.removedSecretFields:!value.selection.harness)throw new Error('Reviewed original differs from its explicit family selection');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
-    if(hook&&data.includes(0))throw new Error('Git hook originals require UTF-8 text, not binary data');
+    if(gitOriginal&&data.includes(0))throw new Error('Git review originals require UTF-8 text, not binary data');
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
     if(codexReviewToml(file.path)&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
     safeText(text(data),'Reviewed provider configuration');
@@ -1059,8 +1060,9 @@ async function captureGitRaw(association:GitAssociation) {
   const owner=(await fs.lstat(association.root,{bigint:true})).uid,names=new Set<string>();
   let nodes=0,bytes=0,hookEntries=0;
   const walk=async(target:string,name:string,source:'selected'|'shared',objects=false,optional=true):Promise<void>=>{
-    const hook=name==='hooks'||name.startsWith('hooks/');
-    if(hook&&(source!=='shared'||name!=='hooks'&&!gitHookOriginal('.git/'+name)))throw new Error('Invalid common Git hook original path');
+    const hook=name==='hooks'||name.startsWith('hooks/'),gitOriginal=gitReviewOriginal('.git/'+name);
+    if(gitOriginal&&source!=='shared')throw new Error('Git review originals require common provenance');
+    if(hook&&(source!=='shared'||name!=='hooks'&&!gitReviewOriginal('.git/'+name)))throw new Error('Invalid common Git hook original path');
     if(hook&&name!=='hooks'&&++hookEntries>1000)throw new Error('Git hook inventory exceeds 1000 entries');
     const refPath=name.startsWith('logs/')?name.slice(5):name;
     // Common private names belong to the main worktree: do not even stat or open them.
@@ -1088,9 +1090,9 @@ async function captureGitRaw(association:GitAssociation) {
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
       const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
-      if(hook){
-        if(data.includes(0))throw new Error('Git hook originals require UTF-8 text, not binary data');
-        safeText(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data),'Git hook original');
+      if(gitOriginal){
+        if(data.includes(0))throw new Error('Git review originals require UTF-8 text, not binary data');
+        safeText(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data),'Git review original');
       }
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
@@ -1110,7 +1112,7 @@ async function captureGitRaw(association:GitAssociation) {
   for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
-  for(const name of ['config','shallow','packed-refs','refs','objects','hooks'])await walk(path.join(commonDir,name),name,'shared',name==='objects');
+  for(const name of ['config','shallow','packed-refs','refs','objects','hooks',...gitWebOriginalNames])await walk(path.join(commonDir,name),name,'shared',name==='objects');
   for(const directory of new Set([gitDir,commonDir])){
     const target=path.join(directory,'logs');
     const source=directory===gitDir?'selected':'shared';
@@ -1153,7 +1155,7 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
     const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
     const expectedRefs=new Map<string,{oid?:string;symbolic?:string}>();
     for(const file of files){
-      if(file.name.startsWith('hooks/'))continue;
+      if(gitReviewOriginal('.git/'+file.name))continue;
       if(file.name==='ORIG_HEAD'||file.name==='logs/ORIG_HEAD'||file.name==='FETCH_HEAD')continue;
       if(derivedGitCache(file.name)){
         if(!derivedGitCache(file.name,format))throw new Error('Git derived cache name differs from the declared format');
@@ -1222,7 +1224,7 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
 }
 
 /** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
-export async function exportReviewedGit(root:string):Promise<{git:ReviewedGitUserData;hookOriginals:ReviewedUserData['providerFiles']}|undefined> {
+export async function exportReviewedGit(root:string):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}|undefined> {
   const association=await gitAssociation(root);if(!association)return undefined;
   const {gitDir,commonDir,linked}=association;
   const assertTopology=async()=>{
@@ -1301,8 +1303,8 @@ export async function exportReviewedGit(root:string):Promise<{git:ReviewedGitUse
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
   result.index.push(...expandSparseDirectories(directories,new Map(objects.map(object=>[object.oid,object])),format));
   result.index.sort(indexOrder);validateReviewedGit(result);
-  const hookOriginals=before.raw.files.filter(file=>file.source==='shared'&&file.name.startsWith('hooks/')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false}));
-  return {git:result,hookOriginals};
+  const gitOriginals=before.raw.files.filter(file=>file.source==='shared'&&gitReviewOriginal('.git/'+file.name)).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false}));
+  return {git:result,gitOriginals};
 }
 
 /** Recreate a separate review repository, never the native-owned destination .git. No Git command or hook runs. */
@@ -1388,7 +1390,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     const captured=await exportReviewedGit(root);
     if(captured){
       result.git=captured.git;
-      for(const original of captured.hookOriginals){
+      for(const original of captured.gitOriginals){
         bytes+=Buffer.from(original.dataBase64,'base64').length;
         if(result.providerFiles.length>=1000||bytes>limit)throw new Error('Combined review originals exceed their bound');
         result.providerFiles.push(original);
