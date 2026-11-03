@@ -277,3 +277,15 @@ alias graph and restoring any restrictive source file/directory mode. Descriptor
 remain bounded, and exact readback stamps bind the metadata pass. The shared
 runtime-only `directoryProofs` map exposes issued common/private/module/working
 parents to the caller without promoting a later observation to authority.
+
+Native callers may share an opaque `nativeMetadataScope` with deferred metadata
+across all native tasks. One one-shot `prepareNativeMetadata` materializes the
+complete alias graph and verifies readable originals after every copy/sharing
+step. The caller stages ordinary/ACL metadata and performs its readable adoption
+snapshot, then invokes the same one-shot `finalizeNativeMetadata`. Controlled
+metadata callbacks run on the finalizer's exact held descriptor before raw source
+modes/timestamps, so restrictive source permissions never require relaxation.
+Runtime-only file and directory metadata proofs are issued after exact readback;
+they are not a cached-byte authorization for future Runs. A failed/started callback
+cannot be replayed. Fully declared existing working aliases are counted only after
+original root/parent custody and exact same-inode checks; missing proof refuses.

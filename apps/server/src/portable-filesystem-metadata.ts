@@ -5,7 +5,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {applyExactFileMetadata,applyExtendedMetadata,inspectExtendedMetadata,inspectPersistentNode,inspectPersistentNodeMetadata,applyPersistentNodeMetadata,createPersistentNode,type ExtendedMetadataEvidence} from '@ponderosa/native-host';
 import type {PortableFilesystemMetadata,ReviewedMetadataActivation,ReviewedUserDataSelection,PortableWorkingLinkDto} from '@ponderosa/core';
-import {inventoryWorkingFolder,portableWorkingPath,type WorkingFolderInventory} from './portable-working-files.js';
+import {inventoryWorkingFolder,portableWorkingPath,type WorkingFolderInventory,type WorkingNativeMetadata} from './portable-working-files.js';
 import type {GitExportCapture} from './portable-reviewed-user-data.js';
 import {assertPortableSecretsAbsent,isPortableSecretField} from './portable-secrets.js';
 
@@ -158,7 +158,7 @@ export function planFilesystemMetadata(metadata:PortableFilesystemMetadata,selec
   }
 }
 /** Fresh import root only. Every mutation is one attempt; partial nodes remain for recovery. */
-export async function applyFilesystemMetadata(root:string,metadata:PortableFilesystemMetadata,selection:ReviewedUserDataSelection,activation:ReviewedMetadataActivation,links:readonly PortableWorkingLinkDto[]=[],expectedLinkCounts?:ReadonlyMap<string,bigint>):Promise<void>{
+export async function applyFilesystemMetadata(root:string,metadata:PortableFilesystemMetadata,selection:ReviewedUserDataSelection,activation:ReviewedMetadataActivation,links:readonly PortableWorkingLinkDto[]=[],expectedLinkCounts?:ReadonlyMap<string,bigint>,nativeMetadata?:WorkingNativeMetadata):Promise<void>{
   planFilesystemMetadata(metadata,selection,activation);
   const provenance=await filesystemMetadataProvenance();
   if(provenance.qualifier!==activation.destinationQualifier)fail('Destination metadata provenance changed; review the current host');
@@ -187,6 +187,23 @@ export async function applyFilesystemMetadata(root:string,metadata:PortableFiles
   }
   for(const node of [...metadata.nodes].sort((a,b)=>b.path.split('/').length-a.path.split('/').length||(a.path==='.'?1:b.path==='.'?-1:0))){
     const target=node.path==='.'?root:path.join(root,node.path);
+    const protectedPlan=node.kind==='file'?nativeMetadata?.protectedFiles.get(target):nativeMetadata?.protectedDirectories.get(target);
+    const ancestor=node.kind==='directory'&&nativeMetadata&&[...nativeMetadata.protectedFiles.keys(),...nativeMetadata.protectedDirectories.keys()].some(name=>name.startsWith(target+path.sep));
+    if(protectedPlan||ancestor){
+      if(protectedPlan&&(protectedPlan.mode!==node.mode||protectedPlan.mtimeNs!==node.mtimeNs))fail('Filesystem metadata differs from the selected native Git original');
+      const apply=(held:{fd:number;expectedDevice:bigint;expectedInode:bigint;expectedLinkCount?:bigint})=>{
+        applyExtendedMetadata({...held,kind:node.kind,restore:'replace-user-and-posix-acl',sourceQualifier:metadata.sourceQualifier,destinationQualifier:provenance.qualifier,
+          sourceOwnerId:Number(node.ownerId),sourceGroupId:Number(node.groupId),destinationOwnerId:map('user',node.ownerId),destinationGroupId:map('group',node.groupId),
+          principalMappings:activation.principalMappings.map(mapping=>({...mapping,sourceId:Number(mapping.sourceId),destinationId:Number(mapping.destinationId)})),
+          attributes:node.userAttributes.map(attribute=>({name:bytes(attribute.nameBase64),value:bytes(attribute.valueBase64)})),
+          accessAcl:node.accessAclBase64===null?null:bytes(node.accessAclBase64),defaultAcl:node.defaultAclBase64===null?null:bytes(node.defaultAclBase64),mode:node.mode});
+        applyExactFileMetadata({...held,kind:node.kind,mode:node.mode,mtimeNs:BigInt(node.mtimeNs)});
+      };
+      const prior=nativeMetadata!.deferredMetadata.get(target);
+      if(prior&&(prior.kind!==node.kind||prior.mode!==node.mode||prior.mtimeNs!==node.mtimeNs))fail('Selected filesystem metadata conflicts with deferred native metadata');
+      nativeMetadata!.deferredMetadata.set(target,{kind:node.kind,mode:node.mode,mtimeNs:node.mtimeNs,apply:prior?async held=>{await prior.apply(held);apply(held);}:apply});
+      continue;
+    }
     if(await fs.realpath(target)!==target)fail('Metadata destination node changed');
     const handle=node.kind==='directory'?await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW):await openPortableRegular(target,'metadata');
     await withMetadataHandle(handle,async()=>{

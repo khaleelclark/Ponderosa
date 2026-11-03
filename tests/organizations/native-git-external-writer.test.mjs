@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {fstatSync} from 'node:fs';
 import {exportReviewedUserData,reviewedGitConfiguration,createReviewedRecoveryGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
 
 const exec=promisify(execFile),git=async(cwd,...args)=>(await exec('git',['--no-optional-locks',...args],{cwd,env:{...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}})).stdout.trim();
@@ -133,4 +134,32 @@ test('restrictive recursive source modes wait until global verification and capt
   const source=await lstat(path.join(worktreePath,'script'),{bigint:true}),alias=await lstat(path.join(locked,'captured-parent-alias'),{bigint:true});assert.equal(source.ino,alias.ino);assert.equal(source.dev,alias.dev);assert.equal(source.nlink,3n);
   assert.ok(configuration.directoryProofs.has(locked));assert.equal(configuration.directoryProofs,childConfiguration.directoryProofs,'Recursive scopes publish the same exact issued directory map');
  }finally{if(locked)await chmod(locked,0o700).catch(()=>{});await f.dispose();}
+});
+
+
+test('one shared metadata scope waits for all tasks and composes callbacks on the exact held descriptors',options,async()=>{
+ const f=await fixture();let locked;try{
+  const scope={},first={...f.configuration(),nativeMetadataScope:scope,deferNativeMetadata:true};
+  f.external.files[0].mode=0;f.external.directories[1].mode=0;locked=path.join(f.destination,'.git/ponderosa-external/capsule');
+  await f.apply(first);const second=path.join(f.root,'second');await mkdir(second);
+  const configuration={...f.configuration(),nativeMetadataScope:scope,deferNativeMetadata:true},original=Buffer.from(JSON.stringify(f.manifest)),sha256=createHash('sha256').update(original).digest('hex');
+  await createReviewedRecoveryGit(second,original,sha256,{git:true,harness:false},undefined,configuration);
+  assert.equal(first.prepareNativeMetadata,configuration.prepareNativeMetadata);assert.equal(first.finalizeNativeMetadata,configuration.finalizeNativeMetadata);
+  assert.equal((await lstat(path.join(locked,'script'),{bigint:true})).mode&0o400n,0o400n,'Collecting another task cannot seal the first');
+  await first.prepareNativeMetadata();const target=path.join(locked,'script');let invoked=0;
+  first.nativeMetadata.deferredMetadata.set(target,{kind:'file',mode:0,mtimeNs:f.ns,apply:held=>{const stat=fstatSync(held.fd,{bigint:true});assert.equal(stat.dev,held.expectedDevice);assert.equal(stat.ino,held.expectedInode);assert.equal(stat.nlink,2n);assert.equal(stat.mode&0o400n,0o400n);invoked++;}});
+  await first.finalizeNativeMetadata();assert.equal(invoked,1);assert.equal(first.fileProofs.get(target).mode,0);assert.equal(first.fileProofs.get(target).mtimeNs,f.ns);assert.match(first.fileProofs.get(target).ctimeNs,/^[0-9]+$/);
+  await assert.rejects(first.finalizeNativeMetadata(),/cannot be replayed/);await assert.rejects(first.prepareNativeMetadata(),/cannot be replayed/);
+  await chmod(locked,0o700);await chmod(path.join(second,'.git/ponderosa-external/capsule'),0o700);
+ }finally{if(locked)await chmod(locked,0o700).catch(()=>{});await chmod(path.join(f.root,'second/.git/ponderosa-external/capsule'),0o700).catch(()=>{});await f.dispose();}
+});
+
+test('fully issued plain-working aliases count once and receive the native precision proof',options,async()=>{
+ const f=await fixture();try{
+  await mkdir(path.join(f.destination,'.hooks'));const target=path.join(f.destination,'.hooks/run'),alias=path.join(f.destination,'shared-script');await writeFile(target,f.data);await link(target,alias);
+  const root=await lstat(f.destination,{bigint:true}),hooks=await lstat(path.dirname(target),{bigint:true}),identity={device:root.dev.toString(),inode:root.ino.toString(),directories:{'.hooks':{device:hooks.dev.toString(),inode:hooks.ino.toString()}}};
+  f.external.worktreeIdentity=identity;f.external.files.push({path:'.hooks/run',context:'worktree',data:f.data,mode:0o751,mtimeNs:f.ns});
+  const configuration={...f.configuration(),workingAliases:[{path:alias,target,rootPath:f.destination,identity}]};await f.apply(configuration);
+  const actual=await lstat(alias,{bigint:true});assert.equal(actual.nlink,2n);assert.equal(actual.mtimeNs,BigInt(f.ns));assert.equal(configuration.fileProofs.get(alias).inode,actual.ino.toString());assert.equal(configuration.fileProofs.get(alias).expectedLinkCount,'2');assert.equal(configuration.nativeMetadata.protectedFiles.get(alias).mtimeNs,f.ns);
+ }finally{await f.dispose();}
 });
