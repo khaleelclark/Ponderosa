@@ -279,7 +279,8 @@ test('long history and guidance retain exact text through remapping and three fu
  assert.ok(text.length>100000);node.initialInstructions=text;
  node.history=[{role:'user',text,createdAt:'2026-10-27T02:00:00+02:00'},{role:'user',text},{role:'system',text}];
  const imported=f.ok(await f.request(f.importRequest(pkg))),archive=f.store.getImportedHistory(imported.rootAgentId);
- const artifact=f.store.getProjectArtifacts(f.project.id).find(a=>a.originAgentId===imported.rootAgentId),rewritten=text.replaceAll(f.artifactId,artifact.id);
+ const exactArtifact=agentId=>{const rows=f.store.getProjectArtifacts(f.project.id).filter(a=>a.originAgentId===agentId&&a.summary==='Managed fixture document'&&a.sha256===createHash('sha256').update(f.bytes).digest('hex'));assert.equal(rows.length,1,'The managed source document must map to exactly one destination artifact');return rows[0];};
+ const artifact=exactArtifact(imported.rootAgentId),rewritten=text.replaceAll(f.artifactId,artifact.id);
  assert.ok(archive.initialInstructions===rewritten,'complete guidance rewrites only the artifact reference');
  assert.equal(historyHash(archive.messages),historyHash(node.history.map(message=>({...message,text:rewritten}))));
  const again=await f.exportAgent(imported.rootAgentId);
@@ -287,7 +288,7 @@ test('long history and guidance retain exact text through remapping and three fu
  await f.restart();assert.equal(historyHash(f.store.getImportedHistory(imported.rootAgentId).messages),historyHash(archive.messages));
  let source=imported.rootAgentId,currentArtifact=artifact.id,expected=rewritten;
  for(let generation=0;generation<3;generation++){
-  const copied=await f.copy(source),mapped=f.store.getProjectArtifacts(f.project.id).find(item=>item.originAgentId===copied.rootAgentId);
+  const copied=await f.copy(source),mapped=exactArtifact(copied.rootAgentId);
   assert.ok(mapped,'Every full copy retains its managed artifact');
   expected=expected.replaceAll(currentArtifact,mapped.id);currentArtifact=mapped.id;
   const retained=f.store.getImportedHistory(copied.rootAgentId),history=node.history.map(message=>({...message,text:expected}));
