@@ -582,7 +582,7 @@ identities and bytes still participate in before/after comparisons.
 Export exclusions explicitly report omission. No cache bytes enter the portable
 DTO, native read view, recreated inactive full index or retained-original manifest
 re-export authority. Real paths, modes, stages, OIDs, supported flags, REUC, sparse
-and offset-table checks remain unchanged, as do unknown-extension and split/sparse
+and offset-table checks remain unchanged, as do unknown-mandatory-extension and split/sparse
 topology refusals. No source index is copied or written, and no destination cache
 or monitor is activated. Source/partial retention and cleanup are unchanged.
 Source-only implementation; no runtime, capture/recreation, round-trip, native
@@ -606,7 +606,7 @@ Full entries, empty-name split replacements and shared originals reuse the same
 mode/stage/OID/flag checks, exact shared checksum association, ordering, extension
 consumption, no-follow identity and before/after storage/logical checks. Malformed
 prefixes, overlong removals, missing terminators, invalid decoded paths/lengths,
-unknown extensions and observed drift refuse without source writes or native
+unknown mandatory extensions and observed drift refuse without source writes or native
 index-reading commands. Supported sparse checkout/directory forms and reciprocal
 linked-worktree authority use this same v4 reader under the separate contracts
 above and below; combined split/sparse storage, unsupported sparse forms and
@@ -770,11 +770,11 @@ An empty array records absent/empty local inventory; omission refuses rather tha
 claiming complete capture. The existing package artifact, hash, full-history
 warning, byte codec and import preview carry these originals unchanged.
 
-Each file preserves exact UTF-8 bytes, oldest-to-newest physical entry order,
+Each file preserves exact original bytes, oldest-to-newest physical entry order,
 old/new object IDs, user name/email, original timestamp/timezone and message.
 No identity, timestamp, message or object relationship is rewritten. Every nonzero
-old/new ID must exist in the captured object inventory, which already includes
-unreachable/reflog-only objects and validates their graph closure. Zero IDs are
+old/new ID either exists in the captured verified object inventory or is listed
+exactly in reflogMissingObjects; absent historical objects are never fabricated. Zero IDs are
 allowed at either endpoint for creation/deletion, but not both. Logs may remain
 for deleted refs: a current ref is not required and entry continuity is not
 invented. Recognized credentials anywhere in the raw log refuse the whole selection.
@@ -782,10 +782,10 @@ invented. Recognized credentials anywhere in the raw log refuse the whole select
 Supported entry syntax is two lowercase SHA-1/SHA-256 IDs, a nonempty name and
 nonempty whitespace-free email in angle brackets, a 1–16 digit nonnegative Unix
 timestamp, signed four-digit timezone (hours 00–23/minutes 00–59), a tab and a
-possibly empty single-line message, terminated by LF. Control bytes, invalid UTF-8,
+possibly empty single-line message, terminated by LF. Control bytes,
 unterminated/unknown forms, unknown log paths, links, hardlinks, special files,
-missing objects (including expired/pruned originals), lock files and external
-worktree logs refuse. This narrow contract does not normalize older/other formats.
+lock files and external worktree logs refuse. Undeclared identity/message
+encodings are retained as bytes; missing historical objects are explicit evidence. This narrow contract does not normalize older/other formats.
 
 Reflogs have a 1 MiB/file, 32 MiB total, 10,000 total entry and 10,000 inventory-node
 bound; path length is at most 1,024 characters. Existing 48 MiB manifest/package
@@ -919,9 +919,9 @@ still requires separate human review/action.
 | --- | --- |
 | `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist, except missing parents of explicitly validated shallow commits. Supported normal local `.git` and the explicit reciprocally validated selected-worktree/common-directory association above only. Associated shared objects are explicitly authorized by Include Git; unassociated external/common directories and alternate object stores refuse. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
-| `git.origHeadReview.{path,source,dataBase64,reflogDataBase64}` | Required exact selected-worktree `ORIG_HEAD` and optional matching log bytes or explicit absences. Canonical direct/symbolic binding and historical log endpoints require captured verified objects/refs. Remains inactive in `CONFIGURATION-REVIEW.json`; see [previous HEAD contract](#selected-worktree-previous-head). |
+| `git.origHeadReview.{path,source,dataBase64,reflogDataBase64}` | Required exact selected-worktree `ORIG_HEAD` and optional matching log bytes or explicit absences. Canonical direct/symbolic binding requires captured verified objects/refs; historical log endpoints may instead have exact reflogMissingObjects evidence. Remains inactive in `CONFIGURATION-REVIEW.json`; see [previous HEAD contract](#selected-worktree-previous-head). |
 | `git.fetchHeadReview.{path,source,dataBase64}` | Required exact selected-worktree FETCH_HEAD bytes or explicit absence. Ordered/repeated LF records retain native markers and opaque notes; every OID requires captured verified objects, and mergeable entries peel to commits. Inactive CONFIGURATION-REVIEW.json only; see [fetched-head contract](#selected-worktree-fetched-heads). |
-| `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
+| `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; reserved flags/unknown mandatory extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
 | `git.shallowReview.{path,source,dataBase64}` | Required exact common-repository `shallow` bytes or explicit null absence (empty-present stays distinct). Bounded canonical ASCII/OID validation requires captured verified commits; only those commit parents may be missing. Recreated exclusively as `.git/shallow` inside the new separate review repository, with original bytes retained for re-export. No native working-root adoption, fetch/deepening, grafts or partial/promisor support; source-only, runtime unverified. |
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
@@ -978,7 +978,7 @@ system/global files and reads only stdin for the requested enumeration. Only an
 empty parser directory is removed afterward; unexpected bytes are retained and
 cleanup refuses. No source configuration bytes are written to the parser directory. Ordered nonsecret
 entries, original values, implicit booleans and source scope survive; source
-formatting and credential fields are not copied. Nonsecret include/includeIf declarations
+formatting survives in the required configurationOriginalReview slots after excluded field spans are removed; credential fields are not copied. Nonsecret include/includeIf declarations
 survive as inactive ordered literals; `--no-includes` prevents targets or conditions
 from supplying sparse meaning. Home profiles are never selected. Linked/common directories require the separate reciprocal Git authority above. Worktree sparse values require an explicit local
 `extensions.worktreeConfig` setting; true applies worktree precedence only for
@@ -1038,13 +1038,13 @@ to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal pres
 the source instead of truncating data.
 
 The existing source fence and before/after checks do not drain independent native
-writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote, rr-cache and lost-found originals plus the exact selected-gitdir COMMIT_EDITMSG, SQUASH_MSG, TAG_EDITMSG, MERGE_MSG and EDIT_DESCRIPTION are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
+writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown mandatory layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote, rr-cache and lost-found originals plus the exact selected-gitdir COMMIT_EDITMSG, SQUASH_MSG, TAG_EDITMSG, MERGE_MSG and EDIT_DESCRIPTION are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
 not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
 
 Exact remaining implementation: unsupported linked/common-directory layouts, packed private refs and unsupported selected ref storage;
-unsupported index flags/extensions and combined split/sparse or other unsupported sparse forms; staged submodule repository originals; custom external Git include/hook
+reserved index flags/unknown mandatory extensions and combined split/sparse or other unsupported sparse forms; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats and TOML outside the bounded structured subset; explicit reviewed activation into a native-owned live Git or
 provider configuration. Whole-folder re-export of imported inactive originals is
 implemented through the [explicit retained-original consumer](#re-exporting-imported-inactive-originals).
@@ -1939,11 +1939,11 @@ Bible #8. Source completion of the two additions above is not full portability.
 
 | Item | Current source boundary and required next implementation |
 | --- | --- |
-| Git associations and ref storage | `gitAssociation` admits in-root .git or exact reciprocal common/worktrees/id layout. Separated gitdirs, nested submodule gitdirs and reftable need explicit selected-storage association plus bounded native-format readers. Linked selected packed-refs and unknown private storage remain refused. Common packed public refs already work. These are parser/association implementation gaps, not proof that external contracts cannot exist. |
-| Index and sparse layouts | `decodeIndex` supports bounded v2/v3/v4, link/sdir separately, REUC and listed derived caches; combined split/sparse and unknown flags/extensions refuse. Extend only with a pinned producer/consumer grammar, graph/path/flag validation and all before/after storage evidence. Unknown mandatory semantics cannot be discarded. |
-| Reflogs and missing objects | Current normal local reflog parser requires resolvable retained object identities. Missing/pruned objects cannot be fabricated; preserving dangling history and its absence needs a distinct validated representation. Unknown reflog encodings need exact readers. |
+| Git associations and ref storage | `gitAssociation` now also admits selected-root-contained separated gitfile storage with no commondir/backlink. External separated or nested submodule storage still needs explicit additional-root selection; reftable remains unfinished reader work. Pinned Git ignores linked-private packed-refs in favor of common packed-refs, so private packed storage is not interpreted as new ref authority. Unknown private storage remains refused; common packed public refs work. |
+| Index and sparse layouts | `decodeIndex` supports bounded v2/v3/v4, link/sdir separately, REUC and listed derived caches; uppercase optional extensions retain exact inactive evidence. Pinned native Git disallows combined on-disk split/sparse storage; reserved flags and unknown mandatory extensions still refuse. Future legitimate formats need pinned grammar, graph/path validation and before/after evidence. |
+| Reflogs and missing objects | Historical reflogs now retain byte-exact identity/message fields without guessing an encoding, plus exact sorted reflogMissingObjects evidence derived from the complete captured object inventory. Active refs/index/graph closure remains mandatory. Unsupported record framing remains refused rather than guessed. |
 | Submodule originals | A gitlink OID is preserved, not the nested repository. Requires independently selected nested roots, ownership and per-root import mapping through the package consumer; no recursive acquisition from an OID or .gitmodules. |
-| Config and external support | Ordered local nonsecret config/include declarations are retained logically, not exact source formatting. External include contents/configured hooks need explicit additional source selection and destination mapping, not automatic path chasing. Other structured formats need actual parser/scrub contracts. |
+| Config and external support | Ordered local nonsecret config/include declarations now also preserve exact surviving source spans and explicit absences in required configurationOriginalReview slots. External include contents/configured hooks need explicit additional source selection and destination mapping, not automatic path chasing. Other structured formats need actual parser/scrub contracts. |
 | Provider directories and metadata | Current providerDirectories and harness-file metadata carry selected empty directories, low 12 mode bits and exact mtimeNs through capture, shared validation, review maps and authoritative re-export. Native directory/mode/timestamp application remains unfinished and needs explicit activation/application selection, destination conflict handling and nanosecond-capable host application. Inactive maps are not native recreation. |
 | Native application | Include Git/harness authorizes inactive inspection only. Recreating a native-owned live repository/settings requires a reviewed apply contract with exact destination ownership, replacement/conflict handling and user-selected activation. Inactive copies do not satisfy that requirement. |
 | Absolute and cross-root links | Existing working link format and validation require relative in-root targets. Multi-root destination mapping must bind source root identities, user-selected destination roots, external-target absence and retained target spelling; no rewriting or acquisition of unselected roots. This requires package/root-selection and importer ownership, not a refusal-literal change. |
@@ -1992,3 +1992,256 @@ conflict/replacement handling, plus a host operation capable of applying the
 retained nanosecond timestamps without silently rounding them. Inert records do
 not satisfy full native recreation under Bible #8. No tests, test preparation,
 builds, typechecks or runtime/native/provider execution qualified this change.
+
+
+### Current Git format extension and historical-evidence contract
+
+The current strict manifest additionally requires `git.reflogMissingObjects`,
+`git.indexOptionalReview` and both `git.configurationOriginalReview` slots.
+Shared validation runs during live export, before import destination writes,
+separate Git recreation and authoritative retained-original re-export. Missing
+current fields are refused, never filled with guessed historical values.
+
+`reflogMissingObjects` is exactly the sorted unique set of nonzero historical log
+endpoints absent from the complete selected object inventory, including the
+optional selected ORIG_HEAD log. Import recomputes the set from exact retained
+log bytes and verified objects. It does not permit missing active refs, HEAD,
+index objects or object-graph dependencies. Existing complete capture snapshots
+and all-object enumeration prove observed local absence; no object is fetched,
+fabricated or supplied from another root. Ordinary historical logs are recreated
+with their exact bytes in the separate repository; ORIG_HEAD/log remains review
+only, and missing-object evidence is also in CONFIGURATION-REVIEW.json.
+
+The pinned files backend frames OIDs/timestamps/timezone with ASCII delimiters
+but does not declare an identity/message character encoding. The reader checks
+that framing in a lossless Latin-1 byte view without translating retained bytes;
+known-secret inspection also checks decoded UTF-8 when valid. No locale or
+replacement-character conversion is guessed. Invalid framing, zero/zero records,
+NUL/control contamination and count/byte overflows still refuse. See
+[Git v2.56.0 files-backend.c, show_one_reflog_ent](https://raw.githubusercontent.com/git/git/v2.56.0/refs/files-backend.c).
+
+Unknown index extensions with an uppercase first signature byte are explicitly
+optional in the [pinned index format](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/gitformat-index.adoc).
+Their exact signature/body and `index` versus `sharedindex` provenance survive in
+`indexOptionalReview`; the existing physical checksum, duplicate, size and
+snapshot checks still run. The parser scans original bytes for recognizable
+credentials and validates the bounded canonical base64 again at import. These
+unknown observations never control parsing, native Git, monitor paths or the
+fresh full index; recreation retains them in CONFIGURATION-REVIEW.json and
+retained re-export uses only the authoritative manifest. Known derived-cache
+and offset policies remain unchanged. Reserved extended bits and unknown
+mandatory signatures still refuse. [Pinned sparse-index.c149–162](https://raw.githubusercontent.com/git/git/v2.56.0/sparse-index.c)
+explicitly disallows combined on-disk split/sparse storage; no synthetic native
+semantics are invented for it.
+
+`configurationOriginalReview` contains `config` with common provenance and
+`config.worktree` with selected provenance, each present or explicitly absent.
+A synchronous bounded lexer follows [pinned config syntax](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/config.adoc)
+and [config.c parse_value/get_value/get_base_var](https://raw.githubusercontent.com/git/git/v2.56.0/config.c):
+sections, quoted/deprecated subsections, implicit booleans, continuations,
+comments, quotes/escapes, BOM, CRLF and EOF. Export cross-checks every decoded
+original declaration against the isolated no-includes native parser. Recognized
+credential/source-ownership/URL-userinfo declaration spans are removed; surviving
+nonsecret spelling, whitespace, comments and order remain exact UTF-8 bytes.
+Secret section headers are removed with their entries. Concealed/comment secrets
+that cannot be safely retained refuse; they are not silently copied. Import
+reparses the retained spans, requires no further removals and exact equality to
+the logical configuration list. No include/condition/configured target is
+resolved. Originals remain inactive in CONFIGURATION-REVIEW.json, never installed
+as active Git configuration.
+
+A selected gitfile may point to a canonical same-owner separated repository
+contained strictly inside the already selected working root, with no backlink
+or commondir; existing snapshot/identity checks cover its association and storage.
+Working-folder inventory excludes selected contained common/private storage roots
+from ordinary file transport, and direct selected-file export refuses those
+paths, so raw native storage cannot bypass the Git transport via a second copy.
+External separated/submodule gitdirs still need explicit additional source-root
+selection, rather than implicit acquisition. The [pinned repository layout](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/gitrepository-layout.adoc)
+defines gitfiles and states that linked private packed-refs is ignored in favor
+of common packed-refs; this change does not reinterpret that ignored file.
+
+Reftable and explicit additional-root selection/application remain unfinished.
+This source work does not qualify native equivalence, round trip, independent-
+writer atomicity or full Bible #8. No tests, preparation, builds, typechecks or
+parser/native/product/provider execution were performed.
+
+
+### Explicit provider activation backend (successor of frozen 796)
+
+This source adds optional `reviewedUserDataActivation: {git: boolean,
+harness: boolean}` to import/copy metadata and Branch file selections. Both
+booleans are required, unknown fields refuse, and at least one must be true.
+Absent means inert behavior. It is separate from export Include selections and
+from `workingFilesActivation`; the latter is also required for native application.
+Full package, authoritative reviewed original in each selected root, exact
+family presence, unused NEW managed destination and Shared-root confirmation
+are checked before native work. Selecting `git: true` currently refuses with a
+specific before-initialization working-copy adoption reason; existing init and
+Separate Git ownership cannot be overwritten or treated as adoption.
+
+`harness: true, git: false` reaches the actual provider files/directories from the
+validated original manifest. `.git/` review originals stay inert. A provider
+root collision refuses, including an existing empty directory. No existing
+provider node is displaced. Regular files use exclusive no-follow creation;
+new directory/file descriptors retain device/inode identity and canonical
+membership checks through metadata application. All selected directory children
+are created before directory metadata; files precede deepest-first directories.
+The separately reviewed native helper is a REQUIRED composition dependency:
+`818438b35f87f01263ead83a51d9c4389da49dc4`, parent released 744, exports
+`applyExactFileMetadata` from `@ponderosa/native-host`. It is not copied into this
+source tranche. No floating-point/Date time fallback, rollback or blind retry is
+used for provider metadata. Windows POSIX metadata activation refuses.
+
+Ordinary and worker canonical import identity include the exact activation
+choice. Access-preview hash additionally binds package/original bytes, selected
+working-root recovery destinations, Shared confirmation, effective mode and
+NEW managed destination identity. Import rechecks the same selection. Branch
+staged access review, grouped/single forwarding and retained results carry the
+choice. Existing durable import result records each attempted source ref,
+root path, original SHA256 and selection as applying/completed/incomplete;
+partial metadata errors retain code and observed evidence (bigints as decimal
+strings). Originals and partial destination bytes remain for recovery; recorded
+completion is source behavior, not evidence of executed platform qualification.
+
+Required UI follow-on remains separately owned: import/copy upload metadata,
+agent-access-preview upload metadata, Branch file-selection controls and staged
+review must send the same explicit choice and display incomplete application
+receipts. Backend does not infer activation when these controls are absent.
+
+Finite remaining checklist disposition: rows 1 (reftable and external selected
+storage), 4 (extra submodule roots), 7 (native Git adoption), 8 (absolute/cross-root
+mapping), 9 (persistent nodes/service context), 10 (ACL/xattr host APIs and
+principal mapping), 11 (snapshot/drain evidence) remain incomplete. Rows 2/3/5
+retain frozen 796 preservation behavior and its unresolved review boundary.
+Row 6 now has provider metadata application caller source with exact native 818
+dependency; this is not native-equivalence, round-trip, durability, independent-
+writer atomicity or Bible acceptance. No tests, fixtures, preparation, builds,
+typechecks, parser/native/provider/runtime/browser/liveDB execution performed.
+
+
+### Standalone selected reftable source flow
+
+The successor of frozen faff adds required `git.reftableReview`, either `null`
+for file refs or `{source: 'common_repository', tablesListBase64, tables}`.
+Each table retains `{name, dataBase64}` in exact `tables.list` order. The list
+is bounded to 64 KiB/1,000 safe names; each table to 4 MiB; total originals,
+inflated log data and expanded keys are bounded to 32 MiB and 20,000 records.
+These are current prerelease representations, with strict validation and no
+historical schema upgrade or dependency change.
+
+Pinned primary contracts are Git v2.56.0
+[technical format](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/technical/reftable.adoc),
+[writer](https://raw.githubusercontent.com/git/git/v2.56.0/reftable/writer.c),
+[blocks](https://raw.githubusercontent.com/git/git/v2.56.0/reftable/block.c), and
+[backend](https://raw.githubusercontent.com/git/git/v2.56.0/refs/reftable-backend.c).
+Source parsing validates header/version/hash/footer CRC, bounded unsigned varints,
+record prefix/restart/key order, block/section boundaries, compressed-log consumed
+bytes, index links/last keys/root-level coverage and object-index ref mappings.
+Pinned writer details take precedence over assumptions from the prose: log-only
+first blocks include the file header in logical offsets; replacement log keys may
+precede the table's minimum; index roots may span several blocks. Log bytes remain
+raw, with Latin-1 secret scans plus UTF-8 scans when valid; no encoding is guessed.
+
+Live selection reads only the canonical same-owner selected stack list and
+listed regular no-follow table originals, with existing identity/hash/absence
+and before/after association drift checks. Orphan tables are not read or followed.
+Stack order and ref/log tombstones derive current logical refs/HEAD and surviving
+historical endpoints; shared validation recomputes them from exact originals,
+checks complete current object graph and peeled targets, and recomputes absent
+historical endpoint evidence. File-backend observed log originals remain separate
+exact evidence. Ref directory/file conflicts are permitted for reftable refs.
+
+Native read views use only these validated original tables, generated local
+config and verified object copies; physical dummy HEAD never supplies logical
+HEAD. Reconstruction writes exact tables/list into the separate review repository
+with generated refStorage config, rather than flattening conflicting refs or
+rewriting binary log histories as file logs. The authoritative original manifest
+retains tables for re-export. None of this activates the live native root.
+
+Linked shared/private reftable stacks remain an exact provenance dependency:
+raw common tables also contain main-worktree private refs/HEAD, which cannot be
+silently transported as selected-worktree originals. A filtered selected/shared
+representation and corresponding recreation are still required. Root pseudoref
+families other than HEAD/ORIG_HEAD/FETCH_HEAD, unsupported ref encodings and
+excessive representations refuse; they are remaining implementation, not invented
+external failures. Legacy ignored loose ref files are not declared recreated.
+Finite row 1 now has standalone reftable source support; the other finite rows and
+native Git adoption remain as previously recorded. No parser, tests, fixtures,
+preparation, builds, types, native/runtime/provider/browser/liveDB execution,
+round-trip, equivalence or atomicity qualification occurred.
+
+
+### Direct native Shared Git creation before initialization
+
+The next successor implements `git: true` only for one complete selected working
+folder, with all imported members using the same NEW managed Shared destination.
+Separate Git copies and multiple source roots refuse before writes. The importer
+binds the validated original artifact SHA256 and activation choice, records the
+native Git initialization phase, and passes that exact original to
+`initializeImportProject`. For this explicit path the service directly creates
+Git in the proved canonical empty root and returns before the ordinary
+`git init`/empty-commit path. It never deletes or replaces generated metadata.
+No Git command, hook, provider or include target executes during this creation.
+
+Native configuration is exact accepted common source bytes, limited to explicit
+literal core repository/filemode/log/ignorecase/precomposeunicode/autocrlf/safecrlf/
+eol/quotepath/whitespace/symlinks fields, object/ref storage extensions and
+user.name/email. Source worktree config, removed spans, other settings, bare
+sources, sparse patterns/collapsed directories, unknown optional index records,
+submodules and active hooks/legacy/recovery originals require further application
+contracts and refuse. Selected draft/web originals and nonexecuting `.sample`
+hook files can be installed; no hook execution is inferred. These are narrow
+supported semantics, not a universal native restoration claim.
+
+The shared writer creates verified loose objects, refs or exact reftable stack,
+logical HEAD, supported config, reflog bytes, full index/flags/REUC, shallow and
+info originals, ORIG_HEAD/FETCH_HEAD evidence and verified retained pack/keep/mtimes
+originals. Parent directories are created exclusively or matched to this writer's
+known directory identities; regular files use exclusive no-follow descriptors.
+It verifies created file hashes/identities before returning. The working-copy
+service retains current in-process creation proof (not restart/retry authority),
+checks exact root/.git identities and complete expected Git inventory, and reads
+bounded originals/hashes before and after working-file population. No unknown
+state is cleared or reapplied when proof is unavailable. Partial roots and
+recovery originals remain, with applying/completed/incomplete phase receipts.
+
+Provider activation can follow this supported Git path. Ordinary root metadata
+is deferred until provider children and exact provider metadata complete, avoiding
+premature root permissions or directory-time changes. Application failures after
+an attempted population conservatively retain possible partial-state evidence.
+Reftable one-level root names now follow pinned `refs.c:is_root_ref` syntax;
+operation-in-progress roots still require continuation semantics and refuse.
+
+Finite disposition: rows 1/2/3/5 have the source preservation coverage recorded
+above, with linked shared/private stack privacy and unsupported source semantics
+still explicit remaining work. Rows 6/7 now have actual provider metadata and
+narrow NEW Shared Git caller source, dependent on reviewed native 818 for provider
+metadata; neither is execution-qualified. Rows 4/8 await the tracked named-root
+selection/provenance/destination mapping decision. Rows 9/10/11 require real
+special-node/service, ACL/xattr/principal, and snapshot/drain APIs; concrete
+contracts were sent to the root owner, with no fabricated implementations or
+blanket exclusions. Both earlier frozen review tranches remain unchanged.
+No tests, fixtures, preparation, parser/native/runtime/provider/browser/liveDB
+execution, builds or types were run. Full native equivalence, round trip,
+independent-writer atomicity and whole-Bible acceptance remain unqualified.
+
+
+The same native-creation successor also closes a provider-parent metadata gap:
+selected `.claude` and `.codex` parents carry their own mode/mtimeNs, including
+empty parents, without enumerating unrelated session/profile contents. Canonical
+same-owner parent identity and optional absent parents/families/fixed files are
+rechecked before return. Existing accepted directory records drive recreation
+and deepest-first native metadata application, so a parent is finalized after
+its children. Export exclusions now distinguish inert evidence from separately
+reviewed native activation. Capture drift observations still prove no consistent
+snapshot against independent writers.
+
+
+### Reviewed source corrections: physical EOF and descriptor cleanup
+
+The shared local Git config lexer follows pinned Git v2.56.0 `get_next_char`/`parse_value`: physical EOF supplies a synthetic LF. A final backslash byte in an unquoted value consumes that LF as a continuation, then the next synthetic LF terminates the value. The backslash contributes no value byte; an unclosed quoted value still refuses. This does not append a physical newline, rewrite retained original bytes, change original hashes, or authorize excluded configuration. Primary source: https://raw.githubusercontent.com/git/git/v2.56.0/config.c (lines 756–852).
+
+Provider application owns every opened descriptor before its first stat, attempts all closes, and preserves the primary application code/observed partial-state evidence when cleanup also fails. Cleanup failure after otherwise successful application reports an incomplete, possibly partial result; it never authorizes rollback or retry. Root-inspection cleanup failure preserves its primary cause before any provider mutation. These are source changes awaiting independent exact-head review; no parser/native execution or installed qualification was performed.
+
+Destination-root finalization also owns its descriptor before stat, runs after ordinary/provider children, attempts close on every path, and keeps the primary finalization cause/code plus any cleanup failures. A failed finalization collects held-descriptor observed identity/mode/mtime where stat remains available; successful metadata application followed by failed cleanup is explicitly incomplete and possibly partial. No automatic retry, deletion or rollback is authorized.

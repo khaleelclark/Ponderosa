@@ -60,8 +60,8 @@ from missing user-data transport below.
 | FIFO/socket/block/character device | Refuse at inventory before opening/reading it. A live endpoint's process/kernel state is not ordinary bytes and is not fabricated. Persistent FIFO/device-node topology is still unsupported; if needed for the selected workflow it remains a concrete recreation gap, not a Bible-approved blanket exclusion. |
 | uid/gid, ACLs, xattrs, birth/ctime/atime, sparse extents, special ownership bits | Not represented by the current DTO. Ordinary content/mode/mtime are the only preservation claims. Host principal numbers/native attributes are not destination authority; loss of nonsecret required ACL/xattr/special-file semantics remains an exact format/platform gap. No byte-identical filesystem claim. |
 | `.git` working-tree pointer; common-dir/worktrees links, ownership markers, branch creation/cleanup receipts, locks | Not adopted. Destination working-copy service creates its own branch, paths, receipts and cleanup ownership. Adopting source receipts would misidentify a foreign worktree as locally owned. This is separate from user Git data. |
-| Git commits/objects, branches/tags/refs, reflogs, index/staged state, config/hook/Gitweb/legacy remote/dormant resolution/draft/recovery content | Unchecked Agent/organization and full Branch export controls pass explicit `reviewedUserData` choices for selected whole folders. This selection transports supported local Git objects/history, refs/HEAD, normal local reflogs with exact nonsecret user/time/message metadata, saved resolve-undo conflict stages and staged index originals with intent-to-add, assume-unchanged and skip-worktree (including supported local v2/v3/v4 full/split-index and ordinary sparse-directory logical state normalized into a full review index, without adopting source stat/shared storage) through the shared package flow into a separate review repository. Selected linked-worktree loose private refs and matching reflogs use that same inactive transport. Selected reciprocal backlinks may be absolute or relative to the private gitdir; checked raw parent components must resolve to the exact already observed selected `.git` file, without opening another target. Raw link spelling/identity remain before-after evidence. Ordered inactive `extensions.relativeWorktrees` common declarations require explicit format 1; declarations in either source require bounded valid booleans and no duplicates per source across capture/import/recreation/re-export. Worktree-local records do not determine repository format. Absent/false does not forbid relative links and true does not require them for this selection. No link/config rewrite or active adoption. Nonsecret configuration is inactive review data, including ordered literal local include/includeIf declarations without target/condition resolution or external contents; bounded default common Git hook/support UTF-8 originals are inactive `providerFiles` records under virtual `.git/hooks/...` paths, and four exact common Gitweb files (`description`, `category`, `cloneurl`, `README.html`) use inactive `.git/{exactname}` originals, and optional common `branches/`/`remotes/` originals use inactive `.git/branches/...`/`.git/remotes/...` records, and common `rr-cache/` resolution text plus exact selected-gitdir `COMMIT_EDITMSG` draft originals use inactive `.git/rr-cache/...`/`.git/COMMIT_EDITMSG` records with common/selected provenance respectively, and exact selected `SQUASH_MSG`/`TAG_EDITMSG`/`MERGE_MSG`/`EDIT_DESCRIPTION` use inactive `.git/SQUASH_MSG`/`.git/TAG_EDITMSG`/`.git/MERGE_MSG`/`.git/EDIT_DESCRIPTION` with selected provenance, and optional common `lost-found/` UTF-8 recovery originals use inactive `.git/lost-found/...` records, while configured hook targets remain uncollected and destination Git ownership stays local. See [exact contract and refusals](git-provider-user-data-transport.md). Unsupported linked layouts, packed private refs/unknown selected ref storage, unsupported reflog formats or missing/pruned reflog objects, unsupported index flags/extensions, combined split/sparse storage and other unsupported sparse forms, live activation and other listed families remain unsupported; fresh Git initialization alone is not equivalent recreation. |
-| Selected-worktree previous HEAD (`ORIG_HEAD`) | Required inactive `origHeadReview` preserves exact selected-gitdir pointer and optional `logs/ORIG_HEAD` bytes or explicit absences with `selected_worktree` provenance. Canonical LF-terminated direct full-width nonzero OID or symbolic `ref: refs/...` binding requires exact captured ref chains and verified local object closure; absent current pointer may retain a valid historical log. Shared ordinary reflog grammar, object/secret proof and aggregate bounds apply to that log. Pointer bounded to 4 KiB; canonical same-owner single-link no-follow raw identity/hash/absence and whole-capture bounds remain. No common main-worktree or other-worktree ORIG_HEAD/log inspection. Native read view skips both; recreation retains only inactive review/manifest records, never active ORIG_HEAD or its log. Shared live/import/recreation/retained-original checks refuse malformed encoding, unknown fields/provenance, missing/pruned objects and cyclic/uncaptured symbolic targets. Existing operation holds and source/partial preservation remain; no reset/replay/repair, cap/version/schema/dependency change or native ownership adoption. Source-only; no parser/native/runtime/capture/recreation/round-trip/atomicity qualification. |
+| Git commits/objects, branches/tags/refs, reflogs, index/staged state, config/hook/Gitweb/legacy remote/dormant resolution/draft/recovery content | Unchecked Agent/organization and full Branch export controls pass explicit `reviewedUserData` choices for selected whole folders. This selection transports supported local Git objects/history, refs/HEAD, normal local reflogs with exact nonsecret user/time/message metadata, saved resolve-undo conflict stages and staged index originals with intent-to-add, assume-unchanged and skip-worktree (including supported local v2/v3/v4 full/split-index and ordinary sparse-directory logical state normalized into a full review index, without adopting source stat/shared storage) through the shared package flow into a separate review repository. Selected linked-worktree loose private refs and matching reflogs use that same inactive transport. Selected reciprocal backlinks may be absolute or relative to the private gitdir; checked raw parent components must resolve to the exact already observed selected `.git` file, without opening another target. Raw link spelling/identity remain before-after evidence. Ordered inactive `extensions.relativeWorktrees` common declarations require explicit format 1; declarations in either source require bounded valid booleans and no duplicates per source across capture/import/recreation/re-export. Worktree-local records do not determine repository format. Absent/false does not forbid relative links and true does not require them for this selection. No link/config rewrite or active adoption. Nonsecret configuration is inactive review data, including ordered literal local include/includeIf declarations without target/condition resolution or external contents; bounded default common Git hook/support UTF-8 originals are inactive `providerFiles` records under virtual `.git/hooks/...` paths, and four exact common Gitweb files (`description`, `category`, `cloneurl`, `README.html`) use inactive `.git/{exactname}` originals, and optional common `branches/`/`remotes/` originals use inactive `.git/branches/...`/`.git/remotes/...` records, and common `rr-cache/` resolution text plus exact selected-gitdir `COMMIT_EDITMSG` draft originals use inactive `.git/rr-cache/...`/`.git/COMMIT_EDITMSG` records with common/selected provenance respectively, and exact selected `SQUASH_MSG`/`TAG_EDITMSG`/`MERGE_MSG`/`EDIT_DESCRIPTION` use inactive `.git/SQUASH_MSG`/`.git/TAG_EDITMSG`/`.git/MERGE_MSG`/`.git/EDIT_DESCRIPTION` with selected provenance, and optional common `lost-found/` UTF-8 recovery originals use inactive `.git/lost-found/...` records, while configured hook targets remain uncollected and destination Git ownership stays local. See [exact contract and refusals](git-provider-user-data-transport.md). Unsupported linked layouts, packed private refs/unknown selected ref storage, unsupported reflog framing, reserved index flags/unknown mandatory extensions, combined split/sparse storage and other unsupported sparse forms, live activation and other listed families remain unsupported; fresh Git initialization alone is not equivalent recreation. |
+| Selected-worktree previous HEAD (`ORIG_HEAD`) | Required inactive `origHeadReview` preserves exact selected-gitdir pointer and optional `logs/ORIG_HEAD` bytes or explicit absences with `selected_worktree` provenance. Canonical LF-terminated direct full-width nonzero OID or symbolic `ref: refs/...` binding requires exact captured ref chains and verified local object closure; absent current pointer may retain a valid historical log. Shared ordinary reflog grammar, object/absence/secret proof and aggregate bounds apply to that log. Pointer bounded to 4 KiB; canonical same-owner single-link no-follow raw identity/hash/absence and whole-capture bounds remain. No common main-worktree or other-worktree ORIG_HEAD/log inspection. Native read view skips both; recreation retains only inactive review/manifest records, never active ORIG_HEAD or its log. Shared live/import/recreation/retained-original checks refuse malformed encoding, unknown fields/provenance, missing/pruned current pointer objects and cyclic/uncaptured symbolic targets; historical log-only absences are explicit evidence. Existing operation holds and source/partial preservation remain; no reset/replay/repair, cap/version/schema/dependency change or native ownership adoption. Source-only; no parser/native/runtime/capture/recreation/round-trip/atomicity qualification. |
 | Selected-worktree fetched heads (`FETCH_HEAD`) | Required inactive `fetchHeadReview` retains exact selected-gitdir bytes or explicit null absence with `selected_worktree` provenance, distinguishing empty-present. Canonical UTF-8/base64 LF records require full-width lowercase nonzero IDs, TAB, empty or `not-for-merge` marker, TAB and opaque NUL-free note. Entry order/repeats and note bytes remain exact; further tabs/carriage returns are note text, never URL/path/ref authority. Known-secret refusal applies. Every OID requires captured hash/type/graph-verified local objects even if unreachable; empty markers must peel through noncyclic captured tags to commits, while not-for-merge permits noncommit objects. Missing/pruned proof refuses, with no current-ref match requirement. Canonical same-owner single-link no-follow reads and raw identity/hash/absence before-after checks retain existing 1 MiB file, 10,000-record and whole-capture caps. No main/common or other-worktree FETCH_HEAD inspection. Syntax checked before native reading; read view skips FETCH_HEAD. Shared live/import/recreation/retained-original validation rejects missing/unknown fields/provenance. Only inactive CONFIGURATION-REVIEW.json and original manifest retain it, never active .git/FETCH_HEAD. No fetch/pull/merge/reset/replay/repair/ownership adoption, cap/schema/version/dependency change; existing ORIG_HEAD behavior and operation holds remain. Original/partial bytes preserved. Source-only; no native/runtime/capture/recreation/round-trip/atomicity qualification. |
 | Derived local Git commit-graph caches | Common `objects/info/commit-graph` and exact split `commit-graphs/{commit-graph-chain,graph-{format-width lowercase hash}.graph}` names are bounded same-owner canonical single-link regular no-follow observations. Exact raw directory/file identity/hash/absence checks detect observed drift; known-secret inspection remains. Cache bodies/chain are never interpreted or used as graph proof. Native read views skip caches before copying objects; export exclusions document omission and recreation installs no caches. Verified objects and existing graph/ref/log/index/REUC/sparse/shallow semantics remain authority; caches are rebuildable but no rebuild runs. Unknown names/topologies, unsupported multi-pack-index/retention-layout/reftable/promisor/alternates remain refused. No DTO/version change, live source write or native working-root adoption. Source/partial bytes remain; no runtime/capture/round-trip/native/atomicity qualification. |
 | Derived local Git multi-pack-index caches | The shared derived-cache path observes exact common `objects/pack/multi-pack-index`, hash-named `.bitmap`/`.rev` companions and `multi-pack-index.d/{multi-pack-index-chain,multi-pack-index-{hash}.{midx,bitmap,rev}}` names from pinned Git v2.54.0. Declared lowercase hash width, canonical same-owner single-link regular no-follow reads, bounds, known-secret inspection and raw before/after identity/hash/absence checks apply. Opaque bodies/chain are never followed or used as proof; native views skip caches before pack pairing/copying. Ordinary pack/idx pairing and verified objects/ref/log/index/REUC/sparse/shallow remain authority. Explicit omission is rebuildable; no rebuild, cache DTO/recreation, native working metadata or external-store traversal. Unknown names/topology/locks, alternates/promisor/unsupported-retention-layout/reftable still refuse. Source/partial bytes remain; cleanup unchanged. Source-only, no runtime/capture/round-trip/native/atomicity qualification. |
@@ -69,7 +69,7 @@ from missing user-data transport below.
 | Git pack retention (`.keep`, MTME v1 `.mtimes`) | Required inactive `packRetentionReview` preserves exact source pack/v1-or-v2-index/companion bytes, checksum identity and independently checked index-order OIDs/epoch-second mtimes. Empty keep differs from null absence. Shared capture/validation decoding supports v1 interleaved offsets/OIDs and v2 separate tables at declared SHA-1/SHA-256 width. V1 CRC absence is explicit; v2 CRCs remain mandatory. Recognized unknown versions never fall back to v1; malformed/mixed layouts refuse. Complete pack/index/MTME header, fanout, counts, offsets, v2 CRCs, checksums, boundaries and canonical captured object identities agree on export/import/recreation/re-export, including unreachable objects. Non-delta, backward OFS and earlier/later same-pack REF bases supported, including mixed chains. Iterative dependency ordering checks each complete indexed base once before dependents; self/cyclic/missing/external bases refuse even if canonical bytes exist elsewhere. V2 mixed direct/64-bit-table offsets are supported within existing bounds, including small indirect values: exact framing, one reference per slot without imposed reference order, no unused slots, and exact integer bounds before number conversion. Malformed/truncated/extra tables, repeated/out-of-range references, unsafe integers, actual offsets outside the bounded pack and unsupported MTME forms refuse. Table bytes count once; caps and OID/MTME ordering do not change. Bounded same-owner no-follow single-link raw identity/hash/absence before-after observations and known-secret checks remain. Limits: 1,000 packs, 10,000 entries/pack, 1 MiB index/companion, 32 MiB combined objects/evidence and separate 32 MiB inflation/base-read/reconstruction budget, 10,000 delta instructions/object. Native view omits retention companions. Original bytes/intent remain only in manifest and CONFIGURATION-REVIEW.json; loose-object review recreation does not activate keep/mtime/GC/layout policy. No source writes, metadata installation, maintenance or network; retention intent is distinct from native GC equivalence. Originals/partial copies remain; cleanup unchanged. Source-only; no parser/native/runtime/capture/round-trip/atomicity qualification. |
 | Ordinary shallow Git history | Include Git preserves required `shallowReview` exact common-repository bytes/provenance or explicit absence, distinguishing empty-present. Same-owner regular single-link no-follow capture and canonical association/raw before-after identity/hash/absence checks apply. Shared validation requires bounded canonical base64, LF-terminated ASCII, unique nonzero format-width IDs and captured verified commits; only declared commits may omit parents, with syntax and captured parent types still checked. Other graph/object/index/REUC/sparse checks remain. Recreation writes exact `.git/shallow` only inside the newly owned separate review repository, never native working metadata; original manifest remains re-export authority. No graph rewrite, fetch/deepening, external stores, grafts or promisor/partial-clone support. Source and partial bytes remain. Source-only; no runtime/round-trip/native/atomicity qualification. |
 | Repository-local Git `info/attributes` and `info/exclude` | Explicit Include Git transports exactly these two common-repository originals as required, path-ordered `infoReview` byte/absence records with `common_repository` provenance. Empty bytes remain distinct from absence. Same-owner canonical parent, regular single-link no-follow files and raw before/after identity/hash/absence checks preserve scope and refuse observed drift. Shared export/import/recreation/retained-original validation enforces the two-path allowlist, bounds, exact base64/UTF-8 and known-secret refusal. Original BOM/line endings/content remain exact; patterns and commands are never interpreted. Destination evidence stays in inactive `CONFIGURATION-REVIEW.json`, outside active `.git/info`; native read views omit it. No external/global files, other private worktrees, filter/hook activation, ownership adoption or extra checkbox. Original/partial bytes remain. No native/runtime/round-trip/atomicity qualification. |
-| Git index optional observation caches (`UNTR`, `FSMN`) | Exact signatures accepted as bounded opaque derived caches in full indexes, split overlays and required shared originals. Existing whole-index header/checksum, 1 MiB physical-file/10,000-entry bounds, extension sizes, duplicate checks and EOIE header hashing remain; lossless Latin-1 known-secret inspection uses the existing separate 4 MiB UTF-8 bound. Cache versions/grammar, paths, environment strings, tokens and bitmaps are never interpreted or used as file lists/proof; no monitor/hook/environment lookup. Exact raw identities/bytes and before-after comparison remain. Explicit export exclusions record rebuildable omission; no cache bytes enter DTO/native view/fresh inactive full index or retained-original manifest re-export authority. Logical entries/flags, REUC, sparse/offset semantics, strict unknown optional/required extension and split/sparse refusals remain. No source writes, cache activation, schema/version or cleanup change; originals/partial copies remain. Source-only; no tests/runtime/capture/recreation/round-trip/native-equivalence/atomicity qualification. |
+| Git index optional observation caches (`UNTR`, `FSMN`) | Exact signatures accepted as bounded opaque derived caches in full indexes, split overlays and required shared originals. Existing whole-index header/checksum, 1 MiB physical-file/10,000-entry bounds, extension sizes, duplicate checks and EOIE header hashing remain; lossless Latin-1 known-secret inspection uses the existing separate 4 MiB UTF-8 bound. Cache versions/grammar, paths, environment strings, tokens and bitmaps are never interpreted or used as file lists/proof; no monitor/hook/environment lookup. Exact raw identities/bytes and before-after comparison remain. Explicit export exclusions record rebuildable omission; no cache bytes enter DTO/native view/fresh inactive full index or retained-original manifest re-export authority. Logical entries/flags, REUC, sparse/offset semantics, strict unknown mandatory extension and split/sparse refusals remain. No source writes, cache activation, schema/version or cleanup change; originals/partial copies remain. Source-only; no tests/runtime/capture/recreation/round-trip/native-equivalence/atomicity qualification. |
 | Git index derived offsets (`EOIE`, `IEOT`) | Bounded full v2/v3/v4 originals and each required split storage file validate EOIE final position, exact length/end offset/header hash and IEOT v1 complete offset/count partitions against sequentially decoded raw entry boundaries. Native v4 full-path block restarts, empty-index version-only tables and a leading empty block after removed entries are supported. Tables never control parsing or use merged offsets. Existing raw identity/byte checks, logical flags/REUC/sparse/private refs, import validation and exact retained-original re-export remain unchanged. Accelerators are omitted in the new inactive full review index; no source writes, stat/layout adoption, active cache/configuration or DTO/version change. Malformed tables, unknown extensions and existing split/sparse combinations still refuse; original/partial bytes remain. Source-only; no tests/native/runtime/atomicity qualification. |
 | Git index resolve-undo (`REUC`) | Required `git.resolveUndo` records preserve exact paths and present stage 1–3 canonical modes/OIDs, with missing stages absent. Ordinary full v2/v3/v4 and selected split-overlay extensions decode directly; a required shared-base REUC refuses rather than supplying inherited data. One semantic validator/encoder checks complete grammar, UTF-8/path and byte/stage ordering, duplicates, bounds, known-secret paths and captured blob identities; all captured objects retain hash/secret/graph checks. Raw index/shared-index originals and logical undo state must match before/after. Existing export/import/Shared/retained-original paths carry the same manifest. Inactive standalone recreation writes canonical REUC and index checksum exclusively, with no source writes, checkout or Git index invocation. No stat/layout/operation authority is adopted. Original/partial bytes remain. Required field omission, unsupported modes/storage and missing non-gitlink objects refuse. Gitlink IDs remain exact; submodule contents remain a gap. No tests/native/runtime/round-trip qualification. |
 | Explicitly selected linked-worktree Git association | Include Git authorizes only the bounded reciprocal selected `.git` pointer/private `gitdir` backlink/`commondir` association at canonical same-owner `<common>/worktrees/<id>`. Association records/directory identities are checked before repository content and before/after capture. Selected HEAD/index/exact sharedindex/config.worktree/patterns/HEAD log and loose `refs/{bisect,rewritten,worktree}/**` with matching logs remain provenance-separated from shared config/public refs/objects/public ref logs. Common private namespaces/logs are skipped by name before stat/open/descent; main/other worktree private state is not read or substituted. No common/worktrees enumeration. Unknown selected ref storage, packed private refs, duplicate/shadowing paths and out-of-scope symbolic aliases refuse. Names, object/graph/secret and exact reflog validation apply through export/import/retained-original re-export. Native plumbing sees only an exclusive captured temporary Git view with generated format-only config; isolated stdin config parsing with include resolution disabled, alternate refusal, environment/pager/discovery controls prevent unapproved startup reads. Complete bounded raw/logical inventories and required index storage must match; no independent-writer atomicity guarantee. Existing DTO and inactive standalone recreation normalize storage and adopt no ownership/topology or active bisect/rebase operation. Unsupported associations, unknown/promisor object metadata, incomplete packs and existing sparse/index limitations refuse. Source and partial copies remain; successful temporary views remove only known unchanged files and empty directories. Ordinary crossRootLinks stays refuse; authority is separate from working-file traversal. Source-only implementation, runtime unverified. |
@@ -812,3 +812,256 @@ conflict/replacement handling, plus a host operation capable of applying the
 retained nanosecond timestamps without silently rounding them. Inert records do
 not satisfy full native recreation under Bible #8. No tests, test preparation,
 builds, typechecks or runtime/native/provider execution qualified this change.
+
+
+### Current Git format extension and historical-evidence contract
+
+The current strict manifest additionally requires `git.reflogMissingObjects`,
+`git.indexOptionalReview` and both `git.configurationOriginalReview` slots.
+Shared validation runs during live export, before import destination writes,
+separate Git recreation and authoritative retained-original re-export. Missing
+current fields are refused, never filled with guessed historical values.
+
+`reflogMissingObjects` is exactly the sorted unique set of nonzero historical log
+endpoints absent from the complete selected object inventory, including the
+optional selected ORIG_HEAD log. Import recomputes the set from exact retained
+log bytes and verified objects. It does not permit missing active refs, HEAD,
+index objects or object-graph dependencies. Existing complete capture snapshots
+and all-object enumeration prove observed local absence; no object is fetched,
+fabricated or supplied from another root. Ordinary historical logs are recreated
+with their exact bytes in the separate repository; ORIG_HEAD/log remains review
+only, and missing-object evidence is also in CONFIGURATION-REVIEW.json.
+
+The pinned files backend frames OIDs/timestamps/timezone with ASCII delimiters
+but does not declare an identity/message character encoding. The reader checks
+that framing in a lossless Latin-1 byte view without translating retained bytes;
+known-secret inspection also checks decoded UTF-8 when valid. No locale or
+replacement-character conversion is guessed. Invalid framing, zero/zero records,
+NUL/control contamination and count/byte overflows still refuse. See
+[Git v2.56.0 files-backend.c, show_one_reflog_ent](https://raw.githubusercontent.com/git/git/v2.56.0/refs/files-backend.c).
+
+Unknown index extensions with an uppercase first signature byte are explicitly
+optional in the [pinned index format](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/gitformat-index.adoc).
+Their exact signature/body and `index` versus `sharedindex` provenance survive in
+`indexOptionalReview`; the existing physical checksum, duplicate, size and
+snapshot checks still run. The parser scans original bytes for recognizable
+credentials and validates the bounded canonical base64 again at import. These
+unknown observations never control parsing, native Git, monitor paths or the
+fresh full index; recreation retains them in CONFIGURATION-REVIEW.json and
+retained re-export uses only the authoritative manifest. Known derived-cache
+and offset policies remain unchanged. Reserved extended bits and unknown
+mandatory signatures still refuse. [Pinned sparse-index.c149–162](https://raw.githubusercontent.com/git/git/v2.56.0/sparse-index.c)
+explicitly disallows combined on-disk split/sparse storage; no synthetic native
+semantics are invented for it.
+
+`configurationOriginalReview` contains `config` with common provenance and
+`config.worktree` with selected provenance, each present or explicitly absent.
+A synchronous bounded lexer follows [pinned config syntax](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/config.adoc)
+and [config.c parse_value/get_value/get_base_var](https://raw.githubusercontent.com/git/git/v2.56.0/config.c):
+sections, quoted/deprecated subsections, implicit booleans, continuations,
+comments, quotes/escapes, BOM, CRLF and EOF. Export cross-checks every decoded
+original declaration against the isolated no-includes native parser. Recognized
+credential/source-ownership/URL-userinfo declaration spans are removed; surviving
+nonsecret spelling, whitespace, comments and order remain exact UTF-8 bytes.
+Secret section headers are removed with their entries. Concealed/comment secrets
+that cannot be safely retained refuse; they are not silently copied. Import
+reparses the retained spans, requires no further removals and exact equality to
+the logical configuration list. No include/condition/configured target is
+resolved. Originals remain inactive in CONFIGURATION-REVIEW.json, never installed
+as active Git configuration.
+
+A selected gitfile may point to a canonical same-owner separated repository
+contained strictly inside the already selected working root, with no backlink
+or commondir; existing snapshot/identity checks cover its association and storage.
+Working-folder inventory excludes selected contained common/private storage roots
+from ordinary file transport, and direct selected-file export refuses those
+paths, so raw native storage cannot bypass the Git transport via a second copy.
+External separated/submodule gitdirs still need explicit additional source-root
+selection, rather than implicit acquisition. The [pinned repository layout](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/gitrepository-layout.adoc)
+defines gitfiles and states that linked private packed-refs is ignored in favor
+of common packed-refs; this change does not reinterpret that ignored file.
+
+Reftable and explicit additional-root selection/application remain unfinished.
+This source work does not qualify native equivalence, round trip, independent-
+writer atomicity or full Bible #8. No tests, preparation, builds, typechecks or
+parser/native/product/provider execution were performed.
+
+
+### Explicit provider activation backend (successor of frozen 796)
+
+This source adds optional `reviewedUserDataActivation: {git: boolean,
+harness: boolean}` to import/copy metadata and Branch file selections. Both
+booleans are required, unknown fields refuse, and at least one must be true.
+Absent means inert behavior. It is separate from export Include selections and
+from `workingFilesActivation`; the latter is also required for native application.
+Full package, authoritative reviewed original in each selected root, exact
+family presence, unused NEW managed destination and Shared-root confirmation
+are checked before native work. Selecting `git: true` currently refuses with a
+specific before-initialization working-copy adoption reason; existing init and
+Separate Git ownership cannot be overwritten or treated as adoption.
+
+`harness: true, git: false` reaches the actual provider files/directories from the
+validated original manifest. `.git/` review originals stay inert. A provider
+root collision refuses, including an existing empty directory. No existing
+provider node is displaced. Regular files use exclusive no-follow creation;
+new directory/file descriptors retain device/inode identity and canonical
+membership checks through metadata application. All selected directory children
+are created before directory metadata; files precede deepest-first directories.
+The separately reviewed native helper is a REQUIRED composition dependency:
+`818438b35f87f01263ead83a51d9c4389da49dc4`, parent released 744, exports
+`applyExactFileMetadata` from `@ponderosa/native-host`. It is not copied into this
+source tranche. No floating-point/Date time fallback, rollback or blind retry is
+used for provider metadata. Windows POSIX metadata activation refuses.
+
+Ordinary and worker canonical import identity include the exact activation
+choice. Access-preview hash additionally binds package/original bytes, selected
+working-root recovery destinations, Shared confirmation, effective mode and
+NEW managed destination identity. Import rechecks the same selection. Branch
+staged access review, grouped/single forwarding and retained results carry the
+choice. Existing durable import result records each attempted source ref,
+root path, original SHA256 and selection as applying/completed/incomplete;
+partial metadata errors retain code and observed evidence (bigints as decimal
+strings). Originals and partial destination bytes remain for recovery; recorded
+completion is source behavior, not evidence of executed platform qualification.
+
+Required UI follow-on remains separately owned: import/copy upload metadata,
+agent-access-preview upload metadata, Branch file-selection controls and staged
+review must send the same explicit choice and display incomplete application
+receipts. Backend does not infer activation when these controls are absent.
+
+Finite remaining checklist disposition: rows 1 (reftable and external selected
+storage), 4 (extra submodule roots), 7 (native Git adoption), 8 (absolute/cross-root
+mapping), 9 (persistent nodes/service context), 10 (ACL/xattr host APIs and
+principal mapping), 11 (snapshot/drain evidence) remain incomplete. Rows 2/3/5
+retain frozen 796 preservation behavior and its unresolved review boundary.
+Row 6 now has provider metadata application caller source with exact native 818
+dependency; this is not native-equivalence, round-trip, durability, independent-
+writer atomicity or Bible acceptance. No tests, fixtures, preparation, builds,
+typechecks, parser/native/provider/runtime/browser/liveDB execution performed.
+
+
+### Standalone selected reftable source flow
+
+The successor of frozen faff adds required `git.reftableReview`, either `null`
+for file refs or `{source: 'common_repository', tablesListBase64, tables}`.
+Each table retains `{name, dataBase64}` in exact `tables.list` order. The list
+is bounded to 64 KiB/1,000 safe names; each table to 4 MiB; total originals,
+inflated log data and expanded keys are bounded to 32 MiB and 20,000 records.
+These are current prerelease representations, with strict validation and no
+historical schema upgrade or dependency change.
+
+Pinned primary contracts are Git v2.56.0
+[technical format](https://raw.githubusercontent.com/git/git/v2.56.0/Documentation/technical/reftable.adoc),
+[writer](https://raw.githubusercontent.com/git/git/v2.56.0/reftable/writer.c),
+[blocks](https://raw.githubusercontent.com/git/git/v2.56.0/reftable/block.c), and
+[backend](https://raw.githubusercontent.com/git/git/v2.56.0/refs/reftable-backend.c).
+Source parsing validates header/version/hash/footer CRC, bounded unsigned varints,
+record prefix/restart/key order, block/section boundaries, compressed-log consumed
+bytes, index links/last keys/root-level coverage and object-index ref mappings.
+Pinned writer details take precedence over assumptions from the prose: log-only
+first blocks include the file header in logical offsets; replacement log keys may
+precede the table's minimum; index roots may span several blocks. Log bytes remain
+raw, with Latin-1 secret scans plus UTF-8 scans when valid; no encoding is guessed.
+
+Live selection reads only the canonical same-owner selected stack list and
+listed regular no-follow table originals, with existing identity/hash/absence
+and before/after association drift checks. Orphan tables are not read or followed.
+Stack order and ref/log tombstones derive current logical refs/HEAD and surviving
+historical endpoints; shared validation recomputes them from exact originals,
+checks complete current object graph and peeled targets, and recomputes absent
+historical endpoint evidence. File-backend observed log originals remain separate
+exact evidence. Ref directory/file conflicts are permitted for reftable refs.
+
+Native read views use only these validated original tables, generated local
+config and verified object copies; physical dummy HEAD never supplies logical
+HEAD. Reconstruction writes exact tables/list into the separate review repository
+with generated refStorage config, rather than flattening conflicting refs or
+rewriting binary log histories as file logs. The authoritative original manifest
+retains tables for re-export. None of this activates the live native root.
+
+Linked shared/private reftable stacks remain an exact provenance dependency:
+raw common tables also contain main-worktree private refs/HEAD, which cannot be
+silently transported as selected-worktree originals. A filtered selected/shared
+representation and corresponding recreation are still required. Root pseudoref
+families other than HEAD/ORIG_HEAD/FETCH_HEAD, unsupported ref encodings and
+excessive representations refuse; they are remaining implementation, not invented
+external failures. Legacy ignored loose ref files are not declared recreated.
+Finite row 1 now has standalone reftable source support; the other finite rows and
+native Git adoption remain as previously recorded. No parser, tests, fixtures,
+preparation, builds, types, native/runtime/provider/browser/liveDB execution,
+round-trip, equivalence or atomicity qualification occurred.
+
+
+### Direct native Shared Git creation before initialization
+
+The next successor implements `git: true` only for one complete selected working
+folder, with all imported members using the same NEW managed Shared destination.
+Separate Git copies and multiple source roots refuse before writes. The importer
+binds the validated original artifact SHA256 and activation choice, records the
+native Git initialization phase, and passes that exact original to
+`initializeImportProject`. For this explicit path the service directly creates
+Git in the proved canonical empty root and returns before the ordinary
+`git init`/empty-commit path. It never deletes or replaces generated metadata.
+No Git command, hook, provider or include target executes during this creation.
+
+Native configuration is exact accepted common source bytes, limited to explicit
+literal core repository/filemode/log/ignorecase/precomposeunicode/autocrlf/safecrlf/
+eol/quotepath/whitespace/symlinks fields, object/ref storage extensions and
+user.name/email. Source worktree config, removed spans, other settings, bare
+sources, sparse patterns/collapsed directories, unknown optional index records,
+submodules and active hooks/legacy/recovery originals require further application
+contracts and refuse. Selected draft/web originals and nonexecuting `.sample`
+hook files can be installed; no hook execution is inferred. These are narrow
+supported semantics, not a universal native restoration claim.
+
+The shared writer creates verified loose objects, refs or exact reftable stack,
+logical HEAD, supported config, reflog bytes, full index/flags/REUC, shallow and
+info originals, ORIG_HEAD/FETCH_HEAD evidence and verified retained pack/keep/mtimes
+originals. Parent directories are created exclusively or matched to this writer's
+known directory identities; regular files use exclusive no-follow descriptors.
+It verifies created file hashes/identities before returning. The working-copy
+service retains current in-process creation proof (not restart/retry authority),
+checks exact root/.git identities and complete expected Git inventory, and reads
+bounded originals/hashes before and after working-file population. No unknown
+state is cleared or reapplied when proof is unavailable. Partial roots and
+recovery originals remain, with applying/completed/incomplete phase receipts.
+
+Provider activation can follow this supported Git path. Ordinary root metadata
+is deferred until provider children and exact provider metadata complete, avoiding
+premature root permissions or directory-time changes. Application failures after
+an attempted population conservatively retain possible partial-state evidence.
+Reftable one-level root names now follow pinned `refs.c:is_root_ref` syntax;
+operation-in-progress roots still require continuation semantics and refuse.
+
+Finite disposition: rows 1/2/3/5 have the source preservation coverage recorded
+above, with linked shared/private stack privacy and unsupported source semantics
+still explicit remaining work. Rows 6/7 now have actual provider metadata and
+narrow NEW Shared Git caller source, dependent on reviewed native 818 for provider
+metadata; neither is execution-qualified. Rows 4/8 await the tracked named-root
+selection/provenance/destination mapping decision. Rows 9/10/11 require real
+special-node/service, ACL/xattr/principal, and snapshot/drain APIs; concrete
+contracts were sent to the root owner, with no fabricated implementations or
+blanket exclusions. Both earlier frozen review tranches remain unchanged.
+No tests, fixtures, preparation, parser/native/runtime/provider/browser/liveDB
+execution, builds or types were run. Full native equivalence, round trip,
+independent-writer atomicity and whole-Bible acceptance remain unqualified.
+
+
+The same native-creation successor also closes a provider-parent metadata gap:
+selected `.claude` and `.codex` parents carry their own mode/mtimeNs, including
+empty parents, without enumerating unrelated session/profile contents. Canonical
+same-owner parent identity and optional absent parents/families/fixed files are
+rechecked before return. Existing accepted directory records drive recreation
+and deepest-first native metadata application, so a parent is finalized after
+its children. Export exclusions now distinguish inert evidence from separately
+reviewed native activation. Capture drift observations still prove no consistent
+snapshot against independent writers.
+
+
+### Reviewed source corrections: physical EOF and descriptor cleanup
+
+The shared local Git config lexer follows pinned Git v2.56.0 `get_next_char`/`parse_value`: physical EOF supplies a synthetic LF. A final backslash byte in an unquoted value consumes that LF as a continuation, then the next synthetic LF terminates the value. The backslash contributes no value byte; an unclosed quoted value still refuses. This does not append a physical newline, rewrite retained original bytes, change original hashes, or authorize excluded configuration. Primary source: https://raw.githubusercontent.com/git/git/v2.56.0/config.c (lines 756–852).
+
+Provider application owns every opened descriptor before its first stat, attempts all closes, and preserves the primary application code/observed partial-state evidence when cleanup also fails. Cleanup failure after otherwise successful application reports an incomplete, possibly partial result; it never authorizes rollback or retry. Root-inspection cleanup failure preserves its primary cause before any provider mutation. These are source changes awaiting independent exact-head review; no parser/native execution or installed qualification was performed.
+
+Destination-root finalization also owns its descriptor before stat, runs after ordinary/provider children, attempts close on every path, and keeps the primary finalization cause/code plus any cleanup failures. A failed finalization collects held-descriptor observed identity/mode/mtime where stat remains available; successful metadata application followed by failed cleanup is explicitly incomplete and possibly partial. No automatic retry, deletion or rollback is authorized.

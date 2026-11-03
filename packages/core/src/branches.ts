@@ -375,7 +375,7 @@ export interface BranchHostRequestAdoptionDto {
 }
 
 /** Explicit reviewed recovery destinations and optional live activation per JSON.stringify([chatRef,agentRef]). */
-export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>;workingFilesActivation?:{sharedRoot?:string};newManagedChatFolderName?:string}
+export interface BranchImportFileSelection {workingFilesDestination?:string;workingRootDestinations?:Record<string,string>;workingFilesActivation?:{sharedRoot?:string};reviewedUserDataActivation?:import('./portable-reviewed-user-data.js').ReviewedUserDataActivation;newManagedChatFolderName?:string}
 export type BranchImportFileSelections=Record<string,BranchImportFileSelection>;
 export type BranchExportFileSelections=Record<string,{selectedWorkingFiles?:string[];wholeWorkingFolder?:boolean;reviewedUserData?:import('./portable-reviewed-user-data.js').ReviewedUserDataSelection}>;
 

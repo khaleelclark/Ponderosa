@@ -216,6 +216,7 @@ export interface ImportAgentPackageRequest {
   workingRootDestinations?: Record<string,string>;
   /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
   workingFilesActivation?: {sharedRoot?:string};
+  reviewedUserDataActivation?: import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;
   accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string;
     /** Exhaustive per-node human choices for one reviewed organization import. */
     agentActions?:Record<string,"keep_destination"|"use_source">};
@@ -237,6 +238,7 @@ export interface CopyAgentPackageRequest {
   workingRootDestinations?: Record<string,string>;
   /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
   workingFilesActivation?: {sharedRoot?:string};
+  reviewedUserDataActivation?: import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;
   /** Optional new name for the copied organization root; descendants retain their names. */
   rootTitle?: string;
   /** Template copies omit history and files. Defaults to full. */
@@ -246,7 +248,9 @@ export interface CopyAgentPackageRequest {
   /** Required when any copied Agent receives autonomous destructive authority. */
   acknowledgeElevatedManagementPermissions?: boolean;
 }
-export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[]; agentRefs?:Record<string,string>; workingFilesDestination?:string;
+export interface ImportAgentPackageResponse {
+  reviewedUserDataApplications?:Array<{ref:string;path:string;originalSha256:string;selection:import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{code?:string;partialStatePossible:boolean;observed:unknown}}>;
+  rootAgentId: string; agentIds: string[]; agentRefs?:Record<string,string>; workingFilesDestination?:string;
   liveWorkingRoots?:Array<{ref:string;path:string;agentIds:string[]}>;
   workingRoots?:Array<{ref:string;destination:string;agentIds:string[]}>;
   accessSettingsToReview?:Array<{agentId:string;source:NonNullable<PortableAgentNodeDto["accessSettings"]>;conversationId:string}>;

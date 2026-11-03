@@ -1,8 +1,12 @@
-/** Human-selected families; settings remain inactive after import. */
+/** Explicit import authority; export family selection never implies activation. */
+export interface ReviewedUserDataActivation {git:boolean;harness:boolean}
+/** Human-selected export families; native import activation is a separate choice. */
 export interface ReviewedUserDataSelection {git:boolean;harness:boolean;source?:'live'|'retained_originals'}
 /** Inert user-data transport. No source runtime, credential or worktree authority. */
 export interface ReviewedGitUserData {
   version:1;format:'sha1'|'sha256';
+  /** Exact selected common stack; null denotes file ref storage. */
+  reftableReview:null|{source:'common_repository';tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
   objects:Array<{oid:string;type:'blob'|'tree'|'commit'|'tag';dataBase64:string}>;
   refs:Array<{name:string;oid:string;symbolic?:string}>;
   head:{symbolic:string}|{oid:string};
@@ -11,6 +15,10 @@ export interface ReviewedGitUserData {
   /** Exact selected-worktree fetched-head records or absence; never active fetch/merge authority. */
   fetchHeadReview:{path:'FETCH_HEAD';source:'selected_worktree';dataBase64:string|null};
   /** Exact oldest-first local reflog bytes; never source worktree ownership. */
+  /** Exact nonzero reflog endpoints absent from the complete selected object inventory. */
+  reflogMissingObjects:string[];
+  /** Unknown uppercase extensions are optional observations, never active index instructions. */
+  indexOptionalReview:Array<{source:'index'|'sharedindex';signature:string;dataBase64:string}>;
   reflogs:Array<{path:string;dataBase64:string}>;
   index:Array<{mode:string;oid:string;stage:number;path:string;intentToAdd:boolean;assumeUnchanged:boolean;skipWorktree:boolean}>;
   /** Saved conflict stages, in byte-path/stage order; absent stages have no fabricated mode or OID. */
@@ -23,6 +31,8 @@ export interface ReviewedGitUserData {
   shallowReview:{path:'shallow';source:'common_repository';dataBase64:string|null};
   /** Exact bounded source retention evidence and index-ordered object times; never active GC policy. */
   packRetentionReview:Array<{packOid:string;packDataBase64:string;indexDataBase64:string;keepDataBase64:string|null;mtimesDataBase64:string|null;objects:Array<{oid:string;mtime:number|null}>}>;
+  /** Exact surviving source spans and explicit absence; includes remain literal inactive declarations. */
+  configurationOriginalReview:Array<{path:'config'|'config.worktree';source:'common_repository'|'selected_worktree';dataBase64:string|null;removedFields:boolean}>;
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true;source?:'config.worktree'}>;
   exclusions:string[];
 }
