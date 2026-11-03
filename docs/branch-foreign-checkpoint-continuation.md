@@ -1327,3 +1327,59 @@ No schema/storage-version/DTO/format/dependency changes. Source only: no tests,
 builds, types or execution were run. Execution, timing/durability, notifications,
 round trips, scheduling, rollback, native equivalence, atomicity and whole-Bible/
 full-portability acceptance remain unvalidated.
+
+
+## Root-scoped review and disposition-aware held generations
+
+Foreign tree review compares historical definitions, configurations and Call
+bindings against the selected root's complete validated ancestry inventory. This
+includes latest legitimate suffix children, rather than only owners present in
+the selected checkpoint. Unrelated historical roots on the same Branch may retain
+older pins as evidence without requiring one current destination to match several
+historical definitions. Review and confirmation use this shared source cut; the
+review digest and original-key receipt continue binding the exact original
+manifest, checkpoint, held maps and current reviewed choices.
+
+Whole-package validation and exhaustive held readback remain global. Every mapped
+Branch still undergoes the existing enabled/current definition, configuration,
+Call dependency, permission, budget, directory and no-secret review. Narrowing
+historical comparisons neither adopts a foreign configuration nor removes any
+current destination authority check.
+
+Repeated held export/import follows the original complete manifest and all owner,
+Branch, frontier reservation and publication-pin maps. Each owner must retain its
+exact import/provenance, unaccepted waiting hold, output, counters, mapped ancestry,
+input/hash/configuration and original private command. Map reservations remain
+complete, fresh and unique even when no native frontier was recreated. No owner,
+private fact, earlier generation or original command is discarded or rewritten.
+
+The resolver validates both existing dispositions. A `recreated_held` owner needs
+its exact definition, mapped Call bindings and typed frontier remap. An unrelated
+`evidence_only` leaf needs an empty native frontier and empty executable idMap;
+its actual destination version/binding pins remain bound to the import receipt.
+Its native definition may describe the imported current Branch, while its older
+historical definition remains unchanged in the private original manifest. It does
+not gain a frontier or admission. Evidence-only parents and any evidence-only
+owner in the selected root's complete related tree still refuse. Global
+manifest/command/hash, identity/map closure, no-admission and held-authority checks
+continue for every owner, with the existing 16-link/cycle/alias bounds.
+
+Original manual or automatic root history and actual Call ancestry remain distinct
+from fresh human/manual root and Call-child destination authority. Selected and
+independent latest replay, original automatic occurrence proof, exact committed
+saver bytes/hash/invocation and every required child save remain mandatory.
+Authentic EXIT interruption/gate closure and observed process-group/pipe drain are
+still required; root saves never supply missing child proof. Retry deadlines,
+fences, consumed attempt numbers, `MAX(number)+1`, fork/Map/Join/state, gates,
+causal cancellation and serial canceled-gate refusals retain their existing rules.
+Bounded lineage, original-key recovery, pending destination notifications and
+current permissions/capacity/budgets/directories/no-secrets are unchanged. No source
+trigger, scheduler, lease or response authority is adopted, and no issued, Agent,
+resource, native, effectful, unknown, secret, bundle or execution-Chat family gains
+support. Held recreation remains nondispatchable.
+
+Source only: no tests, preparation, builds, typechecks, Node/parser/native/runtime,
+browser/provider/live database actions or executed reproductions were performed.
+Execution, timing/durability, notification delivery, round trips, scheduling,
+rollback, native equivalence, atomicity and whole-Bible/full-portability acceptance
+remain unvalidated. No schema, storage-version, DTO, format or dependency changes.

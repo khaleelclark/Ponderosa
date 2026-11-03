@@ -1,5 +1,5 @@
 import {automaticScriptDefinitionSupported,automaticScriptOriginSupported,branchTriggerInput} from './branch-script-origin.js';
-import {heldTreeSource,portableTreeOwners} from './branch-tree-generation.js';
+import {heldTreeSource,portableRootTreeOwners} from './branch-tree-generation.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {insertBranchExecutionTree,readBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
 import {validateBranchRuntimeData,resolveBranchRuntimeSource} from './branch-runtime-package.js';
@@ -676,7 +676,7 @@ export class BranchStore {
     if(!selection||Object.keys(selection).sort().join('|')!==['planId','sourceExecutionId','checkpointKey','checkpointSha256'].sort().join('|')||[selection.planId,selection.sourceExecutionId,selection.checkpointKey].some(v=>typeof v!=='string'||!v||v.length>200)||! /^[a-f0-9]{64}$/.test(selection.checkpointSha256))throw Error('Exact imported tree selection required');
     const saved=readHeldTreeForContinuation(this.sqlite,selection.planId,branchId);if(!saved)throw Error('Imported tree unavailable');
     const all=Object.values(saved.data.branches).flatMap(b=>b.owners),owner=all.find(o=>o.sourceExecutionId===selection.sourceExecutionId);
-    const resolved=heldTreeSource(saved.data,selection.sourceExecutionId),sourceOwners=portableTreeOwners(resolved.data),sourceOwner=sourceOwners.find(o=>o.sourceExecutionId===resolved.rootId);
+    const resolved=heldTreeSource(saved.data,selection.sourceExecutionId),sourceOwners=portableRootTreeOwners(resolved.data,resolved.rootId),sourceOwner=sourceOwners.find(o=>o.sourceExecutionId===resolved.rootId);
     const fact=sourceOwner?.facts.find(f=>f.kind==='checkpoint'&&f.key===selection.checkpointKey&&f.sha256===selection.checkpointSha256);
     if(!owner||!fact||owner.sourceBranchId!==saved.data.rootSourceBranchId)throw Error('Select an original root checkpoint');
     const snapshot=JSON.parse(fact.json),c=portableScriptTreeSupported(this.sqlite,resolved.data,resolved.rootId,snapshot);
