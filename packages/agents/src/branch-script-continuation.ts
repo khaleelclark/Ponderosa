@@ -30,8 +30,8 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
 }
 /** Portable replay admits only the effect-free subset of the canonical graph codec. */
 export function portableScriptDefinitionSupported(definition:BranchDefinition):boolean {
-  // Automatic retries opt into only the existing serial codec; manual parallel support is unchanged.
-  return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition,false,true))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'||step.kind==='script'&&step.failure.action==='retry'))&&scriptDefinitionSupported(definition,false,false,0,true);
+  // Portable standalone automatic retries opt into their existing serial or parallel codec.
+  return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition,false,true,true))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'||step.kind==='script'&&step.failure.action==='retry'))&&scriptDefinitionSupported(definition,false,false,0,true);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
 export type ScriptOwnerContext={automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
@@ -298,7 +298,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     }else if(checkpoint&&!context?.terminal)return false;
     const owner=foreign?.owner??db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
     if(!owner||e.id!==executionId||['branch_id','version_id','binding_revision_id','input_hash'].some(key=>e[key]!==owner[key])
-      ||(e.admission_source==='automatic'?!automaticScriptOriginSupported(db,e,definition,foreign?foreign.runtimeOwner??null:undefined,context?.automaticRootTree===true,standaloneSerialRetries(definition,e,context)):e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'})))
+      ||(e.admission_source==='automatic'?!automaticScriptOriginSupported(db,e,definition,foreign?foreign.runtimeOwner??null:undefined,context?.automaticRootTree===true,standaloneSerialRetries(definition,e,context),hasParallelControls(definition)&&standaloneGateContext(context)):e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'})))
       ||stableJson(configuration)!==stableJson(context?.issuedResource?Object.fromEntries(Object.entries(JSON.parse(owner.configuration_json)).filter(([key])=>key!=='secretBindings')):JSON.parse(owner.configuration_json)))return false;
     if(context?.issuedResource&&Object.keys(JSON.parse(owner.configuration_json).secretBindings??{}).length)return false;
     const boundRequests=new Set<string>();
@@ -683,7 +683,7 @@ export function portableScriptCutSupported(db:Database.Database,data:import("@po
   budget.cache.set(cacheKey,false);
   const read=(kind:string)=>JSON.parse(owner.facts.find(f=>f.kind===kind)!.json);
   const definition=read('definition'),configuration=read('configuration'),e=selected.execution?.[0];
-  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||!['manual','automatic'].includes(e.admission_source)||e.admission_source==='automatic'&&!automaticScriptOriginSupported(db,e,definition,owner,false,true)||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||
+  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||!['manual','automatic'].includes(e.admission_source)||e.admission_source==='automatic'&&!automaticScriptOriginSupported(db,e,definition,owner,false,true,true)||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||
     owner.chatRefs.length||owner.facts.some(f=>f.kind==='custody'||f.kind==='tree-import')||
     [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.some((g:Row)=>g.purpose!=='approval')||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
   if(continuation&&['async','exit'].includes(configuration.configuration.checkpointMode??'async')&&!owner.facts.some(f=>{

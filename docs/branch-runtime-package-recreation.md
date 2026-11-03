@@ -172,7 +172,7 @@ Held recreation does not turn a pending save into durable evidence or adopt sour
 scheduling/response authority. Existing committed selected and closed-EXIT latest
 proof, bounded generation/local-rewind composition, fresh manual confirmation,
 destination pending notifications and original-key receipt recovery remain unchanged.
-Automatic Call trees beyond the root-only family below, retries, bundles, secrets and issued/native/effectful/resource/
+Automatic Call trees beyond the root-only family below, unproven retries (see successors below), bundles, secrets and issued/native/effectful/resource/
 Agent/unknown/in-flight families remain unsupported by this continuation subset.
 Runtime package/saver/remap/server/SDK/UI formats and paths need no changes because
 they already carry this graph evidence through the shared codec and review.
@@ -230,7 +230,7 @@ Manual standalone effect-free Script/ordinary-approval-gate graphs with existing
 Fork/Map/Join controls can now pass the portable consumer with canonical Script
 retry histories. The shared portable definition guard permits retry only on Script
 steps in that family; the serial successor below extends manual standalone
-Script retries; the automatic serial successor below extends proven automatic sources. Automatic parallel and human-gate retry policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
+Script retries; the automatic serial successor below extends proven automatic sources. The automatic parallel successor below extends that family; human-gate retry policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
 DTO, storage-version or scheduler format is added.
 
 Existing capture retains all attempt rows, failed results, retry transition bytes
@@ -326,7 +326,7 @@ notifications, round trips, scheduling, rollback or whole-Bible portability.
 The existing serial retry continuation now includes original schedule/webhook/
 filesystem standalone effect-free Node Script/ordinary approval-gate owners, with
 JSON state, condition/route/loop paths, workflow/gate stop policy and per-Script
-retry. Automatic parallel/tree retries and called/issued/Agent/resource/native/
+retry. The parallel successor below separately extends its existing codec; automatic tree retries and called/issued/Agent/resource/native/
 effectful/unknown work remain outside this extension; manual behavior is unchanged.
 
 Automatic definition/origin validators require an explicit serial retry opt-in,
@@ -366,3 +366,49 @@ See [automatic serial proof](branch-foreign-checkpoint-continuation.md#proven-au
 No tests/preparation/builds/types/Node/parser/native/runtime/browser/provider/liveDB
 actions were performed. Source support does not qualify execution, timing/durability,
 notifications, round trips, scheduling, rollback, atomicity or whole-Bible acceptance.
+
+
+## Proven automatic-source standalone parallel retry successor
+
+The existing parallel retry consumer also accepts proven original schedule/webhook/
+filesystem standalone effect-free Node Script/ordinary approval-gate graphs with
+fork/Map/Join, condition/route/loop and JSON state/reducers. Workflow/gate failure
+policy stays stop; only per-Script retries opt in. Manual serial/parallel and
+automatic serial behavior stays unchanged. Automatic tree/Call/issued/Agent/resource/
+native/effectful/unknown retry families remain excluded.
+
+Automatic definition/origin validators add a separate parallel retry flag defaulting
+off; serial flags remain serial-only. The parallel opt-in cannot combine with Calls
+and requires actual fork/Map controls. Structural frontier requires a parentless
+standalone owner or exact terminal context. The shared consumer separately validates
+original occurrence/payload/provenance/trigger snapshot/input/hash/accepted/started/
+admission evidence before parallel replay. Foreign facts never fall back to original
+owner SQL. Selected and independent latest must prove the complete graph.
+
+Existing parallel replay/seed logic is unchanged: all consecutive failed attempts,
+per-attempt process exit/settlement, ceiling/delay/failure-edge precedence, state
+seals/reducers and full fork/Map/Join/gate/cancellation/loop proof remain required.
+Remap/storage retain consumed numbers/results/absolute `available_at` and waiting
+paths; seed preserves completed prefix work once. Legitimate suffix progress uses
+current destination time/readiness/capacity/policy and `MAX(number)+1`.
+
+Held/admitted/re-exported/local-rewind generations keep their actual human/manual
+acceptance even with the original automatic definition. Held recreation, local
+rewind and the childless EXIT owner-chain origin caller explicitly opt into parallel
+proof. The existing portable producer eligibility needs no further change. Current
+pins/configuration/authority, actual interruption/closure/drain, committed selected
+sync/async/default bytes/hash and authentic closed EXIT/latest whole-graph evidence
+stay mandatory. Missing/in-flight/undrained evidence stays held, with no recreated
+source scheduler/trigger/lease/response authority.
+
+Fresh review/manual admission/budgets/current choices/directories/no-secrets, bounded
+lineage, original-key receipt/purpose/deadline recovery, pending-gate destination
+lifecycle/notifications and supported parallel causal cancellation remain connected.
+Serial canceled source gates remain refused. Capture/import/readback/re-export,
+saver/remap/storage and server/SDK/DTO/UI need no format changes. Complete changed
+files: shared consumer, automatic origin, parallel structural consumer, necessary
+store callers and both guides. See [parallel automatic proof](branch-foreign-checkpoint-continuation.md#proven-automatic-source-standalone-parallel-script-retries).
+
+Source only: no tests/preparation/builds/types/Node/parser/native/runtime/browser/
+provider/liveDB execution. Execution, timing/durability, notifications, round trips,
+scheduling, rollback, atomicity and whole-Bible acceptance remain unvalidated.

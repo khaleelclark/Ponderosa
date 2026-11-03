@@ -32,7 +32,7 @@ export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?
   const e=s.execution![0],terminal=context?.terminal===true;
   // Structural eligibility only; replayScriptCut proves the original automatic occurrence before replay.
   const automatic=e?.admission_source==='automatic'&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth&&(context?.automaticRootTree===true&&!context.parent&&automaticScriptDefinitionSupported(d,true)
-    ||automaticScriptDefinitionSupported(d)&&(!context||terminal&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key))));
+    ||automaticScriptDefinitionSupported(d,false,false,true)&&(!context||terminal&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key))));
   if(s.execution!.length!==1||!e||!(terminal?e.state===(context?.terminalState??'completed'):['running','waiting'].includes(e.state))||e.admission_source!==(context?.parent?'call':automatic?'automatic':'manual')||!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth)||e.cancel_requested||e.budget_exhausted||e.recovery_traversals||!terminal&&e.output_text!==null||e.merged_into!==null||e.requested_outcome!=='canceled')return false;
   if(s.actions!.length||(!context?.issuedResource&&s.resources!.length)||context?.resourceCleanup)return false;
   branchContinuationIds(s);

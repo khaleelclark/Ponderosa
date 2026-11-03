@@ -5,9 +5,10 @@ import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 type Row=Record<string,any>;
 const triggerLimits={maxDepth:64,maxNodes:250_000};
 
-// Calls and standalone serial retries require separate opt-ins; parallel defaults stay unchanged.
-export function automaticScriptDefinitionSupported(definition:BranchDefinition,calls=false,scriptRetries=false):boolean {
-  const retries=scriptRetries&&!calls&&definition.controls.every(c=>['condition','route'].includes(c.kind));
+// Calls, serial retries and parallel retries require separate opt-ins.
+export function automaticScriptDefinitionSupported(definition:BranchDefinition,calls=false,scriptRetries=false,parallelRetries=false):boolean {
+  const retries=!calls&&(scriptRetries&&definition.controls.every(c=>['condition','route'].includes(c.kind))
+    ||parallelRetries&&definition.controls.some(c=>c.kind==='fork'||c.kind==='map'));
   return ['schedule','webhook','filesystem'].includes(definition.trigger.kind)&&definition.policy.failure.action==='stop'&&definition.steps.every(s=>(s.kind==='script'||s.kind==='human_gate'||calls&&s.kind==='branch_call')&&(!s.failure||s.failure.action==='stop'||retries&&s.kind==='script'&&s.runtime==='node'&&s.failure.action==='retry'))&&definition.controls.every(c=>['condition','route','fork','map','join'].includes(c.kind));
 }
 /** Same immutable untrusted input at native intake and historical verification. */
@@ -16,9 +17,9 @@ export function branchTriggerInput(payload:unknown,occurrenceId:string,provenanc
   catch {return stableJson({artifactRef:`trigger-occurrence:${occurrenceId}`,notice:'Event exceeds inline input limit. Retrieve this explicit occurrence reference for its complete untrusted payload and provenance.'});}
 }
 /** Occurrence data is historical evidence only, never scheduler or destination authority. */
-export function automaticScriptOriginSupported(db:Database.Database,e:Row,definition:BranchDefinition,source?:BranchPortableRuntimeOwner|null,calls=false,scriptRetries=false):boolean {
+export function automaticScriptOriginSupported(db:Database.Database,e:Row,definition:BranchDefinition,source?:BranchPortableRuntimeOwner|null,calls=false,scriptRetries=false,parallelRetries=false):boolean {
  try {
-  if(source===null||!automaticScriptDefinitionSupported(definition,calls,scriptRetries)||e.admission_source!=='automatic'||e.parent_execution_id||e.parent_attempt_id||e.call_depth)return false;
+  if(source===null||!automaticScriptDefinitionSupported(definition,calls,scriptRetries,parallelRetries)||e.admission_source!=='automatic'||e.parent_execution_id||e.parent_attempt_id||e.call_depth)return false;
   const read=(kind:string)=>{const facts=source!.facts.filter(f=>f.kind===kind);if(facts.length!==1)throw Error('Missing original origin fact');return JSON.parse(facts[0]!.json);};
   const original=source?read('frontier').execution[0]:db.prepare('SELECT * FROM branch_executions WHERE id=?').get(e.id) as Row|undefined;
   if(!original||['id','branch_id','version_id','binding_revision_id','occurrence_key','admission_source','input_text','input_hash'].some(key=>original[key]!==e[key]))return false;
