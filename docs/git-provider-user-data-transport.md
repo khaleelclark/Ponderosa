@@ -212,15 +212,17 @@ well as the complete logical inventory. Unreferenced shared files are neither
 read nor transported. A missing required shared file or observed drift refuses.
 These checks do not drain independent writers or guarantee an atomic snapshot.
 
-Only `link`, the empty `sdir` marker and the known derived `TREE` cache extension are accepted; combined split/sparse storage refuses. TREE's
+Only `link`, `REUC` resolve-undo, the empty `sdir` marker and the known derived `TREE` cache extension are accepted; combined split/sparse storage refuses. TREE's
 complete count/length grammar is checked and its cache is not adopted. Other
-extensions, including resolve-undo, untracked/fsmonitor caches and offset tables,
+extensions, including untracked/fsmonitor caches and offset tables,
 refuse rather than silently lose semantics. Unknown layouts remain unsupported. Both logical and storage entry inventories are bounded to
-10,000. Unsupported originals remain at source.
+10,000. Resolve-undo belongs only to the selected index/overlay; any `REUC` in a
+required shared base refuses, even an empty one. Base and overlay undo records
+are never blended or inherited. Unsupported originals remain at source.
 
 Recovery writes the existing exclusive **full** v2/v3 review index into a new
 inactive standalone review repository. Split/shared storage layout, raw stat
-cache values, shared-file timestamps and cache extensions are deliberately not
+cache values, shared-file timestamps and derived cache extensions are deliberately not
 reproduced. This is logical index recreation, not byte-identical storage
 recreation. Original/partial recovery retention, credential refusal and inactive
 configuration/ownership behavior are unchanged. No native capture or runtime
@@ -259,6 +261,60 @@ No tests, native capture or runtime qualification were performed for this batch.
 
 References: [Git v4 index format](https://git-scm.com/docs/index-format) and
 [Git offset-varint implementation](https://github.com/git/git/blob/master/varint.c).
+
+### Resolve-undo conflict recovery data
+
+Include Git now preserves the supported `REUC` extension from ordinary v2/v3/v4
+index originals and the selected overlay of supported split storage. This saves
+the former conflict stages for later review; it does not replay a merge, change
+working files or migrate an in-progress operation.
+
+The existing version-1 reviewed Git manifest requires `resolveUndo`, an array of
+`{path,stages}` records. Each stage is `{stage,mode,oid}` with stage 1, 2 or 3.
+Missing stages are absent from that list, not represented by invented hashes or
+content. `[]` means no saved undo entries; missing fields refuse rather than
+defaulting away recovery data. No new selection control, DB schema, transport
+version or dependency is introduced. The canonical shared server validator is
+used by live export, manifest import and exact retained-original re-export; Shared
+composition carries the same manifest bytes and the same import validation.
+
+The direct index reader consumes the complete extension: a strict UTF-8,
+round-trip-exact NUL-terminated path, exactly three NUL-terminated canonical octal
+modes, then only the fixed-width hashes for present stages in stage order. A
+missing mode is exactly `0`; present modes are `100644`, `100755`, `120000` or
+`160000`. Unknown modes, leading-zero variants, zero object IDs, missing hashes,
+trailing malformed bytes, empty/all-missing records, duplicate extension signatures
+or duplicate/unordered paths refuse. Paths follow the existing index path rules,
+are at most 1 MiB each, and use unsigned UTF-8 byte ordering. Stage lists must be
+strictly increasing and have one to three entries. Resolve-undo is bounded to
+10,000 paths and 1 MiB encoded extension data within the existing 1 MiB original
+index-file bound. Whole manifest/package limits still apply.
+
+Known credential paths or recognizable secrets in undo paths refuse the whole
+selection. Every regular/executable/symlink stage must reference a captured blob;
+object hashes, known-secret inspection and complete captured graph closure use
+the existing validation. Gitlink stages retain their exact object IDs, but
+submodule repository content is not fabricated. Undo paths need not have a current
+index entry: conflict resolution may have removed the file. No relationship to
+current index stages or resolved content is invented.
+
+Capture compares complete original index/shared-index bytes and identities plus
+the decoded logical undo inventory before and after, alongside the existing
+index/sparse/ref checks. The isolated Git view still receives no source index;
+no native index reader or source write is added. Import writes canonical `REUC`
+bytes, extension length and final SHA-1/SHA-256 checksum only in the new inactive
+standalone review repository's exclusive full v2/v3 index. An empty semantic array
+needs no extension in that reconstructed index. Source stat/cache/layout authority
+is not adopted; existing files refuse and source/partial recovery bytes remain.
+Retained-original re-export keeps the exact original manifest bytes and never
+uses a generated review index as its source. This is source-only implementation;
+tests, native capture/recreation and round trips were not run.
+
+References: [Git resolve-undo format](https://git-scm.com/docs/gitformat-index#_resolve_undo),
+[pinned Git v2.43.0 resolve-undo reader/writer](https://github.com/git/git/blob/v2.43.0/resolve-undo.c),
+and [pinned full/split extension ownership](https://github.com/git/git/blob/v2.43.0/read-cache.c)
+(`write_shared_index` uses `WRITE_NO_EXTENSION`; the selected split overlay writes
+the extensions). These are format references, not runtime qualification.
 
 ### Selected local reflogs
 

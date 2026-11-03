@@ -281,7 +281,7 @@ function reflogPath(value:string):void {
 }
 
 export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','reflogs','configurationReview','sparseReview','exclusions']);
+  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','configurationReview','sparseReview','exclusions']);
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const ids=new Map<string,GitObject>();let bytes=0;
   const oidPattern=value.format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
@@ -360,12 +360,60 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
     if(entries.has(key)||!Number.isInteger(entry.stage)||entry.stage<0||entry.stage>3||!['100644','100755','120000','160000'].includes(entry.mode)||!oidPattern.test(entry.oid)||entry.mode!=='160000'&&ids.get(entry.oid)?.type!=='blob')throw new Error('Invalid staged Git original');
     entries.add(key);
   }
+  encodeResolveUndo(value.resolveUndo,value.format,ids);
   for(const item of value.configurationReview){fields(item,['key','value'],['implicitBoolean','source']);if(item.source!==undefined&&item.source!=='config.worktree')throw new Error('Invalid reviewed Git configuration source');if(typeof item.key!=='string'||typeof item.value!=='string'||item.implicitBoolean!==undefined&&(item.implicitBoolean!==true||item.value!=='')||excludedGitKey(item.key)||/:\/\/[^/]*@/.test(item.value))throw new Error('Invalid reviewed Git configuration');safeText(`${item.key}=${item.value}`,'Git configuration');}
   validateSparseReview(value,ids);
 }
 
 type IndexEntry=ReviewedGitUserData['index'][number];
 function indexOrder(a:IndexEntry,b:IndexEntry):number{return Buffer.compare(Buffer.from(a.path),Buffer.from(b.path))||a.stage-b.stage;}
+
+/** One canonical semantic validator/encoder for captured, imported and recreated resolve-undo data. */
+function encodeResolveUndo(value:ReviewedGitUserData['resolveUndo'],format:'sha1'|'sha256',objects?:Map<string,GitObject>):Buffer {
+  if(!Array.isArray(value)||value.length>10000)throw new Error('Invalid bounded Git resolve-undo inventory');
+  const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
+  const parts:Buffer[]=[];let bytes=0,previous:Buffer|undefined;
+  for(const entry of value){
+    fields(entry,['path','stages']);
+    if(typeof entry.path!=='string'||Buffer.byteLength(entry.path)>1024*1024)throw new Error('Invalid Git resolve-undo path bound');
+    indexPath(entry.path);safeText(entry.path,'Git resolve-undo path');
+    if(credentialPath(entry.path))throw new Error('Known credential path in Git resolve-undo; preserve source');
+    const name=Buffer.from(entry.path);
+    if(text(name)!==entry.path||previous&&Buffer.compare(previous,name)>=0)throw new Error('Invalid UTF-8, duplicate or unordered Git resolve-undo path');
+    previous=name;
+    if(!Array.isArray(entry.stages)||!entry.stages.length||entry.stages.length>3)throw new Error('Git resolve-undo requires original present stages');
+    let last=0;
+    for(const stage of entry.stages){
+      fields(stage,['stage','mode','oid']);
+      if(!Number.isInteger(stage.stage)||stage.stage<=last||stage.stage>3||!['100644','100755','120000','160000'].includes(stage.mode)||typeof stage.oid!=='string'||!oidPattern.test(stage.oid)||/^0+$/.test(stage.oid))throw new Error('Invalid Git resolve-undo stage, mode or OID');
+      if(objects&&stage.mode!=='160000'&&objects.get(stage.oid)?.type!=='blob')throw new Error('Missing or mismatched Git resolve-undo blob original');
+      last=stage.stage;
+    }
+    const modes=[1,2,3].map(stage=>entry.stages.find(item=>item.stage===stage)?.mode??'0');
+    const header=Buffer.from(entry.path+'\0'+modes.join('\0')+'\0'),oids=entry.stages.map(stage=>Buffer.from(stage.oid,'hex'));
+    if((bytes+=header.length+oids.reduce((sum,oid)=>sum+oid.length,0))>1024*1024)throw new Error('Git resolve-undo bytes exceed their bound');
+    parts.push(header,...oids);
+  }
+  return Buffer.concat(parts,bytes);
+}
+
+function decodeResolveUndo(data:Buffer,format:'sha1'|'sha256'):ReviewedGitUserData['resolveUndo'] {
+  if(data.length>1024*1024)throw new Error('Git resolve-undo extension exceeds its bound');
+  const result:ReviewedGitUserData['resolveUndo']=[],width=format==='sha1'?20:32;let offset=0;
+  const field=()=>{const nul=data.indexOf(0,offset);if(nul<offset)throw new Error('Unterminated Git resolve-undo field');const value=text(data.subarray(offset,nul));offset=nul+1;return value;};
+  while(offset<data.length){
+    if(result.length>=10000)throw new Error('Git resolve-undo entry count exceeds its bound');
+    const name=field(),modes=[field(),field(),field()],stages:ReviewedGitUserData['resolveUndo'][number]['stages']=[];
+    for(const [i,mode] of modes.entries()){
+      if(mode==='0')continue;
+      if(!['100644','100755','120000','160000'].includes(mode)||offset+width>data.length)throw new Error('Invalid Git resolve-undo mode or truncated object name');
+      stages.push({stage:i+1,mode,oid:data.subarray(offset,offset+width).toString('hex')});offset+=width;
+    }
+    result.push({path:name,stages});
+  }
+  if(!encodeResolveUndo(result,format).equals(data))throw new Error('Noncanonical Git resolve-undo extension');
+  return result;
+}
 
 function sparseKey(key:string):boolean {return /^(?:core\.sparsecheckout(?:cone)?|index\.sparse|extensions\.(?:sparseindex|worktreeconfig))$/i.test(key);}
 
@@ -489,7 +537,7 @@ function validateSparseReview(value:ReviewedGitUserData,objects:Map<string,GitOb
 }
 
 /** Decode bounded v2/v3/v4 originals; never ask Git to read a split index (it freshens shared-file mtime). */
-function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];link?:Buffer;sparse?:true} {
+function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];resolveUndo?:ReviewedGitUserData['resolveUndo'];link?:Buffer;sparse?:true} {
   const width=format==='sha1'?20:32,end=data.length-width;
   if(end<12||data.toString('latin1',0,4)!=='DIRC'||!createHash(format).update(data.subarray(0,end)).digest().equals(data.subarray(end)))throw new Error('Invalid Git index header/checksum');
   const version=data.readUInt32BE(4),count=data.readUInt32BE(8);
@@ -524,7 +572,7 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];l
     if(!['40000','100644','100755','120000','160000'].includes(mode))throw new Error('Unsupported Git index mode');
     entries.push({path:name,mode,oid,stage:(flags>>>12)&3,assumeUnchanged:Boolean(flags&0x8000),intentToAdd:Boolean(extended&0x2000),skipWorktree:Boolean(extended&0x4000)});
   }
-  let link:Buffer|undefined;const seen=new Set<string>();
+  let link:Buffer|undefined,resolveUndo:ReviewedGitUserData['resolveUndo']|undefined;const seen=new Set<string>();
   while(offset<end){
     if(offset+8>end)throw new Error('Truncated Git index extension');
     const signature=data.toString('latin1',offset,offset+4),size=data.readUInt32BE(offset+4);offset+=8;
@@ -532,6 +580,7 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];l
     const body=data.subarray(offset,offset+size);offset+=size;
     if(signature==='link'){link=body;continue;}
     if(signature==='sdir'){if(body.length)throw new Error('Unsupported sparse-index extension payload');continue;}
+    if(signature==='REUC'){resolveUndo=decodeResolveUndo(body,format);continue;}
     if(signature!=='TREE')throw new Error('Unknown or unsupported Git index extension; preserve source');
     // TREE is only a derived cache: validate its complete grammar, then recreate no cache.
     let cursor=0,pending=1,nodes=0;
@@ -547,7 +596,7 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];l
     if(cursor!==body.length)throw new Error('Unconsumed Git cache-tree bytes');
   }
   if(entries.some(entry=>entry.mode==='40000')&&!seen.has('sdir')||seen.has('sdir')&&link)throw new Error('Sparse directory extension missing or combined with split storage');
-  return {entries,...(link?{link}:{}),...(seen.has('sdir')?{sparse:true as const}:{})};
+  return {entries,...(resolveUndo!==undefined?{resolveUndo}:{}),...(link?{link}:{}),...(seen.has('sdir')?{sparse:true as const}:{})};
 }
 
 function splitBitmap(data:Buffer,start:number,bound:number):{bits:Set<number>;end:number} {
@@ -570,27 +619,29 @@ function splitBitmap(data:Buffer,start:number,bound:number):{bits:Set<number>;en
   return {bits,end};
 }
 
-async function captureIndexStorage(gitDir:string,format:'sha1'|'sha256'):Promise<{originals:Buffer;logical:IndexEntry[]}> {
+async function captureIndexStorage(gitDir:string,format:'sha1'|'sha256'):Promise<{originals:Buffer;logical:IndexEntry[];resolveUndo:ReviewedGitUserData['resolveUndo']}> {
   const originals:Array<{name:string;identity:string;data:string}>=[];
+  const owner=(await fs.lstat(gitDir,{bigint:true})).uid;
   const read=async(name:string)=>{
-    const target=path.join(gitDir,name),before=await fs.lstat(target,{bigint:true}),{data}=await regularOriginal(target),after=await fs.lstat(target,{bigint:true});
-    const identity=(stat:typeof before)=>[stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
-    if(identity(before)!==identity(after))throw new Error('Git index storage changed during capture');
-    originals.push({name,identity:identity(after),data:data.toString('base64')});return data;
+    const target=path.join(gitDir,name),before=await fs.lstat(target,{bigint:true}),{data}=await regularOriginal(target,1024*1024,owner),after=await fs.lstat(target,{bigint:true});
+    if(originalIdentity(before)!==originalIdentity(after))throw new Error('Git index storage changed during capture');
+    originals.push({name,identity:originalIdentity(after),data:data.toString('base64')});return data;
   };
   let data:Buffer;
-  try{await fs.lstat(path.join(gitDir,'index'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return {originals:Buffer.from('[]'),logical:[]};throw error;}
+  try{await fs.lstat(path.join(gitDir,'index'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return {originals:Buffer.from('[]'),logical:[],resolveUndo:[]};throw error;}
   data=await read('index');
   const decoded=decodeIndex(data,format);
   const ordered=(entries:IndexEntry[])=>{for(let i=0;i<entries.length;i++)if(!entries[i]!.path||i>0&&indexOrder(entries[i-1]!,entries[i]!)>=0)throw new Error('Invalid Git index path/stage ordering');};
-  if(!decoded.link){ordered(decoded.entries);return {originals:Buffer.from(JSON.stringify(originals)),logical:decoded.entries};}
+  const resolveUndo=decoded.resolveUndo??[];
+  if(!decoded.link){ordered(decoded.entries);return {originals:Buffer.from(JSON.stringify(originals)),logical:decoded.entries,resolveUndo};}
   const width=format==='sha1'?20:32,link=decoded.link;
   if(link.length<width)throw new Error('Truncated split-index link');
   const oid=link.subarray(0,width).toString('hex');let base:IndexEntry[]=[];
   if(!/^0+$/.test(oid)){
     const shared=await read(`sharedindex.${oid}`);
     if(!shared.subarray(shared.length-width).equals(link.subarray(0,width)))throw new Error('Shared Git index identity differs');
-    const parsed=decodeIndex(shared,format);if(parsed.link||parsed.sparse)throw new Error('Nested shared or sparse split Git index refused');base=parsed.entries;
+    // REUC belongs to the selected overlay, never an inherited or merged shared-base extension.
+    const parsed=decodeIndex(shared,format);if(parsed.link||parsed.sparse||parsed.resolveUndo!==undefined)throw new Error('Nested shared, sparse or resolve-undo base Git index refused');base=parsed.entries;
   }
   ordered(base);
   let deleted=new Set<number>(),replaced=new Set<number>();
@@ -604,7 +655,7 @@ async function captureIndexStorage(gitDir:string,format:'sha1'|'sha256'):Promise
   });
   const additions=decoded.entries.slice(replacement);ordered(additions);logical.push(...additions);logical.sort(indexOrder);ordered(logical);
   if(logical.length>10000)throw new Error('Logical split index exceeds its bound');
-  return {originals:Buffer.from(JSON.stringify(originals)),logical};
+  return {originals:Buffer.from(JSON.stringify(originals)),logical,resolveUndo};
 }
 
 type GitAssociation={root:string;gitDir:string;commonDir:string;linked:boolean;evidence:string};
@@ -840,7 +891,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     objects.push({oid:match[1]!,type:match[2] as GitObject['type'],dataBase64:batch.subarray(offset,offset+size).toString('base64')});offset+=size+1;
   }
   const after={...await snapshot(),storage:await captureIndexStorage(gitDir,format)};
-  if(before.raw.evidence!==after.raw.evidence||JSON.stringify(before.sparse)!==JSON.stringify(after.sparse)||!before.storage.originals.equals(after.storage.originals)||JSON.stringify(before.storage.logical)!==JSON.stringify(after.storage.logical))throw new Error('Git selection changed during capture; preserve source and retry');
+  if(before.raw.evidence!==after.raw.evidence||JSON.stringify(before.sparse)!==JSON.stringify(after.sparse)||!before.storage.originals.equals(after.storage.originals)||JSON.stringify(before.storage.logical)!==JSON.stringify(after.storage.logical)||JSON.stringify(before.storage.resolveUndo)!==JSON.stringify(after.storage.resolveUndo))throw new Error('Git selection changed during capture; preserve source and retry');
   const finalAssociation=await gitAssociation(root);if(!finalAssociation||finalAssociation.evidence!==association.evidence)throw new Error('Git association changed after capture');
   const originalIndex:IndexEntry[]=before.storage.logical;
   const sparseSnapshot=before.sparse;
@@ -857,7 +908,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
       exclusions.push('Git configuration entry excluded: recognizable credential or URL userinfo');
     }
   }
-  const result:ReviewedGitUserData={version:1,format,objects,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')).map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),sparseReview,configurationReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,objects,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')).map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,configurationReview,exclusions};
   // Verify every captured object and graph before deriving any missing logical index entries.
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
@@ -890,7 +941,9 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
       entries.push(Buffer.concat([body,Buffer.alloc((8-body.length%8)%8)]));
     }
     const header=Buffer.alloc(12);header.write('DIRC');header.writeUInt32BE(extendedIndex?3:2,4);header.writeUInt32BE(entries.length,8);
-    const index=Buffer.concat([header,...entries]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
+    const undo=encodeResolveUndo(value.resolveUndo,value.format),extension=Buffer.alloc(undo.length?8:0);
+    if(undo.length){extension.write('REUC');extension.writeUInt32BE(undo.length,4);}
+    const index=Buffer.concat([header,...entries,extension,undo]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
     await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
   }catch(error){throw new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error});}
 }
