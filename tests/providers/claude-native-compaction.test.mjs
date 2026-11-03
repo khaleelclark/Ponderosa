@@ -154,7 +154,9 @@ for await (const line of createInterface({input:process.stdin})) {
       onRuntimeSpawned: handle => handles.push(handle), onRuntimeRootExit: () => {} });
     const catalog = await session.capabilities();
     assert.equal(catalog.commands.find(command => command.name === 'compact').invocation, 'runtime');
-    const compact = await session.invokeCommand('compact');
+    const pendingCompact = session.invokeCommand('compact');
+    await assert.rejects(()=>session.startTurn({prompt:'must not overlap compact'}),/active or uncertain/);
+    const compact = await pendingCompact;
     assert.equal(compact.outcome, 'completed');
     assert.equal(compact.contextUsage.usedTokens, 10000);
     assert.equal(handles.length, 1);
@@ -201,4 +203,40 @@ for await (const line of createInterface({input:process.stdin})) {
     assert.equal(session.initialized,true,'the control initialization response must have arrived');
     await assert.rejects(access(marker), {code:'ENOENT'});
   } finally {await session?.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('model change refuses compaction even if an old session init arrives late', async () => {
+  const session=Object.create(ClaudeStreamSession.prototype), frames=[];
+  Object.assign(session,{engineAgentId:sessionId,opts:{resumeSessionId:sessionId},selectedModel:'claude-old',
+    fileHistory:new ClaudeFileHistory(sessionId,async()=>{}),taskLifetime:new ClaudeTaskLifetime(sessionId),
+    controls:{uncertain:false,request:async frame=>{frames.push(frame);return {};}},
+    sessionInitialization:{...init,model:'claude-old'},initialized:true,nativeCompactAdvertised:true,
+    initialization:Promise.resolve(),writeInput:async (...args)=>frames.push({input:args})});
+  await session.invokeCommand('native-model','claude-new');
+  assert.equal(session.selectedModel,'claude-new');
+  // An uncorrelated init with the same session can arrive after the ACK.
+  session.sessionInitialization={...init,model:'claude-old'};
+  await assert.rejects(()=>session.invokeCommand('compact'),/reopen the retained session/);
+  const fallback=await session.capabilities();
+  assert.equal(fallback.commands.find(command=>command.name==='compact').status,'unavailable');
+  assert.match(fallback.commands.find(command=>command.name==='compact').unavailableReason,/reopen the retained session/);
+  session.capabilitiesSnapshot={...fallback,commands:[{name:'compact',description:'Native',source:'adapter-implemented',acceptsArguments:false,insertText:'/compact',status:'available',invocation:'runtime'}]};
+  assert.equal((await session.capabilities()).commands.find(command=>command.name==='compact').status,'unavailable');
+  session.capabilitiesSnapshot={...fallback,commands:[{name:'compact',description:'User skill',source:'skill',acceptsArguments:true,insertText:'/compact',status:'available',invocation:'prompt'}]};
+  assert.equal((await session.capabilities()).commands.find(command=>command.name==='compact').status,'available','a custom skill must not be masked');
+  assert.deepEqual(frames,[{subtype:'set_model',model:'claude-new'}]);
+  assert.equal(session.nativeCommand,undefined);
+});
+
+test('ordinary turn rechecks command ownership after model acknowledgement', async () => {
+  const session=Object.create(ClaudeStreamSession.prototype), writes=[];
+  const otherCommand={succeeded:false};
+  Object.assign(session,{engineAgentId:sessionId,opts:{resumeSessionId:sessionId},selectedModel:'old',
+    fileHistory:new ClaudeFileHistory(sessionId,async()=>{}),taskLifetime:new ClaudeTaskLifetime(sessionId),
+    controls:{uncertain:false},contextObservations:{beginTurn(){},endTurn(){}},seedHistory:[],
+    setLiveModel:async()=>{session.nativeCommand=otherCommand;},
+    writeInputFrame:async frame=>writes.push(frame)});
+  await assert.rejects(()=>session.startTurn({prompt:'must wait',model:'new'}),/active or uncertain/);
+  assert.equal(session.nativeCommand,otherCommand);
+  assert.deepEqual(writes,[]);
 });

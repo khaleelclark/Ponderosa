@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AgentEvent,
   EngineCapabilities,
+  EngineCommand,
   EngineModelOption,
   OpenRuntimeSessionOptions,
   RuntimeSession,
@@ -64,6 +65,8 @@ export function claudeCapabilityRestrictionArgs(
   return disallowed.size ? ["--disallowedTools", [...disallowed].sort().join(",")] : [];
 }
 
+const MODEL_REOPEN_COMPACT_REASON = "Claude model changed in this session; reopen the retained session before compaction to verify the model.";
+
 export class ClaudeStreamSession implements RuntimeSession {
   private replayFraming?: ClaudeReplayFraming;
   readonly engineAgentId: string;
@@ -79,6 +82,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private nativeUsage?: RuntimeContextUsage;
   private usageInvalidated = false;
   private sessionInitialization?: unknown;
+  private modelChangedSinceOpen = false;
   private sessionInitializationReady!: () => void;
   private sessionInitializationWait = new Promise<void>(resolve => { this.sessionInitializationReady = resolve; });
   private initialized = false;
@@ -244,6 +248,12 @@ export class ClaudeStreamSession implements RuntimeSession {
       frame = this.inputFrame(prompt, turnId, input.inputFiles);
     }
     input.assertCurrent?.();
+    // A native command or control can acquire ownership while a model change
+    // is awaiting its acknowledgement. Never erase or overlap that work.
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded ||
+        this.historyActive || this.fileHistory.uncertain || this.liveControlActive || this.controls.uncertain) {
+      throw new Error("Claude has active or uncertain native work");
+    }
     // Validation and any asynchronous model acknowledgement precede lifetime changes.
     this.nativeCommand = undefined;
     this.nativeUsage = undefined;
@@ -287,8 +297,12 @@ export class ClaudeStreamSession implements RuntimeSession {
       source: "adapter-implemented" as const, acceptsArguments: name !== "native-context-usage", insertText: `/${name}`,
       invocation: "runtime" as const, status: "available" as const,
     })).filter(control => !this.capabilitiesSnapshot?.commands.some(command => command.name === control.name && (command.source === "skill" || command.source === "plugin")));
+    const availability = (command: EngineCommand): EngineCommand =>
+      this.modelChangedSinceOpen && command.name === "compact" && command.source === "adapter-implemented" && command.invocation === "runtime"
+        ? { ...command, status: "unavailable", unavailableReason: MODEL_REOPEN_COMPACT_REASON }
+        : command;
     if (this.capabilitiesSnapshot) return { ...this.capabilitiesSnapshot, commands: [
-      ...this.capabilitiesSnapshot.commands.filter(command => !nativeControls.some(control => control.name === command.name)), ...nativeControls] };
+      ...this.capabilitiesSnapshot.commands.filter(command => !nativeControls.some(control => control.name === command.name)).map(availability), ...nativeControls] };
     return {
       steering: true,
       persistentSessions: true,
@@ -300,7 +314,8 @@ export class ClaudeStreamSession implements RuntimeSession {
       commands: this.initialized && this.nativeCompactAdvertised && this.opts.resumeSessionId ? [{
         name: "compact", description: "Compact retained Claude context with verified native receipts",
         source: "adapter-implemented", acceptsArguments: false, insertText: "/compact",
-        invocation: "runtime", status: "available",
+        invocation: "runtime", status: this.modelChangedSinceOpen ? "unavailable" : "available",
+        ...(this.modelChangedSinceOpen ? {unavailableReason: MODEL_REOPEN_COMPACT_REASON} : {}),
       }, ...nativeControls] : nativeControls,
       mcpServers: [],
       composerCapabilities: [],
@@ -343,6 +358,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
     if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude control is active or uncertain");
     if (name !== "compact" || argumentsText?.trim()) throw new Error("Claude native compact accepts no arguments");
+    if (this.modelChangedSinceOpen) throw new Error(MODEL_REOPEN_COMPACT_REASON);
     if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded) {
       throw new Error("Claude has active or uncertain native work; do not repeat compaction");
     }
@@ -368,7 +384,9 @@ export class ClaudeStreamSession implements RuntimeSession {
         } finally { if (readyTimer) clearTimeout(readyTimer); }
       }
       if (this.sessionInitialization) command.observe(this.sessionInitialization);
-      if (this.closed || command.cancelled || !this.initialized || !this.nativeCompactAdvertised ||
+      if (this.closed || this.active || this.taskLifetime.ownsRun || this.historyActive || this.fileHistory.uncertain ||
+          this.liveControlActive || this.controls.uncertain || this.nativeCommand !== command ||
+          command.cancelled || !this.initialized || !this.nativeCompactAdvertised ||
           !this.sessionInitialization ||
           this.capabilitiesSnapshot?.commands.some(candidate => candidate.name === "compact" && candidate.invocation !== "runtime")) {
         command.fail(); return unknown();
@@ -439,6 +457,9 @@ export class ClaudeStreamSession implements RuntimeSession {
     try {
       await this.controls.request({ subtype: "set_model", model });
       this.selectedModel = model;
+      // Native init carries no correlation to a live set_model acknowledgement.
+      // A late old-model init cannot prove the current model for compaction.
+      this.modelChangedSinceOpen = true;
       this.usageInvalidated = true;
       this.nativeUsage = undefined;
       // Require a fresh provider init before compaction; do not fabricate model evidence.
