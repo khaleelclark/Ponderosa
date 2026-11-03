@@ -5,12 +5,35 @@ import {captureFinalResourceExitEnvelope} from './branch-generation-exit-capture
 import {captureFinalProviderStarts,verifyFinalProviderStarts} from './provider-start-journal.js';
 import {captureFinalProviderExits,verifyFinalProviderExits,verifyRetainedProviderExitEvidence} from './provider-exit-evidence.js';
 import {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+import {issuedResourceCapture} from './branch-issued-resource-capture.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {captureGenerationOneHost,generationOneEvidence} from './branch-resource-generation-one.js';
 type Row=Record<string,any>;
 export const finalResourceExitKey=(stepId:string,generation=0)=>`resource-final-exit:${stepId}:${generation}`;
+function issuedCaptureCommands(db:Database.Database,executionId:string,stepId:string):string[]{
+ const prefix='issued-resource-capture:';
+ return (db.prepare("SELECT command_key,result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-resource-capture:%'").all(executionId) as Row[])
+  .filter(row=>{const journal=JSON.parse(row.result_json);return journal.source?.intent?.resourceStepId===stepId
+    &&!db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-abandoned:${payloadHash(row.command_key)}`);})
+  .map(row=>row.command_key.slice(prefix.length));
+}
+export function finalResourceIssuedCheckpointRequired(db:Database.Database,executionId:string,stepId:string):boolean{
+ if(issuedCaptureCommands(db,executionId,stepId).length)return true;
+ return (db.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=?').all(executionId) as Row[]).some(row=>{
+  const snapshot=JSON.parse(row.snapshot_json);
+  return snapshot.captureKind==='issued_resource'&&snapshot.selected?.resources?.some((resource:Row)=>resource.step_execution_id===stepId);
+ });
+}
+function issuedCheckpoint(db:Database.Database,executionId:string,stepId:string){
+ // A retained journal remains an obligation even if its committed snapshot goes missing.
+ for(const command of issuedCaptureCommands(db,executionId,stepId))if(issuedResourceCapture(db,executionId,stepId,command)?.state!=='retained')throw Error('Issued resource checkpoint capture remains unresolved');
+ return (db.prepare('SELECT id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? ORDER BY id DESC').all(executionId) as Row[]).find(row=>{
+  const snapshot=JSON.parse(row.snapshot_json);
+  return snapshot.captureKind==='issued_resource'&&snapshot.selected?.resources?.some((resource:Row)=>resource.step_execution_id===stepId);
+ });
+}
 function scope(db:Database.Database,stepId:string){
  const r=db.prepare('SELECT r.*,e.branch_id,e.version_id,e.binding_revision_id,e.configuration_json,e.parent_execution_id,e.parent_attempt_id,e.call_depth,e.admission_source,e.provenance_json FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepId) as Row|undefined;
  if(!r||!Number.isSafeInteger(r.generation)||r.generation<0||r.retry_draining!==0||!['active','draining'].includes(r.state)||r.parent_execution_id||r.parent_attempt_id||r.call_depth!==0||r.admission_source!=='manual'||JSON.parse(r.provenance_json).source!=='manual')throw Error('Original standalone manual final resource required');
@@ -30,6 +53,9 @@ function scope(db:Database.Database,stepId:string){
  const currentSelected=retry?.selected??selected,host=retry?.host??captureBranchHostCut(db,r.execution_id,currentSelected);
  if(!host)throw Error('Final resource replay host unavailable');
  encodeIssuedResourceContinuation(db,r.execution_id,currentSelected,host,false,retry?.generationRetry);
+ const checkpoint=issuedCheckpoint(db,r.execution_id,stepId);
+ if(!checkpoint&&finalResourceIssuedCheckpointRequired(db,r.execution_id,stepId))throw Error('Committed issued resource checkpoint unavailable');
+ if(checkpoint)readIssuedResourceContinuation(db,r.execution_id,checkpoint.id,checkpoint.content_hash);
  return {executionId:r.execution_id,stepId,generation:r.generation,projectId:chat.project_id,chatId:r.chat_id,agentIds:ids,creationKey:r.creation_key,branchId:r.branch_id,versionId:r.version_id,bindingRevisionId:r.binding_revision_id,configurationSha256:payloadHash(JSON.parse(r.configuration_json))};
 }
 export function fenceFinalResourceExit(db:Database.Database,stepId:string){
@@ -46,7 +72,7 @@ export function captureFinalResourceExit(db:Database.Database,journal:ReturnType
  const envelope=captureFinalResourceExitEnvelope(db,journal),i=journal.identity;
  const continuationSelected=i.generation>0?generationOneEvidence(db,envelope.selected).selected:envelope.selected;
  const latestContinuation=encodeIssuedResourceContinuation(db,i.executionId,continuationSelected,envelope.hostDependencies,false,envelope.generationRetry);
- const selectedRow=(db.prepare('SELECT id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? ORDER BY id DESC').all(i.executionId) as Row[]).find(row=>(()=>{const snapshot=JSON.parse(row.snapshot_json);return snapshot.captureKind==='issued_resource'&&snapshot.selected?.resources?.some((resource:Row)=>resource.step_execution_id===i.stepId);})());
+ const selectedRow=issuedCheckpoint(db,i.executionId,i.stepId);
  if(!selectedRow)throw Error('Actual committed issued-resource selected checkpoint required');
  readIssuedResourceContinuation(db,i.executionId,selectedRow.id,selectedRow.content_hash);
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(i.executionId) as Row;

@@ -1,4 +1,4 @@
-import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit} from './branch-final-resource-exit.js';
+import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit,finalResourceIssuedCheckpointRequired} from './branch-final-resource-exit.js';
 import {bundleParentInput,bundleCallInput,inheritedBundleCallInput,remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
 import {readRetainedDestinationSource} from './coordination-v3-retained-destination-source.js';
 import {portableScriptBundlesSupported} from './branch-parallel-continuation.js';
@@ -2242,9 +2242,7 @@ export class BranchStore {
   finalResourceExitRequired(stepId:string):boolean {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepId);
     if(!r||r.retry_draining===1)return false;
-    return this.rows('SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=?',r.execution_id).some(row=>{
-      const s=JSON.parse(row.snapshot_json);return s.captureKind==='issued_resource'&&s.selected?.resources?.some((resource:Row)=>resource.step_execution_id===stepId);
-    });
+    return finalResourceIssuedCheckpointRequired(this.sqlite,r.execution_id,stepId);
   }
   resourceRetryGeneration(stepId:string):number|undefined {const r=this.row('SELECT generation,retry_draining FROM branch_resources WHERE step_execution_id=?',stepId);return r?.retry_draining===1?r.generation:undefined;}
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
