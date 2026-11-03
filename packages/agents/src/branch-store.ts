@@ -761,7 +761,12 @@ export class BranchStore {
       return {sourceExecutionId:o.executionId,branchId:destination(source.sourceBranchId),selectedState:o.selected.execution[0].state,gates:{selected:this.foreignGateEvidence(o.selected,definition),latest:this.foreignGateEvidence(latest,definition)},...(definition.state?{sharedState:{channels:definition.state,selected:branchSharedState(definition,o.selected.steps,o.selected.sealedResults),latest:branchSharedState(definition,latest.steps,latest.sealedResults)}}:{})};
     });
     const {definition,...rootChoices}=root;
-    const value={schema:'ponderosa.branch-foreign-review.v1' as const,selection,importedExecutionId:cut.importedId,manifestSha256:cut.saved.data.sha256,ownerSha256:cut.owner.sha256,checkpoint:cut.snapshot,nativeMaps:r,generationChain:cut.resolved.chain,...rootChoices,definitionSha256:payloadHash(definition),tree:{branches,owners},custody:'not_applicable' as const,engine:'node' as const,secretChoice:'none' as const,accessChoice:'current_destination' as const};
+    const generationChain:NonNullable<import('@ponderosa/core').BranchForeignContinuationReview['generationChain']>=cut.resolved.chain.map(row=>{
+      const {manifestSha256,ownerSha256,executionId}=row;
+      if(typeof manifestSha256!=='string'||! /^[a-f0-9]{64}$/.test(manifestSha256)||typeof ownerSha256!=='string'||! /^[a-f0-9]{64}$/.test(ownerSha256)||typeof executionId!=='string'||!executionId)throw Error('Held tree generation review evidence is malformed');
+      return {manifestSha256,ownerSha256,executionId};
+    });
+    const value={schema:'ponderosa.branch-foreign-review.v1' as const,selection,importedExecutionId:cut.importedId,manifestSha256:cut.saved.data.sha256,ownerSha256:cut.owner.sha256,checkpoint:cut.snapshot,nativeMaps:r,generationChain,...rootChoices,definitionSha256:payloadHash(definition),tree:{branches,owners},custody:'not_applicable' as const,engine:'node' as const,secretChoice:'none' as const,accessChoice:'current_destination' as const};
     return {...value,reviewSha256:this.foreignReviewHash(value)};
   }
   private foreignReviewHash(value:Omit<import('@ponderosa/core').BranchForeignContinuationReview,'reviewSha256'>):string {
@@ -770,7 +775,7 @@ export class BranchStore {
   }
   private continueForeignTree(branchId:string,importedId:string,input:import('@ponderosa/core').BranchForeignContinuationInput,review:import('@ponderosa/core').BranchForeignContinuationReview,now:string):import('@ponderosa/core').BranchForeignContinuationReceipt {
     const cut=this.foreignTreeCut(branchId,review.selection),ids:Record<string,string>=Object.fromEntries(treeIds(cut.c.owners).map(id=>[id,randomUUID()])),pending:Row[]=[...cut.c.owners],ordered:Row[]=[];
-    while(pending.length){const index=pending.findIndex(o=>!o.selected.execution[0].parent_execution_id||ordered.some(p=>p.executionId===o.selected.execution[0].parent_execution_id));if(index<0)throw Error('Tree owner cycle');ordered.push(pending.splice(index,1)[0]);}
+    while(pending.length){const index=pending.findIndex(o=>!o.selected.execution[0].parent_execution_id||ordered.some(p=>p.executionId===o.selected.execution[0].parent_execution_id));if(index<0)throw Error('Tree owner cycle');const [owner]=pending.splice(index,1);if(!owner)throw Error('Tree owner ordering lost its selected owner');ordered.push(owner);}
     for(const o of ordered)for(const item of o.selected.items)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
     const values:BundleValueMap={owners:cut.c.owners,ids};
     const treeOwners:NonNullable<import('@ponderosa/core').BranchForeignContinuationReceipt['treeOwners']>={};
@@ -993,8 +998,8 @@ export class BranchStore {
       const next=this.acceptInput(branchId,`foreign-continuation:${importedId}:${payloadHash(input.commandKey)}`,cut.e.input_text,payloadHash({input:branchText(cut.e.input_text),source:'manual'}),
         {source:'foreign_checkpoint_continuation',importedExecutionId:importedId,reviewSha256:review.reviewSha256,commandKey:input.commandKey},now,'manual');
       if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Current continuation capacity/budget admission unavailable');
-      const ids=Object.fromEntries(branchContinuationIds(cut.selected).map(id=>[id,randomUUID()]));
-      for(const item of cut.selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
+      const ids:Record<string,string>=Object.fromEntries(branchContinuationIds(cut.selected).map(id=>[id,randomUUID()]));
+      for(const item of cut.selected.items!){const invocation=ids[item.map_invocation_id];if(!invocation)throw Error('Selected Map invocation has no reserved continuation identity');ids[item.id]=`${invocation}:${item.item_index}`;}
       const restored=remapBranchFrontier(cut.selected,ids,cut.e.id,next.id);
       insertBranchFrontier(this.sqlite,next.id,restored,now);
       for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,next.id,g.prompt_text,g.purpose,now,now);
