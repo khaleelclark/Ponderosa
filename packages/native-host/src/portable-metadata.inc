@@ -39,21 +39,21 @@ napi_value Failure(napi_env env, const char* code, const std::string& message) {
   ThrowCode(env,code,message); return nullptr;
 }
 #ifdef __linux__
-struct Target { int fd; uint64_t dev, ino; bool directory; uint64_t links=1; };
+struct Target { int fd; uint64_t dev, ino; bool directory; uint64_t links=1; bool fifo=false; };
 Target ReadTarget(napi_env env, napi_value input) {
   Target t;
   t.fd = Integer(env,Property(env,input,"fd"),INT_MAX);
   t.dev = Identity(env,Property(env,input,"expectedDevice")); t.ino = Identity(env,Property(env,input,"expectedInode"));
   const std::string kind = String(env,Property(env,input,"kind"));
-  if (kind != "file" && kind != "directory") throw std::runtime_error("unsupported target kind");
+  if (kind != "file" && kind != "directory" && kind != "fifo") throw std::runtime_error("unsupported target kind");
   bool hasLinks=false;
   if(napi_has_named_property(env,input,"expectedLinkCount",&hasLinks)!=napi_ok)throw std::runtime_error("invalid selected link count");
   if(hasLinks){t.links=Identity(env,Property(env,input,"expectedLinkCount"));if(t.links<1||t.links>10000)throw std::runtime_error("selected link count exceeds its bound");}
-  t.directory = kind == "directory"; return t;
+  t.directory = kind == "directory";t.fifo=kind=="fifo";if(t.fifo&&t.links!=1)throw std::runtime_error("FIFO metadata requires one exact held name");return t;
 }
 bool Matches(const Target& t, const struct stat& s) {
   return uint64_t(s.st_dev) == t.dev && uint64_t(s.st_ino) == t.ino &&
-      (t.directory ? S_ISDIR(s.st_mode) : S_ISREG(s.st_mode) && uint64_t(s.st_nlink) == t.links);
+      (t.directory ? S_ISDIR(s.st_mode) : t.fifo ? S_ISFIFO(s.st_mode)&&s.st_nlink==1 : S_ISREG(s.st_mode) && uint64_t(s.st_nlink) == t.links);
 }
 struct stat Stat(const Target& t) {
   struct stat s{};
@@ -66,15 +66,54 @@ bool SameObservation(const struct stat& a, const struct stat& b) {
       a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
       a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
 }
+// O_PATH descriptors never open a FIFO data endpoint. The fixed procfs magic
+// descriptor path resolves this exact still-owned fd; no user path is used.
+// Linux fd-form xattr calls filter O_PATH, including xattrat's empty-name arm.
+bool MetadataOnly(int fd) {
+  const int flags=fcntl(fd,F_GETFL);if(flags<0)throw std::runtime_error("metadata descriptor flags unavailable");
+#ifdef O_PATH
+  return (flags&O_PATH)==O_PATH;
+#else
+  return false;
+#endif
+}
+std::string MetadataPath(int fd) {
+  struct statfs filesystem{};struct stat held{},resolved{};
+  const std::string pathname="/proc/self/fd/"+std::to_string(fd);
+  if(statfs("/proc/self/fd",&filesystem)!=0||filesystem.f_type!=PROC_SUPER_MAGIC||fstat(fd,&held)!=0||stat(pathname.c_str(),&resolved)!=0||
+      held.st_dev!=resolved.st_dev||held.st_ino!=resolved.st_ino||(held.st_mode&S_IFMT)!=(resolved.st_mode&S_IFMT))
+    throw std::runtime_error("held procfs metadata descriptor path unavailable or differs");
+  return pathname;
+}
+ssize_t MetadataGet(int fd,const char* name,void* value,size_t size) {
+  return MetadataOnly(fd)?getxattr(MetadataPath(fd).c_str(),name,value,size):fgetxattr(fd,name,value,size);
+}
+ssize_t MetadataList(int fd,char* value,size_t size) {
+  return MetadataOnly(fd)?listxattr(MetadataPath(fd).c_str(),value,size):flistxattr(fd,value,size);
+}
+int MetadataSet(int fd,const char* name,const void* value,size_t size) {
+  return MetadataOnly(fd)?setxattr(MetadataPath(fd).c_str(),name,value,size,0):fsetxattr(fd,name,value,size,0);
+}
+int MetadataRemove(int fd,const char* name) {
+  return MetadataOnly(fd)?removexattr(MetadataPath(fd).c_str(),name):fremovexattr(fd,name);
+}
+int MetadataMode(int fd,uint32_t mode) {
+  if(!MetadataOnly(fd))return fchmod(fd,mode);
+#if defined(SYS_fchmodat2) && defined(AT_EMPTY_PATH)
+  return syscall(SYS_fchmodat2,fd,"",mode,AT_EMPTY_PATH);
+#else
+  errno=ENOSYS;return -1;
+#endif
+}
 struct Attribute { std::string name, value; int error = 0; bool absent = false; };
 Attribute ReadAttribute(int fd, const std::string& name) {
   Attribute a; a.name = name;
-  const ssize_t size = fgetxattr(fd,name.c_str(),nullptr,0);
+  const ssize_t size = MetadataGet(fd,name.c_str(),nullptr,0);
   if (size < 0) { a.error = errno; a.absent = errno == ENODATA; return a; }
   if (size > ssize_t(kValue)) { a.error = E2BIG; return a; }
   // A zero-length value still needs a nonzero-size read to detect concurrent growth.
   std::vector<char> bytes(std::max<ssize_t>(size,1));
-  const ssize_t got = fgetxattr(fd,name.c_str(),bytes.data(),bytes.size());
+  const ssize_t got = MetadataGet(fd,name.c_str(),bytes.data(),bytes.size());
   if (got < 0) { a.error = errno; return a; }
   if (got != size) { a.error = EAGAIN; return a; }
   a.value.assign(bytes.data(),got); return a;
@@ -82,11 +121,11 @@ Attribute ReadAttribute(int fd, const std::string& name) {
 struct Inventory { std::vector<Attribute> attributes; int error = 0; };
 Inventory ReadInventory(int fd) {
   Inventory out;
-  const ssize_t size = flistxattr(fd,nullptr,0);
+  const ssize_t size = MetadataList(fd,nullptr,0);
   if (size < 0) { out.error = errno; return out; }
   if (size > ssize_t(kNames)) { out.error = E2BIG; return out; }
   std::vector<char> bytes(std::max<ssize_t>(size,1));
-  const ssize_t got = flistxattr(fd,bytes.data(),bytes.size());
+  const ssize_t got = MetadataList(fd,bytes.data(),bytes.size());
   if (got < 0 || got != size) { out.error = got < 0 ? errno : EAGAIN; return out; }
   size_t offset = 0, total = 0;
   while (offset < size_t(got)) {
@@ -156,6 +195,7 @@ napi_value Inspect(napi_env env,const Target& target,const std::string& qualifie
   const auto after=Stat(target);
   if(!SameObservation(before,after))throw std::runtime_error("metadata changed during inspection");
   napi_value out=Object(env),identity=ExactMetadataEvidence(env,after);
+  if(target.fifo)Set(env,identity,"kind",Text(env,"fifo"));
   Set(env,identity,"ownerId",Number(env,after.st_uid));Set(env,identity,"groupId",Number(env,after.st_gid));
   Set(env,out,"supported",Boolean(env,true));Set(env,out,"identity",identity);Set(env,out,"sourceQualifier",Text(env,qualifier));
   Set(env,out,"allNamespacesComplete",Boolean(env,false));
@@ -218,13 +258,19 @@ napi_value InspectExtendedMetadata(napi_env env,napi_callback_info info) {
 #endif
 }
 
-napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
+napi_value ApplyExtendedMetadataInput(napi_env env,napi_value input) {
 #ifdef __linux__
   using namespace portable_metadata;
   bool attempted=false;Target target{};std::string qualifier,destinationQualifier;
   try {
-    size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);if(argc!=1)throw std::runtime_error("one restore input required");
-    auto input=args[0];target=ReadTarget(env,input);auto before=Stat(target);
+    target=ReadTarget(env,input);auto before=Stat(target);
+    if(target.fifo){
+#if defined(SYS_fchmodat2) && defined(AT_EMPTY_PATH)
+      errno=0;if(syscall(SYS_fchmodat2,-1,"",0,AT_EMPTY_PATH)!=-1||errno!=EBADF)throw std::runtime_error("descriptor-only FIFO chmod support unavailable before metadata mutation");
+#else
+      throw std::runtime_error("descriptor-only FIFO chmod requires fchmodat2/AT_EMPTY_PATH");
+#endif
+    }
     if(!Literal(env,input,"restore","replace-user-and-posix-acl"))throw std::runtime_error("explicit exact selected restore required");
     qualifier=String(env,Property(env,input,"sourceQualifier"));if(qualifier.empty())throw std::runtime_error("source qualifier required");
     destinationQualifier=String(env,Property(env,input,"destinationQualifier"));if(destinationQualifier.empty())throw std::runtime_error("destination host/user namespace qualifier required");
@@ -246,6 +292,7 @@ napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
     if(!target.directory && !defaults.absent)throw std::runtime_error("default ACL requires directory");
     auto attrs=Property(env,input,"attributes");array=false;
     if(napi_is_array(env,attrs,&array)!=napi_ok || !array || napi_get_array_length(env,attrs,&count)!=napi_ok || count>kCount)throw std::runtime_error("invalid bounded user attributes");
+    if(target.fifo&&count)throw std::runtime_error("Linux VFS forbids user attributes on FIFO; no metadata changed");
     Inventory wanted;size_t total=access.value.size()+defaults.value.size();
     for(uint32_t i=0;i<count;++i){napi_value item;napi_get_element(env,attrs,i,&item);Attribute a;
       a.name=Buffer(env,Property(env,item,"name"),255);a.value=Buffer(env,Property(env,item,"value"),kValue);
@@ -267,11 +314,11 @@ napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
     std::sort(wanted.attributes.begin(),wanted.attributes.end(),[](const Attribute& a,const Attribute& b){return a.name<b.name;});
     if(!SameObservation(before,Stat(target)))throw std::runtime_error("destination changed before mutation");
     attempted=true;
-    auto remove=[&](const std::string& name){if(fremovexattr(target.fd,name.c_str())!=0 && errno!=ENODATA)throw std::runtime_error(std::string("selected xattr removal failed: ")+std::strerror(errno));};
+    auto remove=[&](const std::string& name){if(MetadataRemove(target.fd,name.c_str())!=0 && errno!=ENODATA)throw std::runtime_error(std::string("selected xattr removal failed: ")+std::strerror(errno));};
     for(const auto& a:original.attributes)if(a.name.compare(0,5,"user.")==0 && std::none_of(wanted.attributes.begin(),wanted.attributes.end(),[&](const Attribute& w){return w.name==a.name;}))remove(a.name);
-    for(const auto& a:wanted.attributes)if(a.name.compare(0,5,"user.")==0 && fsetxattr(target.fd,a.name.c_str(),a.value.data(),a.value.size(),0)!=0)throw std::runtime_error(std::string("selected user xattr application failed: ")+std::strerror(errno));
-    for(const auto& a:{access,defaults}) {if(a.absent)remove(a.name);else if(fsetxattr(target.fd,a.name.c_str(),a.value.data(),a.value.size(),0)!=0)throw std::runtime_error(std::string("mapped POSIX ACL application failed: ")+std::strerror(errno));}
-    if(fchmod(target.fd,mode)!=0)throw std::runtime_error(std::string("ACL-compatible mode application failed: ")+std::strerror(errno));
+    for(const auto& a:wanted.attributes)if(a.name.compare(0,5,"user.")==0 && MetadataSet(target.fd,a.name.c_str(),a.value.data(),a.value.size())!=0)throw std::runtime_error(std::string("selected user xattr application failed: ")+std::strerror(errno));
+    for(const auto& a:{access,defaults}) {if(a.absent)remove(a.name);else if(MetadataSet(target.fd,a.name.c_str(),a.value.data(),a.value.size())!=0)throw std::runtime_error(std::string("mapped POSIX ACL application failed: ")+std::strerror(errno));}
+    if(MetadataMode(target.fd,mode)!=0)throw std::runtime_error(std::string("ACL-compatible mode application failed: ")+std::strerror(errno));
     const auto after=Stat(target);if(after.st_uid!=owner || after.st_gid!=group || (after.st_mode&07777)!=mode || !SameInventory(wanted,ReadInventory(target.fd)))throw std::runtime_error("exact extended metadata readback differs");
     const auto finalAccess=ReadAttribute(target.fd,access.name),finalDefault=ReadAttribute(target.fd,defaults.name);
     auto same=[](const Attribute& a,const Attribute& b){return a.absent ? b.absent:!b.error && b.value==a.value;};
@@ -285,6 +332,12 @@ napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
 #else
   return portable_metadata::Failure(env,"ERR_PORTABLE_METADATA_UNSUPPORTED","Extended metadata application requires Linux; no metadata changed");
 #endif
+}
+
+napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
+  size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+  if(argc!=1)return portable_metadata::Failure(env,"ERR_PORTABLE_METADATA_PREFLIGHT","one restore input required");
+  return ApplyExtendedMetadataInput(env,args[0]);
 }
 
 namespace portable_metadata {
@@ -330,6 +383,63 @@ napi_value NodeEvidence(napi_env env,const Parent& p,const struct stat& s) {
 #endif
 }
 
+napi_value InspectPersistentNodeMetadata(napi_env env,napi_callback_info info) {
+#if defined(__linux__) && defined(O_PATH)
+  using namespace portable_metadata;
+  try {
+    size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+    if(argc!=1)throw std::runtime_error("one persistent metadata input required");
+    const auto parent=ReadParent(env,args[0]);CheckParent(parent);DescriptorSet owned;
+    const int fd=openat(parent.fd,parent.leaf.c_str(),O_PATH|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0)throw std::runtime_error(std::string("metadata-only FIFO open failed: ")+std::strerror(errno));owned.values.push_back(fd);
+    const auto before=ReadNode(parent,fd);
+    if(!S_ISFIFO(before.st_mode))throw std::runtime_error("only FIFO extended metadata is supported");
+    const auto qualifier=String(env,Property(env,args[0],"sourceQualifier"));
+    if(qualifier.empty())throw std::runtime_error("source-qualified FIFO metadata required");
+    Target target{fd,uint64_t(before.st_dev),uint64_t(before.st_ino),false,1,true};
+    const auto result=Inspect(env,target,qualifier);
+    const auto after=ReadNode(parent,fd);
+    if(!SameObservation(before,after))throw std::runtime_error("FIFO metadata changed during capture");
+    return result;
+  }catch(const std::exception& e){return Failure(env,"ERR_PORTABLE_METADATA_INSPECT",e.what());}
+#else
+  return portable_metadata::Failure(env,"ERR_PORTABLE_METADATA_UNSUPPORTED","FIFO extended metadata requires Linux O_PATH and exact procfs fd metadata; no content opened");
+#endif
+}
+
+napi_value ApplyPersistentNodeMetadata(napi_env env,napi_callback_info info) {
+#if defined(__linux__) && defined(O_PATH)
+  using namespace portable_metadata;
+  Parent parent{};int fd=-1;bool attempted=false;DescriptorSet owned;
+  try {
+    size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+    if(argc!=1)throw std::runtime_error("one persistent metadata restore required");
+    auto input=args[0];parent=ReadParent(env,input);CheckParent(parent);
+    fd=openat(parent.fd,parent.leaf.c_str(),O_PATH|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0)throw std::runtime_error(std::string("metadata-only FIFO restore open failed: ")+std::strerror(errno));owned.values.push_back(fd);
+    const auto before=ReadNode(parent,fd);
+    if(!S_ISFIFO(before.st_mode)||uint64_t(before.st_dev)!=Identity(env,Property(env,input,"expectedDevice"))||uint64_t(before.st_ino)!=Identity(env,Property(env,input,"expectedInode")))
+      throw std::runtime_error("FIFO restore original identity differs; no metadata changed");
+    auto restore=Object(env);
+    for(const char* key:{"restore","sourceQualifier","destinationQualifier","sourceOwnerId","sourceGroupId","destinationOwnerId","destinationGroupId","principalMappings","attributes","accessAcl","defaultAcl","mode"})
+      Set(env,restore,key,Property(env,input,key));
+    Set(env,restore,"fd",Number(env,fd));Set(env,restore,"expectedDevice",Big(env,before.st_dev));Set(env,restore,"expectedInode",Big(env,before.st_ino));Set(env,restore,"kind",Text(env,"fifo"));
+    attempted=true;
+    auto result=ApplyExtendedMetadataInput(env,restore);
+    bool pending=false;napi_is_exception_pending(env,&pending);
+    if(pending)return nullptr;
+    ReadNode(parent,fd);
+    return result;
+  }catch(const std::exception& e){
+    if(!attempted)return Failure(env,"ERR_PORTABLE_METADATA_PREFLIGHT",e.what());
+    napi_value observed=Null(env);try{if(fd>=0)observed=NodeEvidence(env,parent,ReadNode(parent,fd));}catch(const std::exception&){}
+    return Partial(env,e.what(),observed);
+  }
+#else
+  return portable_metadata::Failure(env,"ERR_PORTABLE_METADATA_UNSUPPORTED","FIFO extended metadata requires Linux O_PATH and exact procfs fd metadata; no content opened");
+#endif
+}
+
 napi_value InspectPersistentNode(napi_env env,napi_callback_info info) {
 #if defined(__linux__) && defined(O_PATH)
   using namespace portable_metadata;
@@ -361,7 +471,10 @@ napi_value CreatePersistentNode(napi_env env,napi_callback_info info) {
     errno=0;const int time_probe=utimensat(-1,"",probe,AT_EMPTY_PATH);
     if(time_probe!=-1 || errno!=EBADF)throw std::runtime_error("descriptor-only utimensat AT_EMPTY_PATH unavailable");
     const auto inherited=ReadAttribute(parent.fd,"system.posix_acl_default");
-    if(!inherited.absent && inherited.error!=EOPNOTSUPP)throw std::runtime_error("parent default ACL present/unreadable; FIFO ACL restoration unavailable on O_PATH");
+    bool hasExtended=false,restoreExtended=false;
+    if(napi_has_named_property(env,input,"restoreExtendedMetadata",&hasExtended)!=napi_ok)throw std::runtime_error("invalid FIFO metadata restore selection");
+    if(hasExtended&&napi_get_value_bool(env,Property(env,input,"restoreExtendedMetadata"),&restoreExtended)!=napi_ok)throw std::runtime_error("FIFO metadata restore choice must be boolean");
+    if(!inherited.absent&&inherited.error!=EOPNOTSUPP&&(!restoreExtended||inherited.error))throw std::runtime_error("parent default ACL present/unreadable; explicit exact FIFO metadata restoration required");
     CheckParent(parent);
     attempted=true;
     if(mknodat(parent.fd,parent.leaf.c_str(),S_IFIFO|0600,0)!=0)throw std::runtime_error(std::string("exclusive FIFO creation failed; existing entries are never replaced: ")+std::strerror(errno));

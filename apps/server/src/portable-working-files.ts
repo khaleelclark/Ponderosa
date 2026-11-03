@@ -263,7 +263,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
       if(createHash('sha256').update(file.data).digest('hex')!==file.sha256)throw new Error('Staged working-file identity changed');
       await preserveBaseline(relative);
       const handle=await fs.open(path.join(destination,relative),'wx',0o600);
-      try{await handle.writeFile(file.data);if(!metadataActivation||!reviewedData?.selection.extendedMetadata){if(file.mode!==undefined)await handle.chmod(file.mode&0o777);if(file.mtime)await handle.utimes(new Date(file.mtime),new Date(file.mtime));}await handle.sync();}finally{await handle.close();}
+      try{await handle.writeFile(file.data);await handle.sync();}finally{await handle.close();}
     }
     for(const link of [...links].sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
       const target=path.join(destination,link.path),parent=path.dirname(target);
@@ -314,6 +314,22 @@ export async function finalizeWorkingFolderMetadata(destination:string,files:Par
     await applyFilesystemMetadata(destination,reviewed.filesystemMetadata,reviewed.selection,activation,links,expectedLinkCounts);
   }
   if(!activation||!reviewed?.selection.extendedMetadata){
+    for(const file of files){
+      const target=path.join(destination,portableWorkingPath(file.path));
+      if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Final working-file parent changed');
+      const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
+      try{
+        const before=await handle.stat({bigint:true}),expectedLinks=expectedLinkCounts?.get(file.path)??BigInt(1+links.filter(link=>link.kind==='hardlink'&&!link.targetRootRef&&link.target===file.path).length);
+        if(!before.isFile()||before.size!==BigInt(file.data.length)||before.nlink!==expectedLinks)throw new Error('Final working-file identity, size or complete aliases differ');
+        const hash=createHash('sha256'),buffer=Buffer.alloc(Math.min(file.data.length||1,65536));let offset=0;
+        while(offset<file.data.length){const read=await handle.read(buffer,0,Math.min(buffer.length,file.data.length-offset),offset);if(!read.bytesRead)throw new Error('Final working file shortened');hash.update(buffer.subarray(0,read.bytesRead));offset+=read.bytesRead;}
+        const after=await handle.stat({bigint:true});
+        if(hash.digest('hex')!==file.sha256||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Final working-file content changed; preserve current bytes');
+        if(file.mode!==undefined)await handle.chmod(file.mode&0o777);
+        if(file.mtime)await handle.utimes(new Date(file.mtime),new Date(file.mtime));
+        await handle.sync();
+      }finally{await handle.close();}
+    }
     for(const folder of [...(directories??[])].sort((a,b)=>b.path.split('/').length-a.path.split('/').length)){
       const target=path.join(destination,portableWorkingPath(folder.path));
       if(await fs.realpath(target)!==target)throw new Error('Destination directory changed');

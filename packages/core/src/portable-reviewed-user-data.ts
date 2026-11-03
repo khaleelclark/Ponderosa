@@ -37,7 +37,7 @@ export interface PortableFilesystemMetadata {
   version:1;sourceQualifier:string;allNamespacesComplete:false;
   nodes:Array<{path:string;kind:'file'|'directory';mode:number;mtimeNs:string;ownerId:string;groupId:string;
     userAttributes:Array<{nameBase64:string;valueBase64:string}>;accessAclBase64:string|null;defaultAclBase64:string|null}>;
-  persistentNodes:Array<{path:string;kind:'fifo'|'socket'|'character'|'block';mode:number;mtimeNs:string;ownerId:string;groupId:string;deviceMajor:number;deviceMinor:number}>;
+  persistentNodes:Array<{path:string;kind:'fifo'|'socket'|'character'|'block';mode:number;mtimeNs:string;ownerId:string;groupId:string;deviceMajor:number;deviceMinor:number;extendedMetadata?:Pick<PortableFilesystemMetadata['nodes'][number],'userAttributes'|'accessAclBase64'|'defaultAclBase64'>}>;
 }
 /** Inert user-data transport. No source runtime, credential or worktree authority. */
 export interface ReviewedGitUserData {

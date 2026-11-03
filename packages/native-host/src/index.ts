@@ -9,7 +9,9 @@ interface NativeJobBinding {
   inspectExtendedMetadata(input: HeldMetadataTarget & { sourceQualifier: string }): ExtendedMetadataEvidence;
   applyExtendedMetadata(input: ExtendedMetadataRestore): ExtendedMetadataEvidence;
   inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence;
-  createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint }): PersistentNodeEvidence;
+  inspectPersistentNodeMetadata(input: PersistentNodeParent & {sourceQualifier:string}): ExtendedMetadataEvidence;
+  applyPersistentNodeMetadata(input: PersistentNodeMetadataRestore): ExtendedMetadataEvidence;
+  createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint;restoreExtendedMetadata?:boolean }): PersistentNodeEvidence;
   applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence;
   offlineMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineWorkspaceMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
@@ -71,7 +73,7 @@ export interface HeldMetadataTarget {
   fd: number;
   expectedDevice: bigint;
   expectedInode: bigint;
-  kind: "file" | "directory";
+  kind: "file" | "directory" | "fifo";
   /** Default one; callers prove complete selected aliases before supplying another bound. */
   expectedLinkCount?: bigint;
 }
@@ -93,7 +95,7 @@ export interface PosixAclEvidence extends ExtendedAttributeEvidence {
 }
 export interface ExtendedMetadataEvidence {
   supported: boolean;
-  identity: ExactFileMetadataEvidence & { ownerId: number; groupId: number };
+  identity: Omit<ExactFileMetadataEvidence,"kind"> & {kind:"file"|"directory"|"fifo";ownerId:number;groupId:number};
   sourceQualifier: string;
   inventoryState: "complete-visible" | "error" | "unsupported";
   inventoryErrorNumber?: number;
@@ -149,6 +151,11 @@ export interface PersistentNodeEvidence {
   deviceMajor: number; deviceMinor: number;
   parentDevice: bigint; parentInode: bigint;
 }
+export type PersistentNodeMetadataRestore=PersistentNodeParent & Omit<ExtendedMetadataRestore,"fd"|"expectedDevice"|"expectedInode"|"expectedLinkCount"|"kind"> & {expectedDevice:bigint;expectedInode:bigint};
+/** Exact held FIFO metadata; never opens a data endpoint. User namespace is VFS-forbidden on FIFO, while POSIX ACLs are inspected explicitly. */
+export function inspectPersistentNodeMetadata(input:PersistentNodeParent & {sourceQualifier:string}):ExtendedMetadataEvidence{return binding().inspectPersistentNodeMetadata(input);}
+/** Original created FIFO identity and explicit source-qualified principal map required. */
+export function applyPersistentNodeMetadata(input:PersistentNodeMetadataRestore):ExtendedMetadataEvidence{return binding().applyPersistentNodeMetadata(input);}
 /** Linux O_PATH metadata only; never opens content or connects a socket/device. */
 export function inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence {
   return binding().inspectPersistentNode(input);
@@ -158,7 +165,7 @@ export function inspectPersistentNode(input: PersistentNodeParent): PersistentNo
  * No replacement; inherited default ACL must be absent. Refuses special mode bits.
  * Creation changes parent directory metadata. Partial error retains the node and
  * reports observed evidence|null; no rollback or automatic retry. */
-export function createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint }): PersistentNodeEvidence {
+export function createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint;restoreExtendedMetadata?:boolean }): PersistentNodeEvidence {
   return binding().createPersistentNode(input);
 }
 

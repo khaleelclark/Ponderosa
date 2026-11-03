@@ -10,7 +10,7 @@ claim. Public functions and exact TypeScript types are exported from
 
 | Family | Implemented source | Unsupported or still required |
 | --- | --- | --- |
-| Extended inspection | Linux held regular-file/directory descriptors; bounded visible name/value inventory; explicit POSIX ACL probes and v2 parser | Linux may hide privileged names. `allNamespacesComplete` is always false. Other platforms throw a specific unsupported error; they are not empty inventories. |
+| Extended inspection | Linux held regular-file/directory descriptors and internally held FIFO O_PATH nodes; bounded visible name/value inventory; explicit POSIX ACL probes and v2 parser | Linux may hide privileged names. `allNamespacesComplete` is always false. Other platforms throw a specific unsupported error; they are not empty inventories. |
 | Selected extended restore | Linux exact selected `user.*` plus POSIX access/default ACL state, explicit principal remapping and full selected readback | No security/trusted/capability/SELinux/unknown namespace application, chown or alternate ACL dialect. A destination with other visible namespaces refuses before mutation. Hidden namespaces cannot be proved absent. |
 | Persistent inspection | Linux O_PATH descriptor and held parent/one leaf binding for FIFO, socket, character/block node | No content open, socket communication or service adoption. Exact device numbers are evidence, never destination mapping authority. |
 | Persistent creation | Linux no-replace FIFO creation, descriptor-only mode/time and exact readback | Requires headers/kernel supporting fchmodat2/AT_EMPTY_PATH and utimensat/AT_EMPTY_PATH. No device/socket creation; no ownership recreation or extended-metadata equivalence claim. |
@@ -128,8 +128,7 @@ mode, timestamp and parent/name association. mode is limited to 0..0o7777; nativ
 refusal or truncation is failure. Parent directory timestamps naturally change
 when its entry is created; restore parent metadata last.
 
-Creation retains current native owner/inherited group; it does not recreate source
-ownership, ACLs, labels or all extended metadata. Inherited/default/security policy
+Creation retains current native owner/inherited group. The product separately maps and restores selected Linux FIFO access ACLs on that exact created inode; it never recreates foreign ownership, labels or all namespaces. Inherited/default/security policy
 is never changed or bypassed. An independent actor replacing the name before the
 first O_PATH observation cannot be distinguished from creation by mknodat alone;
 therefore exclusive caller directory/name custody is a necessary contract, not a
@@ -206,3 +205,39 @@ installed permissions, kernel/header/platform support, precision, round trips,
 service recreation, durability, atomicity and full portability acceptance. No tests,
 fixtures/preparation, builds, typechecks or native/parser/product execution were
 performed in this implementation tranche.
+
+## FIFO extended metadata completion
+
+FIFO ACL evidence now uses internally held O_PATH nodes plus metadata-only
+get/list/set/remove xattr calls through the exact owned procfs fd path. The
+fixed procfs path is filesystem-qualified and resolved identity must match the
+held inode; no FIFO content endpoint is opened. Held parent/name/node bindings
+are checked around inspection/application. Unavailable procfs, unsupported ACL
+dialects, unreadable namespaces and failed metadata syscalls remain explicit
+errors.
+
+The persistent-node carrier includes extendedMetadata when selected. Its access
+ACL has the same source-qualified principal mapping and secret/bounds validation
+as regular nodes; missing evidence cannot mean absence. Linux forbids user.*
+attributes on FIFOs, so that selected namespace is observed empty rather than
+invented or activated. A FIFO cannot have a default ACL.
+
+Creation may accept an inherited access ACL only under the separate explicit
+exact-restoration choice. After exclusive creation and actual ownership readback,
+the original created inode is bound to mapped ACL restoration and full-mode
+readback. ACL application failure keeps the created node and reports a partial
+result. No rollback or second creation attempt occurs.
+
+Ordinary metadata can also be staged globally: imports keep file/directory/root
+permissions temporary until all selected roots, aliases and provider/Git children
+exist. Final ordinary file application rechecks exact bytes, complete link count
+and descriptor observation before mode/time mutation; directories and roots
+follow their children. This includes imports without native metadata activation.
+
+Source basis: Pine reported kernel 7.0.0-38-generic and its installed headers expose
+xattrat syscall identifiers. This is read-only environment evidence, not execution
+qualification. Pinned [Linux v7.0 xattr implementation](https://raw.githubusercontent.com/torvalds/linux/v7.0/fs/xattr.c)
+establishes inode-only metadata dispatch and the FIFO user-namespace prohibition;
+[POSIX ACL implementation](https://raw.githubusercontent.com/torvalds/linux/v7.0/fs/posix_acl.c)
+defines non-directory/default and access ACL semantics.
+The added FIFO ACL round-trip regression is unexecuted pending combined validation.

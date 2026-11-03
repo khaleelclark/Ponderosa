@@ -2,7 +2,7 @@ import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {applyExactFileMetadata,applyExtendedMetadata,inspectExtendedMetadata,inspectPersistentNode,createPersistentNode,type ExtendedMetadataEvidence} from '@ponderosa/native-host';
+import {applyExactFileMetadata,applyExtendedMetadata,inspectExtendedMetadata,inspectPersistentNode,inspectPersistentNodeMetadata,applyPersistentNodeMetadata,createPersistentNode,type ExtendedMetadataEvidence} from '@ponderosa/native-host';
 import type {PortableFilesystemMetadata,ReviewedMetadataActivation,ReviewedUserDataSelection,PortableWorkingLinkDto} from '@ponderosa/core';
 import {inventoryWorkingFolder,portableWorkingPath,type WorkingFolderInventory} from './portable-working-files.js';
 import type {GitExportCapture} from './portable-reviewed-user-data.js';
@@ -50,6 +50,31 @@ export async function filesystemMetadataProvenance():Promise<{qualifier:string;o
   const qualifier='linux:'+createHash('sha256').update(machine).update(':').update(String(userNamespace.ino)).update(':').update(String(mountNamespace.ino)).digest('hex');
   return {qualifier,ownerId:String(process.geteuid?.()??process.getuid!()),groupId:String(process.getegid?.()??process.getgid!())};
 }
+type SelectedExtended=Pick<PortableFilesystemMetadata['nodes'][number],'userAttributes'|'accessAclBase64'|'defaultAclBase64'>;
+function validateExtendedFields(node:SelectedExtended,kind:'file'|'directory'|'fifo',selection:ReviewedUserDataSelection):number{
+  if(!Array.isArray(node.userAttributes)||node.userAttributes.length>256)fail('Invalid selected user attributes');
+  if(kind==='fifo'&&node.userAttributes.length)fail('Linux forbids user attributes on FIFO nodes');
+  const names=new Set<string>();let total=0;
+  for(const attribute of node.userAttributes){
+    keys(attribute,['nameBase64','valueBase64']);const name=bytes(attribute.nameBase64,255),data=bytes(attribute.valueBase64);
+    if(name.length<6||!name.subarray(0,5).equals(Buffer.from('user.'))||name.includes(0)||names.has(attribute.nameBase64)||!selection.extendedMetadata?.userXattrs)fail('Invalid selected user attribute');
+    if(isPortableSecretField(name.subarray(5).toString('utf8')))fail('Known secret attribute fields cannot be exported');
+    inspectSecrets(name);inspectSecrets(data);names.add(attribute.nameBase64);total+=name.length+data.length;
+  }
+  for(const acl of [node.accessAclBase64,node.defaultAclBase64]){
+    if(acl!==null){const data=bytes(acl);if(!selection.extendedMetadata?.posixAcl)fail('Unselected POSIX ACL');total+=data.length;}
+  }
+  if(kind!=='directory'&&node.defaultAclBase64!==null)fail('Only directories can have a default ACL');
+  return total;
+}
+function selectedEvidence(evidence:ExtendedMetadataEvidence,selection:ReviewedUserDataSelection):SelectedExtended{
+  acceptedEvidence(evidence);
+  return {
+    userAttributes:selection.extendedMetadata?.userXattrs?evidence.attributes.filter(attribute=>attribute.name.subarray(0,5).equals(Buffer.from('user.'))).map(attribute=>({nameBase64:attribute.name.toString('base64'),valueBase64:attribute.value!.toString('base64')})):[],
+    accessAclBase64:selection.extendedMetadata?.posixAcl&&evidence.accessAcl.state==='value'?evidence.accessAcl.value!.toString('base64'):null,
+    defaultAclBase64:selection.extendedMetadata?.posixAcl&&evidence.defaultAcl.state==='value'?evidence.defaultAcl.value!.toString('base64'):null,
+  };
+}
 export function validateFilesystemMetadata(value:unknown,selection:ReviewedUserDataSelection):asserts value is PortableFilesystemMetadata{
   keys(value,['version','sourceQualifier','allNamespacesComplete','nodes','persistentNodes']);
   const metadata=value as PortableFilesystemMetadata;
@@ -61,24 +86,19 @@ export function validateFilesystemMetadata(value:unknown,selection:ReviewedUserD
     relative(node.path,true);
     if(paths.has(node.path)||!['file','directory'].includes(node.kind)||node.path==='.'&&node.kind!=='directory'||!Number.isInteger(node.mode)||node.mode<0||node.mode>0o7777||!Array.isArray(node.userAttributes)||node.userAttributes.length>256)fail('Invalid filesystem metadata node');
     paths.add(node.path);decimal(node.ownerId);decimal(node.groupId);decimal(node.mtimeNs,true);
-    const names=new Set<string>();
-    for(const attribute of node.userAttributes){
-      keys(attribute,['nameBase64','valueBase64']);const name=bytes(attribute.nameBase64,255),data=bytes(attribute.valueBase64);
-      if(name.length<6||!name.subarray(0,5).equals(Buffer.from('user.'))||name.includes(0)||names.has(attribute.nameBase64)||!selection.extendedMetadata?.userXattrs)fail('Invalid selected user attribute');
-      if(isPortableSecretField(name.subarray(5).toString('utf8')))fail('Known secret attribute fields cannot be exported');
-      inspectSecrets(name);inspectSecrets(data);names.add(attribute.nameBase64);total+=name.length+data.length;
-    }
-    for(const acl of [node.accessAclBase64,node.defaultAclBase64]){
-      if(acl!==null){const data=bytes(acl);if(!selection.extendedMetadata?.posixAcl)fail('Unselected POSIX ACL');total+=data.length;}
-    }
-    if(node.kind==='file'&&node.defaultAclBase64!==null)fail('Regular files cannot have a default ACL');
+    total+=validateExtendedFields(node,node.kind,selection);
   }
   for(const node of metadata.persistentNodes){
-    keys(node,['path','kind','mode','mtimeNs','ownerId','groupId','deviceMajor','deviceMinor']);relative(node.path);
+    keys(node,['path','kind','mode','mtimeNs','ownerId','groupId','deviceMajor','deviceMinor',...(node.extendedMetadata!==undefined?['extendedMetadata']:[])]);relative(node.path);
     if(paths.has(node.path)||!['fifo','socket','character','block'].includes(node.kind)||!Number.isInteger(node.mode)||node.mode<0||node.mode>0o7777)fail('Invalid persistent-node metadata');
     if(node.kind==='fifo'?!selection.persistentNodes?.fifo&&!selection.persistentNodes?.evidenceOnly:!selection.persistentNodes?.evidenceOnly)fail('Unselected persistent-node evidence');
     paths.add(node.path);decimal(node.ownerId);decimal(node.groupId);decimal(node.mtimeNs,true);
     for(const id of [node.deviceMajor,node.deviceMinor])if(!Number.isInteger(id)||id<0||id>4294967295)fail('Invalid source device evidence');
+    if(node.kind==='fifo'&&selection.extendedMetadata){
+      if(!node.extendedMetadata)fail('Selected FIFO ACL metadata evidence is missing; omission is not absence');
+      keys(node.extendedMetadata,['userAttributes','accessAclBase64','defaultAclBase64']);
+      total+=validateExtendedFields(node.extendedMetadata,'fifo',selection);
+    }else if(node.extendedMetadata!==undefined)fail('Unselected or unsupported persistent-node extended metadata');
   }
   if(total>maximumBytes)fail('Selected filesystem metadata exceeds 16 MiB');
   for(const name of paths)if(name!=='.'&&name.split('/').slice(0,-1).some((_,index)=>metadata.persistentNodes.some(node=>node.path===name.split('/').slice(0,index+1).join('/'))))fail('Persistent nodes cannot be parent directories');
@@ -96,11 +116,7 @@ export async function captureFilesystemMetadata(root:string,selection:ReviewedUs
       const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|(kind==='directory'?constants.O_DIRECTORY:0));
       await withMetadataHandle(handle,async()=>{
         const stat=await handle.stat({bigint:true}),evidence=inspectExtendedMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind,sourceQualifier:provenance.qualifier,...(kind==='file'?{expectedLinkCount:inventory.linkCounts.get(relativePath)??1n}:{})});
-        acceptedEvidence(evidence);
-        const userAttributes=selection.extendedMetadata.userXattrs?evidence.attributes.filter(attribute=>attribute.name.subarray(0,5).equals(Buffer.from('user.'))).map(attribute=>({nameBase64:attribute.name.toString('base64'),valueBase64:attribute.value!.toString('base64')})):[];
-        result.nodes.push({path:relativePath,kind,mode:evidence.identity.mode,mtimeNs:String(evidence.identity.mtimeNs),ownerId:String(evidence.identity.ownerId),groupId:String(evidence.identity.groupId),userAttributes,
-          accessAclBase64:selection.extendedMetadata.posixAcl&&evidence.accessAcl.state==='value'?evidence.accessAcl.value!.toString('base64'):null,
-          defaultAclBase64:selection.extendedMetadata.posixAcl&&evidence.defaultAcl.state==='value'?evidence.defaultAcl.value!.toString('base64'):null});
+        result.nodes.push({path:relativePath,kind,mode:evidence.identity.mode,mtimeNs:String(evidence.identity.mtimeNs),ownerId:String(evidence.identity.ownerId),groupId:String(evidence.identity.groupId),...selectedEvidence(evidence,selection)});
       });
     }
   }
@@ -109,8 +125,10 @@ export async function captureFilesystemMetadata(root:string,selection:ReviewedUs
     if(await fs.realpath(parent)!==parent)fail('Persistent-node parent changed');
     const handle=await fs.open(parent,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
     await withMetadataHandle(handle,async()=>{
-      const stat=await handle.stat({bigint:true}),node=inspectPersistentNode({parentFd:handle.fd,expectedParentDevice:stat.dev,expectedParentInode:stat.ino,leaf:path.basename(target)});
-      result.persistentNodes.push({path:relativePath,kind:node.kind,mode:node.mode,mtimeNs:String(node.mtimeNs),ownerId:String(node.ownerId),groupId:String(node.groupId),deviceMajor:node.deviceMajor,deviceMinor:node.deviceMinor});
+      const stat=await handle.stat({bigint:true}),parent={parentFd:handle.fd,expectedParentDevice:stat.dev,expectedParentInode:stat.ino,leaf:path.basename(target)},node=inspectPersistentNode(parent);
+      const extended=node.kind==='fifo'&&selection.extendedMetadata?inspectPersistentNodeMetadata({...parent,sourceQualifier:provenance.qualifier}):undefined;
+      if(extended&&(extended.identity.device!==node.device||extended.identity.inode!==node.inode||extended.identity.mode!==node.mode||extended.identity.mtimeNs!==node.mtimeNs||extended.identity.ownerId!==node.ownerId||extended.identity.groupId!==node.groupId))fail('FIFO metadata changed between owned inspections');
+      result.persistentNodes.push({path:relativePath,kind:node.kind,mode:node.mode,mtimeNs:String(node.mtimeNs),ownerId:String(node.ownerId),groupId:String(node.groupId),deviceMajor:node.deviceMajor,deviceMinor:node.deviceMinor,...(extended?{extendedMetadata:selectedEvidence(extended,selection)}:{})});
     });
   }
   validateFilesystemMetadata(result,selection);
@@ -122,7 +140,7 @@ export function planFilesystemMetadata(metadata:PortableFilesystemMetadata,selec
   if(selection.extendedMetadata&&(!selection.extendedMetadata.userXattrs||!selection.extendedMetadata.posixAcl))fail('Applying native metadata requires both complete user attributes and POSIX ACL selection');
   if(metadata.persistentNodes.some(node=>node.kind!=='fifo'))fail('Socket/device evidence is preserved; recreation requires its actual service or device mapping');
   if(metadata.persistentNodes.length&&!activation.fifo)fail('Explicit FIFO recreation choice required');
-  for(const node of metadata.nodes){
+  for(const node of [...metadata.nodes,...metadata.persistentNodes.flatMap(node=>node.extendedMetadata?[node.extendedMetadata]:[])]){
     for(const encoded of [node.accessAclBase64,node.defaultAclBase64]){
       if(encoded===null)continue;
       const acl=bytes(encoded);
@@ -152,8 +170,18 @@ export async function applyFilesystemMetadata(root:string,metadata:PortableFiles
     await withMetadataHandle(handle,async()=>{
       const stat=await handle.stat({bigint:true}),expectedGroup=(stat.mode&0o2000n)!==0n?Number(stat.gid):Number(provenance.groupId);
       if(map('group',node.groupId)!==expectedGroup)fail('FIFO inherited group differs from the explicit mapping; no node created');
-      const observed=createPersistentNode({parentFd:handle.fd,expectedParentDevice:stat.dev,expectedParentInode:stat.ino,leaf:path.basename(target),kind:'fifo',mode:node.mode,mtimeNs:BigInt(node.mtimeNs)});
+      const parent={parentFd:handle.fd,expectedParentDevice:stat.dev,expectedParentInode:stat.ino,leaf:path.basename(target)};
+      const observed=createPersistentNode({...parent,kind:'fifo',mode:node.mode,mtimeNs:BigInt(node.mtimeNs),...(node.extendedMetadata?{restoreExtendedMetadata:true}:{})});
       if(observed.ownerId!==map('user',node.ownerId)||observed.groupId!==map('group',node.groupId))throw Object.assign(new Error('Created FIFO ownership differs; preserve the node and review the partial result'),{code:'ERR_PORTABLE_METADATA_PARTIAL',partialStatePossible:true,observed});
+      if(node.extendedMetadata){
+        try{
+          const restored=applyPersistentNodeMetadata({...parent,expectedDevice:observed.device,expectedInode:observed.inode,restore:'replace-user-and-posix-acl',
+            sourceQualifier:metadata.sourceQualifier,destinationQualifier:provenance.qualifier,sourceOwnerId:Number(node.ownerId),sourceGroupId:Number(node.groupId),destinationOwnerId:map('user',node.ownerId),destinationGroupId:map('group',node.groupId),
+            principalMappings:activation.principalMappings.map(mapping=>({...mapping,sourceId:Number(mapping.sourceId),destinationId:Number(mapping.destinationId)})),attributes:[],
+            accessAcl:node.extendedMetadata.accessAclBase64===null?null:bytes(node.extendedMetadata.accessAclBase64),defaultAcl:null,mode:node.mode});
+          if(restored.identity.mtimeNs!==BigInt(node.mtimeNs))throw new Error('FIFO timestamp changed during exact ACL restoration');
+        }catch(error){throw Object.assign(new Error('Created FIFO metadata restoration incomplete; preserve the node: '+(error instanceof Error?error.message:String(error)),{cause:error}),{code:(error as {code?:string}).code??'ERR_PORTABLE_METADATA_PARTIAL',partialStatePossible:true,observed:(error as {observed?:unknown}).observed??observed});}
+      }
     },true);
   }
   for(const node of [...metadata.nodes].sort((a,b)=>b.path.split('/').length-a.path.split('/').length||(a.path==='.'?1:b.path==='.'?-1:0))){

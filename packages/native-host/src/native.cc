@@ -47,6 +47,8 @@ SQLITE_EXTENSION_INIT1
 #include <sys/syscall.h>
 #include <sys/statvfs.h>
 #include <sys/xattr.h>
+#include <sys/vfs.h>
+#include <linux/magic.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
 #include <linux/stat.h>
@@ -2575,6 +2577,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
       {"inspectExtendedMetadata", nullptr, InspectExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"applyExtendedMetadata", nullptr, ApplyExtendedMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"inspectPersistentNodeMetadata", nullptr, InspectPersistentNodeMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"applyPersistentNodeMetadata", nullptr, ApplyPersistentNodeMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"inspectPersistentNode", nullptr, InspectPersistentNode, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"createPersistentNode", nullptr, CreatePersistentNode, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"applyExactFileMetadata", nullptr, ApplyExactFileMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},

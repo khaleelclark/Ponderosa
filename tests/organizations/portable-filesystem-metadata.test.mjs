@@ -41,11 +41,11 @@ test('named ACL principals require an explicit map even when source numeric IDs 
   assert.throws(()=>planFilesystemMetadata(original,selection,activation()),/named ACL principal/);
 });
 test('FIFO recreation and device evidence never infer an execution or device grant',()=>{
-  const original={...metadata(),persistentNodes:[{path:'queue',kind:'fifo',mode:0o600,mtimeNs:'0',ownerId:'1000',groupId:'1000',deviceMajor:0,deviceMinor:0}]};
+  const original={...metadata(),persistentNodes:[{path:'queue',kind:'fifo',mode:0o600,mtimeNs:'0',ownerId:'1000',groupId:'1000',deviceMajor:0,deviceMinor:0,extendedMetadata:{userAttributes:[],accessAclBase64:null,defaultAclBase64:null}}]};
   const chosen={...selection,persistentNodes:{fifo:true,evidenceOnly:false}};
   assert.throws(()=>planFilesystemMetadata(original,chosen,activation()),/FIFO recreation choice/);
   assert.doesNotThrow(()=>planFilesystemMetadata(original,chosen,{...activation(),fifo:true}));
-  original.persistentNodes[0].kind='socket';
+  original.persistentNodes[0].kind='socket';delete original.persistentNodes[0].extendedMetadata;
   assert.throws(()=>planFilesystemMetadata(original,{...chosen,persistentNodes:{fifo:true,evidenceOnly:true}},{...activation(),fifo:true}),/actual service/);
 });
 
@@ -76,5 +76,39 @@ test('Linux selected metadata round trip carries user attributes through the rea
       assert.equal(observed.attributes.find(attribute=>attribute.name.equals(Buffer.from('user.note'))).value.toString(),'exact metadata');
       assert.equal(observed.identity.mode,0o4640);
     }finally{await imported.close();}
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('Linux FIFO ACL metadata survives package export/import without a content endpoint open',{skip:process.platform!=='linux'},async()=>{
+  const {mkdtemp,mkdir,open,lstat,rm}=await import('node:fs/promises');
+  const {constants}=await import('node:fs');const path=await import('node:path');const {tmpdir}=await import('node:os');const {createHash}=await import('node:crypto');
+  const {createPersistentNode,inspectPersistentNodeMetadata,applyPersistentNodeMetadata}=await import('@ponderosa/native-host');
+  const {filesystemMetadataProvenance}=await import('../../apps/server/dist/portable-filesystem-metadata.js');
+  const {inventoryWorkingFolder,exportWorkingFiles,importWorkingFiles}=await import('../../apps/server/dist/portable-working-files.js');
+  const provenance=await filesystemMetadataProvenance(),root=await mkdtemp(path.join(tmpdir(),'portable-fifo-acl-')),source=path.join(root,'source'),destination=path.join(root,'destination');
+  const owner=Number(provenance.ownerId),group=Number(provenance.groupId),sourceNamed=owner+10,destinationNamed=owner+20;
+  const mappings=[{sourceQualifier:provenance.qualifier,kind:'user',sourceId:owner,destinationId:owner},{sourceQualifier:provenance.qualifier,kind:'group',sourceId:group,destinationId:group},{sourceQualifier:provenance.qualifier,kind:'user',sourceId:sourceNamed,destinationId:sourceNamed}];
+  const acl=Buffer.alloc(44);acl.writeUInt32LE(2);
+  for(const [index,tag,permissions,id] of [[0,1,6,0xffffffff],[1,2,4,sourceNamed],[2,4,2,0xffffffff],[3,16,6,0xffffffff],[4,32,0,0xffffffff]]){acl.writeUInt16LE(tag,4+index*8);acl.writeUInt16LE(permissions,6+index*8);acl.writeUInt32LE(id,8+index*8);}
+  try{
+    await mkdir(source);const parent=await open(source,constants.O_RDONLY|constants.O_DIRECTORY);
+    try{
+      const stat=await parent.stat({bigint:true}),scope={parentFd:parent.fd,expectedParentDevice:stat.dev,expectedParentInode:stat.ino,leaf:'queue'};
+      const created=createPersistentNode({...scope,kind:'fifo',mode:0o660,mtimeNs:1234567890000000000n,restoreExtendedMetadata:true});
+      applyPersistentNodeMetadata({...scope,expectedDevice:created.device,expectedInode:created.inode,restore:'replace-user-and-posix-acl',sourceQualifier:provenance.qualifier,destinationQualifier:provenance.qualifier,sourceOwnerId:owner,sourceGroupId:group,destinationOwnerId:owner,destinationGroupId:group,principalMappings:mappings,attributes:[],accessAcl:acl,defaultAcl:null,mode:0o660});
+      assert.equal(inspectPersistentNodeMetadata({...scope,sourceQualifier:provenance.qualifier}).accessAcl.entries.find(entry=>entry.tag==='user').sourceId,sourceNamed);
+    }finally{await parent.close();}
+    const chosenSelection={...selection,persistentNodes:{fifo:true,evidenceOnly:false}},inventory=await inventoryWorkingFolder(source,chosenSelection),exported=await exportWorkingFiles(source,inventory.paths,1024*1024,inventory.links,chosenSelection,undefined,undefined,undefined,inventory);
+    const files=exported.files.map(file=>{const data=Buffer.from(exported.artifacts.find(artifact=>artifact.ref===file.artifactRef).dataBase64,'base64');return {...file,data,sha256:createHash('sha256').update(data).digest('hex')};});
+    const choice={sourceQualifier:provenance.qualifier,destinationQualifier:provenance.qualifier,principalMappings:mappings.map(mapping=>({...mapping,sourceId:String(mapping.sourceId),destinationId:String(mapping.sourceId===sourceNamed?destinationNamed:mapping.destinationId)})),replaceInheritedUserAndPosixAcl:true,rootRefs:['root'],fifo:true};
+    await importWorkingFiles(destination,files,inventory.directories,{mode:inventory.mode,mtime:inventory.mtime},undefined,inventory.links,'passive_in_root',choice);
+    assert.equal((await lstat(path.join(destination,'queue'))).isFIFO(),true);
+    const restoredParent=await open(destination,constants.O_RDONLY|constants.O_DIRECTORY);
+    try{
+      const stat=await restoredParent.stat({bigint:true}),observed=inspectPersistentNodeMetadata({parentFd:restoredParent.fd,expectedParentDevice:stat.dev,expectedParentInode:stat.ino,leaf:'queue',sourceQualifier:provenance.qualifier});
+      assert.equal(observed.identity.kind,'fifo');assert.equal(observed.identity.mtimeNs,1234567890000000000n);
+      assert.equal(observed.accessAcl.entries.find(entry=>entry.tag==='user').sourceId,destinationNamed);
+      assert.equal(observed.defaultAcl.state,'absent');
+    }finally{await restoredParent.close();}
   }finally{await rm(root,{recursive:true,force:true});}
 });

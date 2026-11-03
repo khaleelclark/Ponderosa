@@ -83,9 +83,8 @@ receive competing attribute applications.
 
 - Linux selected user attributes/POSIX ACLs are covered. Other platform ACL
   dialects, ownership changes, and security/trusted/LSM namespace policy are not.
-- FIFO evidence covers mode/time/owner/group and native creation. FIFO extended
-  attributes/ACL equivalence is not claimed; inherited default ACL refusal is
-  explicit. Device-node recreation needs an actual destination device mapping;
+- FIFO evidence covers mode/time/owner/group plus selected Linux access ACLs.
+  User attributes are VFS-forbidden and default ACLs are invalid on non-directories. Device-node recreation needs an actual destination device mapping;
   socket recreation needs the real service owner/lifecycle.
 - Source root/alias identity and drift checks do not create an atomic snapshot.
   There is no independent-writer snapshot-set or service-quiescence backend.
@@ -99,3 +98,39 @@ Regression sources cover exact metadata/absence, missing principals, secret
 attributes, FIFO choices, real Linux attribute-plus-hardlink/full-mode round trips,
 absolute links, mapped symbolic escapes and complete cross-root hardlink aliases.
 They are intentionally unexecuted until all implementation lanes are combined.
+
+## FIFO extended metadata completion
+
+FIFO ACL evidence now uses internally held O_PATH nodes plus metadata-only
+get/list/set/remove xattr calls through the exact owned procfs fd path. The
+fixed procfs path is filesystem-qualified and resolved identity must match the
+held inode; no FIFO content endpoint is opened. Held parent/name/node bindings
+are checked around inspection/application. Unavailable procfs, unsupported ACL
+dialects, unreadable namespaces and failed metadata syscalls remain explicit
+errors.
+
+The persistent-node carrier includes extendedMetadata when selected. Its access
+ACL has the same source-qualified principal mapping and secret/bounds validation
+as regular nodes; missing evidence cannot mean absence. Linux forbids user.*
+attributes on FIFOs, so that selected namespace is observed empty rather than
+invented or activated. A FIFO cannot have a default ACL.
+
+Creation may accept an inherited access ACL only under the separate explicit
+exact-restoration choice. After exclusive creation and actual ownership readback,
+the original created inode is bound to mapped ACL restoration and full-mode
+readback. ACL application failure keeps the created node and reports a partial
+result. No rollback or second creation attempt occurs.
+
+Ordinary metadata can also be staged globally: imports keep file/directory/root
+permissions temporary until all selected roots, aliases and provider/Git children
+exist. Final ordinary file application rechecks exact bytes, complete link count
+and descriptor observation before mode/time mutation; directories and roots
+follow their children. This includes imports without native metadata activation.
+
+Source basis: Pine reported kernel 7.0.0-38-generic and its installed headers expose
+xattrat syscall identifiers. This is read-only environment evidence, not execution
+qualification. Pinned [Linux v7.0 xattr implementation](https://raw.githubusercontent.com/torvalds/linux/v7.0/fs/xattr.c)
+establishes inode-only metadata dispatch and the FIFO user-namespace prohibition;
+[POSIX ACL implementation](https://raw.githubusercontent.com/torvalds/linux/v7.0/fs/posix_acl.c)
+defines non-directory/default and access ACL semantics.
+The added FIFO ACL round-trip regression is unexecuted pending combined validation.

@@ -1297,3 +1297,14 @@ Non-Linux ACL dialects, FIFO extended metadata, native device/socket service
 recreation and independent-writer coherent acquisition remain explicit boundaries.
 These are not approved Bible exceptions. No tests/builds/typechecks or production
 operations were run in this tranche; final combined qualification remains required.
+
+### FIFO ACL successor
+
+The FIFO extended-metadata gap in the preceding Codex tranche is superseded by
+the [FIFO completion contract](portable-filesystem-recreation.md#fifo-extended-metadata-completion).
+Selected Linux access ACLs now have real O_PATH/procfs metadata-only inspection,
+source-qualified evidence, named-principal mapping, exact created-inode application
+and partial-state retention. Linux user.* attributes are kernel-forbidden on
+FIFOs; no unsupported values or default ACL are invented. Ordinary global
+metadata staging is also wired for permission-restricting directories/files.
+No tests, native execution, builds or typechecks were performed for this successor.

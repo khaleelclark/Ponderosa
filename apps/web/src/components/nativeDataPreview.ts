@@ -39,7 +39,7 @@ export async function nativeDataPreview(nodes:unknown[]):Promise<NativeDataPrevi
    if(metadata.version!==1||typeof metadata.sourceQualifier!=='string'||!Array.isArray(metadata.nodes)||!Array.isArray(metadata.persistentNodes))throw Error('Native metadata summary is invalid');
    sources.add(metadata.sourceQualifier);roots.add(node.workingRootRef??node.ref);
    for(const entry of [...metadata.nodes,...metadata.persistentNodes]){principal('user',entry.ownerId);principal('group',entry.groupId);}
-   for(const entry of metadata.nodes)for(const encoded of [entry.accessAclBase64,entry.defaultAclBase64]){
+   for(const entry of [...metadata.nodes,...metadata.persistentNodes.flatMap((node:any)=>node.extendedMetadata?[node.extendedMetadata]:[])])for(const encoded of [entry.accessAclBase64,entry.defaultAclBase64]){
     if(encoded===null)continue;
     if(typeof encoded!=='string')throw Error('Invalid ACL evidence');
     const acl=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0)),view=new DataView(acl.buffer);
