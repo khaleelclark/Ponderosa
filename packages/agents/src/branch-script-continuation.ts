@@ -31,10 +31,10 @@ export function portableScriptDefinitionSupported(definition:BranchDefinition):b
   return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
-export type ScriptOwnerContext={workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
+export type ScriptOwnerContext={automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 // Only a standalone terminal observation may retain serial gate evidence with context.
 const standaloneGateContext=(context:ScriptOwnerContext|undefined)=>!context||context.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
-// Tree owners opt in only for the manual synchronous effect-free serial family.
+// Tree owners opt in separately from standalone eligibility and origin proof.
 const workflowGateContext=(context:ScriptOwnerContext|undefined)=>standaloneGateContext(context)||context?.workflowGates===true;
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
   try {
@@ -50,7 +50,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
       ||!['active','draining'].includes(selected.resources![0]?.state)||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
     const waitingGate=workflowGateContext(context)&&selected.gates!.some(g=>g.state==='waiting');
     const waiting=context?.waiting||waitingGate;
-    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':e.admission_source==='automatic'&&standaloneGateContext(context)&&automaticScriptDefinitionSupported(definition)?'automatic':'manual')
+    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':e.admission_source==='automatic'&&(standaloneGateContext(context)&&automaticScriptDefinitionSupported(definition)||context?.automaticRootTree===true&&!context.parent&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth&&automaticScriptDefinitionSupported(definition,true))?'automatic':'manual')
       ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
       ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting&&!context?.issuedGroup?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
@@ -282,7 +282,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     }else if(checkpoint&&!context?.terminal)return false;
     const owner=foreign?.owner??db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
     if(!owner||e.id!==executionId||['branch_id','version_id','binding_revision_id','input_hash'].some(key=>e[key]!==owner[key])
-      ||(e.admission_source==='automatic'?!automaticScriptOriginSupported(db,e,definition,foreign?foreign.runtimeOwner??null:undefined):e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'})))
+      ||(e.admission_source==='automatic'?!automaticScriptOriginSupported(db,e,definition,foreign?foreign.runtimeOwner??null:undefined,context?.automaticRootTree===true):e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'})))
       ||stableJson(configuration)!==stableJson(context?.issuedResource?Object.fromEntries(Object.entries(JSON.parse(owner.configuration_json)).filter(([key])=>key!=='secretBindings')):JSON.parse(owner.configuration_json)))return false;
     if(context?.issuedResource&&Object.keys(JSON.parse(owner.configuration_json).secretBindings??{}).length)return false;
     const boundRequests=new Set<string>();

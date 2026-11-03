@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining beyond the supported Call-tree family described below: unproven automatic and automatic Call-tree frontiers; issued/unknown/resource/bundle/Agent frontiers; EXIT trees without the closed saved proof described below; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the supported Call-tree family described below: unproven automatic frontiers and automatic Call trees outside the proven root-only family below; issued/unknown/resource/bundle/Agent frontiers; EXIT trees without the closed saved proof described below; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -583,7 +583,7 @@ An original automatic execution can supply an independently supported selected
 checkpoint and latest cut for standalone effect-free serial or parallel Node Scripts, ordinary
 `human_gate` approval steps, declared JSON state, conditions/routes, fork/Map/Join
 controls and their existing loop counters. Schedule, webhook and filesystem definitions keep their actual trigger kind/configRef and exact
-pinned configuration; no trigger is rewritten to manual. Automatic Call trees,
+pinned configuration; no trigger is rewritten to manual. Automatic Call trees beyond the proven root-only tree family below,
 issued/effectful/native/resource/Agent work, retries and secrets
 remain outside this origin-proof subset. Manual graph behavior is unchanged.
 
@@ -652,7 +652,7 @@ Later cancellation of a copied pending gate additionally requires complete quies
 current causal replay with attempt fences; cancellation without that proof refuses.
 Held import/re-export itself emits no notification or response authority. Recovery-
 purpose gates, leased/inflight/unknown work and operator-manual-marker hash mismatches
-remain refused, as do automatic Call-tree families.
+remain refused. Automatic Call trees have the separate root-only proof below.
 
 Existing snapshot listing and foreign picker use codec eligibility; server/SDK/UI
 review and confirmation carry full private checkpoint/manifests and current choices,
@@ -700,3 +700,86 @@ parallel facts, current configuration, full gate/state/control review and explic
 confirmation. The store diagnostic names the wider standalone family. This is
 source support only; no execution, timing/durability, notification, round-trip,
 scheduling or rollback qualification was performed.
+
+
+## Proven automatic-root Script/Call trees
+
+The existing foreign tree consumer now admits an original schedule, webhook or
+filesystem root with effect-free Node Scripts, ordinary approval gates and native
+Calls to supported **manual-definition children**. The root keeps its original
+trigger/configRef and all owners retain their exact configuration, including mixed
+sync, async, omitted-default async and genuinely closed EXIT. State, condition,
+route, loops and existing fork/Map/Join replay are reused. Workflow and step policies
+must stop throughout this automatic-root family; no retries are added. This is an
+explicit tree eligibility path, separate from standalone eligibility, called-child
+admission and issued/resource contexts.
+
+The shared origin validator accepts a Call-capable definition only when the tree
+consumer explicitly opts in. Original selected and latest root cuts each prove the
+same immutable activated occurrence, canonical payload/media/provenance/trigger
+snapshot, native envelope or large-input reference/hash, original pins and original
+accepted/started nonmanual admission. Foreign tree replay passes the root's actual
+private runtime owner to that validator. Missing/unavailable original facts refuse;
+there is no destination SQL fallback or occurrence reconstruction. Called children
+prove their actual parent attempt, input hash, definition/binding, admission and
+result through the existing complete tree replay, never as independent automatic
+origins. Automatic child definitions remain unsupported.
+
+Selected root bytes/hash must match an actual committed complete tree checkpoint.
+Every selected child in this automatic-root family also needs its own exact committed
+saver inventory, invocation, mode and closing flag, including sync children. A saved
+root cannot attest missing or pending child saves. Child saver observations may be
+nonrestorable independently: the complete root codec supplies Call context. Freezing
+a candidate does not acknowledge that these writes have committed. Latest replay is
+independent. Every EXIT latest owner additionally needs its own exact committed
+closed inventory and real closure/process-drain evidence; root invocation metadata
+comes from a retained complete tree. Genuine terminal `latestOnly` nonrestorable
+tree observations qualify only as latest evidence and never become selected cuts.
+Sync/async latest replay does not certify a pending latest write as durable.
+
+Explicit interruption/resume of a live original automatic-root tree uses the same
+original occurrence validator in the existing current owner-chain check. All current
+pins/configuration, policies, owner states, genuine Call edges, saved quiescence and
+observed process exits remain required. Process absence never proves drain; imported
+source interruption never authorizes destination work. Waiting-gate closure continues
+to use the existing gate lifecycle.
+
+Held DATA planning uses the explicit structural tree eligibility only, preserving
+complete private original facts without acceptance or notifications. Continuation
+requires the stronger selected/latest origin and tree proof before review or fresh
+acceptance. Unproven evidence remains held. Existing bounded held re-export,
+admitted generation and local rewind composition separately replay the original
+automatic root and each fresh manually accepted root; original manifests, commands,
+maps and admission evidence remain mandatory. Local historical terminal children
+retain their genuine nonadmission; unfinished restored owners and suffix Calls need
+actual admission. No missing old codec is synthesized.
+
+All-Branch human review still compares the actual current published definitions,
+configRefs/configurations, mapped Call targets, policies, budgets, capacity,
+directories and absence of secrets. The current root may retain its automatic
+**definition**, while explicit confirmation accepts a new **manual execution** with
+its own canonical manual hash, occurrence key, provenance and admission. Receipt
+recovery now checks that destination manual hash rather than the original automatic
+hash. Native child acceptance retains its own Call hash and current authority.
+Completed prefix, children and decisions remain historical once; only unfinished
+suffix runs. Selected pending gates receive fresh destination IDs/notifications in
+the acceptance transaction and require fresh ordinary destination responses. Source
+occurrences, schedules, leases and response authority are never adopted or advanced.
+
+The existing original-key receipt and immutable-prefix checks remain; later copied
+pending-gate cancellation requires complete quiescent current-tree causal replay,
+including Join/path/item/gate events and attempt fences. Unknown, in-flight or
+unsupported latest work refuses rather than creating a replacement command/key.
+Saver lanes/readiness/after-COMMIT publication, runtime fact capture, tree generation
+maps, remap and server/core SDK review/confirm/receipt paths already carry the needed
+evidence and configuration, so they need no new format, DTO, endpoint or authority.
+The existing UI warning now labels the fresh manual execution rather than calling
+the original workflow manual; full current root/child definitions and configuration
+remain inspectable in the existing review. The changed store paths are current tree review, exact destination-hash receipt
+validation and genuine original automatic owner-chain interruption eligibility.
+
+Native/issued/effectful/Agent/resource/custody/bundle/secret/execution-Chat/unknown/
+in-flight/retry families, automatic children, unproven origins and EXIT trees without
+the required closed saves remain unsupported. This is source-only implementation;
+no execution, timing/durability, notification delivery, round-trip, scheduling,
+rollback or whole-Bible acceptance is claimed.

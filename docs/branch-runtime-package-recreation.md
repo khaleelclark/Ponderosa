@@ -103,7 +103,7 @@ frontier **held**, through the same shared origin proof used for continuation. I
 requires the exact retained activated occurrence, canonical original payload/media/
 provenance/trigger snapshot and native envelope or large-input reference, original
 input hash and accepted/started audit. Missing/unavailable/changed or unsupported
-automatic Call-tree or recovery-purpose-gate evidence remains `evidence_only`. No acceptance,
+automatic Call-tree evidence outside the supported root-only family below or recovery-purpose-gate evidence remains `evidence_only`. No acceptance,
 trigger lifetime, scheduler lease or occurrence is recreated. Only a separate human
 review/confirm can accept an earlier genuine supported checkpoint with a fresh
 manual destination input hash/admission; the source automatic hash stays historical.
@@ -172,9 +172,53 @@ Held recreation does not turn a pending save into durable evidence or adopt sour
 scheduling/response authority. Existing committed selected and closed-EXIT latest
 proof, bounded generation/local-rewind composition, fresh manual confirmation,
 destination pending notifications and original-key receipt recovery remain unchanged.
-Automatic Call trees, retries, bundles, secrets and issued/native/effectful/resource/
+Automatic Call trees beyond the root-only family below, retries, bundles, secrets and issued/native/effectful/resource/
 Agent/unknown/in-flight families remain unsupported by this continuation subset.
 Runtime package/saver/remap/server/SDK/UI formats and paths need no changes because
 they already carry this graph evidence through the shared codec and review.
 No execution or notification/timing/durability/round-trip/scheduling/rollback
 validation was performed for this extension.
+
+
+## Automatic-root Script/Call tree successor
+
+The held tree planner now structurally recognizes the supported automatic-root
+Script/ordinary-approval-gate/Call family. Only the root may keep a schedule,
+webhook or filesystem definition; children keep supported manual definitions and
+actual native Call ancestry. Standalone automatic eligibility remains separate.
+Held recreation preserves original input/hash/trigger facts and typed parallel/Call
+maps but creates no acceptance, occurrence, notification, lease or response authority.
+Missing original facts cannot become executable proof through structural recreation.
+
+The [foreign tree consumer](branch-foreign-checkpoint-continuation.md#proven-automatic-root-scriptcall-trees)
+separately proves original activated occurrence/envelope/hash/provenance/admission
+through the same shared validator with explicit Call-family eligibility. It passes
+the original private owner for foreign proof and never falls back to destination
+SQL. Complete selected/latest tree causal replay and per-owner configuration remain
+mandatory, including parallel controls, state/loops, gates, Call results and process
+exits. Every selected automatic-family child needs its own exact committed saver
+inventory/invocation/mode/closing proof; a complete root save cannot cover a missing
+child save. EXIT latest additionally needs each owner's actual closed saved inventory
+and observed drain, with root metadata retained in a complete restorable checkpoint
+or genuine terminal nonrestorable `latestOnly` observation. Observations are latest
+evidence only. No codec or closure is synthesized, and pending saves do not qualify.
+
+Existing bounded held/admitted/re-export/local-rewind generation proof preserves
+original automatic and fresh manual destination identities separately. Explicit
+all-Branch current review and confirmation are still required. The destination root
+retains the same automatic definition but receives a fresh manual execution hash,
+key, provenance and admission; descendants retain native Call acceptance. Original-key
+receipt checks the fresh manual hash, prefix ownership, exact commands and supported
+current cancellation causality. Prefix decisions/children remain historical once;
+pending gates get fresh destination notifications, and only suffix work schedules.
+Original source occurrence or scheduler authority is never adopted or replayed.
+
+Runtime fact capture/format, saver lanes/modes/readiness, generation links/remap and
+server/SDK review/confirm/receipt paths already preserve this evidence and current
+configuration. The UI labels confirmation as a fresh manual execution, while the
+existing review exposes the actual automatic root definition. No format/storage-version/
+DTO/dependency changes are needed. Automatic
+children, retries, issued/native/effectful/Agent/resource/custody/bundle/secret/unknown/
+in-flight work and unproven source or EXIT closure remain unsupported. Source support
+has no execution, timing/durability, notification, round-trip, scheduling or rollback
+qualification.
