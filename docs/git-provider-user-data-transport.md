@@ -282,14 +282,14 @@ were run for this source change.
 
 The shared `scrubReviewToml` reader handles selected `.codex/config.toml` live
 export and imported-manifest validation. Accepted nonsecret source spans stay
-byte-for-byte unchanged. Recognized secret-key string assignments are removed as
+byte-for-byte unchanged. Recognized secret-key assignments are removed as
 whole spans, including multiline payload, trailing comment and terminating newline;
 `removedSecretFields` records the removal. Import refuses such retained assignments.
 Decoded nonsecret strings also pass existing recognizable-secret inspection, so
 supported escapes cannot bypass it. Arbitrary disguised credentials remain outside
 that inspection guarantee.
 
-The bounded scalar subset follows [TOML 1.0 strings](https://toml.io/en/v1.0.0#string):
+The supported string subset follows [TOML 1.0 strings](https://toml.io/en/v1.0.0#string):
 basic/literal single-line and multiline strings, valid basic escapes and Unicode
 scalar escapes, initial newline trimming, multiline basic line continuation and
 one/two quotes inside multiline strings. Three-to-five closing quote runs are
@@ -300,13 +300,30 @@ assignment keys are supported. Duplicate keys/tables, scalar/table collisions,
 invalid escapes/controls, unterminated strings and trailing syntax refuse.
 
 Other accepted scalars are booleans, signed 64-bit decimal integers and finite
-decimal/exponent numbers. Secret keys require string values. Arrays, array tables,
-dates/times, nondecimal integers, infinities/NaNs, dotted/escaped assignment keys,
-quoted table paths, inline tables and compound values refuse. This conservative
-subset may reject valid project TOML; it is not a general TOML implementation.
-Input is bounded to 1 MiB, 64 table segments and 10,000 declarations/comment/blank-line iterations;
-existing per-file, decoded-inspection and package bounds remain. No dependency,
-settings activation, native capture or runtime qualification is introduced.
+decimal/exponent numbers. [Arrays](https://toml.io/en/v1.0.0#array) and
+[inline tables](https://toml.io/en/v1.0.0#inline-table) may nest supported values.
+Arrays accept mixed types, layout comments/newlines and a trailing comma. Inline
+tables allow horizontal layout whitespace, no layout comments/newlines and no
+trailing comma; multiline strings/arrays inside values retain their own rules.
+Duplicate inline member keys refuse, including equivalent bare/quoted spellings.
+Assigned inline tables are closed: later static table extension refuses.
+
+A recognized secret assignment may contain any supported value; the complete
+assignment is parsed before removal. A recognized secret member nested within an
+otherwise nonsecret inline table refuses the entire selection with an explicit
+message; no partial member rewrite or unrelated-setting loss is performed. Every
+retained string leaf is decoded and inspected, including leaves nested in arrays
+or inline tables. The remaining raw-text scan is unchanged.
+
+Array-of-table declarations, dates/times, nondecimal integers, infinities/NaNs,
+dotted/escaped assignment keys and quoted static table paths still refuse. This
+subset may reject valid TOML; no general-language completeness is claimed. Input
+is capped at 1 MiB, 64 static table segments, 10,000 outer statement/line iterations,
+10,000 total value nodes (including containers) and 32 nested value levels below
+the root. Parsing advances through bounded source spans and visits each value
+once; namespace checks use bounded sets, with static path checks capped at 64
+segments. Existing decoded-inspection/package bounds, inactive settings and source
+retention remain. No dependency or runtime qualification is introduced.
 
 Harness selection means the listed project-root configuration families below;
 it never reads the host home profile. Unsupported global/native settings are
@@ -337,7 +354,7 @@ still requires separate human review/action.
 | `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. JSON known secret fields are removed structurally. Codex TOML uses the shared [bounded scalar reader](#bounded-toml-syntax): whole recognized credential string assignments are removed, including multiline payloads; accepted nonsecret source bytes survive. Import enforces the same grammar and rejects retained credential assignments. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. JSON known secret fields are removed structurally. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): whole recognized credential assignments are removed, including multiline payloads; accepted nonsecret source bytes survive. Import enforces the same grammar and rejects retained credential assignments. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -447,7 +464,7 @@ to 48 MiB. Provider settings are never made active by inspection alone.
 
 Exact remaining implementation: unsupported linked/common-directory layouts and private ref namespaces;
 unsupported index flags/extensions and combined split/sparse or other unsupported sparse forms; staged submodule repository originals; custom external Git include/hook
-contents; arbitrary other provider configuration formats and TOML outside the bounded scalar subset; explicit reviewed activation into a native-owned live Git or
+contents; arbitrary other provider configuration formats and TOML outside the bounded structured subset; explicit reviewed activation into a native-owned live Git or
 provider configuration. Whole-folder re-export of imported inactive originals is
 implemented through the [explicit retained-original consumer](#re-exporting-imported-inactive-originals).
 It requires exact family selection, one canonical artifact binding and matching

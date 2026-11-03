@@ -168,13 +168,27 @@ shared request DTO. Selected-file/package-history behavior and cycle policies st
 unchanged. No runtime or platform qualification is claimed.
 
 
-Selected Codex TOML now uses one bounded scalar parser/scrubber for live capture
+Selected Codex TOML now uses one bounded structured parser/scrubber for live capture
 and imported-original validation. Basic/literal multiline string assignments
-preserve accepted nonsecret source bytes; whole recognized secret-key string
+preserve accepted nonsecret source bytes; whole recognized secret-key
 assignments are removed with honest `removedSecretFields`. Decoded nonsecret
 strings undergo recognizable-secret checks. Missing/invalid delimiters, duplicate
-keys/tables, scalar/table collisions and unsupported compound/key/table forms
+keys/tables, scalar/table collisions and unsupported key/table/value forms
 refuse; valid TOML outside this subset remains a recreation limit. See the
-[exact scalar contract](git-provider-user-data-transport.md#bounded-toml-syntax).
+[exact structured contract](git-provider-user-data-transport.md#bounded-toml-syntax).
 Retained-original matching remains byte-exact and never re-sanitizes or substitutes
 live settings. No native/provider/runtime qualification was performed.
+
+
+Supported TOML arrays and inline tables now compose recursively with supported
+scalars in that same reader. Exact nonsecret source spans survive; recognized
+secret assignments remove their complete structurally valid value. Nested secret
+members of nonsecret inline tables refuse the entire selection rather than
+partially rewriting a table. Arrays support comments/newlines/trailing commas;
+inline tables refuse layout comments/newlines and trailing commas. Duplicate
+members and later extension of closed inline tables refuse. Value depth is capped
+at 32 below the root and total value nodes at 10,000, alongside existing byte,
+statement and static-table bounds. Unsupported array-table declarations, dates,
+nondecimal/special numbers and key/path forms remain explicit limits. Decoded
+string-leaf and raw-text secret checks both remain. Source-only implementation;
+no tests, builds, types, native capture or runtime qualification performed.

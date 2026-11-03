@@ -48,12 +48,12 @@ function safeText(value:string,label:string):void {
   assertPortableSecretsAbsent(value,label);
   if(redactPortableDiagnostic(value)!==value||/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value)||/(?:^|\n)\s*(?:export\s+)?(?:[A-Z0-9_]+_)?(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)\s*=/m.test(value))throw new Error(`${label} contains recognizable credentials; preserve source and remove secrets explicitly`);
 }
-/** Bounded scalar TOML subset; source spans survive unless their whole assignment is secret. */
+/** Bounded structured TOML subset; source spans survive unless their whole assignment is secret. */
 function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean} {
   if(Buffer.byteLength(value)>1024*1024||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|\r(?!\n)/.test(value))throw new Error('Invalid or oversized review TOML');
   let offset=0,scope:string[]=[],kept=0,safe='',removedSecretFields=false,entries=0;
   const scalars=new Set<string>(),tables=new Set<string>(),declared=new Set<string>();
-  const fail=():never=>{throw new Error('Invalid, ambiguous or unsupported review TOML scalar syntax');};
+  const fail=():never=>{throw new Error('Invalid, ambiguous or unsupported review TOML value syntax');};
   const horizontal=()=>{while(value[offset]===' '||value[offset]==='\t')offset++;};
   const newline=()=>{if(value[offset]==='\r')offset++;if(value[offset]!=='\n')fail();offset++;};
   const endLine=()=>{horizontal();if(value[offset]==='#')while(offset<value.length&&value[offset]!=='\n'&&value[offset]!=='\r')offset++;if(offset<value.length)newline();};
@@ -100,6 +100,65 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
     }
     if(!closed)fail();return decoded;
   };
+  const assignmentKey=():string=>{
+    let key:string;
+    if(value[offset]==='"'||value[offset]==="'"){
+      const quote=value[offset++]!,end=value.indexOf(quote,offset);if(end<0)fail();
+      key=value.slice(offset,end);if(/[\\\r\n]/.test(key))fail();offset=end+1;
+    }else{
+      const match=/^[A-Za-z0-9_-]+/.exec(value.slice(offset));if(!match)fail();key=match![0];offset+=key.length;
+    }
+    return key;
+  };
+  const arrayWhitespace=()=>{
+    while(offset<value.length){
+      horizontal();
+      if(value[offset]==='#'){while(offset<value.length&&value[offset]!=='\n'&&value[offset]!=='\r')offset++;}
+      if(value[offset]==='\n'||value[offset]==='\r')newline();else break;
+    }
+  };
+  let nodes=0;
+  const readValue=(discard:boolean,depth=0):void=>{
+    if(depth>32||++nodes>10000)throw new Error('Review TOML nesting/value inventory exceeds its bound');
+    if(value[offset]==='"'||value[offset]==="'"){
+      const decoded=string();if(!discard)safeText(decoded,'Decoded provider TOML string');return;
+    }
+    if(value[offset]==='['){
+      offset++;arrayWhitespace();
+      if(value[offset]===']'){offset++;return;}
+      while(offset<value.length){
+        readValue(discard,depth+1);arrayWhitespace();
+        if(value[offset]===']'){offset++;return;}
+        if(value[offset++]!==',')fail();arrayWhitespace();
+        if(value[offset]===']'){offset++;return;}
+      }
+      fail();
+    }
+    if(value[offset]==='{'){
+      offset++;horizontal();const members=new Set<string>();
+      if(value[offset]==='}'){offset++;return;}
+      while(offset<value.length){
+        const key=assignmentKey();if(members.has(key))fail();members.add(key);
+        horizontal();if(value[offset++]!=='=')fail();horizontal();
+        if(!discard&&isPortableSecretField(key))throw new Error('Nested credential TOML fields require separate preservation; inline tables are not partially scrubbed');
+        readValue(discard,depth+1);horizontal();
+        if(value[offset]==='}'){offset++;return;}
+        if(value[offset++]!==',')fail();horizontal();
+        // TOML 1.0 inline tables allow neither trailing commas nor layout newlines/comments.
+        if(value[offset]==='}')fail();
+      }
+      fail();
+    }
+    const begin=offset;while(offset<value.length&&!/[ \t,#\r\n\]}]/.test(value[offset]!))offset++;
+    const scalar=value.slice(begin,offset);
+    // shortcut: dates, nondecimal numbers and array-table declarations remain unsupported.
+    if(!/^(?:true|false|[+-]?(?:0|[1-9](?:_?[0-9])*)(?:\.[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?)$/.test(scalar))fail();
+    const numeric=scalar.replaceAll('_','');
+    if(!['true','false'].includes(scalar)){
+      if(!Number.isFinite(Number(numeric)))fail();
+      if(!/[.eE]/.test(numeric)&&(BigInt(numeric)<-(1n<<63n)||BigInt(numeric)>(1n<<63n)-1n))fail();
+    }
+  };
   while(offset<value.length){
     if(++entries>10000)fail();const start=offset;horizontal();
     if(value[offset]==='#'||value[offset]==='\r'||value[offset]==='\n'||offset===value.length){endLine();continue;}
@@ -111,31 +170,12 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
       if(scope.some(isPortableSecretField))throw new Error('Credential TOML tables require separate preservation');
       registerTable(scope);offset=end+1;endLine();continue;
     }
-    let key:string;
-    if(value[offset]==='"'||value[offset]==="'"){
-      const quote=value[offset++]!,end=value.indexOf(quote,offset);if(end<0)fail();
-      key=value.slice(offset,end);if(/[\\\r\n]/.test(key))fail();offset=end+1;
-    }else{
-      const match=/^[A-Za-z0-9_-]+/.exec(value.slice(offset));if(!match)fail();key=match![0];offset+=key.length;
-    }
+    const key=assignmentKey();
     horizontal();if(value[offset++]!=='=')fail();horizontal();
     const name=JSON.stringify([...scope,key]);if(scalars.has(name)||tables.has(name))fail();scalars.add(name);
-    const secret=isPortableSecretField(key);let decoded:string|undefined;
-    if(value[offset]==='"'||value[offset]==="'")decoded=string();
-    else{
-      const begin=offset;while(offset<value.length&&!/[#\r\n]/.test(value[offset]!))offset++;
-      const scalar=value.slice(begin,offset).replace(/^[ \t]+|[ \t]+$/g,'');
-      // shortcut: compound/date/array-table forms refuse until a complete bounded reader is required.
-      if(secret||!/^(?:true|false|[+-]?(?:0|[1-9](?:_?[0-9])*)(?:\.[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?)$/.test(scalar))fail();
-      const numeric=scalar.replaceAll('_','');
-      if(!['true','false'].includes(scalar)){
-        if(!Number.isFinite(Number(numeric)))fail();
-        if(!/[.eE]/.test(numeric)&&(BigInt(numeric)<-(1n<<63n)||BigInt(numeric)>(1n<<63n)-1n))fail();
-      }
-    }
+    const secret=isPortableSecretField(key);readValue(secret);
     endLine();
     if(secret){safe+=value.slice(kept,start);kept=offset;removedSecretFields=true;}
-    else if(decoded!==undefined)safeText(decoded,'Decoded provider TOML string');
   }
   safe+=value.slice(kept);return {safe,removedSecretFields};
 }
