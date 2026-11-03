@@ -77,8 +77,8 @@ permission. This implementation batch performed no live external-repository read
 Only selected private `HEAD`, `index`, exact linked `sharedindex.<OID>` originals,
 `config.worktree`, `info/sparse-checkout`, `logs/HEAD`, loose
 `refs/{bisect,rewritten,worktree}/**` and matching `logs/refs` supply selected state.
-Shared `config`, `packed-refs`, public `refs`, `objects` and public `logs/refs`
-supply repository state. The common repository's private HEAD/index/config.worktree/patterns/HEAD
+Shared `config`, `packed-refs`, public `refs`, `objects`, public `logs/refs`
+and exact `info/attributes` / `info/exclude` originals supply repository state. The common repository's private HEAD/index/config.worktree/patterns/HEAD
 log are never used, and `common/worktrees` is never enumerated. Its directory
 identity is association evidence only. Selected/shared identities and exact raw
 file bytes (compared by SHA-256), provenance-tagged bounded directory inventories, complete logical
@@ -90,8 +90,8 @@ All native plumbing now reads an exclusive mode-0700 temporary captured view,
 including for ordinary repositories. It contains only captured selected HEAD,
 selected private loose refs, shared public refs/packed refs and approved bounded object-storage originals, plus a
 minimal generated format-only config. Source config, config.worktree, pointers,
-commondir, hooks, logs, index and sparse settings are never copied into its active
-metadata. Native startup therefore cannot discover the selected/common/ancestor
+commondir, hooks, logs, index, sparse settings and repository-local ignore/attribute
+files are never copied into its active metadata. Native startup therefore cannot discover the selected/common/ancestor
 repository, resolve a live include, refresh a shared index or update a linked
 backlink. Captured source config is parsed separately with the existing isolated
 stdin parser and include declarations still refuse. Ref names/targets and packed
@@ -186,6 +186,45 @@ were run for this source change.
 Source references: [Git index format](https://git-scm.com/docs/gitformat-index),
 [Git cache flag definitions](https://github.com/git/git/blob/master/read-cache-ll.h)
 and the binary storage references below.
+
+### Repository-local ignore and attribute originals
+
+Explicit Include Git also captures exactly `info/attributes` and `info/exclude`
+from the validated common repository (ordinary `.git` for a normal repository).
+It never substitutes selected worktree-private files, working-copy
+`.gitattributes`/`.gitignore`, global files or configured external paths. Git's
+[repository layout](https://git-scm.com/docs/gitrepository-layout#Documentation/gitrepository-layout.txt-info)
+places this `info` state in the common directory for linked worktrees. No other
+`info` entries are enumerated or read by this family.
+
+Required `git.infoReview` contains exactly two ordered entries: `info/attributes`,
+then `info/exclude`. Each requires `source:"common_repository"` and
+`dataBase64`: canonical base64 for original bytes, or literal `null` for absence.
+An empty file is `""`, never absence. Unknown/extra fields, missing/duplicate or
+reordered paths, wrong provenance, noncanonical base64, NUL-containing data and
+unsupported UTF-8 refuse. Each original is bounded to 1 MiB (at most 2 MiB for
+the pair, also within live raw-capture and manifest bounds). Valid UTF-8 BOMs,
+line endings, comments and pattern/filter text remain byte-exact; no patterns or
+commands are interpreted. Recognizable credentials refuse the selected export
+or import with the original path identified; these files are never silently
+scrubbed or dropped.
+
+The common `info` parent must be a canonical same-owner directory or explicitly
+absent. Each present file uses the existing bounded same-owner, single-link,
+regular no-follow reader. Parent identity/absence and file identity/absence/hash
+join raw before/after capture evidence; appearance, disappearance or observed
+changes refuse. Existing association checks remain required. This detects
+observed drift, without guaranteeing atomicity against arbitrary writers.
+
+The shared semantic validator covers live export, import, recreation and
+retained-original re-export. Destination `CONFIGURATION-REVIEW.json` retains the
+ordered byte/absence records as inactive evidence, outside `.git`; neither the
+temporary native read view nor the new review repository installs these files
+at active Git paths. No filter, hook, ignore or attribute behavior is activated.
+The original manifest remains the re-export source; generated review JSON is
+never recaptured. Existing Include Git controls carry the added required field
+without a new checkbox, storage version or dependency. This batch is source-only;
+no native, runtime or round-trip qualification was performed.
 
 ### Ordinary local split-index storage
 
@@ -486,6 +525,7 @@ still requires separate human review/action.
 | `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist. Supported normal local `.git` and the explicit reciprocally validated selected-worktree/common-directory association above only. Associated shared objects are explicitly authorized by Include Git; unassociated external/common directories and alternate object stores refuse. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
 | `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
+| `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
 | `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. JSON known secret fields are removed structurally. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): whole recognized credential assignments are removed, including multiline payloads; accepted nonsecret source bytes survive. Import enforces the same grammar and rejects retained credential assignments. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |

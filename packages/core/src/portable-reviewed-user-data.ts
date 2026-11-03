@@ -13,6 +13,8 @@ export interface ReviewedGitUserData {
   resolveUndo:Array<{path:string;stages:Array<{stage:number;mode:string;oid:string}>}>;
   /** Exact patterns and collapsed directory originals; destination index is full and settings stay inactive. */
   sparseReview:{patternsBase64:string|null;directories:ReviewedGitUserData['index']};
+  /** Exact common-repository originals or explicit absence, in path order; never active Git settings. */
+  infoReview:Array<{path:'info/attributes'|'info/exclude';source:'common_repository';dataBase64:string|null}>;
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true;source?:'config.worktree'}>;
   exclusions:string[];
 }

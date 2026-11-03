@@ -281,7 +281,7 @@ function reflogPath(value:string):void {
 }
 
 export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','configurationReview','sparseReview','exclusions']);
+  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','configurationReview','sparseReview','infoReview','exclusions']);
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const ids=new Map<string,GitObject>();let bytes=0;
   const oidPattern=value.format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
@@ -362,7 +362,25 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   }
   encodeResolveUndo(value.resolveUndo,value.format,ids);
   for(const item of value.configurationReview){fields(item,['key','value'],['implicitBoolean','source']);if(item.source!==undefined&&item.source!=='config.worktree')throw new Error('Invalid reviewed Git configuration source');if(typeof item.key!=='string'||typeof item.value!=='string'||item.implicitBoolean!==undefined&&(item.implicitBoolean!==true||item.value!=='')||excludedGitKey(item.key)||/:\/\/[^/]*@/.test(item.value))throw new Error('Invalid reviewed Git configuration');safeText(`${item.key}=${item.value}`,'Git configuration');}
+  validateGitInfoReview(value.infoReview);
   validateSparseReview(value,ids);
+}
+
+const gitInfoPaths=['info/attributes','info/exclude'] as const;
+function validateGitInfoReview(value:ReviewedGitUserData['infoReview']):void {
+  if(!Array.isArray(value)||value.length!==gitInfoPaths.length)throw new Error('Both Git info originals or explicit absences are required');
+  for(const [i,file] of value.entries()){
+    fields(file,['path','source','dataBase64']);
+    if(file.path!==gitInfoPaths[i]||file.source!=='common_repository')throw new Error('Invalid Git info path/order/provenance');
+    if(file.dataBase64===null)continue;
+    if(typeof file.dataBase64!=='string'||file.dataBase64.length>Math.ceil(1024*1024/3)*4)throw new Error('Git info original exceeds its bound');
+    const raw=Buffer.from(file.dataBase64,'base64');
+    if(raw.length>1024*1024||raw.toString('base64')!==file.dataBase64||raw.includes(0))throw new Error('Invalid Git info original bytes; preserve source');
+    let original:string;
+    try{original=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw);}catch{throw new Error(`Unsupported UTF-8 Git ${file.path} original; preserve source`);}
+    if(!Buffer.from(original).equals(raw))throw new Error('Unsupported Git info encoding; preserve source');
+    safeText(original.replace(/^\uFEFF/,''),`Git ${file.path} original`);
+  }
 }
 
 type IndexEntry=ReviewedGitUserData['index'][number];
@@ -774,6 +792,17 @@ async function captureGitRaw(association:GitAssociation) {
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
     }
   };
+  // Inspect only the exact common info parent and two allowlisted files, never its other contents.
+  const info=path.join(commonDir,'info');
+  const infoIdentity=async():Promise<string|null>=>{
+    let stat;try{stat=await fs.lstat(info,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
+    if(!stat.isDirectory()||stat.uid!==owner||await fs.realpath(info)!==info)throw new Error('Git info parent must be canonical and same-owner');
+    return originalIdentity(stat);
+  };
+  const infoBefore=await infoIdentity();
+  inventory.push({name:'info',source:'shared',identity:infoBefore??'',...(infoBefore===null?{absent:true as const}:{})});
+  for(const name of gitInfoPaths)await walk(path.join(commonDir,name),name,'shared');
+  if(await infoIdentity()!==infoBefore)throw new Error('Git info parent changed during capture');
   for(const name of ['HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
@@ -791,7 +820,10 @@ async function captureGitRaw(association:GitAssociation) {
     await walk(path.join(gitDir,'refs'),'refs','selected');
     await walk(path.join(gitDir,'logs','refs'),'logs/refs','selected');
   }
-  return {files,evidence:JSON.stringify(inventory)};
+  if(await infoIdentity()!==infoBefore)throw new Error('Git info parent changed during capture');
+  const infoReview:ReviewedGitUserData['infoReview']=gitInfoPaths.map(name=>({path:name,source:'common_repository',dataBase64:files.find(file=>file.source==='shared'&&file.name===name)?.data.toString('base64')??null}));
+  validateGitInfoReview(infoReview);
+  return {files,evidence:JSON.stringify(inventory),infoReview};
 }
 
 /** Native plumbing sees only an exclusive private copy, with generated config and no source pointers/index. */
@@ -931,7 +963,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
       exclusions.push('Git configuration entry excluded: recognizable credential or URL userinfo');
     }
   }
-  const result:ReviewedGitUserData={version:1,format,objects,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')).map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,configurationReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,objects,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')).map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,configurationReview,exclusions};
   // Verify every captured object and graph before deriving any missing logical index entries.
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
@@ -967,7 +999,7 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
     const undo=encodeResolveUndo(value.resolveUndo,value.format),extension=Buffer.alloc(undo.length?8:0);
     if(undo.length){extension.write('REUC');extension.writeUInt32BE(undo.length,4);}
     const index=Buffer.concat([header,...entries,extension,undo]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
-    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
+    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,infoReview:value.infoReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
   }catch(error){throw new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error});}
 }
 
