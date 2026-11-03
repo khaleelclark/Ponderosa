@@ -15,7 +15,7 @@ function fixture(t,mode='full'){
  CREATE TABLE branch_unit_snapshots(id INTEGER PRIMARY KEY);CREATE TABLE conversations(id TEXT);
  CREATE TABLE agents(id TEXT,conversation_id TEXT,deleted_at TEXT);CREATE TABLE scheduler_runs(agent_id TEXT,status TEXT);
  CREATE TABLE agent_activations(agent_id TEXT,state TEXT);
- CREATE TABLE agent_creation_operations(id TEXT,project_id TEXT,conversation_id TEXT,status TEXT);`);
+ CREATE TABLE agent_creation_operations(id TEXT,project_id TEXT,conversation_id TEXT,status TEXT,result_json TEXT);`);
  for(const name of ['0037_coordination_destination_admissions.sql','0038_coordination_destination_retirements.sql','0039_coordination_destination_group_chats.sql'])db.exec(readFileSync(new URL('../../packages/agents/src/schema/'+name,import.meta.url),'utf8'));
  db.exec("INSERT INTO branches VALUES('branch');INSERT INTO branch_executions VALUES('source1'),('source2');INSERT INTO branch_unit_snapshots VALUES(1)");
  const resources=[1,2].map(i=>({custody:{sourceChatId:`old-chat${i}`,agentIds:[`old${i}`],intent:{executionId:`source${i}`,resourceStepId:`source-step${i}`,resourceGeneration:0}},destination:{projectId:'project',conversationId:`fresh-chat${i}`,executionId:'new-owner',resourceStepId:`new-step${i}`,resourceGeneration:0}}));
@@ -33,7 +33,7 @@ function fixture(t,mode='full'){
  for(const i of [1,2]){
   const prepared=mode!=='empty'&&(mode!=='partial'||i===1);
   db.prepare('INSERT INTO coordination_destination_group_chats VALUES(?,?,?,?,?)').run('group',`old-chat${i}`,'source1',`fresh-chat${i}`,prepared?stableJson(stages[`old-chat${i}`]):null);
-  if(prepared){db.prepare('INSERT INTO coordination_destination_members VALUES(?,?,?)').run('group',`old${i}`,`new${i}`);db.prepare('INSERT INTO agent_creation_operations VALUES(?,?,?,?)').run(`import${i}`,'project',`fresh-chat${i}`,'rolled_back');}
+  if(prepared){db.prepare('INSERT INTO coordination_destination_members VALUES(?,?,?)').run('group',`old${i}`,`new${i}`);db.prepare('INSERT INTO agent_creation_operations VALUES(?,?,?,?,NULL)').run(`import${i}`,'project',`fresh-chat${i}`,'rolled_back');}
  }
  const service=new CoordinationV3DestinationReconciliation(db,true),singular=new CoordinationV3DestinationReconciliation(db);
  let revision='observed-whole-group',references=[];
