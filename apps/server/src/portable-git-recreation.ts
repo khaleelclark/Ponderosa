@@ -84,7 +84,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
       }
       for(const record of task.value.git!.configurationOriginalReview)if(record.dataBase64!==null)addOriginal(path.join(record.source==='selected_worktree'?privateDir:common,record.path),{dataBase64:record.dataBase64});
     }
-    const read=(name:string)=>{const encoded=originals.get(name);if(encoded===undefined)return;return decodePortableMetadataArtifact(encoded,1024*1024);};
+    const read=(name:string)=>{const encoded=originals.get(name);if(encoded===undefined)return;return decodePortableMetadataArtifact(encoded,64*1024*1024);};
     for(const task of tasks.filter(task=>task.activation.git)){
       const common=task.layout?.commonDir??task.storage?.gitDir??path.join(task.destination,'.git'),privateDir=task.layout?.privateDir??common;
       task.externalPlan=planReviewedGitExternalApplication(task.value,task.activation,{common,private:privateDir,worktree:task.destination},paths,read);

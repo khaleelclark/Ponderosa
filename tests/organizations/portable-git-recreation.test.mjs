@@ -518,3 +518,14 @@ test('an internally deferred direct plan stays direct after a confirmed prefligh
     assert.deepEqual(receipts.map(receipt=>receipt.state),['applying','completed']);
   }finally{await rm(root,{recursive:true,force:true});}
 });
+
+
+test('native planning compares transported hook originals above the config-only one-MiB bound',{skip:process.platform==='win32'},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-large-hook-plan-'));
+  try{
+    const source=path.join(root,'source'),destination=path.join(root,'destination');await initialize(source);await mkdir(path.join(source,'.husky'));
+    const hook='echo retained\n'.repeat(100000);await writeFile(path.join(source,'.husky','pre-commit'),hook);await git(source,'config','core.hooksPath','.husky');
+    const manifest=await exportReviewedUserData(source,{git:true,harness:false}),tasks=planReviewedRecoveryRoots(packageFor(manifest,{'.husky/pre-commit':hook}),{work:destination},{git:true,harness:false});
+    assert.equal(tasks[0].configuration.external.files.find(file=>file.path==='.husky/pre-commit').data.length,Buffer.byteLength(hook));
+  }finally{await rm(root,{recursive:true,force:true});}
+});
