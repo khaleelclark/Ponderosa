@@ -20,7 +20,7 @@ import {checkpointPackageCustody,type CheckpointPackageSource,type CheckpointPac
 export type {CheckpointPackageSource,CheckpointPackageReceipt,CheckpointPackageStatus} from '../checkpoint-agent-packages.js';
 export type {AgentPackageCompositionInput,AgentPackageComposition} from '../compose-agent-packages.js';
 import {withoutPortableSecrets,redactPortableDiagnostic} from '../portable-secrets.js';
-import {planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,validateReviewedUserDataActivation,validateReviewedUserDataSelection,validateReviewedMetadataActivation,requireReviewedMetadataApplication,validateGitStorageSelections,createGitExportCapture,verifyGitExportAssociations,validatePortableGitStorageBindings,type GitExportCapture,type SelectedGitBinding} from '../portable-reviewed-user-data.js';
+import {REVIEWED_USER_DATA_PATH,validateReviewedUserDataActivation,validateReviewedUserDataSelection,validateReviewedMetadataActivation,requireReviewedMetadataApplication,validateGitStorageSelections,createGitExportCapture,verifyGitExportAssociations,validatePortableGitStorageBindings,type GitExportCapture,type SelectedGitBinding} from '../portable-reviewed-user-data.js';
 import {filesystemMetadataProvenance,planFilesystemMetadata} from '../portable-filesystem-metadata.js';
 import {parseReviewedUserData} from '../portable-reviewed-user-data.js';
 import {validateWorkingRootNesting,exportWorkingFiles,importWorkingFiles,importWorkingLinks,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,type WorkingFolderInventory,type WorkingRootIdentity} from '../portable-working-files.js';
@@ -33,7 +33,7 @@ import {validateMemorySnapshot} from '../portable-memory-snapshot.js';
 import {executionArchives,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
 import { createHash, randomUUID } from "node:crypto";
 import {constants} from "node:fs";
-import syncFs,{ createReadStream, promises as fs } from "@ponderosa/native-host/fs";
+import syncFs,{ promises as fs } from "@ponderosa/native-host/fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
   normalizeAgentRole, FULL_PACKAGE_EXPORT_WARNING, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
@@ -1986,9 +1986,10 @@ export function registerAgentPackageRoutes(
         catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
       }
       if(body.reviewedUserDataActivation&&!body.workingFilesActivation){
+        const activation=body.reviewedUserDataActivation;
         const owner=portablePackage.agents.find(node=>node.workingFolder||node.workingFiles?.length);
         const destinations=body.workingRootDestinations??{[owner!.workingRootRef??owner!.ref]:body.workingFilesDestination!};
-        await runNativeMetadataPhase(()=>applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,destinations,body.reviewedUserDataActivation),body.reviewedUserDataActivation,receipt=>{
+        await runNativeMetadataPhase(()=>applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,destinations,activation),activation,receipt=>{
           const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
           if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
           store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});

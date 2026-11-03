@@ -247,7 +247,7 @@ export class AgentWorkingCopyService {
     private readonly store: Pick<
       AgentStore,
       "getAgent" | "listProjectWorkingCopies" | "updateAgentWorkingCopy" |
-      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents" | "getProject" | "bindStagedImportedProjectRoot" | "bindPreparingImportedProjectRoot"
+      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents" | "getProject" | "bindStagedImportedProjectRoot" | "bindPreparingImportedProjectRoot" | "recordGeneratedHookNamespace"
     >,
   ) {
     this.managedRoot = path.join(realpathSync(dataDir), "working-copies");
