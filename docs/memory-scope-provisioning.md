@@ -2,9 +2,10 @@
 
 The host creates a new durable Chat's memory and log collections only from a
 receipt inserted in the same canonical transaction as that Chat. Initial global
-and already-existing eligible Chat scopes receive matching planned receipts in
+and already-existing durable Chat scopes receive matching planned receipts in
 the transaction that binds the first policy, before any remote collection is
-created. An existing same-name collection is refused, not adopted as fresh. Each
+created. Inactive Chats remain planned until exact active ownership is proven. An
+existing same-name collection is refused, not adopted as fresh. Each
 receipt binds the scope and Project, data generation, memory principal, storage
 binding, and a random operation identity. Each collection advances separately from
 planned to submitted before the external create, then to confirmed after the
