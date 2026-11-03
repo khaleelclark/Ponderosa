@@ -87,6 +87,7 @@ test('indirect Run, Request and activation URLs retain the canonical product own
 });
 
 test('product collections filter before paging and bind continuations to their product',async t=>withFixture(t,async f=>{
+ const assistant=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(assistant.enabled,true);assert.ok(assistant.app);
  const {branch,products}=await setup(f);
  const agentPage=await f.api('GET',`/api/branches/${branch.id}/agents?limit=1`);f.ok(agentPage);assert.equal(agentPage.body.length,1);assert.equal(agentPage.headers['x-total-count'],'2');assert.ok(agentPage.headers['x-next-cursor']);
  const agentNext=f.ok(await f.api('GET',`/api/branches/${branch.id}/agents?limit=1&cursor=${encodeURIComponent(agentPage.headers['x-next-cursor'])}`));assert.equal(agentNext.length,1);assert.notEqual(agentNext[0].id,agentPage.body[0].id);
@@ -94,14 +95,16 @@ test('product collections filter before paging and bind continuations to their p
  const branchPage=await f.api('GET',`/api/branches/${branch.id}/chats?limit=1`);f.ok(branchPage);assert.equal(branchPage.body.length,1);assert.equal(branchPage.headers['x-total-count'],'2');assert.ok(branchPage.headers['x-next-cursor']);
  const branchNext=f.ok(await f.api('GET',`/api/branches/${branch.id}/chats?limit=1&cursor=${encodeURIComponent(branchPage.headers['x-next-cursor'])}`));assert.equal(branchNext.length,1);assert.notEqual(branchNext[0].id,branchPage.body[0].id);
  for(const product of ['dev','branches'])for(const kind of ['project','conversation','agent']){
+  const expected=products[product].map(item=>kind==='agent'?item.agent.id:kind==='project'?item.chat.projectId:item.chat.id);
+  if(product==='branches')expected.push(kind==='agent'?assistant.app.agentId:kind==='project'?assistant.app.projectId:assistant.app.chatId);
   const base=`${prefix(product)}/workspace/directory/${kind}?limit=1&sort=alphabetical`,seen=[];let cursor,first;
   do{
    const page=f.ok(await f.api('GET',base+(cursor?`&cursor=${encodeURIComponent(cursor)}`:'')));first??=page;
-   assert.equal(page.total,2,`${product} ${kind} count`);assert.equal(page.items.length,1,'Foreign rows consumed a page');
+   assert.equal(page.total,expected.length,`${product} ${kind} count`);assert.equal(page.items.length,1,'Foreign rows consumed a page');
    seen.push(...page.items.map(item=>item[kind].id));cursor=page.history.cursor;
-   assert.ok(seen.length<=2,'Pagination repeated a page');
+   assert.ok(seen.length<=expected.length,'Pagination repeated a page');
   }while(cursor);
-  assert.deepEqual(seen.sort(),products[product].map(item=>kind==='agent'?item.agent.id:kind==='project'?item.chat.projectId:item.chat.id).sort());
+  assert.deepEqual(seen.sort(),expected.sort(),'Only the owned scoped resources and the Branches Assistant belong in the collection');
   assert.ok(first.history.cursor);const foreign=product==='dev'?'branches':'dev';
   assert.ok([400,409].includes((await f.api('GET',`${prefix(foreign)}/workspace/directory/${kind}?limit=1&sort=alphabetical&cursor=${encodeURIComponent(first.history.cursor)}`)).status));
  }
@@ -109,7 +112,9 @@ test('product collections filter before paging and bind continuations to their p
   const other=product==='dev'?'branches':'dev';
   assert.equal((await f.api('GET',`${prefix(product)}/agents/${products[other][0].agent.id}`)).status,404);
   assert.equal((await f.api('GET',`${prefix(product)}/conversations/${products[other][0].chat.id}/files`)).status,404);
-  assert.equal(f.ok(await f.api('GET',`${prefix(product)}/projects?limit=100`)).length,2);
+  const expectedProjects=products[product].map(item=>item.chat.projectId);
+  if(product==='branches')expectedProjects.push(assistant.app.projectId);
+  assert.deepEqual(f.ok(await f.api('GET',`${prefix(product)}/projects?limit=100`)).map(project=>project.id).sort(),expectedProjects.sort());
  }
 }));
 
@@ -161,16 +166,19 @@ test('notification counts, page boundaries and dismissal cannot affect the other
 test('inactive installation resources disappear from direct and paginated read models',async t=>{
  let store;
  await withFixture(t,async f=>{
+  const assistant=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(assistant.enabled,true);assert.ok(assistant.app);
   const {branch,products}=await setup(f),{chat,agent}=products.branches[0];
   const page=f.ok(await f.api('GET','/api/branches/engine/workspace/directory/agent?limit=1&sort=alphabetical'));
   store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat','agent',?,'retiring')").run(branch.id,'controlled-scope-installation',agent.id);
   assert.equal((await f.api('GET',`/api/branches/engine/agents/${agent.id}`)).status,404);
-  assert.equal(f.ok(await f.api('GET','/api/branches/engine/workspace/directory/agent')).total,1);
+  const remainingAgents=f.ok(await f.api('GET','/api/branches/engine/workspace/directory/agent'));
+  assert.equal(remainingAgents.total,2);assert.deepEqual(remainingAgents.items.map(item=>item.agent.id).sort(),[assistant.app.agentId,products.branches[1].agent.id].sort());
   assert.equal((await f.api('GET',`/api/branches/engine/workspace/directory/agent?limit=1&sort=alphabetical&cursor=${encodeURIComponent(page.history.cursor)}`)).status,409,'A visibility change must invalidate the prior continuation');
   store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat','',?,'retiring')").run(branch.id,'controlled-scope-installation',chat.id);
-  assert.equal(f.ok(await f.api('GET','/api/branches/engine/workspace/directory/conversation')).total,1);
-  assert.equal(f.ok(await f.api('GET','/api/branches/engine/projects')).length,1);
-  assert.equal(f.ok(await f.api('GET','/api/projects')).length,2);
+  const remainingChats=f.ok(await f.api('GET','/api/branches/engine/workspace/directory/conversation'));
+  assert.equal(remainingChats.total,2);assert.deepEqual(remainingChats.items.map(item=>item.conversation.id).sort(),[assistant.app.chatId,products.branches[1].chat.id].sort());
+  assert.deepEqual(f.ok(await f.api('GET','/api/branches/engine/projects')).map(project=>project.id).sort(),[assistant.app.projectId,products.branches[1].chat.projectId].sort());
+  assert.deepEqual(f.ok(await f.api('GET','/api/projects')).map(project=>project.id).sort(),products.dev.map(item=>item.chat.projectId).sort());
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 
