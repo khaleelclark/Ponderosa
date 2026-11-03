@@ -2515,6 +2515,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Linux, Node24, built native/server workspaces, local Git; private inert roots only",
       "origin": "Owned external Git graph application: post-sharing source modes and nanosecond link/directory times, context-root identity, equal-only existing byte preservation and complete hardlink custody"
+    },
+    {
+      "path": "tests/organizations/portable-bare-git.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces and Git; disposable repositories; no provider account",
+      "origin": "Typed configured bare repository capsules, source preservation, sanitized config and credential-file exclusions"
     }
   ],
   "retainedReleasePayload": [

@@ -105,5 +105,5 @@ export interface ReviewedGitExternalDependencies {
   absentPaths:string[];
   omittedPaths:string[];
   bindings:Array<{kind:'include'|'hooks'|'attributes'|'excludes';sourceConfigPath:string;rawValue:string;resolvedPath:string;contextSourcePath:string;context:'config'|'worktree'|'gitdir';default?:true}>;
-  repositories?:Array<{sourcePath:string;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}>;
+  repositories?:Array<{sourcePath:string;bare?:true;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}>;
 }

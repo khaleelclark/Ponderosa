@@ -1,7 +1,7 @@
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
-import {applyExactFileMetadata,applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
+import {DataDirectoryReadReference,applyExactFileMetadata,applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
 import {closeSync,promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {tmpdir,homedir} from 'node:os';
@@ -1953,7 +1953,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
   return context;
 }
 
-type GitAssociation={root:string;gitDir:string;commonDir:string;linked:boolean;module?:true;moduleData?:true;evidence:string};
+type GitAssociation={root:string;gitDir:string;commonDir:string;linked:boolean;module?:true;moduleData?:true;bare?:true;evidence:string};
 function originalIdentity(stat:{dev:bigint;ino:bigint;mode:bigint;uid:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint}):string {
   return [stat.dev,stat.ino,stat.mode,stat.uid,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
 }
@@ -2378,9 +2378,45 @@ export async function exportReviewedGit(root:string,capture?:GitExportCapture,al
   const association=await gitAssociation(root,capture);if(!association)return undefined;
   return captureReviewedGit(root,association,capture,0,allowConfiguredExternalSource);
 }
-async function captureReviewedGit(root:string,association:GitAssociation,capture?:GitExportCapture,depth=0,allowConfiguredExternalSource=false):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}> {
+/** Explicit configured bare storage grants no working-tree authority. Reuse
+ * canonical immutable originals and the normal secret/config sanitizer.
+ * https://git-scm.com/docs/gitrepository-layout */
+export async function exportReviewedBareGit(root:string):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}> {
+  if(!path.isAbsolute(root)||await fs.realpath(root)!==root)throw new Error('Bare Git source must be canonical');
+  const named=await fs.lstat(root,{bigint:true});
+  if(!named.isDirectory())throw new Error('Bare Git source must be a directory');
+  let handle:Awaited<ReturnType<typeof fs.open>>|undefined,reference:DataDirectoryReadReference|undefined,primary:unknown;
+  try{
+    if(process.platform==='linux')handle=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+    else reference=new DataDirectoryReadReference(root);
+    const rootPath=handle?'/proc/self/fd/'+handle.fd:reference!.rootPath;
+    const held=handle?await handle.stat({bigint:true}):await fs.lstat(rootPath,{bigint:true});
+    if(held.dev!==named.dev||held.ino!==named.ino||held.uid!==named.uid)throw new Error('Bare Git root changed before capture');
+    const mapped=(target:string)=>target===root?rootPath+'/.':target.startsWith(root+path.sep)?rootPath+target.slice(root.length):target;
+    const io:GitSourceFs={
+      lstat:((target:string,...args:unknown[])=>fs.lstat(mapped(target),...args as [])) as typeof fs.lstat,
+      realpath:((target:string)=>fs.realpath(mapped(target))) as typeof fs.realpath,
+      open:((target:string,...args:unknown[])=>fs.open(mapped(target),...args as [number])) as typeof fs.open,
+      readdir:((target:string,...args:unknown[])=>fs.readdir(mapped(target),...args as [])) as typeof fs.readdir,
+    };
+    const verify=async()=>{const current=await fs.lstat(root,{bigint:true}),retained=handle?await handle.stat({bigint:true}):await fs.lstat(rootPath,{bigint:true});if(originalIdentity(current)!==originalIdentity(named)||originalIdentity(retained)!==originalIdentity(named)||await fs.realpath(root)!==root)throw new Error('Bare Git root changed during capture');};
+    for(const name of ['.git','commondir','gitdir'])await absentGitPath(path.join(root,name),io);
+    const configuration=await regularOriginal(path.join(root,'config'),1024*1024,named.uid,io);
+    const raw=await parseCapturedGitConfiguration(configuration.data),rows=raw.slice(0,-1).split('\0');
+    if(!raw.endsWith('\0')||rows.some(row=>row.split('\n',1)[0]!.toLowerCase()==='core.worktree'))throw new Error('Bare Git source cannot claim a working tree');
+    if(gitConfigurationBoolean(configSource(configuration.data).items,'core.bare')!==true)throw new Error('Bare Git source requires explicit core.bare=true');
+    const association:GitAssociation={root,gitDir:root,commonDir:root,linked:false,moduleData:true,bare:true,evidence:configuration.identity};
+    const result=await captureReviewedGit(root,association,undefined,0,false,{io,verify});
+    const after=await regularOriginal(path.join(root,'config'),1024*1024,named.uid,io);
+    if(after.identity!==configuration.identity||!after.data.equals(configuration.data))throw new Error('Bare Git configuration changed during capture');
+    for(const name of ['.git','commondir','gitdir'])await absentGitPath(path.join(root,name),io);
+    await verify();return result;
+  }catch(error){primary=error;throw error;}
+  finally{const cleanup:unknown[]=[];try{await handle?.close();}catch(error){cleanup.push(error);}try{reference?.close();}catch(error){cleanup.push(error);}if(cleanup.length)throw Object.assign(new AggregateError([...(primary?[primary]:[]),...cleanup],'Bare Git capture descriptor cleanup failed'),{cause:primary??cleanup[0],cleanupErrors:cleanup});}
+}
+async function captureReviewedGit(root:string,association:GitAssociation,capture?:GitExportCapture,depth=0,allowConfiguredExternalSource=false,source?:{io:GitSourceFs;verify:()=>Promise<void>}):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}> {
   if(depth>16)throw new Error('Native Git module nesting exceeds the capture bound');
-  const fs=capture?.io??sourceFs;
+  const fs=source?.io??capture?.io??sourceFs;
   const {gitDir,commonDir,linked}=association;
   const assertTopology=async()=>{
     for(const name of ['MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock'])await absentGitPath(path.join(gitDir,name),fs);
@@ -2397,6 +2433,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
     const current=association.moduleData?association:await gitAssociation(root,capture);if(!current||current.evidence!==association.evidence)throw new Error('Git association changed during capture');
     await assertTopology();
     const sparse=await captureSparseConfiguration(gitDir,commonDir,fs);
+    if(association.bare&&(gitConfigurationBoolean(sparse.configuration,'core.bare')!==true||sparse.configuration.some(item=>item.key.toLowerCase()==='core.worktree')))throw new Error('Bare Git source configuration cannot override bare storage with working-tree authority');
     const storage=sparse.configuration.filter(item=>!item.source&&item.key.toLowerCase()==='extensions.refstorage');
     if(storage.length>1||storage.some(item=>!['files','reftable'].includes(item.value)))throw new Error('Unsupported Git reference storage declaration');
     const raw=await captureGitRaw(association,storage[0]?.value==='reftable',fs);
@@ -2434,7 +2471,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   const after={...await snapshot(),storage:await captureIndexStorage(gitDir,format,fs)};
   if(before.raw.evidence!==after.raw.evidence||JSON.stringify(before.sparse)!==JSON.stringify(after.sparse)||!before.storage.originals.equals(after.storage.originals)||JSON.stringify(before.storage.logical)!==JSON.stringify(after.storage.logical)||JSON.stringify(before.storage.resolveUndo)!==JSON.stringify(after.storage.resolveUndo))throw new Error('Git selection changed during capture; preserve source and retry');
   const finalAssociation=association.moduleData?association:await gitAssociation(root,capture);if(!finalAssociation||finalAssociation.evidence!==association.evidence)throw new Error('Git association changed after capture');
-  if(capture){await capture.verify();if(!association.moduleData)capture.record(root,association.evidence);}
+  if(capture){await capture.verify();if(!association.moduleData)capture.record(root,association.evidence);}await source?.verify();
   const originalIndex:IndexEntry[]=before.storage.logical;
   const sparseSnapshot=before.sparse;
   const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
@@ -2482,7 +2519,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   result.index.sort(indexOrder);validateReviewedGit(result);
   // Drafts are selected-worktree data even when gitDir and commonDir coincide.
   const gitOriginals=before.raw.files.filter(file=>gitReviewOriginal('.git/'+file.name)&&file.source===(gitSelectedOriginalNames.includes(file.name)?'selected':'shared')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false,...(file.metadata?{metadata:file.metadata}:{})}));
-  const moduleSources=await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource);
+  const moduleSources=association.bare?{modules:[],evidence:'bare'}:await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource);
   result.modules=[];
   if(moduleSources.modules.length){
     for(const module of moduleSources.modules){
@@ -2491,7 +2528,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
     }
     validateReviewedGit(result,depth);
   }
-  if((await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource)).evidence!==moduleSources.evidence)throw new Error('Native module inventory changed during capture');
+  if(!association.bare&&(await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource)).evidence!==moduleSources.evidence)throw new Error('Native module inventory changed during capture');
   return {git:result,gitOriginals};
 }
 
@@ -2955,8 +2992,8 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
   }
   if(selection.git&&!result.git)throw new Error('Selected Git data is unavailable in this working root');
   if(result.git){
-    const dependencies=await captureGitExternalDependencies(root,result.git,selection.externalGitDependencies===true,{parseConfiguration:parseReviewedGitConfiguration,exportGit:root=>exportReviewedGit(root,undefined,selection.externalGitDependencies===true)});
-    if(dependencies){result.gitExternalDependencies=dependencies;if(dependencies.omittedPaths.length)result.exclusions.push('Configured Git dependencies omitted without source grant or for credential re-entry: '+dependencies.omittedPaths.join(', '));}
+    const dependencies=await captureGitExternalDependencies(root,result.git,selection.externalGitDependencies===true,{parseConfiguration:parseReviewedGitConfiguration,exportGit:root=>exportReviewedGit(root,undefined,selection.externalGitDependencies===true),exportBareGit:exportReviewedBareGit});
+    if(dependencies){result.gitExternalDependencies=dependencies;if(dependencies.omittedPaths.length)result.exclusions.push('Configured Git dependencies omitted (unselected, private storage, or credential re-entry): '+dependencies.omittedPaths.join(', '));}
   }
   if(capture&&selection.git){
     const worktreeRef=capture.bindings.find(binding=>binding.worktreePath===root)?.worktreeRootRef;

@@ -11,10 +11,11 @@ import {openPortableRegular} from './portable-held-regular.js';
 import {serializeSourcePath,sourcePathAbsolute,normalizeSourcePath,resolveSourcePath,relativeSourcePath,sourcePathWithin,sourcePathKey} from './portable-source-paths.js';
 
 type Configuration={data:Buffer;items:ReviewedGitUserData['configurationReview']};
-type Readers={parseConfiguration:(data:Buffer)=>Configuration;exportGit:(root:string)=>Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}|undefined>};
+type GitCapture={git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']};
+type Readers={exportBareGit?:(root:string)=>Promise<GitCapture>;parseConfiguration:(data:Buffer)=>Configuration;exportGit:(root:string)=>Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}|undefined>};
 const maxBytes=32*1024*1024,maxEntries=10000;
 const stamp=(stat:{dev:bigint;ino:bigint;mode:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint})=>[stat.dev,stat.ino,stat.mode,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
-const privatePath=(name:string)=>name.split(/[\\/]/).some(part=>['.ssh','.aws','.gnupg','browser-profiles'].includes(part.toLowerCase())||/^\.env(?:\.|$)/i.test(part)||/^(?:credentials(?:\.json)?|auth\.json|.*\.p12)$/i.test(part));
+const privatePath=(name:string)=>name.split(/[\\/]/).some(part=>['.ssh','.aws','.gnupg','browser-profiles'].includes(part.toLowerCase())||/^\.env(?:\.|$)/i.test(part)||/^(?:credentials(?:\.json)?|auth\.json|\.git-credentials|\.netrc|_netrc|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*\.(?:p12|pfx))$/i.test(part));
 async function readBounded(handle:Awaited<ReturnType<typeof fs.open>>,size:bigint):Promise<Buffer>{
   if(size<0n||size>BigInt(maxBytes))throw new Error('Configured Git dependency exceeds its read bound');
   const data=Buffer.alloc(Number(size)+1);let position=0;
@@ -50,7 +51,7 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
   const selected=[serializeSourcePath(root),common,privateDir];
   const files=new Map<string,{record:ReviewedGitExternalDependencies['files'][number];raw:Buffer}>(),directories=new Map<string,ReviewedGitExternalDependencies['directories'][number]>(),visited=new Set<string>(),configurations=new Set<string>(),identities=new Map<string,{native:string;stamp:string;hash?:string;target?:string}>(),inodes=new Map<string,string>();
   const pins=new Map<string,{native:string;handle?:Awaited<ReturnType<typeof fs.open>>;reference?:DataDirectoryReadReference;path:string;stamp:string}>();
-  const repositories=new Map<string,{native:string;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}>(),knownRepositories=new Set([sourcePathKey(serializeSourcePath(root))]),knownModules=new Set<string>();
+  const repositories=new Map<string,{native:string;bare?:true;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}>(),knownRepositories=new Set([sourcePathKey(serializeSourcePath(root))]),knownModules=new Set<string>();
   const configurationAbsences=new Set<string>();
   let bytes=0,entries=0;
   const allowed=(name:string)=>allowExternal||selected.some(parent=>sourcePathWithin(parent,name));
@@ -127,7 +128,14 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
       identities.set(key,{native:path.join(parent.native,path.basename(native)),stamp:stamp(before)});
       const held=await pin(path.join(parent.native,path.basename(native))),names=(await fs.readdir(held.path)).sort();
       if(names.length+entries>maxEntries)throw new Error('Git dependency inventory exceeds 10000 entries');
-      if(!names.includes('.git')&&['HEAD','config','objects'].every(name=>names.includes(name)))throw new Error('Configured dependency contains a bare Git repository; a typed bare repository capsule is required before transporting its configuration');
+      const bare=!names.includes('.git')&&['HEAD','config','objects'].every(name=>names.includes(name));
+      if(bare&&!knownRepositories.has(key)){
+        if(!readers.exportBareGit)throw new Error('Configured bare Git repository requires its canonical capsule reader');
+        const repository=await readers.exportBareGit(held.native);
+        if((bytes+=Buffer.byteLength(JSON.stringify(repository)))>maxBytes)throw new Error('Configured Git repository dependencies exceed the 32 MiB capture memory bound');
+        repositories.set(canonical,{native:held.native,bare:true,git:repository.git,originals:repository.gitOriginals});knownRepositories.add(key);
+        await inspectRepositoryConfiguration(repository.git,held.native,0);
+      }
       if(names.includes('.git')&&!knownRepositories.has(sourcePathKey(canonical))&&!knownModules.has(sourcePathKey(canonical))){
         const repository=await readers.exportGit(path.join(parent.native,path.basename(native)));
         if(!repository)throw new Error('Configured dependency Git repository cannot be captured: '+canonical);
@@ -135,7 +143,9 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
         repositories.set(canonical,{native:path.join(parent.native,path.basename(native)),git:repository.git,originals:repository.gitOriginals});knownRepositories.add(sourcePathKey(canonical));moduleRoots(repository.git);
         await inspectRepositoryConfiguration(repository.git,path.join(parent.native,path.basename(native)),0);
       }
-      for(const name of names){if(name==='.git')continue;await walk(path.join(held.native,name),false,wholeDirectory,depth+1);}
+      // Canonical Git storage is transported once through its sanitized capsule.
+      const bareStorage=new Set(['HEAD','config','config.worktree','objects','refs','logs','index','packed-refs','reftable','shallow','ORIG_HEAD','FETCH_HEAD','worktrees','COMMIT_EDITMSG','SQUASH_MSG','TAG_EDITMSG','MERGE_MSG','EDIT_DESCRIPTION','branches','remotes','rr-cache','lost-found','description','category','cloneurl','README.html']);
+      for(const name of names){if(bare&&name==='worktrees')result.omittedPaths.push(serializeSourcePath(path.join(held.native,name)));if(name==='.git'||bare&&(bareStorage.has(name)||/^sharedindex\.[a-f0-9]+$/.test(name)))continue;await walk(path.join(held.native,name),false,wholeDirectory,depth+1);}
       const after=await fs.lstat(target,{bigint:true});if(stamp(after)!==stamp(before))throw new Error('Git dependency directory changed during capture: '+canonical);
       return canonical;
     }
@@ -195,12 +205,12 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
       if(evidence.target!==undefined&&await fs.readlink(evidence.native)!==evidence.target)throw new Error('Configured Git link changed after capture');
       if(evidence.hash){const parent=await pin(path.dirname(evidence.native)),handle=await openDependency(path.join(parent.path,path.basename(evidence.native)));try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stamp(stat)!==evidence.stamp)throw new Error('Configured Git file identity changed after capture');const data=await readBounded(handle,stat.size);if(stamp(await handle.stat({bigint:true}))!==evidence.stamp||createHash('sha256').update(data).digest('hex')!==evidence.hash)throw new Error('Configured Git file identity changed after capture');}finally{await handle.close();}}
     }
-    for(const [source,repository] of repositories){const current=await readers.exportGit(repository.native);if(!current||JSON.stringify(current.git)!==JSON.stringify(repository.git)||JSON.stringify(current.gitOriginals)!==JSON.stringify(repository.originals))throw new Error('Configured dependency repository changed during capture: '+source);}
+    for(const [source,repository] of repositories){const current=repository.bare?await readers.exportBareGit?.(repository.native):await readers.exportGit(repository.native);if(!current||JSON.stringify(current.git)!==JSON.stringify(repository.git)||JSON.stringify(current.gitOriginals)!==JSON.stringify(repository.originals))throw new Error('Configured dependency repository changed during capture: '+source);}
     for(const source of result.absentPaths)try{await fs.lstat(nativeName(source));throw new Error('An absent configured Git dependency appeared during capture');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     for(const source of configurationAbsences)try{await fs.lstat(source);throw new Error('An absent declaring Git configuration appeared during dependency capture');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     result.absentPaths=[...new Set(result.absentPaths)];result.omittedPaths=[...new Set(result.omittedPaths)];
     if(result.files.length+result.directories.length+result.links.length+result.absentPaths.length+result.omittedPaths.length>maxEntries)throw new Error('Configured Git dependency dispositions exceed 10000 entries');
-    if(repositories.size)result.repositories=[...repositories].map(([sourcePath,value])=>({sourcePath,git:value.git,originals:value.originals}));
+    if(repositories.size)result.repositories=[...repositories].map(([sourcePath,value])=>({sourcePath,...(value.bare?{bare:true as const}:{}),git:value.git,originals:value.originals}));
   }catch(error){failure=error;}
   finally{const cleanup:unknown[]=[];for(const held of [...pins.values()].reverse()){try{await held.handle?.close();}catch(error){cleanup.push(error);}try{held.reference?.close();}catch(error){cleanup.push(error);}}if(cleanup.length)failure=Object.assign(new Error((failure instanceof Error?failure.message+'; ':'')+'Git dependency read-reference cleanup failed',{cause:failure??cleanup[0]}),{code:(failure as {code?:string}|undefined)?.code??'ERR_GIT_DEPENDENCY_CLEANUP',cleanupErrors:cleanup});}
   if(failure)throw failure;
@@ -342,10 +352,13 @@ export function validateGitExternalDependencies(
   addRepository(ownerGit,value.sourceWorkingRoot);
   const selectedScopes=[...scopes];
   for(const repository of repositories){
-    exact(repository,['sourcePath','git','originals']);source(repository.sourcePath);const key=sourcePathKey(repository.sourcePath);
+    exact(repository,['sourcePath','git','originals'],['bare']);if(repository.bare!==undefined&&repository.bare!==true)fail('Invalid bare repository provenance');source(repository.sourcePath);const key=sourcePathKey(repository.sourcePath);
     if(repositoryRoots.has(key)||[...scopes].some(scope=>sourcePathKey(scope)===key)||nodes.get(key)?.kind!=='directory')fail('Dependency Git repositories require unique represented directory roots');
     if(!allowExternal&&!selectedScopes.some(root=>sourcePathWithin(root,repository.sourcePath)))fail('Unselected external Git repository dependency');
     repositoryRoots.add(key);validateGit(repository.git);
+    const bareValues=repository.git.configurationReview.filter(item=>item.key.toLowerCase()==='core.bare');
+    const isBare=bareValues.length>0&&(bareValues.at(-1)!.implicitBoolean===true||/^(?:true|yes|on|1)$/i.test(bareValues.at(-1)!.value));
+    if(isBare!==(repository.bare===true)||repository.bare&&(repository.git.configurationReview.some(item=>item.key.toLowerCase()==='core.worktree')||repository.git.modules?.length||repository.git.configurationSourceDirectories?.common!==repository.sourcePath||repository.git.configurationSourceDirectories?.private!==repository.sourcePath))fail('Bare repository provenance differs from its canonical storage configuration');
     if(!Array.isArray(repository.originals)||(bytes+=Buffer.byteLength(JSON.stringify(repository)))>maxBytes)fail('Invalid dependency repository originals or byte bound');
     validateOriginals(repository.git,repository.originals);addRepository(repository.git,repository.sourcePath,0,key);
   }
