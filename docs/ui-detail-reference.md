@@ -146,3 +146,13 @@ Scripts read installation parameters using `JSON.parse(process.env.PONDEROSA_PAR
 File search can omit unavailable folders or matches beyond its bounded result
 window. The interface shows a short coverage hint; narrow the query and load
 additional pages when available. Missing search results do not imply deletion.
+
+## Output and Assistant settings feedback
+
+Save feedback belongs to the current output Agent or Assistant speaker. Moving
+the speaker clears it and fences earlier asynchronous completions, including
+when the speaker later moves back. A saved acknowledgement requires both the
+write and settings refresh to succeed. If only the write succeeds, Settings
+reports that changes were saved but settings could not be refreshed, including
+the readback cause; drafts remain available. Retry refreshes settings without
+repeating the write. Schedule and model writes remain serialized.

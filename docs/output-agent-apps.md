@@ -147,9 +147,16 @@ within its existing height bound. Navigation labels and sidebar search follow
 the same preference; the search control can grow with its text.
 
 Output and Assistant Settings announce **Saving…**, then **Schedule saved** or
-**Model saved** only after the corresponding request succeeds. Changing a draft
-clears the earlier acknowledgement. Schedule and model remain independent saves;
-errors retain the draft and never become a saved acknowledgement. The status row
+**Model saved** only after the corresponding write and settings readback succeed.
+Changing a draft or moving the Assistant speaker clears earlier feedback. Late
+completions from an earlier owner cannot publish feedback for the new owner,
+even if the speaker subsequently moves back. Unmounting invalidates publication.
+Schedule and model remain independent saves with globally serialized writes.
+A successful write followed by a failed readback instead reports **Changes saved,
+but settings could not be refreshed**, with the readback cause inside Settings.
+Drafts remain available; this warning does not mean the write failed. Retry reads
+settings only and never repeats the mutation automatically. Mutation errors also
+retain the draft and do not become a saved acknowledgement. The status row
 reserves its line height so that feedback does not move the controls.
 
 Live Agent response prose and completed Markdown use shared responsive font sizes

@@ -2,7 +2,7 @@ import {useUnsavedForm} from '../reloadSafety';
 import {ConfirmDialog} from './ConfirmationDialogs';
 import {useAppViewport} from '../hooks/useAppViewport';
 import {setStandaloneWorkspaceOwner} from '../api/productScope';
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,Stack,Switch,MenuItem,TextField,Typography} from '@mui/material';
 import type {AssistantStatusDto,OutputAgentAppDto} from '@ponderosa/core';
@@ -27,6 +27,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const [discardSettings,setDiscardSettings]=useState(false);
  const [settings,setSettings]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),[saved,setSaved]=useState('');
  const inFlight=useRef(false);
+ const ownerGeneration=useRef(0),mounted=useRef(false);
  const [automatic,setAutomatic]=useState(true),[minutes,setMinutes]=useState('10'),[model,setModel]=useState(''),[engine,setEngine]=useState('');
  const [route,setRoute]=useState<BranchRoute>();
  const status=useQuery({queryKey:['assistant-status'],enabled:assistant,queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant'),refetchInterval:15000});
@@ -34,6 +35,11 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const engines=useQuery({queryKey:['output-app-engines'],queryFn:()=>realApi.listEngines()});
  const app=assistant?status.data?.app:output.data;
  const ownerKey=app?`${app.branchId}:${app.chatId}:${app.agentId}`:'';
+ // Fence feedback before paint and invalidate late completions, including A → B → A.
+ useLayoutEffect(()=>{
+  mounted.current=true;ownerGeneration.current++;setSaved('');setError('');
+  return()=>{mounted.current=false;ownerGeneration.current++;};
+ },[ownerKey]);
  useEffect(()=>{
   if(!app){setRoute(undefined);return;}
   setStandaloneWorkspaceOwner({branchId:app.branchId,chatId:app.chatId});
@@ -42,12 +48,31 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  },[ownerKey]);
  // Refresh the draft when settings opens; background refreshes must not erase edits.
  useEffect(()=>{if(settings&&app){setAutomatic(app.automatic);setMinutes(String((app.everyMs??600000)/60000));setModel(app.model??'');setEngine(app.engine);}},[settings,ownerKey]);
- const refresh=async()=>{if(assistant)await status.refetch();else await output.refetch();};
+ const refresh=async()=>{
+  try{
+   const result=assistant?await status.refetch():await output.refetch();
+   return result.error;
+  }catch(cause){return cause instanceof Error?cause:new Error(String(cause));}
+ };
+ const retryRefresh=async()=>{
+  const generation=ownerGeneration.current;
+  const cause=await refresh();
+  if(mounted.current&&generation===ownerGeneration.current){setSaved('');setError(cause?`Could not refresh settings: ${cause.message}`:'');}
+ };
  const act=async(work:()=>Promise<unknown>,savedLabel='')=>{
   if(inFlight.current)return;
+  const generation=ownerGeneration.current;
+  const current=()=>mounted.current&&generation===ownerGeneration.current;
   inFlight.current=true;setBusy(true);setError('');setSaved('');
-  try{await work();setSaved(savedLabel);await refresh();}catch(cause){setSaved('');setError(cause instanceof Error?cause.message:String(cause));}
-  finally{inFlight.current=false;setBusy(false);}
+  try{
+   await work();
+   const cause=await refresh();
+   if(current()){
+    setSaved(cause?'':savedLabel);
+    setError(cause?`Changes saved, but settings could not be refreshed: ${cause.message}`:'');
+   }
+  }catch(cause){if(current()){setSaved('');setError(cause instanceof Error?cause.message:String(cause));}}
+  finally{inFlight.current=false;if(mounted.current)setBusy(false);}
  };
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({enabled})}));
  useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({initialize:true})}));},[assistant,status.data?.initialized]);
@@ -68,7 +93,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
    <Button href="/home">Ponderosa</Button><Button onClick={()=>{setError('');setSaved('');setSettings(true);}}>Settings</Button>
   </Stack>
   {error&&!settings&&<Alert severity="error">{error}</Alert>}
-  {(status.isError||output.isError)&&<Alert severity="error" action={<Button onClick={()=>void refresh()}>Retry</Button>}>{((status.error??output.error) as Error)?.message??'Chat unavailable'}</Alert>}
+  {(status.isError||output.isError)&&<Alert severity="error" action={<Button onClick={()=>void retryRefresh()}>Retry</Button>}>{((status.error??output.error) as Error)?.message??'Chat unavailable'}</Alert>}
   {!app&&assistant&&status.data?.setupError&&<Alert severity="error">{status.data.setupError.message}</Alert>}
   {!app&&assistant&&status.data?.initialized&&<Stack spacing={1} sx={{p:2}}><Typography>Assistant is disabled</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
   {!app&&(assistant?status.isPending||busy:output.isPending)&&<Typography role="status" sx={{p:2}}>Loading…</Typography>}
