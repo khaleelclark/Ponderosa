@@ -138,3 +138,19 @@ closes the regular-name-to-FIFO swap endpoint-open window while keeping the
 existing same-owner, single-link, source identity, and parent custody checks.
 The helper is supplied by the portability lane; this commit depends on that
 integration before final build and validation.
+
+
+The separate configured-external-Git-dependencies export choice may authorize a
+native module's current configured working root outside the selected Agent roots.
+The reader's `allowConfiguredExternalSource` argument defaults false and propagates
+through recursive module capture. The opt-in follows only the already captured
+module storage config's exact `core.worktree`; its current canonical same-owner
+working directory is held before the bounded regular `.git` pointer is read.
+That pointer must resolve back to the exact captured module storage, and the held
+root/pointer membership and identities are rechecked. Missing root/pointer facts
+remain observed absences, while disappearance after an observation fails capture.
+No Agent is invented and imported path text never grants this live source read.
+The external-data capture owner separately transports the explicitly selected
+working bytes as inert dependencies. Deferred coverage includes refusal without
+opt-in, initialized and deinitialized capture, and a foreign pointer rejection.
+No tests, native execution or build was run for this source change.

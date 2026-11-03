@@ -260,3 +260,24 @@ test('nested selected child replacement invalidates retained parent membership i
     await assert.rejects(held.capture.verify(),/held Git directory changed|directory entry no longer identifies/i);
   }finally{await held.close();}
 });
+
+
+test('configured external module worktree read requires opt-in and an exact held reciprocal pointer',async t=>{
+  const root=await fixture(t),moduleSource=path.join(root,'module-source'),parent=path.join(root,'parent'),external=path.join(root,'external-child');
+  const oid=await repository(moduleSource);await repository(parent);native(parent,'submodule','add',moduleSource,'child');native(parent,'commit','-m','child');
+  const original=path.join(parent,'child'),storage=native(original,'rev-parse','--absolute-git-dir');
+  await rename(original,external);
+  native(parent,'config','--file',path.join(storage,'config'),'core.worktree',path.relative(storage,external));
+  await writeFile(path.join(external,'.git'),'gitdir: '+path.relative(external,storage).split(path.sep).join('/')+'\n');
+  await assert.rejects(exportReviewedGit(parent),/outside the selected closure/);
+  const captured=await exportReviewedGit(parent,undefined,true),module=captured.git.modules[0];
+  assert.equal(module.source.worktreePath,external);assert.equal(module.worktreeRelativePath,null);assert.equal(module.source.initialized,true);
+  assert.ok(module.git.objects.some(object=>object.oid===oid));
+  validateReviewedGit(captured.git);
+  await writeFile(path.join(external,'.git'),'gitdir: '+path.join(moduleSource,'.git')+'\n');
+  await assert.rejects(exportReviewedGit(parent,undefined,true),/does not identify its captured module storage/);
+  await rm(path.join(external,'.git'));
+  const deinitialized=await exportReviewedGit(parent,undefined,true);
+  assert.equal(deinitialized.git.modules[0].source.initialized,false);
+  assert.deepEqual(deinitialized.git.modules[0].git.objects,module.git.objects);
+});

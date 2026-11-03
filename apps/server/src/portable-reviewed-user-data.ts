@@ -2249,8 +2249,40 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256',re
   }catch(error){throw new Error(`Git capture view incomplete; preserve private originals at ${root}`,{cause:error});}
 }
 
+/** The explicit configured-dependency grant covers only this freshly proved module root. */
+async function configuredExternalModulePointer(worktreePath:string,storagePath:string,owner:bigint):Promise<{initialized:boolean;evidence:unknown}>{
+  const handles:Array<Awaited<ReturnType<typeof fs.open>>>=[];let primary:unknown,result:{initialized:boolean;evidence:unknown}|undefined;
+  try{
+    await associationDirectory(path.parse(worktreePath).root,worktreePath);
+    const root=await fs.open(worktreePath,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);handles.push(root);
+    const before=await root.stat({bigint:true});
+    if(!before.isDirectory()||before.uid!==owner||await fs.realpath(worktreePath)!==worktreePath)throw new Error('Configured external module requires its canonical same-owner working root');
+    const pointer=process.platform==='linux'?'/proc/self/fd/'+root.fd+'/.git':path.join(worktreePath,'.git');
+    let pointerEvidence:unknown={absent:true},initialized=false,pointerObserved=false;
+    try{
+      const named=await fs.lstat(pointer,{bigint:true});
+      pointerObserved=true;
+      if(!named.isFile()||named.uid!==owner||named.nlink!==1n||named.size>4096n)throw new Error('Configured module pointer must be a bounded same-owner regular original');
+      const handle=await openPortableRegular(pointer);handles.push(handle);
+      const held=await handle.stat({bigint:true}),data=await handle.readFile(),after=await handle.stat({bigint:true});
+      if(originalIdentity(named)!==originalIdentity(held)||originalIdentity(held)!==originalIdentity(after)||data.length>4096||originalIdentity(await fs.lstat(pointer,{bigint:true}))!==originalIdentity(named))throw new Error('Configured module pointer changed during held read');
+      const value=text(data).replace(/\n$/,'');safeText(value,'Configured module pointer');
+      if(!value.startsWith('gitdir: ')||/[\0\r\n]/.test(value)||!sourcePathsEqual(serializeSourcePath(path.resolve(worktreePath,value.slice(8))),serializeSourcePath(storagePath)))throw new Error('Configured external module pointer does not identify its captured module storage');
+      initialized=true;pointerEvidence={identity:originalIdentity(after),data:data.toString('base64')};
+    }catch(error){if(pointerObserved||(error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    const current=await root.stat({bigint:true}),namedRoot=await fs.lstat(worktreePath,{bigint:true});
+    if(originalIdentity(current)!==originalIdentity(before)||originalIdentity(namedRoot)!==originalIdentity(before)||await fs.realpath(worktreePath)!==worktreePath)throw new Error('Configured external module working-root custody changed');
+    result={initialized,evidence:{root:originalIdentity(before),pointer:pointerEvidence}};
+  }catch(error){if(!handles.length&&(error as NodeJS.ErrnoException).code==='ENOENT')result={initialized:false,evidence:{rootAbsent:true}};else primary=error;}
+  finally{
+    const settled=await Promise.allSettled(handles.reverse().map(handle=>handle.close())),cleanup=settled.flatMap(item=>item.status==='rejected'?[item.reason]:[]);
+    if(cleanup.length)throw Object.assign(new AggregateError([...(primary?[primary]:[]),...cleanup],'Configured external module descriptor cleanup failed'),{cause:primary,cleanupErrors:cleanup});
+  }
+  if(primary)throw primary;return result!;
+}
+
 type CapturedModuleSource={name:string;source:NonNullable<ReviewedGitUserData['modules']>[number]['source'];worktreeRelativePath:string|null;evidence:string};
-async function captureModuleSources(root:string,association:GitAssociation,fs:GitSourceFs,capture?:GitExportCapture,index:IndexEntry[]=[]):Promise<{modules:CapturedModuleSource[];evidence:string}> {
+async function captureModuleSources(root:string,association:GitAssociation,fs:GitSourceFs,capture?:GitExportCapture,index:IndexEntry[]=[],allowConfiguredExternalSource=false):Promise<{modules:CapturedModuleSource[];evidence:string}> {
   const modules:CapturedModuleSource[]=[],evidence:unknown[]=[],base=path.join(association.commonDir,'modules');
   const owner=(await fs.lstat(association.root,{bigint:true})).uid;let count=0;
   const walk=async(target:string,name:string):Promise<void>=>{
@@ -2267,11 +2299,14 @@ async function captureModuleSources(root:string,association:GitAssociation,fs:Gi
       const coreWorktree=values[0]!.slice(values[0]!.indexOf('\n')+1);safeText(coreWorktree,'Native module worktree path');
       if(!coreWorktree||/[\0\r\n]/.test(coreWorktree)||process.platform!=='win32'&&coreWorktree.includes('\\'))throw new Error('Malformed native module worktree path');
       const worktreePath=path.resolve(target,coreWorktree),contained=worktreePath.startsWith(root+path.sep),relative=contained?path.relative(root,worktreePath).split(path.sep).join('/'):null;
-      // Source pathname disclosure is inert. Reading a working pointer still requires a selected root.
-      if(!contained&&!capture?.bindings.some(binding=>worktreePath===binding.worktreePath||worktreePath.startsWith(binding.worktreePath+path.sep)))throw new Error('Module working root is outside the selected closure; include its Agent root and module storage binding');
+      // Source pathname disclosure is inert. A live external read needs either
+      // selected-root custody or the separate configured-dependency human grant.
+      const selected=contained||!!capture?.bindings.some(binding=>worktreePath===binding.worktreePath||worktreePath.startsWith(binding.worktreePath+path.sep));
+      if(!selected&&!allowConfiguredExternalSource)throw new Error('Module working root is outside the selected closure; include its Agent root and module storage binding or explicitly include configured external Git dependencies');
       let initialized=false,pointerEvidence:unknown={absent:true};
       const pointer=path.join(worktreePath,'.git');
-      try{
+      if(!selected){const external=await configuredExternalModulePointer(worktreePath,target,owner);initialized=external.initialized;pointerEvidence=external.evidence;}
+      else try{
         const resolved=capture?await capture.resolveDirectory(association.root,worktreePath):await associationDirectory(association.root,path.relative(association.root,worktreePath));
         if(resolved!==worktreePath)throw new Error('Native module working root is not canonical');
         const pointerStat=await fs.lstat(pointer,{bigint:true});
@@ -2327,11 +2362,11 @@ async function captureModuleSources(root:string,association:GitAssociation,fs:Gi
 }
 
 /** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
-export async function exportReviewedGit(root:string,capture?:GitExportCapture):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}|undefined> {
+export async function exportReviewedGit(root:string,capture?:GitExportCapture,allowConfiguredExternalSource=false):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}|undefined> {
   const association=await gitAssociation(root,capture);if(!association)return undefined;
-  return captureReviewedGit(root,association,capture);
+  return captureReviewedGit(root,association,capture,0,allowConfiguredExternalSource);
 }
-async function captureReviewedGit(root:string,association:GitAssociation,capture?:GitExportCapture,depth=0):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}> {
+async function captureReviewedGit(root:string,association:GitAssociation,capture?:GitExportCapture,depth=0,allowConfiguredExternalSource=false):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}> {
   if(depth>16)throw new Error('Native Git module nesting exceeds the capture bound');
   const fs=capture?.io??sourceFs;
   const {gitDir,commonDir,linked}=association;
@@ -2435,16 +2470,16 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   result.index.sort(indexOrder);validateReviewedGit(result);
   // Drafts are selected-worktree data even when gitDir and commonDir coincide.
   const gitOriginals=before.raw.files.filter(file=>gitReviewOriginal('.git/'+file.name)&&file.source===(gitSelectedOriginalNames.includes(file.name)?'selected':'shared')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false,...(file.metadata?{metadata:file.metadata}:{})}));
-  const moduleSources=await captureModuleSources(root,association,fs,capture,result.index);
+  const moduleSources=await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource);
   result.modules=[];
   if(moduleSources.modules.length){
     for(const module of moduleSources.modules){
-      const child=await captureReviewedGit(module.source.worktreePath,{root:association.root,gitDir:module.source.storagePath,commonDir:module.source.storagePath,linked:false,moduleData:true,evidence:module.evidence},capture,depth+1);
+      const child=await captureReviewedGit(module.source.worktreePath,{root:association.root,gitDir:module.source.storagePath,commonDir:module.source.storagePath,linked:false,moduleData:true,evidence:module.evidence},capture,depth+1,allowConfiguredExternalSource);
       result.modules.push({name:module.name,source:{...module.source,storagePath:serializeSourcePath(module.source.storagePath),worktreePath:serializeSourcePath(module.source.worktreePath)},worktreeRelativePath:module.worktreeRelativePath,git:child.git,originals:child.gitOriginals});
     }
     validateReviewedGit(result,depth);
   }
-  if((await captureModuleSources(root,association,fs,capture,result.index)).evidence!==moduleSources.evidence)throw new Error('Native module inventory changed during capture');
+  if((await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource)).evidence!==moduleSources.evidence)throw new Error('Native module inventory changed during capture');
   return {git:result,gitOriginals};
 }
 
