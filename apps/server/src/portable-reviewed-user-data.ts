@@ -234,7 +234,7 @@ export function planReviewedUserDataActivation(data:Buffer,sha256:string,activat
   if(createHash('sha256').update(data).digest('hex')!==sha256)throw new Error('Reviewed activation original identity changed');
   const value=parseReviewedUserData(data);
   if(activation.git&&!value.selection.git||activation.harness&&!value.selection.harness)throw new Error('Activated family is absent from the authoritative original');
-  if(activation.git)validateNativeGitSelection(value,mapped,activation);
+  if(activation.git)validateNativeGitSelection(value,mapped);
   if(activation.harness&&process.platform==='win32')throw new Error('Exact provider POSIX metadata is unsupported on Windows');
   if(activation.harness&&!value.providerFiles.some(file=>!gitReviewOriginal(file.path))&&!value.providerDirectories.length)throw new Error('No selected harness originals are present');
   const paths=value.providerFiles.filter(file=>!gitReviewOriginal(file.path)).map(file=>file.path);
@@ -251,11 +251,10 @@ export async function assertReviewedProviderDestination(root:string,value:Review
 }
 
 /** Only semantics recreated by the before-initialization Shared-root writer. */
-function validateNativeGitSelection(value:ReviewedUserData,mapped=false,activation:ReviewedUserDataActivation={git:true,harness:false}):void {
+function validateNativeGitSelection(value:ReviewedUserData,mapped=false):void {
   if(value.associationReview&&!mapped)throw new Error('Mapped Git requires the complete explicit fresh destination root map');
   const git=value.git;if(!git)throw new Error('Native Git original is missing');
   if(git.configurationOriginalReview[0]!.dataBase64===null||git.configurationReview.some(item=>/^extensions\./i.test(item.key)&&!['extensions.objectformat','extensions.refstorage','extensions.worktreeconfig','extensions.relativeworktrees'].includes(item.key.toLowerCase())))throw new Error('Unsupported native Git repository format declarations');
-  reviewedGitConfiguration(value,activation);
   const versions=git.configurationReview.filter(item=>!item.source&&item.key.toLowerCase()==='core.repositoryformatversion'),formats=git.configurationReview.filter(item=>!item.source&&item.key.toLowerCase()==='extensions.objectformat');
   if(versions.length!==1||versions[0]!.implicitBoolean||!['0','1'].includes(versions[0]!.value)||formats.length>1||formats.some(item=>item.value!==git.format)||(git.reftableReview||formats.length)&&versions[0]!.value!=='1'||git.format==='sha256'&&formats.length!==1)throw new Error('Native Git format declarations differ from verified storage');
   for(const key of ['core.bare','core.filemode','core.ignorecase','core.precomposeunicode','core.quotepath','core.symlinks'])gitConfigurationBoolean(git.configurationReview,key);
@@ -273,7 +272,8 @@ export function selectedWorktreeReftable(value:ReviewedGitUserData):SelectedWork
   return (value.reftableReview as (NonNullable<ReviewedGitUserData['reftableReview']>&{selectedWorktree?:SelectedWorktreeReftable})|null)?.selectedWorktree;
 }
 export async function createReviewedNativeGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation,configuration?:NativeReviewedGitConfiguration):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
-  const value=planReviewedUserDataActivation(original,sha256,activation);
+  const source=parseReviewedUserData(original),module=source.associationReview?.length===1&&source.associationReview[0]!.role==='module';
+  const value=planReviewedUserDataActivation(original,sha256,activation,module);
   if(!activation.git||!value.git)throw new Error('Explicit native Git selection is required');
   if(selectedWorktreeReftable(value.git))throw new Error('Selected-worktree reftable requires fresh common/private native initialization');
   if(!configuration&&reviewedGitConfiguration(value,activation).includes.length)throw new Error('Native external includes require their complete transported configuration closure');
@@ -282,7 +282,8 @@ export async function createReviewedNativeGit(root:string,original:Buffer,sha256
 
 /** Recovery roots were just created by the importer; existing native metadata is never replaced. */
 export async function createReviewedRecoveryGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},configuration?:NativeReviewedGitConfiguration):Promise<void> {
-  const value=planReviewedUserDataActivation(original,sha256,activation,!!layout);
+  const source=parseReviewedUserData(original),module=source.associationReview?.length===1&&source.associationReview[0]!.role==='module';
+  const value=planReviewedUserDataActivation(original,sha256,activation,!!layout||module);
   if(!activation.git||!value.git)throw new Error('Explicit Git activation is required');
   await writeReviewedGit(root,value.git,value,layout,true,configuration??reviewedGitConfiguration(value,activation));
 }
@@ -2308,7 +2309,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     for(const file of created){const target=path.join(gitDir,file.path),{data}=await regularOriginal(target,limit),stat=await fs.lstat(target,{bigint:true});if(stat.dev!==file.device||stat.ino!==file.inode||createHash('sha256').update(data).digest('hex')!==file.sha256)throw new Error('Created Git data changed; preserve partial state');}
     for(const target of directories.keys()){const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{await handle.sync();}finally{await handle.close();}}
     return created;
-  }catch(error){throw Object.assign(new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error}),{partialStatePossible:true});}
+  }catch(error){throw Object.assign(new Error(`Git recreation incomplete; preserve all bytes at ${destination}: ${redactPortableDiagnostic((error as Error).message??String(error))}`,{cause:error}),{code:(error as {code?:string}).code??'ERR_GIT_RECREATION_PARTIAL',partialStatePossible:true,observed:(error as {observed?:unknown}).observed??null});}
 }
 
 /** Only configuration families, never provider sessions, login databases, caches or ownership receipts. */

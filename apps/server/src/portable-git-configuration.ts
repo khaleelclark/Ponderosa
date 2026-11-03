@@ -3,6 +3,20 @@ import path from 'node:path';
 import type {ReviewedUserData,ReviewedUserDataActivation} from '@ponderosa/core';
 import {parseReviewedGitConfiguration,reviewedGitConfiguration,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 
+/** Source directories rebind to the native storage the human's fresh destination choice creates. */
+export function bindReviewedGitDirectories(value:ReviewedUserData,activation:ReviewedUserDataActivation,directories:{common:string;private:string}):ReviewedUserDataActivation {
+  if(!activation.git)return activation;
+  const mappings=new Map((activation.gitPathMappings??[]).map(mapping=>[mapping.source,mapping.destination]));
+  for(const role of ['common','private'] as const){
+    const binding=value.associationReview?.find(binding=>binding.role===role),root=binding?.capture?.roots.find(root=>root.rootRef===binding.storageRootRef);
+    const source=value.git?.configurationSourceDirectories?.[role]??(binding&&root?path.posix.join(root.sourcePath,binding.relativePath):undefined);
+    if(!source)continue;
+    if(mappings.has(source)&&mappings.get(source)!==directories[role])throw new Error('Git configuration directory mapping conflicts with the chosen native storage');
+    mappings.set(source,directories[role]);
+  }
+  return {...activation,...(mappings.size?{gitPathMappings:[...mappings].map(([source,destination])=>({source,destination}))}:{})};
+}
+
 /** Compile external includes only from transported originals, never historical host paths. */
 export function compileReviewedGitConfiguration(value:ReviewedUserData,activation:ReviewedUserDataActivation,directories:{common:string;private:string},originals:ReadonlyMap<string,Buffer>|((path:string)=>Buffer|undefined)):NativeReviewedGitConfiguration {
   const git=value.git;if(!git)throw new Error('Git configuration has no selected repository');

@@ -4,15 +4,17 @@ import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import type {AgentPortablePackageDto,PortableGitStorageBinding,ReviewedUserData,ReviewedUserDataActivation,PortableArtifactDto} from '@ponderosa/core';
-import {compileReviewedGitConfiguration} from './portable-git-configuration.js';
-import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,planReviewedUserDataActivation,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings} from './portable-reviewed-user-data.js';
+import {bindReviewedGitDirectories,compileReviewedGitConfiguration} from './portable-git-configuration.js';
+import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,parseReviewedUserData,planReviewedUserDataActivation,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings,validateReviewedUserDataActivation,PortableArtifactDto} from './portable-reviewed-user-data.js';
+import {redactPortableDiagnostic} from './portable-secrets.js';
 
-type RecoveryTask={ref:string;destination:string;data:Buffer;sha256:string;value:ReviewedUserData;configuration?:ReturnType<typeof compileReviewedGitConfiguration>;layout?:{commonDir:string;privateDir:string;commonRoot:string}};
-type RecoveryReceipt={ref:string;path:string;originalSha256:string;selection:ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{code?:string;partialStatePossible:boolean;observed:unknown}};
+type RecoveryTask={ref:string;destination:string;roots:readonly string[];activation:ReviewedUserDataActivation;data:Buffer;sha256:string;value:ReviewedUserData;configuration?:ReturnType<typeof compileReviewedGitConfiguration>;layout?:{commonDir:string;privateDir:string;commonRoot:string}};
+type RecoveryReceipt={ref:string;path:string;originalSha256:string;selection:ReviewedUserDataActivation;state:'applying'|'completed'|'incomplete';error?:{code?:string;message?:string;partialStatePossible:boolean;observed:unknown}};
 const privateRef=(name:string)=>['refs/bisect/','refs/rewritten/','refs/worktree/'].some(prefix=>name.startsWith(prefix));
 
 /** No source identity is adopted: the caller supplies the exact newly imported root map. */
 export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinations:Record<string,string>,activation:ReviewedUserDataActivation):RecoveryTask[] {
+  validateReviewedUserDataActivation(activation);
   if(pkg.mode!=='full')throw new Error('Native recovery requires a full package');
   const roots=new Set(pkg.agents.filter(node=>node.workingFolder||node.workingFiles?.length).map(node=>node.workingRootRef??node.ref));
   if(Object.keys(destinations).length!==roots.size||[...roots].some(ref=>!Object.hasOwn(destinations,ref)))throw new Error('Native recovery requires the complete selected destination root map');
@@ -21,7 +23,6 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
   if(activation.gitPathMappings?.some(mapping=>!paths.some(root=>mapping.destination===root||mapping.destination.startsWith(root+path.sep))))throw new Error('Git path mappings must select one of the newly imported destination roots');
   const bindings=pkg.gitStorageBindings??[];
   if(bindings.length)validatePortableGitStorageBindings(bindings,roots);
-  const storage=new Set(bindings.map(binding=>binding.storageRootRef));
   const tasks:RecoveryTask[]=[];
   type Original=Pick<PortableArtifactDto,'dataBase64'|'dataEncoding'|'decodedSize'>;
   const originals=new Map<string,Original>();
@@ -30,29 +31,43 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
   for(const ref of roots){
     const owners=pkg.agents.filter(node=>(node.workingRootRef??node.ref)===ref);
     const originals=owners.flatMap(node=>{const file=node.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH);return file?[node.artifacts?.find(artifact=>artifact.ref===file.artifactRef)]:[];});
-    if(!originals.length){if(storage.has(ref))continue;throw new Error('Every activated working root requires its authoritative reviewed original');}
+    if(!originals.length)continue; // Explicitly selected supporting roots supply files, not invented Git repositories.
     if(originals.some(original=>!original)||new Set(originals.map(original=>original!.dataBase64)).size!==1)throw new Error('Conflicting reviewed originals for a shared recovery root');
     const data=decodePortableMetadataArtifact(originals[0]!),sha256=createHash('sha256').update(data).digest('hex');
-    const selected=bindings.filter(binding=>binding.worktreeRootRef===ref);
-    const value=planReviewedUserDataActivation(data,sha256,activation,!!selected.length);
-    const task:RecoveryTask={ref,destination:destinations[ref]!,data,sha256,value};
-    if(activation.git&&selected.length){
-      if(selected.length!==2||!value.associationReview||selected.some(binding=>!binding.capture||binding.capture.reviewSha256!==sha256||!value.associationReview!.some(original=>gitBindingSourceEvidence(binding)===gitBindingSourceEvidence(original))))throw new Error('Mapped Git lacks the exact original common/private association review');
+    const declared=parseReviewedUserData(data),selected=bindings.filter(binding=>binding.worktreeRootRef===ref);
+    let taskActivation:ReviewedUserDataActivation={git:activation.git&&declared.selection.git,harness:activation.harness&&declared.selection.harness,...(activation.git&&declared.selection.git&&activation.gitPathMappings?{gitPathMappings:activation.gitPathMappings}:{})};
+    if(!taskActivation.git&&!taskActivation.harness)continue;
+    if(taskActivation.git){
+      const commonBinding=selected.find(binding=>binding.role==='common'),privateBinding=selected.find(binding=>binding.role==='private');
+      const common=commonBinding?path.join(destinations[commonBinding.storageRootRef]!,commonBinding.relativePath):selectedWorktreeReftable(declared.git!)?path.join(destinations[ref]!,'.ponderosa-portable-review','native-git-common'):path.join(destinations[ref]!,'.git');
+      const privateDir=privateBinding?path.join(destinations[privateBinding.storageRootRef]!,privateBinding.relativePath):selectedWorktreeReftable(declared.git!)?path.join(common,'worktrees','imported'):common;
+      taskActivation=bindReviewedGitDirectories(declared,taskActivation,{common,private:privateDir});
+    }
+    const value=planReviewedUserDataActivation(data,sha256,taskActivation,!!selected.length);
+    const task:RecoveryTask={ref,destination:destinations[ref]!,roots:paths,activation:taskActivation,data,sha256,value};
+    if(taskActivation.git&&selected.length){
+      if(!value.associationReview||selected.some(binding=>!binding.capture||binding.capture.reviewSha256!==sha256||!value.associationReview!.some(original=>gitBindingSourceEvidence(binding)===gitBindingSourceEvidence(original))))throw new Error('Mapped Git lacks its exact original association review');
+      if(selected.length===1&&selected[0]!.role==='module'){
+        // A fresh standalone repository recreates module data without adopting source superproject ownership.
+        tasks.push(task);continue;
+      }
+      if(selected.length!==2)throw new Error('Mapped Git requires one module binding or one complete common/private pair');
       const common=selected.find(binding=>binding.role==='common'),privateBinding=selected.find(binding=>binding.role==='private');
       if(!common||!privateBinding)throw new Error('Mapped Git needs one common/private pair');
       const target=(binding:PortableGitStorageBinding)=>path.join(destinations[binding.storageRootRef]!,binding.relativePath);
       const commonDir=target(common),privateDir=target(privateBinding);
       if(path.dirname(privateDir)!==path.join(commonDir,'worktrees')||privateDir===task.destination||commonDir===task.destination)throw new Error('Destination Git storage must retain its declared common/worktrees/private topology');
       task.layout={commonDir,privateDir,commonRoot:destinations[common.storageRootRef]!};
-    }else if(activation.git&&value.associationReview)throw new Error('Retained mapped originals require their complete original package binding set');
-    else if(activation.git&&selectedWorktreeReftable(value.git!)){
+    }else if(taskActivation.git&&value.associationReview)throw new Error('Retained mapped originals require their complete original package binding set');
+    else if(taskActivation.git&&selectedWorktreeReftable(value.git!)){
       const commonDir=path.join(task.destination,'.ponderosa-portable-review','native-git-common');
       task.layout={commonDir,privateDir:path.join(commonDir,'worktrees','imported'),commonRoot:task.destination};
     }
     tasks.push(task);
   }
+  if(!tasks.length||activation.git&&!tasks.some(task=>task.activation.git)||activation.harness&&!tasks.some(task=>task.activation.harness))throw new Error('The selected package contains no authoritative originals for an activated family');
   if(activation.git){
-    for(const task of tasks){
+    for(const task of tasks.filter(task=>task.activation.git)){
       const common=task.layout?.commonDir??path.join(task.destination,'.git'),privateDir=task.layout?.privateDir??common;
       for(const file of task.value.providerFiles){
         const name=file.path.slice(5),selected=['COMMIT_EDITMSG','SQUASH_MSG','TAG_EDITMSG','MERGE_MSG','EDIT_DESCRIPTION'].includes(name);
@@ -61,7 +76,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
       for(const record of task.value.git!.configurationOriginalReview)if(record.dataBase64!==null)addOriginal(path.join(record.source==='selected_worktree'?privateDir:common,record.path),{dataBase64:record.dataBase64});
     }
     const read=(name:string)=>{const encoded=originals.get(name);if(encoded===undefined)return;return decodePortableMetadataArtifact(encoded,1024*1024);};
-    for(const task of tasks)task.configuration=compileReviewedGitConfiguration(task.value,activation,{common:task.layout?.commonDir??path.join(task.destination,'.git'),private:task.layout?.privateDir??path.join(task.destination,'.git')},read);
+    for(const task of tasks.filter(task=>task.activation.git))task.configuration=compileReviewedGitConfiguration(task.value,task.activation,{common:task.layout?.commonDir??path.join(task.destination,'.git'),private:task.layout?.privateDir??path.join(task.destination,'.git')},read);
   }
   const signatures=new Map<string,string>(),privatePaths=new Set<string>();
   for(const task of tasks.filter(task=>task.layout)){
@@ -78,11 +93,12 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
 
 /** Apply once to fresh recovery roots. An incomplete receipt never authorizes a retry. */
 export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planReviewedRecoveryRoots>,activation:ReviewedUserDataActivation,onReceipt:(receipt:RecoveryReceipt)=>void):Promise<void> {
+  validateReviewedUserDataActivation(activation);
   const opened:Array<{path:string;handle:Awaited<ReturnType<typeof fs.open>>;device:bigint;inode:bigint}>=[];
   const commonCreated=new Set<string>();
   let failure:unknown;
   try{
-    const rootPaths=new Set(tasks.flatMap(task=>[task.destination,...(task.layout?[task.layout.commonRoot]:[])]));
+    const rootPaths=new Set(tasks.flatMap(task=>task.roots));
     for(const root of rootPaths){
       const handle=await fs.open(root,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);
       const owned={path:root,handle,device:0n,inode:0n};opened.push(owned);
@@ -93,9 +109,9 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
     // Refuse every collision before creating the first native metadata entry.
     for(const task of tasks){
       await check();
-      if(activation.git){try{await fs.lstat(path.join(task.destination,'.git'));throw new Error('Recovery root already has native Git metadata');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}}
-      if(activation.harness)await assertReviewedProviderDestination(task.destination,task.value);
-      if(activation.git)for(const name of task.configuration!.targets.filter(target=>!task.configuration!.includes.some(include=>include.destination===target))){
+      if(task.activation.git){try{await fs.lstat(path.join(task.destination,'.git'));throw new Error('Recovery root already has native Git metadata');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}}
+      if(task.activation.harness)await assertReviewedProviderDestination(task.destination,task.value);
+      if(task.activation.git)for(const name of task.configuration!.targets.filter(target=>!task.configuration!.includes.some(include=>include.destination===target))){
         const target=path.isAbsolute(name)?name:path.resolve(task.destination,name);
         const nativeOriginal=task.value.providerFiles.some(file=>{const installed=file.path.startsWith('.git/')?path.join(task.layout?.commonDir??path.join(task.destination,'.git'),file.path.slice(5)):path.join(task.destination,file.path);return installed===target||installed.startsWith(target+path.sep);});
         if(nativeOriginal)continue;
@@ -106,10 +122,10 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
       if(task.layout)for(const name of ['objects','refs','worktrees','config','HEAD'])try{await fs.lstat(path.join(task.layout.commonDir,name));throw new Error('Mapped common Git destination already contains metadata');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     }
     for(const task of tasks){
-      const receipt:RecoveryReceipt={ref:task.ref,path:task.destination,originalSha256:task.sha256,selection:activation,state:'applying'};onReceipt(receipt);
+      const receipt:RecoveryReceipt={ref:task.ref,path:task.destination,originalSha256:task.sha256,selection:task.activation,state:'applying'};onReceipt(receipt);
       try{
         await check();
-        if(activation.git){
+        if(task.activation.git){
           if(task.layout&&!commonCreated.has(task.layout.commonDir)&&task.layout.commonDir!==task.layout.commonRoot){
             let parent=task.layout.commonRoot;
             for(const component of path.relative(parent,task.layout.commonDir).split(path.sep)){
@@ -118,17 +134,22 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
               if(await fs.realpath(parent)!==parent||!(await fs.lstat(parent)).isDirectory())throw new Error('Mapped Git destination parent changed');
             }
           }
-          await createReviewedRecoveryGit(task.destination,task.data,task.sha256,activation,task.layout?{commonDir:task.layout.commonDir,privateDir:task.layout.privateDir,writeCommon:!commonCreated.has(task.layout.commonDir)}:undefined,task.configuration);
+          await createReviewedRecoveryGit(task.destination,task.data,task.sha256,task.activation,task.layout?{commonDir:task.layout.commonDir,privateDir:task.layout.privateDir,writeCommon:!commonCreated.has(task.layout.commonDir)}:undefined,task.configuration);
           if(task.layout)commonCreated.add(task.layout.commonDir);
         }
-        if(activation.harness)await applyReviewedProviderData(task.destination,task.data,task.sha256,{git:false,harness:true});
+        if(task.activation.harness)await applyReviewedProviderData(task.destination,task.data,task.sha256,{git:false,harness:true});
         await check();receipt.state='completed';onReceipt(receipt);
-      }catch(error){receipt.state='incomplete';receipt.error={code:(error as {code?:string}).code??'ERR_RECOVERY_APPLICATION_PARTIAL',partialStatePossible:true,observed:null};onReceipt(receipt);throw error;}
+      }catch(error){
+        const primary=error instanceof Error?error:new Error(String(error)),details=error as {code?:string;observed?:unknown};
+        receipt.state='incomplete';receipt.error={code:details.code??'ERR_RECOVERY_APPLICATION_PARTIAL',message:redactPortableDiagnostic(primary.message),partialStatePossible:true,observed:details.observed===undefined?null:JSON.parse(JSON.stringify(details.observed,(_key,value)=>typeof value==='bigint'?value.toString():value))};
+        try{onReceipt(receipt);}catch(receiptError){Object.assign(primary,{receiptError});primary.message+='; the failure receipt could not be saved: '+redactPortableDiagnostic((receiptError as Error).message??String(receiptError));}
+        throw primary;
+      }
     }
   }catch(error){failure=error;}
   finally{
     const cleanup:unknown[]=[];for(const owned of opened.reverse())try{await owned.handle.close();}catch(error){cleanup.push(error);}
-    if(cleanup.length)failure=Object.assign(new Error('Recovery descriptor cleanup failed; preserve all destination roots',{cause:failure??cleanup[0]}),{code:'ERR_RECOVERY_CLEANUP_PARTIAL',partialStatePossible:true,cleanupErrors:cleanup});
+    if(cleanup.length)failure=Object.assign(new Error((failure instanceof Error?failure.message+'; ':'')+'Recovery descriptor cleanup failed; preserve all destination roots',{cause:failure??cleanup[0]}),{code:(failure as {code?:string}|undefined)?.code??'ERR_RECOVERY_CLEANUP_PARTIAL',partialStatePossible:true,observed:(failure as {observed?:unknown}|undefined)?.observed??null,cleanupErrors:cleanup});
   }
   if(failure)throw failure;
 }
