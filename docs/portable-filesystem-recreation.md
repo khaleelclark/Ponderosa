@@ -217,3 +217,16 @@ checks read the original operation marker independently of Project projections.
 Unknown original and replacement folders, partial files, and source receipts stay
 retained. The authored regression covers membership, child replacement, restart
 repair, isolated holds and original-folder retention; execution is deferred.
+
+
+## Contained directory custody across native phases
+
+The byte phase also records each explicit directory and implicit parent it creates
+or validates. Native module and worktree configuration use those original
+directory identities inside the most specific selected root. A directory first
+observed during native activation cannot stand in for byte-phase custody.
+Replacement or a missing original directory record refuses before the later
+mutation; both original and observed folders remain. The identity map travels
+unchanged through live staging and Branch recovery roots. This is local observed
+custody, not an independent-writer atomic snapshot. Regression execution remains
+deferred until all implementation is combined.

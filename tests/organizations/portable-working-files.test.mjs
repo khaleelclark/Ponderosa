@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtemp,writeFile,readFile,symlink,rm} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,symlink,rm,mkdir,rename,lstat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
-import {portableWorkingPath,exportWorkingFiles,importWorkingFiles,validateWorkingFileData} from '../../apps/server/dist/portable-working-files.js';
+import {portableWorkingPath,exportWorkingFiles,importWorkingFiles,validateWorkingFileData,workingDirectoryIdentity,assertWorkingRootIdentity} from '../../apps/server/dist/portable-working-files.js';
 
 test('selected originals refuse path escapes and known credential fields without mutating files',async()=>{
   for(const name of ['../other','/tmp/other','a/../b','.env','.git/config','auth.json'])assert.throws(()=>portableWorkingPath(name));
@@ -116,4 +116,27 @@ test('incompressible selected originals refuse the wire budget whole and leave s
   await assert.rejects(exportWorkingFiles(root,paths,2048*1024*1024),error=>error.statusCode===413&&/serialized package byte limit.*no originals were omitted/.test(error.message));
   for(const name of paths)assert.equal(createHash('sha256').update(await readFile(path.join(root,name))).digest('hex'),createHash('sha256').update(original).digest('hex'));
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('byte-phase directory custody spans implicit module parents and refuses later observations',async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-directory-custody-'));
+  try{
+    const destination=path.join(root,'new'),data=Buffer.from('module worktree original');
+    const identity=await importWorkingFiles(destination,[{path:'modules/child/source.txt',data,sha256:createHash('sha256').update(data).digest('hex')}],[{path:'explicit',mode:0o700,mtime:new Date(0).toISOString()}],undefined,undefined,[],'refuse',undefined,true,undefined,true);
+    for(const relative of ['modules','modules/child','explicit']){
+      const proof=workingDirectoryIdentity(destination,identity,path.join(destination,relative)),actual=await lstat(path.join(destination,relative),{bigint:true});
+      assert.deepEqual(proof,{device:actual.dev.toString(),inode:actual.ino.toString()});
+      await assertWorkingRootIdentity(path.join(destination,relative),proof);
+    }
+    const original=workingDirectoryIdentity(destination,identity,path.join(destination,'modules/child'));
+    await rename(path.join(destination,'modules/child'),path.join(destination,'modules/retained-child'));
+    await mkdir(path.join(destination,'modules/child'));
+    assert.deepEqual(workingDirectoryIdentity(destination,identity,path.join(destination,'modules/child')),original,'The lookup retains byte-phase authority rather than adopting a replacement');
+    await assert.rejects(assertWorkingRootIdentity(path.join(destination,'modules/child'),original),/identity changed/);
+    assert.equal(await readFile(path.join(destination,'modules/retained-child/source.txt'),'utf8'),'module worktree original');
+    await mkdir(path.join(destination,'late'));
+    assert.throws(()=>workingDirectoryIdentity(destination,identity,path.join(destination,'late')),/no original byte-phase custody/);
+    assert.throws(()=>workingDirectoryIdentity(destination,identity,path.join(root,'outside')),/outside its original root/);
+  }finally{await rm(root,{recursive:true,force:true});}
 });

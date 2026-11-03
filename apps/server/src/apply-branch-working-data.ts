@@ -216,7 +216,7 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
   for(const root of liveRoots)await importWorkingLinks(root.livePath!,root.links,finalDestinations,{backupRoot:path.join(root.livePath!,'.ponderosa-import-backups')},liveIdentity.get(root.ref));
   receipt.phase='native-settings';save();
   if(liveRoots.length){
-   for(const root of roots.filter(root=>!root.live))await workingCopies.retainImportedRecoveryGitRoot(root.destination,{device:BigInt(recoveryIdentity.get(root.ref)!.device),inode:BigInt(recoveryIdentity.get(root.ref)!.inode)});
+   for(const root of roots.filter(root=>!root.live))await workingCopies.retainImportedRecoveryGitRoot(root.destination,recoveryIdentity.get(root.ref)!);
    await workingCopies.completeImportedGitRoots(liveRoots[0]!.project,pkg,finalDestinations,liveActivation,nativeReceipt,[...new Set(liveRoots.flatMap(root=>root.members.map(member=>agents.get(member.ref)!.id)))]);
   }else if(native)await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(pkg,finalDestinations,liveActivation??native),liveActivation??native,nativeReceipt,Object.fromEntries(roots.map(root=>[root.destination,recoveryIdentity.get(root.ref)!])));
   receipt.phase='final-metadata';save();

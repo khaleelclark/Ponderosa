@@ -219,7 +219,22 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
   return {files,artifacts,bytes};
 }
 
-export interface WorkingRootIdentity {device:string;inode:string}
+export interface WorkingDirectoryIdentity {device:string;inode:string}
+/** Original directories observed during the byte phase, never late-phase observations. */
+export interface WorkingRootIdentity extends WorkingDirectoryIdentity {directories?:Readonly<Record<string,WorkingDirectoryIdentity>>}
+/** Resolve only a directory issued by the original byte phase. Does not inspect the host. */
+export function workingDirectoryIdentity(rootPath:string,issued:WorkingRootIdentity,targetPath:string):WorkingDirectoryIdentity {
+  if(!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||!path.isAbsolute(targetPath)||path.resolve(targetPath)!==targetPath)throw new Error('Directory custody requires canonical destination paths');
+  if(!issued||![issued.device,issued.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('Invalid issued working-root identity');
+  const relative=path.relative(rootPath,targetPath);
+  if(relative==='')return {device:issued.device,inode:issued.inode};
+  if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Directory custody target is outside its original root');
+  const key=relative.split(path.sep).join('/');
+  if(portableWorkingPath(key)!==key||!issued.directories||!Object.hasOwn(issued.directories,key))throw new Error('Contained directory has no original byte-phase custody');
+  const proof=issued.directories[key]!;
+  if(![proof.device,proof.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('Invalid issued contained-directory identity');
+  return {device:proof.device,inode:proof.inode};
+}
 async function observedWorkingRootIdentity(destination:string):Promise<WorkingRootIdentity>{
   const stat=await fs.lstat(destination,{bigint:true});
   if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(destination)!==destination)throw new Error('Imported working root is not canonical');
@@ -320,6 +335,13 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     await fs.mkdir(freshRoot.backupRoot,{mode:0o700});
     if(await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot)throw new Error('Recovery folder changed');
   }else{await fs.mkdir(destination,{mode:0o700});issuedIdentity=await observedWorkingRootIdentity(destination);}
+  const directoryIdentities:Record<string,WorkingDirectoryIdentity>=Object.create(null);
+  const rememberDirectory=async(relative:string,target:string):Promise<void>=>{
+    await assertWorkingRootIdentity(destination,issuedIdentity);
+    const observed=await observedWorkingRootIdentity(target),prior=directoryIdentities[relative];
+    if(prior&&(prior.device!==observed.device||prior.inode!==observed.inode))throw new Error('Working directory changed during its original byte phase');
+    directoryIdentities[relative]=observed;
+  };
   const checkRoot=()=>assertWorkingRootIdentity(destination,issuedIdentity);
   const preserveBaseline=(relative:string)=>preserveWorkingBaseline(destination,relative,freshRoot);
   try{
@@ -330,6 +352,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
       const target=path.join(destination,relative);
       try{await fs.mkdir(target,{mode:0o700});}catch(error){if(!freshRoot||(error as NodeJS.ErrnoException).code!=='EEXIST'||!(await fs.lstat(target)).isDirectory())throw error;}
       if(await fs.realpath(target)!==target)throw new Error('Destination directory changed');
+      await rememberDirectory(relative,target);
     }
     for(const file of files){
       await checkRoot();
@@ -338,6 +361,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
         dir=path.join(dir,component);
         try{await fs.mkdir(dir,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
         const stat=await fs.lstat(dir);if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(dir)!==dir)throw new Error('Working-files destination changed');
+        await rememberDirectory(path.relative(destination,dir).split(path.sep).join('/'),dir);
       }
       if(createHash('sha256').update(file.data).digest('hex')!==file.sha256)throw new Error('Staged working-file identity changed');
       await preserveBaseline(relative);
@@ -359,6 +383,10 @@ export async function importWorkingFiles(destination:string,files:readonly {path
         await fs.writeFile(path.join(folder,'manifest.json'),JSON.stringify({activation:'inert_review_only',files:manifest,directories:reviewedData.providerDirectories},null,2),{flag:'wx',mode:0o600});
       }
     }
+    // Check original directory names before publishing custody. Final metadata
+    // may intentionally remove traversal permission, so this precedes it.
+    for(const relative of Object.keys(directoryIdentities))await rememberDirectory(relative,path.join(destination,relative));
+    issuedIdentity={device:issuedIdentity.device,inode:issuedIdentity.inode,directories:Object.freeze({...directoryIdentities})};
     if(!deferMetadataApplication)await finalizeWorkingFolderMetadata(destination,files,directories,rootMetadata,links,metadataActivation,undefined,issuedIdentity);
     await checkRoot();
     return issuedIdentity;
