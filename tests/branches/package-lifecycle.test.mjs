@@ -94,15 +94,26 @@ test('legacy JSON envelopes retain bounded metadata and reject malformed text be
  }
 }));
 
-test('post-remap UTF-8 growth is refused before Agent reservation, artifact publication or Chat changes',{timeout:60_000},t=>withPackages(t,async f=>{
+test('post-remap UTF-8 growth is refused before Agent reservation, artifact publication or Chat changes',{timeout:300_000},t=>withPackages(t,async f=>{
  const pkg=portable();pkg.mode='full';
  const artifact={ref:randomUUID(),kind:'document',path:'a.txt',createdAt:new Date().toISOString(),dataBase64:'eA=='};
  pkg.agents[0].artifacts=[artifact];
- const text='雪'.repeat(64*1024),history=Array.from({length:1300},()=>({role:'user',text}));history.push({role:'assistant',text:''});pkg.agents[0].history=history;
- history.at(-1).text='x'.repeat(AGENT_PACKAGE_MAX_BYTES-agentPackageJsonUtf8Bytes(pkg));
+ // Reuse one bounded Unicode string rather than allocating a 2 GiB string.
+ // The logical serialized package still reaches the actual admission limit.
+ const text='雪'.repeat(64*1024),history=[{role:'user',text}];pkg.agents[0].history=history;
+ const one=agentPackageJsonUtf8Bytes(pkg);
+ history.push({role:'user',text});
+ const perMessage=agentPackageJsonUtf8Bytes(pkg)-one;
+ const count=1+Math.floor((AGENT_PACKAGE_MAX_BYTES-one-100)/perMessage);
+ history.length=0;
+ for(let i=0;i<count;i++)history.push({role:'user',text});
+ history.push({role:'assistant',text:''});
+ const padding=AGENT_PACKAGE_MAX_BYTES-agentPackageJsonUtf8Bytes(pkg);
+ assert.ok(padding>=0&&padding<perMessage);
+ history.at(-1).text='x'.repeat(padding);
  assert.equal(agentPackageJsonUtf8Bytes(pkg),AGENT_PACKAGE_MAX_BYTES);
  const before=f.store.getConversation(f.chatId),key=randomUUID();
- await assert.rejects(f.packageEngine.importAgent(f.project.id,f.chatId,pkg,{codex:'codex'},key),error=>error.statusCode===413&&/256 MiB/u.test(error.message));
+ await assert.rejects(f.packageEngine.importAgent(f.project.id,f.chatId,pkg,{codex:'codex'},key),error=>error.statusCode===413&&/2 GiB/u.test(error.message));
  assert.equal(f.store.listAgents(f.project.id).length,0);assert.equal(f.store.getProjectArtifacts(f.project.id).length,0);
  assert.equal(f.store.getConversation(f.chatId).instructions,before.instructions);
  const receipt=f.store.findAgentCreationOperation({projectId:f.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});

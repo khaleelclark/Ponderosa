@@ -13,7 +13,7 @@ function fixture(){
    sqlite:{prepare:sql=>({get:()=>sql.includes('SELECT created_at')?{created_at:'accepted'}:{branch_id:null,branch_execution_id:null,project_id:'project'}})}};
  const coordination={requestIdsAttachedToRun:()=>['request'],requiredReplyObligationsForRun:()=>[],
    activationIdsAttachedToRun:()=>['a','b'],activationPayloads:()=>inputs.map((communication,i)=>({id:i?'b':'a',kind:'human_message',payload:{communication}})),
-   runtimeCommunication:id=>{const input=inputs.find(x=>x.eventId===id);return input?{payload:{communication:input},activations:[{id:id==='shared'?'a':'b',agentId:'agent'}]}:undefined;},getRequest:id=>requests.get(id)};
+   runtimeCommunicationForEvent:(id,agentId)=>{const input=agentId==='agent'&&inputs.find(x=>x.eventId===id);return input?{payload:{communication:input},activations:[{id:id==='shared'?'a':'b',agentId:'agent'}]}:undefined;},getRequest:id=>requests.get(id)};
  return {store,coordination,requests};
 }
 test('document input and coalesced routes require the selected exact canonical audience',()=>{
