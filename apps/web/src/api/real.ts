@@ -1,4 +1,4 @@
-import {readAgentPackageClipboard} from "../agent-package-clipboard.js";
+import {AgentPackageDownloadRequired,readAgentPackageClipboard} from "../agent-package-clipboard.js";
 import {productApiPath} from './productScope.js';
 import type { WorkspaceResourceKind } from "../resourcePreferences.js";
 import type { CollectionPageDto } from "@ponderosa/core";
@@ -298,22 +298,58 @@ async function collectCollectionPages<T>(path: string): Promise<T[]> {
   return items;
 }
 
-async function requestAgentPackageText(path:string,input:unknown):Promise<string>{
- const response=await fetch(productApiPath(`${API_BASE}${path}`),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)});if(!response.ok)throw await decodeHttpError(response,false);
- return readAgentPackageClipboard(response);
+const uncertainPackageExports=new Map<string,{key:string;createdAt:number}>();
+/** Internal request identity survives a lost preparation response. An ordinary
+ * action retry recovers its original outcome before another source is captured. */
+export async function preparePackageExport(path:string,input:Record<string,unknown>):Promise<PreparedPackageExport>{
+ const body=JSON.stringify({...input,download:true}),operation=path+'\n'+body;
+ let record=uncertainPackageExports.get(operation);
+ if(!record){if(uncertainPackageExports.size>=16)throw Error('Several export preparations are unconfirmed. Retry an existing export before preparing another.');record={key:createClientId(),createdAt:Date.now()};uncertainPackageExports.set(operation,record);}
+ const key=record.key;
+ if(Date.now()-record.createdAt>=15*60_000){
+  try{const status=await requestJson<{state:string}&PreparedPackageExport>('/api/package-export-requests/'+encodeURIComponent(key));if(status.state==='completed'){uncertainPackageExports.delete(operation);return status;}}catch{}
+  uncertainPackageExports.delete(operation);throw Error('Original export recovery has expired. Choose Export again to prepare a new snapshot.');
+ }
+ try{
+  const prepared=await requestJson<PreparedPackageExport>(path,{method:'POST',headers:{'x-ponderosa-export-request':key},body});
+  uncertainPackageExports.delete(operation);return prepared;
+ }catch(error){
+  try{
+   const status=await requestJson<{state:'completed'|'unconfirmed'}&Partial<PreparedPackageExport>>('/api/package-export-requests/'+encodeURIComponent(key));
+   if(status.state==='completed'&&status.downloadUrl&&status.expiresAt&&typeof status.byteLength==='number'){
+    uncertainPackageExports.delete(operation);return {downloadUrl:status.downloadUrl,expiresAt:status.expiresAt,byteLength:status.byteLength};
+   }
+  }catch{/* Keep the same identity when either response was lost. */}
+  throw error;
+ }
 }
 
+async function requestAgentPackageText(path:string,input:Record<string,unknown>):Promise<string>{
+ const prepared=await preparePackageExport(path,input);
+ const url=preparedPackageExportUrl(prepared);
+ try{
+  const response=await fetch(url);if(!response.ok)throw await decodeHttpError(response,false);
+  return await readAgentPackageClipboard(response);
+ }catch(error){
+  // A bounded clipboard or interrupted read must keep the first source capture.
+  // The native download retries this same immutable file, never another POST.
+  throw new AgentPackageDownloadRequired(prepared,{cause:error});
+ }
+}
 
 export interface PreparedPackageExport {downloadUrl:string;expiresAt:string;byteLength:number}
-/** Only the same-origin server-owned staged download path can become a native link. */
-export function startPreparedPackageDownload(prepared:PreparedPackageExport,filename:string):void{
+/** Only the same-origin server-owned staged download path can become a link. */
+export function preparedPackageExportUrl(prepared:PreparedPackageExport):string{
  if(!/^\/api\/(?:branches\/engine\/)?package-exports\/[a-f0-9]{48}$/u.test(prepared.downloadUrl)||!Number.isSafeInteger(prepared.byteLength)||prepared.byteLength<0||!Number.isFinite(Date.parse(prepared.expiresAt))||Date.parse(prepared.expiresAt)<=Date.now())throw Error('The server returned an invalid or expired package download.');
  const url=new URL(productApiPath(prepared.downloadUrl),window.location.href);
  if(url.origin!==window.location.origin)throw Error('Package downloads must use this Ponderosa origin.');
- const anchor=document.createElement('a');anchor.href=url.href;anchor.download=filename;anchor.dataset.ponderosaDownloadFeedback='handled';anchor.style.display='none';document.body.append(anchor);try{anchor.click();}finally{anchor.remove();}
+ return url.href;
+}
+export function startPreparedPackageDownload(prepared:PreparedPackageExport,filename:string):void{
+ const anchor=document.createElement('a');anchor.href=preparedPackageExportUrl(prepared);anchor.download=filename;anchor.dataset.ponderosaDownloadFeedback='handled';anchor.style.display='none';document.body.append(anchor);try{anchor.click();}finally{anchor.remove();}
 }
 export async function downloadPackageExport(path:string,input:Record<string,unknown>,filename:string):Promise<PreparedPackageExport>{
- const prepared=await requestJson<PreparedPackageExport>(path,{method:'POST',body:JSON.stringify({...input,download:true})});
+ const prepared=await preparePackageExport(path,input);
  startPreparedPackageDownload(prepared,filename);return prepared;
 }
 function agentExportSelection(mode:AgentExportMode,organization:boolean,workingFiles:string[],wholeWorkingFolder:boolean,organizationWorkingFolders:boolean,reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]){

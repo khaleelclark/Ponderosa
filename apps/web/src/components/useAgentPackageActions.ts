@@ -1,3 +1,4 @@
+import {startPreparedPackageDownload} from '../api/real';
 import {AgentPackageDownloadRequired} from "../agent-package-clipboard";
 import { api } from "../api";
 import { copyDeferredText } from "../clipboard";
@@ -33,8 +34,11 @@ export function useAgentPackageActions({
       notify({ key: "copy-agent-package", message: "Copied" });
     } catch (error) {
       if(error instanceof AgentPackageDownloadRequired){
-        const started=await downloadAgentPackage(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings);
-        if(started)notify({key:'copy-agent-package',message:'Complete package download started. Import the downloaded file; nothing was truncated for the clipboard.'});
+        try{
+          if(!error.preparedExport)throw new Error('The original export ticket is unavailable. Prepare a new export explicitly.');
+          startPreparedPackageDownload(error.preparedExport,portablePackageFileName(title??'agent',organization,mode));
+          notify({key:'copy-agent-package',message:'Complete original package download started. Import the downloaded file; nothing was truncated for the clipboard.'});
+        }catch(downloadError){notify({key:'copy-agent-package',severity:'error',message:downloadError instanceof Error?downloadError.message:'Original package download could not start.'});}
         return;
       }
 

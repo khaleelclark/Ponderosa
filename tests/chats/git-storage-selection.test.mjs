@@ -21,9 +21,9 @@ test('all real Agent export clients preserve complete Git bindings in POST bodie
  const exported={},requests=[],anchors=[];
  const document={createElement:()=>({dataset:{},style:{},click(){anchors.push(this)},remove(){}}),body:{append(){}}};
  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{
-  exports:exported,require:()=>({productApiPath:path=>path,readAgentPackageClipboard,waitForBackgroundCooldown:async()=>{}}),URL,URLSearchParams,Headers,Map,Set,Error,
+  exports:exported,require:()=>({productApiPath:path=>path,readAgentPackageClipboard,waitForBackgroundCooldown:async()=>{},createClientId:()=> 'fixture-request-'+requests.length}),URL,URLSearchParams,Headers,Map,Set,Error,
   window:{location:{href:'http://fixture.local/',origin:'http://fixture.local'}},document,
-  fetch:async(path,init)=>{requests.push({path:String(path),init});const input=JSON.parse(init.body);return new Response(JSON.stringify(input.download?{downloadUrl:'/api/package-exports/'+'a'.repeat(48),expiresAt:new Date(Date.now()+60000).toISOString(),byteLength:123}:{}),{status:200,headers:{'content-type':'application/json'}});}
+  fetch:async(path,init)=>{if(!init?.body)return new Response('{"schema":"ponderosa.agent-package.v1"}',{status:200,headers:{'content-type':'application/json'}});requests.push({path:String(path),init});const input=JSON.parse(init.body);return new Response(JSON.stringify(input.download?{downloadUrl:'/api/package-exports/'+'a'.repeat(48),expiresAt:new Date(Date.now()+60000).toISOString(),byteLength:123}:{}),{status:200,headers:{'content-type':'application/json'}});}
  });
  const settings={git:true,harness:false,source:'live'},args=['working','full',true,[],false,true,settings,[binding]];
  await exported.realApi.exportAgent(...args);await exported.realApi.exportAgentText(...args);

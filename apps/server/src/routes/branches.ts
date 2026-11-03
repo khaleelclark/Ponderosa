@@ -22,7 +22,7 @@ import {sqliteCollectionGeneration,StaleCollectionCursorError,sqliteCollectionPa
 import {parseTokenUsageRange} from '../token-usage.js';
 import {workspaceNotificationPage} from './notifications.js';
 
-export function registerBranchRoutes(app: FastifyInstance, context: { coordination:CoordinationV3Store;resources:BranchResourceService;outputApps:OutputAgentApps; branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
+export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:string; coordination:CoordinationV3Store;resources:BranchResourceService;outputApps:OutputAgentApps; branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
   const { branches, store, sources, notify } = context;
   // These routes inherit the existing operator-only request hook. Agent capability
   // tokens cannot turn Branch read access into private historical Request access.
@@ -269,7 +269,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
   app.post<{Params:{id:string}}>('/api/branches/installations/:id/cancel',async(request,reply)=>{
     try{const result=await context.installations.cancel(request.params.id);await sources.refresh();notify();return result}catch(error){return reply.code(409).send({error:(error as Error).message})}
   });
-  const packageDownloads=packageExportDownloads(app);
+  const packageDownloads=packageExportDownloads(app,context.dataDir);
   const exportPackage=async(id:string,input:Record<string,unknown>,reply:import('fastify').FastifyReply)=>{
     try{
       exactObjectFields(input,['mode','includeValues','fileSelections','download'],'Branch export');
@@ -279,7 +279,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { coordinati
       return await packageDownloads.send(result,'workflow-'+mode+'.ponderosa.json',reply,input.download===true);
     }catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}
   };
-  app.post<{Params:{id:string};Body:unknown}>('/api/branches/:id/package',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout(0);}},async(request,reply)=>{try{return await exportPackage(request.params.id,validatedObject(request.body,'Branch export'),reply);}catch(error){return reply.code(400).send({error:(error as Error).message});}});
+  app.post<{Params:{id:string};Body:unknown}>('/api/branches/:id/package',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout(0);}},async(request,reply)=>{try{return await packageDownloads.prepare(request.headers['x-ponderosa-export-request'],{kind:'branch',id:request.params.id,input:request.body},reply,()=>exportPackage(request.params.id,validatedObject(request.body,'Branch export'),reply));}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}});
   app.get<{Params:{id:string};Querystring:{mode?:'template'|'full';includeValues?:string;fileSelections?:string}}>('/api/branches/:id/package',{config:{agentPackageOperation:true},onRequest:async(_request,reply)=>{reply.raw.socket?.setTimeout(0);}},async(request,reply)=>{
     try{return await exportPackage(request.params.id,{mode:request.query.mode,includeValues:request.query.includeValues==='true',fileSelections:request.query.fileSelections?JSON.parse(request.query.fileSelections):undefined},reply);}catch(error){return reply.code(400).send({error:(error as Error).message});}
   });

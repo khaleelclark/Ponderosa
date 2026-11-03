@@ -1254,7 +1254,7 @@ export function registerAgentPackageRoutes(
     return result;
   });
 
-  const downloads=packageExportDownloads(app);
+  const downloads=packageExportDownloads(app,context.dataDir);
   const exportPackage=async(agentId:string,input:Record<string,unknown>,reply:FastifyReply,attachment=false)=>withAgentImportAdmission(async()=>{
     exactObjectFields(input,['mode','organization','download','workingFiles','wholeWorkingFolder','organizationWorkingFolders','reviewedUserData','gitStorageBindings'],'Agent export');
     for(const key of ['organization','download','wholeWorkingFolder','organizationWorkingFolders'])if(input[key]!==undefined&&typeof input[key]!=='boolean')throw new AssetError(400,'Export choices must be explicit booleans');
@@ -1269,7 +1269,7 @@ export function registerAgentPackageRoutes(
     const safeTitle=result.sourceLabel.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-+|-+$/gu,'').toLocaleLowerCase().slice(0,80);
     return downloads.send(result,`${safeTitle||'agent'}-${result.mode}.ponderosa.json`,reply,input.download===true,attachment);
   });
-  app.post<{Params:{id:string};Body:unknown}>('/api/agents/:id/export',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{try{return await exportPackage(request.params.id,validatedObject(request.body,'Agent export'),reply);}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}});
+  app.post<{Params:{id:string};Body:unknown}>('/api/agents/:id/export',{bodyLimit:AGENT_PACKAGE_MAX_BYTES,onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{try{return await downloads.prepare(request.headers['x-ponderosa-export-request'],{kind:'agent',id:request.params.id,input:request.body},reply,()=>exportPackage(request.params.id,validatedObject(request.body,'Agent export'),reply));}catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}});
   app.get<{Params:{id:string};Querystring:Record<string,string|undefined>}>('/api/agents/:id/export',{onRequest:packageOperation,config:{agentPackageOperation:true}},async(request,reply)=>{
     const q=request.query,input:Record<string,unknown>={mode:q.mode,organization:q.organization==='true',wholeWorkingFolder:q.wholeWorkingFolder==='true',organizationWorkingFolders:q.organizationWorkingFolders==='true'};
     try{for(const key of ['workingFiles','reviewedUserData','gitStorageBindings'])if(q[key]!==undefined)input[key]=JSON.parse(q[key]!);}catch{throw new AssetError(400,'Export selections must be valid JSON');}

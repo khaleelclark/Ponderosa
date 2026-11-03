@@ -1450,7 +1450,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
   application.packageEngine.setOutputApps(outputApps);
   branchInstallations.setOutputApps(outputApps);
   registerAgentWorkspaceActions(app,{store,coordinationV3,workspace,outputApps,createChat:application.createChat,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,recordCommunication,reconcile:reconcileRuntimeCommunicationProjections,notify:()=>coordinationV3Scheduler.notify(),providerEnabled:id=>engines.has(id)&&providerEnabled(id)});
-  registerBranchRoutes(app,{coordination:coordinationV3,outputApps,branches,store,workspace,resources:branchResources,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
+  registerBranchRoutes(app,{dataDir:opts.dataDir,coordination:coordinationV3,outputApps,branches,store,workspace,resources:branchResources,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
     preferences:()=>workspace.getPreferences(),engineAvailable:id=>engines.has(id)&&providerEnabled(id),
     providerStatus:async id=>{const registration=engines.get(id);return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:'error',intakeReady:false,availabilityDetail:'Provider is not configured'};},
 notify:()=>coordinationV3Scheduler.notify(),

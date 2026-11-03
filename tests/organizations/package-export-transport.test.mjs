@@ -1,10 +1,14 @@
 import test from 'node:test';
+import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,writeFile,mkdtemp,rm,unlink,realpath,readdir,rename} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 import vm from 'node:vm';
 import Fastify from 'fastify';
 import ts from 'typescript';
-import {AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
+import {stableJson,AGENT_PACKAGE_STAGING_MAX_BYTES} from '@ponderosa/core';
 import {packageExportDownloads} from '../../apps/server/dist/package-export-downloads.js';
 import {registerBranchRoutes} from '../../apps/server/dist/routes/branches.js';
 
@@ -40,10 +44,10 @@ test('staging capacity refuses visibly before exposing a truncated download',asy
 });
 
 test('browser handoff validates exact origin-owned ticket paths and sends selections in the POST body',async()=>{
- const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['startPreparedPackageDownload','downloadPackageExport']);
+ const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['preparePackageExport','preparedPackageExportUrl','startPreparedPackageDownload','downloadPackageExport']);
  const functions=ast.statements.filter(node=>ts.isFunctionDeclaration(node)&&names.has(node.name?.text)).map(node=>node.getText(ast).replace(/^export /,'')).join('\n');
  const requests=[],links=[],prepared={downloadUrl:'/api/package-exports/'+'a'.repeat(48),expiresAt:new Date(Date.now()+600000).toISOString(),byteLength:42};
- const scope={URL,Date,Number,Error,JSON,Promise,window:{location:{href:'https://local.example/branches',origin:'https://local.example'}},productApiPath:path=>path,requestJson:async(path,input)=>{requests.push({path,input});return prepared;},document:{createElement:()=>({dataset:{},style:{},click(){links.push({href:this.href,filename:this.download,handled:this.dataset.ponderosaDownloadFeedback});},remove(){}}),body:{append(){}}}};
+ const scope={URL,Date,Number,Error,JSON,Promise,Map,encodeURIComponent,uncertainPackageExports:new Map(),createClientId:()=> 'original-request-key',window:{location:{href:'https://local.example/branches',origin:'https://local.example'}},productApiPath:path=>path,requestJson:async(path,input)=>{requests.push({path,input});return prepared;},document:{createElement:()=>({dataset:{},style:{},click(){links.push({href:this.href,filename:this.download,handled:this.dataset.ponderosaDownloadFeedback});},remove(){}}),body:{append(){}}}};
  vm.createContext(scope);vm.runInContext(ts.transpile(functions,{target:ts.ScriptTarget.ES2022}),scope);
  const selections={a:{selectedWorkingFiles:['x'.repeat(20000)]}};
  await scope.downloadPackageExport('/api/branches/branch/package',{mode:'full',fileSelections:selections},'original.json');
@@ -65,4 +69,93 @@ test('Branch body export passes complete selections through the existing install
   assert.deepEqual(calls,[['source','full',true,fileSelections]]);const downloaded=await app.inject(result.json().downloadUrl);assert.deepEqual(downloaded.json(),pkg);
   const invalid=await app.inject({method:'POST',url:'/api/branches/source/package',payload:{...body,includeValues:'true'}});assert.equal(invalid.statusCode,400);assert.equal(calls.length,1);
  }finally{await app.close();}
+});
+
+
+test('clipboard fallback keeps its first ticket after source removal and never captures again',async()=>{
+ const directory=await realpath(await mkdtemp(path.join(tmpdir(),'export-clipboard-original-'))),sourcePath=path.join(directory,'source.json'),app=Fastify();
+ const original={text:'Exact original 🌲 '.repeat(40)};await writeFile(sourcePath,JSON.stringify(original));let captures=0;
+ const downloads=packageExportDownloads(app,directory);
+ app.post('/prepare',async(_request,reply)=>{captures++;return downloads.send(JSON.parse(await readFile(sourcePath,'utf8')),'original.json',reply,true);});await app.ready();
+ try{
+  const clipboardSource=await readFile(new URL('../../apps/web/src/agent-package-clipboard.ts',import.meta.url),'utf8'),clipboardModule={exports:{}};
+  vm.runInNewContext(ts.transpileModule(clipboardSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:clipboardModule,exports:clipboardModule.exports,Error,TextDecoder});
+  const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),names=new Set(['preparePackageExport','requestAgentPackageText','preparedPackageExportUrl','startPreparedPackageDownload']);
+  const functions=ast.statements.filter(node=>ts.isFunctionDeclaration(node)&&names.has(node.name?.text)).map(node=>node.getText(ast).replace(/^export /,'')).join('\n'),links=[];
+  const scope={URL,Date,Number,Error,JSON,Promise,Map,encodeURIComponent,uncertainPackageExports:new Map(),createClientId:()=> 'original-request-key',window:{location:{href:'https://local.example/',origin:'https://local.example'}},productApiPath:path=>path,AgentPackageDownloadRequired:clipboardModule.exports.AgentPackageDownloadRequired,
+   readAgentPackageClipboard:response=>clipboardModule.exports.readAgentPackageClipboard(response,32),
+   requestJson:async()=>{const result=await app.inject({method:'POST',url:'/prepare'});assert.equal(result.statusCode,200,result.body);await unlink(sourcePath);return result.json();},
+   fetch:async url=>{const result=await app.inject(new URL(url).pathname);return new Response(result.rawPayload,{status:result.statusCode,headers:result.headers});},
+   decodeHttpError:async()=>Error('Unexpected GET failure'),document:{createElement:()=>({dataset:{},style:{},click(){links.push(this.href);},remove(){}}),body:{append(){}}}};
+  vm.createContext(scope);vm.runInContext(ts.transpile(functions,{target:ts.ScriptTarget.ES2022}),scope);
+  let overflow;await assert.rejects(scope.requestAgentPackageText('/prepare',{mode:'full'}),error=>{overflow=error;return error instanceof clipboardModule.exports.AgentPackageDownloadRequired&&Boolean(error.preparedExport);});
+  // Exercise the actual action: the fallback must use only the carried ticket.
+  const actionSource=await readFile(new URL('../../apps/web/src/components/useAgentPackageActions.ts',import.meta.url),'utf8'),actionsModule={exports:{}},notices=[];
+  const imports={'../api/real':{startPreparedPackageDownload:scope.startPreparedPackageDownload},'../agent-package-clipboard':clipboardModule.exports,'../api':{api:{exportAgentText:()=>Promise.reject(overflow),downloadAgentPackage:()=>{throw Error('A second capture is forbidden');}}},'../clipboard':{copyDeferredText:pending=>pending},'./MutationNotifications':{useMutationNotification:()=>notice=>notices.push(notice)},'./AgentDetail.helpers':{portablePackageFileName:()=> 'original.json'}};
+  vm.runInNewContext(ts.transpileModule(actionSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:actionsModule,exports:actionsModule.exports,Error,require:name=>imports[name]});
+  await actionsModule.exports.useAgentPackageActions({agentId:'source'}).copyAgentPackage('full');
+  assert.equal(captures,1);assert.equal(links.length,1);assert.equal(new URL(links[0]).pathname,overflow.preparedExport.downloadUrl);assert.match(notices[0].message,/original package download/);
+  const retried=await app.inject(new URL(links[0]).pathname);assert.deepEqual(retried.json(),original,'Download survives removal of its source after clipboard preparation');
+ }finally{await app.close();await rm(directory,{recursive:true,force:true});}
+});
+
+test('confirmed export tickets survive restart with exact bytes and original expiry; unconfirmed files stay held',async()=>{
+ const directory=await realpath(await mkdtemp(path.join(tmpdir(),'export-ticket-restart-')));let app;
+ const openApp=async()=>{app=Fastify();const service=packageExportDownloads(app,directory);app.post('/prepare',async(request,reply)=>service.send(request.body,'durable.json',reply,true));await app.ready();return service;};
+ try{
+  await openApp();const value={schema:'ponderosa.agent-package.v1',original:'retained 🌲'},prepared=(await app.inject({method:'POST',url:'/prepare',payload:value})).json(),first=await app.inject(prepared.downloadUrl);
+  await app.close();
+  const staging=path.join(directory,'package-export-downloads'),token=prepared.downloadUrl.split('/').at(-1),manifest=JSON.parse(await readFile(path.join(staging,token+'.json'),'utf8'));
+  await writeFile(path.join(staging,'f'.repeat(48)+'.bytes'),'unconfirmed crash bytes');
+  const reopened=await openApp(),second=await app.inject(prepared.downloadUrl);assert.equal(second.statusCode,200);assert.equal(second.body,first.body);assert.equal(reopened.tickets.get(token).expiresAt,Date.parse(prepared.expiresAt));assert.equal(reopened.held,1);
+  assert.equal((await app.inject('/api/package-exports/'+'f'.repeat(48))).statusCode,410);assert.equal(await readFile(path.join(staging,'f'.repeat(48)+'.bytes'),'utf8'),'unconfirmed crash bytes');
+  await writeFile(path.join(staging,token+'.bytes'),first.body.replace('retained','modified'));
+  assert.equal((await app.inject(prepared.downloadUrl)).statusCode,500,'Same-inode same-size edits after hydration cannot masquerade as original bytes');
+  await app.close();
+  await writeFile(path.join(staging,token+'.bytes'),'replaced same-inode original');
+  const changed=await openApp();assert.equal((await app.inject(prepared.downloadUrl)).statusCode,410,'Manifest digest/size cannot adopt changed bytes');assert.ok(changed.held>=2);assert.equal(JSON.parse(await readFile(path.join(staging,token+'.json'),'utf8')).sha256,manifest.sha256);
+  assert.ok((await readdir(staging)).includes(token+'.bytes'),'Unconfirmed bytes remain available for exact manual recovery');
+ }finally{await app?.close().catch(()=>{});await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('a lost prepare response recovers the original request ticket after restart without reading its removed source',async()=>{
+ const directory=await realpath(await mkdtemp(path.join(tmpdir(),'export-lost-prepare-'))),sourcePath=path.join(directory,'source.json');let app,captures=0;
+ const original={schema:'ponderosa.branch-installation.v1',source:'First complete snapshot'};await writeFile(sourcePath,JSON.stringify(original));
+ const openApp=async()=>{app=Fastify();const service=packageExportDownloads(app,directory);app.post('/prepare',async(request,reply)=>service.prepare(request.headers['x-ponderosa-export-request'],{kind:'branch',id:'source',input:request.body},reply,async()=>{captures++;return service.send(JSON.parse(await readFile(sourcePath,'utf8')),'original.json',reply,true);}));await app.ready();return service;};
+ try{
+  await openApp();const source=await readFile(new URL('../../apps/web/src/api/real.ts',import.meta.url),'utf8'),ast=ts.createSourceFile('real.ts',source,ts.ScriptTarget.Latest,true),node=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='preparePackageExport'),requests=[];
+  const scope={Error,JSON,Map,encodeURIComponent,uncertainPackageExports:new Map(),createClientId:()=> 'lost-original-request',requestJson:async(url,input)=>{
+   requests.push({url,input});if(input?.method==='POST'){
+    const result=await app.inject({method:'POST',url,headers:input.headers,payload:JSON.parse(input.body)});assert.equal(result.statusCode,200,result.body);
+    await unlink(sourcePath);await app.close();await openApp();throw Error('Preparation POST response lost');
+   }
+   const result=await app.inject(url);assert.equal(result.statusCode,200,result.body);return result.json();
+  }};vm.createContext(scope);vm.runInContext(ts.transpile(node.getText(ast).replace(/^export /,''),{target:ts.ScriptTarget.ES2022}),scope);
+  const recovered=await scope.preparePackageExport('/prepare',{mode:'full',fileSelections:{source:{wholeWorkingFolder:true}}});
+  assert.equal(captures,1);assert.equal(requests.filter(request=>request.input?.method==='POST').length,1);assert.match(requests[1].url,/package-export-requests\/lost-original-request$/);
+  assert.deepEqual((await app.inject(recovered.downloadUrl)).json(),original);
+  const repeated=await app.inject({method:'POST',url:'/prepare',headers:{'x-ponderosa-export-request':'lost-original-request'},payload:{mode:'full',fileSelections:{source:{wholeWorkingFolder:true}}}});assert.equal(repeated.statusCode,200);assert.equal(repeated.json().downloadUrl,recovered.downloadUrl);assert.equal(captures,1);
+  // An interrupted claim with no complete manifest cannot replay source capture.
+  await app.close();const key='unconfirmed-source-request',selectionHash=createHash('sha256').update(stableJson({kind:'branch',id:'source',input:{mode:'full'}})).digest('hex');
+  await writeFile(path.join(directory,'package-export-downloads','request-'+createHash('sha256').update(key).digest('hex')+'.json'),JSON.stringify({schema:'ponderosa.package-export-request.v1',key,selectionHash,createdAt:Date.now()}));
+  await openApp();const held=await app.inject({method:'POST',url:'/prepare',headers:{'x-ponderosa-export-request':key},payload:{mode:'full'}});assert.equal(held.statusCode,409);assert.equal(captures,1);
+ }finally{await app?.close().catch(()=>{});await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('export readback rejects FIFO crash remnants and cleanup preserves replaced manifests',{skip:process.platform!=='linux'},async()=>{
+ const directory=await realpath(await mkdtemp(path.join(tmpdir(),'export-held-remnants-')));let app;
+ try{
+  app=Fastify();let downloads=packageExportDownloads(app,directory);app.post('/prepare',async(request,reply)=>downloads.send(request.body,'retained.json',reply,true));await app.ready();
+  const prepared=(await app.inject({method:'POST',url:'/prepare',payload:{x:'AAAA'}})).json(),token=prepared.downloadUrl.split('/').at(-1),staging=path.join(directory,'package-export-downloads');await app.close();
+  await rename(path.join(staging,token+'.bytes'),path.join(staging,token+'.retained'));
+  execFileSync('mkfifo',[path.join(staging,token+'.bytes')]);execFileSync('mkfifo',[path.join(staging,'e'.repeat(48)+'.json')]);
+  app=Fastify();downloads=packageExportDownloads(app,directory);await app.ready();assert.equal((await app.inject(prepared.downloadUrl)).statusCode,410,'No FIFO endpoint can become an original or block readback');await app.close();
+  await unlink(path.join(staging,token+'.bytes'));await rename(path.join(staging,token+'.retained'),path.join(staging,token+'.bytes'));
+  app=Fastify();downloads=packageExportDownloads(app,directory);await app.ready();assert.equal((await app.inject(prepared.downloadUrl)).statusCode,200);
+  const ticket=downloads.tickets.get(token);await rename(path.join(staging,token+'.json'),path.join(staging,token+'.original-manifest'));await writeFile(path.join(staging,token+'.json'),'unknown replacement manifest');
+  ticket.expiresAt=0;await downloads.remove(token,ticket);
+  assert.equal(await readFile(path.join(staging,token+'.json'),'utf8'),'unknown replacement manifest');assert.ok(downloads.tickets.has(token),'Failed cleanup retains its capacity charge and does not adopt the replacement');
+ }finally{await app?.close().catch(()=>{});await rm(directory,{recursive:true,force:true});}
 });
