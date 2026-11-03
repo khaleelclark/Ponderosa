@@ -2181,6 +2181,38 @@ export class BranchStore {
     return this.unitTransaction(()=>{
       const ids=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id',stepId).map(r=>r.agent_id);
       if(!this.resourceCanRetire(stepId,ids))throw Error('Final resource cleanup is not eligible');
+      // A never-dispatched opening whose exact Branch Request is already completed
+      // is obsolete. Do not cancel retries, delivered work, or unrelated obligations.
+      const obsolete=this.rows(`SELECT activation.id,activation.project_id,activation.payload_json activation_payload,request.payload_json request_payload FROM branch_resources r
+        JOIN conversations chat ON chat.id=r.chat_id
+        JOIN branch_attempts attempt ON attempt.step_execution_id=r.step_execution_id AND attempt.number=r.generation+1 AND attempt.state='completed'
+        JOIN coordination_requests request ON request.id=attempt.request_id AND request.id='branch:'||attempt.id AND request.state='completed'
+          AND request.recipient_agent_id=r.root_agent_id AND request.requester_agent_id IS NULL
+          AND request.project_id=chat.project_id AND request.conversation_id=chat.id
+          AND request.open_question_update_id IS NULL AND request.superseded_by_request_id IS NULL
+        JOIN agent_activations activation ON activation.agent_id=r.root_agent_id AND activation.project_id=chat.project_id
+          AND activation.scope_key='conversation:'||chat.id AND activation.kind='coordination_request'
+          AND activation.state='pending' AND activation.delivery_failures=0
+          AND json_extract(activation.payload_json,'$.requestId')=request.id
+          AND json_extract(activation.payload_json,'$.request.managedAgentOpening')=1
+        WHERE r.step_execution_id=?
+          AND EXISTS(SELECT 1 FROM coordination_request_updates u WHERE u.request_id=request.id AND u.resulting_version=request.version AND u.resulting_state='completed')
+          AND (SELECT count(*) FROM activation_sources source WHERE source.activation_id=activation.id)=1
+          AND EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=activation.id AND source.source_kind='request' AND source.source_id=request.id)
+          AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member WHERE member.value=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM required_reply_obligations obligation WHERE obligation.source_activation_id=activation.id OR obligation.recovery_activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM activation_delivery_retry_lineage retry WHERE retry.predecessor_activation_id=activation.id OR retry.successor_activation_id=activation.id OR retry.root_activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM scheduler_steering_recovery_activations recovery WHERE recovery.source_activation_id=activation.id OR recovery.recovery_activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM runtime_communication_activation_intake intake WHERE intake.activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM trigger_occurrences occurrence WHERE occurrence.activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.recovery_activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM agent_pause_recoveries recovery WHERE recovery.activation_id=activation.id)
+          AND NOT EXISTS(SELECT 1 FROM context_rollovers rollover WHERE rollover.continuation_activation_id=activation.id OR EXISTS(SELECT 1 FROM json_each(rollover.source_activation_ids_json) source WHERE source.value=activation.id))`,stepId);
+      for(const activation of obsolete)if(stableJson(JSON.parse(activation.activation_payload).request)===stableJson(JSON.parse(activation.request_payload)))this.coordination.cancelPendingActivation({activationId:activation.id,projectId:activation.project_id,idempotencyKey:`branch-terminal-opening:${stepId}:${activation.id}`});
+      if(this.row(`SELECT 1 FROM branch_resource_members member JOIN agent_activations activation ON activation.agent_id=member.agent_id
+        WHERE member.step_execution_id=? AND activation.state IN ('pending','attached','retry_pending','outcome_unknown') LIMIT 1`,stepId))
+        throw Error('Final resource has unfinished or uncertain activation work; cleanup remains open');
       return fenceFinalResourceExit(this.sqlite,stepId);
     }).immediate();
   }

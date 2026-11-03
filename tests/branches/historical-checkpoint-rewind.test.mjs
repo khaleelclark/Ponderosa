@@ -2697,8 +2697,7 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])for(
  assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branch_paths SET result_json=? WHERE id=?').run(JSON.stringify({...rootResult,output:'tampered final output'}),rootPath.id);assert.throws(()=>f.branches.finalResourceExitFence(current.stepId),/continuation replay unsupported/);throw Error('restore terminal path');})(),/restore terminal path/);
  assert.equal(db.prepare("SELECT count(*) n FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND json_extract(receipt_json,'$.input.conversationId')=?").get(current.chatId).n,0);
  const finalFence=f.branches.finalResourceExitFence(current.stepId);assert.equal(finalFence.identity.generation,generation);
- assert.throws(()=>f.branches.captureFinalResourceExit(finalFence),/participant effects remain unresolved/);
- for(const activation of pendingActivations)coordination.cancelPendingActivation({activationId:activation.id,projectId:f.store.getAgent(current.agentId).projectId,idempotencyKey:`final-exit:${activation.id}`});
+ assert.ok(pendingActivations.every(activation=>db.prepare('SELECT state FROM agent_activations WHERE id=?').get(activation.id).state==='cancelled'));
  sealProviderNeverStarted(db,'fixture-runtime',[current.agentId]);
  f.branches.captureFinalResourceExit(finalFence);
  assert.equal(f.branches.requireFinalResourceExit(f.source.id,current.stepId).identity.generation,generation);
@@ -2739,10 +2738,45 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test
  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
  const pending=db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(opened.agentId);assert.ok(pending.length);
  const fence=f.branches.finalResourceExitFence(opened.stepId);
- assert.throws(()=>f.branches.captureFinalResourceExit(fence),/participant effects remain unresolved/);
- for(const activation of pending)coordination.cancelPendingActivation({activationId:activation.id,projectId:f.store.getAgent(opened.agentId).projectId,idempotencyKey:`settled-zero:${activation.id}`});
+ assert.ok(pending.every(activation=>db.prepare('SELECT state FROM agent_activations WHERE id=?').get(activation.id).state==='cancelled'));
  sealProviderNeverStarted(db,'fixture-runtime',[opened.agentId]);f.branches.captureFinalResourceExit(fence);
  const deletion=f.store.previewAgentDeletion([opened.agentId]);f.store.deleteAgentSubtrees([opened.agentId],deletion.previewHash,id=>coordination.handleAgentDeletion(id));
  const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);
  f.branches.resourceRetired(opened.stepId);assert.equal(f.branches.requireFinalResourceExit(f.source.id,opened.stepId).identity.generation,0);
+});
+
+
+// Exercise the actual service: only a never-dispatched completed opening may be canceled.
+for(const state of ['completed-opening','human','unknown','extra-source','retried','payload-mismatch'])test(`final cleanup service protects ${state} activation work`,async t=>{
+ const f=await reservationHistoryFixture(t,'async',false,false,false),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ const db=f.store.sqlite,coordination=new CoordinationV3Store(db);
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ enableProviderStartCoverage(db,'fixture-runtime');
+ const opened=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
+ const j=f.branches.reserveIssuedResourceCapture(f.source.id,opened.stepId,0,'service-zero'),receipt={...j.source,version:1,custodyId:hash(j.source.checkpointId),boundaryId:'inert-service-zero',sha256:hash('inert'),byteLength:1};
+ db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,opened.stepId,'service-zero',receipt))();
+ coordination.updateRequest({requestId:opened.requestId,updateId:'service-zero-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const opening=db.prepare("SELECT id,project_id FROM agent_activations WHERE agent_id=? AND state='pending' AND kind='coordination_request'").get(opened.agentId);assert.ok(opening);
+ let human;
+ if(state==='human')human=coordination.enqueueMessageActivation({projectId:opening.project_id,agentId:opened.agentId,scopeKey:`conversation:${opened.chatId}`,messageId:randomUUID(),kind:'human',payload:{text:'An independent human request'}});
+ if(state==='unknown')db.prepare("UPDATE agent_activations SET state='outcome_unknown' WHERE id=?").run(opening.id);
+ if(state==='extra-source')db.prepare("INSERT INTO activation_sources VALUES(?,'communication','unrelated-source')").run(opening.id);
+ if(state==='retried')db.prepare("UPDATE agent_activations SET delivery_failures=1 WHERE id=?").run(opening.id);
+ if(state==='payload-mismatch')db.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.request.text','changed') WHERE id=?").run(opening.id);
+ let deleted=0;
+ const service=new BranchResourceService(f.branches,f.store,async ids=>{deleted++;const preview=f.store.previewAgentDeletion(ids);f.store.deleteAgentSubtrees(ids,preview.previewHash,id=>coordination.handleAgentDeletion(id));},async()=>assert.fail('unexpected create'),async id=>{const chat=f.store.commitConversationDeletion(id);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(id);});
+ service.setPackageEngine({readCheckpoint:async()=>{}});
+ service.setGenerationExitDrain(async ids=>sealProviderNeverStarted(db,'fixture-runtime',ids));
+ await service.tick(false);await service.tick(false);
+ const fence=db.prepare("SELECT count(*) n FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND json_extract(receipt_json,'$.input.conversationId')=?").get(opened.chatId).n;
+ const final=!!db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,`resource-final-exit:${opened.stepId}:0`);
+ if(state==='completed-opening'){
+  assert.equal(deleted,1);assert.equal(fence,1);assert.equal(final,true);assert.equal(db.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).state,'retired');
+ }else{
+  assert.equal(deleted,0);assert.equal(fence,0);assert.equal(final,false);
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(opening.id).state,state==='unknown'?'outcome_unknown':'pending');
+  if(human)assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(human).state,'pending');
+ }
 });
