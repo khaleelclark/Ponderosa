@@ -27,15 +27,28 @@ export interface BranchWorkingDataPreparation {
  sourceSha256:string;parentRootRef:string;childRootRef:string;parentAgentId:string;
  state:'reserving'|'reserved'|'incomplete';reservation?:Awaited<ReturnType<AgentWorkingCopyService['reserveImportedContainedRoot']>>;error?:string;
 }
+/** Separate roots carry one exclusive Agent owner; a Shared physical root
+ * can only be activated for members that all retain Shared ownership. */
+function assertLiveRootOwnership(pkg:BranchPortableWorkingData['package'],ref:string):void {
+ const members=pkg.agents.filter(node=>(node.workingRootRef??node.ref)===ref);
+ const modes=new Set(members.map(member=>member.workingCopyMode??'shared'));
+ if(!members.length||modes.size!==1||modes.has('separate_git')&&members.length!==1)throw Error('Live working-root import requires one compatible ownership mode for every member');
+}
 export interface PrepareBranchWorkingDataChildInput {
  planId:string;data:BranchPortableWorkingData;parentRootRef:string;childRootRef:string;parentAgentId:string;previous?:BranchWorkingDataPreparation;
 }
 export async function prepareBranchWorkingDataChild(store:AgentStore,workingCopies:AgentWorkingCopyService,input:PrepareBranchWorkingDataChildInput,onReceipt:(receipt:BranchWorkingDataPreparation)=>void):Promise<NonNullable<BranchWorkingDataPreparation['reservation']>>{
  const boundary=input.data.package.workingRootNesting?.find(item=>item.parentRootRef===input.parentRootRef&&item.childRootRef===input.childRootRef);
  if(!boundary||branchWorkingDataHash({schema:input.data.schema,package:input.data.package,owners:input.data.owners})!==input.data.sha256)throw new Error('Contained root requires its exact reviewed carrier boundary');
+ assertLiveRootOwnership(input.data.package,input.parentRootRef);
  const parentNode=input.data.package.agents.find(node=>(node.workingRootRef??node.ref)===input.parentRootRef&&node.workingFolder)??input.data.package.agents.find(node=>(node.workingRootRef??node.ref)===input.parentRootRef)!;
  let agent=store.getAgent(input.parentAgentId);const project=agent&&store.getProject(agent.projectId);
- if(!agent||!project||!store.sqlite.prepare("SELECT 1 FROM branch_installation_resources r JOIN agent_creation_operations o ON o.id=r.creation_operation_id WHERE r.local_id=? AND r.staging_plan_id=? AND r.state='staging' AND o.status='completed'").get(agent.id,input.planId))throw new Error('Contained root parent is not the exact staged canonical import');
+ const stagedOwner=agent&&store.sqlite.prepare("SELECT r.chat_ref,r.agent_ref FROM branch_installation_resources r JOIN agent_creation_operations o ON o.id=r.creation_operation_id WHERE r.local_id=? AND r.staging_plan_id=? AND r.state='staging' AND o.status='completed'").get(agent.id,input.planId) as {chat_ref:string;agent_ref:string}|undefined;
+ const rootMember=stagedOwner&&input.data.package.agents.some(node=>{
+  const owner=input.data.owners[node.ref];
+  return (node.workingRootRef??node.ref)===input.parentRootRef&&owner?.chatRef===stagedOwner.chat_ref&&owner.agentRef===stagedOwner.agent_ref;
+ });
+ if(!agent||!project||!rootMember)throw new Error('Contained root parent is not the exact staged canonical import for the reviewed parent root');
  const release=workingCopies.beginModeChange(agent.id);
  const receipt:BranchWorkingDataPreparation={sourceSha256:input.data.sha256,parentRootRef:input.parentRootRef,childRootRef:input.childRootRef,parentAgentId:agent.id,state:'reserving'};
  try{
@@ -47,7 +60,11 @@ export async function prepareBranchWorkingDataChild(store:AgentStore,workingCopi
    return prior.reservation;
   }
   onReceipt(receipt);
-  if(!await workingCopies.inspectPreparedImportedRoot(agent,project)){
+  // A staged Shared folder belongs to the Project, not this parent's
+  // separately selected root, even if another imported member staged it first.
+  if(parentNode.workingCopyMode==='separate_git'&&agent.workingCopy.mode==='shared'){
+   agent=await workingCopies.allocateImportedSeparateGit(agent,project);
+  }else if(!await workingCopies.inspectPreparedImportedRoot(agent,project)){
    if(parentNode.workingCopyMode==='separate_git')agent=await workingCopies.allocateImportedSeparateGit(agent,project);
    else await workingCopies.stageImportedSharedGit(project,store.listAgents(project.id).map(item=>item.id));
   }
@@ -82,6 +99,18 @@ export function branchWorkingRootDestinations(data:BranchPortableWorkingData,fil
   }
  }
  if(Object.keys(destinations).length!==rootRefs.length||rootRefs.some(ref=>!destinations[ref]||!path.isAbsolute(destinations[ref]!)||path.resolve(destinations[ref]!)!==destinations[ref]))throw Error('Choose one canonical new recovery folder for every captured working root');
+ // One physical root cannot become incompatible live ownership modes. Make
+ // this decision during preview, before reserving or writing any destination.
+ for(const ref of rootRefs){
+  const members=pkg.agents.filter(node=>(node.workingRootRef??node.ref)===ref);
+  const selected=members.map(member=>{
+   const owner=data.owners[member.ref];
+   if(!owner)throw Error('Working root member requires its exact Chat owner');
+   return Object.entries(fileSelections).some(([selectionKey,choice])=>JSON.parse(selectionKey)[0]===owner.chatRef&&!!choice.workingFilesActivation);
+  });
+  if(selected.some(Boolean)&&!selected.every(Boolean))throw Error('Chats sharing a source working folder must activate that folder together');
+  if(selected.some(Boolean))assertLiveRootOwnership(pkg,ref);
+ }
  validateWorkingRootNesting(new Set(rootRefs),pkg.workingRootNesting??[],destinations);
  return destinations;
 }
@@ -192,11 +221,18 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
      if(project.hostPath!==reservation.rootPath)await workingCopies.bindImportedContainedProjectAlias(store.getAgent(alias.id)!,project,root.agent,planId);
     }
    }else{
-    const prepared=await workingCopies.inspectPreparedImportedRoot(store.getAgent(root.agent.id)!,root.project);
-    if(!prepared){
-     if(root.mode==='separate_git')root.agent=await workingCopies.allocateImportedSeparateGit(root.agent,root.project);
-     else await workingCopies.stageImportedSharedGit(root.project,store.listAgents(root.project.id).map(agent=>agent.id));
-    }else if(prepared.phase!=='allocated')throw Error('Live root preparation is no longer in its exact empty phase');
+    const current=store.getAgent(root.agent.id)!;
+    // A Shared root may already be staged for another member of this Project.
+    // It does not prepare this Agent's independently selected Separate root.
+    if(root.mode==='separate_git'&&current.workingCopy.mode==='shared'){
+     root.agent=await workingCopies.allocateImportedSeparateGit(current,root.project);
+    }else{
+     const prepared=await workingCopies.inspectPreparedImportedRoot(current,root.project);
+     if(!prepared){
+      if(root.mode==='separate_git')root.agent=await workingCopies.allocateImportedSeparateGit(current,root.project);
+      else await workingCopies.stageImportedSharedGit(root.project,store.listAgents(root.project.id).map(agent=>agent.id));
+     }else if(prepared.phase!=='allocated')throw Error('Live root preparation is no longer in its exact empty phase');
+    }
    }
    for(const member of root.members)agents.set(member.ref,store.getAgent(agents.get(member.ref)!.id)!);
    root.livePath=root.agent.workingCopy.rootPath;

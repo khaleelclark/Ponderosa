@@ -5,12 +5,13 @@ import {readFile,writeFile,stat,lstat,rename,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {AgentStore,destinationAdmissionHeld} from '@ponderosa/agents';
 import {createBranchWorkingData} from '../../apps/server/dist/branch-working-data.js';
+import {branchWorkingRootDestinations,prepareBranchWorkingDataChild} from '../../apps/server/dist/apply-branch-working-data.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
 function installation({shared=false,nested=false}={}){
  const refs={a:randomUUID(),b:shared?undefined:randomUUID()};if(shared)refs.b=refs.a;
  const source=(ref,root,files,links)=>({ref,title:ref,engine:'codex',managementPermissions:permissions,workingCopyMode:'shared',workingRootRef:root,...(files||links?{workingFolder:{directories:[],excludedPaths:nested&&ref==='source-a'?['child']:[],links:links??[]},workingFiles:files??[],artifacts:(files??[]).map(file=>({ref:file.artifactRef,kind:'document',path:file.path,createdAt:'2026-11-03T00:00:00.000Z',dataBase64:Buffer.from('complete original').toString('base64')}))}:{})});
- const agents=[source('source-a',refs.a,[{path:'original',artifactRef:'original-ref'}],[]),source('source-b',refs.b,shared?undefined:[],shared?undefined:[{path:'hard',kind:'hardlink',target:'original',targetRootRef:refs.a},{path:'symbolic',kind:'symlink',target:'original',targetRootRef:refs.a}])];
+ const agents=[source('source-a',refs.a,[{path:'original',artifactRef:'original-ref'}],[]),source('source-b',refs.b,shared?undefined:[],shared?undefined:[{path:'hard',kind:'hardlink',target:'original',targetRootRef:refs.a},{path:'symbolic',kind:'symlink',target:'original',targetRootRef:refs.a,sourceTarget:'/selected-root-a/original'}])];
  const portable={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:'2026-11-03T00:00:00.000Z',sourceLabel:'Closed physical originals',rootRef:'source-a',rootRefs:['source-a','source-b'],agents,...(nested?{workingRootNesting:[{parentRootRef:refs.a,childRootRef:refs.b,path:'child'}]}:{})};
  const workingData=createBranchWorkingData(portable,{'source-a':{chatRef:'chat-a',agentRef:'a'},'source-b':{chatRef:'chat-b',agentRef:'b'}});
  const chats=['a','b'].map(ref=>({ref:'chat-'+ref,title:'Chat '+ref,agents:[{ref,definition:{schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',exportedAt:portable.exportedAt,sourceLabel:'private-'+ref,rootRef:ref,agents:[{ref,title:'Agent '+ref,engine:'codex',managementPermissions:permissions,workingCopyMode:'shared',history:[{role:'user',text:'PRIVATE_'+ref.toUpperCase()+' 🐘 '+('long text '.repeat(40000))}]}]}}]}));
@@ -26,6 +27,30 @@ async function finish(f,plan,live=false){
  f.ok(await f.api('POST',route(plan.id)+'/confirm',{acknowledgeFullImport:true}));
  return until(async()=>{const current=f.ok(await f.api('GET',route(plan.id)));if(live&&current.workingRootReview){const {chatRef,agentRef,sharedRoot}=current.workingRootReview;f.ok(await f.api('POST',route(plan.id)+'/working-root-review',{chatRef,agentRef,sharedRoot}));return false;}assert.notEqual(current.state,'review_required',JSON.stringify(current));assert.notEqual(current.workingDataApplication?.state,'incomplete',JSON.stringify(current));return current.state==='completed'&&current;},'closed physical installation');
 }
+test('live shared roots refuse incompatible member ownership before creating destinations',async()=>{
+ for(const modes of [['shared','separate_git'],['separate_git','separate_git']]){
+  const value=installation({shared:true}),pkg=value.pkg.workingData.package;
+  pkg.agents[0].workingCopyMode=modes[0];pkg.agents[1].workingCopyMode=modes[1];
+  const data=createBranchWorkingData(pkg,value.pkg.workingData.owners);
+  const root=path.join('/tmp','prospective-root-'+randomUUID()),base={[key('a')]:{workingRootDestinations:{[value.refs.a]:root}}};
+  assert.deepEqual(branchWorkingRootDestinations(data,base),{[value.refs.a]:root},'Recovery-only copies remain available');
+  assert.throws(()=>branchWorkingRootDestinations(data,{...base,[key('a')]:{...base[key('a')],workingFilesActivation:{}},[key('b')]:{workingFilesActivation:{}}}),/compatible ownership mode/);
+  await assert.rejects(lstat(root),error=>error.code==='ENOENT');
+ }
+ const value=installation({shared:true}),root=path.join('/tmp','prospective-root-'+randomUUID());
+ assert.throws(()=>branchWorkingRootDestinations(value.pkg.workingData,{[key('a')]:{workingRootDestinations:{[value.refs.a]:root},workingFilesActivation:{}}}),/activate that folder together/);
+ await assert.rejects(lstat(root),error=>error.code==='ENOENT');
+});
+
+test('contained-root preparation rejects a staged Agent from a different source root before allocation',async()=>{
+ const value=installation({nested:true}),data=value.pkg.workingData;
+ let allocations=0;
+ const store={getAgent:id=>({id,projectId:'project',workingCopy:{mode:'shared'}}),getProject:()=>({id:'project'}),sqlite:{prepare:()=>({get:()=>({chat_ref:'chat-b',agent_ref:'b'})})}};
+ const copies={beginModeChange:()=>{allocations++;throw Error('must not allocate');}};
+ await assert.rejects(prepareBranchWorkingDataChild(store,copies,{planId:'plan',data,parentRootRef:value.refs.a,childRootRef:value.refs.b,parentAgentId:'foreign-root-agent'},()=>{}),/exact staged canonical import for the reviewed parent root/);
+ assert.equal(allocations,0);
+});
+
 test('cross-Chat carrier restores originals once and retains exact separate histories across reopen',{skip:process.platform==='win32'},async t=>{
  let store;await withFixture(t,async f=>{
   const value=installation(),{plan,first,second}=await preview(f,value),complete=await finish(f,plan);assert.equal(complete.workingDataApplication.state,'completed');
@@ -35,22 +60,27 @@ test('cross-Chat carrier restores originals once and retains exact separate hist
   await f.reopen();assert.equal(await readFile(path.join(first,'original'),'utf8'),'complete original');assert.equal(f.ok(await f.api('GET',route(plan.id))).workingDataApplication.state,'completed');
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
-test('shared physical root aliases survive deleting the first owning Chat and reopening',{skip:process.platform==='win32'},async t=>withFixture(t,async f=>{
+test('shared physical root aliases survive refused direct deletion and reopening',{skip:process.platform==='win32'},async t=>withFixture(t,async f=>{
  const value=installation({shared:true}),{plan}=await preview(f,value,true),complete=await finish(f,plan,true),roots=complete.workingDataApplication.roots;assert.equal(roots.length,1);assert.ok(roots[0].livePath);assert.equal(roots[0].agentIds.length,2);
  const chats=f.ok(await f.api('GET','/api/branches/'+complete.branchId+'/chats'));assert.equal(chats.length,2);
- const members=f.ok(await f.api('GET','/api/branches/engine/projects/'+chats[0].projectId+'/agents'));f.ok(await f.api('DELETE','/api/branches/engine/conversations/'+chats[0].id,{expectedAgentIds:members.map(agent=>agent.id)}));
+ const members=f.ok(await f.api('GET','/api/branches/engine/projects/'+chats[0].projectId+'/agents'));const deletion=await f.api('DELETE','/api/branches/engine/conversations/'+chats[0].id,{expectedAgentIds:members.map(agent=>agent.id)});assert.equal(deletion.status,409);assert.match(deletion.body.error,/Branch lifecycle/);
  assert.equal(await readFile(path.join(roots[0].livePath,'original'),'utf8'),'complete original');await f.reopen();assert.equal(await readFile(path.join(roots[0].livePath,'original'),'utf8'),'complete original');assert.equal(f.ok(await f.api('GET','/api/branches/engine/projects/'+chats[1].projectId+'/agents')).length,1);
+ const branchDeletion=await f.api('DELETE','/api/branches/'+complete.branchId);assert.ok([200,202].includes(branchDeletion.status),JSON.stringify(branchDeletion.body));
+ await until(async()=>{const result=await f.api('GET','/api/branches/'+complete.branchId);return result.status===404;},'Branch lifecycle deletion completes');
+ assert.equal(await readFile(path.join(roots[0].livePath,'original'),'utf8'),'complete original');
+ await f.reopen();assert.equal(await readFile(path.join(roots[0].livePath,'original'),'utf8'),'complete original');
 }));
 test('nested recovery roots retain cross-root inode links without duplicating the child tree',{skip:process.platform==='win32'},async t=>withFixture(t,async f=>{
  const value=installation({nested:true}),{plan,first,second}=await preview(f,value),complete=await finish(f,plan);assert.equal(complete.workingDataApplication.roots.length,2);assert.equal((await lstat(path.join(second,'hard'))).ino,(await lstat(path.join(first,'original'))).ino);
 }));
-test('completed physical receipt recovers result projections and uncertain receipt stays held without writes',async t=>{
+test('missing compacted source and uncertain physical receipt stay held without replay',async t=>{
  let store;await withFixture(t,async f=>{
   const value=installation(),{plan,first}=await preview(f,value);await finish(f,plan);const before=await stat(path.join(first,'original'));
   let row=store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id),state=JSON.parse(row.preview_json);
   delete state.importResults;store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,next_attempt_at=NULL,error=NULL WHERE id=?").run(JSON.stringify(state),plan.id);
-  await f.reopen();await until(async()=>f.ok(await f.api('GET',route(plan.id))).state==='completed','projection-only recovery');
-  const recovered=f.ok(await f.api('GET',route(plan.id)));assert.equal(Object.keys(recovered.importResults).length,2);assert.equal((await stat(path.join(first,'original'))).ino,before.ino);
+  await f.reopen();const sourceHeld=await until(async()=>{const status=f.ok(await f.api('GET',route(plan.id)));return /source is unavailable or invalid/.test(status.error??'')&&status;},'compacted source hold');
+  assert.equal(sourceHeld.workingDataApplication.state,'completed');assert.match(sourceHeld.error,/without replay/);assert.equal((await stat(path.join(first,'original'))).ino,before.ino);
+  assert.equal(store.sqlite.prepare('SELECT next_attempt_at FROM branch_installation_plans WHERE id=?').get(plan.id).next_attempt_at,'9999-12-31T23:59:59.999Z');
   row=store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id);state=JSON.parse(row.preview_json);state.workingDataApplication.state='applying';
   store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,next_attempt_at=NULL WHERE id=?").run(JSON.stringify(state),plan.id);
   await f.reopen();const held=await until(async()=>{const status=f.ok(await f.api('GET',route(plan.id)));return status.workingDataApplication?.state==='incomplete'&&status;},'uncertain receipt hold');assert.match(held.error,/without replay|stopped before/i);assert.equal((await stat(path.join(first,'original'))).ino,before.ino);

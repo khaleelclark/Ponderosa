@@ -721,8 +721,15 @@ export class BranchInstallationService {
  }
  private retirementError(id:string,error:unknown):void{this.run('INSERT INTO branch_retirement_errors VALUES(?,?,?) ON CONFLICT(resource_id) DO UPDATE SET error=excluded.error,updated_at=excluded.updated_at',id,(error as Error).message,new Date().toISOString());}
  private async apply(plan:Row):Promise<void>{
-  if(this.rolePlan(plan).published){this.finishRoles(plan);return;}
-  const pkg=this.validate(JSON.parse(plan.package_json)),bindings=JSON.parse(plan.bindings_json) as BranchBindings,branchId=plan.branch_id as string;
+  const retained=this.rolePlan(plan);
+  if(retained.published){this.finishRoles(plan);return;}
+  let pkg:ReturnType<BranchInstallationService['validate']>;
+  try{pkg=this.validate(JSON.parse(plan.package_json));}
+  catch(error){
+   if(retained.workingDataApplication)throw new BranchWorkingDataHeldError('Original installation source is unavailable or invalid; the physical receipt and folders are retained without replay. Inspect the original operation.');
+   throw error;
+  }
+  const bindings=JSON.parse(plan.bindings_json) as BranchBindings,branchId=plan.branch_id as string;
   const tree=this.rolePlan(plan).tree;
   if(pkg.definitionTree){
    const inventory=pkg.definitionTree;
