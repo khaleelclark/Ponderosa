@@ -230,3 +230,10 @@ mutation; both original and observed folders remain. The identity map travels
 unchanged through live staging and Branch recovery roots. This is local observed
 custody, not an independent-writer atomic snapshot. Regression execution remains
 deferred until all implementation is combined.
+
+
+Configured external Git originals are also copied under
+.ponderosa-portable-review/external-git as numbered, non-executable .review
+files with a readable mapping manifest. Git repository capsules retain their
+inert Git metadata and original bytes there. The review copy never creates
+source links or activates hooks or configuration.

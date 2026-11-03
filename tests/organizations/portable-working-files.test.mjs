@@ -4,7 +4,7 @@ import {mkdtemp,writeFile,readFile,symlink,rm,mkdir,rename,lstat} from 'node:fs/
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
-import {portableWorkingPath,exportWorkingFiles,importWorkingFiles,validateWorkingFileData,workingDirectoryIdentity,assertWorkingRootIdentity} from '../../apps/server/dist/portable-working-files.js';
+import {portableWorkingPath,exportWorkingFiles,importWorkingFiles,validateWorkingFileData,workingDirectoryIdentity,assertWorkingRootIdentity,materializeGitExternalReview} from '../../apps/server/dist/portable-working-files.js';
 
 test('selected originals refuse path escapes and known credential fields without mutating files',async()=>{
   for(const name of ['../other','/tmp/other','a/../b','.env','.git/config','auth.json'])assert.throws(()=>portableWorkingPath(name));
@@ -141,5 +141,20 @@ test('byte-phase directory custody spans implicit module parents and refuses lat
     await mkdir(path.join(destination,'late'));
     assert.throws(()=>workingDirectoryIdentity(destination,identity,path.join(destination,'late')),/no original byte-phase custody/);
     assert.throws(()=>workingDirectoryIdentity(destination,identity,path.join(root,'outside')),/outside its original root/);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('external Git review keeps original bytes and link evidence inert and inspectable',async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-external-review-'));
+  try{
+    const folder=path.join(root,'review'),bytes=Buffer.from('#!/bin/sh\\necho preserved\\n');
+    await materializeGitExternalReview(folder,{version:1,sourceWorkingRoot:'/old/worktree',files:[{sourcePath:'/old/hooks/pre-commit',dataBase64:bytes.toString('base64'),mode:0o755,mtimeNs:'123'}],directories:[{sourcePath:'/old/hooks',mode:0o755,mtimeNs:'123'}],links:[{sourcePath:'/old/hooks/alias',targetSourcePath:'/old/hooks/pre-commit',kind:'symlink'}],absentPaths:['/old/missing'],omittedPaths:[],bindings:[]},async()=>{});
+    assert.deepEqual(await readFile(path.join(folder,'000000.review')),bytes);
+    assert.equal((await lstat(path.join(folder,'000000.review'))).mode&0o777,0o600);
+    const manifest=JSON.parse(await readFile(path.join(folder,'manifest.json'),'utf8'));
+    assert.equal(manifest.activation,'inert_review_only');assert.equal(manifest.files[0].sourcePath,'/old/hooks/pre-commit');
+    assert.equal(manifest.links[0].targetSourcePath,'/old/hooks/pre-commit');
+    await assert.rejects(lstat(path.join(folder,'alias')),error=>error.code==='ENOENT');
   }finally{await rm(root,{recursive:true,force:true});}
 });

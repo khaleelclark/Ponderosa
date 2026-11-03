@@ -5,7 +5,7 @@ import {openPortableRegular} from './portable-held-regular.js';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import type {PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation} from '@ponderosa/core';
+import type {PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies} from '@ponderosa/core';
 import {applyFilesystemMetadata,planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
 import {captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
@@ -248,6 +248,40 @@ export async function assertWorkingRootIdentity(destination:string,expected:Work
   if(actual.device!==expected.device||actual.inode!==expected.inode)throw Object.assign(new Error('Imported working-root identity changed; preserve original and replacement folders'),{code:'ERR_WORKING_ROOT_IDENTITY',expected,observed:actual});
 }
 
+/** Keep configured Git originals accessible for inspection without activating
+ * hooks, links, configuration or any historical source path. */
+export async function materializeGitExternalReview(folder:string,data:ReviewedGitExternalDependencies,checkRoot:()=>Promise<void>):Promise<void>{
+  await checkRoot();
+  await fs.mkdir(folder,{mode:0o700});
+  const identity=await observedWorkingRootIdentity(folder);
+  const check=async()=>{await checkRoot();await assertWorkingRootIdentity(folder,identity);};
+  const originals:Array<{sourcePath:string;reviewFile:string;mode?:number;mtimeNs?:string;removedSecretFields?:boolean}>=[],repositories:Array<{sourcePath:string;metadataFile:string;originals:Array<{sourcePath:string;reviewFile:string}>}>=[];
+  const write=async(data:Buffer,sourcePath:string,metadata?:{mode?:number;mtimeNs?:string;removedSecretFields?:boolean})=>{
+    await check();
+    const reviewFile=String(originals.length).padStart(6,'0')+'.review';
+    const handle=await fs.open(path.join(folder,reviewFile),'wx',0o600);
+    try{await handle.writeFile(data);await handle.sync();}finally{await handle.close();}
+    await check();
+    originals.push({sourcePath,reviewFile,...metadata});
+    return reviewFile;
+  };
+  for(const file of data.files)await write(Buffer.from(file.dataBase64,'base64'),file.sourcePath,{mode:file.mode,mtimeNs:file.mtimeNs,...(file.removedSecretFields?{removedSecretFields:true}:{})});
+  for(const repo of data.repositories??[]){
+    const metadataFile=await write(Buffer.from(JSON.stringify(repo.git,null,2)),repo.sourcePath+' [Git metadata]');
+    const files:Array<{sourcePath:string;reviewFile:string}>=[];
+    for(const original of repo.originals){
+      const sourcePath=repo.sourcePath+' / '+original.path;
+      files.push({sourcePath,reviewFile:await write(Buffer.from(original.dataBase64,'base64'),sourcePath,{...(original.metadata??{}),removedSecretFields:original.removedSecretFields})});
+    }
+    repositories.push({sourcePath:repo.sourcePath,metadataFile,originals:files});
+  }
+  await check();
+  const manifest={activation:'inert_review_only',description:'The numbered .review files contain original Git dependency bytes. Paths and links are historical evidence only.',sourceWorkingRoot:data.sourceWorkingRoot,files:originals,directories:data.directories,links:data.links,absentPaths:data.absentPaths,omittedPaths:data.omittedPaths,bindings:data.bindings,repositories};
+  const handle=await fs.open(path.join(folder,'manifest.json'),'wx',0o600);
+  try{await handle.writeFile(JSON.stringify(manifest,null,2));await handle.sync();}finally{await handle.close();}
+  await check();
+}
+
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
 /** Shared link phase; global root imports call this only after every original exists. */
 async function placeWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations:Readonly<Record<string,string>>|undefined,preserveBaseline:(relative:string)=>Promise<void>,assertCurrent?:()=>Promise<void>):Promise<void>{
@@ -373,6 +407,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     if(reviewedData){
       // Separate repository only: never overwrite this working root's native-owned .git or provider settings.
       if(reviewedData.git)await recreateReviewedGit(path.join(destination,'.ponderosa-portable-review','git-repository'),reviewedData.git);
+      if(reviewedData.gitExternalDependencies)await materializeGitExternalReview(path.join(destination,'.ponderosa-portable-review','external-git'),reviewedData.gitExternalDependencies,checkRoot);
       if(reviewedData.providerFiles.length||reviewedData.providerDirectories.length){
         const folder=path.join(destination,'.ponderosa-portable-review','provider-files');await fs.mkdir(folder,{mode:0o700});
         const manifest=[];
