@@ -5,7 +5,7 @@ import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import type {AgentPortablePackageDto,PortableGitStorageBinding,ReviewedUserData,ReviewedUserDataActivation,PortableArtifactDto} from '@ponderosa/core';
 import {bindReviewedGitDirectories,compileReviewedGitConfiguration} from './portable-git-configuration.js';
-import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,parseReviewedUserData,planReviewedUserDataActivation,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings,validateReviewedUserDataActivation,PortableArtifactDto} from './portable-reviewed-user-data.js';
+import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,parseReviewedUserData,planReviewedUserDataActivation,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings,validateReviewedUserDataActivation} from './portable-reviewed-user-data.js';
 import {redactPortableDiagnostic} from './portable-secrets.js';
 
 type RecoveryTask={ref:string;destination:string;roots:readonly string[];activation:ReviewedUserDataActivation;data:Buffer;sha256:string;value:ReviewedUserData;configuration?:ReturnType<typeof compileReviewedGitConfiguration>;layout?:{commonDir:string;privateDir:string;commonRoot:string}};
