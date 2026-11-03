@@ -6,7 +6,7 @@ import { AssetError, type AssetStore, contentDisposition } from "../assets.js";
 /** Serve only bytes already acquired and fully verified by the attachment owner.
  * Single ranges support browser media seeking; unsupported and malformed
  * forms are ignored and receive the complete representation. */
-function sendAttachmentBytes(reply: FastifyReply, body: Buffer, name: string, mediaType: string, range: string | undefined, ifRange: string | undefined, playback: boolean) {
+function sendAttachmentBytes(reply: FastifyReply, body: Buffer, name: string, mediaType: string, range: string | string[] | undefined, ifRange: string | string[] | undefined, playback: boolean) {
   const audio = playback && ["audio/webm", "audio/ogg", "audio/mp4"].includes(mediaType);
   if (playback && !audio) return reply.code(404).send({ error: "Audio unavailable" });
   reply.header("content-type", audio ? mediaType : "application/octet-stream")
@@ -14,7 +14,7 @@ function sendAttachmentBytes(reply: FastifyReply, body: Buffer, name: string, me
     .header("cache-control", "private, no-store").header("x-content-type-options", "nosniff")
     .header("content-security-policy", "default-src 'none'; sandbox").header("accept-ranges", "bytes");
   // Without an advertised validator, an If-Range precondition is never proven.
-  const match = !ifRange && range && range.length <= 128 && range.match(/^bytes=(\d*)-(\d*)$/);
+  const match = !ifRange && typeof range === "string" && range.length <= 128 && range.match(/^bytes=(\d*)-(\d*)$/);
   if (!match || (!match[1] && !match[2])) return reply.send(body);
   const size = BigInt(body.length);
   const first = match[1] ? BigInt(match[1]) : undefined;
