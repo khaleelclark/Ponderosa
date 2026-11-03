@@ -17,6 +17,8 @@ export interface ReviewedGitUserData {
   infoReview:Array<{path:'info/attributes'|'info/exclude';source:'common_repository';dataBase64:string|null}>;
   /** Exact common shallow boundary bytes or absence; applies only to the separate review graph. */
   shallowReview:{path:'shallow';source:'common_repository';dataBase64:string|null};
+  /** Exact bounded source retention evidence and index-ordered object times; never active GC policy. */
+  packRetentionReview:Array<{packOid:string;packDataBase64:string;indexDataBase64:string;keepDataBase64:string|null;mtimesDataBase64:string|null;objects:Array<{oid:string;mtime:number|null}>}>;
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true;source?:'config.worktree'}>;
   exclusions:string[];
 }
