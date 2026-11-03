@@ -75,19 +75,20 @@ Ownership supports association validation; explicit human selection supplies
 permission. This implementation batch performed no live external-repository reads.
 
 Only selected private `HEAD`, `index`, exact linked `sharedindex.<OID>` originals,
-`config.worktree`, `info/sparse-checkout` and `logs/HEAD` supply selected state.
-Shared `config`, `packed-refs`, `refs`, `objects` and `logs/refs` supply repository
-state. The common repository's private HEAD/index/config.worktree/patterns/HEAD
+`config.worktree`, `info/sparse-checkout`, `logs/HEAD`, loose
+`refs/{bisect,rewritten,worktree}/**` and matching `logs/refs` supply selected state.
+Shared `config`, `packed-refs`, public `refs`, `objects` and public `logs/refs`
+supply repository state. The common repository's private HEAD/index/config.worktree/patterns/HEAD
 log are never used, and `common/worktrees` is never enumerated. Its directory
 identity is association evidence only. Selected/shared identities and exact raw
-file bytes (compared by SHA-256), bounded directory inventories, complete logical
+file bytes (compared by SHA-256), provenance-tagged bounded directory inventories, complete logical
 index/sparse state and required index storage must match before/after export.
 Independent writers are not drained; this is observed-change refusal, not proof
 of an arbitrary-writer atomic snapshot.
 
 All native plumbing now reads an exclusive mode-0700 temporary captured view,
 including for ordinary repositories. It contains only captured selected HEAD,
-shared refs/packed refs and approved bounded object-storage originals, plus a
+selected private loose refs, shared public refs/packed refs and approved bounded object-storage originals, plus a
 minimal generated format-only config. Source config, config.worktree, pointers,
 commondir, hooks, logs, index and sparse settings are never copied into its active
 metadata. Native startup therefore cannot discover the selected/common/ancestor
@@ -112,10 +113,31 @@ Repository format declarations must be exactly 0 or 1; objectformat requires 1.
 Only objectformat/worktreeConfig repository extensions are accepted (a local
 extensions.sparseindex declaration now refuses; native sparse state uses
 index.sparse and the index marker);
-no ignored native storage file is silently dropped. Selected private refs/log
-refs and shared private `refs/{bisect,rewritten,worktree}` namespaces refuse rather
-than merging another worktree's state. Main-worktree private logs are excluded,
-not read. Unsupported selected operation metadata, shallow history, grafts,
+no ignored native storage file is silently dropped. For linked selections, common
+`refs/{bisect,rewritten,worktree}` and their logs are skipped by name before stat,
+open or descent, including when those excluded names are links or special nodes.
+Only those three namespaces are accepted beneath selected `refs`/`logs/refs`;
+unknown selected storage refuses without opening its contents. Namespace roots
+must be directories. Selected and shared raw inventories carry distinct source
+tags; duplicate effective file paths refuse. Packed private refs, selected
+`packed-refs`, ref file/directory conflicts, duplicate refs and missing/cyclic
+symbolic targets refuse. Symbolic targets must be exact captured `refs/...`
+names, never `main-worktree/...`, `worktrees/...` or pseudoref aliases. Public
+packed refs retain normal loose overrides. All raw directories/files must be
+canonical and same-owner; regular files retain no-follow, single-link and full
+before/after identity checks. The existing shared server validator checks names,
+OID/graph closure, symbolic targets, secrets and exact reflog bytes on export,
+import and retained-original re-export. The existing DTO and callers need no
+format change. Source-only implementation; no runtime equivalence claim.
+
+The selected linked gitdir's bounded top-level name inventory accepts only the
+association records, HEAD, index, config.worktree, info, refs, logs, the excluded
+administrative `locked` record and canonical `sharedindex.<OID>` names. Only the
+exact index-linked sharedindex original is read. Unknown names, unsupported
+pseudorefs and operation metadata refuse; administrative ownership is not copied.
+
+Private refs are review data, not migration of an active bisect/rebase operation.
+Main-worktree private logs are excluded, not read. Unsupported selected operation metadata, shallow history, grafts,
 combined split/sparse storage and the existing index/sparse limits remain.
 Supported split/v4/sparse originals use the selected private gitdir and verified
 captured shared objects; full inactive standalone recreation is unchanged.
@@ -123,6 +145,7 @@ Submodule repository contents, general linked layouts and live activation remain
 gaps. No DTO, caller, UI, transport format or destination ownership change is needed.
 
 Native routing references: [Git repository layout](https://git-scm.com/docs/gitrepository-layout),
+[Git worktree ref sharing rules](https://git-scm.com/docs/git-worktree#_refs),
 [Git private/common path routing](https://github.com/git/git/blob/v2.43.0/path.c),
 [Git setup](https://github.com/git/git/blob/v2.43.0/setup.c),
 [Git config sequence](https://github.com/git/git/blob/v2.43.0/config.c), and
@@ -275,7 +298,10 @@ Import validates logs and object relationships before creating the review reposi
 then writes the original bytes exclusively under its new `.git/logs`. It never
 writes into the active destination repository, appends current identities, runs
 Git or activates source hooks/settings. Existing files refuse and partial recovery
-bytes remain. Supported linked selections combine only selected private `logs/HEAD` with shared `logs/refs`; main-worktree HEAD logs and other private logs are excluded. Private per-worktree ref namespaces and historical logs whose objects are unavailable remain unsupported. No tests or native capture/recreation
+bytes remain. Supported linked selections combine selected private `logs/HEAD`
+and `logs/refs/{bisect,rewritten,worktree}/**` with shared public `logs/refs`.
+Main-worktree HEAD logs and common private ref logs are excluded before descent
+or opening. Historical logs whose objects are unavailable remain unsupported. No tests or native capture/recreation
 were run for this source change.
 
 ### Bounded TOML syntax
@@ -486,7 +512,7 @@ not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
 
-Exact remaining implementation: unsupported linked/common-directory layouts and private ref namespaces;
+Exact remaining implementation: unsupported linked/common-directory layouts, packed private refs and unsupported selected ref storage;
 unsupported index flags/extensions and combined split/sparse or other unsupported sparse forms; staged submodule repository originals; custom external Git include/hook
 contents; arbitrary other provider configuration formats and TOML outside the bounded structured subset; explicit reviewed activation into a native-owned live Git or
 provider configuration. Whole-folder re-export of imported inactive originals is

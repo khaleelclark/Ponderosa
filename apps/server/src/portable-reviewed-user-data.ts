@@ -237,9 +237,11 @@ async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:b
   }finally{await handle.close();}
 }
 function refName(value:string):string {
-  if(!/^refs\/(?:[^\x00-\x20~^:?*\[\\]+)$/.test(value)||value.includes('..')||value.includes('@{')||value.split('/').some(part=>!part||part.startsWith('.')||part.endsWith('.')||part.endsWith('.lock')))throw new Error('Invalid portable Git ref');
+  if(typeof value!=='string'||value.length>1024||!/^refs\/(?:[^\x00-\x20\x7f~^:?*\[\\]+)$/.test(value)||value.includes('..')||value.includes('@{')||value.split('/').some(part=>!part||part.startsWith('.')||part.endsWith('.')||part.endsWith('.lock')))throw new Error('Invalid portable Git ref');
+  safeText(value,'Git ref');
   return value;
 }
+function privateRef(value:string):boolean {return /^refs\/(?:bisect|rewritten|worktree)(?:\/|$)/.test(value);}
 function indexPath(value:string):string {
   if(!value||value.startsWith('/')||value.includes('\\')||value.includes('\0')||value.split('/').some(part=>!part||part==='.'||part==='..'||part.toLowerCase()==='.git'))throw new Error('Invalid portable Git index path');
   return value;
@@ -334,8 +336,13 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
       for(const line of links){const [kind,oid]=line.split(' ');requireObject(oid!,kind==='tree'?'tree':kind==='parent'?'commit':undefined);}
     }
   }
-  const refs=new Set<string>();
-  for(const ref of value.refs){fields(ref,['name','oid'],['symbolic']);refName(ref.name);if(refs.has(ref.name)||!ids.has(ref.oid))throw new Error('Missing or duplicate Git ref original');refs.add(ref.name);if(Object.hasOwn(ref,'symbolic'))refName(ref.symbolic!);}
+  const refs=new Set<string>(),refDirectories=new Set<string>();
+  for(const ref of value.refs){
+    fields(ref,['name','oid'],['symbolic']);refName(ref.name);if(refs.has(ref.name)||!ids.has(ref.oid))throw new Error('Missing or duplicate Git ref original');refs.add(ref.name);if(Object.hasOwn(ref,'symbolic'))refName(ref.symbolic!);
+    const parts=ref.name.split('/');for(let i=1;i<parts.length;i++)refDirectories.add(parts.slice(0,i).join('/'));
+    if(refs.size+refDirectories.size>20000)throw new Error('Git ref inventory exceeds its bound');
+  }
+  for(const name of refs)if(refDirectories.has(name))throw new Error('Git ref file/directory paths conflict');
   for(const ref of value.refs){
     let target=ref;const seen=new Set<string>();
     while(target.symbolic){if(seen.has(target.name))throw new Error('Cyclic Git symbolic ref');seen.add(target.name);const next=value.refs.find(candidate=>candidate.name===target.symbolic);if(!next||next.oid!==ref.oid)throw new Error('Incomplete Git symbolic ref target');target=next;}
@@ -664,44 +671,51 @@ async function gitAssociation(root:string):Promise<GitAssociation|undefined> {
   return {root,gitDir,commonDir,linked:true,evidence:JSON.stringify(evidence)};
 }
 
-type CapturedGitFile={name:string;data:Buffer};
+type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer};
 /** Complete exact allowed roots only; never enumerate common/worktrees or main-worktree private files. */
 async function captureGitRaw(association:GitAssociation) {
-  const {gitDir,commonDir,linked}=association,files:CapturedGitFile[]=[],inventory:Array<{name:string;identity:string;digest?:string;absent?:true}>=[];
+  const {gitDir,commonDir,linked}=association,files:CapturedGitFile[]=[],inventory:Array<{name:string;source:'selected'|'shared';identity:string;digest?:string;absent?:true}>=[];
+  const owner=(await fs.lstat(association.root,{bigint:true})).uid,names=new Set<string>();
   let nodes=0,bytes=0;
-  const walk=async(target:string,name:string,objects=false):Promise<void>=>{
-    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name,identity:'',absent:true});return;}throw error;}
-    if(linked&&/^(?:refs|logs\/refs)\/(?:bisect|rewritten|worktree)(?:\/|$)/.test(name))throw new Error('Other worktree private namespace is outside the selected Git scope');
-    if(++nodes>20000||await fs.realpath(target)!==target)throw new Error('Git raw inventory is external or exceeds its bound');
+  const walk=async(target:string,name:string,source:'selected'|'shared',objects=false):Promise<void>=>{
+    const refPath=name.startsWith('logs/')?name.slice(5):name;
+    // Common private names belong to the main worktree: do not even stat or open them.
+    if(linked&&source==='shared'&&privateRef(refPath))return;
+    if(linked&&source==='selected'&&(name.startsWith('refs/')||name.startsWith('logs/refs/'))&&!privateRef(refPath))throw new Error('Unsupported selected private Git ref storage');
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name,source,identity:'',absent:true});return;}throw error;}
+    if(++nodes>20000||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git raw inventory is foreign, external or exceeds its bound');
     if(before.isDirectory()){
       if(!objects&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
       if(objects&&!['objects','objects/pack','objects/info'].includes(name)&&!/^objects\/[a-f0-9]{2}$/.test(name))throw new Error('Unsupported Git object directory');
-      inventory.push({name,identity:originalIdentity(before)});
-      for(const entry of (await fs.readdir(target)).sort())await walk(path.join(target,entry),name+'/'+entry,objects);
+      inventory.push({name,source,identity:originalIdentity(before)});
+      for(const entry of (await fs.readdir(target)).sort())await walk(path.join(target,entry),name+'/'+entry,source,objects);
       const after=await fs.lstat(target,{bigint:true});if(originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw directory changed');
     }else{
+      if(['refs','logs/refs'].includes(name)||linked&&source==='selected'&&['refs/bisect','refs/rewritten','refs/worktree'].includes(refPath))throw new Error('Git ref namespace must be a directory');
       if(objects&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
       if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/'))reflogPath(name.slice(5));
-      const {data}=await regularOriginal(target,objects?limit:1024*1024),after=await fs.lstat(target,{bigint:true});
+      if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
+      const {data}=await regularOriginal(target,objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
-      inventory.push({name,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,data});
+      inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
     }
   };
-  for(const name of ['HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name);
+  for(const name of ['HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
-  for(const name of ['config','packed-refs','refs','objects'])await walk(path.join(commonDir,name),name,name==='objects');
+  for(const name of ['config','packed-refs','refs','objects'])await walk(path.join(commonDir,name),name,'shared',name==='objects');
   for(const directory of new Set([gitDir,commonDir])){
     const target=path.join(directory,'logs');
-    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name:directory===gitDir?'selected/logs':'shared/logs',identity:'',absent:true});continue;}throw error;}
-    if(!before.isDirectory()||await fs.realpath(target)!==target)throw new Error('Git log parent is not canonical');
-    if(!linked||directory===gitDir)for(const name of await fs.readdir(target))if(!(linked?['HEAD']:['HEAD','refs']).includes(name))throw new Error('Unsupported selected Git reflog original');
-    inventory.push({name:directory===gitDir?'selected/logs':'shared/logs',identity:originalIdentity(before)});
+    const source=directory===gitDir?'selected':'shared';
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name:'logs',source,identity:'',absent:true});continue;}throw error;}
+    if(!before.isDirectory()||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git log parent is not canonical and same-owner');
+    if(!linked||directory===gitDir)for(const name of await fs.readdir(target))if(!['HEAD','refs'].includes(name))throw new Error('Unsupported selected Git reflog original');
+    inventory.push({name:'logs',source,identity:originalIdentity(before)});
   }
-  await walk(path.join(gitDir,'logs','HEAD'),'logs/HEAD');await walk(path.join(commonDir,'logs','refs'),'logs/refs');
+  await walk(path.join(gitDir,'logs','HEAD'),'logs/HEAD','selected');await walk(path.join(commonDir,'logs','refs'),'logs/refs','shared');
   if(linked){
-    // These namespaces are private to a worktree; this bounded implementation refuses instead of merging them.
-    for(const base of [path.join(gitDir,'refs'),path.join(gitDir,'logs','refs')])await absentGitPath(base);
+    await walk(path.join(gitDir,'refs'),'refs','selected');
+    await walk(path.join(gitDir,'logs','refs'),'logs/refs','selected');
   }
   return {files,evidence:JSON.stringify(inventory)};
 }
@@ -736,7 +750,7 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
           if(line.startsWith('#')){if(!/^# pack-refs with:(?: (?:peeled|fully-peeled|sorted))* *$/.test(line))throw new Error('Unsupported packed Git ref header');canPeel=false;continue;}
           if(line.startsWith('^')){if(!canPeel||!oidPattern.test(line.slice(1)))throw new Error('Invalid peeled Git ref');canPeel=false;continue;}
           const split=line.indexOf(' '),oid=line.slice(0,split),name=line.slice(split+1);refName(name);
-          if(!oidPattern.test(oid)||names.has(name)||/^refs\/(?:bisect|rewritten|worktree)(?:\/|$)/.test(name))throw new Error('Invalid, duplicate or private packed Git ref');
+          if(!oidPattern.test(oid)||names.has(name)||privateRef(name))throw new Error('Invalid, duplicate or private packed Git ref');
           names.add(name);expectedRefs.set(name,{oid});canPeel=true;
         }
       }
@@ -752,6 +766,18 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
       }else if(file.name!=='packed-refs'&&!file.name.startsWith('objects/'))continue;
       await write(file.name,file.data);
     }
+    // Resolve only captured names; aliases such as main-worktree/HEAD never reach Git.
+    const refDirectories=new Set<string>();
+    for(const [name,ref] of expectedRefs){
+      const parts=name.split('/');for(let i=1;i<parts.length;i++)refDirectories.add(parts.slice(0,i).join('/'));
+      const seen=new Set([name]);let target=ref;
+      while(target.symbolic){
+        const next=expectedRefs.get(target.symbolic);
+        if(!next||seen.has(target.symbolic))throw new Error('Missing, external or cyclic captured Git symbolic target');
+        seen.add(target.symbolic);target=next;
+      }
+    }
+    for(const name of expectedRefs.keys())if(refDirectories.has(name))throw new Error('Captured Git refs shadow a directory');
     const directoryIdentities=await Promise.all(directories.map(async target=>({target,identity:originalIdentity(await fs.lstat(target,{bigint:true}))})));
     const refs=await git(root,['for-each-ref','--format=%(refname)%00%(objectname)%00%(symref)']);
     const actualRefs=new Map<string,{oid:string;symbolic:string}>();
@@ -782,9 +808,10 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     for(const name of ['shallow','info/grafts','objects/info/alternates','objects/info/http-alternates'])await absentGitPath(path.join(commonDir,name));
     if(linked){
       await absentGitPath(path.join(gitDir,'config'));
-      for(const name of ['bisect','rewritten','worktree']){
-        await absentGitPath(path.join(commonDir,'refs',name));await absentGitPath(path.join(commonDir,'logs','refs',name));
-      }
+      await absentGitPath(path.join(gitDir,'packed-refs'));
+      // Unknown private storage/pseudorefs must not silently disappear from the review copy.
+      const names=await fs.readdir(gitDir);if(names.length>20000)throw new Error('Selected Git storage inventory exceeds its bound');
+      for(const name of names)if(!['gitdir','commondir','HEAD','index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
     }
   };
   const snapshot=async()=>{
