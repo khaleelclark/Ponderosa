@@ -26,3 +26,7 @@ re-export, canonical serializer key ordering, missing proof, original/root
 mismatch, forged workspace receipt, unknown files and replaced generated links.
 Store issuance/lookup tests independently cover canonical authority. No tests,
 build or browser execution were performed while implementing this change.
+
+Observed absence excludes only an exactly absent hook binding. An existing
+source symlink to a declared missing target remains a declared alias, so its
+proved generated wrapper is retained without following either link.

@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {constants,promises as fs} from '@ponderosa/native-host/fs';
 import type {ReviewedUserData} from '@ponderosa/core';
-import {sourcePathAbsolute,sourcePathKey,sourcePathsEqual,sourcePathWithin,relativeSourcePath,resolveSourcePath} from './portable-source-paths.js';
+import {sourcePathAbsolute,sourcePathKey,sourcePathsEqual} from './portable-source-paths.js';
 import {GENERATED_HOOK_NAMESPACE,generatedHookName,generatedHookIdentity,type CanonicalGeneratedHooksProof,type GeneratedHookIdentity} from './portable-generated-hook-proof.js';
 
 /** Check names/content against durable local operation authority. This reader
@@ -26,16 +26,7 @@ export async function verifyRetainedGeneratedHooks(root:string,manifest:Reviewed
  const family=manifest.gitExternalDependencies;
  if(!manifest.git||!family)fail('Retained original does not declare generated relative hook paths');
  const absent=new Set(family.absentPaths.map(sourcePathKey));
- const absentTarget=(source:string)=>{
-  let current=source;const seen=new Set<string>();
-  for(let depth=0;depth<128;depth++){
-   const key=sourcePathKey(current);if(absent.has(key))return true;if(seen.has(key))return false;seen.add(key);
-   const link=family.links.filter(link=>sourcePathWithin(link.sourcePath,current)).sort((a,b)=>b.sourcePath.length-a.sourcePath.length)[0];
-   if(!link)return false;current=resolveSourcePath(link.targetSourcePath,relativeSourcePath(link.sourcePath,current));
-  }
-  fail('Generated hook source alias graph exceeds its bound');
- };
- const expected=new Set(family.bindings.filter(binding=>binding.kind==='hooks'&&!binding.default&&binding.context==='worktree'&&sourcePathsEqual(binding.contextSourcePath,family.sourceWorkingRoot)&&!sourcePathAbsolute(binding.rawValue,binding.contextSourcePath)&&!binding.rawValue.startsWith('~')&&!binding.rawValue.startsWith('%(')&&!absentTarget(binding.resolvedPath)).map(binding=>generatedHookName(binding.sourceConfigPath,binding.rawValue)));
+ const expected=new Set(family.bindings.filter(binding=>binding.kind==='hooks'&&!binding.default&&binding.context==='worktree'&&sourcePathsEqual(binding.contextSourcePath,family.sourceWorkingRoot)&&!sourcePathAbsolute(binding.rawValue,binding.contextSourcePath)&&!binding.rawValue.startsWith('~')&&!binding.rawValue.startsWith('%(')&&!absent.has(sourcePathKey(binding.resolvedPath))).map(binding=>generatedHookName(binding.sourceConfigPath,binding.rawValue)));
  const issued=new Map<string,CanonicalGeneratedHooksProof['links'][number]>();
  for(const link of proof.links){
   fields(link,['name','text','identity']);identity(link.identity);

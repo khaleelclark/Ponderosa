@@ -529,3 +529,19 @@ test('native planning compares transported hook originals above the config-only 
     assert.equal(tasks[0].configuration.external.files.find(file=>file.path==='.husky/pre-commit').data.length,Buffer.byteLength(hook));
   }finally{await rm(root,{recursive:true,force:true});}
 });
+
+
+test('retained generated hook proof distinguishes a declared dangling source alias from an absent hook path', {skip:process.platform==='win32'},async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-retained-dangling-hook-')));
+ try{
+  const source=path.join(base,'source'),destination=path.join(base,'restored');await initialize(source);
+  await symlink('missing-hooks',path.join(source,'dangling-hooks'));await git(source,'config','core.hooksPath','dangling-hooks');
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),original=Buffer.from(JSON.stringify(manifest)),selection={git:true,harness:false,source:'retained_originals'};
+  const family=manifest.gitExternalDependencies,binding=family.bindings.find(binding=>binding.kind==='hooks'&&!binding.default&&binding.context==='worktree');
+  assert.ok(binding);assert.ok(family.links.some(link=>link.sourcePath===binding.resolvedPath),'Fixture retains its actual source alias');assert.ok(family.absentPaths.some(name=>name.endsWith('/missing-hooks')),'Fixture retains the negative alias target');assert.ok(!family.absentPaths.includes(binding.resolvedPath),'The alias itself exists');
+  await mkdir(destination);const review=path.join(destination,'.ponderosa-portable-review'),namespace=path.join(review,'active-git-hooks');await mkdir(review);await mkdir(namespace);await writeFile(path.join(review,'user-data.json'),original);
+  const name=generatedHookName(binding.sourceConfigPath,binding.rawValue),text='../../owned-dangling-alias';await symlink(text,path.join(namespace,name));
+  const root=await lstat(destination,{bigint:true}),proof={schema:'ponderosa.generated-hook-namespace.v1',operationId:'fixture-dangling-source-import',sourceOriginalSha256:createHash('sha256').update(original).digest('hex'),root:{device:root.dev.toString(),inode:root.ino.toString()},namespace:generatedHookIdentity(await lstat(namespace,{bigint:true})),links:[{name,text,identity:generatedHookIdentity(await lstat(path.join(namespace,name),{bigint:true}))}]};
+  const captured=await captureRetainedReviewOriginal(destination,selection,original,proof);await captured.verify();assert.deepEqual(captured.data,original);assert.equal(await readlink(path.join(namespace,name)),text);
+ }finally{await rm(base,{recursive:true,force:true});}
+});
