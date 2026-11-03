@@ -8,7 +8,7 @@ const settle=()=>new Promise(resolve=>setTimeout(resolve,50));
 export async function foreignContinuationRegression(mode:'normal'|'quota'|'security'|'stale'='normal'){
  const host=document.createElement('div');document.body.append(host);let root=createRoot(host);
  const sha='a'.repeat(64),selection={planId:'plan',sourceExecutionId:'source',checkpointKey:'cut',checkpointSha256:sha};
- const saved:any={receipt:{planId:'plan',branchId:'branch'},data:{sha256:sha,owners:[{sourceExecutionId:'source',sha256:sha,facts:[{kind:'checkpoint',key:'cut',sha256:sha,json:'{"restore_supported":true}'}]}]}};
+ const saved:any={receipt:{planId:'plan',branchId:'branch'},data:{sha256:sha,owners:[{sourceExecutionId:'source',sha256:sha,facts:[{kind:'provenance',json:'{"source":"manual"}'},{kind:'checkpoint',key:'cut',sha256:sha,json:'{"restore_supported":true}'}]}]}};
  const key=foreignCommandStorageKey(location.origin,`${currentProductScope()}:${productApiPath('/api/branches')}`,'branch','held');
  const prior=localStorage.getItem(key),transport=window.fetch,setItem=Storage.prototype.setItem;
  localStorage.removeItem(key);let reviews=0,posts=0,gets=0,posted:any;
@@ -31,7 +31,7 @@ export async function foreignContinuationRegression(mode:'normal'|'quota'|'secur
   if(mode==='quota'||mode==='security')Storage.prototype.setItem=function(k,v){if(k===key)throw new DOMException('Controlled storage failure',mode==='quota'?'QuotaExceededError':'SecurityError');return setItem.call(this,k,v)};
   await click('Accept current authority and continue');
   if(mode==='normal'){
-   assert(posts===1&&localStorage.getItem(key),'one lost-result mutation retained');root.unmount();root=createRoot(host);await mount();assert(reviews===2&&posts===1,'remount cannot review or POST');await click('Look up original continuation result');assert(gets===1&&posts===1&&host.textContent?.includes('Fresh continuation accepted'),'original-key recovery only');
+   assert(posts===1&&localStorage.getItem(key),'one lost-result mutation retained');root.unmount();root=createRoot(host);await mount();assert(reviews===2&&posts===1,'remount cannot review or POST');assert(gets===1&&host.textContent?.includes('Fresh continuation accepted'),'remount uses only the original-key read');await click('Refresh saved result');assert(gets===2&&posts===1&&host.textContent?.includes('Fresh continuation accepted'),'manual refresh only reads the original-key receipt');
   }else if(mode==='stale')assert(posts===0&&!(host.querySelector('input[type="checkbox"]') as HTMLInputElement|null)?.checked,'authority drift invalidates consent before mutation');
   else assert(posts===0&&localStorage.getItem(key)===null&&host.textContent?.includes('Controlled storage failure'),'storage exception stops mutation');
   return {mode,posts,gets,reviews};

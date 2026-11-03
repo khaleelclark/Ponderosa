@@ -1,3 +1,4 @@
+import {openSelect} from '../shared/mounted-controls';
 // Deferred mounted source; not executed.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -19,7 +20,7 @@ export async function generationHistoryDisclosureRegression():Promise<void>{
   const json=(v:unknown)=>new Response(JSON.stringify(v),{status:200,headers:{'content-type':'application/json'}});
   globalThis.fetch=async(input,init)=>{const url=String(input);if(init?.method==='POST'){sent=JSON.parse(String(init.body));throw Error('lost choice response');}if(url.includes('/historical-checkpoints'))return json([]);if(url.endsWith('/disclosure'))return json(review());if(url.endsWith('/destinations'))return json([summary]);if(url.includes('/review'))return json({error:'retirement not part of this fixture'});throw Error('unexpected '+url);};
   try{
-   root.render(<QueryClientProvider client={client}><BranchDisclosureReview branchId="branch" executionId="source" enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review fresh destination').click();await settle();(document.querySelector('[role=combobox]') as HTMLElement).click();await settle();(document.querySelector('[role=option]') as HTMLElement).click();await settle();
+   root.render(<QueryClientProvider client={client}><BranchDisclosureReview branchId="branch" executionId="source" enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review fresh destination').click();await settle();openSelect(document.querySelector('[role=combobox]'));await settle();(document.querySelector('[role=option]') as HTMLElement).click();await settle();
    bad=true;button('Preview disclosure').click();await settle();assert(!button('Approve disclosure'),'omitting last historical package/fact refuses whole review');
    bad=false;button('Preview disclosure').click();await settle();for(let i=0;i<generation;i++){assert(document.body.textContent?.includes(`Retired source generation ${i} · nondispatchable evidence`),'every prior generation labelled');assert(document.body.textContent?.includes(`package${i}`),'every original package visible');}
    assert(document.body.textContent?.includes('Current source package generation '+generation),'current source distinguished from destination generation zero');assert(button('Approve disclosure').disabled,'all-facts acknowledgement required');

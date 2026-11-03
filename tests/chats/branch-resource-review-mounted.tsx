@@ -1,3 +1,4 @@
+import {openSelect} from '../shared/mounted-controls';
 // Deferred browser regression source; run only in the existing mounted harness.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -30,7 +31,7 @@ export async function branchResourceReviewRegression():Promise<void>{
   return json({branchId:'branch',executionId:'run',stepExecutionId:'step',generation,state:'reserved',destinationChatId:'actual-chat',destinationChatAvailable:true,importState:null,custody:{kind:'capture',state:'retained',custodyId:'custody',receiptSha256:'receipt',checkpointId:'cut',packageSha256:'package'},accessChoiceCurrent:choiceRecorded,currentPolicyReview:{reviewSha256:hash,source:[{ref:'agent',settings:{restrictedCapabilityIds:['capability']}}],destination:{restrictedCapabilityIds:[]}}});
  };
  const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchResourceReview key={key} branchId="branch" executionId="run" stepId="step" enabled onChanged={()=>{}}/></QueryClientProvider>);
- const choose=async()=>{(document.querySelector('[role=combobox]') as HTMLElement).click();await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Apply source restrictions') as HTMLElement).click();await tick();};
+ const choose=async()=>{openSelect(document.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Apply source restrictions') as HTMLElement).click();await tick();};
  try{
   render('initial');await settle();button('Review resource').click();await settle();
   assert(document.body.textContent?.includes('actual-chat')&&document.body.textContent?.includes('Generation 3'),'show actual destination and generation');

@@ -1,3 +1,4 @@
+import {openSelect} from '../shared/mounted-controls';
 // Deferred browser regression source; no new runner or execution.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -22,7 +23,7 @@ export async function postImportBrowserReviewRegression():Promise<void>{
   assert(writes.length===0,'imported suggestions must not mutate destination grants or profiles');
   const apply=Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Apply saved-browser choice')!;
   assert(apply.disabled,'applying access requires an explicit choice');
-  (host.querySelector('[role=combobox]') as HTMLElement).click();await tick();
+  openSelect(host.querySelector('[role=combobox]'));await tick();
   const allow=Array.from(document.querySelectorAll('[role=option]')).find(option=>option.textContent==='Allow') as HTMLElement;
   allow.click();await tick();apply.click();for(let index=0;index<4;index++)await tick();
   assert(writes.length===1&&JSON.stringify(writes[0]).includes('"agentId":"imported"'),'explicit access choice targets the mapped imported Agent');

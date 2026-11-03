@@ -1,3 +1,4 @@
+import {openSelect} from '../shared/mounted-controls';
 // Deferred browser regression source; use the existing mounted harness.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -22,9 +23,9 @@ export async function branchHistoryReviewRegression():Promise<void>{
  try{
   root.render(<QueryClientProvider client={client}><BranchHistoryReview branchId="branch" executionId="execution" enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();
   button('Review saved work').click();await settle();
-  (document.querySelectorAll('[role=combobox]')[0] as HTMLElement).click();await tick();
+  openSelect(document.querySelectorAll('[role=combobox]')[0]);await tick();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent?.startsWith('4 ·')) as HTMLElement).click();await tick();
-  (document.querySelectorAll('[role=combobox]')[1] as HTMLElement).click();await tick();
+  openSelect(document.querySelectorAll('[role=combobox]')[1]);await tick();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Restore Request graph') as HTMLElement).click();await tick();
   button('Review current scope').click();await settle();assert(sent.length===0,'review cannot restore or activate a graph');
   (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await tick();button('Continue').click();await tick();button('Apply reviewed action').click();await settle();

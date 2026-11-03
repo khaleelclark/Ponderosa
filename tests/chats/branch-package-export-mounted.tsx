@@ -1,3 +1,4 @@
+import {openSelect} from '../shared/mounted-controls';
 // Deferred browser regression; no runner changes or execution.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -20,7 +21,7 @@ export async function branchPackageAllFoldersRegression():Promise<void>{
   Array.from(document.querySelectorAll('label')).find(label=>label.textContent==='Git history, branches and staged files')!.querySelector<HTMLInputElement>('input')!.click();await flush();
   const details=Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Mapped Git folders')!;details.click();await flush();
   Array.from(document.querySelectorAll('button')).find(item=>item.textContent==='Add Git folder mapping')!.click();await flush();
-  const storage=Array.from(document.querySelectorAll('label')).find(label=>label.textContent?.startsWith('Storage-folder Agent'))!;document.getElementById(storage.htmlFor)!.click();await flush();
+  const storage=Array.from(document.querySelectorAll('label')).find(label=>label.textContent?.startsWith('Storage-folder Agent'))!;openSelect(document.getElementById(storage.htmlFor));await flush();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Team · Child') as HTMLElement).click();await flush();
   button.click();await flush();
   const selections=Object.values(exports[1]!);assert(selections.length===2,'global mapping preserves complete workflow root selection');

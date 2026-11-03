@@ -1,3 +1,4 @@
+import {openSelect} from '../shared/mounted-controls';
 // Deferred regression source for the existing mounted browser harness; not executed.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -40,7 +41,7 @@ export async function branchDisclosureReviewRegression():Promise<void>{
   throw Error(`Unexpected call ${url}`);
  };
  const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchDisclosureReview key={key} branchId="branch" executionId="source-run" enabled onChanged={()=>{}}/></QueryClientProvider>);
- const select=async()=>{(document.querySelector('[role=combobox]') as HTMLElement).click();await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent?.includes('fresh-chat')) as HTMLElement).click();await tick();};
+ const select=async()=>{openSelect(document.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent?.includes('fresh-chat')) as HTMLElement).click();await tick();};
  const acknowledge=async()=>{(Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>item.closest('label')?.textContent?.includes('exact historical facts')) as HTMLInputElement).click();await tick();};
  try{
   render('initial');await settle();button('Review fresh destination').click();await settle();await select();button('Preview disclosure').click();await settle();
@@ -65,7 +66,7 @@ export async function branchDisclosureReviewRegression():Promise<void>{
   assert(sent[3].body.commandKey==='composer-key'&&sent[3].body.reviewHash==='current-admit','admission uses canonical composer key and fresh current human hash');
   button('Inspect retained command').click();await settle();assert(sent.length===4&&localStorage.getItem(storageKey)===null,'lost admission response reads canonical receipt without another activation effect');
   (Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Prepare from saved checkpoint') as HTMLElement).click();await tick();
-  (document.querySelectorAll('[role=combobox]')[1] as HTMLElement).click();await tick();
+  openSelect(document.querySelectorAll('[role=combobox]')[1]);await tick();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='4 · cut') as HTMLElement).click();await tick();
   (Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>item.closest('label')?.textContent?.includes('reconciled original external effects')) as HTMLInputElement).click();await tick();
   button('Prepare fresh destination').click();await tick();button('Prepare destination').click();await settle();

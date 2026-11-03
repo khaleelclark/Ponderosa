@@ -1,3 +1,4 @@
+import {openSelect} from '../shared/mounted-controls';
 // Deferred browser regression source. Run only with the later combined verification.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -36,7 +37,7 @@ export async function importLiveRootRegression():Promise<void>{
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ImportAgentForm projectId="old-project" engines={[engine]} conversations={[]} onCancel={()=>{}}/></MutationNotificationProvider></QueryClientProvider>);await flush();
   assert(creates.length===0,'opening import never creates a Chat');
   change(input('New Chat name'),'Restored');change(input('New managed folder name'),'restored');await flush();
-  const combo=host.querySelector('[role=combobox]') as HTMLElement;combo.click();await flush();
+  const combo=host.querySelector('[role=combobox]') as HTMLElement;openSelect(combo);await flush();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Codex') as HTMLElement).click();await flush();
   button('Create new destination').click();await flush();
   assert(creates.length===1,'explicit creation uses exactly one request');
@@ -54,7 +55,7 @@ export async function importLiveRootRegression():Promise<void>{
   assert(reviews[1]?.metadata.workingFilesActivation?.sharedRoot==='/managed/restored','activation confirms canonical returned path');
   assert(reviews[1]?.metadata.workingRootDestinations?.root==='/recovery/restored','live activation retains recovery mapping');
   const restrictions=Array.from(host.querySelectorAll('label')).find(item=>item.textContent?.startsWith('Restrictions for imported Agents'))!;
-  document.getElementById(restrictions.htmlFor)!.click();await flush();
+  openSelect(document.getElementById(restrictions.htmlFor));await flush();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Keep destination restrictions') as HTMLElement).click();await flush();
   button('Import').click();await flush();
   assert(imports[0]?.projectId==='new-project'&&imports[0].metadata.conversationId==='new-chat','import uses actual created destination');
