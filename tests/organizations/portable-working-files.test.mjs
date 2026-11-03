@@ -126,9 +126,12 @@ test('byte-phase directory custody spans implicit module parents and refuses lat
     const identity=await importWorkingFiles(destination,[{path:'modules/child/source.txt',data,sha256:createHash('sha256').update(data).digest('hex')}],[{path:'explicit',mode:0o700,mtime:new Date(0).toISOString()}],undefined,undefined,[],'refuse',undefined,true,undefined,true);
     for(const relative of ['modules','modules/child','explicit']){
       const proof=workingDirectoryIdentity(destination,identity,path.join(destination,relative)),actual=await lstat(path.join(destination,relative),{bigint:true});
-      assert.deepEqual(proof,{device:actual.dev.toString(),inode:actual.ino.toString()});
+      assert.equal(proof.device,actual.dev.toString());assert.equal(proof.inode,actual.ino.toString());
       await assertWorkingRootIdentity(path.join(destination,relative),proof);
     }
+    const parentProof=workingDirectoryIdentity(destination,identity,path.join(destination,'modules'));
+    assert.deepEqual(parentProof.directories.child,identity.directories['modules/child'],'Contained worktree custody keeps the original descendant map in its new relative namespace');
+    assert.deepEqual(workingDirectoryIdentity(destination,identity,destination),identity,'Root custody retains the complete original map');
     const original=workingDirectoryIdentity(destination,identity,path.join(destination,'modules/child'));
     await rename(path.join(destination,'modules/child'),path.join(destination,'modules/retained-child'));
     await mkdir(path.join(destination,'modules/child'));

@@ -223,17 +223,18 @@ export interface WorkingDirectoryIdentity {device:string;inode:string}
 /** Original directories observed during the byte phase, never late-phase observations. */
 export interface WorkingRootIdentity extends WorkingDirectoryIdentity {directories?:Readonly<Record<string,WorkingDirectoryIdentity>>}
 /** Resolve only a directory issued by the original byte phase. Does not inspect the host. */
-export function workingDirectoryIdentity(rootPath:string,issued:WorkingRootIdentity,targetPath:string):WorkingDirectoryIdentity {
+export function workingDirectoryIdentity(rootPath:string,issued:WorkingRootIdentity,targetPath:string):WorkingRootIdentity {
   if(!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||!path.isAbsolute(targetPath)||path.resolve(targetPath)!==targetPath)throw new Error('Directory custody requires canonical destination paths');
   if(!issued||![issued.device,issued.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('Invalid issued working-root identity');
   const relative=path.relative(rootPath,targetPath);
-  if(relative==='')return {device:issued.device,inode:issued.inode};
+  if(relative==='')return {...issued};
   if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))throw new Error('Directory custody target is outside its original root');
   const key=relative.split(path.sep).join('/');
   if(portableWorkingPath(key)!==key||!issued.directories||!Object.hasOwn(issued.directories,key))throw new Error('Contained directory has no original byte-phase custody');
   const proof=issued.directories[key]!;
   if(![proof.device,proof.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('Invalid issued contained-directory identity');
-  return {device:proof.device,inode:proof.inode};
+  const descendants=Object.fromEntries(Object.entries(issued.directories).filter(([relative])=>relative.startsWith(key+'/')).map(([relative,identity])=>[relative.slice(key.length+1),identity]));
+  return {device:proof.device,inode:proof.inode,...(Object.keys(descendants).length?{directories:Object.freeze(descendants)}:{})};
 }
 async function observedWorkingRootIdentity(destination:string):Promise<WorkingRootIdentity>{
   const stat=await fs.lstat(destination,{bigint:true});
