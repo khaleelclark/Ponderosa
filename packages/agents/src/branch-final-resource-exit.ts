@@ -4,7 +4,7 @@ import {fenceBranchFinalResourceExit} from './branch-generation-exit-fence.js';
 import {captureFinalResourceExitEnvelope} from './branch-generation-exit-capture.js';
 import {captureFinalProviderStarts,verifyFinalProviderStarts} from './provider-start-journal.js';
 import {captureFinalProviderExits,verifyFinalProviderExits,verifyRetainedProviderExitEvidence} from './provider-exit-evidence.js';
-import {encodeIssuedResourceContinuation,readIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+import {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {verifyBranchHostCut} from './branch-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
@@ -75,6 +75,12 @@ export function readFinalResourceExit(db:Database.Database,executionId:string,st
  if(!Number.isSafeInteger(value.identity?.generation)||value.identity.generation<0||row.command_key!==finalResourceExitKey(stepId,value.identity.generation))throw Error('Final exit generation key differs');
  verifyFinalResourceExitBytes(value,row.input_hash);
  if(value.identity.executionId!==executionId||value.identity.stepId!==stepId)throw Error('Final exit owner differs');
+ if(value.identity.generation>0){
+  // Readback must still have the exact independent prior retirement chain, not just its saved hash.
+  const e=value.envelope,proof=generationOneEvidence(db,e.selected);
+  if(stableJson(e.generationRetry)!==stableJson(value.latestContinuation?.generationRetry)
+   ||!issuedResourceContinuationSupported(db,executionId,proof.selected,e.hostDependencies,value.latestContinuation))throw Error('Final prior generation replay differs');
+ }
  const f=db.prepare("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(value.intakeFence.identity) as Row|undefined;
  const retained=value.starts.rows.find((r:Row)=>r.kind==='branch-generation-exit-fence');
  if(!f||!retained||f.input_json!==retained.input_json||f.receipt_json!==retained.receipt_json||f.receipt_sha256!==retained.receipt_sha256)throw Error('Final original permanent fence unavailable');

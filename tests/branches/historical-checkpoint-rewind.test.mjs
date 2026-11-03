@@ -2699,6 +2699,7 @@ for(const mode of ['async','sync'])test(`serial later-generation final exit ${mo
  sealProviderNeverStarted(db,'fixture-runtime',[current.agentId]);
  f.branches.captureFinalResourceExit(finalFence);
  assert.equal(f.branches.requireFinalResourceExit(f.source.id,current.stepId).identity.generation,generation);
+ assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:0`);assert.throws(()=>f.branches.requireFinalResourceExit(f.source.id,current.stepId),/retirement linkage/);throw Error('restore committed history');})(),/restore committed history/);
  assert.throws(()=>db.transaction(()=>{const row=db.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,`resource-final-exit:${current.stepId}:${generation}`);db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(row.execution_id,`resource-final-exit:${current.stepId}:999`,row.input_hash,row.result_json,row.created_at);assert.throws(()=>f.branches.requireFinalResourceExit(f.source.id,current.stepId),/ambiguous/);throw Error('restore duplicate');})(),/restore duplicate/);
 
  const deletion=f.store.previewAgentDeletion([current.agentId]);f.store.deleteAgentSubtrees([current.agentId],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
