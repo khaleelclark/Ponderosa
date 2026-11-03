@@ -520,14 +520,36 @@ own closed saver snapshot. Different EXIT owners may obtain invocation observati
 from different retained root snapshots, but all are replayed together against the
 actual latest Call tree. Current process absence cannot supply an invocation.
 A terminal child can qualify through its retained root-tree observation and own
-terminal save. A terminal latest EXIT root for which the saver retained only a
-nonrestorable standalone observation has no complete tree invocation codec and
-refuses; the standalone terminal observation rule does not manufacture one.
+terminal save. Newly frozen supported terminal root trees retain the same complete
+codec with `latestOnly:true` in the actual after-COMMIT saver row and
+`restore_supported:false`. Capture replays the terminal tree, retaining exact owner
+inventories, full audits, pins/configurations and original invocation metadata,
+without requiring that candidate or child writes have already drained. This is
+an immutable observation, not a saved acknowledgement before COMMIT/publication.
+Latest portable proof can read its invocation observations only after the actual
+canonical bytes/hash are retained, and still requires every EXIT owner's separate
+matching closed save and independent entire latest-tree replay. Terminal root
+observations are never executable selected cuts: listing reports them unsupported,
+review/confirm and local rewind retain the existing restorable checks, and an
+earlier genuine supported saved cut remains the only executable source.
+Old terminal observations lacking the complete tree codec are not backfilled and
+still refuse; standalone terminal evidence does not manufacture a tree codec.
 A changed latest EXIT owner without a matching retained complete observation,
 including a newer active or pending invocation, also refuses. Sync/async ancestors
 can retain their supported latest terminal replay when every EXIT descendant has
 this exact proof. Local rewind links remain supported only where original
 selected/latest evidence and subsequent destination cuts satisfy these conditions.
+
+The runtime tree package reader/planner remains unchanged: it already preserves all
+private checkpoint facts, recreates supported terminal frontier data held without
+authority, and passes original facts to the same selected/latest consumer. Runtime
+export retains each actual snapshot unchanged and refuses recorded async/EXIT save
+failure. Held/re-exported and retained-generation readers keep these original bytes;
+no imported snapshot is promoted into a new save or invocation. Historical listing
+and local rewind use the existing restorable predicate; foreign review/confirm
+validates an independently restorable selection and latest proof separately.
+Existing server, SDK and UI calls carry those snapshots and eligibility decisions
+without a new endpoint or DTO, so none needs a format or caller change.
 
 Held import/re-export and admitted generations use the existing bounded walker,
 all-owner maps, original commands/receipts, pins, acceptance and authentic Call

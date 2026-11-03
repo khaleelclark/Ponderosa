@@ -225,8 +225,14 @@ Latest replay independently reconstructs the actual whole current tree. Every EX
 owner's exact current inventory, audit, pins/configuration and original invocation
 must occur in a retained committed complete root tree checkpoint, and must match
 its own closed saver snapshot. It cannot be inferred from an older different cut
-or process absence. Terminal children can qualify; a terminal latest EXIT root
-with only a nonrestorable observation and no matching complete tree codec refuses.
+or process absence. Terminal children can qualify. Newly captured supported
+terminal root trees retain complete immutable `latestOnly:true` tree observations
+in the existing saver row, always with `restore_supported:false`. Freezing reuses
+canonical terminal replay without requiring its own pending save; later latest
+proof requires the actual committed bytes/hash and every EXIT owner's own matching
+closed save. These observations never qualify for selection, confirmation, admission
+or local rewind; only an earlier genuine supported cut can execute. Old terminal
+observations without the complete codec still refuse and are never backfilled.
 Sync/async latest ancestors retain normal terminal support when every EXIT child
 has the required evidence. Original local rewind and held/admitted links use this
 same proof and existing bounds; missing latest codec evidence remains a refusal.

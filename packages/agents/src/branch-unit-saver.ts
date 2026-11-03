@@ -1,6 +1,6 @@
 import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {encodeScriptTreeContinuation} from './branch-tree-continuation.js';
+import {encodeScriptTreeContinuation,encodeScriptTreeObservation} from './branch-tree-continuation.js';
 import {encodeScriptContinuation,type Selected} from './branch-script-continuation.js';
 import {createHash} from 'node:crypto';
 import type {BranchCheckpointMode} from '@ponderosa/core';
@@ -41,7 +41,8 @@ export class BranchUnitSaver {
         // Fixed SQL/column inventory excludes secretBindings and operational authority.
         const hostDependencies=captureBranchHostCut(this.sqlite,executionId,selected);
         const continuation=encodeScriptContinuation(this.sqlite,executionId,selected as Selected,hostDependencies)??encodeScriptTreeContinuation(this.sqlite,executionId,selected as Selected);
-        const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:!!continuation,...metadata,selected,...(continuation?{continuation}:{}),...(hostDependencies?{hostDependencies}:{})});
+        const observation=continuation?undefined:encodeScriptTreeObservation(this.sqlite,executionId,selected as Selected);
+        const content=stableJson({schema:'branch-unit-selected.v2',restore_supported:!!continuation,...metadata,selected,...(continuation||observation?{continuation:continuation??observation}:{}),...(hostDependencies?{hostDependencies}:{})});
         return {executionId,...metadata,content,hash:createHash('sha256').update(content).digest('hex')};
       } catch(error) { return {executionId,...metadata,error}; }
     });
