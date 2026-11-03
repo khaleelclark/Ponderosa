@@ -108,6 +108,7 @@ export interface BranchPackageEngine {
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
   captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
+  readCheckpointBytes(receipt:CheckpointPackageReceipt):Promise<string>;
   verifyCheckpointNow(receipt:CheckpointPackageReceipt):string;
   finishDestinationImport(operationId:string,compose:(result:ImportAgentPackageResponse,complete:()=>void)=>void):void;
   releaseCheckpoint(receipt:CheckpointPackageReceipt):Promise<void>;
@@ -2841,6 +2842,7 @@ export function registerAgentPackageRoutes(
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();const result:unknown=seal?.(receipt);if(result&&typeof result==='object'&&'then' in result)throw new Error('Checkpoint sealing must be synchronous');publish();}));}finally{releaseSourceCapture(token);}
     }),
     readCheckpoint:receipt=>checkpointCustody.read(receipt),
+    readCheckpointBytes:receipt=>checkpointCustody.readBytes(receipt),
     verifyCheckpointNow:receipt=>checkpointCustody.verifyNow(receipt),
     finishDestinationImport(operationId,compose){
       const operation=store.getAgentCreationOperation(operationId),result=operation?.result as ImportAgentPackageResponse&{branchDestinationPrepared?:boolean};

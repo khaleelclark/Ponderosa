@@ -124,6 +124,18 @@ export function checkpointPackageCustody(dataDir:string){
         throw error;
       }
     }),
+    // Exact original wire text is evidence; parsing or reencoding cannot replace its digest.
+    readBytes:(receipt:CheckpointPackageReceipt)=>serial(async()=>{
+      await verifiedRead(receipt);
+      const handle=await fs.open(path.join(directory,`${key(receipt)}.payload`),'r'),parts:Buffer[]=[];let length=0;
+      try{for await(const part of handle.createReadStream({autoClose:false})){
+        length+=part.length;if(length>receipt.byteLength||length>AGENT_PACKAGE_MAX_BYTES)throw Error('Original checkpoint wire exceeds its bound');
+        parts.push(part);
+      }}finally{await handle.close();}
+      const bytes=Buffer.concat(parts,length),text=bytes.toString('utf8');
+      if(bytes.length!==receipt.byteLength||!Buffer.from(text,'utf8').equals(bytes)||createHash('sha256').update(bytes).digest('hex')!==receipt.sha256)throw Error('Original checkpoint wire bytes differ');
+      verifyNow(receipt);return text;
+    }),
     read:(receipt:CheckpointPackageReceipt)=>serial(()=>verifiedRead(receipt)),
     release:(receipt:CheckpointPackageReceipt)=>serial(async()=>{
       const id=key(receipt),stored=await receiptAt(id);

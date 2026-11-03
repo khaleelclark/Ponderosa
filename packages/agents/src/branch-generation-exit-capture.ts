@@ -19,13 +19,15 @@ function verifyIntakeFence(db:Database.Database,journal:Row){
  const row=db.prepare("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(key) as Row|undefined;
  if(!row)throw Error('Canonical generation intake fence missing');
  const receipt=JSON.parse(row.receipt_json);
+ if(receipt.purpose!==undefined&&receipt.purpose!=='final-resource')throw Error('Unknown generation intake fence purpose');
+ if((receipt.purpose??'retry')!==(journal.purpose??'retry')||!['retry','final-resource'].includes(receipt.purpose??'retry'))throw Error('Generation intake fence purpose differs');
  if(stableJson(input)!==row.input_json||stableJson(receipt)!==row.receipt_json||stableJson(receipt.input)!==row.input_json||payloadHash(receipt)!==row.receipt_sha256||stableJson(journal.intakeFence)!==stableJson({identity:key,sha256:row.receipt_sha256}))throw Error('Canonical generation intake fence receipt differs');
  if(receipt.resource.original_branch_id!==undefined&&receipt.resource.original_branch_id!==journal.identity.branchId)throw Error('Canonical generation original Branch differs');
  requireGenerationExitIntakeFence(db,journal.identity);
 }
-function identity(db:Database.Database,stepId:string){
+function identity(db:Database.Database,stepId:string,purpose:'retry'|'final-resource'='retry'){
  const r=db.prepare('SELECT r.*,e.branch_id,e.parent_execution_id,e.version_id,e.binding_revision_id,e.configuration_json FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepId) as Row|undefined;
- if(!r||r.retry_draining!==1||!['active','draining'].includes(r.state)||!r.chat_id||r.parent_execution_id)throw Error('Current standalone retry-draining generation required before cleanup');
+ if(!r||(purpose==='retry'?r.retry_draining!==1:r.retry_draining!==0||r.generation!==0)||!['active','draining'].includes(r.state)||!r.chat_id||r.parent_execution_id)throw Error('Current standalone retry-draining generation required before cleanup');
  const chat=db.prepare('SELECT project_id,branch_id,branch_execution_id AS execution_id FROM conversations WHERE id=?').get(r.chat_id) as Row|undefined;
  const members=db.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(stepId) as Row[];
  const agentIds=members.map(m=>m.agent_id),live=db.prepare('SELECT id FROM agents WHERE conversation_id=? AND deleted_at IS NULL ORDER BY id').all(r.chat_id) as Row[];
@@ -61,8 +63,8 @@ export function fenceGenerationExitCapture(db:Database.Database,stepId:string):R
  db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(scope.executionId,generationExitKey(stepId,scope.generation),payloadHash(scope),stableJson(value),new Date().toISOString());return value;
 }
 /** Capture only after live runtime drain, while every original identity still exists. */
-function envelope(db:Database.Database,journal:Row,expectedRevision?:string){
- const scope=identity(db,journal.identity.stepId);
+function envelope(db:Database.Database,journal:Row,expectedRevision?:string,purpose:'retry'|'final-resource'='retry'){
+ const scope=identity(db,journal.identity.stepId,purpose);
  if(stableJson(scope)!==stableJson(journal.identity))throw Error('Generation exit owner/generation changed');
  verifyIntakeFence(db,journal);
  const branch=db.prepare('SELECT * FROM branches WHERE id=?').get(scope.branchId) as Row|undefined;
@@ -121,3 +123,9 @@ export function sealGenerationExitCapture(db:Database.Database,executionId:strin
 
 export type BranchPriorGenerationEnvelope=ReturnType<typeof envelope>;
 
+
+/** Internal final capture reuses identical native/host/effect closure checks without retry custody. */
+export function captureFinalResourceExitEnvelope(db:Database.Database,journal:Row){
+ if(journal.purpose!=='final-resource')throw Error('Exact final resource purpose required');
+ return {...envelope(db,journal,undefined,'final-resource'),schema:'branch-final-resource-exit-envelope.v1' as const};
+}

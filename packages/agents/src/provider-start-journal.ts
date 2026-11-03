@@ -84,6 +84,8 @@ function exactFence(db:Database.Database,agentId:string,projectId:string,convers
  const row=rows[0]!;if(Buffer.byteLength(row.receipt_json)>4*1024*1024)throw Error('Generation fence exceeds bound');
  const f=JSON.parse(row.receipt_json),i=f.input;
  if(f.schema!=='branch-generation-exit-fence.v1'||stableJson(f)!==row.receipt_json||payloadHash(f)!==row.receipt_sha256||stableJson(i)!==row.input_json||i.projectId!==projectId||i.conversationId!==conversationId||!Array.isArray(i.agentIds)||!i.agentIds.includes(agentId)||new Set(i.agentIds).size!==i.agentIds.length||!i.agentIds.length||i.agentIds.length>256||!Number.isSafeInteger(i.generation)||i.generation<0||row.identity!==payloadHash({executionId:i.executionId,stepExecutionId:i.stepExecutionId,generation:i.generation})||stableJson(f.members.map((m:any)=>m.agent_id).sort())!==stableJson([...i.agentIds].sort()))throw Error('Exact permanent generation fence differs');
+ if(f.purpose!==undefined&&f.purpose!=='final-resource')throw Error('Unknown generation fence purpose');
+ if(f.purpose==='final-resource'&&(i.generation!==0||f.resource?.generation!==0||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId))throw Error('Final generation fence resource differs');
  return {fence:{identity:row.identity,sha256:row.receipt_sha256},input:i};
 }
 /** Server invokes only after draining runtime producers AND tracked adapter operations. */
@@ -123,4 +125,86 @@ export function verifyProviderNeverStarted(db:Database.Database,r:ProviderNeverS
  noActivity(db,r.agentId);
  const c=retained(db,'provider-start-coverage',r.coverage),d=retained(db,'provider-start-drain',r.drain),f=exactFence(db,r.agentId,r.projectId,r.conversationId);
  if(r.coverage.identity!==r.agentId||r.drain.identity!==r.agentId||c.schema!=='provider-start-coverage.v1'||c.contract!==CONTRACT||!c.workerId||c.agentId!==r.agentId||c.projectId!==r.projectId||c.conversationId!==r.conversationId||d.schema!=='provider-start-drain.v1'||!d.workerId||d.agentId!==r.agentId||d.projectId!==r.projectId||d.conversationId!==r.conversationId||stableJson(d.coverage)!==stableJson(r.coverage)||stableJson(d.fence)!==stableJson(r.fence)||stableJson(f.fence)!==stableJson(r.fence)||r.executionId!==f.input.executionId||r.stepExecutionId!==f.input.stepExecutionId||r.generation!==f.input.generation)throw Error('Never-started scope/coverage/fence/drain mismatch');
+}
+
+/** Internal original rows retained by a fenced final command, never destination SQL. */
+export type FinalProviderStartInventory={kind:'retained-final-resource';rows:Array<Row&{kind:string}>};
+const finalStartKinds=['provider-start-coverage','provider-start-admission','provider-start-settlement','provider-start-unknown','provider-start-drain','provider-never-started','branch-generation-exit-fence'];
+export function captureFinalProviderStarts(db:Database.Database,scope:{projectId:string;conversationId:string;agentIds:string[]},evidence:import('@ponderosa/core').ProviderExitEvidence):FinalProviderStartInventory {
+ if(!db.inTransaction)throw Error('Final start inventory requires owner transaction');
+ for(const agent of scope.agentIds)requireProviderStartsDrained(db,agent);
+ const rows=db.prepare(`SELECT kind,identity,input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits
+  WHERE kind IN (${finalStartKinds.map(()=>'?').join(',')}) AND (
+   json_extract(receipt_json,'$.conversationId')=? OR json_extract(receipt_json,'$.input.conversationId')=?
+   OR json_extract(receipt_json,'$.agentId') IN (SELECT value FROM json_each(?))
+   OR kind IN ('provider-start-settlement','provider-start-unknown') AND identity IN (
+    SELECT identity FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.agentId') IN (SELECT value FROM json_each(?))))
+  ORDER BY kind,identity LIMIT 4097`).all(...finalStartKinds,scope.conversationId,scope.conversationId,stableJson(scope.agentIds),stableJson(scope.agentIds)) as Array<Row&{kind:string}>;
+ const inventory:FinalProviderStartInventory={kind:'retained-final-resource',rows};
+ verifyFinalProviderStarts(inventory,scope,evidence);
+ return inventory;
+}
+
+/** Structural checks only. Native capture supplies a live census; portable completeness remains unsupported. */
+export function verifyFinalProviderStarts(source:FinalProviderStartInventory,scope:{projectId:string;conversationId:string;agentIds:string[]},evidence:import('@ponderosa/core').ProviderExitEvidence):void {
+ if(source.kind!=='retained-final-resource'||source.rows.length>4096||Buffer.byteLength(stableJson(source))>16*1024*1024)throw Error('Final provider start inventory exceeds bound');
+ if(evidence.projectId!==scope.projectId||evidence.conversationId!==scope.conversationId||stableJson(evidence.participants.map(p=>p.agentId).sort())!==stableJson([...scope.agentIds].sort()))throw Error('Final provider scope differs');
+ const seen=new Set<string>(),values=new Map<string,any>();
+ for(const row of source.rows){
+  const key=`${row.kind}:${row.identity}`;
+  if(seen.has(key)||!finalStartKinds.includes(row.kind)||Buffer.byteLength(row.receipt_json)>4*1024*1024)throw Error('Final provider start identity differs');
+  seen.add(key);const value=JSON.parse(row.receipt_json);
+  if(stableJson(value)!==row.receipt_json||payloadHash(value)!==row.receipt_sha256||row.input_json!==(row.kind==='branch-generation-exit-fence'?stableJson(value.input):row.receipt_json))throw Error('Final provider start canonical bytes differ');
+  values.set(key,value);
+ }
+ const get=(kind:string,ref:{identity:string;sha256:string})=>{
+  const row=source.rows.find(r=>r.kind===kind&&r.identity===ref.identity);
+  if(!row||row.receipt_sha256!==ref.sha256)throw Error('Final provider start proof unavailable');
+  return values.get(`${kind}:${ref.identity}`);
+ };
+ const fences=source.rows.filter(r=>r.kind==='branch-generation-exit-fence');
+ if(fences.length!==1)throw Error('Exact final provider fence required');
+ const fenceRow=fences[0]!,f=values.get(`branch-generation-exit-fence:${fenceRow.identity}`),i=f.input;
+ if(f.schema!=='branch-generation-exit-fence.v1'||f.purpose!=='final-resource'||i.projectId!==scope.projectId||i.conversationId!==scope.conversationId||i.generation!==0
+  ||f.resource?.generation!==0||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId
+  ||fenceRow.identity!==payloadHash({executionId:i.executionId,stepExecutionId:i.stepExecutionId,generation:i.generation})
+  ||stableJson(i.agentIds)!==stableJson([...scope.agentIds].sort())||stableJson(f.members.map((m:any)=>m.agent_id).sort())!==stableJson(i.agentIds))throw Error('Final provider fence differs');
+ const fence={identity:fenceRow.identity,sha256:fenceRow.receipt_sha256};
+ const registrations=evidence.receipts.flatMap(e=>e.receipt.registrations.map(r=>r.registration));
+ for(const row of source.rows){
+  const value=values.get(`${row.kind}:${row.identity}`);
+  if(row.kind==='branch-generation-exit-fence')continue;
+  if(row.kind==='provider-start-unknown')throw Error('Final provider start remains unknown');
+  if(row.kind==='provider-start-settlement'){
+   const claim=value.claim&&source.rows.find(r=>r.kind==='provider-start-admission'&&r.identity===value.claim.identity&&r.identity===row.identity&&r.receipt_sha256===value.claim.sha256);
+   if(!claim)throw Error('Orphan final provider settlement');
+   continue;
+  }
+  if(value.projectId!==scope.projectId||value.conversationId!==scope.conversationId||!scope.agentIds.includes(value.agentId))throw Error('Final provider start scope differs');
+ }
+ for(const agentId of scope.agentIds){
+  const coverageRow=source.rows.find(r=>r.kind==='provider-start-coverage'&&r.identity===agentId);
+  if(!coverageRow)throw Error('Final provider creation coverage unavailable');
+  const coverage={identity:agentId,sha256:coverageRow.receipt_sha256},c=get('provider-start-coverage',coverage);
+  if(c.schema!=='provider-start-coverage.v1'||c.contract!==CONTRACT||!c.workerId||c.agentId!==agentId)throw Error('Final provider coverage differs');
+  const claims=source.rows.filter(r=>r.kind==='provider-start-admission'&&values.get(`${r.kind}:${r.identity}`).agentId===agentId);
+  for(const row of claims){
+   const claim=values.get(`${row.kind}:${row.identity}`),ref={identity:row.identity,sha256:row.receipt_sha256};
+   if(claim.schema!==CONTRACT||claim.identity!==row.identity||!claim.workerId||!claim.operation||stableJson(claim.generation)!==stableJson({executionId:i.executionId,stepExecutionId:i.stepExecutionId,generation:i.generation}))throw Error('Final provider admission differs');
+   const settledRow=source.rows.find(r=>r.kind==='provider-start-settlement'&&r.identity===row.identity);
+   if(!settledRow)throw Error('Final provider admission unsettled');
+   const settled=values.get(`${settledRow.kind}:${settledRow.identity}`);
+   if(settled.schema!=='provider-start-settlement.v1'||stableJson(settled.claim)!==stableJson(ref)||settled.workerId!==claim.workerId||!Array.isArray(settled.registrations)||!settled.registrations.length||settled.registrations.length>4096||new Set(settled.registrations).size!==settled.registrations.length)throw Error('Final provider settlement differs');
+   for(const id of settled.registrations)if(!evidence.receipts.some(r=>r.identity===id)||!registrations.some(r=>r.authorityId===id&&r.agentId===agentId&&r.workerId===claim.workerId))throw Error('Final admitted lifetime lacks observed exit');
+  }
+  const participant=evidence.participants.find(p=>p.agentId===agentId)!;
+  if(!participant.runIds.length){
+   if(claims.length||registrations.some(r=>r.agentId===agentId)||evidence.runs.some(r=>r.agentId===agentId))throw Error('Final never-started participant has activity');
+   const n=evidence.schema==='provider-exit-evidence.v2'?evidence.neverStarted.find(n=>n.identity===agentId):undefined;
+   if(!n||stableJson(get('provider-never-started',{identity:agentId,sha256:n.sha256}))!==stableJson(n.receipt))throw Error('Final never-started original receipt missing');
+   const r=n.receipt,d=get('provider-start-drain',r.drain);
+   if(r.schema!=='provider-never-started.v1'||r.executionId!==i.executionId||r.stepExecutionId!==i.stepExecutionId||r.generation!==i.generation||stableJson(r.fence)!==stableJson(fence)||stableJson(r.coverage)!==stableJson(coverage)||r.drain.identity!==agentId
+    ||d.schema!=='provider-start-drain.v1'||!d.workerId||d.agentId!==agentId||stableJson(d.fence)!==stableJson(fence)||stableJson(d.coverage)!==stableJson(coverage))throw Error('Final never-started fence/coverage/drain differs');
+  }else if(source.rows.some(r=>r.kind==='provider-never-started'&&r.identity===agentId))throw Error('Final started participant has never-started receipt');
+ }
 }

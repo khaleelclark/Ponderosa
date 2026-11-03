@@ -1,3 +1,4 @@
+import {readFinalResourceExit} from './branch-final-resource-exit.js';
 import type Database from 'better-sqlite3';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {receiptMatchesSource,resourceCaptureFrontierHash} from './branch-resource-capture.js';
@@ -25,6 +26,13 @@ export function requireGenerationExitDeletionReady(db:Database.Database,scope:{a
   const fail=()=>{throw Error('Original generation deletion requires an exact sealed capture and intake fence receipt');};
   const retained=JSON.parse(f.receipt_json),input=retained.input;
   if(retained.schema!=='branch-generation-exit-fence.v1'||stableJson(retained)!==f.receipt_json||payloadHash(retained)!==f.receipt_sha256||stableJson(input)!==f.input_json||f.identity!==payloadHash({executionId:input.executionId,stepExecutionId:input.stepExecutionId,generation:input.generation}))fail();
+  if(retained.purpose==='final-resource'){
+   const final=readFinalResourceExit(db,input.executionId,input.stepExecutionId);
+   if(final.identity.projectId!==input.projectId||final.identity.chatId!==input.conversationId||final.identity.generation!==input.generation||stableJson(final.identity.agentIds)!==stableJson(input.agentIds)
+    ||final.intakeFence.identity!==f.identity||final.intakeFence.sha256!==f.receipt_sha256||final.identity.branchId!==retained.resource.original_branch_id)fail();
+   continue;
+  }
+  if(retained.purpose!==undefined)fail();
   const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(input.executionId,`resource-generation-exit:${input.stepExecutionId}:${input.generation}`) as {input_hash:string;result_json:string}|undefined;
   if(!row)fail();
   const j=JSON.parse(row!.result_json),i=j.identity,e=j.envelope,fence={identity:f.identity,sha256:f.receipt_sha256};

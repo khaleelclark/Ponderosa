@@ -1,3 +1,4 @@
+import {remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
 import {createHash} from 'node:crypto';
 import {stableJson} from './coordination-v3-canonical-json.js';
 import type {Selected} from './branch-script-continuation.js';
@@ -6,9 +7,10 @@ const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const identityTables=['paths','steps','attempts','sealedResults','gates','forks','items','bundles'] as const;
 
 /** Execution output is a typed reference only when the entire value names an owned bundle. */
-export function remapBranchOutput(selected:Selected,ids:Record<string,string>,source:string,target:string):string|null {
+export function remapBranchOutput(selected:Selected,ids:Record<string,string>,source:string,target:string,tree?:BundleValueMap):string|null {
  const value=selected.execution![0]!.output_text,match=typeof value==='string'?/^branch-result-bundle:([0-9a-f-]{36}):([0-9a-f-]{36})$/u.exec(value):null;
  if(!match)return value;
+ if(tree)return remapBundleValue(value,source,target,tree);
  if(match[1]!==source||!selected.bundles!.some(b=>b.id===match[2]&&b.execution_id===source)||!ids[match[2]!])throw Error('Execution output bundle escapes its owner');
  return `branch-result-bundle:${target}:${ids[match[2]!]}`;
 }
@@ -23,11 +25,12 @@ export function branchContinuationIds(selected:Selected):string[] {
 }
 
 /** Remap only typed ownership links. Authored text and graph node/edge keys stay intact. */
-export function remapBranchFrontier(selected:Selected,ids:Record<string,string>,source:string,target:string,requestMap?:Record<string,string>):Selected {
+export function remapBranchFrontier(selected:Selected,ids:Record<string,string>,source:string,target:string,requestMap?:Record<string,string>,tree?:BundleValueMap):Selected {
  const keys=branchContinuationIds(selected);
  if(source===target||!target||keys.includes(target)||Object.keys(ids).some(key=>!keys.includes(key))
    ||keys.some(key=>typeof ids[key]!=='string'||!ids[key]||ids[key]===target||ids[key]===source||keys.includes(ids[key]!))
    ||new Set(Object.values(ids)).size!==keys.length)throw Error('Incomplete or aliased continuation ID map');
+ if(tree&&(tree.ids[source]!==target||keys.some(id=>tree.ids[id]!==ids[id])||!tree.owners.some(o=>stableJson(o.selected)===stableJson(selected))))throw Error('Tree map differs from exact owner cut');
  const out=structuredClone(Object.fromEntries(['paths','steps','attempts','sealedResults','gates','forks','joins','loops','maps','items','bundles'].map(key=>[key,selected[key]!]))),members=(key:string)=>new Set(selected[key]!.map(row=>row.id));
  const paths=members('paths'),steps=members('steps'),attempts=members('attempts'),results=members('sealedResults'),forks=members('forks'),maps=members('maps'),bundles=members('bundles');
  const link=(id:string|null,owned:Set<string>):string|null=>{
@@ -39,6 +42,7 @@ export function remapBranchFrontier(selected:Selected,ids:Record<string,string>,
  const text=(value:string):string=>{
   const match=/^branch-result-bundle:([0-9a-f-]{36}):([0-9a-f-]{36})$/u.exec(value);
   if(!match)return value;
+  if(tree)return remapBundleValue(value,source,target,tree);
   if(match[1]!==source||!bundles.has(match[2]!))throw Error('Result bundle requires captured local ownership');
   return `branch-result-bundle:${target}:${ids[match[2]!]}`;
  };
@@ -92,7 +96,11 @@ export function remapBranchFrontier(selected:Selected,ids:Record<string,string>,
   row.id=ids[row.id];row.map_invocation_id=mapped;row.path_id=link(row.path_id,paths);row.input_text=text(row.input_text);row.input_hash=hash(row.input_text);
  }
  for(const map of out.maps!)map.items_hash=hash(stableJson(out.items!.filter(item=>item.map_invocation_id===map.id).sort((a,b)=>a.item_index-b.item_index).map(item=>item.input_text)));
- for(const row of out.bundles!){execution(row);if(hash(row.content_text)!==row.content_hash)throw Error('Result bundle integrity failure');row.id=ids[row.id];row.fork_invocation_id=link(row.fork_invocation_id,forks);}
+ for(const row of out.bundles!){
+  execution(row);if(hash(row.content_text)!==row.content_hash)throw Error('Result bundle integrity failure');row.id=ids[row.id];
+  if(forks.has(row.fork_invocation_id))row.fork_invocation_id=link(row.fork_invocation_id,forks);
+  else {const producer=row.fork_invocation_id;if(!tree||!tree.ids[producer]||!tree.owners.some(o=>o.selected.forks!.some(f=>f.id===producer)))throw Error('Bundle producer escapes captured tree');row.fork_invocation_id=tree.ids[producer];}
+ }
  for(const row of out.loops!){execution(row);row.path_id=link(row.path_id,paths);}
  for(const row of out.gates!){row.id=ids[row.id];row.step_execution_id=link(row.step_execution_id,steps);row.attempt_id=link(row.attempt_id,attempts);row.proposal_text=text(row.proposal_text);if(row.response_json!==null){const response=JSON.parse(row.response_json);if(typeof response.output==='string')response.output=text(response.output);row.response_json=stableJson(response);}}
  // No execution admission, Resources, Actions, leases or provider state is returned.

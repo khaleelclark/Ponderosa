@@ -73,6 +73,9 @@ export class BranchInstallationService {
  private run(sql:string,...args:unknown[]):void{this.store.sqlite.prepare(sql).run(...args);}
  private planState(id:string):string|undefined{return this.row('SELECT state FROM branch_installation_plans WHERE id=?',id)?.state;}
  private compactPlan(id:string,state:string,error?:string):void{
+  const pins=this.rows('SELECT id FROM coordination_destination_retained_sources WHERE installation_plan_id=?',id);
+  for(const pin of pins)this.branches.retainedDestinationInstallationEvidence(pin.id);
+  if(pins.length)throw new Error('Retained destination source pins installation evidence');
   if(state!=='completed'&&this.journal(id))throw new Error('Installation compensation remains unresolved; its journal must be retained');
   const saved=this.rolePlan(this.row('SELECT * FROM branch_installation_plans WHERE id=?',id)!),results=saved.importResults;
   const retained={...(results?{importResults:results}:{}),...(state==='completed'&&saved.treeReceipt?{treeReceipt:saved.treeReceipt}:{}),...(state==='completed'&&saved.runtimeTreeReceipt?{runtimeTreeReceipt:saved.runtimeTreeReceipt}:{})};
@@ -80,11 +83,11 @@ export class BranchInstallationService {
  }
  private maintainPlans(now=new Date()):void{
   const cutoff=new Date(now.getTime()-PREVIEW_TTL_MS).toISOString();
-  for(const plan of this.rows("SELECT id FROM branch_installation_plans WHERE state='preview' AND created_at<?",cutoff))this.compactPlan(plan.id,'expired','Installation preview expired; review the package again');
-  for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND (package_json!='{}' OR bindings_json!='{}' OR (preview_json!='[]' AND json_extract(preview_json,'$.importResults') IS NULL AND json_extract(preview_json,'$.treeReceipt') IS NULL))"))this.compactPlan(plan.id,plan.state,plan.error??undefined);
+  for(const plan of this.rows("SELECT id FROM branch_installation_plans WHERE state='preview' AND created_at<? AND NOT EXISTS(SELECT 1 FROM coordination_destination_retained_sources s WHERE s.installation_plan_id=branch_installation_plans.id)",cutoff))this.compactPlan(plan.id,'expired','Installation preview expired; review the package again');
+  for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND (package_json!='{}' OR bindings_json!='{}' OR (preview_json!='[]' AND json_extract(preview_json,'$.importResults') IS NULL AND json_extract(preview_json,'$.treeReceipt') IS NULL)) AND NOT EXISTS(SELECT 1 FROM coordination_destination_retained_sources s WHERE s.installation_plan_id=branch_installation_plans.id)"))this.compactPlan(plan.id,plan.state,plan.error??undefined);
   const receiptCutoff=new Date(now.getTime()-TERMINAL_RECEIPT_TTL_MS).toISOString();
-  this.run("DELETE FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND updated_at<?",receiptCutoff);
-  this.run("DELETE FROM branch_installation_plans WHERE id IN (SELECT id FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' ORDER BY updated_at DESC,id DESC LIMIT -1 OFFSET ?)",MAX_TERMINAL_RECEIPTS);
+  this.run("DELETE FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' AND updated_at<? AND NOT EXISTS(SELECT 1 FROM coordination_destination_retained_sources s WHERE s.installation_plan_id=branch_installation_plans.id)",receiptCutoff);
+  this.run("DELETE FROM branch_installation_plans WHERE id IN (SELECT id FROM branch_installation_plans WHERE state IN ('completed','canceled','expired','review_required') AND journal_json='{}' ORDER BY updated_at DESC,id DESC LIMIT -1 OFFSET ?) AND NOT EXISTS(SELECT 1 FROM coordination_destination_retained_sources s WHERE s.installation_plan_id=branch_installation_plans.id)",MAX_TERMINAL_RECEIPTS);
  }
  private assertPlanCapacity(branchId:string|undefined,incomingBytes:number):void{
   const global=this.row("SELECT COUNT(*) n FROM branch_installation_plans WHERE state IN ('preview','applying','canceling')")!.n as number;
@@ -264,7 +267,12 @@ export class BranchInstallationService {
     }
     for(const [key,receipt] of receipts){
      let evidence:unknown;
-     try{const data=await this.engine.readCheckpoint(receipt);validatePortableAgentPackage(data);evidence={receipt,disposition:'retained_data',package:data,packageSha256:createHash('sha256').update(stableJson(data)).digest('hex'),currentAuthority:false};}
+     try{
+      const wireJson=await this.engine.readCheckpointBytes(receipt),data=await this.engine.readCheckpoint(receipt);
+      validatePortableAgentPackage(data);
+      if(Buffer.byteLength(wireJson)!==receipt.byteLength||createHash('sha256').update(wireJson).digest('hex')!==receipt.sha256||stableJson(JSON.parse(wireJson))!==stableJson(data))throw Error('Private custody original wire and parsed package differ');
+      evidence={receipt,disposition:'retained_data',package:data,packageSha256:createHash('sha256').update(stableJson(data)).digest('hex'),wireJson,currentAuthority:false};
+     }
      catch(error){evidence={receipt,disposition:'unavailable_held',reason:(error as Error).message,currentAuthority:false};}
      const json=stableJson(evidence);owner.facts.push({kind:'custody',key,json,sha256:createHash('sha256').update(json).digest('hex')});
     }

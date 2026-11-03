@@ -1,3 +1,4 @@
+import {bundleValue,treeBundle,bundleReference,type BundleValueOwner,type BundleValueMap} from './branch-bundle-values.js';
 import {automaticScriptDefinitionSupported,automaticScriptOriginSupported} from './branch-script-origin.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {validateBranchRuntimeData,resolveBranchRuntimeSource} from './branch-runtime-package.js';
@@ -6,8 +7,8 @@ import type {generationOneReplay} from './branch-resource-generation-one.js';
 import {retainedResourceCapture} from './branch-resource-capture.js';
 import {hostRequestPayload,coordinationLineageSupported} from './branch-host-provenance.js';
 import {branchScriptFailureSummary} from '@ponderosa/core';
-import {branchContinuationIds} from './branch-continuation-remap.js';
-import {hasParallelControls,rootCallBundleTreeSupported,callLeafBundleTreeSupported,type ManualRootBundleOwner,portableScriptBundlesSupported,standaloneBundleTreeOwnerSupported,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
+import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
+import {hasParallelControls,rootCallBundleTreeSupported,callLeafBundleTreeSupported,callValueBundleTreeSupported,type ManualRootBundleOwner,portableScriptBundlesSupported,standaloneBundleTreeOwnerSupported,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
@@ -41,7 +42,7 @@ export function portableScriptDefinitionSupported(definition:BranchDefinition):b
   return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition,false,true,true))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'||step.kind==='script'&&step.failure.action==='retry'))&&scriptDefinitionSupported(definition,false,false,0,true);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
-export type ScriptOwnerContext={parallelTreeRetries?:boolean;serialTreeRetries?:boolean;automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
+export type ScriptOwnerContext={bundleOwners?:BundleValueOwner[];parallelTreeRetries?:boolean;serialTreeRetries?:boolean;automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string;inputHashText?:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 // Only a standalone terminal observation may retain serial gate evidence with context.
 const standaloneGateContext=(context:ScriptOwnerContext|undefined)=>!context||context.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
 // Tree owners opt in separately from standalone eligibility and origin proof.
@@ -49,7 +50,7 @@ const workflowGateContext=(context:ScriptOwnerContext|undefined)=>standaloneGate
 // Retained automatic origins and fresh manual destinations share serial proof, never admission authority.
 const standaloneSerialRetries=(definition:BranchDefinition,e:Row|undefined,context?:ScriptOwnerContext)=>standaloneScriptRetryFamily(definition)&&!hasParallelControls(definition)&&standaloneGateContext(context)&&!!e&&['manual','automatic'].includes(e.admission_source)&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth;
 const serialRetriesSupported=(definition:BranchDefinition,e:Row|undefined,context?:ScriptOwnerContext)=>standaloneSerialRetries(definition,e,context)
-  ||context?.serialTreeRetries===true&&(manualSerialTreeDefinitionSupported(definition)||context.automaticRootTree===true&&!context.parent&&automaticSerialTreeDefinitionSupported(definition))&&definition.steps.some(s=>s.kind==='script'&&s.failure?.action==='retry')
+  ||context?.serialTreeRetries===true&&(manualSerialTreeDefinitionSupported(definition)||(context.automaticRootTree===true&&!context.parent||!!context.parent)&&automaticSerialTreeDefinitionSupported(definition))&&definition.steps.some(s=>s.kind==='script'&&s.failure?.action==='retry')
     &&!context.resourceFrontier&&!context.issuedResource&&!context.issuedOwnerTree&&!context.issuedGroup&&!context.resourceRetry&&!context.resourceGeneration&&!context.resourceCleanup&&!!e
     &&(context.parent?e.admission_source==='call'&&e.parent_execution_id===context.parent.executionId&&e.parent_attempt_id===context.parent.attemptId&&e.input_text===context.parent.input:(e.admission_source==='manual'||e.admission_source==='automatic'&&context.automaticRootTree===true)&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth);
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
@@ -73,7 +74,8 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
       ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting&&!context?.issuedGroup?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
     if(!scriptDefinitionSupported(definition,!!context&&!standaloneGateContext(context),context?.resourceFrontier,context?.resourceGeneration,serialRetries,context?.serialTreeRetries))return false;
-    if(['forks','joins','maps','items','bundles',...(!workflowGateContext(context)?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
+    if(['forks','joins','maps','items',...(!context?.bundleOwners?['bundles']:[]),...(!workflowGateContext(context)?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
+    if(context?.bundleOwners&&selected.bundles!.some(b=>!treeBundle(context.bundleOwners!,e.id,b.id)))return false;
     if(context?.resourceFrontier&&!(context.issuedResource?issuedResourceFrontierSupported(selected,definition,hostCut,context?.issuedGroup,context?.issuedOwnerTree,context?.resourceGeneration):resourceReservationSupported(selected,definition)))return false;
     if(!definition.steps.some(s=>s.id===p.node_id)&&!definition.controls.some(c=>c.id===p.node_id))return false;
     const ids=new Set<string>();
@@ -165,7 +167,7 @@ export function scriptAuditSupported(audit:unknown,preservedTerminal=false):bool
 
 type PortableBudget={remaining:number;cache:Map<string,boolean>};
 type PortableEvidence={data:import("@ponderosa/core").BranchPortableRuntimeData;owner:import("@ponderosa/core").BranchPortableRuntimeOwner};
-type Cut={executionId:string;selected:Selected;audit:Row[];checkpoint?:Row;provenance?:unknown;hostCut?:BranchHostCut;seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>};reference?:Row};
+type Cut={executionId:string;selected:Selected;audit:Row[];checkpoint?:Row;provenance?:unknown;hostCut?:BranchHostCut;seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>;bundleMap?:BundleValueMap};reference?:Row};
 
 /** Resolve owned immutable links iteratively; wrapped text never supplies replay authority. */
 function composeScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,provenance?:unknown,encoding=false,hostCut?:BranchHostCut,evidence?:PortableEvidence,depth=0,terminalContext?:ScriptOwnerContext,budget:PortableBudget={remaining:128,cache:new Map()}):Row[]|undefined {
@@ -291,14 +293,41 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
 }
 
 /** The audit and inventory must describe the same committed single-path cut. */
-export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean;tree?:boolean;treeRootId?:string;runtimeOwner?:import("@ponderosa/core").BranchPortableRuntimeOwner;bundleTreeOwners?:ManualRootBundleOwner[]}):boolean {
+export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>;bundleMap?:BundleValueMap},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean;tree?:boolean;treeRootId?:string;runtimeOwner?:import("@ponderosa/core").BranchPortableRuntimeOwner;bundleTreeOwners?:ManualRootBundleOwner[]}):boolean {
+  return replayScriptCutCore({kind:'native',db,foreign},executionId,selected,definition,configuration,audit,checkpoint,seed,context,hostCut);
+}
+
+type ScriptReplaySource={kind:'native';db:Database.Database;foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean;tree?:boolean;treeRootId?:string;runtimeOwner?:import("@ponderosa/core").BranchPortableRuntimeOwner;bundleTreeOwners?:ManualRootBundleOwner[]}}|{kind:'retained-issued-resource';owner:Row;audit:Row[];bindingsJson:string};
+/** Explicit retained pins and host evidence; no native owner, binding, Chat or audit lookup. */
+export function replayRetainedIssuedResourceCut(evidence:{kind:'retained-issued-resource';owner:import('@ponderosa/core').BranchPortableRuntimeOwner},selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,context:ScriptOwnerContext,hostCut:BranchHostCut):boolean {
+  try {
+    const owner=evidence.owner,{sha256,...value}=owner;
+    if(evidence.kind!=='retained-issued-resource'||payloadHash(value)!==sha256)return false;
+    const fact=(kind:string)=>{const facts=owner.facts.filter(f=>f.kind===kind);if(facts.length!==1||hash(facts[0]!.json)!==facts[0]!.sha256)throw Error('Retained issued pin bytes differ');return facts[0]!;};
+    const original=JSON.parse(fact('frontier').json).execution[0],config=JSON.parse(fact('configuration').json),origin=JSON.parse(fact('provenance').json),binding=fact('bindings'),version=fact('definition');
+    if(!original||owner.sourceExecutionId!==original.id||owner.sourceBranchId!==original.branch_id||[original,selected.execution?.[0]].some(e=>!e||e.admission_source!=='manual'||e.parent_execution_id||e.parent_attempt_id||e.call_depth)
+      ||origin.source!=='manual'||definition.trigger.kind!=='manual'||version.key!==original.version_id||binding.key!==original.binding_revision_id
+      ||version.json!==stableJson(definition)||config.requiredSecretRefs.length||stableJson(config.configuration)!==stableJson(configuration)
+      ||!['sync','async'].includes(configuration.checkpointMode??'async')||!context.issuedResource||context.issuedGroup||context.issuedOwnerTree||context.resourceRetry||context.resourceGeneration||context.parent||Object.keys(context.children).length
+      ||owner.facts.some(f=>['import','tree-import','continuation','tree-continuation'].includes(f.kind))
+      ||selected.resources!.length!==1||selected.resources![0]!.generation!==0||definition.steps.some(s=>s.kind==='agent'&&s.target.kind!=='ephemeral_organization'))return false;
+    const fullAudit=owner.facts.filter(f=>f.kind==='transition').map(f=>{if(hash(f.json)!==f.sha256)throw Error('Retained issued audit bytes differ');return JSON.parse(f.json);});
+    if(fullAudit.some(a=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix','tree_historical_rewind','tree_restored_prefix'].includes(a.kind)))return false;
+    return replayScriptCutCore({kind:'retained-issued-resource',owner:{...original,configuration_json:stableJson(configuration)},audit:fullAudit,bindingsJson:binding.json},owner.sourceExecutionId,selected,definition,configuration,audit,undefined,undefined,context,hostCut);
+  }catch{return false;}
+}
+
+function replayScriptCutCore(source:ScriptReplaySource,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>;bundleMap?:BundleValueMap},context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
+  const db=source.kind==='native'?source.db:undefined,foreign=source.kind==='native'?source.foreign:undefined;
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
-    const rootCallBundles=!!foreign?.tree&&!context?.parent&&!!foreign.bundleTreeOwners&&foreign.bundleTreeOwners.some(o=>o.selected.execution![0]!.id===executionId&&stableJson(o.selected)===stableJson(selected)&&payloadHash(o.definition)===payloadHash(definition)&&stableJson(o.bindings)===foreign.runtimeOwner?.facts.find(f=>f.kind==='bindings')?.json)&&rootCallBundleTreeSupported(foreign.bundleTreeOwners,executionId);
+    const ownerBundles=!!foreign?.tree&&!!foreign.treeRootId&&!!foreign.bundleTreeOwners&&callValueBundleTreeSupported(foreign.bundleTreeOwners,foreign.treeRootId);
+    const rootCallBundles=!!foreign?.tree&&!context?.parent&&!!foreign.bundleTreeOwners&&foreign.bundleTreeOwners.some(o=>o.selected.execution![0]!.id===executionId&&stableJson(o.selected)===stableJson(selected)&&payloadHash(o.definition)===payloadHash(definition)&&stableJson(o.bindings)===foreign.runtimeOwner?.facts.find(f=>f.kind==='bindings')?.json)&&(rootCallBundleTreeSupported(foreign.bundleTreeOwners,executionId)||foreign.treeRootId===executionId&&ownerBundles);
     const leafBundles=!!foreign?.tree&&!!foreign.treeRootId&&!!context?.parent&&!!foreign.bundleTreeOwners
-      &&foreign.bundleTreeOwners.some(o=>{const e=o.selected.execution![0]!;return e.id===executionId&&e.parent_execution_id===context.parent!.executionId&&e.parent_attempt_id===context.parent!.attemptId&&e.input_text===context.parent!.input&&stableJson(o.selected)===stableJson(selected)&&payloadHash(o.definition)===payloadHash(definition)&&stableJson(o.bindings)===foreign.runtimeOwner?.facts.find(f=>f.kind==='bindings')?.json;})
-      &&callLeafBundleTreeSupported(foreign.bundleTreeOwners,foreign.treeRootId);
+      &&foreign.bundleTreeOwners.some(o=>{const e=o.selected.execution![0]!;return e.id===executionId&&e.parent_execution_id===context.parent!.executionId&&e.parent_attempt_id===context.parent!.attemptId&&e.input_text===context.parent!.input&&stableJson(o.selected)===stableJson(selected)&&stableJson(o.seed)===stableJson(seed)&&payloadHash(o.definition)===payloadHash(definition)&&stableJson(o.bindings)===foreign.runtimeOwner?.facts.find(f=>f.kind==='bindings')?.json;})
+      &&(callLeafBundleTreeSupported(foreign.bundleTreeOwners,foreign.treeRootId)||ownerBundles);
+    if(context?.bundleOwners&&context.bundleOwners.some(o=>o.selected.execution![0]!.id===executionId&&(stableJson(o.selected)!==stableJson(selected)||stableJson(o.seed)!==stableJson(seed))))return false;
     if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||!portableScriptBundlesSupported(selected,definition)&&!rootCallBundles&&!leafBundles||foreign.tree&&selected.bundles!.length&&!rootCallBundles&&!leafBundles&&(!context||context.parent||Object.keys(context.children).length||!standaloneBundleTreeOwnerSupported(selected,definition,JSON.parse(foreign.runtimeOwner!.facts.find(f=>f.kind==='bindings')!.json)))||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
@@ -311,23 +340,23 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         ||closing.state!=='interrupted'||closing.primaryOutcome!=='interrupted'||typeof closing.id!=='string'||!waitingGate&&typeof closing.interruptionId!=='string'
         ||!Number.isSafeInteger(closing.ordinal)||closing.ordinal<1)return false;
     }else if(checkpoint&&!context?.terminal)return false;
-    const owner=foreign?.owner??db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
+    const owner=source.kind==='retained-issued-resource'?source.owner:foreign?.owner??db!.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
     if(!owner||e.id!==executionId||['branch_id','version_id','binding_revision_id','input_hash'].some(key=>e[key]!==owner[key])
-      ||(e.admission_source==='automatic'?!automaticScriptOriginSupported(db,e,definition,foreign?foreign.runtimeOwner??null:undefined,context?.automaticRootTree===true,standaloneSerialRetries(definition,e,context),hasParallelControls(definition)&&standaloneGateContext(context),context?.automaticRootTree===true&&context.serialTreeRetries===true,context?.automaticRootTree===true&&context.parallelTreeRetries===true):e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'})))
+      ||(e.admission_source==='automatic'?!automaticScriptOriginSupported(db!,e,definition,foreign?foreign.runtimeOwner??null:undefined,context?.automaticRootTree===true,standaloneSerialRetries(definition,e,context),hasParallelControls(definition)&&standaloneGateContext(context),context?.automaticRootTree===true&&context.serialTreeRetries===true,context?.automaticRootTree===true&&context.parallelTreeRetries===true):e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.inputHashText??context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'})))
       ||stableJson(configuration)!==stableJson(context?.issuedResource?Object.fromEntries(Object.entries(JSON.parse(owner.configuration_json)).filter(([key])=>key!=='secretBindings')):JSON.parse(owner.configuration_json)))return false;
     if(context?.issuedResource&&Object.keys(JSON.parse(owner.configuration_json).secretBindings??{}).length)return false;
     const boundRequests=new Set<string>();
     if(selected.attempts!.some(a=>a.request_id)){
-      const binding=db.prepare('SELECT bindings_json FROM branch_bindings WHERE id=?').get(e.binding_revision_id) as Row|undefined;
-      const chat=db.prepare('SELECT chat_id FROM branches WHERE id=?').get(e.branch_id) as Row|undefined;
-      if(!binding||!chat)return false;
+      const binding=source.kind==='retained-issued-resource'?{bindings_json:source.bindingsJson}:db!.prepare('SELECT bindings_json FROM branch_bindings WHERE id=?').get(e.binding_revision_id) as Row|undefined;
+      const chat=source.kind==='retained-issued-resource'?undefined:db!.prepare('SELECT chat_id FROM branches WHERE id=?').get(e.branch_id) as Row|undefined;
+      if(!binding||source.kind==='native'&&!chat)return false;
       const bindings=JSON.parse(binding.bindings_json);
       for(const a of selected.attempts!.filter(a=>a.request_id)){
         const s=selected.steps!.find(s=>s.id===a.step_execution_id)!,node=definition.steps.find(n=>n.id===s.step_id)!,r=hostCut!.requests.find(({row})=>row.id===a.request_id)!.row;
         if(node.kind!=='agent')return false;
         const resource=context?.resourceRetry?.generations.find(g=>g.prior.id===a.id)?.oldResource??(context?.issuedResource?selected.resources!.find(resource=>resource.step_execution_id===s.id):undefined);
         if(resource?node.target.kind!=='ephemeral_organization'||r.recipient_agent_id!==resource.root_agent_id||r.conversation_id!==resource.chat_id
-          :!('ref' in node.target)||r.recipient_agent_id!==bindings.agents[node.target.ref]||r.conversation_id!==chat.chat_id)return false;
+          :source.kind==='retained-issued-resource'||!('ref' in node.target)||r.recipient_agent_id!==bindings.agents[node.target.ref]||r.conversation_id!==chat!.chat_id)return false;
         const actualPayload=hostRequestPayload(hostCut!,r) as Row;
         const requestState=definition.state?branchSharedState(definition,selected.steps!,selected.sealedResults!.filter(seal=>{const u=JSON.parse(seal.result_json).stateUpdate;return !u||u.revision<=actualPayload?.sharedState?.revision;})):undefined;
         if(definition.state&&stableJson(actualPayload?.sharedState)!==stableJson(requestState))return false;
@@ -337,14 +366,14 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       }
     }
     // A prefix must include every owned event through its boundary, not just its last ID.
-    const owned=foreign?foreign.audit.filter(row=>row.id<=events.at(-1)!.id):db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
+    const owned=source.kind==='retained-issued-resource'?source.audit.filter(row=>row.id<=events.at(-1)!.id):foreign?foreign.audit.filter(row=>row.id<=events.at(-1)!.id):db!.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND id<=? ORDER BY id').all(executionId,events.at(-1)!.id);
     if(stableJson(owned)!==stableJson(events))return false;
     if(hasParallelControls(definition))return replayParallelCut(selected,definition,configuration,events,checkpoint,seed,context,hostCut);
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let finished:Row|undefined,terminalObserved=false;
     const serialRetries=serialRetriesSupported(definition,e,context),scriptStates=new Map<string,string>();
     let scriptAttempt:Row|undefined,scriptWaiting=false;
-    const admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();
+    const replayedBundles=new Set<string>(),admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();
     let resourceReserved=!!seed?.selected.resources?.length,gateClosing:Row|undefined;
     const resourceOperations=new Map<string,Row>();
     const retry=context?.resourceRetry;let retryIndex=0,retrySettled=false,retryScheduled=false;
@@ -353,19 +382,20 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     let started=false,accepted=false,pendingLoop:string|undefined,interruption:Row|undefined,activeInvocation:Row|undefined;
     const authorized=new Map<string,number>(),exited=new Set<string>(),seen=new Set<string>(),invocations=new Map<string,number>(),loops=new Map<string,number>(),fences=new Map<string,number>();
     if(seed){
-      const old=seed.selected,ids=seed.idMap,sp=old.paths![0]!;
-      if(p.id!==ids[sp.id])return false;
+      const old=seed.selected,ids=seed.idMap,mappedSeed=remapBranchFrontier(old,Object.fromEntries(branchContinuationIds(old).map(id=>[id,ids[id]!])),old.execution![0]!.id,e.id,seed.requestMap,seed.bundleMap),sp=mappedSeed.paths![0]!;
+      for(const bundle of mappedSeed.bundles!){if(!selected.bundles!.some(b=>stableJson(b)===stableJson(bundle)))return false;replayedBundles.add(bundle.id);}
+      if(p.id!==sp.id)return false;
       for(const oldStep of old.steps!){
         const step=selected.steps!.find(row=>row.id===ids[oldStep.id]);
-        if(!step||step.path_id!==ids[oldStep.path_id]||['step_id','invocation','input_text'].some(key=>step[key]!==oldStep[key])
-          ||['completed','failed'].includes(oldStep.state)&&(step.state!==oldStep.state||step.result_json!==oldStep.result_json))return false;
+        if(!step||step.path_id!==ids[oldStep.path_id]||['step_id','invocation','input_text'].some(key=>step[key]!==mappedSeed.steps!.find(row=>row.id===ids[oldStep.id])![key])
+          ||['completed','failed'].includes(oldStep.state)&&(step.state!==oldStep.state||step.result_json!==mappedSeed.steps!.find(row=>row.id===ids[oldStep.id])!.result_json))return false;
         seen.add(step.id);invocations.set(step.step_id,Math.max(invocations.get(step.step_id)??0,step.invocation));
       }
       for(const oldAttempt of old.attempts!){
         const attempt=selected.attempts!.find(row=>row.id===ids[oldAttempt.id]);
-        if(!attempt||attempt.step_execution_id!==ids[oldAttempt.step_execution_id]||['number','input_hash','purpose',...(serialRetries?['available_at']:[])].some(key=>attempt[key]!==oldAttempt[key])
+        if(!attempt||attempt.step_execution_id!==ids[oldAttempt.step_execution_id]||['number','input_hash','purpose',...(serialRetries?['available_at']:[])].some(key=>attempt[key]!==mappedSeed.attempts!.find(row=>row.id===ids[oldAttempt.id])![key])
           ||(oldAttempt.request_id?attempt.request_id!==seed.requestMap?.[oldAttempt.request_id]:false)
-          ||['completed','failed'].includes(oldAttempt.state)&&(attempt.state!==oldAttempt.state||attempt.fence!==0||attempt.result_json!==oldAttempt.result_json))return false;
+          ||['completed','failed'].includes(oldAttempt.state)&&(attempt.state!==oldAttempt.state||attempt.fence!==0||attempt.result_json!==mappedSeed.attempts!.find(row=>row.id===ids[oldAttempt.id])!.result_json))return false;
         if(serialRetries&&definition.steps.some(node=>node.id===selected.steps!.find(s=>s.id===attempt.step_execution_id)?.step_id&&node.kind==='script'))scriptStates.set(attempt.id,oldAttempt.state);
         fences.set(attempt.id,0);
         if(oldAttempt.request_id)boundRequests.add(attempt.id);
@@ -373,23 +403,23 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       for(const oldGate of old.gates!){
         const gate=selected.gates!.find(g=>g.id===ids[oldGate.id]);
         if(!gate||gate.step_execution_id!==ids[oldGate.step_execution_id]||gate.attempt_id!==ids[oldGate.attempt_id]
-          ||['proposal_text','choices_json','purpose','prompt_text'].some(k=>gate[k]!==oldGate[k])
-          ||oldGate.state==='resolved'&&(gate.state!=='resolved'||gate.revision!==oldGate.revision||gate.response_json!==oldGate.response_json))return false;
+          ||['proposal_text','choices_json','purpose','prompt_text'].some(k=>gate[k]!==mappedSeed.gates!.find(row=>row.id===ids[oldGate.id])![k])
+          ||oldGate.state==='resolved'&&(gate.state!=='resolved'||gate.revision!==oldGate.revision||gate.response_json!==mappedSeed.gates!.find(row=>row.id===ids[oldGate.id])!.response_json))return false;
         openedGates.add(gate.id);
         if(oldGate.state==='resolved')resolvedGates.set(gate.id,JSON.parse(oldGate.response_json).decision);
       }
       for(const oldResult of old.sealedResults!){
         const result=selected.sealedResults!.find(row=>row.id===ids[oldResult.id]);
         if(!result||result.path_id!==ids[oldResult.path_id]||result.step_execution_id!==ids[oldResult.step_execution_id]
-          ||result.terminal_attempt_id!==ids[oldResult.terminal_attempt_id]||result.result_json!==oldResult.result_json||result.content_hash!==oldResult.content_hash)return false;
+          ||result.terminal_attempt_id!==ids[oldResult.terminal_attempt_id]||result.result_json!==mappedSeed.sealedResults!.find(row=>row.id===ids[oldResult.id])!.result_json||result.content_hash!==mappedSeed.sealedResults!.find(row=>row.id===ids[oldResult.id])!.content_hash)return false;
       }
-      node=sp.node_id;input=sp.input_text;traversals=sp.traversals;last=sp.last_result_id?ids[sp.last_result_id]!:null;
-      current=!['completed','failed'].includes(old.execution![0]!.state)&&sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
+      node=sp.node_id;input=sp.input_text;traversals=sp.traversals;last=sp.last_result_id;
+      current=!['completed','failed'].includes(old.execution![0]!.state)&&sp.step_execution_id?selected.steps!.find(row=>row.id===sp.step_execution_id):undefined;
       if(serialRetries&&current&&definition.steps.some(node=>node.id===current!.step_id&&node.kind==='script')){
-        const prior=old.attempts!.filter(a=>a.step_execution_id===sp.step_execution_id).sort((a,b)=>b.number-a.number)[0]!;
+        const prior=old.attempts!.filter(a=>ids[a.step_execution_id]===sp.step_execution_id).sort((a,b)=>b.number-a.number)[0]!;
         scriptAttempt=selected.attempts!.find(a=>a.id===ids[prior.id]);scriptWaiting=sp.state==='waiting';
       }
-      if(context?.restoredTerminal){finished={node:sp.node_id,input:sp.input_text,stepId:ids[sp.step_execution_id],result:JSON.parse(sp.result_json)};terminalObserved=true;}
+      if(context?.restoredTerminal){finished={node:sp.node_id,input:sp.input_text,stepId:sp.step_execution_id,result:JSON.parse(sp.result_json)};terminalObserved=true;}
       for(const attempt of old.attempts!){if(context?.children[ids[attempt.id]!]){if(!context.foreignTreePrefix)admitted.add(ids[attempt.id]!);if(['completed','failed'].includes(attempt.state))completedChildren.add(ids[attempt.id]!);}}
       for(const loop of old.loops!)loops.set(loop.edge_id,loop.iterations);
     }
@@ -466,6 +496,8 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
             }else if(serialRetries)return false;
           }
           if(event.kind==='script_leased'){
+            const ref=bundleReference(step.input_text),bundle=ref&&context?.bundleOwners?bundleValue(context.bundleOwners,e.id,step.input_text,event.id):undefined;
+            if(ref&&(!bundle||ref[1]===e.id&&!replayedBundles.has(bundle.id))||v.inputBundleId!==bundle?.id||v.inputBundleHash!==bundle?.content_hash)return false;
             if(event.transition_key!==`leased:${a.id}:${v.fence}`||v.fence!==(fences.get(a.id)??0)+1||v.sourceHash!==hash((definition.steps.find(s=>s.id===step.step_id) as Extract<BranchDefinition['steps'][number],{kind:'script'}>).source)
               ||serialRetries&&(scriptStates.get(a.id)!=='prepared'||a.available_at&&event.created_at<a.available_at))return false;
             const state=definition.state?branchSharedState(definition,selected.steps!,stateSeals):undefined;
@@ -541,6 +573,11 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(v.state==='completed'&&stableJson(v)!==r[`${v.phase}_operation_json`])return false;
           if(v.phase==='import'&&previous?.creationOperationId&&v.creationOperationId!==previous.creationOperationId)return false;
           resourceOperations.set(v.phase,v);break;
+        }
+        case 'result_bundle_forwarded':{
+          const child=context?.children[v.attemptId],a=selected.attempts!.find(a=>a.id===v.attemptId),step=selected.steps!.find(s=>s.id===a?.step_execution_id),bundle=selected.bundles!.find(b=>b.id===v.forwardedBundleId);
+          if(!context?.bundleOwners||!current||step?.id!==current.id||!definition.steps.some(node=>node.id===step.step_id&&node.kind==='branch_call')||!admitted.has(v.attemptId)||child?.executionId!==v.childExecutionId||event.transition_key!==`bundle-forwarded:${v.attemptId}`||!bundle||replayedBundles.has(bundle.id)||!treeBundle(context.bundleOwners,e.id,bundle.id)||bundleValue(context.bundleOwners,e.id,step.input_text,event.id)?.id!==v.sourceBundleId)return false;
+          replayedBundles.add(bundle.id);break;
         }
         case 'child_admitted':case 'child_completed':{
           const child=context?.children[v.attemptId],a=selected.attempts!.find(row=>row.id===v.attemptId),step=selected.steps!.find(row=>row.id===a?.step_execution_id);
@@ -643,6 +680,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     if(context?.resourceFrontier&&(!resourceReserved||context.issuedGroup&&reservedResources.size!==selected.resources!.length))return false;
     if(context?.resourceFrontier&&(retainedResourceCapture(selected)||context.issuedResource)&&!seed&&['chat','import'].some(phase=>resourceOperations.get(phase)?.state!=='completed'))return false;
     if(openedGates.size!==selected.gates!.length||selected.gates!.some(g=>resolvedGates.has(g.id)!==(g.state==='resolved')))return false;
+    if(replayedBundles.size!==selected.bundles!.length||selected.bundles!.some(b=>!replayedBundles.has(b.id)))return false;
     if(boundRequests.size!==selected.attempts!.filter(a=>a.request_id).length)return false;
     if(!started||pendingLoop||current&&!['prepared',...(context?.waiting||waitingGate||hostCut?['waiting']:[])].includes(current.state)||seen.size!==selected.steps!.length)return false;
     if(context?.terminal){

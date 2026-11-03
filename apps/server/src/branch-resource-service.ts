@@ -31,6 +31,21 @@ export class BranchResourceService {
     await this.packages.captureCheckpoint(journal.source,receipt=>this.branches.sealGenerationExit(resource.execution_id,stepId,generation,receipt));
     if(this.branches.generationExitCapture(resource.execution_id,stepId,generation)?.state!=='sealed')throw Error('Generation exit seal unavailable; cleanup held');
   }
+  private async captureFinalExitBeforeCleanup(stepId:string):Promise<void>{
+    if(!this.branches.finalResourceExitRequired(stepId))return;
+    const resource=this.store.sqlite.prepare('SELECT execution_id,state FROM branch_resources WHERE step_execution_id=?').get(stepId) as {execution_id:string;state:string};
+    const retained=this.branches.retainedFinalResourceExit(stepId);
+    if(retained){if(resource.state!=='retired')this.branches.requireFinalResourceFrontier(resource.execution_id,stepId);return;}
+    if(resource.state==='retired'){
+      this.branches.requireFinalResourceExit(resource.execution_id,stepId);return;
+    }
+    const journal=this.branches.finalResourceExitFence(stepId);
+    if(!this.generationExitDrain)throw Error('Observed final resource drain unavailable; cleanup held');
+    this.branches.cancelResourceWork(stepId);
+    await this.generationExitDrain(journal.identity.agentIds);
+    if(!this.branches.resourceCanRetire(stepId,journal.identity.agentIds)||!this.idle(journal.identity.agentIds))throw Error('Final resource cleanup changed after drain');
+    this.branches.captureFinalResourceExit(journal);
+  }
   setPackageEngine(engine:BranchPackageEngine):void {this.packages=engine;}
   destinationPackageEngine():BranchPackageEngine {if(!this.packages)throw Error('Checkpoint package service unavailable');return this.packages;}
   private pending?: Promise<void>;
@@ -245,8 +260,10 @@ export class BranchResourceService {
         if(capture?.state==='retained'){if(!this.packages||!capture.receipt)throw Error('Required checkpoint custody unavailable');await this.packages.readCheckpoint(capture.receipt);}
         this.branches.cancelResourceWork(resource.stepExecutionId);
         await this.captureGenerationExitBeforeCleanup(resource.stepExecutionId);
+        await this.captureFinalExitBeforeCleanup(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         await this.deleteAgents(resource.agentIds);
+        if(this.branches.finalResourceExitRequired(resource.stepExecutionId))this.branches.requireFinalResourceFrontier(resource.executionId,resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         for (const id of resource.agentIds) {
           if (this.store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=?').get(id)) throw new Error('Provider process cleanup remains pending');
@@ -255,12 +272,13 @@ export class BranchResourceService {
           const chat = this.store.getConversation(resource.chatId);
           if (chat && (chat.branchId !== resource.branchId || chat.executionId !== resource.executionId)) throw new Error('Temporary Chat ownership changed');
           await this.deleteChat(resource.chatId);
+          if(this.branches.finalResourceExitRequired(resource.stepExecutionId))this.branches.requireFinalResourceFrontier(resource.executionId,resource.stepExecutionId);
           if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds)) continue;
         }
         // The shared deletion authority has observed process and private-state cleanup.
         // The final SQLite check still rejects new members or an obsolete generation.
         this.branches.resourceRetired(resource.stepExecutionId);
-      } catch(error) { this.branches.resourceError(resource.stepExecutionId,error instanceof Error ? error.message : 'Resource cleanup remains pending'); }
+      } catch(error) { this.branches.resourceCleanupError(resource.stepExecutionId,error instanceof Error ? error.message : 'Resource cleanup remains pending'); }
     }
     for (const context of this.branches.resourceContextCleanupCandidates()) {
       try {

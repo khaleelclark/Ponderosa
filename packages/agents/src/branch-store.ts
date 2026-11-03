@@ -1,3 +1,6 @@
+import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit} from './branch-final-resource-exit.js';
+import {bundleParentInput,bundleCallInput,inheritedBundleCallInput,remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
+import {readRetainedDestinationSource} from './coordination-v3-retained-destination-source.js';
 import {portableScriptBundlesSupported} from './branch-parallel-continuation.js';
 import {automaticScriptDefinitionSupported,automaticScriptOriginSupported,branchTriggerInput} from './branch-script-origin.js';
 import {heldTreeSource,portableRootTreeOwners} from './branch-tree-generation.js';
@@ -14,7 +17,7 @@ import {generationExitKey,requireGenerationExitIntakeFence,readGenerationExitCap
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import {issuedGroupOwners,issuedGroupResources,readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
-import {encodeIssuedResourceContinuation,readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+import {encodeIssuedResourceContinuation,readIssuedResourceContinuation,reconstructIssuedResourceContinuation,retainedIssuedResourceSource} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {issuedResourceCapture,reserveIssuedResourceCapture,sealIssuedResourceCapture} from './branch-issued-resource-capture.js';
 import {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
@@ -24,7 +27,7 @@ import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
 import {branchContinuationIds,remapBranchFrontier,remapBranchOutput} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
-import {TREE_SCHEMA,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
+import {TREE_SCHEMA,replayedTreeCallInput,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {manualSerialTreeDefinitionSupported,automaticSerialTreeDefinitionSupported,scriptTreeRetryDefinitionSupported,resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptSnapshotSupported,scriptLatestSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts,readBranchLiveOutputs} from './branch-run-status.js';
@@ -235,7 +238,7 @@ export class BranchStore {
       if(!['interrupt','resume'].includes(action)||!invocation||invocation.mode!=='exit'||!(['running','waiting'].includes(execution.state)||action==='resume'&&execution.state==='queued'&&this.row("SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND kind='checkpoint_restore_held'",executionId))
         ||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',executionId)?.cancel_requested
         ||!this.checkpointDefinitionSupported(execution.id)||this.rows("WITH RECURSIVE owned(id) AS (SELECT ? UNION SELECT e.id FROM branch_executions e JOIN owned o ON e.parent_execution_id=o.id) SELECT id FROM owned",executionId).some(owner=>{const child=this.execution(owner.id)!;return !['queued','running','waiting','completed'].includes(child.state)||!this.checkpointDefinitionSupported(child.id)||Object.keys(child.configuration?.secretBindings??{}).length;})||Object.keys(execution.configuration?.secretBindings??{}).length)throw Error('Checkpoint interruption supports only live nonsecret exit Script/control owners and supported descendants');
-      if(!this.checkpointOwnerChainSupported(executionId))throw Error(action==='resume'?'Checkpoint resume requires current saved quiescence and authority':'Checkpoint interruption supports only current nonsecret Script/control owner chains');
+      if(!this.checkpointOwnerChainSupported(executionId,action==='resume'))throw Error(action==='resume'?'Checkpoint resume requires current saved quiescence and authority':'Checkpoint interruption supports only current nonsecret Script/control owner chains');
       if(action==='interrupt'){
         if(invocation.id!==expectedId||invocation.state!=='active'||invocation.interruptionId)throw Error('Checkpoint invocation changed');
         const interruptionId=randomUUID();
@@ -255,10 +258,10 @@ export class BranchStore {
     const execution=this.execution(executionId)!,definition=this.definition(execution);
     const owner=this.row('SELECT admission_source,parent_execution_id,parent_attempt_id,call_depth FROM branch_executions WHERE id=?',executionId)!;
     const effectFreeTree=this.ancestors(executionId).some(owner=>!owner.parent_execution_id&&scriptTreeRetryDefinitionSupported(this.definition(this.execution(owner.id)!),true));
-    return effectFreeTree&&scriptTreeRetryDefinitionSupported(definition,!owner.parent_execution_id)&&this.ancestors(executionId).every(owner=>scriptTreeRetryDefinitionSupported(this.definition(this.execution(owner.id)!),!owner.parent_execution_id)&&(owner.parent_execution_id?owner.admission_source==='call':['manual','automatic'].includes(owner.admission_source)))||scriptDefinitionSupported(definition,true)||(manualSerialTreeDefinitionSupported(definition)||!owner.parent_execution_id&&automaticSerialTreeDefinitionSupported(definition))&&this.ancestors(executionId).every(owner=>(manualSerialTreeDefinitionSupported(this.definition(this.execution(owner.id)!))||!owner.parent_execution_id&&automaticSerialTreeDefinitionSupported(this.definition(this.execution(owner.id)!)))&&(owner.parent_execution_id?owner.admission_source==='call':['manual','automatic'].includes(owner.admission_source)))||['manual','automatic'].includes(owner.admission_source)&&!owner.parent_execution_id&&!owner.parent_attempt_id&&!owner.call_depth&&!this.row('SELECT 1 FROM branch_executions WHERE parent_execution_id=?',executionId)&&portableScriptDefinitionSupported(definition)
+    return effectFreeTree&&scriptTreeRetryDefinitionSupported(definition,true)&&this.ancestors(executionId).every(owner=>scriptTreeRetryDefinitionSupported(this.definition(this.execution(owner.id)!),true)&&(owner.parent_execution_id?owner.admission_source==='call':['manual','automatic'].includes(owner.admission_source)))||scriptDefinitionSupported(definition,true)||(manualSerialTreeDefinitionSupported(definition)||!owner.parent_execution_id&&automaticSerialTreeDefinitionSupported(definition))&&this.ancestors(executionId).every(owner=>(manualSerialTreeDefinitionSupported(this.definition(this.execution(owner.id)!))||!owner.parent_execution_id&&automaticSerialTreeDefinitionSupported(this.definition(this.execution(owner.id)!)))&&(owner.parent_execution_id?owner.admission_source==='call':['manual','automatic'].includes(owner.admission_source)))||['manual','automatic'].includes(owner.admission_source)&&!owner.parent_execution_id&&!owner.parent_attempt_id&&!owner.call_depth&&!this.row('SELECT 1 FROM branch_executions WHERE parent_execution_id=?',executionId)&&portableScriptDefinitionSupported(definition)
       ||scriptDefinitionSupported(definition,false,true)&&resourceReservationSupported(selectBranchUnit(this.sqlite,executionId),definition);
   }
-  private checkpointOwnerChainSupported(executionId:string):boolean {
+  private checkpointOwnerChainSupported(executionId:string,heldResume=false):boolean {
     const chain=this.ancestors(executionId);
     return chain.every((owner,index)=>{
       const execution=this.execution(owner.id)!,branch=this.getBranch(owner.branch_id);
@@ -275,20 +278,45 @@ export class BranchStore {
       const definition=parent&&this.definition(this.execution(parent.id)!);
       const call=definition?.steps.find(s=>s.id===step?.step_id);
       const admitted=parent&&this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='child_admitted' AND transition_key=?",parent.id,`call:${owner.parent_attempt_id}`);
-      // Inherited membership is proved by the immutable tree origin, not a fabricated admission.
+      // Held resume proves the immutable rewind independently of runnable current-tree replay.
+      let inspected=false,proof:{line:Row;original:Row}|undefined;
       const inherited=()=>{
+        if(inspected)return proof;inspected=true;
         const root=chain.at(-1)!,origin=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND kind='tree_historical_rewind'",root.id);
-        if(!origin)return false;
+        if(!origin)return;
         try{
           const evidence=JSON.parse(origin.evidence_json),source=this.execution(evidence.sourceRootId);
-          // Only the existing idempotent command may prove inherited target membership.
-          if(!source||!this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',source.id,`tree-historical-rewind:${payloadHash(evidence.commandKey)}`))return false;
-          return this.rewindHistorical(source.branchId,source.id,evidence.checkpointId,evidence.checkpointHash,evidence.commandKey).id===root.id;
-        }catch{return false;}
+          // Only an existing idempotent command may prove inherited target membership.
+          if(!source||!this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',source.id,`tree-historical-rewind:${payloadHash(evidence.commandKey)}`))return;
+          const saved=this.row('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?',evidence.checkpointId,source.id),lineage=this.row('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?',evidence.lineageId,root.id);
+          if(!saved||!lineage)return;
+          const snapshot=JSON.parse(saved.snapshot_json),line=JSON.parse(lineage.snapshot_json);
+          if(stableJson(snapshot)!==saved.snapshot_json||payloadHash(snapshot)!==saved.content_hash||saved.content_hash!==evidence.checkpointHash
+            ||stableJson(line)!==lineage.snapshot_json||payloadHash(line)!==lineage.content_hash
+            ||!scriptTreeSnapshotSupported(this.sqlite,source.id,snapshot))return;
+          if(this.rewindHistorical(source.branchId,source.id,evidence.checkpointId,evidence.checkpointHash,evidence.commandKey).id!==root.id)return;
+          proof={line,original:snapshot.continuation};return proof;
+        }catch{return;}
+      };
+      const heldInput=()=>{
+        if(!heldResume||owner.state!=='queued'||this.row(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+          WHERE s.execution_id=? AND (a.state IN ('leased','running','outcome_unknown') OR a.process_identity_json IS NOT NULL OR a.lease_owner IS NOT NULL OR a.lease_until IS NOT NULL)`,owner.id))return;
+        const invocation=this.checkpointInvocationRow(owner.id),ticket=this.unitSaver.status(owner.id);
+        if(!invocation||invocation.mode!=='exit'||invocation.state!=='interrupted'||invocation.durability!=='saved'
+          ||!this.checkpointHoldIdentitySupported(owner.id,invocation)
+          ||ticket&&(ticket.invocationId!==invocation.id||ticket.state!=='saved')
+          ||!this.unitSaver.currentSavedMatches(owner.id,invocation.id,ticket?.savedId??invocation.saved_snapshot_id))return;
+        const verified=inherited();if(!verified||!parent||!scriptTreeLatestSupported(this.sqlite,verified.original.rootExecutionId))return;
+        const {line,original}=verified,map:BundleValueMap={owners:original.owners,ids:line.idMap};
+        const oldParent=original.owners.find((o:Row)=>line.idMap[o.executionId]===parent.id),oldChild=original.owners.find((o:Row)=>line.idMap[o.executionId]===owner.id);
+        if(!oldParent||!oldChild)return;
+        return inheritedBundleCallInput(
+          {selected:selectBranchUnit(this.sqlite,parent.id),audit:[],seed:{selected:oldParent.selected,idMap:line.idMap,bundleMap:map}},
+          {selected:selectBranchUnit(this.sqlite,owner.id),audit:[],seed:{selected:oldChild.selected,idMap:line.idMap,bundleMap:map}});
       };
       return !!parent&&['queued','running','waiting'].includes(parent.state)&&owner.admission_source==='call'&&attempt?.state==='waiting'&&step?.state==='waiting'
         &&step.execution_id===parent.id&&path!==undefined&&path.execution_id===parent.id&&path.state==='waiting'&&path.step_execution_id===step.id
-        &&owner.input_text===step.input_text&&owner.input_hash===payloadHash({parentAttempt:owner.parent_attempt_id,input:step.input_text})
+        &&(owner.input_text===bundleCallInput({selected:selectBranchUnit(this.sqlite,parent.id),audit:this.rows('SELECT id,kind,transition_key,evidence_json FROM branch_checkpoints WHERE execution_id=? ORDER BY id',parent.id)},owner.parent_attempt_id)||owner.input_text===replayedTreeCallInput(this.sqlite,chain.at(-1)!.id,parent.id,owner.id)||owner.input_text===heldInput())&&owner.input_hash===payloadHash({parentAttempt:owner.parent_attempt_id,input:step.input_text})
         &&owner.call_depth===parent.call_depth+1&&call?.kind==='branch_call'&&this.bindings(this.execution(parent.id)!).branches?.[call.branchRef]===owner.branch_id
         &&!!(admitted&&admitted.evidence_json===stableJson({attemptId:owner.parent_attempt_id,childExecutionId:owner.id,definitionId:owner.version_id})||inherited());
     });
@@ -674,6 +702,23 @@ export class BranchStore {
   foreignContinuationSource(branchId:string,planId:string) {
     return this.runtimeData(planId,branchId)??readHeldTreeForContinuation(this.sqlite,planId,branchId);
   }
+  /** Exact held installation provenance, never canonical replay or current admission authority. */
+  retainedDestinationInstallationEvidence(sourceId:string) {
+    return readRetainedDestinationSource(this.sqlite,sourceId,(planId,branchId)=>this.foreignContinuationSource(branchId,planId));
+  }
+  /** Original issued facts remain evidence; the local held installation is not an acceptance. */
+  issuedDestinationSource(branchId:string,executionId:string,checkpointId:number,checkpointHash:string) {
+    const execution=this.row('SELECT branch_id,provenance_json FROM branch_executions WHERE id=?',executionId);
+    if(!execution||execution.branch_id!==branchId)throw Error('Issued destination source owner unavailable');
+    const origin=JSON.parse(execution.provenance_json);
+    if(origin.source!=='portable_runtime_data')return {kind:'native' as const,...readIssuedResourceContinuation(this.sqlite,executionId,checkpointId,checkpointHash)};
+    if(origin.tree)throw Error('Retained issued tree source replay is not supported');
+    const installation=this.runtimeData(origin.planId,branchId);
+    if(!installation||installation.receipt.executionMap[origin.sourceExecutionId]!==executionId)throw Error('Exact retained issued installation owner unavailable');
+    const proof=retainedIssuedResourceSource(installation.data,origin.sourceExecutionId,String(checkpointId),checkpointHash);
+    return {kind:'retained-issued-resource' as const,selected:proof.selected.selected as Selected,hostDependencies:proof.selected.hostDependencies,
+      continuation:proof.selected.issuedContinuation,custody:proof.selected.issuedResourceCustody as import('@ponderosa/core').CheckpointPackageReceipt,proof};
+  }
   private foreignTreeCut(branchId:string,selection:import('@ponderosa/core').BranchForeignContinuationSelection) {
     if(!selection||Object.keys(selection).sort().join('|')!==['planId','sourceExecutionId','checkpointKey','checkpointSha256'].sort().join('|')||[selection.planId,selection.sourceExecutionId,selection.checkpointKey].some(v=>typeof v!=='string'||!v||v.length>200)||! /^[a-f0-9]{64}$/.test(selection.checkpointSha256))throw Error('Exact imported tree selection required');
     const saved=readHeldTreeForContinuation(this.sqlite,selection.planId,branchId);if(!saved)throw Error('Imported tree unavailable');
@@ -700,7 +745,7 @@ export class BranchStore {
       const branch=this.getBranch(id);if(!branch?.enabled||!branch.versionId||!branch.bindingRevisionId||this.row('SELECT deleting FROM branches WHERE id=?',id)?.deleting)throw Error('Enable every current Call destination before review');
       if(branch.chatId)this.chat(branch.chatId);
       const definition=this.version(id,branch.versionId)!.definition,bindings=this.localConfiguration(id)!,configuration=this.configuration(id),{secretBindings,...nonsecret}=configuration;
-      if(definition.trigger.kind!=='manual'&&!(id===branchId&&automaticScriptDefinitionSupported(definition,true,false,false,true,true))||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||!(scriptDefinitionSupported(definition,true)||manualSerialTreeDefinitionSupported(definition)||id===branchId&&scriptTreeRetryDefinitionSupported(definition,true))||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret sync/async or proven closed EXIT Script/Call family');
+      if(definition.trigger.kind!=='manual'&&!automaticScriptDefinitionSupported(definition,true,false,false,true,true)||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||!(scriptDefinitionSupported(definition,true)||manualSerialTreeDefinitionSupported(definition)||scriptTreeRetryDefinitionSupported(definition,true))||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret sync/async or proven closed EXIT Script/Call family');
       for(const o of all.filter(o=>destination(o.sourceBranchId)===id)){
         const get=(kind:string)=>JSON.parse(o.facts.find(f=>f.kind===kind)!.json);
         if(payloadHash(definition)!==payloadHash(get('definition'))||stableJson(nonsecret)!==stableJson(get('configuration').configuration))throw Error('Current tree definition/configuration differs from source');
@@ -727,13 +772,14 @@ export class BranchStore {
     const cut=this.foreignTreeCut(branchId,review.selection),ids:Record<string,string>=Object.fromEntries(treeIds(cut.c.owners).map(id=>[id,randomUUID()])),pending:Row[]=[...cut.c.owners],ordered:Row[]=[];
     while(pending.length){const index=pending.findIndex(o=>!o.selected.execution[0].parent_execution_id||ordered.some(p=>p.executionId===o.selected.execution[0].parent_execution_id));if(index<0)throw Error('Tree owner cycle');ordered.push(pending.splice(index,1)[0]);}
     for(const o of ordered)for(const item of o.selected.items)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
+    const values:BundleValueMap={owners:cut.c.owners,ids};
     const treeOwners:NonNullable<import('@ponderosa/core').BranchForeignContinuationReceipt['treeOwners']>={};
     for(const o of ordered){
       const e=o.selected.execution[0],choice=review.tree!.owners.find(p=>p.sourceExecutionId===o.executionId)!,parent=e.parent_execution_id?ids[e.parent_execution_id]:null,attempt=e.parent_attempt_id?ids[e.parent_attempt_id]:null;
-      const next=this.acceptInput(choice.branchId,attempt?`call:${attempt}`:`foreign-continuation:${importedId}:${payloadHash(input.commandKey)}`,e.input_text,attempt?payloadHash({parentAttempt:attempt,input:e.input_text}):payloadHash({input:branchText(e.input_text),source:'manual'}),attempt?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:{source:'foreign_tree_continuation',importedExecutionId:importedId,reviewSha256:review.reviewSha256,commandKey:input.commandKey},now,attempt?'call':'manual');
-      ids[o.executionId]=next.id;
-      this.run('UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,traversals=?,loop_iterations=?,recovery_traversals=?,output_text=? WHERE id=?',parent,attempt,e.call_depth,e.depth_ceiling,e.traversals,e.loop_iterations,e.recovery_traversals,remapBranchOutput(o.selected,ids,o.executionId,next.id),next.id);
-      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids[id]!])),o.executionId,next.id);
+      const next=this.acceptInput(choice.branchId,attempt?`call:${attempt}`:`foreign-continuation:${importedId}:${payloadHash(input.commandKey)}`,remapBundleValue(e.input_text,o.executionId,ids[o.executionId]!,values),attempt?payloadHash({parentAttempt:attempt,input:remapBundleValue(bundleParentInput(cut.c.owners,e),e.parent_execution_id,parent!,values)}):payloadHash({input:branchText(e.input_text),source:'manual'}),attempt?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:{source:'foreign_tree_continuation',importedExecutionId:importedId,reviewSha256:review.reviewSha256,commandKey:input.commandKey},now,attempt?'call':'manual',ids[o.executionId]);
+      if(ids[o.executionId]!==next.id)throw Error('Reserved foreign tree identity changed');
+      this.run('UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,traversals=?,loop_iterations=?,recovery_traversals=?,output_text=? WHERE id=?',parent,attempt,e.call_depth,e.depth_ceiling,e.traversals,e.loop_iterations,e.recovery_traversals,remapBranchOutput(o.selected,ids,o.executionId,next.id,values),next.id);
+      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids[id]!])),o.executionId,next.id,undefined,values);
       insertBranchFrontier(this.sqlite,next.id,restored,now);
       for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,next.id,g.prompt_text,g.purpose,now,now);
       if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Current tree owner capacity/budget admission unavailable');
@@ -756,13 +802,13 @@ export class BranchStore {
     let canceledGate=false;
     for(const o of c.owners){
       const e=o.selected.execution[0],mapped=receipt.treeOwners[o.executionId]!,choice=review.tree!.owners.find(p=>p.sourceExecutionId===o.executionId),pins=review.tree!.branches.find(b=>b.branchId===choice?.branchId),next=this.row('SELECT * FROM branch_executions WHERE id=?',mapped.executionId),parent=e.parent_execution_id?receipt.idMap[e.parent_execution_id]:null,attempt=e.parent_attempt_id?receipt.idMap[e.parent_attempt_id]:null;
-      if(!pins||!next||mapped.executionId!==receipt.idMap[o.executionId]||next.branch_id!==pins.branchId||next.version_id!==pins.versionId||next.binding_revision_id!==pins.bindingRevisionId||next.configuration_json!==stableJson(pins.configuration)||!next.admitted_at||next.admission_json!==stableJson(mapped.admission)||next.parent_execution_id!==parent||next.parent_attempt_id!==attempt||next.call_depth!==e.call_depth||next.depth_ceiling!==e.depth_ceiling||next.input_text!==e.input_text||next.input_hash!==(attempt?payloadHash({parentAttempt:attempt,input:e.input_text}):payloadHash({input:branchText(e.input_text),source:'manual'}))||next.admission_source!==(parent?'call':'manual')||next.occurrence_key!==(attempt?`call:${attempt}`:`foreign-continuation:${receipt.importedExecutionId}:${payloadHash(receipt.commandKey)}`)||next.provenance_json!==stableJson(parent?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:{source:'foreign_tree_continuation',importedExecutionId:receipt.importedExecutionId,reviewSha256,commandKey:receipt.commandKey}))throw Error('Foreign tree fresh owner acceptance/admission differs');
+      if(!pins||!next||mapped.executionId!==receipt.idMap[o.executionId]||next.branch_id!==pins.branchId||next.version_id!==pins.versionId||next.binding_revision_id!==pins.bindingRevisionId||next.configuration_json!==stableJson(pins.configuration)||!next.admitted_at||next.admission_json!==stableJson(mapped.admission)||next.parent_execution_id!==parent||next.parent_attempt_id!==attempt||next.call_depth!==e.call_depth||next.depth_ceiling!==e.depth_ceiling||next.input_text!==remapBundleValue(e.input_text,o.executionId,next.id,{owners:c.owners,ids:receipt.idMap})||next.input_hash!==(attempt?payloadHash({parentAttempt:attempt,input:remapBundleValue(bundleParentInput(c.owners,e),e.parent_execution_id,parent!,{owners:c.owners,ids:receipt.idMap})}):payloadHash({input:branchText(e.input_text),source:'manual'}))||next.admission_source!==(parent?'call':'manual')||next.occurrence_key!==(attempt?`call:${attempt}`:`foreign-continuation:${receipt.importedExecutionId}:${payloadHash(receipt.commandKey)}`)||next.provenance_json!==stableJson(parent?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:{source:'foreign_tree_continuation',importedExecutionId:receipt.importedExecutionId,reviewSha256,commandKey:receipt.commandKey}))throw Error('Foreign tree fresh owner acceptance/admission differs');
       if(payloadHash(this.version(next.branch_id,next.version_id)!.definition)!==payloadHash(pins.definition)||this.row('SELECT bindings_json FROM branch_bindings WHERE id=? AND branch_id=?',next.binding_revision_id,next.branch_id)?.bindings_json!==stableJson(pins.bindings)||next.traversals<e.traversals||next.loop_iterations<e.loop_iterations||next.recovery_traversals!==e.recovery_traversals)throw Error('Foreign tree immutable destination pins/counters differ');
       const accepted=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='accepted' AND kind='trigger_accepted'",next.id),prefix=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='foreign-tree-prefix' AND kind='foreign_tree_selected_prefix'",next.id),started=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='workflow-started' AND kind='workflow_started'",next.id);
       if(accepted?.evidence_json!==stableJson({versionId:next.version_id,bindingRevisionId:next.binding_revision_id,inputHash:next.input_hash})||prefix?.evidence_json!==stableJson({importedExecutionId:receipt.importedExecutionId,sourceExecutionId:o.executionId,reviewSha256})||started?.evidence_json!==stableJson({admission:mapped.admission}))throw Error('Foreign tree canonical acceptance/prefix/start differs');
       if(parent&&this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='child_admitted'",parent,`call:${attempt}`)?.evidence_json!==stableJson({attemptId:attempt,childExecutionId:next.id,definitionId:next.version_id}))throw Error('Foreign tree genuine child admission differs');
-      if(['completed','failed'].includes(e.state)&&(next.state!==e.state||next.output_text!==remapBranchOutput(o.selected,receipt.idMap,o.executionId,next.id)))throw Error('Foreign tree terminal prefix differs');
-      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,receipt.idMap[id]!])),o.executionId,next.id);
+      if(['completed','failed'].includes(e.state)&&(next.state!==e.state||next.output_text!==remapBranchOutput(o.selected,receipt.idMap,o.executionId,next.id,{owners:cut.c.owners,ids:receipt.idMap})))throw Error('Foreign tree terminal prefix differs');
+      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,receipt.idMap[id]!])),o.executionId,next.id,undefined,{owners:cut.c.owners,ids:receipt.idMap});
       this.verifyForeignPrefix(next,restored,choice?.sharedState);
       canceledGate ||= restored.gates!.some(g=>g.state==='waiting'&&this.row('SELECT state FROM branch_gates WHERE id=?',g.id)?.state==='canceled');
     }
@@ -1486,9 +1532,9 @@ export class BranchStore {
         if(references.length!==2||references[0]?.kind!=='tree_restored_prefix'||references[0]?.transition_key!=='tree-restored-prefix'||references[1]?.kind!=='tree_historical_rewind'||references[1]?.transition_key!=='tree-rewind-origin')throw Error('Tree owner prefix lineage identity failure');
         if(!origin||!prefix||prefix.evidence_json!==origin.evidence_json||!owner||owner.parent_execution_id!==(old.parent_execution_id?line.idMap[old.parent_execution_id]:null)||owner.parent_attempt_id!==(old.parent_attempt_id?line.idMap[old.parent_attempt_id]:null))throw Error('Tree owner lineage unavailable');const evidence=JSON.parse(origin.evidence_json);
         if(evidence.commandKey!==commandKey||evidence.lineageId!==result.lineageId||evidence.sourceExecutionId!==o.executionId||evidence.sourceRootId!==executionId||evidence.checkpointId!==checkpointId||evidence.checkpointHash!==expectedHash)throw Error('Tree owner lineage integrity failure');
-        if(['branch_id','version_id','binding_revision_id','input_text','call_depth','depth_ceiling'].some(key=>owner[key]!==old[key]))throw Error('Tree mapped owner identity failure');
-        if(owner.input_hash!==(old.parent_attempt_id?payloadHash({parentAttempt:line.idMap[old.parent_attempt_id],input:old.input_text}):old.input_hash))throw Error('Tree mapped input identity failure');
-        const map=line.idMap,remapped=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,map[id]])),o.executionId,target,canonical?.requestMap);
+        if(['branch_id','version_id','binding_revision_id','call_depth','depth_ceiling'].some(key=>owner[key]!==old[key])||owner.input_text!==remapBundleValue(old.input_text,o.executionId,target,{owners:c.owners,ids:line.idMap}))throw Error('Tree mapped owner identity failure');
+        if(owner.input_hash!==(old.parent_attempt_id?payloadHash({parentAttempt:line.idMap[old.parent_attempt_id],input:remapBundleValue(bundleParentInput(c.owners,old),old.parent_execution_id,line.idMap[old.parent_execution_id],{owners:c.owners,ids:line.idMap})}):old.input_hash))throw Error('Tree mapped input identity failure');
+        const map=line.idMap,remapped=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,map[id]])),o.executionId,target,canonical?.requestMap,{owners:c.owners,ids:map});
         for(const p of o.selected.paths){const row=this.row('SELECT execution_id FROM branch_paths WHERE id=?',map[p.id]);if(row?.execution_id!==target)throw Error('Tree mapped path ownership failure');}
         for(const step of remapped.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=?',step.id);if(!row||row.execution_id!==target||row.path_id!==step.path_id||['step_id','invocation','input_text'].some(key=>row[key]!==step[key]))throw Error('Tree mapped Step ownership failure');}
         for(const a of remapped.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',a.id);if(!row||row.step_execution_id!==a.step_execution_id||row.number!==a.number||row.input_hash!==a.input_hash||row.request_id!==(a.request_id??null)&&!(o.selected.resources.some((resource:Row)=>map[resource.step_execution_id]===a.step_execution_id)&&this.restoredResourceRequestOwned(target,a,row)))throw Error('Tree mapped attempt ownership failure');}
@@ -1513,6 +1559,7 @@ export class BranchStore {
       canonical=this.coordination.restoreHostCoordinationCut(branchId,executionId,{checkpointId,expectedHash,commandKey:`branch-tree-rewind:${payloadHash(commandKey)}`,reviewHash:graph!.reviewHash,reconcileEffects:graph!.reconcileEffects},graph!.grant,now);
       if(canonical.replayed)throw Error('Canonical graph already belongs to a separate tree restoration');
     }
+    const valueMap:BundleValueMap={owners:c.owners,ids:Object.fromEntries(ids)};
     const mapped=(id:string|null):string|null=>id===null?null:ids.get(id)??(()=>{throw Error('Incomplete tree ID map');})();
     const pending=c.owners.filter((o:Row)=>o.executionId!==executionId),ordered:Row[]=[root];
     while(pending.length){const n=pending.findIndex((o:Row)=>ordered.some(p=>p.executionId===o.selected.execution[0].parent_execution_id));if(n<0)throw Error('Tree ownership cycle');ordered.push(pending.splice(n,1)[0]);}
@@ -1520,12 +1567,12 @@ export class BranchStore {
       const e=o.selected.execution[0];let target=next.id;
       if(o!==root){
         const parentId=mapped(e.parent_execution_id)!,attemptId=mapped(e.parent_attempt_id)!;
-        const child=this.acceptInput(e.branch_id,`call:${attemptId}`,e.input_text,payloadHash({parentAttempt:attemptId,input:e.input_text}),{source:'historical_child',parentExecutionId:parentId,parentAttemptId:attemptId},now,'call');
+        const child=this.acceptInput(e.branch_id,`call:${attemptId}`,remapBundleValue(e.input_text,o.executionId,ids.get(e.id)!,valueMap),payloadHash({parentAttempt:attemptId,input:remapBundleValue(bundleParentInput(c.owners,e),e.parent_execution_id,parentId,valueMap)}),{source:'historical_child',parentExecutionId:parentId,parentAttemptId:attemptId},now,'call',ids.get(e.id));
         // Acceptance owns the execution ID; all dependent references use this final mapping.
-        ids.set(e.id,child.id);target=child.id;
-        this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,['completed','failed'].includes(e.state)?e.state:'queued',e.output_text,target);
+        if(ids.get(e.id)!==child.id)throw Error('Reserved rewind owner identity changed');target=child.id;
+        this.run("UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,state=?,output_text=? WHERE id=?",parentId,attemptId,e.call_depth,e.depth_ceiling,['completed','failed'].includes(e.state)?e.state:'queued',remapBranchOutput(o.selected,Object.fromEntries(ids),o.executionId,target,valueMap),target);
       }
-      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target,canonical?.requestMap);
+      const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids.get(id)!])),o.executionId,target,canonical?.requestMap,valueMap);
       insertBranchFrontier(this.sqlite,target,restored,now,canonical?new Set(Object.values(canonical.requestMap)):undefined);
       for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,target,g.prompt_text,g.purpose,now,now);
       for(const resource of o.selected.resources){
@@ -1580,11 +1627,11 @@ export class BranchStore {
     validateHistoricalRequest(request,host.updates.filter(update=>update.row.request_id===request.id).map(update=>update.row).sort((a,b)=>a.resulting_version-b.resulting_version),host);
     return true;
   }
-  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call"): BranchExecutionDto {
+  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call", reservedId?:string): BranchExecutionDto {
     return this.unitTransaction(() => {
       const prior = this.row("SELECT id, input_hash, admission_source FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
       if (prior) {
-        if (prior.input_hash !== hash || prior.admission_source !== admissionSource) throw new Error("Branch occurrence idempotency conflict");
+        if (prior.input_hash !== hash || prior.admission_source !== admissionSource || reservedId!==undefined&&prior.id!==reservedId) throw new Error("Branch occurrence idempotency conflict");
         return this.execution(prior.id)!;
       }
       const branch = this.getBranch(branchId);
@@ -1598,7 +1645,8 @@ export class BranchStore {
       const budget=branchTraversalPreflight(definition);
       if(!budget.uncertain&&budget.minimum>configuration.limits.maxTraversals)
         throw new Error(`Traversal preflight: a successful run needs at least ${budget.minimum} visits, above the configured maxTraversals ${configuration.limits.maxTraversals}. Increase the Branch limit before running.`);
-      const id = randomUUID();
+      if(reservedId!==undefined&&!/^[0-9a-f-]{36}$/u.test(reservedId))throw Error('Invalid reserved tree execution identity');
+      const id = reservedId??randomUUID();
       this.run(`INSERT INTO branch_executions(id,branch_id,version_id,binding_revision_id,occurrence_key,input_text,input_hash,provenance_json,admission_source,state,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?, 'queued',?,?)`, id, branch.id, branch.versionId, branch.bindingRevisionId, occurrenceKey, input, hash, stableJson(provenance), admissionSource, now, now);
       this.validateTextReferences(definition,configuration);
@@ -2073,10 +2121,30 @@ export class BranchStore {
       this.run('UPDATE branch_resources SET error=? WHERE step_execution_id=?',message,stepExecutionId);this.selectedWrite(r.execution_id);
     })();
   }
+  resourceCleanupError(stepExecutionId:string,error:string):void {
+    this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId);if(!r)return;
+      const identity=payloadHash({executionId:r.execution_id,stepExecutionId,generation:r.generation});
+      const fence=this.row("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?",identity);
+      if(fence){
+        const f=JSON.parse(fence.receipt_json),i=f.input;
+        if(f.purpose==='final-resource'){
+          if(f.schema!=='branch-generation-exit-fence.v1'||stableJson(f)!==fence.receipt_json||payloadHash(f)!==fence.receipt_sha256||stableJson(i)!==fence.input_json
+            ||i.executionId!==r.execution_id||i.stepExecutionId!==stepExecutionId||i.generation!==0||r.generation!==0||r.retry_draining!==0
+            ||!r.chat_id||i.conversationId!==r.chat_id||f.resource.creation_key!==r.creation_key)throw Error('Final cleanup diagnostic fence differs');
+          // Cleanup observations must not mutate the already fenced semantic frontier.
+          this.run('INSERT INTO branch_retirement_errors VALUES(?,?,?) ON CONFLICT(resource_id) DO UPDATE SET error=excluded.error,updated_at=excluded.updated_at',r.chat_id,branchText(error),new Date().toISOString());
+          return;
+        }
+      }
+      this.resourceError(stepExecutionId,error);
+    })();
+  }
   private resourceCompletionError(r:Row):string|undefined {
     return this.row("SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE execution_id=? AND command_key LIKE ? ORDER BY created_at DESC,command_key DESC LIMIT 1",r.execution_id,`resource-completion-error:${r.creation_key}:%`)?.error;
   }
   resourceErrors():Error[] {return this.rows(`SELECT error FROM branch_resources WHERE error IS NOT NULL
+    UNION SELECT d.error FROM branch_retirement_errors d JOIN branch_resources r ON r.chat_id=d.resource_id
     UNION SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE (command_key LIKE 'resource-capture:%' OR command_key LIKE 'resource-completion-error:%') AND json_extract(result_json,'$.error') IS NOT NULL
     UNION SELECT json_extract(c.result_json,'$.error') error FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id
       AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
@@ -2103,6 +2171,37 @@ export class BranchStore {
   requireGenerationExitFence(executionId:string,stepId:string,generation:number){
     const journal=readGenerationExitCapture(this.sqlite,executionId,stepId,generation);if(!journal)throw Error('Generation fence journal missing');
     requireGenerationExitIntakeFence(this.sqlite,journal.identity);
+  }
+  finalResourceExitFence(stepId:string){
+    return this.unitTransaction(()=>{
+      const ids=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id',stepId).map(r=>r.agent_id);
+      if(!this.resourceCanRetire(stepId,ids))throw Error('Final resource cleanup is not eligible');
+      return fenceFinalResourceExit(this.sqlite,stepId);
+    }).immediate();
+  }
+  captureFinalResourceExit(journal:ReturnType<typeof fenceFinalResourceExit>){
+    return this.unitTransaction(()=>{
+      if(!this.resourceCanRetire(journal.identity.stepId,journal.identity.agentIds))throw Error('Final resource cleanup changed after drain');
+      captureFinalResourceExit(this.sqlite,journal);
+    }).immediate();
+  }
+  requireFinalResourceExit(executionId:string,stepId:string){return readFinalResourceExit(this.sqlite,executionId,stepId);}
+  requireFinalResourceFrontier(executionId:string,stepId:string){
+    const final=readFinalResourceExit(this.sqlite,executionId,stepId);
+    if(stableJson(selectBranchUnit(this.sqlite,executionId))!==stableJson(final.envelope.selected))throw Error('Final resource frontier changed before retirement');
+  }
+  retainedFinalResourceExit(stepId:string){
+    const resource=this.row('SELECT execution_id FROM branch_resources WHERE step_execution_id=?',stepId);
+    if(!resource)return;
+    const command=this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',resource.execution_id,`resource-final-exit:${stepId}:0`);
+    return command?readFinalResourceExit(this.sqlite,resource.execution_id,stepId):undefined;
+  }
+  finalResourceExitRequired(stepId:string):boolean {
+    const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepId);
+    if(!r||r.retry_draining===1)return false;
+    return this.rows('SELECT snapshot_json FROM branch_unit_snapshots WHERE execution_id=?',r.execution_id).some(row=>{
+      const s=JSON.parse(row.snapshot_json);return s.captureKind==='issued_resource'&&s.selected?.resources?.some((resource:Row)=>resource.step_execution_id===stepId);
+    });
   }
   resourceRetryGeneration(stepId:string):number|undefined {const r=this.row('SELECT generation,retry_draining FROM branch_resources WHERE step_execution_id=?',stepId);return r?.retry_draining===1?r.generation:undefined;}
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {
@@ -2149,9 +2248,10 @@ export class BranchStore {
   resourceRetired(stepExecutionId: string, now = new Date().toISOString()): void {
     this.unitTransaction(()=>{
       const r=this.row("SELECT * FROM branch_resources WHERE step_execution_id=?",stepExecutionId); if(!r)return;
-      if(r.state==='retired'){this.run('UPDATE branch_resources SET error=NULL WHERE step_execution_id=?',stepExecutionId);return;}
+      if(r.state==='retired'){this.run('UPDATE branch_resources SET error=NULL WHERE step_execution_id=?',stepExecutionId);this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',r.chat_id);return;}
       const ids=this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",stepExecutionId).map(m=>m.agent_id);
       if(!this.resourceCanRetire(stepExecutionId,ids) || this.row("SELECT 1 FROM branch_resource_members m JOIN agents a ON a.id=m.agent_id WHERE m.step_execution_id=? AND a.deleted_at IS NULL",stepExecutionId))throw new Error("Resource retirement is no longer eligible");
+      if(r.retry_draining!==1&&this.finalResourceExitRequired(stepExecutionId))this.requireFinalResourceFrontier(r.execution_id,stepExecutionId);
       if(r.retry_draining===1){
         // Preserve the exact drained generation before replacing its current pointers.
         // Only the dedicated retry codec may partition this retained history.
@@ -2170,6 +2270,7 @@ export class BranchStore {
         this.run('DELETE FROM branch_resource_members WHERE step_execution_id=?',stepExecutionId);
         this.run("UPDATE branch_resources SET state='reserved',retry_draining=0,root_agent_id=NULL,chat_id=NULL,error=NULL,generation=generation+1,creation_key=? WHERE step_execution_id=?",`branch-resource:${stepExecutionId}:${r.generation+1}`,stepExecutionId);
       }else this.run("UPDATE branch_resources SET state='retired',error=NULL WHERE step_execution_id=?",stepExecutionId);
+      this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',r.chat_id);
       this.selectedWrite(r.execution_id);
       this.checkpoint(r.execution_id,`resource-retired:${stepExecutionId}:${r.generation}`,"resource_retired",{stepExecutionId},now);this.aggregate(r.execution_id,now);
     })();
@@ -3445,6 +3546,8 @@ export class BranchStore {
   }
   requireDeletionReady(id:string):void {
     requireGenerationExitDeletionReady(this.sqlite,{branchId:id});
+    // Final proof lives in owner-local commands until the retained lifecycle archival follow-on.
+    if(this.row("SELECT 1 FROM branch_commands c JOIN branch_executions e ON e.id=c.execution_id WHERE e.branch_id=? AND c.command_key LIKE 'resource-final-exit:%' LIMIT 1",id))throw Error('Final resource exit evidence pins owner deletion until archival');
     // Tree custody has no admitted/retired consumer yet; preserve every source owner and checkpoint.
     if(this.row(`SELECT 1 FROM branch_commands c,json_each(c.result_json,'$.snapshot.continuation.owners') o
       WHERE c.command_key LIKE 'issued-tree-capture:%' AND json_extract(o.value,'$.selected.execution[0].branch_id')=? LIMIT 1`,id))throw Error('Issued tree custody holds owner deletion');

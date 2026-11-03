@@ -78,6 +78,7 @@ const schemaExtensions = [
   "0039_coordination_destination_group_chats.sql",
   "0040_lifecycle_reconciliation.sql",
   "0041_native_task_stops.sql",
+  "0042_destination_retained_sources.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

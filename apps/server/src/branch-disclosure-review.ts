@@ -1,7 +1,7 @@
 import {generationHistoricalSelections} from '@ponderosa/agents';
 import {createHash} from 'node:crypto';
 import {
- readDestinationHistoricalPartition,destinationHistoricalFacts,destinationDisclosurePolicy,readIssuedResourceContinuation,readIssuedGroup,issuedGroupOwners,issuedGroupHost,stableJson,
+ readDestinationHistoricalPartition,destinationHistoricalFacts,destinationDisclosurePolicy,readIssuedGroup,issuedGroupOwners,issuedGroupHost,stableJson,
  type AgentStore,type BranchStore,type CoordinationV3Store,
 } from '@ponderosa/agents';
 import type {
@@ -77,7 +77,8 @@ export class BranchDisclosureReviewService {
  }
  requireCurrentOwner(reservation:CoordinationDestinationReservation):string {
   if(!this.db.inTransaction)throw Error('Disclosure custody proof requires owner transaction');
-  const saved=readIssuedResourceContinuation(this.db,reservation.sourceExecutionId,reservation.checkpointId,reservation.checkpointHash);
+  const saved=this.branches.issuedDestinationSource(reservation.branchId,reservation.sourceExecutionId,reservation.checkpointId,reservation.checkpointHash);
+  if(saved.kind==='retained-issued-resource')throw Error('This imported checkpoint remains held until source shutdown and destination custody are verified');
   if(stableJson(saved.custody)!==stableJson(reservation.custody)||saved.custody.intent.hostCutSha256!==hash(saved.hostDependencies))throw Error('Disclosure issued custody differs');
   const e=this.db.prepare(`SELECT e.*,b.deleting,b.enabled,b.active_version_id,b.binding_revision_id current_binding,b.configuration_json current_configuration
    FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=? AND b.id=?`).get(reservation.sourceExecutionId,reservation.branchId) as Row|undefined;

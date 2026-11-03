@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {
- readIssuedResourceContinuation,stableJson,workspaceCreationId,
+ stableJson,workspaceCreationId,
  type AgentStore,type BranchStore,type CoordinationV3Store,type CoordinationDestinationAuthority,
 } from '@ponderosa/agents';
 import type {BranchIssuedDestinationInput,BranchIssuedDestinationDto,CoordinationDestinationReservation,AgentPortablePackageDto} from '@ponderosa/core';
@@ -94,14 +94,18 @@ export class BranchIssuedDestinationService {
     if(status.state!=='reserved')return status;
    }else{
     // Fully parse/validate private bytes before reserving any new managed identity.
-    const saved=readIssuedResourceContinuation(this.db,executionId,input.checkpointId,input.expectedHash),pkg=await this.packages().readCheckpoint(saved.custody);
+    const saved=this.branches.issuedDestinationSource(branchId,executionId,input.checkpointId,input.expectedHash);
+    if(saved.kind==='retained-issued-resource')throw Error('This imported checkpoint remains held: source shutdown and new destination custody have not been verified');
+    const pkg=await this.packages().readCheckpoint(saved.custody);
     this.supported(pkg,{custody:saved.custody} as CoordinationDestinationReservation);
     const chatCreationKey=`issued-destination-${lock}`,projectId=workspaceCreationId('project','workspace',chatCreationKey),conversationId=workspaceCreationId('conversation',projectId,`${chatCreationKey}:default`);
     plan=this.branches.reserveIssuedDestination(branchId,executionId,input,{projectId,conversationId,creationKey:chatCreationKey,operatorId:BRANCH_DISCLOSURE_OPERATOR},this.authority());
    }
    const r=plan.reservation as CoordinationDestinationReservation,d=r.destination;
    const pkg=await this.packages().readCheckpoint(r.custody);this.supported(pkg,r);
-   const bindings=this.branches.bindingRevision(branchId,readIssuedResourceContinuation(this.db,executionId,r.checkpointId,r.checkpointHash).continuation.bindingRevisionId);
+   const saved=this.branches.issuedDestinationSource(branchId,executionId,r.checkpointId,r.checkpointHash);
+   if(saved.kind==='retained-issued-resource')throw Error('This imported checkpoint has no verified custody for the new destination');
+   const bindings=this.branches.bindingRevision(branchId,saved.continuation.bindingRevisionId);
    const engines=bindings?.engines??{},root=pkg.agents.find(a=>a.ref===pkg.rootRef),defaultEngine=root?engines[root.engine]:undefined;
    if(!defaultEngine)throw Error('Current destination Engine mapping unavailable');
    this.packages().validateAgent(pkg,engines);

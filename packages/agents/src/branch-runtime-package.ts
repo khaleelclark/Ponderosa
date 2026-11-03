@@ -1,3 +1,4 @@
+import {verifyRetainedFinalExitCommand} from './branch-final-resource-exit.js';
 import {captureForeignTreeGeneration} from './branch-tree-generation.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -38,6 +39,7 @@ export function validateBranchRuntimeData(value:unknown,called=false,depth=0):Br
   if(!exact(o,['sourceExecutionId','sourceBranchId','chatRefs','facts','sha256'])||typeof o.sourceExecutionId!=='string'||!o.sourceExecutionId||owners.has(o.sourceExecutionId)||o.sourceBranchId!==d.sourceBranchId||!Array.isArray(o.chatRefs)||!Array.isArray(o.facts)||o.facts.length>100000||payloadHash({sourceExecutionId:o.sourceExecutionId,sourceBranchId:o.sourceBranchId,chatRefs:o.chatRefs,facts:o.facts})!==o.sha256)throw Error('Runtime owner inventory differs');
   owners.add(o.sourceExecutionId);
   for(const ref of o.chatRefs){if(typeof ref!=='string'||!allChats.has(ref)||chats.has(ref))throw Error('Runtime Chat ownership aliases');chats.add(ref);}
+  for(const fact of o.facts.filter(f=>f.kind==='command'&&f.key.startsWith('resource-final-exit:')))verifyRetainedFinalExitCommand(o,parseFact(fact));
   const seen=new Set<string>();
   for(const f of o.facts){const key=f.kind+':'+f.key;if(seen.has(key))throw Error('Duplicate runtime evidence');seen.add(key);parseFact(f);}
   for(const kind of ['frontier','definition','bindings','configuration','provenance'])if(o.facts.filter(f=>f.kind===kind).length!==1)throw Error('Incomplete runtime owner pins');
@@ -91,6 +93,10 @@ export function validateBranchRuntimeData(value:unknown,called=false,depth=0):Br
   const configuration=JSON.parse(o.facts.find(f=>f.kind==='configuration')!.json);
   if(!exact(configuration,['configuration','requiredSecretRefs'])||!configuration.configuration||!Array.isArray(configuration.requiredSecretRefs)||configuration.requiredSecretRefs.some((v:unknown)=>typeof v!=='string'||!v)||new Set(configuration.requiredSecretRefs).size!==configuration.requiredSecretRefs.length)throw Error('Runtime secret reentry inventory differs');
   for(const f of o.facts.filter(f=>f.kind==='custody')){const c=JSON.parse(f.json);if(c.receipt?.custodyId!==f.key||c.receipt.intent?.executionId!==o.sourceExecutionId||c.currentAuthority!==false||!['retained_data','unavailable_held'].includes(c.disposition)||c.disposition==='retained_data'&&payloadHash(c.package)!==c.packageSha256)throw Error('Private runtime custody evidence differs');}
+  for(const f of o.facts.filter(f=>f.kind==='custody')){
+   const c=JSON.parse(f.json);
+   if(c.wireJson!==undefined&&(c.disposition!=='retained_data'||typeof c.wireJson!=='string'||Buffer.from(c.wireJson,'utf8').toString('utf8')!==c.wireJson||Buffer.byteLength(c.wireJson)!==c.receipt.byteLength||sha(c.wireJson)!==c.receipt.sha256||payloadHash(JSON.parse(c.wireJson))!==c.packageSha256))throw Error('Private runtime original custody wire differs');
+  }
   if(!definition)throw Error('Runtime definition unavailable');
  }
  return d;

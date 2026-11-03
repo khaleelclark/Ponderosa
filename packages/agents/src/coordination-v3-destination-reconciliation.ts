@@ -68,7 +68,7 @@ export class CoordinationV3DestinationReconciliation {
    ||new Set(resources.map(r=>r.destination.resourceStepId)).size!==resources.length
    ||resources.some(r=>r.destination.projectId!==reservation.destination.projectId)
    ||stableJson(resources[0])!==stableJson({custody:reservation.custody,destination:reservation.destination}))throw Error('Invalid whole-group retirement inventory');
-  const slots=this.db.prepare('SELECT * FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(id) as CoordinationDestinationGroupReconciliationSlot[];
+  const slots=this.db.prepare('SELECT admission_id,source_chat_id,source_execution_id,conversation_id,stage_json FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(id) as CoordinationDestinationGroupReconciliationSlot[];
   const expected=resources.map(r=>({admission_id:id,source_chat_id:r.custody.sourceChatId,source_execution_id:r.custody.intent.executionId,conversation_id:r.destination.conversationId})).sort((a,b)=>a.source_chat_id<b.source_chat_id?-1:1);
   if(stableJson(slots.map(({stage_json,...identity})=>identity))!==stableJson(expected))throw Error('Exhaustive group slot ownership differs');
   return slots;

@@ -68,8 +68,8 @@ export function readProviderExitEvidence(db:Database.Database,input:{projectId:s
  })();
 }
 
-/** Immutable readback after deletion; does not re-authorize capture, cleanup or dispatch. */
-export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence:ProviderExitEvidence):void {
+/** Structural proof only; authoritative commit, start and inventory checks remain in the native wrapper. */
+function providerExitInventory(evidence:ProviderExitEvidence) {
  if(Buffer.byteLength(stableJson(evidence))>16*1024*1024)throw Error('Retained provider evidence exceeds bound');
  const {revision,...body}=evidence;
  if(!['provider-exit-evidence.v1','provider-exit-evidence.v2'].includes(body.schema)||payloadHash(body)!==revision||(body.schema==='provider-exit-evidence.v1'&&!body.receipts.length))throw Error('Retained provider exit evidence hash mismatch');
@@ -78,9 +78,7 @@ export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence
  for(const item of neverStarted){
   const p=body.participants.find(p=>p.agentId===item.identity);
   if(!p||p.runIds.length||item.identity!==item.receipt.agentId||item.sha256!==payloadHash(item.receipt)||item.receipt.projectId!==body.projectId||item.receipt.conversationId!==body.conversationId)throw Error('Retained never-started participant mismatch');
-  verifyProviderNeverStarted(db,item.receipt);
  }
- for(const p of body.participants)requireProviderStartsDrained(db,p.agentId);
  if(!body.participants.length||body.participants.length>256||body.participants.some(p=>(!p.runIds.length&&!neverStarted.some(n=>n.identity===p.agentId))||p.runIds.length>4096)||body.runs.length>4096||body.receipts.length>4096)throw Error('Retained provider inventory exceeds bound');
  const expected=new Map(body.participants.flatMap(p=>p.runIds.map(id=>[id,p.agentId] as const)));
  if((!expected.size&&!neverStarted.length)||expected.size!==body.participants.reduce((n,p)=>n+p.runIds.length,0)||new Set(body.participants.map(p=>p.agentId)).size!==body.participants.length||body.runs.length!==expected.size)throw Error('Retained provider Run/member inventory mismatch');
@@ -92,8 +90,7 @@ export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence
   const receipt=item.receipt;
   if(identities.has(item.identity)||receipt.schema!=='provider-process-exit.v1'||receipt.authorityId!==item.identity||receipt.operationId!==`provider-exit:${item.identity}`||receipt.result!=='observed_exited'||!['os-not-alive','close-confirmed'].includes(receipt.observation)||!Number.isFinite(Date.parse(receipt.observedAt))||!receipt.registrations.length)throw Error('Retained provider observation mismatch');
   identities.add(item.identity);
-  const row=db.prepare(`SELECT identity,input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-exit' AND identity=?`).get(item.identity) as Commit|undefined;
-  if(!row||row.receipt_sha256!==item.sha256||stableJson(read(row))!==stableJson(item.receipt))throw Error('Retained provider exit receipt mismatch');
+  if(item.sha256!==payloadHash(receipt))throw Error('Retained provider exit receipt mismatch');
   for(const registration of item.receipt.registrations){
    if(registrationIds.has(registration.identity)||registrationIds.size>=4096)throw Error('Retained provider registration inventory mismatch');
    registrationIds.add(registration.identity);
@@ -103,6 +100,21 @@ export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence
    else if(r.process.kind!=='native-job'||r.process.lifetimeId!==item.identity)throw Error('Retained native lifetime missing');
    if(r.runId){if(!run||run.agentId!==r.agentId||!Number.isSafeInteger(r.runFence)||(r.runFence??0)<1||(r.runFence??Infinity)>run.fence)throw Error('Retained provider Run fence mismatch');covered.add(r.runId);}
    else if(r.runFence!==null)throw Error('Unbound provider fence');
+  }
+ }
+ if([...expected.keys()].some(id=>!covered.has(id)))throw Error('Retained provider Run coverage incomplete');
+ return {body,neverStarted,registrationIds};
+}
+
+/** Immutable native readback after deletion; never substitutes structural proof for live authority. */
+export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence:ProviderExitEvidence):void {
+ const {body,neverStarted,registrationIds}=providerExitInventory(evidence);
+ for(const item of neverStarted)verifyProviderNeverStarted(db,item.receipt);
+ for(const p of body.participants)requireProviderStartsDrained(db,p.agentId);
+ for(const item of body.receipts){
+  const row=db.prepare(`SELECT identity,input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-exit' AND identity=?`).get(item.identity) as Commit|undefined;
+  if(!row||row.receipt_sha256!==item.sha256||stableJson(read(row))!==stableJson(item.receipt))throw Error('Retained provider exit receipt mismatch');
+  for(const registration of item.receipt.registrations){
    const source=db.prepare(`SELECT identity,input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND identity=?`).get(registration.identity) as Commit|undefined;
    if(!source||source.receipt_sha256!==registration.sha256||stableJson(read(source))!==stableJson(registration.registration))throw Error('Retained provider registration mismatch');
   }
@@ -111,5 +123,39 @@ export function verifyRetainedProviderExitEvidence(db:Database.Database,evidence
   const rows=db.prepare("SELECT identity FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.agentId')=? AND json_extract(receipt_json,'$.conversationId')=? LIMIT 4097").all(p.agentId,body.conversationId) as Array<{identity:string}>;
   if(rows.length>4096||rows.some(r=>!registrationIds.has(r.identity)))throw Error('Retained provider registration inventory changed');
  }
- if([...expected.keys()].some(id=>!covered.has(id)))throw Error('Retained provider Run coverage incomplete');
+}
+
+export type FinalProviderExitInventory={kind:'retained-final-resource';commits:Array<Commit&{kind:string}>;runs:Array<{id:string;agent_id:string;project_id:string;fencing_token:number;status:string}>};
+export function captureFinalProviderExits(db:Database.Database,evidence:ProviderExitEvidence):FinalProviderExitInventory {
+ if(!db.inTransaction)throw Error('Final provider exit census requires owner transaction');
+ verifyRetainedProviderExitEvidence(db,evidence);
+ const agents=stableJson(evidence.participants.map(p=>p.agentId));
+ const commits=db.prepare(`SELECT kind,identity,input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE
+  kind='provider-process-registration' AND json_extract(receipt_json,'$.agentId') IN (SELECT value FROM json_each(?))
+  OR kind='provider-process-exit' AND identity IN (SELECT value FROM json_each(?)) ORDER BY kind,identity LIMIT 4097`).all(agents,stableJson(evidence.receipts.map(r=>r.identity))) as Array<Commit&{kind:string}>;
+ const runs=db.prepare('SELECT id,agent_id,project_id,fencing_token,status FROM scheduler_runs WHERE agent_id IN (SELECT value FROM json_each(?)) ORDER BY id LIMIT 4097').all(agents) as FinalProviderExitInventory['runs'];
+ const inventory:FinalProviderExitInventory={kind:'retained-final-resource',commits,runs};
+ verifyFinalProviderExits(inventory,evidence);return inventory;
+}
+/** Structural inventory comparison only; enclosing portable command/fact hashes do not prove completeness. */
+export function verifyFinalProviderExits(source:FinalProviderExitInventory,evidence:ProviderExitEvidence):void {
+ const {body,registrationIds}=providerExitInventory(evidence);
+ if(source.kind!=='retained-final-resource'||source.commits.length>4096||source.runs.length>4096||Buffer.byteLength(stableJson(source))>16*1024*1024)throw Error('Final provider census exceeds bound');
+ const expected=new Map(body.runs.map(r=>[r.runId,r]));
+ if(source.runs.length!==expected.size||new Set(source.runs.map(r=>r.id)).size!==expected.size)throw Error('Final original Run census differs');
+ for(const r of source.runs){const e=expected.get(r.id);if(!e||r.agent_id!==e.agentId||r.project_id!==body.projectId||r.fencing_token!==e.fence||r.status!==e.status)throw Error('Final original terminal Run differs');}
+ const seen=new Set<string>();
+ for(const row of source.commits){
+  const key=`${row.kind}:${row.identity}`;
+  if(seen.has(key))throw Error('Final provider commit aliases');seen.add(key);
+  const value=read(row);
+  if(row.kind==='provider-process-exit'){
+   const item=body.receipts.find(r=>r.identity===row.identity);
+   if(!item||row.receipt_sha256!==item.sha256||stableJson(value)!==stableJson(item.receipt))throw Error('Final observed exit commit differs');
+  }else if(row.kind==='provider-process-registration'){
+   const item=body.receipts.flatMap(r=>r.receipt.registrations).find(r=>r.identity===row.identity);
+   if(!item||row.receipt_sha256!==item.sha256||stableJson(value)!==stableJson(item.registration))throw Error('Final complete registration census differs');
+  }else throw Error('Unknown final provider commit kind');
+ }
+ if(body.receipts.some(r=>!seen.has(`provider-process-exit:${r.identity}`))||[...registrationIds].some(id=>!seen.has(`provider-process-registration:${id}`)))throw Error('Final provider commit coverage incomplete');
 }
