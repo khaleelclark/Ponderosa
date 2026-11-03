@@ -71,8 +71,9 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
     const text=data.toString('utf8');
     if(/-----BEGIN (?:(?:[A-Z0-9]+ )*PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/.test(text))throw new Error('Configured Git dependency contains a private key; re-enter it on the destination');
     if(/\.(?:key|pem)$/i.test(name)&&!/-----BEGIN (?:RSA )?PUBLIC KEY-----|-----BEGIN CERTIFICATE-----/.test(text))throw new Error('Configured Git key material must be re-entered on the destination; public PEM certificates and keys are supported');
-    if(!Buffer.from(text).equals(data)||!/^\s*[\[{]/.test(text))return data;
-    try{const value=JSON.parse(text),safe=withoutPortableSecrets(value,maxBytes);return JSON.stringify(value)===JSON.stringify(safe)?data:Buffer.from(JSON.stringify(safe,null,2)+'\n');}catch(error){if(error instanceof SyntaxError)return data;throw error;}
+    if(!Buffer.from(text).equals(data)||!/^\s*[\[{"]/.test(text))return data;
+    try{JSON.parse(text);}catch(error){if(error instanceof SyntaxError)return data;throw error;}
+    const safe=withoutPortableSecrets(text,maxBytes);if(typeof safe!=='string')throw new Error('Git JSON inspection returned invalid data');return safe===text?data:Buffer.from(safe);
   };
   const moduleRoots=(value:ReviewedGitUserData)=>{for(const module of value.modules??[]){knownModules.add(sourcePathKey(module.source.worktreePath));moduleRoots(module.git);}};moduleRoots(git);
   const nativeName=(name:string)=>process.platform==='win32'?path.win32.normalize(name):name;
@@ -253,9 +254,9 @@ export function validateGitExternalDependencies(
       const text=data.toString('utf8');
       if(/-----BEGIN (?:(?:[A-Z0-9]+ )*PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/.test(text))fail('Configured Git data retains private key material');
       if(/\.(?:key|pem)$/i.test(file.sourcePath)&&!/-----BEGIN (?:RSA )?PUBLIC KEY-----|-----BEGIN CERTIFICATE-----/.test(text))fail('Configured Git key material must be re-entered on the destination');
-      if(Buffer.from(text).equals(data)&&/^\s*[\[{]/.test(text)){
-        try{const parsed=JSON.parse(text);if(JSON.stringify(withoutPortableSecrets(parsed,maxBytes))!==JSON.stringify(parsed))fail('Configured Git data retains credential fields');}
-        catch(error){if(!(error instanceof SyntaxError))throw error;}
+      if(Buffer.from(text).equals(data)&&/^\s*[\[{"]/.test(text)){
+        let valid=true;try{JSON.parse(text);}catch(error){if(error instanceof SyntaxError)valid=false;else throw error;}
+        if(valid&&withoutPortableSecrets(text,maxBytes)!==text)fail('Configured Git data retains credential fields');
       }
     }
     add({source:file.sourcePath,kind:'file',file});

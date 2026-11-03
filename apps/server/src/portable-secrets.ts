@@ -26,6 +26,47 @@ function portableSecretInspection(maxBytes: number, diagnostic = false) {
     if (depth > PORTABLE_SECRET_MAX_DEPTH) throw new Error('Portable structured data exceeds the supported nesting depth');
   };
 
+  // JSON.parse discards overwritten object properties. Refuse ambiguous valid
+  // JSON before parsing it for secrets, including escaped-equivalent keys and
+  // recursively encoded objects, so hidden earlier values cannot be exported.
+  function assertUniqueJsonKeys(text: string, depth: number): void {
+    let index = 0;
+    const whitespace = () => { while (index < text.length && /[\t\n\r ]/.test(text[index]!)) index++; };
+    const quoted = (): string => {
+      const start = index++;
+      while (index < text.length) {
+        const character = text[index++]!;
+        if (character === '\\') { index++; continue; }
+        if (character === '"') return JSON.parse(text.slice(start, index)) as string;
+      }
+      throw new Error('Invalid JSON string during credential inspection');
+    };
+    const value = (nesting: number): void => {
+      checkDepth(depth + nesting); whitespace();
+      if (text[index] === '{') {
+        index++; whitespace(); const keys = new Set<string>();
+        if (text[index] === '}') { index++; return; }
+        for (;;) {
+          whitespace(); const key = quoted();
+          if (keys.has(key)) throw new Error('Portable JSON contains duplicate object keys; preserve the original and resolve ambiguity before export');
+          keys.add(key); whitespace(); index++; value(nesting + 1); whitespace();
+          if (text[index++] === '}') return;
+        }
+      }
+      if (text[index] === '[') {
+        index++; whitespace();
+        if (text[index] === ']') { index++; return; }
+        for (;;) {
+          value(nesting + 1); whitespace();
+          if (text[index++] === ']') return;
+        }
+      }
+      if (text[index] === '"') { quoted(); return; }
+      while (index < text.length && !/[\t\n\r ,\]}]/.test(text[index]!)) index++;
+    };
+    value(0);
+  }
+
   function spanEnd(text: string, start: number, depth: number): number {
     const first = text[start];
     let quote = first === '"' || first === "'" ? first : '';
@@ -81,6 +122,7 @@ function portableSecretInspection(maxBytes: number, diagnostic = false) {
         let parsed: unknown;
         try { parsed = JSON.parse(original); }
         catch { continue; } // The assignment scanner also handles escaped keys in damaged spans.
+        assertUniqueJsonKeys(original, depth);
         const safe = visit(parsed, depth + 1);
         if (JSON.stringify(parsed) === JSON.stringify(safe)) {
           token.lastIndex = end;
@@ -104,6 +146,7 @@ function portableSecretInspection(maxBytes: number, diagnostic = false) {
       if (!/^[\s]*[\[{"]/.test(item)) return item;
       let parsed: unknown;
       try { parsed = JSON.parse(item); } catch { return item; }
+      assertUniqueJsonKeys(item, depth);
       const safe = visit(parsed, depth + 1);
       return JSON.stringify(parsed) === JSON.stringify(safe) ? item : JSON.stringify(safe);
     }

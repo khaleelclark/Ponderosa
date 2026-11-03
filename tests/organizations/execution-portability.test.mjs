@@ -8,7 +8,7 @@ import Fastify from 'fastify';
 import {AgentStore,CoordinationV3Store,BranchStore,readManagedArtifactContent,publishManagedArtifactContentAsync} from '@ponderosa/agents';
 import {AssetStore} from '../../apps/server/dist/assets.js';
 import {registerAgentPackageRoutes} from '../../apps/server/dist/routes/agent-packages.js';
-import {withoutPortableSecrets,assertPortableSecretsAbsent} from '../../apps/server/dist/portable-secrets.js';
+import {withoutPortableSecrets,assertPortableSecretsAbsent,redactPortableDiagnostic} from '../../apps/server/dist/portable-secrets.js';
 import {EXECUTION_ARCHIVE_MEDIA_TYPE,validateExecutionArchive,executionArchives} from '../../apps/server/dist/portable-execution-archive.js';
 
 async function instance(t,branch=false,connectionTimeout=0){
@@ -121,6 +121,19 @@ test('structured inspection charges decoded layers and keeps safe boundary strin
  for(const invalid of [-1,NaN,Infinity])assert.throws(()=>withoutPortableSecrets({},invalid),/byte limit is invalid/);
 });
 
+
+test('structured inspection refuses duplicate decoded keys before secrets can be hidden',()=>{
+ const ambiguous='{"user":{"apiKey":"SYNTHETIC_SECRET"},"u\\u0073er":{}}';
+ for(const value of [ambiguous,JSON.stringify(ambiguous),{outer:ambiguous},{outer:JSON.stringify(ambiguous)}]){
+  assert.throws(()=>withoutPortableSecrets(value),/duplicate object keys/);
+  assert.throws(()=>assertPortableSecretsAbsent(value,'Metadata'),/duplicate object keys/);
+ }
+ assert.doesNotMatch(redactPortableDiagnostic('prefix '+ambiguous+' suffix'),/SYNTHETIC_SECRET/);
+ assert.match(redactPortableDiagnostic('prefix '+ambiguous+' suffix'),/omitted/);
+ assert.equal(withoutPortableSecrets('ordinary prose [not JSON'), 'ordinary prose [not JSON');
+ const safe=' { "unicode" : "雪🌲", "nested" : [1, {"a":true}] }\n';
+ assert.equal(withoutPortableSecrets(safe),safe);
+});
 
 test('shared metadata rejection allows historical SourceStamp fenceToken and rejects encoded credentials',()=>{
  const metadata={sourceStamp:{fenceToken:42,sourceAgentId:'historical-agent'},encoded:JSON.stringify({env:{OPENAI_ORG_ID:'kept'}})};

@@ -103,6 +103,88 @@ export interface PlannedGitExternalApplication {
 const emptyApplication=():NativeGitExternalApplication=>({directories:[],files:[],links:[],absentPaths:[]});
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 
+// An external graph is authority only when produced by the local planner for
+// these exact reviewed bytes and fresh destinations. Package JSON and caller
+// supplied configuration objects cannot mint or clone this capability.
+type PlanContext={common:string;private:string;worktree:string};
+const issuedPlans=new WeakMap<PlannedGitExternalApplication,{source:string;context:string;signature:string;project:PlannedGitExternalApplication['project']}>();
+const issuedConfigurations=new WeakMap<NativeReviewedGitConfiguration,{source:string;sha256:string;activation:string;context:string;signature:string;sealedSignature?:string}>();
+const encoded=(value:unknown)=>digest(JSON.stringify(value));
+const applicationSignature=(external:NativeGitExternalApplication|undefined)=>{
+  if(!external)return null;
+  const {worktreeIdentity:_identity,...content}=external as NativeGitExternalApplication&{worktreeIdentity?:unknown};
+  return content;
+};
+function planSignature(plan:PlannedGitExternalApplication):string {
+  return encoded({activation:plan.activation,scopes:plan.scopes.map(scope=>({...scope,external:applicationSignature(scope.external)})),
+    originals:[...plan.originals].map(([name,data])=>[name,data.toString('base64')]),
+    absentSources:[...plan.absentSources],repositories:plan.repositories.map(scope=>plan.scopes.indexOf(scope))});
+}
+function configurationSignature(config:NativeReviewedGitConfiguration,includeIdentity=false,depth=0,seen=new Set<NativeReviewedGitConfiguration>()):unknown {
+  if(depth>32||seen.has(config))throw new Error('Native Git dependency configuration is cyclic or too deep');
+  seen.add(config);
+  const result={common:config.common.toString('base64'),private:config.private?.toString('base64')??null,
+    targets:config.targets,includes:config.includes,includeFiles:config.includeFiles?.map(file=>({...file,data:file.data.toString('base64')})),
+    external:includeIdentity?config.external:applicationSignature(config.external),modules:(config.modules??[]).map(module=>({
+      gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized,
+      worktreeUnconfigured:module.worktreeUnconfigured,bare:module.bare,layout:module.layout,
+      value:module.value,activation:module.activation,configuration:configurationSignature(module.configuration,includeIdentity,depth+1,seen)}))};
+  seen.delete(config);return result;
+}
+/** Bind the compiled graph to the issued planner and exact native owner. */
+export function bindNativeGitExternalPlan(config:NativeReviewedGitConfiguration,plan:PlannedGitExternalApplication,value:ReviewedUserData,sha256:string,activation:ReviewedUserDataActivation,context:PlanContext):void {
+  const issued=issuedPlans.get(plan);
+  if(!issued||issued.source!==encoded(value)||issued.context!==encoded(context)||
+    issued.project!==plan.project||encoded(plan.activation)!==encoded(activation)||config.external!==plan.external)
+    throw new Error('Native Git requires its exact locally issued dependency plan');
+  // Configuration compilation may add projections to the locally held plan.
+  // Finalize its identity only after that compilation and before exposing tasks.
+  issued.signature=planSignature(plan);
+  const found=new Set<NativeExternalScope>();
+  const check=(current:NativeReviewedGitConfiguration,scope:NativeExternalScope,depth:number)=>{
+    if(depth>32||found.has(scope)||current.external!==scope.external)throw new Error('Native Git dependency graph differs from its issued plan');
+    found.add(scope);
+    for(const module of current.modules??[]){
+      const matches=plan.scopes.filter(candidate=>candidate.gitDir===module.gitDir&&candidate.privateDir===(module.layout?.privateDir??module.gitDir)&&candidate.worktreePath===module.worktreePath);
+      if(matches.length!==1||matches[0]!.initialized!==module.initialized||Boolean(matches[0]!.worktreeUnconfigured)!==Boolean(module.worktreeUnconfigured)||
+        Boolean(matches[0]!.bare)!==Boolean(module.bare)||encoded(matches[0]!.value)!==encoded(module.value))throw new Error('Native Git dependency module differs from its issued owner');
+      check(module.configuration,matches[0]!,depth+1);
+    }
+  };
+  check(config,plan.scopes[0]!,0);
+  if(found.size!==plan.scopes.length)throw new Error('Native Git dependency plan omits a reviewed repository');
+  issuedConfigurations.set(config,{source:issued.source,sha256,activation:encoded(activation),context:issued.context,signature:encoded(configurationSignature(config))});
+}
+/** Freeze the late-issued worktree custody data only after apply has opened and
+ * checked its destination roots, and before any receipt or native mutation. */
+export function sealNativeGitExternalPlan(config:NativeReviewedGitConfiguration):void {
+  const issued=issuedConfigurations.get(config);
+  if(!issued||issued.signature!==encoded(configurationSignature(config)))throw new Error('Native Git dependency plan changed before destination preflight');
+  const rootNodes=[...(config.external?.directories??[]),...(config.external?.files??[]),...(config.external?.links??[]),...(config.external?.absentPaths??[])];
+  const ownerReference=(current:NativeReviewedGitConfiguration):boolean=>
+    !!current.external?.links.some(link=>link.targetContext==='ownerWorktree')||(current.modules??[]).some(module=>ownerReference(module.configuration));
+  if((rootNodes.some(node=>node.context==='worktree')||ownerReference(config))&&!config.external?.worktreeIdentity)
+    throw new Error('External worktree nodes require the original issued import-root identity');
+  const sealed=encoded(configurationSignature(config,true));
+  if(issued.sealedSignature&&issued.sealedSignature!==sealed)throw new Error('Native Git dependency custody changed after preflight');
+  issued.sealedSignature=sealed;
+}
+function hasExternalGraph(config:NativeReviewedGitConfiguration|undefined,seen=new Set<NativeReviewedGitConfiguration>()):boolean {
+  if(!config)return false;
+  if(seen.has(config))throw new Error('Native Git dependency configuration is cyclic');
+  seen.add(config);
+  return !!config.external||(config.modules??[]).some(module=>hasExternalGraph(module.configuration,seen));
+}
+/** Recheck before the first native write; mutable caller objects cannot change the graph. */
+export function assertNativeGitExternalPlan(config:NativeReviewedGitConfiguration|undefined,value:ReviewedUserData,sha256:string,activation:ReviewedUserDataActivation,context:PlanContext):void {
+  if(!value.gitExternalDependencies){if(hasExternalGraph(config))throw new Error('Native Git external graph lacks reviewed source evidence');return;}
+  const issued=config&&issuedConfigurations.get(config);
+  if(!issued||!issued.sealedSignature||issued.source!==encoded(value)||issued.sha256!==sha256||issued.activation!==encoded(activation)||
+    issued.context!==encoded(context)||issued.signature!==encoded(configurationSignature(config!))||
+    issued.sealedSignature!==encoded(configurationSignature(config!,true)))
+    throw new Error('Native Git requires its exact locally issued dependency plan');
+}
+
 /** Build destinations and native setting projections only from inert, validated
  * bytes plus the human's selected fresh roots. No historical path is opened. */
 export function planReviewedGitExternalApplication(value:ReviewedUserData,activation:ReviewedUserDataActivation,context:{common:string;private:string;worktree:string},selectedDestinations:readonly string[],transported:ReadonlyMap<string,Buffer>|((name:string)=>Buffer|undefined)):PlannedGitExternalApplication|undefined{
@@ -219,7 +301,9 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     if(bindings.some(binding=>!sourcePathsEqual(binding.resolvedPath,first.resolvedPath)))throw new Error('Configured Git paths have distinct contexts that cannot become one absolute scalar');
     return {source:first.resolvedPath,destination:target,value:target};
   };
-  return {activation:{...activation,gitPathMappings:[...sourceMappings.values()]},scopes,external:rootScope.external,originals,absentSources,repositories,project:projection};
+  const plan:PlannedGitExternalApplication={activation:{...activation,gitPathMappings:[...sourceMappings.values()]},scopes,external:rootScope.external,originals,absentSources,repositories,project:projection};
+  issuedPlans.set(plan,{source:encoded(value),context:encoded(context),signature:planSignature(plan),project:plan.project});
+  return plan;
 }
 
 /** Exact generated views for canonical local issuance; never authority from package data. */

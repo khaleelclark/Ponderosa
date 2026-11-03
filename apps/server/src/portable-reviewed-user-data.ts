@@ -11,6 +11,7 @@ import {crc32,deflateSync,inflateSync} from 'node:zlib';
 import type {ReviewedGitUserData,ReviewedUserData,ReviewedUserDataSelection,ReviewedUserDataActivation,ReviewedMetadataActivation,GitStorageSelection,PortableGitStorageBinding} from '@ponderosa/core';
 import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnostic,withoutPortableSecrets} from './portable-secrets.js';
 import {captureGitExternalDependencies,validateGitExternalDependencies} from './portable-git-external.js';
+import {assertNativeGitExternalPlan} from './portable-git-external-application.js';
 
 import {captureFilesystemMetadata,validateFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {canonicalSourcePath,normalizeSourcePath,serializeSourcePath,sourcePathAbsolute,sourcePathKey,sourcePathsEqual,sourcePathWithin,joinSourcePath,resolveSourcePath,dirnameSourcePath,basenameSourcePath,relativeSourcePath} from './portable-source-paths.js';
@@ -326,6 +327,7 @@ export async function createReviewedNativeGit(root:string,original:Buffer,sha256
   const source=parseReviewedUserData(original),module=source.associationReview?.length===1&&source.associationReview[0]!.role==='module';
   const value=planReviewedUserDataActivation(original,sha256,activation,module);
   if(!activation.git||!value.git)throw new Error('Explicit native Git selection is required');
+  assertNativeGitExternalPlan(configuration,value,sha256,activation,{common:path.join(root,'.git'),private:path.join(root,'.git'),worktree:root});
   await verifyDormantModuleDeclarations(value.git);
   if(selectedWorktreeReftable(value.git))throw new Error('Selected-worktree reftable requires fresh common/private native initialization');
   if(!configuration&&reviewedGitConfiguration(value,activation).includes.length)throw new Error('Native external includes require their complete transported configuration closure');
@@ -337,6 +339,8 @@ export async function createReviewedRecoveryGit(root:string,original:Buffer,sha2
   const source=parseReviewedUserData(original),module=source.associationReview?.length===1&&source.associationReview[0]!.role==='module';
   const value=planReviewedUserDataActivation(original,sha256,activation,!!layout||module);
   if(!activation.git||!value.git)throw new Error('Explicit Git activation is required');
+  const common=layout?.commonDir??storage?.gitDir??path.join(root,'.git');
+  assertNativeGitExternalPlan(configuration,value,sha256,activation,{common,private:layout?.privateDir??common,worktree:root});
   await verifyDormantModuleDeclarations(value.git);
   await writeReviewedGit(root,value.git,value,layout,true,configuration??reviewedGitConfiguration(value,activation),storage);
 }
@@ -3161,7 +3165,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     {
       const {data}=originalFile;
       const original=codexReviewToml(relative)||claudeOutputStyle(relative)||opaqueProviderOriginal(relative)?new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data):text(data);let safe=original,removedSecretFields=false;
-      if(providerJsonSettings(relative)){const parsed=JSON.parse(original),scrubbed=withoutPortableSecrets(parsed);removedSecretFields=JSON.stringify(parsed)!==JSON.stringify(scrubbed);safe=JSON.stringify(scrubbed,null,2);}
+      if(providerJsonSettings(relative)){JSON.parse(original);const scrubbed=withoutPortableSecrets(original);if(typeof scrubbed!=='string')throw new Error('Provider JSON inspection returned invalid data');removedSecretFields=scrubbed!==original;safe=scrubbed;}
       else if(codexReviewToml(relative)){
         ({safe,removedSecretFields}=scrubReviewToml(original));
       }

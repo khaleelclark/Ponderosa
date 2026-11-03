@@ -3,13 +3,13 @@ import {generatedHookName,generatedHookIdentity} from '../../apps/server/dist/po
 import test from 'node:test';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,readlink,unlink,chmod,lstat,realpath,open,rm,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,readlink,readdir,unlink,chmod,lstat,realpath,open,rm,symlink} from 'node:fs/promises';
 import {tmpdir,homedir,userInfo} from 'node:os';
 import {mkdirSync,renameSync} from 'node:fs';
 import path from 'node:path';
 import {promisify} from 'node:util';
 import {execFile} from 'node:child_process';
-import {exportReviewedUserData,parseReviewedUserData,createGitExportCapture,createReviewedNativeGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,parseReviewedUserData,createGitExportCapture,createReviewedNativeGit,createReviewedRecoveryGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {AgentStore} from '@ponderosa/agents';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
@@ -74,7 +74,7 @@ test('native recreation retains initialized and deinitialized module repositorie
     const inactive=await exportReviewedUserData(source,{git:true,harness:false});assert.equal(inactive.git.modules[0].source.initialized,false);assert.equal(inactive.git.modules[0].source.coreWorktree,null);
     const direct=path.join(root,'direct-without-module-plan');await mkdir(direct);
     const inactiveBytes=Buffer.from(JSON.stringify(inactive)),inactiveHash=createHash('sha256').update(inactiveBytes).digest('hex');
-    await assert.rejects(createReviewedNativeGit(direct,inactiveBytes,inactiveHash,activation),/complete exact reviewed recreation plan/);
+    await assert.rejects(createReviewedNativeGit(direct,inactiveBytes,inactiveHash,activation),/complete exact reviewed recreation plan|locally issued dependency plan/);
     await assert.rejects(lstat(path.join(direct,'.git')),{code:'ENOENT'});
     const recovery=path.join(root,'inactive');await mkdir(recovery);await mkdir(path.join(recovery,'module'));await writeFile(path.join(recovery,'file.txt'),'committed\n');await writeFile(path.join(recovery,'.gitmodules'),gitmodules);
     const missing=packageFor(inactive,{'file.txt':'committed\n'}),changed=packageFor(inactive,{'file.txt':'committed\n','.gitmodules':gitmodules+'\n# changed\n'});
@@ -276,7 +276,7 @@ test('native sharing matches installed Git modes for group, world, exact octal a
       await writeFile(hook,'#!/bin/sh\necho unexpected > '+JSON.stringify(path.join(root,'hook-ran'))+'\n');await chmod(hook,0o751);
       const manifest=await exportReviewedUserData(source,{git:true,harness:false}),wire=Buffer.from(JSON.stringify(manifest));
       await mkdir(destination);await chmod(destination,0o750);
-      await createReviewedNativeGit(destination,wire,createHash('sha256').update(wire).digest('hex'),{git:true,harness:false});
+      await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(packageFor(manifest),{work:destination},{git:true,harness:false}),{git:true,harness:false},()=>{});
       await mkdir(control);await git(control,'init','--template=','--initial-branch=main','--shared='+setting);
       await git(control,'config','user.name','Portable Test');await git(control,'config','user.email','portable@example.invalid');
       await writeFile(path.join(control,'file.txt'),'committed\n');await git(control,'add','file.txt');await git(control,'commit','--no-gpg-sign','-m','Initial');
@@ -302,7 +302,7 @@ test('native sharing follows active worktree configuration rather than only the 
     await git(source,'config','core.sharedRepository','all');await git(source,'config','extensions.worktreeConfig','true');
     await git(source,'config','--worktree','core.sharedRepository','0640');
     const manifest=await exportReviewedUserData(source,{git:true,harness:false}),wire=Buffer.from(JSON.stringify(manifest));await mkdir(destination);
-    await createReviewedNativeGit(destination,wire,createHash('sha256').update(wire).digest('hex'),{git:true,harness:false});
+    await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(packageFor(manifest),{work:destination},{git:true,harness:false}),{git:true,harness:false},()=>{});
     assert.equal(await git(destination,'config','--get','core.sharedRepository'),'0640');
     assert.equal((await lstat(path.join(destination,'.git','config'))).mode&0o7777,0o640);
     assert.equal((await lstat(path.join(destination,'.git'))).mode&0o7777,0o2750);
@@ -336,7 +336,7 @@ test('native sharing retains kernel default-ACL creation modes rather than recon
     const source=path.join(root,'source'),destination=path.join(root,'new'),control=path.join(root,'native');
     await initialize(source);await git(source,'config','core.sharedRepository','group');
     const manifest=await exportReviewedUserData(source,{git:true,harness:false}),wire=Buffer.from(JSON.stringify(manifest));await mkdir(destination);
-    await createReviewedNativeGit(destination,wire,createHash('sha256').update(wire).digest('hex'),{git:true,harness:false});
+    await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(packageFor(manifest),{work:destination},{git:true,harness:false}),{git:true,harness:false},()=>{});
     await mkdir(control);await git(control,'init','--template=','--initial-branch=main','--shared=group');
     for(const name of ['', 'objects','refs','HEAD','config'])assert.equal((await lstat(path.join(destination,'.git',name))).mode&0o7777,
       (await lstat(path.join(control,'.git',name))).mode&0o7777,'kernel ACL-aware native mode for '+name);
@@ -404,6 +404,120 @@ test('live native held-open rejects replacement after service precheck before an
    restore();restore=undefined;assert.equal(replaced,true);await assert.rejects(lstat(path.join(root,'.git')),error=>error.code==='ENOENT');assert.equal(await readFile(path.join(retained,'.ponderosa-portable-review/user-data.json'),'utf8'),bytes.toString());assert.equal(store.getAgent(agent.id).workingCopy.state,'unavailable');
   }finally{release();}
  }finally{restore?.();store?.close();await rm(base,{recursive:true,force:true});}
+});
+
+test('native hook graph requires exact issued source, destination and untampered plan before writes',{skip:process.platform==='win32'},async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-issued-hook-plan-')));
+ try{
+  const source=path.join(base,'source');await initialize(source);
+  const hook=path.join(source,'.git','hooks','pre-commit'),marker=path.join(base,'hook-ran');
+  await mkdir(path.dirname(hook),{recursive:true});
+  await writeFile(hook,'#!/bin/sh\necho ran > '+JSON.stringify(marker)+'\n',{mode:0o751});await chmod(hook,0o751);
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),wire=Buffer.from(JSON.stringify(manifest));
+  const hash=createHash('sha256').update(wire).digest('hex'),activation={git:true,harness:false},pkg=packageFor(manifest);
+  const direct=path.join(base,'direct');await mkdir(direct);
+  await assert.rejects(createReviewedNativeGit(direct,wire,hash,activation),/locally issued dependency plan/);
+  await assert.rejects(createReviewedRecoveryGit(direct,wire,hash,activation),/locally issued dependency plan/);
+  assert.deepEqual(await readdir(direct),[]);
+
+  const forgedRoot=path.join(base,'forged');await mkdir(forgedRoot);
+  const forged=planReviewedRecoveryRoots(pkg,{work:forgedRoot},activation)[0];
+  forged.configuration={...forged.configuration};
+  await assert.rejects(applyReviewedRecoveryRoots([forged],activation,()=>{}),/dependency plan/);
+  assert.deepEqual(await readdir(forgedRoot),[]);
+
+  const foreignRoot=path.join(base,'foreign-custody');await mkdir(foreignRoot);
+  const foreign=planReviewedRecoveryRoots(pkg,{work:foreignRoot},activation)[0],foreignStat=await lstat(foreignRoot,{bigint:true});
+  foreign.configuration.external.worktreeIdentity={device:String(foreignStat.dev),inode:String(foreignStat.ino)};
+  await assert.rejects(applyReviewedRecoveryRoots([foreign],activation,()=>{}),/original issued root/);
+  assert.deepEqual(await readdir(foreignRoot),[]);
+
+  const missingFamily=structuredClone(manifest);delete missingFamily.gitExternalDependencies;
+  const missingWire=Buffer.from(JSON.stringify(missingFamily)),missingHash=createHash('sha256').update(missingWire).digest('hex');
+  const graphRoot=path.join(base,'unreviewed-graph');await mkdir(graphRoot);
+  const graphConfig={common:Buffer.alloc(0),private:null,targets:[],includes:[],external:{directories:[],files:[],links:[]}};
+  await assert.rejects(createReviewedNativeGit(graphRoot,missingWire,missingHash,activation,graphConfig),/lacks reviewed source evidence/);
+  assert.deepEqual(await readdir(graphRoot),[]);
+
+  const tamperedRoot=path.join(base,'tampered');await mkdir(tamperedRoot);
+  const tampered=planReviewedRecoveryRoots(pkg,{work:tamperedRoot},activation)[0];
+  const original=tampered.configuration.external.files.find(file=>file.path.endsWith('pre-commit'));
+  assert.ok(original,'captured hook must be in the issued dependency graph');original.data[0]^=1;
+  await assert.rejects(applyReviewedRecoveryRoots([tampered],activation,()=>{}),/dependency plan/);
+  assert.deepEqual(await readdir(tamperedRoot),[]);
+
+  const wrongRoot=path.join(base,'wrong');await mkdir(wrongRoot);
+  const wrong=planReviewedRecoveryRoots(pkg,{work:wrongRoot},activation)[0];
+  const otherRoot=path.join(base,'other');await mkdir(otherRoot);wrong.destination=otherRoot;
+  await assert.rejects(applyReviewedRecoveryRoots([wrong],activation,()=>{}),/dependency plan/);
+  assert.deepEqual(await readdir(otherRoot),[]);
+
+  const custodyRoot=path.join(base,'custody');await mkdir(custodyRoot);
+  const custody=planReviewedRecoveryRoots(pkg,{work:custodyRoot},activation)[0],st=await lstat(custodyRoot,{bigint:true});
+  await assert.rejects(applyReviewedRecoveryRoots([custody],activation,receipt=>{
+   if(receipt.state==='applying')custody.configuration.external.worktreeIdentity={device:String(st.dev),inode:String(st.ino+1n)};
+  },{[custodyRoot]:{device:String(st.dev),inode:String(st.ino)}}),/dependency plan/);
+  assert.deepEqual(await readdir(custodyRoot),[]);
+
+  const collisionRoot=path.join(base,'collision');await mkdir(collisionRoot);
+  const collision=planReviewedRecoveryRoots(pkg,{work:collisionRoot},activation)[0],collisionStat=await lstat(collisionRoot,{bigint:true});
+  const collisionIdentity={device:String(collisionStat.dev),inode:String(collisionStat.ino)};
+  await mkdir(path.join(collisionRoot,'.git'));
+  await assert.rejects(applyReviewedRecoveryRoots([collision],activation,()=>{throw Error('No receipt is permitted before preflight');},{[collisionRoot]:collisionIdentity}),/already has native Git/);
+  await rm(path.join(collisionRoot,'.git'),{recursive:true});
+  await applyReviewedRecoveryRoots([collision],activation,()=>{},{[collisionRoot]:collisionIdentity});
+  assert.equal(await readFile(path.join(collisionRoot,'.git','hooks','pre-commit'),'utf8'),await readFile(hook,'utf8'));
+
+  await mkdir(path.join(source,'.husky'));await writeFile(path.join(source,'.husky','pre-commit'),'#!/bin/sh\nexit 0\n');
+  await git(source,'config','core.hooksPath','.husky');
+  const scopedManifest=await exportReviewedUserData(source,{git:true,harness:false});
+  const scopedRoot=path.join(base,'worktree-no-custody');await mkdir(scopedRoot);await mkdir(path.join(scopedRoot,'.husky'));
+  await writeFile(path.join(scopedRoot,'.husky','pre-commit'),'#!/bin/sh\nexit 0\n');
+  const scopedTasks=planReviewedRecoveryRoots(packageFor(scopedManifest,{'.husky/pre-commit':'#!/bin/sh\nexit 0\n'}),{work:scopedRoot},activation);
+  await assert.rejects(applyReviewedRecoveryRoots(scopedTasks,activation,()=>{throw Error('Unexpected receipt');}),/original issued import-root identity/);
+  assert.deepEqual(await readdir(scopedRoot),['.husky']);
+
+  const restored=path.join(base,'restored');await mkdir(restored);
+  await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(pkg,{work:restored},activation),activation,()=>{});
+  assert.equal(await readFile(path.join(restored,'.git','hooks','pre-commit'),'utf8'),await readFile(hook,'utf8'));
+  assert.equal((await lstat(path.join(restored,'.git','hooks','pre-commit'))).mode&0o777,0o751);
+  await assert.rejects(lstat(marker),{code:'ENOENT'});
+ }finally{await rm(base,{recursive:true,force:true});}
+});
+
+test('Git dependency JSON refuses hidden duplicate credentials on export and import', {skip:process.platform==='win32'},async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-git-duplicate-json-')));
+ try{
+  const source=path.join(base,'source'),hooks=path.join(source,'hooks');await initialize(source);await mkdir(hooks);
+  await git(source,'config','core.hooksPath','hooks');
+  const file=path.join(hooks,'pre-commit');
+  for(const bad of ['{"user":{"apiKey":"SYNTHETIC_SECRET"},"u\\u0073er":{}}',JSON.stringify({encoded:'{"user":{"apiKey":"SYNTHETIC_SECRET"},"user":{}}'}),JSON.stringify('{"user":{"apiKey":"SYNTHETIC_SECRET"},"user":{}}')]){
+   await writeFile(file,bad);await assert.rejects(exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true}),/duplicate object keys/);
+  }
+  await writeFile(file,'{"safe":true}');const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+  const entry=manifest.gitExternalDependencies.files.find(row=>row.sourcePath===file);assert.ok(entry);
+  entry.dataBase64=Buffer.from('{"user":{"apiKey":"SYNTHETIC_SECRET"},"user":{}}').toString('base64');
+  assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(manifest))),/duplicate object keys/);
+ }finally{await rm(base,{recursive:true,force:true});}
+});
+
+test('provider JSON preserves exact nonsecret bytes while excluding known credential fields',async()=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'portable-provider-json-bytes-')));
+ try{
+  await mkdir(path.join(root,'.claude'));
+  const file=path.join(root,'.claude','settings.json'),original='{  "permissions" : { "allow" : ["Read"] }, "note":"🌲" }\n';
+  await writeFile(file,original);
+  let value=await exportReviewedUserData(root,{git:false,harness:true}),entry=value.providerFiles.find(file=>file.path==='.claude/settings.json');
+  assert.equal(entry.removedSecretFields,false);assert.equal(Buffer.from(entry.dataBase64,'base64').toString('utf8'),original);
+  await writeFile(file,'{ "apiKey": "SYNTHETIC_PRIVATE_KEY", "permissions": { "allow": ["Read"] } }\n');
+  value=await exportReviewedUserData(root,{git:false,harness:true});entry=value.providerFiles.find(file=>file.path==='.claude/settings.json');
+  const sanitized=Buffer.from(entry.dataBase64,'base64').toString('utf8');assert.equal(entry.removedSecretFields,true);
+  assert.doesNotMatch(sanitized,/SYNTHETIC_PRIVATE_KEY|apiKey/);assert.deepEqual(JSON.parse(sanitized),{permissions:{allow:['Read']}});
+  for(const ambiguous of ['{"user":{"apiKey":"SYNTHETIC_SECRET"},"u\\u0073er":{}}',JSON.stringify({value:'{"user":{"apiKey":"SYNTHETIC_SECRET"},"user":{}}'})]){
+   await writeFile(file,ambiguous);
+   await assert.rejects(exportReviewedUserData(root,{git:false,harness:true}),/duplicate object keys/);
+  }
+ }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test('harness-only Separate activation ignores Git refs carried in the same original manifest',async()=>{

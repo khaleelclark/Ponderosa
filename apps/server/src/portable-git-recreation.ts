@@ -1,5 +1,5 @@
 import {workingDirectoryIdentity,workingNativeAliasEvidence,createWorkingNativeMetadataEvidence,type WorkingRootIdentity,type WorkingNativeMetadata} from './portable-working-files.js';
-import {planReviewedGitExternalApplication,getNativeGitExternalGraph,bindNativeGitExternalGraphOwner,type PlannedGitExternalApplication,type NativeExternalScope} from './portable-git-external-application.js';
+import {planReviewedGitExternalApplication,getNativeGitExternalGraph,bindNativeGitExternalGraphOwner,bindNativeGitExternalPlan,sealNativeGitExternalPlan,assertNativeGitExternalPlan,type PlannedGitExternalApplication,type NativeExternalScope} from './portable-git-external-application.js';
 import {decodePortableMetadataArtifact} from './agent-package-codec.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
@@ -167,6 +167,11 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
     if(signatures.has(commonDir)&&signatures.get(commonDir)!==signature)throw new Error('Selected common repository originals disagree; no destination has been changed');
     signatures.set(commonDir,signature);
   }
+  for(const task of tasks.filter(task=>task.activation.git&&task.externalPlan&&!task.moduleOwner)){
+    const common=task.layout?.commonDir??task.storage?.gitDir??path.join(task.destination,'.git');
+    bindNativeGitExternalPlan(task.configuration!,task.externalPlan!,task.value,task.sha256,task.activation,
+      {common,private:task.layout?.privateDir??common,worktree:task.destination});
+  }
   return tasks;
 }
 
@@ -185,18 +190,17 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
     const root=Object.keys(expectedRoots??{}).filter(root=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b.length-a.length)[0];if(!root)return;const issued=expectedRoots![root]!,relative=path.relative(root,target).split(path.sep).join('/');if(relative&&!Object.hasOwn(issued.directories??{},relative))return;return workingDirectoryIdentity(root,issued,target);
   };
   if(!callerDeferred)recoveryOwnedScopes.add(scope);
+  const configured=new Set<NonNullable<RecoveryTask['configuration']>>();
+  const assignedWorktrees:Array<{external:NonNullable<NonNullable<RecoveryTask['configuration']>['external']>;identity:WorkingRootIdentity}>=[];
   const configure=(config:NonNullable<RecoveryTask['configuration']>,worktree:string)=>{
+    if(configured.has(config))return;configured.add(config);
     config.nativeMetadataScope=scope;config.deferNativeMetadata=true;config.nativeMetadata=nativeMetadata;config.fileProofs=nativeMetadata.files;config.directoryMetadataProofs=nativeMetadata.directories;
-    if(config.external){const issued=proofFor(worktree);if(issued)config.external.worktreeIdentity=issued;}
+    if(config.external){
+      if(config.external.worktreeIdentity)throw new Error('Native Git worktree custody must come from its original issued root');
+      const issued=proofFor(worktree);if(issued){config.external.worktreeIdentity=issued;assignedWorktrees.push({external:config.external,identity:issued});}
+    }
     for(const module of config.modules??[])configure(module.configuration,module.worktreePath);
   };
-  for(const task of tasks.filter(task=>task.activation.git)){
-    configure(task.configuration!,task.destination);
-    if(task.workingAliases?.length)task.configuration!.workingAliases=task.workingAliases.map(alias=>{const identity=expectedRoots?.[alias.rootPath];if(!identity)throw new Error('Working native alias requires original transported root custody');return {...alias,identity};});
-  }
-  const graphs=tasks.filter(task=>task.activation.git).map(task=>getNativeGitExternalGraph(task.configuration,{gitDir:task.layout?.commonDir??task.storage?.gitDir??path.join(task.destination,'.git'),privateDir:task.layout?.privateDir,worktreePath:task.destination}));
-  const plannedTargets=new Set(graphs.flatMap(graph=>[...graph.files,...graph.directories,...graph.links,...graph.absentPaths].map(node=>node.path)));
-  const plannedDirectory=(name:string)=>graphs.some(graph=>graph.directories.some(node=>node.path===name));
   try{
     const rootPaths=new Set(tasks.flatMap(task=>task.roots));
     for(const root of rootPaths){
@@ -208,6 +212,20 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
     }
     const check=async()=>{for(const owned of opened){const stat=await fs.lstat(owned.path,{bigint:true});if(!stat.isDirectory()||stat.dev!==owned.device||stat.ino!==owned.inode||await fs.realpath(owned.path)!==owned.path)throw new Error('Recovery root identity changed; preserve all partial state');}};
     const modules=(value:readonly NativeReviewedGitModulePlan[]):NativeReviewedGitModulePlan[]=>value.flatMap(module=>[module,...modules(module.configuration.modules??[])]);
+    await check();
+    for(const task of tasks.filter(task=>task.activation.git)){
+      configure(task.configuration!,task.destination);
+      if(task.workingAliases?.length)task.configuration!.workingAliases=task.workingAliases.map(alias=>{const identity=expectedRoots?.[alias.rootPath];if(!identity)throw new Error('Working native alias requires original transported root custody');return {...alias,identity};});
+    }
+    const graphs=tasks.filter(task=>task.activation.git).map(task=>getNativeGitExternalGraph(task.configuration,{gitDir:task.layout?.commonDir??task.storage?.gitDir??path.join(task.destination,'.git'),privateDir:task.layout?.privateDir,worktreePath:task.destination}));
+    const plannedTargets=new Set(graphs.flatMap(graph=>[...graph.files,...graph.directories,...graph.links,...graph.absentPaths].map(node=>node.path)));
+    const plannedDirectory=(name:string)=>graphs.some(graph=>graph.directories.some(node=>node.path===name));
+    for(const task of tasks.filter(task=>task.activation.git&&!task.moduleOwner)){
+      const value=planReviewedUserDataActivation(task.data,task.sha256,task.activation,!!task.layout||!!task.storage);
+      if(task.externalPlan)sealNativeGitExternalPlan(task.configuration!);
+      const common=task.layout?.commonDir??task.storage?.gitDir??path.join(task.destination,'.git');
+      assertNativeGitExternalPlan(task.configuration,value,task.sha256,task.activation,{common,private:task.layout?.privateDir??common,worktree:task.destination});
+    }
     // Refuse every collision before creating the first native metadata entry.
     for(const task of tasks){
       await check();
@@ -279,6 +297,10 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
     }
   }catch(error){failure=error;for(const receipt of receipts.filter(receipt=>receipt.state==='applying')){receipt.state='incomplete';receipt.error={code:(error as {code?:string}).code??'ERR_RECOVERY_APPLICATION_PARTIAL',message:redactPortableDiagnostic(error instanceof Error?error.message:String(error)),partialStatePossible:true,observed:null};try{onReceipt(receipt);}catch(receiptError){Object.assign(error instanceof Error?error:new Error(String(error)),{receiptError});}}}
   finally{
+    // A refusal before any receipt or native write may be explicitly retried.
+    // Remove only the exact identity this invocation injected; preserve any
+    // independently changed value for diagnosis rather than overwriting it.
+    if(failure&&!receipts.length)for(const item of assignedWorktrees)if(item.external.worktreeIdentity===item.identity)delete item.external.worktreeIdentity;
     const cleanup:unknown[]=[];for(const owned of opened.reverse())try{await owned.handle.close();}catch(error){cleanup.push(error);}
     if(cleanup.length)failure=Object.assign(new Error((failure instanceof Error?failure.message+'; ':'')+'Recovery descriptor cleanup failed; preserve all destination roots',{cause:failure??cleanup[0]}),{code:(failure as {code?:string}|undefined)?.code??'ERR_RECOVERY_CLEANUP_PARTIAL',partialStatePossible:true,observed:(failure as {observed?:unknown}|undefined)?.observed??null,cleanupErrors:cleanup});
   }
