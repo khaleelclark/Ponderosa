@@ -300,6 +300,39 @@ function reflogPath(value:string):void {
   if(value!=='HEAD')refName(value);
 }
 
+/** The historical review log shares the ordinary reflog grammar, object proof and total budget. */
+function validateGitReflogData(encoded:string,format:'sha1'|'sha256',ids:Map<string,GitObject>,budget:{bytes:number;entries:number}):void {
+  if(typeof encoded!=='string'||encoded.length>Math.ceil(1024*1024/3)*4)throw new Error('Invalid Git reflog encoding');
+  const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
+  const raw=Buffer.from(encoded,'base64');budget.bytes+=raw.length;
+  if(raw.length>1024*1024||budget.bytes>limit||raw.toString('base64')!==encoded)throw new Error('Git reflog byte bound or encoding mismatch');
+  const original=text(raw);safeText(original,'Git reflog');
+  if(original&&!original.endsWith('\n'))throw new Error('Incomplete Git reflog entry');
+  for(const line of original?original.slice(0,-1).split('\n'):[]){
+    if(++budget.entries>10000)throw new Error('Git reflog entry count exceeds its bound');
+    const entry=/^([a-f0-9]+) ([a-f0-9]+) ([^<>\x00-\x1f\x7f]+) <([^<>\x00-\x20\x7f]+)> ([0-9]{1,16}) ([+-][0-9]{4})\t([^\x00-\x1f\x7f]*)$/.exec(line);
+    if(!entry||!oidPattern.test(entry[1]!)||!oidPattern.test(entry[2]!)||Number(entry[6]!.slice(1,3))>23||Number(entry[6]!.slice(3))>59)throw new Error('Unsupported Git reflog entry; preserve source');
+    const zero='0'.repeat(format==='sha1'?40:64);
+    if(entry[1]===zero&&entry[2]===zero)throw new Error('Git reflog has no object endpoint');
+    for(const oid of [entry[1]!,entry[2]!])if(oid!==zero&&!ids.has(oid))throw new Error('Git reflog original object is missing; preserve source');
+  }
+}
+
+/** Canonical file-backend records only; originals stay inactive and exact. */
+function parseGitOrigHeadReview(value:ReviewedGitUserData['origHeadReview'],format:'sha1'|'sha256'):{oid:string}|{symbolic:string}|undefined {
+  fields(value,['path','source','dataBase64','reflogDataBase64']);
+  if(value.path!=='ORIG_HEAD'||value.source!=='selected_worktree'||value.reflogDataBase64!==null&&typeof value.reflogDataBase64!=='string')throw new Error('Invalid ORIG_HEAD review path/provenance');
+  if(value.dataBase64===null)return;
+  if(typeof value.dataBase64!=='string'||value.dataBase64.length>Math.ceil(4096/3)*4)throw new Error('ORIG_HEAD original exceeds its bound');
+  const raw=Buffer.from(value.dataBase64,'base64'),original=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw);
+  if(raw.length>4096||raw.toString('base64')!==value.dataBase64||!Buffer.from(original).equals(raw)||!original.endsWith('\n'))throw new Error('Invalid ORIG_HEAD original bytes; preserve source');
+  safeText(original,'Git ORIG_HEAD original');
+  const binding=original.slice(0,-1);
+  if(binding.startsWith('ref: '))return {symbolic:refName(binding.slice(5))};
+  if(!(format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/).test(binding)||/^0+$/.test(binding))throw new Error('Unsupported ORIG_HEAD binding; preserve source');
+  return {oid:binding};
+}
+
 /** Decode either original index layout without guessing missing CRCs or hash widths. */
 function decodeRetentionPackIndex(idx:Buffer,format:'sha1'|'sha256',packChecksum:Buffer):Array<{oid:string;offset:number;crc:number|null}> {
   const width=format==='sha1'?20:32;
@@ -421,7 +454,7 @@ function validatePackRetention(records:ReviewedGitUserData['packRetentionReview'
 }
 
 export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','configurationReview','sparseReview','infoReview','shallowReview','packRetentionReview','exclusions']);
+  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','configurationReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','exclusions']);
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const ids=new Map<string,GitObject>();let bytes=0;
   const oidPattern=value.format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
@@ -438,7 +471,7 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   const shallow=validateGitShallowReview(value.shallowReview,value.format);
   for(const oid of shallow)if(ids.get(oid)?.type!=='commit')throw new Error('Git shallow boundary must name a captured verified commit');
   if(!Array.isArray(value.reflogs)||value.reflogs.length>10000)throw new Error('Invalid bounded Git reflogs');
-  const logPaths=new Set<string>(),logDirectories=new Set(['']);let logBytes=0,logEntries=0;
+  const logPaths=new Set<string>(),logDirectories=new Set(['']),logBudget={bytes:0,entries:0};
   for(const log of value.reflogs){
     fields(log,['path','dataBase64']);reflogPath(log.path);
     if(logPaths.has(log.path)||typeof log.dataBase64!=='string'||log.dataBase64.length>Math.ceil(1024*1024/3)*4)throw new Error('Invalid or duplicate Git reflog');
@@ -446,18 +479,7 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
     const parts=log.path.split('/');
     for(let i=1;i<parts.length;i++)logDirectories.add(parts.slice(0,i).join('/'));
     if(logPaths.size+logDirectories.size>10000)throw new Error('Git reflog inventory exceeds its bound');
-    const raw=Buffer.from(log.dataBase64,'base64');logBytes+=raw.length;
-    if(raw.length>1024*1024||logBytes>limit||raw.toString('base64')!==log.dataBase64)throw new Error('Git reflog byte bound or encoding mismatch');
-    const original=text(raw);safeText(original,'Git reflog');
-    if(original&&!original.endsWith('\n'))throw new Error('Incomplete Git reflog entry');
-    for(const line of original?original.slice(0,-1).split('\n'):[]){
-      if(++logEntries>10000)throw new Error('Git reflog entry count exceeds its bound');
-      const entry=/^([a-f0-9]+) ([a-f0-9]+) ([^<>\x00-\x1f\x7f]+) <([^<>\x00-\x20\x7f]+)> ([0-9]{1,16}) ([+-][0-9]{4})\t([^\x00-\x1f\x7f]*)$/.exec(line);
-      if(!entry||!oidPattern.test(entry[1]!)||!oidPattern.test(entry[2]!)||Number(entry[6]!.slice(1,3))>23||Number(entry[6]!.slice(3))>59)throw new Error('Unsupported Git reflog entry; preserve source');
-      const zero='0'.repeat(value.format==='sha1'?40:64);
-      if(entry[1]===zero&&entry[2]===zero)throw new Error('Git reflog has no object endpoint');
-      for(const oid of [entry[1]!,entry[2]!])if(oid!==zero&&!ids.has(oid))throw new Error('Git reflog original object is missing; preserve source');
-    }
+    validateGitReflogData(log.dataBase64,value.format,ids,logBudget);
   }
   for(const name of logPaths)if(logDirectories.has(name))throw new Error('Git reflog file/directory paths conflict');
   const requireObject=(oid:string,type?:string)=>{const object=ids.get(oid);if(!object||type&&object.type!==type)throw new Error('Git graph is incomplete or has a mismatched object type');};
@@ -495,6 +517,15 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   for(const ref of value.refs){
     let target=ref;const seen=new Set<string>();
     while(target.symbolic){if(seen.has(target.name))throw new Error('Cyclic Git symbolic ref');seen.add(target.name);const next=value.refs.find(candidate=>candidate.name===target.symbolic);if(!next||next.oid!==ref.oid)throw new Error('Incomplete Git symbolic ref target');target=next;}
+  }
+  const origHead=parseGitOrigHeadReview(value.origHeadReview,value.format);
+  if(origHead){
+    const oid='oid' in origHead?origHead.oid:value.refs.find(ref=>ref.name===origHead.symbolic)?.oid;
+    if(!oid||!ids.has(oid))throw new Error('Missing ORIG_HEAD object or captured symbolic target; preserve source');
+  }
+  if(value.origHeadReview.reflogDataBase64!==null){
+    if(logPaths.size+logDirectories.size>=10000)throw new Error('Git reflog inventory exceeds its bound');
+    validateGitReflogData(value.origHeadReview.reflogDataBase64,value.format,ids,logBudget);
   }
   fields(value.head,'symbolic' in value.head?['symbolic']:['oid']);
   if('symbolic' in value.head)refName(value.head.symbolic);else if(!ids.has(value.head.oid))throw new Error('Missing detached HEAD object');
@@ -987,9 +1018,9 @@ async function captureGitRaw(association:GitAssociation) {
       if(['objects/info/commit-graphs','objects/pack/multi-pack-index.d'].includes(name))throw new Error('Git derived-cache namespace must be a directory');
       const cache=objects&&derivedGitCache(name),retention=objects&&/\.(?:keep|mtimes)$/.test(name);
       if(objects&&!cache&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap|keep|mtimes))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
-      if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/'))reflogPath(name.slice(5));
+      if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/')&&!(source==='selected'&&name==='logs/ORIG_HEAD'))reflogPath(name.slice(5));
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
-      const {data}=await regularOriginal(target,cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
+      const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
@@ -1006,7 +1037,7 @@ async function captureGitRaw(association:GitAssociation) {
   inventory.push({name:'info',source:'shared',identity:infoBefore??'',...(infoBefore===null?{absent:true as const}:{})});
   for(const name of gitInfoPaths)await walk(path.join(commonDir,name),name,'shared');
   if(await infoIdentity()!==infoBefore)throw new Error('Git info parent changed during capture');
-  for(const name of ['HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
+  for(const name of ['HEAD','ORIG_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
   for(const name of ['config','shallow','packed-refs','refs','objects'])await walk(path.join(commonDir,name),name,'shared',name==='objects');
@@ -1015,9 +1046,10 @@ async function captureGitRaw(association:GitAssociation) {
     const source=directory===gitDir?'selected':'shared';
     let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){inventory.push({name:'logs',source,identity:'',absent:true});continue;}throw error;}
     if(!before.isDirectory()||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git log parent is not canonical and same-owner');
-    if(!linked||directory===gitDir)for(const name of await fs.readdir(target))if(!['HEAD','refs'].includes(name))throw new Error('Unsupported selected Git reflog original');
+    if(!linked||directory===gitDir)for(const name of await fs.readdir(target))if(!['HEAD','ORIG_HEAD','refs'].includes(name))throw new Error('Unsupported selected Git reflog original');
     inventory.push({name:'logs',source,identity:originalIdentity(before)});
   }
+  await walk(path.join(gitDir,'logs','ORIG_HEAD'),'logs/ORIG_HEAD','selected');
   await walk(path.join(gitDir,'logs','HEAD'),'logs/HEAD','selected');await walk(path.join(commonDir,'logs','refs'),'logs/refs','shared');
   if(linked){
     await walk(path.join(gitDir,'refs'),'refs','selected');
@@ -1027,7 +1059,8 @@ async function captureGitRaw(association:GitAssociation) {
   const infoReview:ReviewedGitUserData['infoReview']=gitInfoPaths.map(name=>({path:name,source:'common_repository',dataBase64:files.find(file=>file.source==='shared'&&file.name===name)?.data.toString('base64')??null}));
   validateGitInfoReview(infoReview);
   const shallowReview:ReviewedGitUserData['shallowReview']={path:'shallow',source:'common_repository',dataBase64:files.find(file=>file.source==='shared'&&file.name==='shallow')?.data.toString('base64')??null};
-  return {files,evidence:JSON.stringify(inventory),infoReview,shallowReview};
+  const origHeadReview:ReviewedGitUserData['origHeadReview']={path:'ORIG_HEAD',source:'selected_worktree',dataBase64:files.find(file=>file.source==='selected'&&file.name==='ORIG_HEAD')?.data.toString('base64')??null,reflogDataBase64:files.find(file=>file.source==='selected'&&file.name==='logs/ORIG_HEAD')?.data.toString('base64')??null};
+  return {files,evidence:JSON.stringify(inventory),infoReview,shallowReview,origHeadReview};
 }
 
 /** Native plumbing sees only an exclusive private copy, with generated config and no source pointers/index. */
@@ -1049,6 +1082,7 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
     const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
     const expectedRefs=new Map<string,{oid?:string;symbolic?:string}>();
     for(const file of files){
+      if(file.name==='ORIG_HEAD'||file.name==='logs/ORIG_HEAD')continue;
       if(derivedGitCache(file.name)){
         if(!derivedGitCache(file.name,format))throw new Error('Git derived cache name differs from the declared format');
         continue;
@@ -1127,7 +1161,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
       await absentGitPath(path.join(gitDir,'packed-refs'));
       // Unknown private storage/pseudorefs must not silently disappear from the review copy.
       const names=await fs.readdir(gitDir);if(names.length>20000)throw new Error('Selected Git storage inventory exceeds its bound');
-      for(const name of names)if(!['gitdir','commondir','HEAD','index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
+      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
     }
   };
   const snapshot=async()=>{
@@ -1147,6 +1181,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   if(versions.length!==1||!['0','1'].includes(versions[0]!.value)||declared.length>0&&versions[0]!.value!=='1'||local.some(item=>/^extensions\./i.test(item.key)&&!['extensions.objectformat','extensions.worktreeconfig','extensions.relativeworktrees'].includes(item.key.toLowerCase())))throw new Error('Unsupported Git repository format or extension');
   const before={...initial,storage:await captureIndexStorage(gitDir,format)};
   validateGitShallowReview(before.raw.shallowReview,format);
+  parseGitOrigHeadReview(before.raw.origHeadReview,format);
   const captured=await readCapturedGit(before.raw.files,format),batch=captured.batch;
   const objects:GitObject[]=[];let offset=0;
   while(offset<batch.length){
@@ -1187,7 +1222,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     packRetentionReview.push({packOid,packDataBase64:pack.toString('base64'),indexDataBase64:idx.toString('base64'),keepDataBase64:find('.keep')?.toString('base64')??null,mtimesDataBase64:mtimes?.toString('base64')??null,objects:entries.map((entry,i)=>({oid:entry.oid,mtime:mtimes?mtimes.readUInt32BE(12+i*4):null}))});
   }
   packRetentionReview.sort((a,b)=>a.packOid<b.packOid?-1:a.packOid>b.packOid?1:0);
-  const result:ReviewedGitUserData={version:1,format,objects,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')).map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,configurationReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,objects,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,configurationReview,exclusions};
   // Verify every captured object and graph before deriving any missing logical index entries.
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
@@ -1224,7 +1259,7 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
     const undo=encodeResolveUndo(value.resolveUndo,value.format),extension=Buffer.alloc(undo.length?8:0);
     if(undo.length){extension.write('REUC');extension.writeUInt32BE(undo.length,4);}
     const index=Buffer.concat([header,...entries,extension,undo]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
-    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,packRetentionReview:value.packRetentionReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
+    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,packRetentionReview:value.packRetentionReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
   }catch(error){throw new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error});}
 }
 
