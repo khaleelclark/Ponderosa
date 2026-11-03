@@ -36,9 +36,16 @@ function claudeOpaqueOriginal(value:string,directory=false):boolean {
 function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
+const gitDirectoryOriginalNames=['hooks','branches','remotes'];
 const gitWebOriginalNames=['description','category','cloneurl','README.html'];
 function gitReviewOriginal(value:string):boolean {
-  return gitWebOriginalNames.some(name=>value==='.git/'+name)||value.startsWith('.git/hooks/')&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
+  return gitWebOriginalNames.some(name=>value==='.git/'+name)||gitDirectoryOriginalNames.some(name=>value.startsWith('.git/'+name+'/'))&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
+}
+function inspectGitReviewOriginal(data:Buffer,originalPath:string):void {
+  if(data.includes(0))throw new Error('Git review originals require UTF-8 text, not binary data');
+  const value=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data);
+  safeText(value,'Git review original');
+  if(/^\.git\/(?:branches|remotes)\//.test(originalPath)&&/:\/\/[^/\s]*@/.test(value))throw new Error('Legacy Git remote original contains URL userinfo; preserve source');
 }
 function opaqueProviderOriginal(value:string,directory=false):boolean {
   if(gitReviewOriginal(value))return true;
@@ -311,8 +318,8 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     const gitOriginal=gitReviewOriginal(file.path);
     if(gitOriginal?!value.selection.git||!value.git||file.removedSecretFields:!value.selection.harness)throw new Error('Reviewed original differs from its explicit family selection');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
-    if(gitOriginal&&data.includes(0))throw new Error('Git review originals require UTF-8 text, not binary data');
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
+    if(gitOriginal)inspectGitReviewOriginal(data,file.path);
     if(codexReviewToml(file.path)&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
     safeText(text(data),'Reviewed provider configuration');
     if(providerJsonSettings(file.path))assertPortableSecretsAbsent(JSON.parse(text(data)),'Reviewed provider configuration');
@@ -1060,18 +1067,18 @@ async function captureGitRaw(association:GitAssociation) {
   const owner=(await fs.lstat(association.root,{bigint:true})).uid,names=new Set<string>();
   let nodes=0,bytes=0,hookEntries=0;
   const walk=async(target:string,name:string,source:'selected'|'shared',objects=false,optional=true):Promise<void>=>{
-    const hook=name==='hooks'||name.startsWith('hooks/'),gitOriginal=gitReviewOriginal('.git/'+name);
+    const hook=name==='hooks'||name.startsWith('hooks/'),originalDirectory=gitDirectoryOriginalNames.some(root=>name===root||name.startsWith(root+'/')),gitOriginal=gitReviewOriginal('.git/'+name);
     if(gitOriginal&&source!=='shared')throw new Error('Git review originals require common provenance');
-    if(hook&&(source!=='shared'||name!=='hooks'&&!gitReviewOriginal('.git/'+name)))throw new Error('Invalid common Git hook original path');
+    if(originalDirectory&&(source!=='shared'||!gitDirectoryOriginalNames.includes(name)&&!gitOriginal))throw new Error('Invalid common Git review original path');
     if(hook&&name!=='hooks'&&++hookEntries>1000)throw new Error('Git hook inventory exceeds 1000 entries');
     const refPath=name.startsWith('logs/')?name.slice(5):name;
     // Common private names belong to the main worktree: do not even stat or open them.
     if(linked&&source==='shared'&&privateRef(refPath))return;
     if(linked&&source==='selected'&&(name.startsWith('refs/')||name.startsWith('logs/refs/'))&&!privateRef(refPath))throw new Error('Unsupported selected private Git ref storage');
-    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!hook||optional)){inventory.push({name,source,identity:'',absent:true});return;}throw error;}
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!originalDirectory||optional)){inventory.push({name,source,identity:'',absent:true});return;}throw error;}
     if(++nodes>20000||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git raw inventory is foreign, external or exceeds its bound');
     if(before.isDirectory()){
-      if(!objects&&!hook&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
+      if(!objects&&!originalDirectory&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
       if(objects&&!['objects','objects/pack','objects/info','objects/info/commit-graphs','objects/pack/multi-pack-index.d'].includes(name)&&!/^objects\/[a-f0-9]{2}$/.test(name))throw new Error('Unsupported Git object directory');
       inventory.push({name,source,identity:originalIdentity(before)});
       const entries=(await fs.readdir(target)).sort();
@@ -1081,7 +1088,7 @@ async function captureGitRaw(association:GitAssociation) {
       if(name==='objects/pack')for(const entry of entries.filter(entry=>/^pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.pack$/.test(entry)))for(const suffix of ['keep','mtimes']){const companion=entry.slice(0,-4)+suffix;if(!entries.includes(companion))await walk(path.join(target,companion),name+'/'+companion,source,objects);}
       const after=await fs.lstat(target,{bigint:true});if(originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw directory changed');
     }else{
-      if(name==='hooks')throw new Error('Common Git hook root must be a directory');
+      if(gitDirectoryOriginalNames.includes(name))throw new Error('Common Git original root must be a directory');
       if(['refs','logs/refs'].includes(name)||linked&&source==='selected'&&['refs/bisect','refs/rewritten','refs/worktree'].includes(refPath))throw new Error('Git ref namespace must be a directory');
       if(['objects/info/commit-graphs','objects/pack/multi-pack-index.d'].includes(name))throw new Error('Git derived-cache namespace must be a directory');
       const cache=derivedGitCache(name),retention=objects&&/\.(?:keep|mtimes)$/.test(name);
@@ -1090,10 +1097,7 @@ async function captureGitRaw(association:GitAssociation) {
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
       const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
-      if(gitOriginal){
-        if(data.includes(0))throw new Error('Git review originals require UTF-8 text, not binary data');
-        safeText(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data),'Git review original');
-      }
+      if(gitOriginal)inspectGitReviewOriginal(data,'.git/'+name);
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
     }
@@ -1112,7 +1116,7 @@ async function captureGitRaw(association:GitAssociation) {
   for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
-  for(const name of ['config','shallow','packed-refs','refs','objects','hooks',...gitWebOriginalNames])await walk(path.join(commonDir,name),name,'shared',name==='objects');
+  for(const name of ['config','shallow','packed-refs','refs','objects',...gitDirectoryOriginalNames,...gitWebOriginalNames])await walk(path.join(commonDir,name),name,'shared',name==='objects');
   for(const directory of new Set([gitDir,commonDir])){
     const target=path.join(directory,'logs');
     const source=directory===gitDir?'selected':'shared';
