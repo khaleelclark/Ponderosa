@@ -790,6 +790,12 @@ async function gitAssociation(root:string):Promise<GitAssociation|undefined> {
 }
 
 type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer};
+/** Derived local caches are observed for drift, never parsed or supplied to native Git. */
+function commitGraphCache(name:string,format?:'sha1'|'sha256'):boolean {
+  const width=format==='sha1'?'{40}':format==='sha256'?'{64}':'{40}(?:[a-f0-9]{24})?';
+  return name==='objects/info/commit-graph'||name==='objects/info/commit-graphs/commit-graph-chain'||new RegExp('^objects/info/commit-graphs/graph-[a-f0-9]'+width+'\\.graph$').test(name);
+}
+
 /** Complete exact allowed roots only; never enumerate common/worktrees or main-worktree private files. */
 async function captureGitRaw(association:GitAssociation) {
   const {gitDir,commonDir,linked}=association,files:CapturedGitFile[]=[],inventory:Array<{name:string;source:'selected'|'shared';identity:string;digest?:string;absent?:true}>=[];
@@ -804,17 +810,23 @@ async function captureGitRaw(association:GitAssociation) {
     if(++nodes>20000||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git raw inventory is foreign, external or exceeds its bound');
     if(before.isDirectory()){
       if(!objects&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
-      if(objects&&!['objects','objects/pack','objects/info'].includes(name)&&!/^objects\/[a-f0-9]{2}$/.test(name))throw new Error('Unsupported Git object directory');
+      if(objects&&!['objects','objects/pack','objects/info','objects/info/commit-graphs'].includes(name)&&!/^objects\/[a-f0-9]{2}$/.test(name))throw new Error('Unsupported Git object directory');
       inventory.push({name,source,identity:originalIdentity(before)});
-      for(const entry of (await fs.readdir(target)).sort())await walk(path.join(target,entry),name+'/'+entry,source,objects);
+      const entries=(await fs.readdir(target)).sort();
+      for(const entry of entries)await walk(path.join(target,entry),name+'/'+entry,source,objects);
+      const optional=name==='objects'?['info']:name==='objects/info'?['commit-graph','commit-graphs']:name==='objects/info/commit-graphs'?['commit-graph-chain']:[];
+      for(const entry of optional)if(!entries.includes(entry))await walk(path.join(target,entry),name+'/'+entry,source,objects);
       const after=await fs.lstat(target,{bigint:true});if(originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw directory changed');
     }else{
       if(['refs','logs/refs'].includes(name)||linked&&source==='selected'&&['refs/bisect','refs/rewritten','refs/worktree'].includes(refPath))throw new Error('Git ref namespace must be a directory');
-      if(objects&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
+      if(name==='objects/info/commit-graphs')throw new Error('Git commit-graphs cache namespace must be a directory');
+      const cache=objects&&commitGraphCache(name);
+      if(objects&&!cache&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
       if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/'))reflogPath(name.slice(5));
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
-      const {data}=await regularOriginal(target,objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
+      const {data}=await regularOriginal(target,cache?4*1024*1024:objects?limit:1024*1024,owner),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
+      if(cache)safeText(data.toString('latin1'),'Git commit-graph cache');
       inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
     }
   };
@@ -872,6 +884,10 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
     const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
     const expectedRefs=new Map<string,{oid?:string;symbolic?:string}>();
     for(const file of files){
+      if(commitGraphCache(file.name)){
+        if(!commitGraphCache(file.name,format))throw new Error('Git commit-graph cache name differs from the declared format');
+        continue;
+      }
       if(file.name.startsWith('objects/')){
         const width=format==='sha1'?40:64;
         const loose=new RegExp('^objects/[a-f0-9]{2}/[a-f0-9]{'+(width-2)+'}$'),packed=new RegExp('^objects/pack/pack-[a-f0-9]{'+width+'}\\.(?:pack|idx|rev|bitmap)$');
@@ -982,7 +998,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
   const headText=text(captured.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
+  const exclusions=['Excluded: derived local commit-graph caches; rebuild from verified objects if needed','Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
   for(const item of before.sparse.configuration){
     const {key,value}=item;

@@ -107,7 +107,7 @@ filenames must match the declared SHA-1/SHA-256 format. Raw object/control/log
 originals (excluding separately bounded index/shared-index originals) together
 are bounded to 32 MiB and 20,000 inventory nodes, with 1 MiB
 per nonobject file and 32 MiB per object-storage file. Alternates (including HTTP
-alternates), promisor/unknown object metadata, commit-graph/info files, incomplete
+alternates), promisor/unknown object metadata, unsupported info files (ordinary commit-graph caches are observed and omitted as below), incomplete
 packs, unknown repository extensions/formats and malformed packed refs refuse.
 Repository format declarations must be exactly 0 or 1; objectformat requires 1.
 Only objectformat/worktreeConfig repository extensions are accepted (a local
@@ -186,6 +186,43 @@ were run for this source change.
 Source references: [Git index format](https://git-scm.com/docs/gitformat-index),
 [Git cache flag definitions](https://github.com/git/git/blob/master/read-cache-ll.h)
 and the binary storage references below.
+
+### Derived local commit-graph caches
+
+Ordinary common-repository `objects/info/commit-graph` and split
+`objects/info/commit-graphs` no longer block Include Git. The split directory
+accepts only `commit-graph-chain` and `graph-{hash}.graph`, where the lowercase
+hash has the declared SHA-1/SHA-256 width. No other names, nested directories,
+lock files, symlinks, special nodes or foreign-owner/multiple-link files are
+accepted. This adds no alternate store or other-worktree traversal authority.
+
+These files use the existing canonical same-owner regular no-follow reader.
+Each file is bounded to 4 MiB, subject also to the existing 4 MiB UTF-8 size bound
+on known-secret inspection of its lossless Latin-1 view. They count toward the
+32 MiB raw byte and 20,000-node limits. Exact directory/file identities, hashes,
+and explicit absence observations for the optional info/cache/chain paths join
+before/after comparison. Appearing, disappearing or observably changing data
+refuses. All inspected cache bytes receive known-secret inspection. Original
+source files and partial recovery copies remain untouched on failure.
+
+The cache bodies are opaque: chain text is never followed and neither checksums,
+chain completeness nor cache graph correctness are asserted. Caches are skipped
+before the exclusive native read view copies object files; they never influence
+Git parsing. Only independently captured and hash-verified objects, refs, logs,
+index, resolve-undo, sparse and shallow data remain semantic authority. Existing
+object-name/format, pack-pairing, closure and secret checks still apply. The
+export records their deliberate omission in its exclusions. No cache bytes enter
+the portable manifest or the separate recreated review repository, and no
+native working-root metadata is installed. Original manifests remain re-export
+authority; no DTO, selection or version changes are needed.
+
+Git documents commit-graphs as [supplemental acceleration](https://git-scm.com/docs/commit-graph)
+that can be rebuilt from the object database, with the above
+[file layout](https://git-scm.com/docs/gitformat-commit-graph.html). Rebuilding is
+not performed here. Unknown metadata, multipack-index, cruft, reftable, promisor
+and alternate stores retain their existing refusals. This is source-only
+support, with no runtime/capture, round-trip, native-equivalence or arbitrary
+writer atomicity acceptance.
 
 ### Ordinary shallow history
 
