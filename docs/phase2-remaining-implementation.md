@@ -1,5 +1,48 @@
 # Phase 2 remaining implementation inventory
 
+## Current reviewed source: 2026-11-03
+
+Combined source baseline: `1daf3b6fc79707d7944fc4a7a4844ee132b1d00c`.
+**Phase 2 remains incomplete.** This section supersedes earlier assignment and
+integration-status statements below for the named changes. Earlier narratives,
+all 32 commandment rows, all 24 Build behavior rows and historical evidence remain
+retained with their original scope. Their source dispositions are not current
+execution verdicts or an exhaustive claim that no further implementation is needed.
+
+| Area | Reviewed source integrated into this baseline | Work still open |
+| --- | --- | --- |
+| Runtime continuation | `38c36ebadaca05ed10da91559c4511a3ee0dfd8d` preserves the reviewed automatic-root/manual-Call-leaf Join-bundle extension. The prior statement that this extension is merely assigned is superseded. | Root-plus-leaf, nonleaf/automatic-child, forwarded/cross-owner and issued-resource/Agent/Chat continuation work remains outside this integrated tranche. Newer Runtime handoffs require separate verification and composition. |
+| Output, Assistant and shared UI | Corrected UI source `c6fb7e8487eece24f375153713c69f14fd330429` preserves responsive typography and shared live/completed prose, draft/dirty/discard handling and serialized settings writes. Feedback follows the current speaker, including late completion and A-to-B-to-A changes. A saved acknowledgement requires successful write and settings readback; failed readback reports the successful write separately and retains drafts. Retry reads only. | Mounted behavior, accessibility, streaming, layout and comparative quality remain unqualified. Source review does not establish these execution criteria. |
+| Public feature surfaces | Source `81e56f7da4956f71e6da733f8d916e44030d53bd`, composed at `8bb96cf71e015ba77fb8b5b47dca76af2c60f564`, preserves accepted task text, separately pageable authorized Chat Agents, public result bundles, value-bearing export selection and existing Output/Assistant client wrappers. The finite source checklist is [public-feature-requirements.md](public-feature-requirements.md). | Public-client, Assistant and workflow behavior still requires combined-product verification. These source additions do not establish universal comparator parity. |
+| Git/provider transport | Sources `db9b8b69393b8d5aa9e6c42c203b076cbc1990a5` and `744083a0de899433292ebe3d37e881df65c08bbc`, composed through `c61f65401d62847d7fdfeb8d22e1ed12c7503ade`, add selected EDIT_DESCRIPTION originals, bounded binary support in already selected skill/hook families, provider directory records and exact mode/mtime evidence. The earlier EDIT_DESCRIPTION feasibility-only and absent provider-metadata representation statements are superseded. Originals remain inactive review data; original manifests supply re-export. | Actual native application, additional Git formats/associations, explicit extra-root mappings, extended filesystem semantics and independent-writer snapshot/drain remain unfinished. The separate `796ce6f5984aa975a125a28f889b5d7bdb3410f8` tranche is not integrated: its recovered review requires an EOF-continuation lexer correction. Its successor work is separate. |
+| Native harness | Source `3a8e826294c6fb3bcd598dcd59c674f2c7f46628`, composed at `2b40e29c650a0e09117d4858c3e6d754c69af619`, fixes Claude input validation/history ordering, current steering authority, Codex queued-observation identity, native-selected Claude auth observation and the mounted per-task Stop declaration. [Native reconciliation](native-harness-reconciliation.md) records the finite G1-G8 disposition. | Lost-identity compact lookup, pre-start native goal admission, missing original-effect/restart receipts, remote fencing and unsupported media/platform contracts remain explicit boundaries. Installed compatibility and full native parity are unqualified. |
+| Exact metadata primitive | Source `818438b35f87f01263ead83a51d9c4389da49dc4`, composed at this `1daf3b6` baseline, exports descriptor-bound `applyExactFileMetadata` with bigint identity/time, exact POSIX mode/mtime readback and partial-error evidence. | There is no product importer caller in this baseline. Caller destination authority, sole descriptor/node ownership and directory-after-children ordering remain required. Windows exact POSIX modes are explicitly unsupported; importer adoption, filesystem precision, durability and round trips remain unqualified. |
+
+The composition chain is `c6fb7e8` -> `8bb96cf` -> `019033e` -> `c61f654`
+-> `2b40e29` -> `1daf3b6`. Each composed patch was independently source-reviewed,
+owner-released and compared with its complete reviewed source delta. Root verified
+every required physical deliverable in the final 130 manifest rows (86 distinct
+paths), all 1552 tracked physical blobs, exact commit/parent/tree/registration,
+clean state, no upstream and whitespace. Current helper-composition Quality SUPPORT
+is `auto:dbc3327cbad10635a6b56ff5f05c32ac6d5630e19383a0c0a95fa039f199c35e`.
+These checks establish source preservation, not compilation or product execution.
+
+The existing Runtime and Portability owners continue their remaining implementation;
+Delivery alone composes released sources. Native import activation requires its
+own explicit family choice, original-manifest binding and current new-destination
+checks; export inclusion or working-file activation does not grant it. Backend
+adoption and corresponding UI controls are not present in this baseline. The prior
+Portability continuation's unknown outcome remains recorded; its recovered commit
+and later documentation-only draft are preserved, with new work isolated from them.
+
+All tests, test preparation, fixtures, builds, typechecks, compilation and
+product/native/provider/browser/live-database execution remain deferred. No push,
+deployment, restart or unknown-outcome clearance follows from this inventory.
+All 32 Bible criteria and all Build acceptance criteria remain subject to their
+full final verification; none is promoted to True by these source checks.
+
+## Retained earlier reconciliation and requirement accounting
+
 Current source reconciliation: `61d892bd17b12c6f454579ad0410ca34d03e0468`,
 2026-11-03. This includes reviewed Git/index/sparse/settings transport, selected
 linked-worktree support, standalone continuation UI and original-receipt recovery,
