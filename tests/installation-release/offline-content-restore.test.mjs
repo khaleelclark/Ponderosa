@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -55,4 +55,22 @@ for(const invalid of ['unknown','duplicate'])test(`offline restore refuses ${inv
     {id:randomUUID(),name:'One',conversationIds:[ids[0]]},{id:randomUUID(),name:'Two',conversationIds:[ids[0]]},
   ]);
   assert.throws(()=>restoreContent(f),/folder.*Chat scope/);f.complete();
+});
+
+
+test('historical normalization refuses encoded package artifacts before creating destination data',t=>{
+ const f=source(t,()=>[]),input=f.sources[0],directory=input.directory;
+ const manifest=JSON.parse(readFileSync(path.join(directory,'manifest.json'),'utf8'));
+ const index=JSON.parse(readFileSync(path.join(directory,'file-index.json'),'utf8'));
+ const write=(name,value)=>{
+  const bytes=Buffer.from(JSON.stringify(value));writeFileSync(path.join(directory,name),bytes);
+  const record={path:name,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
+  const at=index.files.findIndex(file=>file.path===name);if(at<0)index.files.push(record);else index.files[at]=record;
+ };
+ manifest.channel='prod';manifest.packages=[{path:'encoded-package.json'}];
+ write('encoded-package.json',{schema:'ponderosa.agent-package.v1',mode:'full',agents:[{ref:'original',artifacts:[{ref:'artifact',dataBase64:'',dataEncoding:'gzip',decodedSize:0}]}]});
+ write('manifest.json',manifest);index.channel='prod';input.channel='prod';
+ const bytes=Buffer.from(JSON.stringify(index));writeFileSync(path.join(directory,'file-index.json'),bytes);input.indexSha256=createHash('sha256').update(bytes).digest('hex');
+ assert.throws(()=>restoreContent(f),/compressed Agent packages require the supported Agent package importer/);
+ assert.equal(existsSync(f.output),false);f.complete();
 });

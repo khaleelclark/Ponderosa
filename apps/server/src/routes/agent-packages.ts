@@ -21,7 +21,7 @@ import {portableCommunicationVisible,portableCommunicationMessage} from '../port
 import type {OutputAgentApps} from '../output-agent-apps.js';
 import {localMemoryFor} from '../local-memory.js';
 import {validateMemorySnapshot} from '../portable-memory-snapshot.js';
-import {executionArchive,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
+import {executionArchives,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
 import { createHash, randomUUID } from "node:crypto";
 import {constants} from "node:fs";
 import syncFs,{ createReadStream, promises as fs } from "@ponderosa/native-host/fs";
@@ -75,11 +75,12 @@ import {
   validatedObject,
 } from "../object-validation.js";
 import {
-  decodePortableArtifact,
-  encodePortableArtifact,
+  assertAgentPackageMemoryAvailable,
+  decodePortableArtifactData,
+  encodePortableArtifactData,
   parsePortablePackageFile,
   portablePackageJsonChunks,
-  portableBase64ByteLength,
+  portableArtifactByteLength,
   portableImportPayloadHash,
   withAgentImportAdmission,
 } from "../agent-package-codec.js";
@@ -293,6 +294,12 @@ export function registerAgentPackageRoutes(
   const ownedUploads=new WeakSet<StagedImportUpload>();
   const pendingUploads=new WeakMap<IncomingMessage,StagedImportUpload>();
   const completedUploadRequests=new WeakSet<IncomingMessage>();
+  // Owned package processing can legitimately exceed the server's 10-second
+  // idle socket timeout before response headers. Body intake remains covered
+  // by the server request deadline, byte quotas and owned-upload lifecycle.
+  const packageOperation = async (_request: FastifyRequest, reply: FastifyReply) => {
+    if (typeof reply.raw.socket?.setTimeout === "function") reply.raw.socket.setTimeout(0);
+  };
   const maximumImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 1;
   const maximumJsonImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 12;
   const maximumStagedImportBytes = AGENT_PACKAGE_STAGING_MAX_BYTES;
@@ -781,6 +788,14 @@ export function registerAgentPackageRoutes(
     const chat = store.getConversation(root.conversationId);
     const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
     let portableArtifactBytes = 0;
+    let retainedArtifactWireBytes = 0;
+    const admitArtifact = (artifact: import('@ponderosa/core').PortableArtifactDto) => {
+      retainedArtifactWireBytes += agentPackageJsonUtf8Bytes(artifact);
+      if (retainedArtifactWireBytes + retainedHistoryBytes > AGENT_PACKAGE_MAX_BYTES) {
+        throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} of serialized UTF-8 bytes; complete originals were not omitted`);
+      }
+      return artifact;
+    };
     const canonicalCommunications = mode === "template"
       ? []
       : store.readCommunicationEvents(root.projectId);
@@ -847,7 +862,8 @@ export function registerAgentPackageRoutes(
       : store.getProjectArtifacts(root.projectId);
     const artifactOwner = new Map<string, string>();
     if (mode !== "template") {
-      for (const artifact of projectArtifacts) {
+      for (const [artifactIndex, artifact] of projectArtifacts.entries()) {
+        if (artifactIndex % 128 === 0) await yieldToLoop();
         if (artifact.origin?.kind === "operator") continue;
         if (artifact.originAgentId && included.has(artifact.originAgentId)) {
           artifactOwner.set(artifact.id, artifact.originAgentId);
@@ -897,7 +913,7 @@ export function registerAgentPackageRoutes(
           if (!data) {
             throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
           }
-          artifacts.push({
+          artifacts.push(admitArtifact({
             ref: artifact.id,
             kind: artifact.kind,
             path: artifact.path,
@@ -907,8 +923,8 @@ export function registerAgentPackageRoutes(
             ...(artifact.visibility ? { visibility: artifact.visibility } : {}),
             ...(artifact.pinned !== undefined ? { pinned: artifact.pinned } : {}),
             ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
-            dataBase64: await encodePortableArtifact(data),
-          });
+            ...await encodePortableArtifactData(data),
+          }));
         }
       };
       for (const artifact of selectedArtifacts) {
@@ -951,7 +967,7 @@ export function registerAgentPackageRoutes(
         }
         reservedArtifactBytes += identity.size;
         pendingArtifacts.push({ artifact, identity });
-        if (pendingArtifacts.length >= 128) await flushArtifacts();
+        if (pendingArtifacts.length >= 128 || pendingArtifacts.reduce((bytes, entry) => bytes + entry.identity.size, 0) >= 16 * 1024 * 1024) await flushArtifacts();
       }
       await flushArtifacts();
       if(mode === "full") {
@@ -969,15 +985,15 @@ export function registerAgentPackageRoutes(
               reservedArtifactBytes+=content.body.length;
               if(reservedArtifactBytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw new AssetError(413,'Portable attachment originals exceed the artifact byte limit');
               ref=randomUUID();originals.set(key,ref);
-              artifacts.push({ref,kind:'document',path:attachment.name,summary:attachment.name,mediaType:attachment.mediaType,createdAt:attachment.createdAt??message.createdAt??new Date().toISOString(),dataBase64:await encodePortableArtifact(content.body)});
+              artifacts.push(admitArtifact({ref,kind:'document',path:attachment.name,summary:attachment.name,mediaType:attachment.mediaType,createdAt:attachment.createdAt??message.createdAt??new Date().toISOString(),...await encodePortableArtifactData(content.body)}));
             }
             message.attachmentRefs.push(ref);
           }
         }
       }
       if(mode === "full") {
-        const archive=executionArchive(store,agent.id,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes);
-        if(archive){reservedArtifactBytes+=portableBase64ByteLength(archive.dataBase64);artifacts.push(archive);}
+        const archives=await executionArchives(store,agent.id,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes);
+        for(const archive of archives){reservedArtifactBytes+=portableArtifactByteLength(archive);artifacts.push(admitArtifact(archive));}
       }
       const sourceRoot=path.resolve(agent.workingCopy.rootPath);
       await verifySelectedRoots();
@@ -1012,7 +1028,7 @@ export function registerAgentPackageRoutes(
       const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
       const workingFiles=(organizationWorkingFolders?firstRoot:agent.id===root.id)&&(selectedPaths.length||folderInventory)
         ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?rootReviewedSelection:undefined,retainedOriginal,gitCapture):undefined;
-      if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');artifacts.push(...workingFiles.artifacts);reservedArtifactBytes+=workingFiles.bytes;}
+      if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');for(const artifact of workingFiles.artifacts)artifacts.push(admitArtifact(artifact));reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance
         ?? importedHistories.get(agent.id)?.initialInstructions;
@@ -1191,7 +1207,7 @@ export function registerAgentPackageRoutes(
       reviewedUserData?:string;
       gitStorageBindings?:string;
     };
-  }>("/api/agents/:id/export", async (request, reply) => withAgentImportAdmission(async () => {
+  }>("/api/agents/:id/export", { onRequest: packageOperation }, async (request, reply) => withAgentImportAdmission(async () => {
     const requestedMode: AgentExportMode = ["template", "context", "full"]
       .includes(request.query.mode ?? "")
       ? request.query.mode!
@@ -1470,6 +1486,7 @@ export function registerAgentPackageRoutes(
       const artifactRefMap = new Map<string, string>();
       try {
         const validated = validatePortableAgentPackage(body?.package);
+        assertAgentPackageMemoryAvailable(validated.totalArtifactBytes);
         portablePackage = validated.package;
         importSourceLabel = portablePackage.sourceLabel.slice(0,240);
         const sourceChatRefs=new Set(portablePackage.agents.flatMap(node=>node.sourceChat?[node.sourceChat.ref]:[]));
@@ -1562,7 +1579,9 @@ export function registerAgentPackageRoutes(
               abandonMutationFreeOperation(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`);
               return reply.code(413).send({ error: `portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}` });
             }
-            const { data, sha256 } = await decodePortableArtifact(artifact.dataBase64);
+            signal?.throwIfAborted();
+            const { data, sha256 } = await decodePortableArtifactData(artifact);
+            signal?.throwIfAborted();
             if(artifact.mediaType===EXECUTION_ARCHIVE_MEDIA_TYPE)validateExecutionArchive(data);
             artifactBytes += data.length;
             if (artifactBytes > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
@@ -2248,7 +2267,7 @@ export function registerAgentPackageRoutes(
     scope.addContentTypeParser("application/json", stagedImportParser(true));
     scope.post<{ Params: { id: string }; Headers: { "idempotency-key"?: string }; Body: StagedImportUpload }>(
       "/api/projects/:id/import-agents",
-      { bodyLimit: maximumJsonImportBytes, preHandler: claimUpload },
+      { bodyLimit: maximumJsonImportBytes, preHandler: claimUpload, onRequest: packageOperation },
       (request, reply) => importStagedPackage(request, reply, true),
     );
   });
@@ -2423,7 +2442,7 @@ export function registerAgentPackageRoutes(
       return finalized;
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
-  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-access-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload},async(request,reply)=>{
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-access-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation},async(request,reply)=>{
     try{
       if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
       const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
@@ -2434,7 +2453,7 @@ export function registerAgentPackageRoutes(
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
     finally{await cleanupUpload(request.body);}
   });
-  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-role-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload},async(request,reply)=>{
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-role-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation},async(request,reply)=>{
     try{
       if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
       const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
@@ -2453,7 +2472,7 @@ export function registerAgentPackageRoutes(
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/agent-import-operations",
-    { bodyLimit: maximumImportBytes,preHandler:claimUpload },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation },
     async (request, reply) => withProjectImportLock(request.params.id, async () => {
       const staged = request.body;
       let transferredReservation = false;
@@ -2586,7 +2605,7 @@ export function registerAgentPackageRoutes(
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/import-agent-package",
-    { bodyLimit: maximumImportBytes,preHandler:claimUpload },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload,onRequest:packageOperation },
     (request, reply) => importStagedPackage(request, reply),
   );
 
@@ -2596,7 +2615,7 @@ export function registerAgentPackageRoutes(
     Body: CopyAgentPackageRequest;
   }>(
     "/api/projects/:id/copy-agent",
-    { bodyLimit: 64 * 1024 },
+    { bodyLimit: 64 * 1024, onRequest: packageOperation },
     async (request, reply) => withAgentImportAdmission(async () => {
       await operationHydration;
       const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);

@@ -39,3 +39,16 @@ test('Shared composition preserves identical topology and rejects conflicting al
   inputs[1].package.agents[0].workingFolder.links[1].target='different';
   await assert.rejects(composeAgentPackages(inputs),/Conflicting captured Shared link topology/);
 });
+
+
+test('Shared composition compares exact originals across compressed and plain encodings',async()=>{
+ const {encodePortableArtifactData,decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+ const body='雪🌲 original working bytes'.repeat(10000),plain=definition('a',body),compressed=definition('b',body);
+ Object.assign(compressed.agents[0].artifacts[0],await encodePortableArtifactData(Buffer.from(body)));
+ assert.equal(compressed.agents[0].artifacts[0].dataEncoding,'gzip');
+ const result=await composeAgentPackages([{ref:'first',package:plain},{ref:'second',package:compressed}]);
+ const owner=result.package.agents.find(node=>node.workingFiles?.length);
+ assert.equal(result.package.agents.flatMap(node=>node.workingFiles??[]).length,1);
+ const original=owner.artifacts.find(artifact=>artifact.ref===owner.workingFiles[0].artifactRef);
+ assert.deepEqual((await decodePortableArtifactData(original)).data,Buffer.from(body));
+});

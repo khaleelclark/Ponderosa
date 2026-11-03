@@ -3,7 +3,7 @@ import type {AgentPortablePackageDto,PortableAgentNodeDto,PortableArtifactDto,Po
 import {stableJson} from '@ponderosa/agents';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 import {rewritePortableArtifactReferences} from './artifact-refs.js';
-import {decodePortableArtifact} from './agent-package-codec.js';
+import {decodePortableArtifactData} from './agent-package-codec.js';
 
 export interface AgentPackageCompositionInput {ref:string;managerRef?:string;package:AgentPortablePackageDto}
 export interface AgentPackageComposition {
@@ -101,7 +101,7 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
     }
     for(const file of node.workingFiles??[]){
       const artifact=node.artifacts!.find(candidate=>candidate.ref===file.artifactRef)!;
-      const {sha256}=await decodePortableArtifact(artifact.dataBase64);
+      const {sha256}=await decodePortableArtifactData(artifact);
       const prior=group.files.get(file.path);
       if(prior){if(prior.sha256!==sha256||prior.file.mode!==file.mode||prior.file.mtime!==file.mtime)throw new Error('Conflicting Shared working originals; re-export a coherent snapshot');continue;}
       let merged={...file};

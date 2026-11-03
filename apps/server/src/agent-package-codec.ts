@@ -1,10 +1,11 @@
+import { gzip, gunzip } from "node:zlib";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { freemem } from "node:os";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import {
   AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL, agentPackageJsonPieces,
-  type AgentPortablePackageDto, type ImportAgentPackageRequest,
+  type AgentPortablePackageDto, type ImportAgentPackageRequest, type PortableArtifactDto,
 } from "@ponderosa/core";
 import { MANAGED_ARTIFACT_MAX_BYTES } from "@ponderosa/agents";
 import { stableJsonParts } from "@ponderosa/agents/canonical-json";
@@ -12,8 +13,8 @@ import { stableJsonParts } from "@ponderosa/agents/canonical-json";
 const CODEC_TIMEOUT_MS = 60_000;
 // The JSON source and parsed UTF-16 strings can coexist. A single bounded
 // parser, measured at the supported ceiling, needs more than the old 192 MiB.
-export const AGENT_PACKAGE_CODEC_HEAP_MIB = 1536;
-const CODEC_ADMISSION_BYTES = 3 * 1024 * 1024 * 1024;
+export const AGENT_PACKAGE_CODEC_HEAP_MIB = 3072;
+const CODEC_ADMISSION_BYTES = 6 * 1024 * 1024 * 1024;
 let importTail: Promise<void> = Promise.resolve();
 let codecTail: Promise<void> = Promise.resolve();
 async function admission<T>(kind: "import" | "codec", work: () => Promise<T>): Promise<T> {
@@ -57,6 +58,22 @@ export interface PackageCodecOptions {
   jsonEnvelope?: boolean;
   onMemory?: (memory: NodeJS.MemoryUsage) => void;
 }
+/** The serialized parser and all retained decoded originals must fit together.
+ * Keep ordinary package imports serialized and refuse before allocating/writing. */
+export function assertAgentPackageMemoryAvailable(decodedBytes = 0): void {
+  const required = CODEC_ADMISSION_BYTES + 2 * decodedBytes;
+  // Also respect a constrained/cgroup process memory allowance where Node
+  // exposes it. Never remove the worker cap to make a large upload succeed.
+  const constrained = process.constrainedMemory();
+  const processAvailable = process.availableMemory();
+  // Node 24 reports usable memory, including reclaimable pages, within cgroups.
+  const available = Math.min(processAvailable, constrained || Infinity);
+  if (!Number.isFinite(processAvailable) || !Number.isFinite(constrained) || constrained < 0
+    || !Number.isFinite(available) || available < required) {
+    throw Object.assign(new Error(`Agent package processing needs ${(required / (1024 ** 3)).toFixed(2)} GiB of available memory for its complete decoded originals; retry when capacity is available`), { statusCode: 503 });
+  }
+}
+
 export async function parsePortablePackageFile(pathname: string, options: PackageCodecOptions = {}): Promise<{
   metadata: Omit<ImportAgentPackageRequest, "package">;
   portable: AgentPortablePackageDto;
@@ -64,17 +81,7 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
 }> {
   return admission("codec", async () => {
     options.signal?.throwIfAborted();
-    // Also respect a constrained/cgroup process memory allowance where Node
-    // exposes it. Never remove the worker cap to make a large upload succeed.
-    const constrained = process.constrainedMemory();
-    const processAvailable = process.availableMemory();
-    // macOS available memory includes reclaimable pages excluded by freemem().
-    const available = Math.min(processAvailable, constrained || Infinity,
-      process.platform === "darwin" ? Infinity : freemem());
-    if (!Number.isFinite(processAvailable) || !Number.isFinite(constrained) || constrained < 0
-      || !Number.isFinite(available) || available < CODEC_ADMISSION_BYTES) {
-      throw new Error("Agent package processing needs 3 GiB of available memory; retry when capacity is available");
-    }
+    assertAgentPackageMemoryAvailable();
     return new Promise((resolve, reject) => {
       const worker = new Worker(import.meta.url.endsWith(".ts")
         ? new URL("../dist/agent-package-codec-worker.js", import.meta.url)
@@ -197,4 +204,45 @@ export async function* portablePackageJsonChunks(portable: AgentPortablePackageD
     }
   }
   if (batch.length) yield batch.join("");
+}
+
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
+type ArtifactData = Pick<PortableArtifactDto, "dataBase64" | "dataEncoding" | "decodedSize">;
+/** Previews charge the declared original size; import verifies it before mutation. */
+export function portableArtifactByteLength(artifact: ArtifactData): number {
+  const encodedBytes = portableBase64ByteLength(artifact.dataBase64);
+  if (artifact.dataEncoding === undefined) {
+    if (artifact.decodedSize !== undefined) throw new Error("Unencoded artifact cannot declare a decoded size");
+    return encodedBytes;
+  }
+  if (artifact.dataEncoding !== "gzip" || !Number.isSafeInteger(artifact.decodedSize)
+      || artifact.decodedSize! < 0 || artifact.decodedSize! > MANAGED_ARTIFACT_MAX_BYTES) {
+    throw new Error("Invalid portable artifact encoding or decoded size (64 MiB per file)");
+  }
+  return artifact.decodedSize!;
+}
+export async function encodePortableArtifactData(source: Buffer): Promise<ArtifactData> {
+  if (source.length > MANAGED_ARTIFACT_MAX_BYTES) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
+  // Small originals keep their established representation. Compression is only
+  // a wire/storage optimization and never changes metadata, refs or content.
+  if (source.length >= 64 * 1024) {
+    const compressed = await gzipAsync(source);
+    if (compressed.length < source.length) return {
+      dataBase64: await encodePortableArtifact(compressed), dataEncoding: "gzip", decodedSize: source.length,
+    };
+  }
+  return { dataBase64: await encodePortableArtifact(source) };
+}
+export async function decodePortableArtifactData(artifact: ArtifactData): Promise<{ data: Buffer; sha256: string }> {
+  const expected = portableArtifactByteLength(artifact);
+  const decoded = await decodePortableArtifact(artifact.dataBase64);
+  if (!artifact.dataEncoding) return decoded;
+  let data: Buffer;
+  try {
+    // Bounds apply to the actual output, including concatenated gzip members.
+    data = await gunzipAsync(decoded.data, { maxOutputLength: Math.max(1, expected) });
+  } catch { throw new Error("Portable artifact gzip is corrupt or exceeds its declared decoded size"); }
+  if (data.length !== expected) throw new Error("Portable artifact decoded size does not match its original");
+  return { data, sha256: createHash("sha256").update(data).digest("hex") };
 }

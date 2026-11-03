@@ -9,7 +9,7 @@ import {normalizeAgentRole,AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,ag
 import {CANONICAL_ARTIFACT_ID,portableAgentTopologyError} from './artifact-refs.js';
 import {exactObjectFields,validatedObject} from './object-validation.js';
 import {validatePortableGitStorageBindings,parseReviewedUserData,gitBindingSourceEvidence} from './portable-reviewed-user-data.js';
-import {portableBase64ByteLength} from './agent-package-codec.js';
+import {portableArtifactByteLength} from './agent-package-codec.js';
 
 
 export interface ValidatedPortableAgentPackage {
@@ -88,10 +88,10 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
     if(node.artifacts!==undefined&&!Array.isArray(node.artifacts))throw new Error('Agent artifacts must be an array');
     for(const artifactCandidate of (node.artifacts as unknown[]|undefined)??[]){
       const artifact=validatedObject(artifactCandidate,'portable artifact');
-      exactObjectFields(artifact,['ref','kind','path','summary','createdAt','mediaType','visibility','pinned','sourcePath','dataBase64'],'portable artifact');
+      exactObjectFields(artifact,['ref','kind','path','summary','createdAt','mediaType','visibility','pinned','sourcePath','dataBase64','dataEncoding','decodedSize'],'portable artifact');
       if(typeof artifact.ref!=='string'||!CANONICAL_ARTIFACT_ID.test(artifact.ref)||artifactRefs.has(artifact.ref))throw new Error('artifact refs must be unique canonical identifiers');
       if(!['diff','test_report','pr_summary','log','document','screenshot','generated_file'].includes(String(artifact.kind))||typeof artifact.path!=='string'||!artifact.path||typeof artifact.createdAt!=='string'||!Number.isFinite(Date.parse(artifact.createdAt))||typeof artifact.dataBase64!=='string'||(artifact.summary!==undefined&&typeof artifact.summary!=='string')||(artifact.mediaType!==undefined&&typeof artifact.mediaType!=='string')||(artifact.visibility!==undefined&&artifact.visibility!=='project'&&artifact.visibility!=='published')||(artifact.pinned!==undefined&&typeof artifact.pinned!=='boolean')||(artifact.sourcePath!==undefined&&typeof artifact.sourcePath!=='string'))throw new Error(`artifact ${String(artifact.ref)} has an invalid shape`);
-      const bytes=portableBase64ByteLength(artifact.dataBase64);totalArtifactBytes+=bytes;if(totalArtifactBytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw Object.assign(new Error(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`),{statusCode:413});
+      const bytes=portableArtifactByteLength(artifact as unknown as PortableArtifactDto);totalArtifactBytes+=bytes;if(totalArtifactBytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw Object.assign(new Error(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`),{statusCode:413});
       const typed=artifactCandidate as PortableArtifactDto;artifactRefs.add(artifact.ref);artifactBytes.set(typed,bytes);
     }
   }

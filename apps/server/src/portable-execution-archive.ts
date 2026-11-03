@@ -1,40 +1,54 @@
+import {encodePortableArtifactData} from "./agent-package-codec.js";
+import {setImmediate as yieldToLoop} from "node:timers/promises";
 import {withoutPortableSecrets,assertPortableSecretsAbsent,PORTABLE_SECRET_MAX_BYTES} from './portable-secrets.js';
 import {randomUUID} from 'node:crypto';
 import type {AgentStore} from '@ponderosa/agents';
 import type {PortableArtifactDto} from '@ponderosa/core';
-import {AGENT_PACKAGE_ARTIFACT_MAX_BYTES,agentPackageTextIsWellFormed} from '@ponderosa/core';
+import {AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed} from '@ponderosa/core';
 import {exactObjectFields,validatedObject} from './object-validation.js';
 
 export const EXECUTION_ARCHIVE_MEDIA_TYPE = 'application/vnd.ponderosa.execution-archive+json';
 const SCHEMA = 'ponderosa.execution-archive.v1';
 /** Historical evidence only; imports publish these bytes as an ordinary log artifact. */
-export function executionArchive(store:AgentStore,agentId:string,maxBytes:number):PortableArtifactDto|undefined {
+// Each part remains an ordinary, independently validated managed file. Parts
+// preserve original sequence numbers and provenance; no history is summarized.
+export async function executionArchives(store:AgentStore,agentId:string,maxBytes:number):Promise<PortableArtifactDto[]> {
   const agent=store.getAgent(agentId);if(!agent)throw new Error('Execution archive Agent is unavailable');
-  const budget=Math.min(maxBytes,PORTABLE_SECRET_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_MAX_BYTES);
-  const events:unknown[]=[];let bytes=0,seq=0;
+  const budget=Math.min(maxBytes,AGENT_PACKAGE_ARTIFACT_MAX_BYTES);
+  const parts:PortableArtifactDto[]=[];
+  let events:unknown[]=[],runs:unknown[]=[],partBytes=0,totalBytes=0,wireBytes=0,seq=0;
+  const flush=async()=>{
+    if(!events.length&&!runs.length)return;
+    const data=Buffer.from(JSON.stringify({schema:SCHEMA,sourceAgentId:agentId,sourceProjectId:agent.projectId,events,runs}));
+    totalBytes+=data.length;
+    if(totalBytes>budget)throw Object.assign(new Error('Execution archive exceeds the portable artifact byte limit'),{statusCode:413});
+    validateExecutionArchive(data);
+    const artifact:PortableArtifactDto={ref:randomUUID(),kind:'log',path:parts.length?`execution-history-${parts.length+1}.json`:'execution-history.json',summary:'Imported execution evidence (historical; never scheduled)',createdAt:new Date().toISOString(),mediaType:EXECUTION_ARCHIVE_MEDIA_TYPE,...await encodePortableArtifactData(data)};
+    wireBytes+=agentPackageJsonUtf8Bytes(artifact);
+    if(wireBytes>AGENT_PACKAGE_MAX_BYTES)throw Object.assign(new Error('Execution archive exceeds the serialized package byte limit; no events were omitted'),{statusCode:413});
+    parts.push(artifact);
+    events=[];runs=[];partBytes=0;
+    await yieldToLoop();
+  };
+  const add=async(row:unknown,kind:'event'|'run')=>{
+    const retained=withoutPortableSecrets(row);
+    const bytes=Buffer.byteLength(JSON.stringify(retained))+1;
+    if(totalBytes+partBytes+bytes>budget)throw Object.assign(new Error('Execution archive exceeds the portable artifact byte limit'),{statusCode:413});
+    // Leave inspection headroom for nested/encoded diagnostics. Individual
+    // rows still use the existing 64 MiB structured-data admission unchanged.
+    if(partBytes+bytes>8*1024*1024)await flush();
+    (kind==='event'?events:runs).push(retained);partBytes+=bytes;
+  };
   for(;;){
     const batch=store.readEventsSince(agentId,seq,256);
-    for(const row of batch){
-      const retained=withoutPortableSecrets(row,budget-bytes);bytes+=Buffer.byteLength(JSON.stringify(retained));
-      if(bytes>budget)throw Object.assign(new Error('Execution archive exceeds the portable artifact byte limit'),{statusCode:413});
-      events.push(retained);seq=row.seq;
-    }
+    for(const row of batch){await add(row,'event');seq=row.seq;}
     if(batch.length<256)break;
   }
-  // Deliberately select historical facts, never leases, fences, prompts,
-  // capability tokens, provider profiles, activations or operational outboxes.
-  const runs:unknown[]=[];
+  // Retain historical facts, never live leases/fences/prompts or outboxes.
   for(const row of store.sqlite.prepare(`SELECT id,status,created_at,started_at,terminal_at
-    FROM scheduler_runs WHERE agent_id=? ORDER BY created_at,id`).iterate(agentId)){
-    bytes+=Buffer.byteLength(JSON.stringify(row));
-    if(bytes>budget)throw Object.assign(new Error('Execution archive exceeds the portable artifact byte limit'),{statusCode:413});
-    runs.push(row);
-  }
-  if(!events.length&&!runs.length)return undefined;
-  const data=Buffer.from(JSON.stringify({schema:SCHEMA,sourceAgentId:agentId,sourceProjectId:agent.projectId,events,runs}));
-  if(data.length>budget)throw Object.assign(new Error('Execution archive exceeds the portable artifact byte limit'),{statusCode:413});
-  validateExecutionArchive(data);
-  return {ref:randomUUID(),kind:'log',path:'execution-history.json',summary:'Imported execution evidence (historical; never scheduled)',createdAt:new Date().toISOString(),mediaType:EXECUTION_ARCHIVE_MEDIA_TYPE,dataBase64:data.toString('base64')};
+    FROM scheduler_runs WHERE agent_id=? ORDER BY created_at,id`).iterate(agentId))await add(row,'run');
+  await flush();
+  return parts;
 }
 
 /** Validate the versioned envelope before any destination Agent/files are created. */

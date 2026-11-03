@@ -1,5 +1,5 @@
 import type { PortableAgentPreview } from "./agent-package-preview.types";
-import { agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
+import { AgentPackageJsonParser, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 interface PreviewRequest {
   id: number;
   blob: Blob;
@@ -22,9 +22,18 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
   try {
     if (blob.size > AGENT_PACKAGE_MAX_BYTES) throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
     worker.postMessage({ id, phase: "Reading import" });
-    const source = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer());
+    const parser = new AgentPackageJsonParser(), decoder = new TextDecoder("utf-8", { fatal: true });
+    const reader = blob.stream().getReader();
+    try {
+      for (;;) {
+        const chunk = await reader.read(); if (chunk.done) break;
+        parser.write(decoder.decode(chunk.value, { stream: true }));
+      }
+      parser.write(decoder.decode());
+    } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+    finally { reader.releaseLock(); }
     worker.postMessage({ id, phase: "Validating" });
-    const value = JSON.parse(source) as Record<string, unknown>;
+    const value = parser.end() as Record<string, unknown>;
     if (
       value?.schema !== "ponderosa.agent-package.v1"
       || (value.mode !== "template" && value.mode !== "full")

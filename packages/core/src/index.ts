@@ -46,3 +46,4 @@ export * from "./native-history.js";
 export * from "./native-tasks.js";
 
 export * from "./portable-reviewed-user-data.js";
+export { AgentPackageJsonParser } from "./agent-package-json-parser.js";

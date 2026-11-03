@@ -3,7 +3,7 @@ import test from 'node:test';
 import {mkdtemp,writeFile,readFile,symlink,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {createHash} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
 import {portableWorkingPath,exportWorkingFiles,importWorkingFiles,validateWorkingFileData} from '../../apps/server/dist/portable-working-files.js';
 
 test('selected originals refuse path escapes and known credential fields without mutating files',async()=>{
@@ -105,4 +105,15 @@ test('topology refuses missing originals, escaping chains, native targets and pa
     await assert.rejects(inventoryWorkingFolder(path.join(root,'selected')),/aliases outside/);
     assert.equal(await readFile(path.join(root,'outside'),'utf8'),'retained');
   }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('incompressible selected originals refuse the wire budget whole and leave source files exact',{timeout:120000},async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'portable-wire-bound-'));
+ try{
+  const original=randomBytes(64*1024*1024),paths=Array.from({length:25},(_,i)=>`original-${i}.bin`);
+  for(const name of paths)await writeFile(path.join(root,name),original);
+  await assert.rejects(exportWorkingFiles(root,paths,2048*1024*1024),error=>error.statusCode===413&&/serialized package byte limit.*no originals were omitted/.test(error.message));
+  for(const name of paths)assert.equal(createHash('sha256').update(await readFile(path.join(root,name))).digest('hex'),createHash('sha256').update(original).digest('hex'));
+ }finally{await rm(root,{recursive:true,force:true});}
 });

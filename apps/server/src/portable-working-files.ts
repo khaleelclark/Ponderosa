@@ -1,3 +1,5 @@
+import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core";
+import {encodePortableArtifactData} from "./agent-package-codec.js";
 import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
@@ -89,7 +91,7 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     else {const target=await fs.lstat(path.join(root,link.target),{bigint:true});if(!stat.isFile()||stat.dev!==target.dev||stat.ino!==target.ino)throw new Error('Working hardlink changed during export');}
   }};
   await verifyLinks();
-  let bytes=0;
+  let bytes=0,wireBytes=0;
   if(selected.length>10000||new Set(selected).size!==selected.length)throw new Error('Select at most 10000 distinct working files');
   for(const item of selected){
     const relative=portableWorkingPath(item),parts=relative.split('/');
@@ -111,7 +113,10 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     for(const link of links.filter(link=>link.kind==='hardlink'&&link.target===relative))validateWorkingFileData(link.path,data);
     bytes+=data.length;if(bytes>maxBytes)throw new Error('Selected working files exceed the portable artifact limit');
     const ref=randomUUID();files.push({path:relative,artifactRef:ref,mode:mode!,mtime:mtime!});
-    artifacts.push({ref,kind:'document',path:relative,summary:relative,createdAt:new Date().toISOString(),mediaType:'application/octet-stream',dataBase64:data.toString('base64')});
+    const artifact:PortableArtifactDto={ref,kind:'document',path:relative,summary:relative,createdAt:new Date().toISOString(),mediaType:'application/octet-stream',...await encodePortableArtifactData(data)};
+    wireBytes+=agentPackageJsonUtf8Bytes(artifact);
+    if(wireBytes>AGENT_PACKAGE_MAX_BYTES)throw Object.assign(new Error('Selected working files exceed the serialized package byte limit; no originals were omitted'),{statusCode:413});
+    artifacts.push(artifact);
   }
   await verifyLinks();
   if(reviewedSelection){

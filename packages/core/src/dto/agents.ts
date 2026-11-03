@@ -135,6 +135,9 @@ export interface PortableArtifactDto {
   pinned?: boolean;
   sourcePath?: string;
   dataBase64: string;
+  /** Lossless wire encoding; managed storage always receives the original bytes. */
+  dataEncoding?: "gzip";
+  decodedSize?: number;
 }
 /** Passive topology inside one selected root; never imports an external/native owner. */
 export interface PortableWorkingLinkDto {path:string;kind:'symlink'|'hardlink';target:string;mtime?:string}

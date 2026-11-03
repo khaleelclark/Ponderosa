@@ -64,6 +64,8 @@ interface PortableAgent {
     visibility?: "project" | "published";
     pinned?: boolean;
     dataBase64: string;
+    dataEncoding?: unknown;
+    decodedSize?: unknown;
   }>;
 }
 interface ContentProject extends BackupProject {
@@ -213,6 +215,7 @@ class Source {
       requireValue(pack.schema === "ponderosa.agent-package.v1" && pack.mode === "full", "full native history package required");
       for (const agent of pack.agents) {
         requireValue(!this.portable.has(agent.ref), "duplicate exported Agent identity");
+        requireValue((agent.artifacts ?? []).every(artifact => artifact.dataEncoding === undefined && artifact.decodedSize === undefined), 'compressed Agent packages require the supported Agent package importer, not historical normalization');
         this.portable.set(agent.ref, agent);
       }
     }

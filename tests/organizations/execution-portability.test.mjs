@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
-import {AgentStore,CoordinationV3Store,BranchStore,readManagedArtifactContent} from '@ponderosa/agents';
+import {AgentStore,CoordinationV3Store,BranchStore,readManagedArtifactContent,publishManagedArtifactContentAsync} from '@ponderosa/agents';
 import {AssetStore} from '../../apps/server/dist/assets.js';
 import {registerAgentPackageRoutes} from '../../apps/server/dist/routes/agent-packages.js';
 import {withoutPortableSecrets,assertPortableSecretsAbsent} from '../../apps/server/dist/portable-secrets.js';
-import {EXECUTION_ARCHIVE_MEDIA_TYPE,validateExecutionArchive,executionArchive} from '../../apps/server/dist/portable-execution-archive.js';
+import {EXECUTION_ARCHIVE_MEDIA_TYPE,validateExecutionArchive,executionArchives} from '../../apps/server/dist/portable-execution-archive.js';
 
-async function instance(t,branch=false){
+async function instance(t,branch=false,connectionTimeout=0){
  const dataDir=await mkdtemp(path.join(tmpdir(),'execution-portability-'));let store,assets,app,engine;
  const open=async()=>{
-  store=new AgentStore(dataDir);assets=new AssetStore(dataDir);app=Fastify();
+  store=new AgentStore(dataDir);assets=new AssetStore(dataDir);app=Fastify({connectionTimeout});
   const coordination=new CoordinationV3Store(store.sqlite);
   engine=registerAgentPackageRoutes(app,{dataDir,store,coordination,assets,engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>store.getProjectedAgentMessages(id),createOperationalNotification(){}}).packageEngine;
   await app.ready();
@@ -73,7 +73,7 @@ test('execution archive schema errors refuse import before destination Agent cre
   assert.equal(destination.store.getProjectArtifacts(destination.project.id).length,0);
  }
  assert.throws(()=>validateExecutionArchive(Buffer.from([0xff])),/UTF-8 JSON/);
- assert.throws(()=>executionArchive(source.store,root.id,10),/byte limit/);
+ await assert.rejects(executionArchives(source.store,root.id,10),/byte limit/);
 });
 
 test('known provider fields and JSON string layers share export scrub and pre-mutation import rejection',async t=>{
@@ -107,7 +107,7 @@ test('archive inspection rejects excessive nesting and bytes loudly on export an
  assert.equal(destination.store.listAgents(destination.project.id).length,0);
  assert.equal(destination.store.getProjectArtifacts(destination.project.id).length,0);
  source.store.appendEvent(root.id,{type:'tool_call',id:'deep',name:'synthetic',input:JSON.stringify(nested)});
- assert.throws(()=>executionArchive(source.store,root.id,1_000_000),/nesting depth/);
+ await assert.rejects(executionArchives(source.store,root.id,1_000_000),/nesting depth/);
  assert.throws(()=>validateExecutionArchive(new Uint8Array(64*1024*1024+1)),error=>error.statusCode===413&&/byte limit/.test(error.message));
 });
 
@@ -130,4 +130,68 @@ test('shared metadata rejection allows historical SourceStamp fenceToken and rej
  for(const credential of [{env:{OPENAI_API_KEY:'SYNTHETIC_SECRET'}},JSON.stringify({env:{ANTHROPIC_API_KEY:'SYNTHETIC_SECRET'}}),JSON.stringify(JSON.stringify({api_key:'SYNTHETIC_SECRET'}))]){
   assert.throws(()=>assertPortableSecretsAbsent({...metadata,credential},'Memory metadata'),/Memory metadata cannot contain known credential fields/);
  }
+});
+
+
+test('execution archives over 64 MiB retain every row and provenance in bounded lossless parts',{timeout:120000},async()=>{
+ const {decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+ const rows=Array.from({length:70},(_,i)=>({seq:i+1,ts:'2026-11-02T00:00:00Z',event:{type:'tool_result',text:'雪🌲'.repeat(150000),safeIdentity:`original-${i}`,api_key:'EXCLUDED_TEST'}}));
+ const store={getAgent:()=>({projectId:'original-project'}),readEventsSince:(_id,seq,limit)=>rows.filter(row=>row.seq>seq).slice(0,limit),sqlite:{prepare:()=>({iterate:()=>[]})}};
+ const artifacts=await executionArchives(store,'original-agent',256*1024*1024);
+ assert.ok(artifacts.length>1);
+ const retained=[];
+ for(const artifact of artifacts){
+  assert.equal(artifact.dataEncoding,'gzip');
+  const {data}=await decodePortableArtifactData(artifact);validateExecutionArchive(data);
+  const part=JSON.parse(data);assert.equal(part.sourceAgentId,'original-agent');assert.equal(part.sourceProjectId,'original-project');
+  retained.push(...part.events);
+ }
+ assert.deepEqual(retained,rows.map(row=>withoutPortableSecrets(row)));
+ assert.equal(rows[0].event.api_key,'EXCLUDED_TEST','source rows are untouched');
+});
+
+test('full export, staged import and supported copy preserve artifacts beyond the former 128 MiB limit',{timeout:120000},async t=>{
+ const source=await instance(t,false,25),destination=await instance(t),{root}=seed(source);
+ const {decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+ const body=Buffer.alloc(44*1024*1024,0x65),sha256=createHash('sha256').update(body).digest('hex');
+ const ids=[];
+ for(let i=0;i<3;i++){
+  const id=randomUUID();ids.push(id);
+  await publishManagedArtifactContentAsync(source.dataDir,source.project.id,id,body);
+  source.store.recordProjectArtifact({id,projectId:source.project.id,agentId:root.id,originAgentId:root.id,kind:'document',path:`original-${i}.bin`,summary:'Exact large original',createdAt:'2026-11-02T00:00:00Z',size:body.length,sha256,mediaType:'application/octet-stream'});
+ }
+ const address=await source.app.listen({port:0,host:'127.0.0.1'}),started=Date.now();
+ const exported=await fetch(`${address}/api/agents/${root.id}/export?mode=full`);
+ assert.equal(exported.status,200);
+ const pkg=await exported.json();
+ assert.ok(Date.now()-started>25,'export lasts longer than the short fixture idle timeout without becoming a gateway error');
+ for(const artifact of pkg.agents[0].artifacts.filter(a=>ids.includes(a.ref))){
+  assert.equal(artifact.dataEncoding,'gzip');assert.equal((await decodePortableArtifactData(artifact)).sha256,sha256);
+ }
+ const metadata={conversationId:destination.project.lastConversationId,engineMapping:{codex:'codex'}};
+ const response=await destination.app.inject({method:'POST',url:`/api/projects/${destination.project.id}/import-agents`,headers:{'content-type':'application/json','idempotency-key':randomUUID()},payload:JSON.stringify({package:pkg,...metadata})});
+ assert.equal(response.statusCode,201,response.body);
+ const imported=response.json();
+ const originals=destination.store.getProjectArtifacts(destination.project.id).filter(a=>a.originAgentId===imported.rootAgentId&&a.mediaType==='application/octet-stream');
+ assert.equal(originals.length,3);
+ for(const artifact of originals){assert.equal(artifact.sha256,sha256);assert.deepEqual(readManagedArtifactContent(destination.dataDir,destination.project.id,artifact.id,artifact.size,artifact.sha256)?.body,body);}
+ const binary=await destination.app.inject({method:'POST',url:`/api/projects/${destination.project.id}/import-agent-package`,headers:{'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':randomUUID()},payload:Buffer.from(JSON.stringify(metadata)+'\n'+JSON.stringify(pkg))});
+ assert.equal(binary.statusCode,201,binary.body);
+ assert.equal(destination.store.getProjectArtifacts(destination.project.id).filter(a=>a.originAgentId===binary.json().rootAgentId&&a.sha256===sha256).length,3);
+ const cancelled=new AbortController();
+ const pending=destination.engine.importAgent(destination.project.id,destination.project.lastConversationId,pkg,{codex:'codex'},randomUUID(),{signal:cancelled.signal});
+ setTimeout(()=>cancelled.abort(Error('Owned import cancelled during decoding')),0);
+ const beforeCancel=destination.store.listAgents(destination.project.id).length;
+ await assert.rejects(pending,/Owned import cancelled/);
+ assert.equal(destination.store.listAgents(destination.project.id).length,beforeCancel);
+ const target=source.store.createProject({label:'Copy target',hostPath:source.dataDir,defaultEngine:'codex',chatOwned:true});
+ const copy=await source.app.inject({method:'POST',url:`/api/projects/${target.id}/copy-agent`,headers:{'idempotency-key':randomUUID()},payload:{sourceAgentId:root.id,conversationId:target.lastConversationId,mode:'full'}});
+ assert.equal(copy.statusCode,201,copy.body);
+ assert.equal(source.store.getProjectArtifacts(target.id).filter(a=>a.originAgentId===copy.json().rootAgentId&&a.sha256===sha256).length,3);
+ const before=destination.store.listAgents(destination.project.id).length;
+ pkg.agents[0].artifacts.find(a=>ids.includes(a.ref)).decodedSize--;
+ const failed=await destination.app.inject({method:'POST',url:`/api/projects/${destination.project.id}/import-agents`,headers:{'content-type':'application/json','idempotency-key':randomUUID()},payload:JSON.stringify({package:pkg,...metadata})});
+ assert.equal(failed.statusCode,400);assert.match(failed.body,/gzip|decoded size/);
+ assert.equal(destination.store.listAgents(destination.project.id).length,before);
+ assert.ok(source.store.getAgent(root.id));
 });

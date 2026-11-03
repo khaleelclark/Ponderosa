@@ -1,7 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "@ponderosa/native-host/fs";
-import { agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
+import { createReadStream, statSync } from "@ponderosa/native-host/fs";
+import { AgentPackageJsonParser, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 import type { PackageWireEntry } from "./agent-package-codec.js";
 import { stableJsonParts } from "@ponderosa/agents/canonical-json";
 import { exactObjectFields, validatedObject } from "./object-validation.js";
@@ -16,16 +16,26 @@ async function parse(): Promise<void> {
       (input.packageOnly ? 0 : AGENT_PACKAGE_METADATA_MAX_BYTES + (input.jsonEnvelope ? 12 : 1))) {
     throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
   }
-  let body: Buffer | undefined = readFileSync(input.pathname);
-  const separator = input.packageOnly || input.jsonEnvelope ? -1 : body.indexOf(0x0a);
-  if (!input.packageOnly && !input.jsonEnvelope && (separator < 1 || separator > AGENT_PACKAGE_METADATA_MAX_BYTES)) {
-    throw new Error("Agent package upload metadata is invalid");
+  const parser = new AgentPackageJsonParser(), decoder = new TextDecoder("utf-8", { fatal: true });
+  let metadata: Record<string, unknown> = {};
+  let header = Buffer.alloc(0), headerDone = input.packageOnly || input.jsonEnvelope, rawBytes = 0;
+  for await (const chunk of createReadStream(input.pathname, { highWaterMark: 256 * 1024 })) {
+    let raw = chunk as Buffer;
+    if (!headerDone) {
+      const newline = raw.indexOf(0x0a);
+      if (header.length + (newline < 0 ? raw.length : newline) > AGENT_PACKAGE_METADATA_MAX_BYTES) throw new Error("Agent package upload metadata is invalid");
+      if (newline < 0) { header = Buffer.concat([header, raw]); continue; }
+      header = Buffer.concat([header, raw.subarray(0, newline)]);
+      metadata = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(header));
+      raw = raw.subarray(newline + 1); headerDone = true;
+    }
+    rawBytes += raw.length;
+    if (rawBytes > AGENT_PACKAGE_MAX_BYTES + (input.jsonEnvelope ? AGENT_PACKAGE_METADATA_MAX_BYTES + 12 : 0)) throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
+    parser.write(decoder.decode(raw, { stream: true }));
   }
-  let raw: Buffer | undefined = body.subarray(separator + 1);
-  if (!input.jsonEnvelope && raw.length > AGENT_PACKAGE_MAX_BYTES) throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let metadata = input.packageOnly || input.jsonEnvelope ? {} : JSON.parse(decoder.decode(body.subarray(0, separator)));
-  let portable: unknown = JSON.parse(decoder.decode(raw));
+  if (!headerDone) throw new Error("Agent package upload metadata is invalid");
+  parser.write(decoder.decode());
+  let portable: unknown = parser.end();
   let canonicalPayloadHash: string | undefined;
   if (input.jsonEnvelope) {
     const envelope = validatedObject(portable, "Agent import request");
@@ -69,8 +79,6 @@ async function parse(): Promise<void> {
     }, { maxDepth: 64, maxNodes: AGENT_PACKAGE_MAX_BYTES })) hash.update(part);
     canonicalPayloadHash = hash.digest("hex");
   }
-  body = undefined;
-  raw = undefined;
   let batch: PackageWireEntry[] = [];
   let weight = 0;
   const flush = async () => {
