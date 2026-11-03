@@ -1005,7 +1005,7 @@ export class CodexAppServerSession implements RuntimeSession {
       if (input.inputFiles?.length) throw new Error("Native review does not accept typed attachments; submit them in a separate turn");
       if (this.activeTurnId) throw new Error("Native review requires an idle session");
       const turnId = await startCodexReview(this.rpc, this.engineAgentId, input.nativeAction);
-      this.activeTurnId = turnId;
+      this.activeTurnId = this.lastCompletedTurnId === turnId ? undefined : turnId;
       return { turnId };
     }
     const prompt = this.seedHistory.length > 0
@@ -1032,7 +1032,7 @@ export class CodexAppServerSession implements RuntimeSession {
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.nativeAction?.kind === "structured" ? { outputSchema: input.nativeAction.outputSchema } : {}),
     });
-    this.activeTurnId = response.turn.id;
+    this.activeTurnId = this.lastCompletedTurnId === response.turn.id ? undefined : response.turn.id;
     const acceptedModel = input.model?.trim() || this.activeModel;
     // A matching-thread model notification is more authoritative than RPC
     // success, including when it arrives before this continuation resumes.
@@ -1131,11 +1131,24 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private async *eventStream(): AsyncIterable<AgentEvent> {
+    // The transport may have observed completion before this queued reader advances.
+    let eventTurnId = this.activeTurnId;
     yield { type: "session", sessionId: this.engineAgentId };
     const responseText = new CodexResponseText(this.engineAgentId);
     for await (const notification of this.rpc.notifications) {
       if (this.nativeCommandNotifications.has(notification)) continue;
-      yield* codexNativeObservation(notification.method, notification.params, this.engineAgentId, this.activeTurnId);
+      const params = object(notification.params);
+      if (notification.method.startsWith("item/") || notification.method.startsWith("turn/")) {
+        if (params?.threadId !== this.engineAgentId) continue;
+        if (notification.method === "turn/started") {
+          const turn = object(params.turn);
+          if (typeof turn?.id !== "string" || !turn.id) throw new Error("Native turn start has no identity");
+          eventTurnId = turn.id;
+        } else if (notification.method === "turn/completed") {
+          if (object(params.turn)?.id !== eventTurnId || !eventTurnId) continue;
+        } else if (params.turnId !== eventTurnId || !eventTurnId) continue;
+      }
+      yield* codexNativeObservation(notification.method, notification.params, this.engineAgentId, eventTurnId);
       yield* responseText.map(notification.method, notification.params);
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { threadId?: unknown; turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
@@ -1149,7 +1162,7 @@ export class CodexAppServerSession implements RuntimeSession {
 
             // A resumed thread replays its prior cumulative total before the new
             // turn's events. That checkpoint is the durable interval baseline.
-            if (total && params.turnId !== this.activeTurnId) {
+            if (total && params.turnId !== eventTurnId) {
               this.baselineTotal = total;
               this.latestTotal = total;
             } else if (total) {
@@ -1172,7 +1185,7 @@ export class CodexAppServerSession implements RuntimeSession {
             // A resumed thread first replays old token checkpoints. Preserve
             // those for aggregate baselining/status, but only emit pressure
             // observations for the currently accepted provider turn.
-            if (requestUsage && this.latestContextUsage && params.turnId === this.activeTurnId) yield {
+            if (requestUsage && this.latestContextUsage && params.turnId === eventTurnId) yield {
               type: "context_usage",
               providerSessionId: this.engineAgentId,
               providerSessionGeneration: this.engineAgentId,
@@ -1187,7 +1200,7 @@ export class CodexAppServerSession implements RuntimeSession {
         continue;
       }
       const taskParams = object(notification.params), taskItem = object(taskParams?.item);
-      if (taskParams?.threadId === this.engineAgentId && taskParams.turnId === this.activeTurnId &&
+      if (taskParams?.threadId === this.engineAgentId && taskParams.turnId === eventTurnId &&
           ["item/started", "item/completed"].includes(notification.method) && taskItem?.type === "commandExecution" &&
           typeof taskItem.processId === "string" && taskItem.processId.length > 0) {
         if (typeof taskItem.id !== "string" || !taskItem.id || taskItem.id.length > 1024 || taskItem.processId.length > 1024 ||
@@ -1196,14 +1209,9 @@ export class CodexAppServerSession implements RuntimeSession {
         this.nativeTaskItems.set(taskItem.id,taskItem.processId);
         this.nativeTaskReceiptSeen = true;
       }
-      if (notification.method === "turn/started") {
-        const turn = (notification.params as { turn?: { id?: string } } | undefined)?.turn;
-        if (turn?.id) this.activeTurnId = turn.id;
-      }
       const completedTurnId = notification.method === "turn/completed"
         ? ((notification.params as { turn?: { id?: unknown } } | undefined)?.turn?.id)
         : undefined;
-      if (notification.method === "turn/completed") this.activeTurnId = undefined;
       const completedRequestUsage = typeof completedTurnId === "string"
         ? this.providerRequestUsageByTurnId.get(completedTurnId) ?? []
         : [];
@@ -1227,6 +1235,7 @@ export class CodexAppServerSession implements RuntimeSession {
         yield event;
       }
       if (typeof completedTurnId === "string") {
+        eventTurnId = undefined;
         this.usageByTurnId.delete(completedTurnId);
         this.providerRequestUsageByTurnId.delete(completedTurnId);
         this.usageCheckpointsByTurnId.delete(completedTurnId);

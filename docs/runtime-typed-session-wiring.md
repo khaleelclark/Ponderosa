@@ -17,3 +17,14 @@ An echo is stripped only when type user, isReplay true, current session, exact i
 ## Deferred qualification
 
 Physically source-read session wiring, framing helper, documentation and deferred fixture. Fixture covers fragmented large exact replay, Unicode, preservation of adjacent tool_result, unrelated/foreign/mismatched/repeated refusal and compact text-only construction. No tests/checks/builds/types/Node/provider/browser execution, preparation, install, push or deploy. Pinned/native echoed message-envelope compatibility, memory pressure at the 160 MiB maximum, fresh/resumed/steered whole flows, cancellation and real original/artifact access revocation still need combined execution. Source wiring is complete for these paths; installed compatibility, full modality parity and Phase 2 acceptance are not claimed.
+
+## Current input admission correction
+
+Claude validates the complete typed frame before consuming initial history or
+opening task lifetime. If a model control is needed, it rechecks the current Run
+and validates the frame again after the acknowledgement. Local validation failure
+keeps the initial history. Start and steer check current authority immediately
+before input; unsupported native actions refuse rather than become ordinary text.
+The scheduler's steering caller now supplies that callback with the exact original
+Run, session, prompt injection, lease, pause state and current attachment access.
+A failed or uncertain transport write is not permission to replay the source.

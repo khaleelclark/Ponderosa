@@ -157,13 +157,15 @@ human route session/fence checks. They were written, not run.
 
 ## Remaining and domain boundaries
 
-G1/G4 now have callable source implementations, not universal parity verdicts.
-Persistent per-Agent permission mode/launch settings, native hook registration and
-path-level filesystem escalation under an existing deny-only write policy are not introduced.
-M2 durable lost-ack/noIDs result lookup and M3 original uncertain effect
-reconciliation remain distinct work; no native source effects are inferred or
-replayed. G2 live-session paused goal controls and G3 individual-Agent human plan/review/schema actions are assembled, with active goal continuation and broader intake still open. G7 bounded console/recording tools/API/SDK are assembled; operator UI scope remains unresolved. G5 file rewind/fork, G6 modality and G8 pending native task lifetime remain pending assignment and unqualified. Native TaskOutput was removed upstream; inherited output-file
-Read is its domain disposition, not a request to resurrect a removed tool.
-Operator-native installation/login/TTY rendering remain documented domain
-boundaries, never an approved blanket exception to Bible #4. No whole-work done
-claim follows from this source implementation.
+G1/G4 have callable source implementations. Operator native launch settings and
+disk hooks remain with the native CLI; this host does not add a second settings
+or credential store. Unregistered SDK callbacks return an error rather than an
+invented response. Model/permission/interrupt controls retain their single reader.
+
+G2 paused goals and G3 canonical plan/review/schema intake are implemented. Active
+goal continuation still needs the provider's pre-start host-admission contract.
+G5 file rewind/fork, G6 typed input, G7 browser observations and G8 task lifetime
+and human stop controls are also present in source; their remaining limits are
+listed in [native reconciliation](native-harness-reconciliation.md). Native
+TaskOutput was removed upstream; inherited output-file Read remains its disposition.
+No source effects are inferred or replayed by these controls.

@@ -194,7 +194,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.child.stdin?.write(`${JSON.stringify({
       type: "control_request",
       request_id: this.modelInitializationRequestId,
-      request: { subtype: "initialize", hooks: { Stop: [{ hookCallbackIds: [this.taskLifetime.stopCallbackId] }] }, sdkMcpServers: [] },
+      request: { subtype: "initialize", hooks: { Stop: [{ hookCallbackIds: [this.taskLifetime.stopCallbackId] }] }, sdkMcpServers: [], perTaskStopAffordance: true },
     })}\n`);
     // One stdout reader serves both ordinary turns and idle native commands.
     // Backpressure bounds normal event buffering; native receipts never enter it.
@@ -224,25 +224,35 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
+    input.assertCurrent?.();
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude has active or uncertain native work");
     if (this.historyActive || this.fileHistory.uncertain) throw new Error("Native file history is active or uncertain");
     if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude native control is active or uncertain");
+    if (input.nativeAction) throw new Error("This native turn action is unsupported by Claude");
     if (input.effort && input.effort !== this.opts.effort) throw new Error("Claude effort change requires reopening the retained session");
-    if (input.model && input.model !== this.selectedModel) await this.setLiveModel(input.model);
-    if (this.active || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude has active or uncertain native work");
-    this.nativeCommand = undefined;
-    this.nativeUsage = undefined;
-    this.terminalEvent=undefined;
     const turnId = input.clientMessageId ?? randomUUID();
-    this.fileHistory.beginTurn();
     const prompt = this.opts.resumeSessionId || this.opts.transcriptFork
       ? input.prompt
-      : renderSeedPrompt(this.seedHistory.splice(0), input.prompt);
+      : renderSeedPrompt(this.seedHistory, input.prompt);
+    let frame = this.inputFrame(prompt, turnId, input.inputFiles);
+    if (input.model && input.model !== this.selectedModel) {
+      await this.setLiveModel(input.model);
+      input.assertCurrent?.();
+      frame = this.inputFrame(prompt, turnId, input.inputFiles);
+    }
+    input.assertCurrent?.();
+    // Validation and any asynchronous model acknowledgement precede lifetime changes.
+    this.nativeCommand = undefined;
+    this.nativeUsage = undefined;
+    this.terminalEvent = undefined;
+    this.fileHistory.beginTurn();
     this.taskLifetime.beginTurn();
     this.contextObservations.beginTurn(turnId);
     this.active = true;
     this.activeInputId = turnId;
     try {
-      await this.writeInput(prompt, turnId, input.inputFiles);
+      await this.writeInputFrame(frame);
+      this.seedHistory.splice(0);
     } catch (error) {
       this.active = false;
       this.contextObservations.endTurn();
@@ -373,13 +383,17 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
+    input.assertCurrent?.();
+    if (input.nativeAction) return { status: "not_steerable", reason: "Native actions require a supported scheduler-owned turn" };
     if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude native control is active or uncertain");
     if (input.model && input.model !== this.selectedModel) throw new Error("Change model at a turn boundary");
     if (input.effort && input.effort !== this.opts.effort) throw new Error("Claude effort change requires reopening the retained session");
-    if (this.historyActive || this.fileHistory.uncertain || this.nativeCommand || !this.active) return { status: "not_active" };
+    if (this.closed || this.historyActive || this.fileHistory.uncertain || this.nativeCommand || !this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
+    const frame = this.inputFrame(input.prompt, turnId, input.inputFiles);
+    input.assertCurrent?.();
     this.contextObservations.submit(turnId);
-    await this.writeInput(input.prompt, turnId, input.inputFiles);
+    await this.writeInputFrame(frame);
     return { status: "accepted", turnId };
   }
 
@@ -494,18 +508,25 @@ export class ClaudeStreamSession implements RuntimeSession {
     return shared;
   }
 
-  private async writeInput(prompt: string, id: string, inputFiles?: RuntimeTurnInput["inputFiles"]): Promise<void> {
-    if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
-    const frame = {
+  private inputFrame(prompt: string, id: string, inputFiles?: RuntimeTurnInput["inputFiles"]) {
+    return {
       type: "user",
       uuid: id,
       session_id: this.engineAgentId,
       message: { role: "user", content: claudeTurnContent({ prompt, kind: "user_message", inputFiles }) },
     };
+  }
+
+  private writeInput(prompt: string, id: string, inputFiles?: RuntimeTurnInput["inputFiles"]): Promise<void> {
+    return this.writeInputFrame(this.inputFrame(prompt, id, inputFiles));
+  }
+
+  private async writeInputFrame(frame: ReturnType<ClaudeStreamSession["inputFrame"]>): Promise<void> {
+    if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
     const media = frame.message.content.some(block => block.type === "image" || block.type === "document");
-    if (media) this.mediaReplayFraming().expect(id, frame.message, Buffer.byteLength(JSON.stringify(frame), "utf8"));
+    if (media) this.mediaReplayFraming().expect(frame.uuid, frame.message, Buffer.byteLength(JSON.stringify(frame), "utf8"));
     try { await this.writeFrame(frame); }
-    catch (error) { this.replayFraming?.forget(id); throw error; }
+    catch (error) { this.replayFraming?.forget(frame.uuid); throw error; }
   }
 
   private mediaReplayFraming(): ClaudeReplayFraming {

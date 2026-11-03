@@ -70,9 +70,9 @@ export function defaultEngineRegistrations(
         modelEnvironment: env,
       }),
       isInstalled: () => installed(claudeBin),
-      authStatus: () => installed(claudeBin)
-        ? claudeAuthStatus(env) : Promise.resolve({ authenticated: false }),
-      availabilityProbe: options => claudeAvailabilityStatus(env, undefined, () => options?.authObservation ? Promise.resolve(options.authObservation) : claudeAuthStatus(env), options),
+      authStatus: options => installed(claudeBin)
+        ? claudeAuthStatus(env, options) : Promise.resolve({ authenticated: false }),
+      availabilityProbe: options => claudeAvailabilityStatus(env, undefined, () => options?.authObservation ? Promise.resolve(options.authObservation) : claudeAuthStatus(env, options), options),
     },
   ];
 }

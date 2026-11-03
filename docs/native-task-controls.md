@@ -32,9 +32,14 @@ inventory, or an uncertain persistence boundary; it never means the native
 registry is empty. 400 means malformed input; 404 means absent Agent or exact
 receipt. Do not automatically retry mutations. Offer the existing exact Run
 stop as fallback. Source effects and original Run completion are separate from
-these per-task receipts. Backend controls do not yet declare Claude's
-`perTaskStopAffordance`: that declaration must wait for the actual human UI.
-The integrated UI consumes this contract; this original backend slice changed no UI files.
+these per-task receipts. Claude's initialize request now declares
+`perTaskStopAffordance:true`: the released `NativeTaskControls` panel is mounted
+in Agent Settings and wired to these exact list/stop/readback routes. Native
+interrupt can therefore leave background work available for individual stop.
+Authoritative Run Stop still fences the Run and closes/drains the owned process.
+This declaration applies at new native session initialization; it does not
+rewrite an already attached client's declaration. No UI files change in this
+reconciliation successor.
 
 ## Host authority and durability
 

@@ -81,8 +81,9 @@ session. Cleanup retains working-folder use and admission barriers until observe
 exit, with visible diagnostic logs. Explicit Stop targets the exact recovery ID
 and aborts/drains its process; status is read through the existing GET. Shutdown
 and deletion fence the command before native input or acceptance. No startup worker
-replays a recovery. Unknown legacy or Claude sessions retain the refusal path;
-Claude exposes no mapped structured compaction operation.
+replays a recovery. Unknown legacy sessions retain the refusal path. Claude uses its native command,
+exact UUID/local-command/manual-boundary receipts and a separate fresh usage
+control; see [the current recovery contract](runtime-native-recovery-contract.md).
 
 `context_accepted` means that exact compaction completion and occupancy were
 persisted after process drain. It is not evidence that the original uncertain
@@ -103,8 +104,10 @@ returns an empty acknowledgement and accepts only `threadId`; it has no mapped
 client operation key or lookup for a lost result. Thus the host cannot decide
 whether an original unknown turn or a crashed compaction completed, recover a
 complete unseen native tail, or resume original work exactly once from that fact.
-A native turn/outcome/full-transcript read bound to source session and turn ID,
-and a queryable compaction identity, would enable that reconciliation. This is
+Known-ID stored completion readback is now implemented for Codex, and exact
+host-effect receipt inspection is implemented separately. A durable caller-key
+compaction lookup and evidence for unreceipted original effects are still needed
+for the remaining crash gaps. This is
 separate from the host retention/reservation/drain/acceptance plumbing now present.
 No new provider call/schema is invented to fill that seam. A host replacement
 would need the immutable complete native transcript as input; authored Chat alone
@@ -125,7 +128,7 @@ work or runner preparation were performed for this implementation slice.
 
 | Bible rows | Source in this slice | Remaining implementation |
 | --- | --- | --- |
-| 1, 2, 6, 13 | Existing identity/session/permission/steering paths are retained; this slice does not write them | Future exact normal contracts and Codex managed-compaction custody are implemented; original unknown-turn reconciliation and Claude structured compaction remain missing |
+| 1, 2, 6, 13 | Existing identity/session/permission/steering paths are retained | Exact normal contracts and both providers' managed compaction are implemented; lost native identities and unreceipted original effects remain held |
 | 4, 31 backend | `claude-stream-events.ts`, `claude.ts`, `claude-stream-session.ts` supply native execution partials to existing server/SSE callers | Claude voice receipts and response items now feed the existing host publisher; explicit text publication now reuses the scoped host receipt path; mixed/absent routes and correlated reports retain their ordinary publisher |
 | 5 | Existing text budget reused for partial accumulation, with a visible pause notice | No new limit policy or required third-party service introduced |
 | 7, 20 | No network login, token gate, remote dependency or credential store added | Existing implementation is inherited; no fresh audit verdict implied |
@@ -135,8 +138,9 @@ work or runner preparation were performed for this implementation slice.
 | 31 browser delivery | No source change | `terminalDelivery` in Event Timing collector is qualification instrumentation, deferred by current direction |
 
 No all-commandment, harness-parity, successful-recovery, whole-UI streaming or
-performance-completion claim follows from this source slice. Original unknown-turn
-reconciliation and Claude structured compaction remain concrete implementation gaps.
+performance-completion claim follows from this source slice. Native compaction
+without retained identities and unreceipted original effects remain separate
+recovery limits; see [current reconciliation](native-harness-reconciliation.md).
 Atomic billed-account locking against external account changes is not a Bible 25
 requirement and does not block the implemented human mode switch. Real-account/device checks remain later manual
 qualification; they do not block these source changes.

@@ -4,7 +4,6 @@
 // badge without Ponderosa reading token files (SPEC §8 /api/engines, §9).
 
 import { mkdtempSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -231,39 +230,47 @@ function codexProbeFailure(stdout: string): EngineAvailabilityStatus | undefined
   }
 }
 
-/** Observe native harness billing mode without returning credential values. */
+/** Let the native CLI resolve its own profile, helper and environment precedence. */
 export async function claudeAuthStatus(
   env: NodeJS.ProcessEnv = process.env,
+  options: import("@ponderosa/core").EngineProbeOptions = {},
 ): Promise<EngineAuthStatus> {
-  if (env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY.trim() !== "") {
-    // Conflicting credential selectors cannot establish which account the CLI uses.
-    if ([env.ANTHROPIC_AUTH_TOKEN, env.CLAUDE_CODE_OAUTH_TOKEN].some(value => value?.trim())) {
-      return { authenticated: false, status: "unknown", reason: "malformed", source: "environment_presence",
-        detail: "Multiple Claude credential modes are configured; select one native harness login mode before rechecking." };
-    }
-    return {
-      authenticated: true, billingMode: "api", source: "environment_presence",
-      detail: "Claude API-key environment configured (not verified)",
-    };
-  }
-  const configPath = path.join(os.homedir(), ".claude.json");
+  const bin = env.PONDEROSA_CLAUDE_BIN?.trim() || "claude";
   try {
-    const raw = await readFile(configPath, "utf8");
-    const config = JSON.parse(raw) as { oauthAccount?: { emailAddress?: string } };
-    if (config.oauthAccount) {
-      const email = config.oauthAccount.emailAddress;
-      return {
-        authenticated: true, billingMode: "subscription", source: "subscription_presence",
-        detail: email ? `logged in as ${email} (subscription)` : "Claude subscription login present",
-      };
-    }
-    return { authenticated: false, source: "subscription_presence", detail: "run `claude` and sign in to your Claude Pro/Max account" };
+    const { stdout } = await containedAuthCommand(bin, ["auth", "status"], {
+      env: runtimeEnvironment(env), timeout: 5000, maxBuffer: 256 * 1024, ...options,
+    });
+    return parseClaudeLoginStatus(stdout, 0);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      return { authenticated: false, status: "unknown", reason: error instanceof SyntaxError ? "malformed" : "probe_failed", source: "subscription_presence", detail: "Claude authentication could not be checked." };
+    const failed = error as Error & { stdout?: string; probeReason?: EngineAuthStatus["reason"]; code?: string; probeExitCode?: number; probeSucceeded?: boolean };
+    if (failed.stdout && Buffer.byteLength(failed.stdout) <= 256 * 1024) {
+      if (failed.probeReason === "cleanup_failed" && failed.probeSucceeded) {
+        const observed = parseClaudeLoginStatus(failed.stdout, 0);
+        if (observed.status !== "unknown") return { ...observed, diagnosticFailure: "cleanup_failed" };
+      }
+      if (!failed.probeReason && failed.probeExitCode === 1) return parseClaudeLoginStatus(failed.stdout, 1);
     }
-    return { authenticated: false, source: "subscription_presence", detail: "run `claude` and sign in to your Claude Pro/Max account" };
+    return { authenticated: false, status: "unknown", source: "cli_status",
+      reason: failed.probeReason ?? (failed.code === "ENOENT" ? "spawn_failed" : "probe_failed"),
+      detail: "Claude authentication could not be checked; the native status command failed or timed out." };
   }
+}
+
+function parseClaudeLoginStatus(stdout: string, exitCode: 0 | 1): EngineAuthStatus {
+  const unknown: EngineAuthStatus = { authenticated: false, status: "unknown", reason: "malformed", source: "cli_status",
+    detail: "Claude returned an unsupported or inconsistent native authentication status." };
+  try {
+    const value: unknown = JSON.parse(stdout);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return unknown;
+    const status = value as { authMethod?: unknown; loggedIn?: unknown };
+    if (status.loggedIn !== undefined && status.loggedIn !== (exitCode === 0)) return unknown;
+    if (exitCode === 1) return status.authMethod === "none"
+      ? { authenticated: false, source: "cli_status", detail: "Run `claude auth login` on the host to sign in." } : unknown;
+    const billingMode = status.authMethod === "claude.ai" || status.authMethod === "oauth_token" ? "subscription"
+      : status.authMethod === "api_key" || status.authMethod === "api_key_helper" ? "api" : undefined;
+    return billingMode ? { authenticated: true, billingMode, source: "cli_status",
+      detail: billingMode === "subscription" ? "Claude subscription login present" : "Claude native API authentication present" } : unknown;
+  } catch { return unknown; }
 }
 
 /**
@@ -274,10 +281,10 @@ export async function claudeAuthStatus(
 export async function claudeAvailabilityStatus(
   env: NodeJS.ProcessEnv = process.env,
   run: AuthCommandRunner = containedAuthCommand,
-  readAuth: () => Promise<EngineAuthStatus> = () => claudeAuthStatus(env),
+  readAuth: (() => Promise<EngineAuthStatus>) | undefined = undefined,
   options: import("@ponderosa/core").EngineProbeOptions = {},
 ): Promise<EngineAvailabilityStatus> {
-  const auth = await readAuth();
+  const auth = await (readAuth ? readAuth() : claudeAuthStatus(env, options));
   if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
   if (!auth.authenticated) {
     return { available: false, failureCategory: "authentication", detail: auth.detail };

@@ -446,7 +446,25 @@ return new CoordinationV3Scheduler(
       }
       const inputFiles = compilation.inputFiles ?? [];
       requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: lease.projectId, agentId: lease.agentId, store, assets });
-      const providerSessionId = readProviderSessionIdentifier(run.runtimeSession);
+      const session = run.runtimeSession;
+      const providerSessionId = readProviderSessionIdentifier(session);
+      const assertCurrent = () => {
+        if (activeRuns.get(lease.agentId) !== run || run.runtimeSession !== session ||
+            run.controller.signal.aborted || deletingAgentIds.has(lease.agentId) ||
+            run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken ||
+            readProviderSessionIdentifier(session) !== providerSessionId || !session.isAlive())
+          throw new Error("Steering lost the current Run or native session");
+        const owned = store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r
+          JOIN scheduler_prompt_injections i ON i.run_id=r.id
+          WHERE r.id=? AND r.agent_id=? AND r.fencing_token=? AND r.status='running'
+          AND r.provider_session_id=? AND r.side_effects_fenced_at IS NULL AND r.lease_expires_at>?
+          AND i.id=? AND i.state='submitted'
+          AND NOT EXISTS (SELECT 1 FROM agent_run_pauses p WHERE p.agent_id=r.agent_id
+            AND p.state IN ('paused','resume_requested'))`)
+          .get(lease.runId, lease.agentId, lease.fencingToken, providerSessionId, new Date().toISOString(), lease.injectionId);
+        if (!owned || !renewExecutionLease(lease.agentId, run)) throw new Error("Steering lost current leased authority");
+        requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: lease.projectId, agentId: lease.agentId, store, assets });
+      };
       try {
         coordinationV3.markPromptSubmitted({
           injectionId: lease.injectionId,
@@ -460,7 +478,8 @@ return new CoordinationV3Scheduler(
         return {accepted:false,retryable:true,retrySteering:true,error:"steering authority changed before submission",steeringWaitReason:"provider_not_ready"};
       }
       try {
-        const result = await invokeProviderSteer(run.runtimeSession, {
+        const result = await invokeProviderSteer(session, {
+          assertCurrent,
           prompt,
           inputFiles,
           kind: "user_message",
