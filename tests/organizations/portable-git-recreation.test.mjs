@@ -402,3 +402,24 @@ test('harness-only Separate activation ignores Git refs carried in the same orig
   }finally{release();}
  }finally{store?.close();await rm(base,{recursive:true,force:true});}
 });
+
+test('live native adoption seals and rechecks configured closed hardlink/symlink dependencies',{skip:process.platform==='win32'},async()=>{
+ const {symlink,link,unlink}=await import('node:fs/promises'),{getNativeGitExternalGraph}=await import('../../apps/server/dist/portable-git-external-application.js');
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-native-owned-aliases-')));let store;
+ try{
+  const source=path.join(base,'source'),shared=path.join(base,'shared'),hooks=path.join(base,'configured-hooks'),data=path.join(base,'data');await initialize(source);await initialize(shared);await mkdir(hooks);await mkdir(data);
+  await writeFile(path.join(hooks,'pre-commit'),'#!/bin/sh\nexit 0\n',{mode:0o750});await link(path.join(hooks,'pre-commit'),path.join(hooks,'same-hook'));await symlink('pre-commit',path.join(hooks,'symbolic-hook'));await git(source,'config','core.hooksPath',hooks);
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true}),pkg=packageFor(manifest),bytes=Buffer.from(JSON.stringify(manifest)),activation={git:true,harness:false};
+  store=new AgentStore(data);const project=store.createProject({label:'Existing',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Owned alias dependencies'}),agent=store.createAgent(project.id,{title:'Owner',engine:'codex',conversationId:chat.id}),service=new AgentWorkingCopyService(data,store),release=service.beginModeChange(agent.id);
+  try{
+   const created=await service.allocateImportedSeparateGit(agent,project),root=created.workingCopy.rootPath;
+   await service.populateImportedRoot(created,project,[{path:'.ponderosa-portable-review/user-data.json',data:bytes,sha256:createHash('sha256').update(bytes).digest('hex')}],[],undefined,path.join(root,'.ponderosa-import-backups'),[],'refuse',undefined,undefined,{work:root},true,true);
+   const task=planReviewedRecoveryRoots(pkg,{work:root},activation)[0],graph=getNativeGitExternalGraph(task.configuration,{gitDir:root+'/.git',worktreePath:root});assert.ok(graph.links.some(link=>link.kind==='hardlink'));assert.ok(graph.links.some(link=>link.kind==='symlink'));
+   await service.completeImportedGitRoots(project,pkg,{work:root},activation,()=>{},[agent.id]);assert.equal(store.getAgent(agent.id).workingCopy.state,'ready');
+   const sha256=createHash('sha256').update(bytes).digest('hex');await service.verifyImportedGitRoot(project,sha256,root);
+   const hard=graph.links.find(link=>link.kind==='hardlink');assert.equal((await lstat(hard.path)).ino,(await lstat(hard.target)).ino);
+   const foreign=path.join(base,'undeclared-outside-hardlink');await link(hard.target,foreign);await assert.rejects(service.verifyImportedGitRoot(project,sha256,root),/hardlinked|count|graph/);await unlink(foreign);
+   const symbolic=graph.links.find(link=>link.kind==='symlink');assert.equal(await readFile(symbolic.path,'utf8'),'#!/bin/sh\nexit 0\n');assert.equal(await readFile(path.join(hooks,'pre-commit'),'utf8'),'#!/bin/sh\nexit 0\n');
+  }finally{release();}
+ }finally{store?.close();await rm(base,{recursive:true,force:true});}
+});

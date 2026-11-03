@@ -1,4 +1,4 @@
-import {getNativeGitModuleAnchors} from './portable-git-configuration.js';
+import {snapshotImportedNativeGit,importedNativeGitStorage,type ImportedNativeGitStorage,type ImportedNativeExternalProof} from './portable-native-git-snapshot.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
 import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,parseReviewedUserData,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 import {planFilesystemMetadata} from './portable-filesystem-metadata.js';
@@ -224,11 +224,11 @@ async function gitWorktreeRootRegistered(
 }
 
 export class AgentWorkingCopyService {
-  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[];anchors:string[]}>();
-  private readonly importedRootCustody=new Map<string,{device:bigint;inode:bigint;agentId:string}>();
+  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[];storage:ImportedNativeGitStorage;external:ImportedNativeExternalProof}>();
+  private readonly importedRootCustody=new Map<string,{device:bigint;inode:bigint;agentId:string;identity?:WorkingRootIdentity}>();
   private readonly containedReservations=new Map<string,ImportedContainedRootReservation>();
   private readonly containedParentDirectories=new Map<string,{device:bigint;inode:bigint}>();
-  private readonly stagedImportedGitRoots=new Map<string,{device:bigint;inode:bigint;phase:'allocated'|'populating'|'populated'|'adopting';agentId?:string}>();
+  private readonly stagedImportedGitRoots=new Map<string,{device:bigint;inode:bigint;phase:'allocated'|'populating'|'populated'|'adopting';agentId?:string;identity?:WorkingRootIdentity}>();
   private readonly managedRoot: string;
   private readonly modeChanges = new Map<string, {
     completion: Promise<void>;
@@ -302,8 +302,8 @@ export class AgentWorkingCopyService {
     if(original){
       if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Git requires the unused NEW managed Project');
       await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,original.configuration);
-      const anchors=getNativeGitModuleAnchors(original.configuration);
-      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,snapshot:await this.importedGitSnapshot(project.hostPath,[project.hostPath],anchors),allowedRoots:[project.hostPath],anchors});return;
+      const storage=importedNativeGitStorage(project.hostPath,original.configuration),observed=await snapshotImportedNativeGit(project.hostPath,[project.hostPath],storage,original.configuration);
+      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,...observed,storage,allowedRoots:[project.hostPath]});return;
     }
     await runGit(project.hostPath,['init','--template=','--initial-branch=main']);
     await runGit(project.hostPath,['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit','--allow-empty','--no-gpg-sign','-m','Initialize imported working roots']);
@@ -365,7 +365,8 @@ export class AgentWorkingCopyService {
       await finalizeWorkingFolderMetadata(current.rootPath,files,directories,metadata,links,metadataActivation,undefined,issuedIdentity);
     }
     await assertWorkingRootIdentity(resolved.rootPath,issuedIdentity);
-    if(staged)staged.phase='populated';
+    this.importedRootCustody.set(resolved.rootPath,{device:rootIdentity.dev,inode:rootIdentity.ino,agentId:agent.id,identity:issuedIdentity});
+    if(staged){staged.phase='populated';staged.identity=issuedIdentity;}
     return issuedIdentity;
   }
 
@@ -373,7 +374,7 @@ export class AgentWorkingCopyService {
     if(!this.modeChanges.has(agent.id))throw new Error('Final live metadata requires its fenced imported destination');
     const root=await this.resolve(agent,project),proof=this.importedRootCustody.get(root.rootPath),stat=await lstat(root.rootPath,{bigint:true});
     if(!proof||proof.agentId!==agent.id||proof.device!==stat.dev||proof.inode!==stat.ino||await realpath(root.rootPath)!==root.rootPath)throw new Error('Final metadata root lost its fresh local custody');
-    await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts,{device:proof.device.toString(),inode:proof.inode.toString()});
+    await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts,proof.identity??{device:proof.device.toString(),inode:proof.inode.toString()});
   }
 
   /** Local storage authority; a source package never supplies this path. */
@@ -490,45 +491,9 @@ export class AgentWorkingCopyService {
     return this.store.getAgent(agent.id)!;
   }
 
-  /** Capture directory or locally recreated pointer layouts without assuming
-   * source Git paths are destination authority. No hooks or filters execute. */
-  private async importedGitSnapshot(rootPath:string,allowedRoots:string[]=[rootPath],anchors:string[]=[]):Promise<string> {
-    const root=await lstat(rootPath,{bigint:true});
-    if(!root.isDirectory()||await realpath(rootPath)!==rootPath)throw new Error('Imported Git root changed');
-    const gitDir=path.resolve(rootPath,await runGit(rootPath,['rev-parse','--absolute-git-dir']));
-    const commonDir=path.resolve(rootPath,await runGit(rootPath,['rev-parse','--git-common-dir']));
-    if(![gitDir,commonDir].every(target=>allowedRoots.some(root=>target===root||inside(root,target))))throw new Error('Imported Git storage is outside its locally owned root');
-    const entries:unknown[]=[{path:rootPath,device:root.dev,inode:root.ino}],seen=new Set<string>();let count=0;
-    const inspect=async(target:string):Promise<void>=>{
-      if(seen.has(target))return;seen.add(target);if(++count>30000)throw new Error('Imported Git inventory exceeds its bound');
-      const stat=await lstat(target,{bigint:true});
-      if(stat.isDirectory()){
-        if(await realpath(target)!==target)throw new Error('Imported Git directory changed');
-        entries.push({path:target,device:stat.dev,inode:stat.ino});
-        for(const name of (await readdir(target)).sort())await inspect(path.join(target,name));
-      }else{
-        if(!stat.isFile()||stat.nlink!==1n||stat.size>33554432n||await realpath(path.dirname(target))!==path.dirname(target))throw new Error('Imported Git file is not exclusive');
-        const handle=await open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
-        try{
-          const before=await handle.stat({bigint:true});if(before.dev!==stat.dev||before.ino!==stat.ino)throw new Error('Imported Git file replaced');
-          const data=await handle.readFile(),after=await handle.stat({bigint:true}),current=await lstat(target,{bigint:true});
-          if(before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Imported Git file changed');
-          entries.push({path:target,device:stat.dev,inode:stat.ino,sha256:createHash('sha256').update(data).digest('hex')});
-        }finally{await handle.close();}
-      }
-    };
-    await inspect(path.join(rootPath,'.git'));await inspect(commonDir);await inspect(gitDir);
-    for(const anchor of anchors){
-      if(!path.isAbsolute(anchor)||path.resolve(anchor)!==anchor||!allowedRoots.some(root=>inside(root,anchor)))throw new Error('Native module pointer is outside the exact imported root closure');
-      await inspect(anchor);
-    }
-    const after=await lstat(rootPath,{bigint:true});if(root.dev!==after.dev||root.ino!==after.ino)throw new Error('Imported Git root replaced');
-    return JSON.stringify(entries,(_key,value)=>typeof value==='bigint'?value.toString():value);
-  }
-
   private async verifyImportedGitRoot(_project:ProjectDto,sha256:string,rootPath:string):Promise<void> {
     const proof=this.importedGitRoots.get(rootPath);
-    if(!proof||proof.sha256!==sha256||proof.snapshot!==await this.importedGitSnapshot(rootPath,proof.allowedRoots,proof.anchors))throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
+    if(!proof||proof.sha256!==sha256||proof.snapshot!==(await snapshotImportedNativeGit(rootPath,proof.allowedRoots,proof.storage,undefined,proof.external)).snapshot)throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
   }
 
   private async stageImportedGitRoot(rootPath:string,agentId?:string):Promise<void> {
@@ -544,10 +509,10 @@ export class AgentWorkingCopyService {
   }
 
   /** New recovery-root custody supplied by the one-shot Branch physical importer, never a source receipt. */
-  async retainImportedRecoveryGitRoot(rootPath:string,identity:{device:bigint;inode:bigint}):Promise<void>{
+  async retainImportedRecoveryGitRoot(rootPath:string,identity:WorkingRootIdentity|{device:bigint;inode:bigint}):Promise<void>{
     const stat=await lstat(rootPath,{bigint:true});
-    if(!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||!stat.isDirectory()||stat.isSymbolicLink()||await realpath(rootPath)!==rootPath||stat.dev!==identity.device||stat.ino!==identity.inode||this.stagedImportedGitRoots.has(rootPath))throw new Error('Imported recovery Git root lost its exact new-directory identity');
-    this.stagedImportedGitRoots.set(rootPath,{device:stat.dev,inode:stat.ino,phase:'populated'});
+    if(!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||!stat.isDirectory()||stat.isSymbolicLink()||await realpath(rootPath)!==rootPath||stat.dev!==BigInt(identity.device)||stat.ino!==BigInt(identity.inode)||this.stagedImportedGitRoots.has(rootPath))throw new Error('Imported recovery Git root lost its exact new-directory identity');
+    this.stagedImportedGitRoots.set(rootPath,{device:stat.dev,inode:stat.ino,phase:'populated',identity:{...identity,device:identity.device.toString(),inode:identity.inode.toString()}});
   }
 
   /** Read only local staging authority; callers may skip a duplicate allocation,
@@ -591,7 +556,7 @@ export class AgentWorkingCopyService {
       const staged=this.stagedImportedGitRoots.get(root),stat=await lstat(root,{bigint:true});
       if(!staged||(staged.phase!=='populated'&&!(staged.phase==='allocated'&&!Object.values(destinations).includes(root)))||stat.dev!==staged.device||stat.ino!==staged.inode||await realpath(root)!==root)throw new Error('Native import root is not in its exact populated phase');
       if(staged.agentId&&(!agentIds.includes(staged.agentId)||!this.modeChanges.has(staged.agentId)||this.activeUses.has(staged.agentId)))throw new Error('Git adoption lost exact current Agent custody');
-      originalRoots[root]={device:staged.device.toString(),inode:staged.inode.toString()};
+      originalRoots[root]=staged.identity??{device:staged.device.toString(),inode:staged.inode.toString()};
       staged.phase='adopting';
     }
     // The shared recreation engine validates included target/config closure and
@@ -626,7 +591,7 @@ export class AgentWorkingCopyService {
     }
     // Seal after every local branch is established: common Git storage can be
     // shared by multiple selected roots, so earlier snapshots would be obsolete.
-    for(const task of tasks.filter(task=>task.activation.git&&task.value.git)){const anchors=getNativeGitModuleAnchors(task.configuration);this.importedGitRoots.set(task.destination,{sha256:task.sha256,snapshot:await this.importedGitSnapshot(task.destination,roots,anchors),allowedRoots:roots,anchors});}
+    for(const task of tasks.filter(task=>task.activation.git&&task.value.git)){const gitDir=task.layout?.privateDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),commonDir=task.layout?.commonDir??task.storage?.gitDir??task.moduleOwner?.gitDir??path.join(task.destination,'.git'),storage=importedNativeGitStorage(task.destination,task.configuration,{gitDir,commonDir}),observed=await snapshotImportedNativeGit(task.destination,roots,storage,task.configuration);this.importedGitRoots.set(task.destination,{sha256:task.sha256,...observed,allowedRoots:roots,storage});}
     for(const root of roots)this.stagedImportedGitRoots.delete(root);
     for(const receipt of receipts.values())onReceipt({...receipt,state:'completed'});
     }catch(error){
