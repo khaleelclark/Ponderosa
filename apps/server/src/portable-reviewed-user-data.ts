@@ -648,6 +648,10 @@ function decodeIndex(data:Buffer,format:'sha1'|'sha256'):{entries:IndexEntry[];r
     if(signature==='link'){link=body;continue;}
     if(signature==='sdir'){if(body.length)throw new Error('Unsupported sparse-index extension payload');continue;}
     if(signature==='REUC'){resolveUndo=decodeResolveUndo(body,format);continue;}
+    if(signature==='UNTR'||signature==='FSMN'){
+      // Optional observation caches are opaque: inspect bytes for secrets, never trust their paths/tokens.
+      safeText(body.toString('latin1'),'Git index derived cache');continue;
+    }
     if(signature!=='TREE')throw new Error('Unknown or unsupported Git index extension; preserve source');
     // TREE is only a derived cache: validate its complete grammar, then recreate no cache.
     let cursor=0,pending=1,nodes=0;
@@ -999,7 +1003,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
   const headText=text(captured.head).trim();
   const head:ReviewedGitUserData['head']=headText.startsWith('refs/')?{symbolic:headText}:{oid:headText};
-  const exclusions=['Excluded: derived local commit-graph and multi-pack-index caches; rebuild from verified objects if needed','Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
+  const exclusions=['Excluded: derived local commit-graph and multi-pack-index caches; rebuild from verified objects if needed','Excluded: derived Git index UNTR/FSMN caches; rebuild local observations if needed','Excluded: Git credentials, external include contents, all Git hook files and source worktree ownership',...(linked?['Linked-worktree selection excludes main/other worktrees private state and normalizes selected/shared originals into one inactive standalone review repository']:[]),'Unsupported index flags/extensions, combined split/sparse storage and operation-in-progress metadata need separate recreation; supported storage normalizes to a full review index'];
   const configurationReview:ReviewedGitUserData['configurationReview']=[];
   for(const item of before.sparse.configuration){
     const {key,value}=item;

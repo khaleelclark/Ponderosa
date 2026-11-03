@@ -373,10 +373,11 @@ read nor transported. A missing required shared file or observed drift refuses.
 These checks do not drain independent writers or guarantee an atomic snapshot.
 
 Only `link`, `REUC` resolve-undo, the empty `sdir` marker and the derived `TREE`,
-`EOIE` and `IEOT` extensions are accepted; combined split/sparse storage refuses.
-TREE's complete count/length grammar is checked and its cache is not adopted. Other
-extensions, including untracked/fsmonitor caches,
-refuse rather than silently lose semantics. Unknown layouts remain unsupported. Both logical and storage entry inventories are bounded to
+`EOIE`, `IEOT`, `UNTR` and `FSMN` extensions are accepted; combined split/sparse
+storage refuses. TREE's complete count/length grammar is checked and its cache is
+not adopted. UNTR/FSMN caches are observed and omitted as described below. Every
+other extension, whether optional or required, refuses. Unknown layouts remain
+unsupported. Both logical and storage entry inventories are bounded to
 10,000. Resolve-undo belongs only to the selected index/overlay; any `REUC` in a
 required shared base refuses, even an empty one. Base and overlay undo records
 are never blended or inherited. Unsupported originals remain at source.
@@ -420,6 +421,34 @@ Source references: [Git index and split-index format](https://git-scm.com/docs/i
 [Git split-index merge](https://github.com/git/git/blob/master/split-index.c),
 [EWAH serialization](https://github.com/git/git/blob/master/ewah/ewah_io.c) and
 [shared-index read/freshening](https://github.com/git/git/blob/master/read-cache.c).
+
+### Optional index observation caches (`UNTR`, `FSMN`)
+
+The existing bounded index reader accepts exactly the optional untracked-cache
+(`UNTR`) and filesystem-monitor-cache (`FSMN`) signatures. Each body is opaque:
+no cache path, environment string, monitor token or bitmap is interpreted,
+followed, used as a file list or treated as current filesystem proof. No monitor,
+hook or environment lookup runs. This does not validate cache versions or internal
+grammar. The [Git index format](https://git-scm.com/docs/gitformat-index#_untracked_cache)
+describes these optional observation accelerators; their contents can be discarded
+and rebuilt locally without replacing the directly decoded logical index entries.
+
+Whole-index header, checksum, 10,000-entry and 1 MiB physical-file limits remain.
+Extension framing, body-size and duplicate-signature checks run before omission;
+EOIE still hashes their headers in sequence. Each inspected body receives the
+existing known-secret check through lossless Latin-1 bytes, with its separate
+4 MiB UTF-8 inspection bound. The same handling applies independently to full
+indexes, split overlays and required shared originals. Exact raw index/shared-index
+identities and bytes still participate in before/after comparisons.
+
+Export exclusions explicitly report omission. No cache bytes enter the portable
+DTO, native read view, recreated inactive full index or retained-original manifest
+re-export authority. Real paths, modes, stages, OIDs, supported flags, REUC, sparse
+and offset-table checks remain unchanged, as do unknown-extension and split/sparse
+topology refusals. No source index is copied or written, and no destination cache
+or monitor is activated. Source/partial retention and cleanup are unchanged.
+Source-only implementation; no runtime, capture/recreation, round-trip, native
+equivalence or atomicity qualification.
 
 ### Version-4 full and split index paths
 
