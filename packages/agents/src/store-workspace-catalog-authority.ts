@@ -168,6 +168,7 @@ export class AgentWorkspaceCatalogAuthority {
     }
     for (const projectId of readdirSync(projectsRoot)) {
       if (projectId.startsWith(".")) continue;
+      this.reconcileImportedProjectBinding(projectId);
       const root = conversationsDir(this.dataDir, projectId);
       if (!existsSync(root)) continue;
       for (const entry of readdirSync(root)) {
@@ -178,6 +179,33 @@ export class AgentWorkspaceCatalogAuthority {
       }
       this.recoverConversationRecency(projectId);
     }
+  }
+
+  /** Complete only interrupted canonical metadata projection, never physical work. */
+  private reconcileImportedProjectBinding(projectId:string):void {
+    const filename=projectJsonPath(this.dataDir,projectId);if(!existsSync(filename))return;
+    const record=readJson<ProjectJson>(filename),intent=record.importedRootBinding;
+    if(!intent||intent.state!=='binding')return;
+    const owner=record.ownerConversationId,proof=intent.parent;
+    if(!owner||record.hostPath!==intent.path||!proof||join(proof.parentPath,proof.relativePath)!==intent.path||
+       !this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state!='active'").get(owner,intent.planId))throw new Error('Interrupted imported-root metadata binding has no exact staged owner');
+    const root=lstatSync(intent.path,{bigint:true}),parent=lstatSync(proof.parentPath,{bigint:true});
+    if(!root.isDirectory()||root.isSymbolicLink()||realpathSync(intent.path)!==intent.path||root.dev.toString()!==proof.device||root.ino.toString()!==proof.inode||
+       !parent.isDirectory()||parent.isSymbolicLink()||realpathSync(proof.parentPath)!==proof.parentPath||parent.dev.toString()!==proof.parentDevice||parent.ino.toString()!==proof.parentInode)throw new Error('Interrupted imported-root identity changed; preserve its exact plan');
+    const chatFile=conversationJsonPath(this.dataDir,projectId,owner),chat=readJson<ConversationJson>(chatFile);
+    if(chat.projectId!==projectId||![intent.previousPath,intent.path].includes(chat.workingDirectory??''))throw new Error('Interrupted imported Chat binding changed');
+    const writes=intent.sharedAgents.map(member=>{
+      const file=agentJsonPath(this.dataDir,projectId,member.id),json=readJson<AgentJson>(file),copy=json.workingCopy;
+      if(!copy||copy.id!==member.workingCopyId||copy.mode!=='shared'||![intent.previousPath,intent.path].includes(copy.rootPath)||
+         !this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND state!='active'").get(member.id,intent.planId)||
+         this.client.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown')").get(member.id))throw new Error('Interrupted imported Shared owner changed');
+      return {file,json,copy};
+    });
+    // The exact local inode/owner intent is known. Repair canonical path fields
+    // only; the outer applying physical receipt still becomes incomplete/held.
+    writeJson(chatFile,{...chat,workingDirectory:intent.path,managedWorkspaceName:undefined});
+    for(const item of writes)writeJson(item.file,{...item.json,workingCopy:{...item.copy,rootPath:intent.path,updatedAt:intent.updatedAt},updatedAt:intent.updatedAt});
+    writeJson(filename,{...record,importedRootBinding:{...intent,state:'completed'}});
   }
 
   private conversationDeletionIdentity(
@@ -491,7 +519,7 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   /** Internal only: final binding of an inactive NEW Branch-import namespace. */
-  bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[]):ProjectDto {
+  bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
     const record=readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId));
     const current=this.listAgents(projectId);
     if(!this.isManagedProjectImportDestination(projectId)||record.hostPath!==oldRoot||!record.ownerConversationId||
@@ -503,19 +531,23 @@ export class AgentWorkspaceCatalogAuthority {
     }
     const chatFile=conversationJsonPath(this.dataDir,projectId,record.ownerConversationId),chat=readJson<ConversationJson>(chatFile);
     if(chat.workingDirectory!==oldRoot)throw new Error('Provisional Chat root changed');
-    const shared=current.filter(agent=>agent.workingCopy.mode==='shared'),files=[projectJsonPath(this.dataDir,projectId),chatFile,...shared.map(agent=>agentJsonPath(this.dataDir,projectId,agent.id))];
+    const shared=current.filter(agent=>agent.workingCopy.mode==='shared');
+    if(shared.some(agent=>agent.workingCopy.rootPath!==oldRoot||agent.workingCopy.importedParent))throw new Error('Provisional Shared owners changed before final binding');
+    const intent:NonNullable<ProjectJson['importedRootBinding']>={planId,previousPath:oldRoot,path:newRoot,managedWorkspaceName:record.managedWorkspaceName,state:'binding',updatedAt:new Date().toISOString(),sharedAgents:shared.map(agent=>({id:agent.id,workingCopyId:agent.workingCopy.id})),parent};
+    const files=[projectJsonPath(this.dataDir,projectId),chatFile,...shared.map(agent=>agentJsonPath(this.dataDir,projectId,agent.id))];
     return this.progress.run(files,()=>{
       this.assertProjectMetadataMutable(projectId);
       // Caller has already saved the exact local contained reservation in the
       // installation receipt. Failure here is held; startup never reallocates.
-      writeJson(projectJsonPath(this.dataDir,projectId),{...record,hostPath:newRoot,managedWorkspaceName:undefined,importedRootBinding:{planId,previousPath:oldRoot,managedWorkspaceName:record.managedWorkspaceName}});
+      writeJson(projectJsonPath(this.dataDir,projectId),{...record,hostPath:newRoot,managedWorkspaceName:undefined,importedRootBinding:intent});
       writeJson(chatFile,{...chat,workingDirectory:newRoot,managedWorkspaceName:undefined});
       this.db.update(projects).set({hostPath:newRoot}).where(eq(projects.id,projectId)).run();
       for(const agent of shared){
-        const filename=agentJsonPath(this.dataDir,projectId,agent.id),json=readJson<AgentJson>(filename),workingCopy={...agent.workingCopy,rootPath:newRoot,updatedAt:new Date().toISOString()};
+        const filename=agentJsonPath(this.dataDir,projectId,agent.id),json=readJson<AgentJson>(filename),workingCopy={...agent.workingCopy,rootPath:newRoot,updatedAt:intent.updatedAt};
         writeJson(filename,{...json,workingCopy,updatedAt:workingCopy.updatedAt});
         this.db.update(agents).set({workingCopyJson:JSON.stringify(workingCopy),updatedAt:workingCopy.updatedAt}).where(eq(agents.id,agent.id)).run();
       }
+      writeJson(projectJsonPath(this.dataDir,projectId),{...readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId)),importedRootBinding:{...intent,state:'completed'}});
       return this.getProject(projectId)!;
     });
   }

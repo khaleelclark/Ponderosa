@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {readFile,stat,lstat} from 'node:fs/promises';
+import {readFile,writeFile,stat,lstat} from 'node:fs/promises';
 import path from 'node:path';
 import {AgentStore} from '@ponderosa/agents';
 import {createBranchWorkingData} from '../../apps/server/dist/branch-working-data.js';
@@ -74,3 +74,16 @@ test('acyclic physical nesting with cross-Chat Separate parents does not form a 
  assert.equal(roots[value.refs.a].livePath,path.join(roots[p].livePath,'child'));assert.equal(roots[value.refs.b].livePath,path.join(roots[q].livePath,'child'));
  assert.equal(await readFile(path.join(roots[value.refs.b].livePath,'hard'),'utf8'),'complete original');await f.reopen();assert.equal(await readFile(path.join(roots[value.refs.a].livePath,'original'),'utf8'),'complete original');
 }));
+
+test('interrupted exact final Project metadata binding reopens consistently while physical outcome remains held',{skip:process.platform==='win32'},async t=>{
+ let store;await withFixture(t,async f=>{
+  const value=installation({nested:true}),{plan}=await preview(f,value,true),complete=await finish(f,plan,true);
+  const resource=store.sqlite.prepare("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND chat_ref='chat-b' AND agent_ref='b'").get(complete.branchId),agent=store.getAgent(resource.local_id),projectFile=path.join(f.dataDir,'projects',agent.projectId,'project.json'),project=JSON.parse(await readFile(projectFile,'utf8')),intent=project.importedRootBinding;
+  assert.equal(intent.state,'completed');project.importedRootBinding.state='binding';await writeFile(projectFile,JSON.stringify(project)+'\n');
+  const agentFile=path.join(f.dataDir,'projects',agent.projectId,'agents',agent.id,'agent.json'),json=JSON.parse(await readFile(agentFile,'utf8'));json.workingCopy.rootPath=intent.previousPath;delete json.workingCopy.importedParent;await writeFile(agentFile,JSON.stringify(json)+'\n');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET state='staging',staging_plan_id=? WHERE branch_id=?").run(plan.id,complete.branchId);
+  const row=store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id),state=JSON.parse(row.preview_json);state.workingDataApplication.state='applying';store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,next_attempt_at=NULL WHERE id=?").run(JSON.stringify(state),plan.id);
+  const before=await stat(intent.path);await f.reopen();assert.equal(store.getAgent(agent.id).workingCopy.rootPath,intent.path);assert.equal((await stat(intent.path)).ino,before.ino);
+  await until(async()=>f.ok(await f.api('GET',route(plan.id))).workingDataApplication?.state==='incomplete','held physical outcome after metadata-only reconciliation');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});

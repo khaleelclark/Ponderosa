@@ -463,7 +463,7 @@ export class AgentWorkingCopyService {
     if(owners.some(owner=>!this.modeChanges.has(owner.id)||this.activeUses.has(owner.id)))throw new Error('Final contained Project binding requires every destination owner fence');
     const parent=this.store.getAgent(reservation.parent.parentAgentId),issued=parent?.workingCopy.containedRootPreparations?.find(item=>item.id===reservation.id);
     if(!parent||!this.modeChanges.has(parent.id)||issued?.phase!=='created'||issued.rootPath!==reservation.rootPath||issued.device!==reservation.parent.device||issued.inode!==reservation.parent.inode||await this.containedRootPath(reservation.parent)!==reservation.rootPath)throw new Error('Final Project binding requires its exact locally created contained-root receipt');
-    const rebound=this.store.bindStagedImportedProjectRoot(project.id,planId,project.hostPath,reservation.rootPath,owners.map(owner=>owner.id));
+    const rebound=this.store.bindStagedImportedProjectRoot(project.id,planId,project.hostPath,reservation.rootPath,owners.map(owner=>owner.id),reservation.parent);
     const bound=await this.bindImportedContainedRoot(this.store.getAgent(agent.id)!,rebound,reservation,'shared');
     for(const owner of owners)if(owner.id!==agent.id&&this.store.getAgent(owner.id)!.workingCopy.mode==='shared')this.requireUpdated(owner.id,{...this.store.getAgent(owner.id)!.workingCopy,importedParent:bound.workingCopy.importedParent});
     return bound;
@@ -473,7 +473,7 @@ export class AgentWorkingCopyService {
   async bindImportedContainedProjectAlias(agent:AgentDto,project:ProjectDto,rootOwner:AgentDto,planId:string):Promise<AgentDto> {
     const proof=rootOwner.workingCopy.importedParent,owners=this.store.listAgents(project.id);
     if(!proof||!this.modeChanges.has(rootOwner.id)||owners.some(owner=>!this.modeChanges.has(owner.id)||this.activeUses.has(owner.id))||await this.containedRootPath(proof)!==rootOwner.workingCopy.rootPath||!this.stagedImportedGitRoots.has(rootOwner.workingCopy.rootPath))throw new Error('Contained Shared alias requires the exact fenced canonical root owner');
-    this.store.bindStagedImportedProjectRoot(project.id,planId,project.hostPath,rootOwner.workingCopy.rootPath,owners.map(owner=>owner.id));
+    this.store.bindStagedImportedProjectRoot(project.id,planId,project.hostPath,rootOwner.workingCopy.rootPath,owners.map(owner=>owner.id),proof);
     for(const owner of owners)if(this.store.getAgent(owner.id)!.workingCopy.mode==='shared')this.requireUpdated(owner.id,{...this.store.getAgent(owner.id)!.workingCopy,importedParent:proof});
     return this.store.getAgent(agent.id)!;
   }

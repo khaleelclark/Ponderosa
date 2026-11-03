@@ -11,3 +11,5 @@ Nested Shared Chat roots register in fresh provisional managed namespaces so val
 Imported originals are published to their exact canonical owners and attached to the existing history archive by byte-stream augmentation. Authored history, source, timestamps and projection offsets are preserved; the canonical incremental package parser/serializer supports large archives without a whole JSON string. An attempted attachment is journaled in the original creation receipt and is not automatically repeated.
 
 Regression sources: tests/branches/working-data-import.test.mjs, tests/organizations/portable-history-json.test.mjs and tests/chats/branch-working-data-files.test.mjs. Implementation first: none were executed in this lane; integrated validation belongs to the parent.
+
+An interrupted final namespace bind retains an exact Project-local intent with the local parent/child inode receipt and Shared owner IDs. Startup may reconcile only those known canonical metadata paths before rebuilding views; it never creates roots or repeats native writes. The outer physical outcome remains incomplete and held.
