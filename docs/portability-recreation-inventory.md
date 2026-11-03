@@ -173,7 +173,7 @@ and imported-original validation. Basic/literal multiline string assignments
 preserve accepted nonsecret source bytes; whole recognized secret-key
 assignments are removed with honest `removedSecretFields`. Decoded nonsecret
 strings undergo recognizable-secret checks. Missing/invalid delimiters, duplicate
-keys/tables, scalar/table collisions and unsupported key/table/value forms
+keys/tables, scalar/table collisions and unsupported declaration/value forms
 refuse; valid TOML outside this subset remains a recreation limit. See the
 [exact structured contract](git-provider-user-data-transport.md#bounded-toml-syntax).
 Retained-original matching remains byte-exact and never re-sanitizes or substitutes
@@ -189,6 +189,20 @@ inline tables refuse layout comments/newlines and trailing commas. Duplicate
 members and later extension of closed inline tables refuse. Value depth is capped
 at 32 below the root and total value nodes at 10,000, alongside existing byte,
 statement and static-table bounds. Unsupported array-table declarations, dates,
-nondecimal/special numbers and key/path forms remain explicit limits. Decoded
+nondecimal/special numbers remain explicit limits. Decoded
 string-leaf and raw-text secret checks both remain. Source-only implementation;
 no tests, builds, types, native capture or runtime qualification performed.
+
+
+Quoted basic/literal keys, supported escaped basic keys and dotted paths now use
+one structural path reader for assignments, static headers and inline members.
+Decoded canonical segments own identity and secret checks; quoted dots, brackets,
+hashes and equals signs are contents. Multiline keys, invalid escapes, duplicate
+decoded spellings and illegal namespace extensions refuse. Implicit/explicit/dotted
+and closed-value namespaces remain distinct, with 64-segment path bounds and
+10,000 namespace-node bound in addition to existing value/byte/depth limits.
+Recognized secret segments remove complete valid assignments or refuse static
+credential tables/retained inline subtrees, without partial unrelated loss.
+Accepted nonsecret source spans and existing raw/decoded string inspection remain.
+See the [exact structured contract](git-provider-user-data-transport.md#bounded-toml-syntax).
+No general TOML completeness or runtime qualification is claimed.

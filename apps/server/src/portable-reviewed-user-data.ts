@@ -51,21 +51,36 @@ function safeText(value:string,label:string):void {
 /** Bounded structured TOML subset; source spans survive unless their whole assignment is secret. */
 function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean} {
   if(Buffer.byteLength(value)>1024*1024||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|\r(?!\n)/.test(value))throw new Error('Invalid or oversized review TOML');
-  let offset=0,scope:string[]=[],kept=0,safe='',removedSecretFields=false,entries=0;
-  const scalars=new Set<string>(),tables=new Set<string>(),declared=new Set<string>();
+  let offset=0,kept=0,safe='',removedSecretFields=false,entries=0,namespaceNodes=0;
+  type Namespace={kind:'implicit'|'explicit'|'dotted'|'value';children:Map<string,Namespace>};
+  const namespace=(kind:Namespace['kind']):Namespace=>{if(++namespaceNodes>10000)throw new Error('Review TOML namespace exceeds its bound');return {kind,children:new Map()};};
+  const root=namespace('explicit');let scope=root,scopeDepth=0;
   const fail=():never=>{throw new Error('Invalid, ambiguous or unsupported review TOML value syntax');};
   const horizontal=()=>{while(value[offset]===' '||value[offset]==='\t')offset++;};
   const newline=()=>{if(value[offset]==='\r')offset++;if(value[offset]!=='\n')fail();offset++;};
   const endLine=()=>{horizontal();if(value[offset]==='#')while(offset<value.length&&value[offset]!=='\n'&&value[offset]!=='\r')offset++;if(offset<value.length)newline();};
-  const registerTable=(parts:string[])=>{
-    if(parts.length>64)fail();
-    for(let size=1;size<=parts.length;size++){
-      const name=JSON.stringify(parts.slice(0,size));if(scalars.has(name))fail();tables.add(name);
+  const registerPath=(base:Namespace,parts:string[],declaration:boolean):Namespace=>{
+    let parent=base;
+    for(const [index,part] of parts.entries()){
+      const last=index===parts.length-1;let child=parent.children.get(part);
+      if(declaration){
+        if(child?.kind==='value'||last&&child&&child.kind!=='implicit')fail();
+        if(!child){child=namespace(last?'explicit':'implicit');parent.children.set(part,child);}
+        else if(last)child.kind='explicit';
+      }else{
+        if(last){if(child)fail();child=namespace('value');parent.children.set(part,child);}
+        else{
+          if(child?.kind==='value'||child?.kind==='explicit')fail();
+          if(!child){child=namespace('dotted');parent.children.set(part,child);}else child.kind='dotted';
+        }
+      }
+      parent=child!;
     }
-    const name=JSON.stringify(parts);if(declared.has(name))fail();declared.add(name);
+    return parent;
   };
-  const string=():string=>{
+  const string=(key=false):string=>{
     const quote=value[offset]!,basic=quote==='"',multiline=value.slice(offset,offset+3)===quote.repeat(3);
+    if(key&&multiline)fail();
     offset+=multiline?3:1;let decoded='',closed=false;
     if(multiline&&(value[offset]==='\n'||value[offset]==='\r'))newline();
     while(offset<value.length){
@@ -100,15 +115,14 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
     }
     if(!closed)fail();return decoded;
   };
-  const assignmentKey=():string=>{
-    let key:string;
-    if(value[offset]==='"'||value[offset]==="'"){
-      const quote=value[offset++]!,end=value.indexOf(quote,offset);if(end<0)fail();
-      key=value.slice(offset,end);if(/[\\\r\n]/.test(key))fail();offset=end+1;
-    }else{
-      const match=/^[A-Za-z0-9_-]+/.exec(value.slice(offset));if(!match)fail();key=match![0];offset+=key.length;
+  const keyPath=():string[]=>{
+    const parts:string[]=[];
+    while(true){
+      if(parts.length>=64)fail();horizontal();
+      if(value[offset]==='"'||value[offset]==="'")parts.push(string(true));
+      else{const match=/^[A-Za-z0-9_-]+/.exec(value.slice(offset));if(!match)fail();parts.push(match![0]);offset+=match![0].length;}
+      horizontal();if(value[offset]!=='.')return parts;offset++;
     }
-    return key;
   };
   const arrayWhitespace=()=>{
     while(offset<value.length){
@@ -135,12 +149,12 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
       fail();
     }
     if(value[offset]==='{'){
-      offset++;horizontal();const members=new Set<string>();
+      offset++;horizontal();const members=namespace('explicit');
       if(value[offset]==='}'){offset++;return;}
       while(offset<value.length){
-        const key=assignmentKey();if(members.has(key))fail();members.add(key);
+        const parts=keyPath();registerPath(members,parts,false);
         horizontal();if(value[offset++]!=='=')fail();horizontal();
-        if(!discard&&isPortableSecretField(key))throw new Error('Nested credential TOML fields require separate preservation; inline tables are not partially scrubbed');
+        if(!discard&&parts.some(isPortableSecretField))throw new Error('Nested credential TOML fields require separate preservation; inline tables are not partially scrubbed');
         readValue(discard,depth+1);horizontal();
         if(value[offset]==='}'){offset++;return;}
         if(value[offset++]!==',')fail();horizontal();
@@ -163,17 +177,14 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
     if(++entries>10000)fail();const start=offset;horizontal();
     if(value[offset]==='#'||value[offset]==='\r'||value[offset]==='\n'||offset===value.length){endLine();continue;}
     if(value[offset]==='['){
-      const end=value.indexOf(']',offset+1);if(end<0)fail();
-      const header=value.slice(offset+1,end);
-      if(!/^[ \t]*[A-Za-z0-9_-]+(?:[ \t]*\.[ \t]*[A-Za-z0-9_-]+)*[ \t]*$/.test(header))fail();
-      scope=header.split('.').map(part=>part.trim());
-      if(scope.some(isPortableSecretField))throw new Error('Credential TOML tables require separate preservation');
-      registerTable(scope);offset=end+1;endLine();continue;
+      offset++;const parts=keyPath();if(value[offset++]!==']')fail();
+      if(parts.some(isPortableSecretField))throw new Error('Credential TOML tables require separate preservation');
+      scope=registerPath(root,parts,true);scopeDepth=parts.length;endLine();continue;
     }
-    const key=assignmentKey();
+    const parts=keyPath();if(scopeDepth+parts.length>64)fail();
     horizontal();if(value[offset++]!=='=')fail();horizontal();
-    const name=JSON.stringify([...scope,key]);if(scalars.has(name)||tables.has(name))fail();scalars.add(name);
-    const secret=isPortableSecretField(key);readValue(secret);
+    registerPath(scope,parts,false);
+    const secret=parts.some(isPortableSecretField);readValue(secret);
     endLine();
     if(secret){safe+=value.slice(kept,start);kept=offset;removedSecretFields=true;}
   }

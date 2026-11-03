@@ -295,8 +295,11 @@ scalar escapes, initial newline trimming, multiline basic line continuation and
 one/two quotes inside multiline strings. Three-to-five closing quote runs are
 handled explicitly. Source CRLF stays unchanged; decoded inspection normalizes
 newlines. Comments and delimiter-like text inside strings are not declarations.
-Outside strings, bare dotted static table paths and bare or unescaped quoted single
-assignment keys are supported. Duplicate keys/tables, scalar/table collisions,
+Basic/literal quoted keys, supported basic escapes and dotted paths are accepted
+in assignments, static table headers and inline members. Multiline keys refuse.
+Separators inside quotes are key contents; identity and credential checks use
+decoded segments, so equivalent escaped/bare spellings cannot bypass duplicates
+or secret filtering. Duplicate keys/tables, value/table collisions,
 invalid escapes/controls, unterminated strings and trailing syntax refuse.
 
 Other accepted scalars are booleans, signed 64-bit decimal integers and finite
@@ -308,6 +311,15 @@ trailing comma; multiline strings/arrays inside values retain their own rules.
 Duplicate inline member keys refuse, including equivalent bare/quoted spellings.
 Assigned inline tables are closed: later static table extension refuses.
 
+Namespace bookkeeping distinguishes implicit static parents, explicit headers,
+dotted-key tables and closed assigned values. An implicit parent may later receive
+its own header; duplicate explicit/dotted redefinition and scalar/closed-table
+extension refuse. Dotted assignments cannot reopen explicitly declared tables,
+while new static subtable headers under dotted-key parents are supported. Dotted
+inline members share the same collision checks within their closed local namespace.
+Any decoded secret segment removes the whole safely delimited assignment; a secret
+static-table path or retained inline-member path refuses the complete selection.
+
 A recognized secret assignment may contain any supported value; the complete
 assignment is parsed before removal. A recognized secret member nested within an
 otherwise nonsecret inline table refuses the entire selection with an explicit
@@ -315,14 +327,15 @@ message; no partial member rewrite or unrelated-setting loss is performed. Every
 retained string leaf is decoded and inspected, including leaves nested in arrays
 or inline tables. The remaining raw-text scan is unchanged.
 
-Array-of-table declarations, dates/times, nondecimal integers, infinities/NaNs,
-dotted/escaped assignment keys and quoted static table paths still refuse. This
+Array-of-table declarations, dates/times, nondecimal integers, infinities/NaNs
+and malformed key/header forms still refuse. This
 subset may reject valid TOML; no general-language completeness is claimed. Input
 is capped at 1 MiB, 64 static table segments, 10,000 outer statement/line iterations,
-10,000 total value nodes (including containers) and 32 nested value levels below
+10,000 total value nodes (including containers), 10,000 namespace nodes
+(including inline roots), 64 decoded segments per key path and 32 nested value levels below
 the root. Parsing advances through bounded source spans and visits each value
-once; namespace checks use bounded sets, with static path checks capped at 64
-segments. Existing decoded-inspection/package bounds, inactive settings and source
+once; namespace checks use segment maps, with root-relative static/assignment paths
+capped at 64 segments. Existing decoded-inspection/package bounds, inactive settings and source
 retention remain. No dependency or runtime qualification is introduced.
 
 Harness selection means the listed project-root configuration families below;
