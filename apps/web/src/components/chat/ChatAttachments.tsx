@@ -23,6 +23,13 @@ import { FilePreview } from "../filePreview/FilePreview";
 import { previewCapability } from "../filePreview/mimeCapabilities";
 import { readTextPreview } from "../filePreview/readTextPreview";
 
+// Keep the download URL while asking the verified attachment route for inline
+// audio. Preserve any existing query and fragment.
+const audioPlaybackUrl = (url: string) => {
+  const [path = "", ...fragment] = url.split("#");
+  return path + (path.includes("?") ? "&" : "?") + "playback=audio" + (fragment.length ? "#" + fragment.join("#") : "");
+};
+
 const textPreviewSupported = (attachment: CommunicationAttachmentDto) =>
   ["text", "markdown", "diff"].includes(previewCapability({
     mediaType: attachment.mediaType, path: attachment.name,
@@ -100,7 +107,7 @@ export function ChatAttachments({
                   {failed.has(attachment.id) && !attachment.unavailable ? <Button size="small" onClick={() => setFailed(current => { const next = new Set(current); next.delete(attachment.id); return next; })}>Retry preview</Button> : null}
                 </Stack>
               ) : attachment.mediaType.startsWith("audio/") && audioUrl ? (
-                <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" sx={{overflowWrap:"anywhere"}}>{attachment.name}</Typography><AudioMessagePlayer src={audioUrl} label={`Play ${attachment.name}`}/><Button href={audioUrl} download size="small">Download audio</Button></Stack>
+                <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" sx={{overflowWrap:"anywhere"}}>{attachment.name}</Typography><AudioMessagePlayer src={audioPlaybackUrl(audioUrl)} label={`Play ${attachment.name}`}/><Button href={audioUrl} download size="small">Download audio</Button></Stack>
               ) : image && previewUrl ? (
                 <ButtonBase
                   aria-label={`Preview ${attachment.name}`}

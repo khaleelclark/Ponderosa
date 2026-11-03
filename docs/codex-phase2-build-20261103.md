@@ -21,3 +21,15 @@ All 32 commandments and all 24 Build behaviors are accounted for in [the reconci
 The first integrated diagnostic build and test attempts exposed syntax, type, schema-admission and fixture/transport issues, which have source fixes. The currently running full diagnostic began on an older candidate before later fixes, including the export-pool work. It has recorded failures; it cannot establish a pass at the checkpoint above. A final full run on one pinned integrated candidate, all fixes it reveals, and the remaining Bible acceptance work are still required. Focused lane checks and the controlled browser walkthroughs are supporting evidence only, not the final product verification.
 
 The Linux export cache stores small durable receipts in SQLite and package bytes in a locally issued held sparse pool. Completed expired slots are reclaimed for reuse; uncertain claims/readers and preserved legacy files can retain charged capacity. Per-chunk digest verification detects changed bytes before delivery, but does not make an independently mutable filesystem an atomic snapshot. No foreign files are deleted to recover capacity.
+
+## Stored audio playback
+
+Stored audio playback uses the same owner-scoped, fully verified bytes as
+attachment downloads. Explicit playback serves the admitted audio container
+inline and supports a bounded single byte range for browser seeking, including
+iOS Safari. Unrecognized or multipart ranges receive the complete representation;
+unsatisfiable single ranges return 416. If-Range requests receive the full
+representation because these routes do not advertise a validator. Ordinary
+downloads retain their attachment disposition. Retained and Decision attachment
+owners use the same verified delivery after their existing checks. Runtime
+browser/device qualification remains required.

@@ -1,7 +1,33 @@
 import { retainedChatAttachmentContent, type AgentStore, type WorkspaceStore } from "@ponderosa/agents";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { retireAttachmentUpload } from "../attachment-upload-lifecycle.js";
 import { AssetError, type AssetStore, contentDisposition } from "../assets.js";
+
+/** Serve only bytes already acquired and fully verified by the attachment owner.
+ * Single ranges support browser media seeking; unsupported and malformed
+ * forms are ignored and receive the complete representation. */
+function sendAttachmentBytes(reply: FastifyReply, body: Buffer, name: string, mediaType: string, range: string | undefined, ifRange: string | undefined, playback: boolean) {
+  const audio = playback && ["audio/webm", "audio/ogg", "audio/mp4"].includes(mediaType);
+  if (playback && !audio) return reply.code(404).send({ error: "Audio unavailable" });
+  reply.header("content-type", audio ? mediaType : "application/octet-stream")
+    .header("content-disposition", audio ? "inline" : contentDisposition(name))
+    .header("cache-control", "private, no-store").header("x-content-type-options", "nosniff")
+    .header("content-security-policy", "default-src 'none'; sandbox").header("accept-ranges", "bytes");
+  // Without an advertised validator, an If-Range precondition is never proven.
+  const match = !ifRange && range && range.length <= 128 && range.match(/^bytes=(\d*)-(\d*)$/);
+  if (!match || (!match[1] && !match[2])) return reply.send(body);
+  const size = BigInt(body.length);
+  const first = match[1] ? BigInt(match[1]) : undefined;
+  const last = match[2] ? BigInt(match[2]) : undefined;
+  if (first !== undefined && last !== undefined && last < first) return reply.send(body);
+  if (size === 0n || (first !== undefined && first >= size) || (first === undefined && last === 0n)) {
+    return reply.code(416).header("content-range", "bytes */" + body.length).send();
+  }
+  const start = first ?? (last! >= size ? 0n : size - last!);
+  const end = first === undefined || last === undefined || last >= size ? size - 1n : last;
+  return reply.code(206).header("content-range", "bytes " + start + "-" + end + "/" + size)
+    .send(body.subarray(Number(start), Number(end + 1n)));
+}
 
 export interface AttachmentRoutesContext {
   readonly store: Pick<AgentStore, "getAgent" | "getConversation">;
@@ -33,7 +59,7 @@ export function registerAttachmentRoutes(
     const chat = decision.conversationId ? store.getConversation(decision.conversationId) : undefined;
     if (decision.conversationId && (!chat || chat.projectId !== decision.projectId || conversationDeletionInProgress(chat.id)))
       return reply.code(404).send({ error: "Decision file unavailable" });
-    if (request.headers.range) return reply.code(416).header("accept-ranges", "none").send({ error: "Range requests are not supported" });
+
     const agent = store.getAgent(decision.agentId);
     const content = agent && agent.projectId === decision.projectId && !agentDeletionInProgress(agent.id)
       ? await assets.content(decision.projectId, agent.id, file.id, preview)
@@ -41,8 +67,8 @@ export function registerAttachmentRoutes(
     if (!content) return reply.code(404).send({ error: "Decision file unavailable" });
     const verified = "asset" in content ? content.asset : content.record.attachment;
     if (verified.sha256 !== file.sha256 || verified.size !== file.size) return reply.code(404).send({ error: "Decision file unavailable" });
-    return reply.header("content-type", preview ? "image/png" : "application/octet-stream")
-      .header("content-disposition", preview ? "inline" : contentDisposition(file.name)).header("cache-control", "private, no-store")
+    if (!preview) return sendAttachmentBytes(reply, content.body, file.name, verified.mediaType, request.headers.range, request.headers["if-range"], (request.query as {playback?: string}).playback === "audio");
+    return reply.header("content-type", "image/png").header("content-disposition", "inline").header("cache-control", "private, no-store")
       .header("x-content-type-options", "nosniff").header("content-security-policy", "default-src 'none'; sandbox").send(content.body);
   });
   app.get<{ Params: { id: string; ownerId: string; assetId: string; action: string } }>(
@@ -51,12 +77,12 @@ export function registerAttachmentRoutes(
       const preview = request.params.action === "preview";
       if (!dataDir || !conversation || conversationDeletionInProgress(conversation.id) ||
           (!preview && request.params.action !== "download")) return reply.code(404).send({ error: "Attachment unavailable" });
-      if (request.headers.range) return reply.code(416).header("accept-ranges", "none").send({ error: "Range requests are not supported" });
+
       const content = retainedChatAttachmentContent(dataDir, conversation.projectId, conversation.id,
         request.params.ownerId, request.params.assetId, preview);
       if (!content) return reply.code(404).send({ error: "Attachment unavailable" });
-      return reply.header("content-type", preview ? "image/png" : "application/octet-stream")
-        .header("content-disposition", preview ? "inline" : contentDisposition(content.record.attachment.name))
+      if (!preview) return sendAttachmentBytes(reply, content.body, content.record.attachment.name, content.record.attachment.mediaType, request.headers.range, request.headers["if-range"], (request.query as {playback?: string}).playback === "audio");
+      return reply.header("content-type", "image/png").header("content-disposition", "inline")
         .header("cache-control", "private, no-store").header("x-content-type-options", "nosniff")
         .header("content-security-policy", "default-src 'none'; sandbox").send(content.body);
     });
@@ -104,17 +130,12 @@ export function registerAttachmentRoutes(
   });
 
   app.get<{ Params: { id: string; assetId: string } }>("/api/conversations/:id/assets/:assetId/download", async (request, reply) => {
-    if (request.headers.range) return reply.code(416).header("accept-ranges", "none").send({ error: "range requests are not supported" });
+
     const conversation = store.getConversation(request.params.id);
     if (!conversation) return reply.code(404).send({ error: "asset not found" });
     const content = await assets.content(conversation.projectId, conversation.id, request.params.assetId, false);
     if (!content || content.asset.conversationId !== conversation.id) return reply.code(404).send({ error: "asset not found" });
-    return reply.header("content-type", "application/octet-stream")
-      .header("content-disposition", contentDisposition(content.asset.name))
-      .header("cache-control", "private, no-store")
-      .header("x-content-type-options", "nosniff")
-      .header("accept-ranges", "none")
-      .send(content.body);
+    return sendAttachmentBytes(reply, content.body, content.asset.name, content.asset.mediaType, request.headers.range, request.headers["if-range"], (request.query as {playback?: string}).playback === "audio");
   });
 
   app.delete<{ Params: { id: string; attachmentId: string } }>("/api/conversations/:id/attachments/:attachmentId", async (request, reply) => {
@@ -222,12 +243,6 @@ export function registerAttachmentRoutes(
   app.get<{ Params: { id: string; assetId: string } }>(
     "/api/agents/:id/assets/:assetId/download",
     async (request, reply) => {
-      if (request.headers.range) {
-        return reply
-          .code(416)
-          .header("accept-ranges", "none")
-          .send({ error: "range requests are not supported" });
-      }
       const agent = store.getAgent(request.params.id);
       if (!agent) return reply.code(404).send({ error: "asset not found" });
       const content = await assets.content(
@@ -237,13 +252,7 @@ export function registerAttachmentRoutes(
         false,
       );
       if (!content) return reply.code(404).send({ error: "asset not found" });
-      return reply
-        .header("content-type", "application/octet-stream")
-        .header("content-disposition", contentDisposition(content.asset.name))
-        .header("cache-control", "private, no-store")
-        .header("x-content-type-options", "nosniff")
-        .header("accept-ranges", "none")
-        .send(content.body);
+      return sendAttachmentBytes(reply, content.body, content.asset.name, content.asset.mediaType, request.headers.range, request.headers["if-range"], (request.query as {playback?: string}).playback === "audio");
     },
   );
 
