@@ -737,8 +737,7 @@ async function captureSparseConfiguration(gitDir:string,commonDir=gitDir) {
     for(const row of parsed?parsed.slice(0,-1).split('\0'):[]){
       if(configuration.length>=10000)throw new Error('Local Git configuration exceeds its bound');
       const split=row.indexOf('\n'),key=split<0?row:row.slice(0,split),value=split<0?'':row.slice(split+1);
-      // Repository-aware plumbing must never resolve an include outside this exact local authority.
-      if(/^(?:include|includeif)\./i.test(key))throw new Error('Git configuration includes require separate scoped capture');
+      // Includes stay literal review records: the isolated stdin parser disables target resolution.
       configuration.push({key,value,...(split<0?{implicitBoolean:true as const}:{}),...(name==='config.worktree'?{source:'config.worktree' as const}:{})});
     }
   }

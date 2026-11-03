@@ -20,7 +20,7 @@ Both booleans are required; either may be false, but at least one must be true.
 Omitting the query preserves existing working-folder export behavior and exclusions.
 Each distinct selected organization root is captured independently. Selecting Git
 on a root with no supported local repository refuses, rather than returning an
-apparently complete Git export. Supported reciprocally associated linked worktrees use the explicit Git authority described below. External alternates/includes, unsupported shared layouts, combined split/sparse index storage, unsupported shallow/partial-clone forms and unfinished selected-worktree Git operations refuse.
+apparently complete Git export. Supported reciprocally associated linked worktrees use the explicit Git authority described below. External alternate stores, unsupported shared layouts, combined split/sparse index storage, unsupported shallow/partial-clone forms and unfinished selected-worktree Git operations refuse.
 
 Inspect the resulting ordinary artifact `.ponderosa-portable-review/user-data.json`
 before importing. Its `selection`, Git refs/index/configuration review, provider
@@ -113,7 +113,7 @@ commondir, hooks, logs, index, sparse settings and repository-local ignore/attri
 files are never copied into its active metadata. Native startup therefore cannot discover the selected/common/ancestor
 repository, resolve a live include, refresh a shared index or update a linked
 backlink. Captured source config is parsed separately with the existing isolated
-stdin parser and include declarations still refuse. Ref names/targets and packed
+stdin parser with `--no-includes`; nonsecret include declarations remain inactive literals. Ref names/targets and packed
 ref structure are checked before plumbing; output must include every effective
 captured ref with its exact OID/symbolic target. Broken or omitted refs refuse.
 Original hashes/types/graphs are checked as before. Successful temporary views
@@ -925,7 +925,7 @@ still requires separate human review/action.
 | `git.shallowReview.{path,source,dataBase64}` | Required exact common-repository `shallow` bytes or explicit null absence (empty-present stays distinct). Bounded canonical ASCII/OID validation requires captured verified commits; only those commit parents may be missing. Recreated exclusively as `.git/shallow` inside the new separate review repository, with original bytes retained for re-export. No native working-root adoption, fetch/deepening, grafts or partial/promisor support; source-only, runtime unverified. |
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
-| `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
+| `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations survive as ordered inactive literals from exact common config or selected config.worktree, with target resolution disabled; external contents are uncollected and never supply effective settings. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git dormant resolution cache and commit draft originals | Explicit Git selection carries optional common `rr-cache/` UTF-8 originals and only the exact selected-gitdir `COMMIT_EDITMSG` through inactive `.git/rr-cache/...` and `.git/COMMIT_EDITMSG` records. No replay, editor, operation recovery or active installation. See [contract](#inactive-common-rerere-and-selected-commit-draft-originals). |
 | Git legacy common remote shorthand originals | Explicit Git selection carries optional common `branches/` and `remotes/` regular UTF-8 originals through inactive `.git/branches/...` and `.git/remotes/...` records. No native remote installation or syntax/version compatibility claim. See [contract](#inactive-common-legacy-git-remote-originals). |
 | Git fixed common Gitweb metadata originals | Explicit Git selection carries only optional common `description`, `category`, `cloneurl` and `README.html` as exact inactive `.git/{name}` originals. Empty present files survive; no HTML rendering, URL fetching or native Gitweb recreation. See [contract](#inactive-fixed-common-gitweb-metadata-originals). |
@@ -973,9 +973,9 @@ system/global files and reads only stdin for the requested enumeration. Only an
 empty parser directory is removed afterward; unexpected bytes are retained and
 cleanup refuses. No source configuration bytes are written to the parser directory. Ordered nonsecret
 entries, original values, implicit booleans and source scope survive; source
-formatting and credential fields are not copied. Include/includeIf declarations
-refuse before repository-aware plumbing, rather than permitting an external
-include to influence sparse meaning. Home profiles are never selected. Linked/common directories require the separate reciprocal Git authority above. Worktree sparse values require an explicit local
+formatting and credential fields are not copied. Nonsecret include/includeIf declarations
+survive as inactive ordered literals; `--no-includes` prevents targets or conditions
+from supplying sparse meaning. Home profiles are never selected. Linked/common directories require the separate reciprocal Git authority above. Worktree sparse values require an explicit local
 `extensions.worktreeConfig` setting; true applies worktree precedence only for
 validation, false retains those values as dormant review data.
 
@@ -1633,3 +1633,48 @@ Other Git/provider families remain unchanged. Original executable mode/mtime,
 empty directories, binary data, learned GC/retention age/reuse and independent-writer
 atomicity remain outside this guarantee. Source-only: no capture execution, native
 equivalence, round-trip, atomicity or whole-Bible acceptance claim.
+
+
+### Inactive local include declarations
+
+Explicit Git selection preserves nonsecret `include.path` and
+`includeIf.<condition>.path` declarations in existing ordered `configurationReview`
+records. Exact common `config` is read before exact selected `config.worktree`;
+repeated entries retain their order within each source. Omitted `source` means
+common config; `source: "config.worktree"` means selected-worktree config.
+Keys/values and implicit-boolean metadata use the existing captured config parser,
+not a new byte-original codec: source comments/quoting/case normalization are not
+claimed exact. Parsed literal relative, absolute, tilde and conditional strings
+are retained without path or environment expansion, condition evaluation, target
+stat/read, recursion, URL lookup or reference chasing. No target must exist.
+
+The official [Git config Includes and Conditional includes](https://git-scm.com/docs/git-config#_includes)
+reference describes repeated paths and native conditional/relative/tilde semantics;
+its [`--no-includes` option](https://git-scm.com/docs/git-config#Documentation/git-config.txt---no-includes)
+disables inclusion. Those native semantics are not activated here. Existing
+`config --file - --null --list --no-includes` receives only captured stdin in a
+private empty cwd with system/global/inherited config disabled, an explicit
+parent discovery ceiling and no pager. Conditions such as gitdir, worktree,
+onbranch and hasconfig, including embedded URLs, remain text; no selected,
+ancestor, home/global or included repository configuration is discovered.
+
+Existing known-secret/URL-userinfo and credential-key/source-ownership filtering
+still applies on export; import rejects retained unsafe records. Supported
+nonsecret declarations do not remove any format, extension, sparse, index,
+object/graph/ref/log/shallow or relative-worktree evidence requirement. For example,
+a required explicit local repository-format declaration, sparse cone settings for
+collapsed directories or worktree sparse extension authority cannot be supplied
+by an uncollected include. Existing corresponding refusals remain; preservation
+of a declaration does not establish effective native configuration equivalence.
+External include contents and configured hook targets remain uncollected.
+
+Canonical association/owner/single-link/no-follow/bounded raw/config snapshots and
+before/after identity/absence/byte/hash checks remain unchanged. Live export uses
+the shared validator; working export validates the complete manifest and import
+parses before writes. Recreation places configuration records only in inactive
+`CONFIGURATION-REVIEW.json`; active read-view and recreated Git configs remain
+generated format-only configs with hooks/fsmonitor disabled. Retained re-export
+uses only the authoritative original manifest, never generated review copies.
+No new traversal, selection, DTO/schema/storage-version/format/cap/dependency or
+parallel codec. Ordinary working-file `.git` refusal remains. Source-only changes:
+no parser/native/runtime execution, round-trip, atomicity or whole-Bible acceptance.
