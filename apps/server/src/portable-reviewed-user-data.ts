@@ -8,6 +8,7 @@ import {tmpdir,homedir} from 'node:os';
 import {crc32,deflateSync,inflateSync} from 'node:zlib';
 import type {ReviewedGitUserData,ReviewedUserData,ReviewedUserDataSelection,ReviewedUserDataActivation,ReviewedMetadataActivation,GitStorageSelection,PortableGitStorageBinding} from '@ponderosa/core';
 import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnostic,withoutPortableSecrets} from './portable-secrets.js';
+import {captureGitExternalDependencies,validateGitExternalDependencies} from './portable-git-external.js';
 
 import {captureFilesystemMetadata,validateFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {canonicalSourcePath,normalizeSourcePath,serializeSourcePath,sourcePathAbsolute,sourcePathKey,sourcePathsEqual,sourcePathWithin,joinSourcePath,resolveSourcePath,dirnameSourcePath,basenameSourcePath,relativeSourcePath} from './portable-source-paths.js';
@@ -773,7 +774,7 @@ function configSource(data:Buffer,source?:'config.worktree'):{items:ReviewedGitU
 export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   if(data.length>48*1024*1024)throw new Error('Reviewed user-data manifest exceeds its bound');
   const value=JSON.parse(text(data)) as ReviewedUserData;
-  fields(value,['version','activation','selection','recreationScope','providerFiles','providerDirectories','exclusions'],['git','associationReview','filesystemMetadata']);
+  fields(value,['version','activation','selection','recreationScope','providerFiles','providerDirectories','exclusions'],['git','associationReview','filesystemMetadata','gitExternalDependencies']);
   if(value.associationReview!==undefined){
     if(!value.selection?.git||!Array.isArray(value.associationReview))throw new Error('Git association evidence requires the original Git selection');
     const roots=new Set(value.associationReview.flatMap(binding=>binding.capture?.roots.map(root=>root.rootRef)??[]));
@@ -818,6 +819,11 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     paths.add(file.path);
   }
   if(value.git)validateReviewedGit(value.git);
+  if(Object.hasOwn(value,'gitExternalDependencies')){
+    if(!value.gitExternalDependencies)throw new Error('Invalid configured Git dependency evidence');
+    if(!value.git)throw new Error('Configured Git dependencies require selected Git data');
+    validateGitExternalDependencies(value.gitExternalDependencies,{parseConfiguration:parseReviewedGitConfiguration},validateReviewedGit,(git,originals)=>{parseReviewedUserData(Buffer.from(JSON.stringify({version:1,activation:'inert_review_only',selection:{git:true,harness:false},recreationScope:{...recreationScope},git,providerFiles:originals,providerDirectories:[],exclusions:[]})));},value.git,value.selection.externalGitDependencies===true);
+  }
   return value;
 }
 
@@ -2124,7 +2130,7 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
   for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD',...gitSelectedOriginalNames,'config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
-  for(const name of ['config','shallow',...(reftable?[]:['packed-refs','refs']),'objects',...gitDirectoryOriginalNames,...gitWebOriginalNames])await walk(path.join(commonDir,name),name,'shared',name==='objects');
+  for(const name of ['config','shallow',...(reftable?[]:['packed-refs','refs']),'objects',...gitDirectoryOriginalNames.filter(name=>name!=='hooks'),...gitWebOriginalNames])await walk(path.join(commonDir,name),name,'shared',name==='objects');
   if(reftable)for(const [directory,source,prefix] of [
     [path.join(commonDir,'reftable'),'shared','reftable'],
     ...(linked?[[path.join(gitDir,'reftable'),'selected','selected-reftable']]:[]),
@@ -2644,7 +2650,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
 export async function exportReviewedUserData(root:string,selection:ReviewedUserDataSelection,capture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:import('./portable-working-files.js').WorkingFolderInventory):Promise<ReviewedUserData> {
   validateReviewedUserDataSelection(selection);
   if(selection.source==='retained_originals')throw new Error('Retained originals require their canonical artifact binding');
-  const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness,...(selection.extendedMetadata?{extendedMetadata:selection.extendedMetadata}:{}),...(selection.persistentNodes?{persistentNodes:selection.persistentNodes}:{})},recreationScope:{...recreationScope},providerFiles:[],providerDirectories:[],exclusions:[]};let bytes=0;
+  const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness,...(selection.externalGitDependencies?{externalGitDependencies:true as const}:{}),...(selection.extendedMetadata?{extendedMetadata:selection.extendedMetadata}:{}),...(selection.persistentNodes?{persistentNodes:selection.persistentNodes}:{})},recreationScope:{...recreationScope},providerFiles:[],providerDirectories:[],exclusions:[]};let bytes=0;
   const fixed=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.claude/AGENTS.md','.codex/config.toml','.codex/instructions.md'],selected=[...fixed];
   const capturedProvider=new Map<string,string>(),absentProvider=new Set<string>();
   let entries=0,outputStyleOwner:bigint|undefined,opaqueOwner:bigint|undefined;
@@ -2707,7 +2713,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     }
   }
   if(selection.git){
-    const captured=await exportReviewedGit(root,capture);
+    const captured=await exportReviewedGit(root,capture,selection.externalGitDependencies===true);
     if(captured){
       result.git=captured.git;
       for(const original of captured.gitOriginals){
@@ -2718,6 +2724,10 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     }
   }
   if(selection.git&&!result.git)throw new Error('Selected Git data is unavailable in this working root');
+  if(result.git){
+    const dependencies=await captureGitExternalDependencies(root,result.git,selection.externalGitDependencies===true,{parseConfiguration:parseReviewedGitConfiguration,exportGit:root=>exportReviewedGit(root,undefined,selection.externalGitDependencies===true)});
+    if(dependencies){result.gitExternalDependencies=dependencies;if(dependencies.omittedPaths.length)result.exclusions.push('Configured Git dependencies omitted without source grant or for credential re-entry: '+dependencies.omittedPaths.join(', '));}
+  }
   if(capture&&selection.git){
     const worktreeRef=capture.bindings.find(binding=>binding.worktreePath===root)?.worktreeRootRef;
     if(worktreeRef)result.associationReview=capture.portableBindings(false).filter(binding=>binding.worktreeRootRef===worktreeRef);
@@ -2749,7 +2759,7 @@ export async function captureRetainedReviewOriginal(root:string,selection:Review
   const directory=await fs.lstat(folder,{bigint:true});
   if(!directory.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
   const names=await fs.readdir(folder);
-  if(names.length>3||names.some(name=>!['user-data.json','git-repository','provider-files'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
+  if(names.length>5||names.some(name=>!['user-data.json','git-repository','provider-files','external-git','native-git-common'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
   const before=await fs.lstat(target,{bigint:true}),captured=await regularOriginal(target,48*1024*1024);
   const verify=async()=>{
     const currentDirectory=await fs.lstat(folder,{bigint:true}),current=await fs.lstat(target,{bigint:true});

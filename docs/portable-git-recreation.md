@@ -18,8 +18,9 @@ keeps `common/worktrees/private`. All selected common originals must agree.
 The writer creates a fresh bare common repository and private worktree slots,
 rewrites `.git`, `commondir`, `gitdir` and current `core.worktree`, and makes new
 destination ownership evidence. Source pointers and process/cleanup authority
-remain historical data. No Git command, hook, provider command, fetch or service
-is invoked by recreation. Existing metadata is never replaced.
+remain historical data. Recreation never invokes hooks, provider commands, fetch or services. A local
+Git config read on the newly recreated destination derives shared modes.
+Existing metadata is never replaced.
 
 An explicit module binding recreates its Git storage in the chosen fresh storage
 root and writes a new worktree pointer. Contained module inventories recurse into
@@ -87,3 +88,40 @@ Exact POSIX hook mode/time application uses the native Linux/macOS descriptor
 operation. Windows explicitly refuses that POSIX metadata before native Git
 creation; inert data recovery remains available. This is a declared platform
 compatibility boundary, not a Windows metadata-equivalence claim.
+
+The shared export choice **Include configured Git files and hooks** grants a
+bounded capture of the currently configured external dependency graph. It does
+not create hidden Agents. Default hooks and dependencies already inside selected
+Git/worktree roots are captured without that extra grant. The new
+`gitExternalDependencies` family carries original source working/context paths,
+sanitized included configs, complete referenced hook directories and their
+siblings, referenced attribute/exclude files, exact ordinary mode/time metadata,
+links and nested repository capsules. A link to an individual external file
+captures that target, never its unrelated parent directory. Bounded captures
+refuse drift; they do not claim an atomic snapshot of independent writers.
+
+Omitted paths (no grant or excluded credential stores) remain distinct from an
+observed missing optional include. Credential stores and private keys are never
+transported; known JSON credential fields are removed, and included configs use
+the same native config secret policy. Captured hook/support bytes can contain
+user-authored sensitive text, covered by the existing sensitive-data export
+review. Source path strings are provenance only; import reads transported bytes
+and newly selected destination roots. Activation uses owned destination copies
+and rewrites context paths, including separate native worktree/gitdir hook
+contexts, without generating hook dispatch programs or executing hooks.
+
+Capture reads through held directory references and nonblocking regular-file
+opens, checks device/inode/mode/time before and after fixed-size bounded reads,
+and rechecks parent membership and original hashes before returning. The format
+bounds are 10,000 nodes, 32 MiB dependency bytes, 1,000 references, native ten-level
+include resolution and 128 directory/link levels. Parser graph checks run before
+native writes. Passive symlink cycles remain retained evidence; an active config
+binding must resolve to usable data or an explicit omitted/absent disposition.
+
+Named-user `~other/` and `%(prefix)` values expand only during source capture,
+using Git's own non-executing `config --path` over the captured declaring config
+bytes with includes disabled. Repeated values bind by exact native key/ordinal.
+The bounded absolute result is retained in the existing dependency binding;
+import validates its original raw declaration and closed transported target,
+then relocates it without consulting destination users or installation paths.
+Unprovable native expansion fails explicitly rather than guessing a path.

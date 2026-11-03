@@ -1,13 +1,13 @@
 import test from 'node:test';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,chmod,lstat,realpath,open,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {mkdtemp,mkdir,writeFile,readFile,chmod,lstat,realpath,open,rm,symlink} from 'node:fs/promises';
+import {tmpdir,homedir,userInfo} from 'node:os';
 import {mkdirSync,renameSync} from 'node:fs';
 import path from 'node:path';
 import {promisify} from 'node:util';
 import {execFile} from 'node:child_process';
-import {exportReviewedUserData,createGitExportCapture,createReviewedNativeGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,parseReviewedUserData,createGitExportCapture,createReviewedNativeGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {AgentStore} from '@ponderosa/agents';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
@@ -422,4 +422,36 @@ test('live native adoption seals and rechecks configured closed hardlink/symlink
    const symbolic=graph.links.find(link=>link.kind==='symlink');assert.equal(await readFile(symbolic.path,'utf8'),'#!/bin/sh\nexit 0\n');assert.equal(await readFile(path.join(hooks,'pre-commit'),'utf8'),'#!/bin/sh\nexit 0\n');
   }finally{release();}
  }finally{store?.close();await rm(base,{recursive:true,force:true});}
+});
+
+test('configured dependency source capture is explicit, complete and keeps credential stores excluded',{skip:process.platform==='win32'},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-external-capture-'));
+  try{
+    const source=path.join(root,'source'),external=path.join(root,'configured');await initialize(source);await mkdir(external);
+    await writeFile(path.join(external,'outer.conf'),'[include]\n path = nested.conf\n[portable]\n external = retained\n');
+    await writeFile(path.join(external,'nested.conf'),'[portable]\n nested = retained\n');
+    await mkdir(path.join(external,'hooks'));await writeFile(path.join(external,'hooks','pre-commit'),'#!/bin/sh\nexit 0\n');await chmod(path.join(external,'hooks','pre-commit'),0o751);
+    await writeFile(path.join(external,'hooks','helper.bin'),Buffer.from([0,255,1,128]));
+    await mkdir(path.join(external,'linked'));await writeFile(path.join(external,'linked','hook.sh'),'#!/bin/sh\nexit 0\n');await writeFile(path.join(external,'linked','unreferenced.txt'),'unrelated');await symlink('../linked/hook.sh',path.join(external,'hooks','post-commit'));
+    await writeFile(path.join(external,'attributes'),'*.txt text\n');await writeFile(path.join(external,'excludes'),'scratch/\n');
+    await git(source,'config','include.path',path.join(external,'outer.conf'));await git(source,'config','core.hooksPath',path.join(external,'hooks'));await git(source,'config','core.attributesFile',path.join(external,'attributes'));await git(source,'config','core.excludesFile',path.join(external,'excludes'));
+    const inert=await exportReviewedUserData(source,{git:true,harness:false});assert.equal(inert.gitExternalDependencies.sourceWorkingRoot,source);assert.ok(inert.gitExternalDependencies.omittedPaths.includes(path.join(external,'outer.conf')));assert.ok(!inert.gitExternalDependencies.files.some(file=>file.sourcePath.startsWith(external+'/')));
+    const value=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true}),family=value.gitExternalDependencies;
+    assert.equal(value.selection.externalGitDependencies,true);assert.equal(family.omittedPaths.length,0);assert.ok(family.files.some(file=>file.sourcePath===path.join(external,'nested.conf')&&file.config));
+    const hook=family.files.find(file=>file.sourcePath===path.join(external,'hooks','pre-commit'));assert.equal(hook.mode,0o751);assert.equal(Buffer.from(family.files.find(file=>file.sourcePath===path.join(external,'hooks','helper.bin')).dataBase64,'base64')[1],255);
+    assert.ok(family.bindings.every(binding=>path.isAbsolute(binding.contextSourcePath)));assert.deepEqual(parseReviewedUserData(Buffer.from(JSON.stringify(value))).gitExternalDependencies,family);
+    assert.ok(family.files.some(file=>file.sourcePath===path.join(external,'linked','hook.sh')));assert.ok(!family.files.some(file=>file.sourcePath===path.join(external,'linked','unreferenced.txt')));
+    const forged=structuredClone(value);forged.gitExternalDependencies.links.push({sourcePath:path.join(external,'alias'),targetSourcePath:path.join(external,'missing'),kind:'hardlink'});assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(forged))),/link|target|graph|dependency/i);
+    const missingBinding=structuredClone(value);missingBinding.gitExternalDependencies.bindings.shift();assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(missingBinding))),/binding/i);
+    const badParent=structuredClone(value),leaf=badParent.gitExternalDependencies.files.find(file=>!file.config);badParent.gitExternalDependencies.files.push({...leaf,sourcePath:leaf.sourcePath+'/nested'});assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(badParent))),/parent|topology/i);
+    const keyMaterial=structuredClone(value);keyMaterial.gitExternalDependencies.files.push({sourcePath:path.join(external,'hooks','secret.key'),dataBase64:Buffer.from('opaque').toString('base64'),mode:0o600,mtimeNs:'0'});assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(keyMaterial))),/key material/i);
+    const cycle=structuredClone(value);cycle.gitExternalDependencies.links.push({sourcePath:path.join(external,'hooks','cycle-a'),targetSourcePath:path.join(external,'hooks','cycle-b'),kind:'symlink',mtimeNs:'0'},{sourcePath:path.join(external,'hooks','cycle-b'),targetSourcePath:path.join(external,'hooks','cycle-a'),kind:'symlink',mtimeNs:'0'});parseReviewedUserData(Buffer.from(JSON.stringify(cycle)));
+    const hardCycle=structuredClone(cycle);for(const alias of hardCycle.gitExternalDependencies.links.filter(alias=>alias.sourcePath.includes('/cycle-')))alias.kind='hardlink';assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(hardCycle))),/hardlink|target/i);
+    const unrelated=path.join(root,'unrelated');await initialize(unrelated);const unrelatedValue=await exportReviewedUserData(unrelated,{git:true,harness:false}),disconnected=structuredClone(value),other=unrelatedValue.gitExternalDependencies;
+    for(const key of ['files','directories','links','absentPaths','omittedPaths','bindings'])disconnected.gitExternalDependencies[key].push(...other[key]);disconnected.gitExternalDependencies.directories.push({sourcePath:unrelated,mode:0o700,mtimeNs:'0',root:true});disconnected.gitExternalDependencies.repositories=[{sourcePath:unrelated,git:unrelatedValue.git,originals:unrelatedValue.providerFiles}];assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(disconnected))),/capsule|repository|disconnected|closure/i);
+    const named='~'+userInfo().username+'/'+path.relative(homedir(),path.join(external,'outer.conf'));await git(source,'config','include.path',named);await git(source,'config','core.attributesFile','%(prefix)/ponderosa-absent-'+path.basename(root));
+    const expanded=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});assert.ok(expanded.gitExternalDependencies.bindings.some(binding=>binding.rawValue===named&&binding.resolvedPath===path.join(external,'outer.conf')));assert.ok(expanded.gitExternalDependencies.bindings.some(binding=>binding.rawValue.startsWith('%(prefix)')&&path.isAbsolute(binding.resolvedPath)));parseReviewedUserData(Buffer.from(JSON.stringify(expanded)));
+    await mkdir(path.join(external,'.aws'));await writeFile(path.join(external,'.aws','credentials'),'private');await git(source,'config','include.path',path.join(external,'.aws','credentials'));
+    const excluded=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});assert.ok(excluded.gitExternalDependencies.omittedPaths.includes(path.join(external,'.aws','credentials')));assert.ok(!excluded.gitExternalDependencies.files.some(file=>file.sourcePath.includes('/.aws/')));
+  }finally{await rm(root,{recursive:true,force:true});}
 });
