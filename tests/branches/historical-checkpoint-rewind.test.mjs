@@ -528,7 +528,7 @@ function treeFixture(t,mode='async',nested=true,childMode='sync',futureCall=fals
  const source=branches.accept(root.id,'tree-source','tree input');
  const settle=(lease,output='tree known')=>{if(childLoop&&lease.source.includes('leaf1'))output=branches.detail(lease.executionId).steps.find(s=>s.state==='leased').invocation===1?'again':'done';branches.authorizeScript(lease,inertIdentity);branches.recordScriptEvidence(lease,inertIdentity,{stdout:output,outputHash:hash(output),code:0});branches.settleScript(lease,{failed:false,output});};
  const claim=async()=>{for(let n=0;n<80;n++){await branches.unitSaver.drain();branches.advance();const lease=branches.claimScript('tree-inert');if(lease){await branches.unitSaver.drain();assert.equal(branches.checkpointDispatch(lease),'ready');return lease;}}assert.fail('expected fresh tree suffix lease');};
- const point=id=>branches.historicalCheckpoints(root.id,id).find(cp=>cp.restoreSupported&&captureBytes({store},cp.id).continuation?.schema==='ponderosa.branch.script-tree-continuation.v1'&&captureBytes({store},cp.id).continuation.owners.filter(o=>o.executionId!==id).every(o=>o.selected.execution[0].state==='completed'));
+ const point=id=>branches.historicalCheckpoints(root.id,id).find(cp=>cp.restoreSupported&&captureBytes({store},cp.id).continuation?.schema==='ponderosa.branch.script-tree-continuation.v1'&&captureBytes({store},cp.id).continuation.owners.length===(nested?3:2)&&captureBytes({store},cp.id).continuation.owners.filter(o=>o.executionId!==id).every(o=>o.selected.execution[0].state==='completed'));
  return {get store(){return store},get branches(){return branches},dir,chat,root,middle,leaf,source,settle,claim,point,
   async prefix(){const first=await claim();assert.equal(first.executionId,source.id);settle(first);for(let n=0;n<100;n++){await branches.unitSaver.drain();branches.advance();await branches.unitSaver.drain();const cp=point(source.id);if(cp)return cp;const lease=branches.claimScript('tree-inert');if(lease){if(lease.executionId===source.id){assert.ok(lease.source.includes('suffix1'));return {pendingRoot:lease};}await branches.unitSaver.drain();settle(lease);}}assert.fail('expected completed-child tree frontier');},
   async finish(id){for(let n=0;n<20&&branches.execution(id).state!=='completed';n++){const lease=await claim();let owner=branches.execution(lease.executionId);while(owner.parentExecutionId)owner=branches.execution(owner.parentExecutionId);assert.equal(owner.id,id);settle(lease);}await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');},
@@ -1259,6 +1259,26 @@ for(const mode of ['async','sync','exit'])test(`prospective imported resource ${
  assert.throws(()=>f.branches.resourceCaptureRelease(retained.stepId,'releasing'),/^Error: Checkpoint custody retains history\/admission references or unconfirmed owner cleanup$/);
  const inspection=f.branches.resourceInspection(retained.stepId);
  assert.throws(()=>f.branches.beginResourceCustodyRelease(retained.stepId,{commandKey:'referenced-release',expectedGeneration:inspection.generation,expectedCustodyId:inspection.custody.custodyId,expectedReceiptSha256:inspection.custody.receiptSha256}),/^Error: Checkpoint custody retains history\/admission references or unconfirmed owner cleanup$/);assert.deepEqual(allocationCounts(f),before);
+});
+
+
+test('final resource fence compares configuration values and rejects drift or malformed JSON',async t=>{
+ const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ await assert.rejects(f.finish(f.source.id,undefined,async({stepId})=>{
+  const db=f.store.sqlite,branch=db.prepare('SELECT configuration_json FROM branches WHERE id=?').get(f.branch.id);
+  const execution=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(f.source.id);
+  const object=JSON.parse(branch.configuration_json),reordered=JSON.stringify(Object.fromEntries(Object.entries(object).sort(([a],[b])=>b.localeCompare(a))));
+  db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run(reordered,f.branch.id);
+  assert.notEqual(reordered,execution.configuration_json,'fixture exercises differing key order');
+  const fence=f.branches.finalResourceExitFence(stepId);assert.ok(fence.intakeFence.sha256);
+  db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run(JSON.stringify({...object,parameters:{...object.parameters,drift:true}}),f.branch.id);
+  assert.throws(()=>f.branches.finalResourceExitFence(stepId),/configuration changed/);
+  db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run('{malformed',f.branch.id);
+  assert.throws(()=>f.branches.finalResourceExitFence(stepId));
+  db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run(branch.configuration_json,f.branch.id);
+  assert.deepEqual(f.branches.finalResourceExitFence(stepId),fence,'restored original configuration replays the same fence');
+  throw Error('final fence regression complete');
+ }),/final fence regression complete/);
 });
 
 // Deferred: source-only child custody, owner transaction rollback and restart readback.

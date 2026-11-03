@@ -28,7 +28,7 @@ function fenceExit(db:Database.Database,input:BranchGenerationExitFenceInput,pur
  }
  const eligibility=purpose==='retry'?"r.retry_draining=1":`r.retry_draining=0 AND r.generation=0 AND r.state IN ('active','draining')
   AND e.parent_execution_id IS NULL AND e.parent_attempt_id IS NULL AND e.call_depth=0 AND e.admission_source='manual'
-  AND b.enabled=1 AND b.deleting=0 AND b.active_version_id=e.version_id AND b.binding_revision_id=e.binding_revision_id AND b.configuration_json=e.configuration_json
+  AND b.enabled=1 AND b.deleting=0 AND b.active_version_id=e.version_id AND b.binding_revision_id=e.binding_revision_id
   AND EXISTS(SELECT 1 FROM branch_versions v WHERE v.id=e.version_id AND v.branch_id=e.branch_id AND json_extract(v.definition_json,'$.trigger.kind')='manual')
   AND COALESCE(json_extract(e.configuration_json,'$.checkpointMode'),'async') IN ('sync','async')
   AND json_extract(e.provenance_json,'$.source')='manual'
@@ -39,7 +39,13 @@ function fenceExit(db:Database.Database,input:BranchGenerationExitFenceInput,pur
   JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id
   JOIN conversations c ON c.id=r.chat_id AND c.branch_id=e.branch_id AND c.branch_execution_id=e.id
   WHERE r.execution_id=? AND r.step_execution_id=? AND r.generation=? AND r.chat_id=? AND c.project_id=? AND ${eligibility} AND r.state!='retired'`).get(input.executionId,input.stepExecutionId,input.generation,input.conversationId,input.projectId);
- if(!resource)throw Error('Original retry-draining resource generation required');
+ if(!resource)throw Error(purpose==='retry'?'Original retry-draining resource generation required':'Original final resource generation required');
+ if(purpose==='final-resource'){
+  // The execution configuration is stored canonically, while the Branch can retain
+  // the same JSON object in insertion order. Compare values, not textual key order.
+  const configs=db.prepare('SELECT b.configuration_json branch_config,e.configuration_json execution_config FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=?').get(input.executionId) as {branch_config:string;execution_config:string}|undefined;
+  if(!configs||stableJson(JSON.parse(configs.branch_config))!==stableJson(JSON.parse(configs.execution_config)))throw Error('Final resource configuration changed');
+ }
  const members=db.prepare('SELECT * FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(input.stepExecutionId) as Array<{agent_id:string}>;
  const actual=db.prepare('SELECT id FROM agents WHERE conversation_id=? AND project_id=? AND deleted_at IS NULL ORDER BY id').all(input.conversationId,input.projectId) as Array<{id:string}>;
  if(stableJson(members.map(m=>m.agent_id).sort())!==stableJson(normalized.agentIds)||stableJson(actual.map(m=>m.id).sort())!==stableJson(normalized.agentIds))throw Error('Complete live original generation member inventory required');
