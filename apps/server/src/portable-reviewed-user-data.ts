@@ -333,6 +333,25 @@ function parseGitOrigHeadReview(value:ReviewedGitUserData['origHeadReview'],form
   return {oid:binding};
 }
 
+/** Native fetch records have two framing tabs; the remaining note is opaque review text. */
+function parseGitFetchHeadReview(value:ReviewedGitUserData['fetchHeadReview'],format:'sha1'|'sha256'):Array<{oid:string;merge:boolean}> {
+  fields(value,['path','source','dataBase64']);
+  if(value.path!=='FETCH_HEAD'||value.source!=='selected_worktree')throw new Error('Invalid FETCH_HEAD review path/provenance');
+  if(value.dataBase64===null)return [];
+  if(typeof value.dataBase64!=='string'||value.dataBase64.length>Math.ceil(1024*1024/3)*4)throw new Error('FETCH_HEAD original exceeds its bound');
+  const raw=Buffer.from(value.dataBase64,'base64'),original=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw);
+  if(raw.length>1024*1024||raw.toString('base64')!==value.dataBase64||!Buffer.from(original).equals(raw)||original&&!original.endsWith('\n'))throw new Error('Invalid FETCH_HEAD original bytes; preserve source');
+  safeText(original,'Git FETCH_HEAD original');
+  const lines=original?original.slice(0,-1).split('\n'):[];
+  if(lines.length>10000)throw new Error('FETCH_HEAD entry count exceeds its bound');
+  const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
+  return lines.map(line=>{
+    const entry=/^([a-f0-9]+)\t(not-for-merge|)\t([^\x00\n]*)$/.exec(line);
+    if(!entry||!oidPattern.test(entry[1]!)||/^0+$/.test(entry[1]!))throw new Error('Unsupported FETCH_HEAD record; preserve source');
+    return {oid:entry[1]!,merge:entry[2]===''};
+  });
+}
+
 /** Decode either original index layout without guessing missing CRCs or hash widths. */
 function decodeRetentionPackIndex(idx:Buffer,format:'sha1'|'sha256',packChecksum:Buffer):Array<{oid:string;offset:number;crc:number|null}> {
   const width=format==='sha1'?20:32;
@@ -454,7 +473,7 @@ function validatePackRetention(records:ReviewedGitUserData['packRetentionReview'
 }
 
 export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','configurationReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','exclusions']);
+  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','configurationReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','fetchHeadReview','exclusions']);
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const ids=new Map<string,GitObject>();let bytes=0;
   const oidPattern=value.format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
@@ -517,6 +536,22 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   for(const ref of value.refs){
     let target=ref;const seen=new Set<string>();
     while(target.symbolic){if(seen.has(target.name))throw new Error('Cyclic Git symbolic ref');seen.add(target.name);const next=value.refs.find(candidate=>candidate.name===target.symbolic);if(!next||next.oid!==ref.oid)throw new Error('Incomplete Git symbolic ref target');target=next;}
+  }
+  for(const entry of parseGitFetchHeadReview(value.fetchHeadReview,value.format)){
+    let object=ids.get(entry.oid);
+    if(!object)throw new Error('Missing FETCH_HEAD object; preserve source');
+    if(entry.merge){
+      const seen=new Set<string>();
+      while(object.type==='tag'){
+        if(seen.has(object.oid))throw new Error('Cyclic FETCH_HEAD tag binding; preserve source');
+        seen.add(object.oid);
+        const targets=text(Buffer.from(object.dataBase64,'base64')).split('\n\n',1)[0]!.split('\n').filter(line=>line.startsWith('object '));
+        if(targets.length!==1)throw new Error('Ambiguous FETCH_HEAD tag binding; preserve source');
+        object=ids.get(targets[0]!.slice(7));
+        if(!object)throw new Error('Missing FETCH_HEAD tag target; preserve source');
+      }
+      if(object.type!=='commit')throw new Error('Mergeable FETCH_HEAD entry must resolve to a captured commit');
+    }
   }
   const origHead=parseGitOrigHeadReview(value.origHeadReview,value.format);
   if(origHead){
@@ -1037,7 +1072,7 @@ async function captureGitRaw(association:GitAssociation) {
   inventory.push({name:'info',source:'shared',identity:infoBefore??'',...(infoBefore===null?{absent:true as const}:{})});
   for(const name of gitInfoPaths)await walk(path.join(commonDir,name),name,'shared');
   if(await infoIdentity()!==infoBefore)throw new Error('Git info parent changed during capture');
-  for(const name of ['HEAD','ORIG_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
+  for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
   for(const name of ['config','shallow','packed-refs','refs','objects'])await walk(path.join(commonDir,name),name,'shared',name==='objects');
@@ -1060,7 +1095,8 @@ async function captureGitRaw(association:GitAssociation) {
   validateGitInfoReview(infoReview);
   const shallowReview:ReviewedGitUserData['shallowReview']={path:'shallow',source:'common_repository',dataBase64:files.find(file=>file.source==='shared'&&file.name==='shallow')?.data.toString('base64')??null};
   const origHeadReview:ReviewedGitUserData['origHeadReview']={path:'ORIG_HEAD',source:'selected_worktree',dataBase64:files.find(file=>file.source==='selected'&&file.name==='ORIG_HEAD')?.data.toString('base64')??null,reflogDataBase64:files.find(file=>file.source==='selected'&&file.name==='logs/ORIG_HEAD')?.data.toString('base64')??null};
-  return {files,evidence:JSON.stringify(inventory),infoReview,shallowReview,origHeadReview};
+  const fetchHeadReview:ReviewedGitUserData['fetchHeadReview']={path:'FETCH_HEAD',source:'selected_worktree',dataBase64:files.find(file=>file.source==='selected'&&file.name==='FETCH_HEAD')?.data.toString('base64')??null};
+  return {files,evidence:JSON.stringify(inventory),infoReview,shallowReview,origHeadReview,fetchHeadReview};
 }
 
 /** Native plumbing sees only an exclusive private copy, with generated config and no source pointers/index. */
@@ -1082,7 +1118,7 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256') {
     const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
     const expectedRefs=new Map<string,{oid?:string;symbolic?:string}>();
     for(const file of files){
-      if(file.name==='ORIG_HEAD'||file.name==='logs/ORIG_HEAD')continue;
+      if(file.name==='ORIG_HEAD'||file.name==='logs/ORIG_HEAD'||file.name==='FETCH_HEAD')continue;
       if(derivedGitCache(file.name)){
         if(!derivedGitCache(file.name,format))throw new Error('Git derived cache name differs from the declared format');
         continue;
@@ -1161,7 +1197,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
       await absentGitPath(path.join(gitDir,'packed-refs'));
       // Unknown private storage/pseudorefs must not silently disappear from the review copy.
       const names=await fs.readdir(gitDir);if(names.length>20000)throw new Error('Selected Git storage inventory exceeds its bound');
-      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
+      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD','index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
     }
   };
   const snapshot=async()=>{
@@ -1182,6 +1218,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
   const before={...initial,storage:await captureIndexStorage(gitDir,format)};
   validateGitShallowReview(before.raw.shallowReview,format);
   parseGitOrigHeadReview(before.raw.origHeadReview,format);
+  parseGitFetchHeadReview(before.raw.fetchHeadReview,format);
   const captured=await readCapturedGit(before.raw.files,format),batch=captured.batch;
   const objects:GitObject[]=[];let offset=0;
   while(offset<batch.length){
@@ -1222,7 +1259,7 @@ export async function exportReviewedGit(root:string):Promise<ReviewedGitUserData
     packRetentionReview.push({packOid,packDataBase64:pack.toString('base64'),indexDataBase64:idx.toString('base64'),keepDataBase64:find('.keep')?.toString('base64')??null,mtimesDataBase64:mtimes?.toString('base64')??null,objects:entries.map((entry,i)=>({oid:entry.oid,mtime:mtimes?mtimes.readUInt32BE(12+i*4):null}))});
   }
   packRetentionReview.sort((a,b)=>a.packOid<b.packOid?-1:a.packOid>b.packOid?1:0);
-  const result:ReviewedGitUserData={version:1,format,objects,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,configurationReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,objects,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,fetchHeadReview:before.raw.fetchHeadReview,configurationReview,exclusions};
   // Verify every captured object and graph before deriving any missing logical index entries.
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
@@ -1259,7 +1296,7 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
     const undo=encodeResolveUndo(value.resolveUndo,value.format),extension=Buffer.alloc(undo.length?8:0);
     if(undo.length){extension.write('REUC');extension.writeUInt32BE(undo.length,4);}
     const index=Buffer.concat([header,...entries,extension,undo]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
-    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,packRetentionReview:value.packRetentionReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
+    await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',configuration:value.configurationReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,fetchHeadReview:value.fetchHeadReview,packRetentionReview:value.packRetentionReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
   }catch(error){throw new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error});}
 }
 

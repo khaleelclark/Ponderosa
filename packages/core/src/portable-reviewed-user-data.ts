@@ -8,6 +8,8 @@ export interface ReviewedGitUserData {
   head:{symbolic:string}|{oid:string};
   /** Exact selected-worktree historical pointer and logs/ORIG_HEAD bytes or absences; never active refs. */
   origHeadReview:{path:'ORIG_HEAD';source:'selected_worktree';dataBase64:string|null;reflogDataBase64:string|null};
+  /** Exact selected-worktree fetched-head records or absence; never active fetch/merge authority. */
+  fetchHeadReview:{path:'FETCH_HEAD';source:'selected_worktree';dataBase64:string|null};
   /** Exact oldest-first local reflog bytes; never source worktree ownership. */
   reflogs:Array<{path:string;dataBase64:string}>;
   index:Array<{mode:string;oid:string;stage:number;path:string;intentToAdd:boolean;assumeUnchanged:boolean;skipWorktree:boolean}>;

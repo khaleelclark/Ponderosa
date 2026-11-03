@@ -150,7 +150,7 @@ import and retained-original re-export. The existing DTO and callers need no
 format change. Source-only implementation; no runtime equivalence claim.
 
 The selected linked gitdir's bounded top-level name inventory accepts only the
-association records, HEAD, historical ORIG_HEAD, index, config.worktree, info, refs, logs, the excluded
+association records, HEAD, historical ORIG_HEAD and FETCH_HEAD, index, config.worktree, info, refs, logs, the excluded
 administrative `locked` record and canonical `sharedindex.<OID>` names. Only the
 exact index-linked sharedindex original is read. Unknown names, unsupported
 pseudorefs and operation metadata refuse; administrative ownership is not copied.
@@ -674,6 +674,55 @@ Generated review files are not re-export authority. No reset, replay, recovery,
 source repair or ownership adoption occurs. Source-only: no parser/native/runtime,
 capture, recreation, round-trip or atomicity qualification.
 
+### Selected-worktree fetched heads
+
+Include Git also requires `fetchHeadReview`:
+`{path:"FETCH_HEAD",source:"selected_worktree",dataBase64}`. It retains exactly
+the selected gitdir's `FETCH_HEAD` bytes as canonical base64, or explicit null
+absence. Empty-present is distinct from absent. Ordinary and already validated
+linked selections use the same selected-gitdir scope; corresponding main/common
+or other-worktree files are not inspected. Existing canonical same-owner,
+single-link, no-follow reads and raw identity/hash/absence before-after evidence
+apply. The existing 1 MiB control-file, 10,000-record and 32 MiB whole raw-capture
+bounds are retained, without increasing caps.
+
+[Git fetch documentation](https://github.com/git/git/blob/v2.54.0/Documentation/git-fetch.adoc)
+and the pinned [fetch writer](https://github.com/git/git/blob/v2.54.0/builtin/fetch.c)
+(`append_fetch_head`, `store_updated_refs`) establish a list, not one ordinary
+ref: each supported UTF-8 record is a lowercase full-width nonzero SHA-1/SHA-256
+OID, TAB, an empty or `not-for-merge` marker, TAB, opaque note, LF. Zero records
+are valid. Record order and repeated entries survive unchanged, including
+appended records; no match to current refs or ordering of merge markers is
+required. Only the first two tabs frame fields. Notes may contain further tabs
+or carriage returns; NUL, malformed UTF-8, BOMs, incomplete lines, unsupported
+markers and invalid IDs refuse. The writer escapes URL newlines as literal
+backslash-n, which remains exact text. Notes, URL spellings, paths and refnames
+are never interpreted, followed or activated. Known-secret checks apply to the
+whole original, so recognizable credentials refuse rather than being rewritten.
+
+Every record requires its exact captured, hash/type/graph-verified local object,
+including otherwise unreachable objects; missing or pruned objects refuse.
+The writer classifies objects that cannot peel to a commit as `not-for-merge`;
+the pinned [merge consumer](https://github.com/git/git/blob/v2.54.0/builtin/merge.c)
+(`handle_fetch_head`) consumes empty-marker entries as merge parents. Accordingly,
+empty-marker objects must resolve through captured noncyclic tag targets to a
+commit; `not-for-merge` entries can name any supported verified object type.
+No current ref, current tip or operation authority is invented from these records.
+`FETCH_HEAD` may survive a completed fetch; existing unfinished-operation holds
+remain unchanged.
+
+Shared live export, parsed import, recreation and retained-original re-export
+validation requires this exact record and provenance, rejecting missing/unknown
+fields. Syntax is checked before native reading, and FETCH_HEAD is skipped before
+private native read-view copying. Existing all-local-object enumeration retains
+otherwise unreachable objects. Recreation stores this record only in inactive
+`CONFIGURATION-REVIEW.json` and the original manifest, never active
+`.git/FETCH_HEAD`. Existing shared callers need no change: they already invoke
+the same validator. No fetch, pull, merge, reset, replay, source repair, ownership
+adoption or schema/version/dependency change. Original and partial bytes remain
+preserved. Source-only: native behavior, capture, recreation, round trips and
+atomicity have not been qualified.
+
 ### Selected local reflogs
 
 The explicit Git checkbox/API selection now includes ordinary local `.git/logs/HEAD`
@@ -833,6 +882,7 @@ still requires separate human review/action.
 | `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist, except missing parents of explicitly validated shallow commits. Supported normal local `.git` and the explicit reciprocally validated selected-worktree/common-directory association above only. Associated shared objects are explicitly authorized by Include Git; unassociated external/common directories and alternate object stores refuse. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
 | `git.origHeadReview.{path,source,dataBase64,reflogDataBase64}` | Required exact selected-worktree `ORIG_HEAD` and optional matching log bytes or explicit absences. Canonical direct/symbolic binding and historical log endpoints require captured verified objects/refs. Remains inactive in `CONFIGURATION-REVIEW.json`; see [previous HEAD contract](#selected-worktree-previous-head). |
+| `git.fetchHeadReview.{path,source,dataBase64}` | Required exact selected-worktree FETCH_HEAD bytes or explicit absence. Ordered/repeated LF records retain native markers and opaque notes; every OID requires captured verified objects, and mergeable entries peel to commits. Inactive CONFIGURATION-REVIEW.json only; see [fetched-head contract](#selected-worktree-fetched-heads). |
 | `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
 | `git.shallowReview.{path,source,dataBase64}` | Required exact common-repository `shallow` bytes or explicit null absence (empty-present stays distinct). Bounded canonical ASCII/OID validation requires captured verified commits; only those commit parents may be missing. Recreated exclusively as `.git/shallow` inside the new separate review repository, with original bytes retained for re-export. No native working-root adoption, fetch/deepening, grafts or partial/promisor support; source-only, runtime unverified. |
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
