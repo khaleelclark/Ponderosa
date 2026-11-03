@@ -190,8 +190,9 @@ live settings. No native/provider/runtime qualification was performed.
 Supported TOML arrays and inline tables now compose recursively with supported
 scalars in that same reader. Exact nonsecret source spans survive; recognized
 secret assignments remove their complete structurally valid value. Nested secret
-members of nonsecret inline tables refuse the entire selection rather than
-partially rewriting a table. Arrays support comments/newlines/trailing commas;
+inline members/subtrees are removed with necessary adjacent separators while
+retaining nonsecret sibling source spans; emptied inline tables remain valid.
+Arrays support comments/newlines/trailing commas;
 inline tables refuse layout comments/newlines and trailing commas. Duplicate
 members and later extension of closed inline tables refuse. Value depth is capped
 at 32 below the root and total value nodes at 10,000, alongside existing byte,
@@ -207,8 +208,17 @@ hashes and equals signs are contents. Multiline keys, invalid escapes, duplicate
 decoded spellings and illegal namespace extensions refuse. Implicit/explicit/dotted
 and closed-value namespaces remain distinct, with 64-segment path bounds and
 10,000 namespace-node bound in addition to existing value/byte/depth limits.
-Recognized secret segments remove complete valid assignments or refuse static
-credential tables/retained inline subtrees, without partial unrelated loss.
+Recognized secret segments remove complete valid assignments, inline members and
+static/array-table credential namespaces without removing unrelated siblings.
+Discarded headers/assignments remain registered for original syntax, duplicate and
+type checks, including latest-parent array-table elements and later subheaders.
+All original values still pass the bounded grammar; only retained leaves receive
+secret inspection. Header paths classify credential ancestors from decoded keys;
+removed namespaces cannot become nonsecret redefinitions. Live export and import
+use the same scrubber, with truthful removal flags; import rejects unsanitized
+nested credentials and retained-original re-export cannot restore removed fields.
+No settings activation, dependency, schema/version or root-inventory change.
+Source-only: no parser execution, tests or round-trip qualification.
 Accepted nonsecret source spans and existing raw/decoded string inspection remain.
 See the [exact structured contract](git-provider-user-data-transport.md#bounded-toml-syntax).
 No general TOML completeness or runtime qualification is claimed.

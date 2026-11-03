@@ -48,13 +48,15 @@ function safeText(value:string,label:string):void {
   assertPortableSecretsAbsent(value,label);
   if(redactPortableDiagnostic(value)!==value||/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value)||/(?:^|\n)\s*(?:export\s+)?(?:[A-Z0-9_]+_)?(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)\s*=/m.test(value))throw new Error(`${label} contains recognizable credentials; preserve source and remove secrets explicitly`);
 }
-/** Bounded structured TOML subset; source spans survive unless their whole assignment is secret. */
+/** Bounded structured TOML subset; remove credential spans without rewriting retained values. */
 function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean} {
   if(Buffer.byteLength(value)>1024*1024||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|\r(?!\n)/.test(value))throw new Error('Invalid or oversized review TOML');
-  let offset=0,kept=0,safe='',removedSecretFields=false,entries=0,namespaceNodes=0;
+  let offset=0,entries=0,namespaceNodes=0;
+  const removals:Array<{start:number;end:number}>=[];
+  const remove=(start:number,end:number)=>{removals.push({start,end});};
   type Namespace={kind:'implicit'|'explicit'|'dotted'|'value'|'array';children:Map<string,Namespace>;latest?:Namespace};
   const namespace=(kind:Namespace['kind']):Namespace=>{if(++namespaceNodes>10000)throw new Error('Review TOML namespace exceeds its bound');return {kind,children:new Map()};};
-  const root=namespace('explicit');let scope=root,scopeDepth=0;
+  const root=namespace('explicit');let scope=root,scopeDepth=0,scopeSecret=false;
   const fail=():never=>{throw new Error('Invalid, ambiguous or unsupported review TOML value syntax');};
   const horizontal=()=>{while(value[offset]===' '||value[offset]==='\t')offset++;};
   const newline=()=>{if(value[offset]==='\r')offset++;if(value[offset]!=='\n')fail();offset++;};
@@ -157,14 +159,27 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
       fail();
     }
     if(value[offset]==='{'){
-      offset++;horizontal();const members=namespace('explicit');
+      offset++;const contentStart=offset;horizontal();const members=namespace('explicit');
+      const spans:Array<{start:number;end:number;secret:boolean}>=[];
       if(value[offset]==='}'){offset++;return;}
       while(offset<value.length){
-        const parts=keyPath();registerPath(members,parts,false);
+        const start=offset,parts=keyPath();registerPath(members,parts,false);
         horizontal();if(value[offset++]!=='=')fail();horizontal();
-        if(!discard&&parts.some(isPortableSecretField))throw new Error('Nested credential TOML fields require separate preservation; inline tables are not partially scrubbed');
-        readValue(discard,depth+1);horizontal();
-        if(value[offset]==='}'){offset++;return;}
+        const secret=discard||parts.some(isPortableSecretField);
+        readValue(secret,depth+1);horizontal();spans.push({start,end:offset,secret});
+        if(value[offset]==='}'){
+          if(!discard){
+            // Remove runs with one adjacent separator; retained member/value bytes stay exact.
+            for(let i=0;i<spans.length;){
+              if(!spans[i]!.secret){i++;continue;}
+              const first=i;while(i<spans.length&&spans[i]!.secret)i++;
+              const start=first===0?contentStart:spans[first-1]!.end;
+              const end=i===spans.length?offset:first===0?spans[i]!.start:spans[i-1]!.end;
+              remove(start,end);
+            }
+          }
+          offset++;return;
+        }
         if(value[offset++]!==',')fail();horizontal();
         // TOML 1.0 inline tables allow neither trailing commas nor layout newlines/comments.
         if(value[offset]==='}')fail();
@@ -205,21 +220,26 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
   };
   while(offset<value.length){
     if(++entries>10000)fail();const start=offset;horizontal();
-    if(value[offset]==='#'||value[offset]==='\r'||value[offset]==='\n'||offset===value.length){endLine();continue;}
+    if(value[offset]==='#'||value[offset]==='\r'||value[offset]==='\n'||offset===value.length){endLine();if(scopeSecret)remove(start,offset);continue;}
     if(value[offset]==='['){
       offset++;const array=value[offset]==='[';if(array)offset++;
       const parts=keyPath();if(value[offset++]!==']'||array&&value[offset++]!==']')fail();
-      if(parts.some(isPortableSecretField))throw new Error('Credential TOML tables require separate preservation');
-      scope=registerPath(root,parts,array?'array':'table');scopeDepth=parts.length;endLine();continue;
+      scope=registerPath(root,parts,array?'array':'table');scopeDepth=parts.length;
+      scopeSecret=parts.some(isPortableSecretField);endLine();if(scopeSecret)remove(start,offset);continue;
     }
     const parts=keyPath();if(scopeDepth+parts.length>64)fail();
     horizontal();if(value[offset++]!=='=')fail();horizontal();
     registerPath(scope,parts,false);
-    const secret=parts.some(isPortableSecretField);readValue(secret);
-    endLine();
-    if(secret){safe+=value.slice(kept,start);kept=offset;removedSecretFields=true;}
+    const secret=scopeSecret||parts.some(isPortableSecretField);readValue(secret);
+    endLine();if(secret)remove(start,offset);
   }
-  safe+=value.slice(kept);return {safe,removedSecretFields};
+  let kept=0,safe='';
+  // Parent removals subsume nested edits; all original namespace/syntax checks ran first.
+  for(const span of removals.sort((a,b)=>a.start-b.start||b.end-a.end)){
+    if(span.start>kept)safe+=value.slice(kept,span.start);
+    kept=Math.max(kept,span.end);
+  }
+  safe+=value.slice(kept);return {safe,removedSecretFields:removals.length>0};
 }
 async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:bigint):Promise<{data:Buffer;mode:number}> {
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');

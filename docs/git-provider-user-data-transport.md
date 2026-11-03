@@ -583,7 +583,8 @@ The shared `scrubReviewToml` reader handles selected `.codex/config.toml` live
 export and imported-manifest validation. Accepted nonsecret source spans stay
 byte-for-byte unchanged. Recognized secret-key assignments are removed as
 whole spans, including multiline payload, trailing comment and terminating newline;
-`removedSecretFields` records the removal. Import refuses such retained assignments.
+`removedSecretFields` records removals, including nested members and credential
+namespaces described below. Import refuses any such retained known-secret field.
 Decoded nonsecret strings also pass existing recognizable-secret inspection, so
 supported escapes cannot bypass it. Arbitrary disguised credentials remain outside
 that inspection guarantee.
@@ -622,15 +623,31 @@ headers traverse the latest defined parent element. Namespace checks include eve
 element. Static-array append, table/array conversion, closed-value extension and
 retroactive conversion of an implicit parent into an array refuse. Source order and
 bytes carry the elements; parsed namespaces are inspection-only.
-Any decoded secret segment removes the whole safely delimited assignment; a secret
-static/array-table path or retained inline-member path refuses the complete selection.
+Any decoded secret key segment removes its complete assignment or inline member,
+including an entire credential subtree. Inline tables retain nonsecret siblings
+and their exact key/value source spans; only removed members and the necessary
+adjacent separators/layout are cut. Nested inline tables inside arrays use the
+same reader. A table emptied by these removals remains a valid empty inline table;
+array elements and their order remain intact.
 
-A recognized secret assignment may contain any supported value; the complete
-assignment is parsed before removal. A recognized secret member nested within an
-otherwise nonsecret inline table refuses the entire selection with an explicit
-message; no partial member rewrite or unrelated-setting loss is performed. Every
-retained string leaf is decoded and inspected, including leaves nested in arrays
-or inline tables. The remaining raw-text scan is unchanged.
+Static and array-table headers containing a secret segment, their assignments and
+intervening comments/layout are omitted until the next header. Each new header is
+classified by its complete decoded root path, including credential ancestors;
+nonsecret headers and siblings remain. Original namespace registration continues
+for discarded declarations and every array-table element. Later headers still
+traverse the latest parent element, and removed namespaces cannot bypass duplicate
+or type-conflict checks. No discarded value is decoded into diagnostics.
+
+Every removed value still passes the complete supported grammar, nesting/count
+bounds and original duplicate/namespace validation before any output is assembled.
+Retained string leaves receive decoded recognizable-secret inspection, including
+leaves nested in arrays or inline tables; discarded credential leaves are parsed
+without credential diagnostics. The remaining raw-text scan is unchanged. Live
+export and import validation share this scrubber; import rejects known-secret
+members/namespaces rather than silently sanitizing the supplied manifest.
+Retained-original re-export uses only the validated sanitized original, so removed
+fields cannot return. No settings, environment references, hooks or grants activate.
+This change is source-only; parser execution and round trips were not performed.
 
 Offset/local date-times, local dates and local times accept valid Gregorian
 calendar days (four-digit years), hours 00–23, minutes/seconds 00–59 and numeric
@@ -679,7 +696,7 @@ still requires separate human review/action.
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. JSON known secret fields are removed structurally. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): whole recognized credential assignments are removed, including multiline payloads; accepted nonsecret source bytes survive. Import enforces the same grammar and rejects retained credential assignments. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. JSON known secret fields are removed structurally. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
