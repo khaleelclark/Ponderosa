@@ -421,7 +421,7 @@ Node Script/ordinary-approval-gate/branch_call owners with canonical per-Script
 retries. Every retained owner must have a manual, effect-free serial definition,
 with no parallel controls and stop policies for workflow, gates and Calls.
 Existing condition/route, edge loops and JSON state remain supported. Automatic
-root trees, parallel-tree retry families and issued/Agent/resource/native/
+root trees and parallel-tree retry families use the later successors; issued/Agent/resource/native/
 effectful/unknown retries retain their previous boundaries. Existing standalone
 manual/automatic serial/parallel support is unchanged.
 
@@ -607,3 +607,55 @@ No schema/storage-version/DTO/format/dependencies changed. No tests/builds/types
 or execution were run; timing/durability, notifications, round trips, scheduling,
 rollback, native equivalence, atomicity and whole-Bible/full-portability acceptance
 remain unvalidated. See the [parallel/mixed-tree continuation proof](branch-foreign-checkpoint-continuation.md#proven-automatic-root-parallel-and-mixed-call-tree-script-retries).
+
+
+## Proven manual-root mixed Call-tree Script retries
+
+Private runtime-tree recreation now recognizes serial Script retries within a
+proven manual-root mixed tree. The owner's validated parent ancestry determines
+its own root and complete related owner inventory; unrelated histories do not
+supply the required mixture or gain eligibility. That inventory must contain
+both serial and fork/Map owners, all with manual, effect-free Node Script/ordinary
+approval-gate/Call definitions and workflow/gate/Call stop policies. It excludes
+host/custody, execution-owned Chats, secrets, resource/action/bundle and
+issued/recovery/runtime-outcome facts. Existing condition/route/loop/JSON state
+and fork/Map/Join controls remain supported.
+
+A separate default-off manual mixed eligibility check supplies the existing
+serial-tree retry context only to serial owners. Parallel owners keep the
+established manual parallel codec; automatic definition/origin flags are not
+used for manual roots. Existing all-serial/manual-parallel and automatic-root
+families remain unchanged. The EXIT producer's structural ancestor guard admits
+these mixed manual definitions while retaining separate current pins,
+configuration, permissions, invocation, saver and closure/drain checks. Current
+foreign review and portable preflight already admit the per-owner definitions.
+
+Existing native parent/attempt/input/hash/Call occurrence, mapped bindings,
+manual root and Call-child acceptance/admission, depth/ceilings/counters and full
+inventory remain mandatory. Held remap/insertion/readback/re-export grants no
+authority. Continuation independently proves selected and latest whole trees,
+exact committed saver bytes/hash/invocation and every required child save.
+Authentic EXIT interruption/gate closure and process-group/pipe drain remain;
+root bytes cannot bless missing/pending child saves or promote latest-only
+terminal observations into selected cuts or invented history.
+
+Serial retry proof keeps consecutive consumed attempts, input/purpose/hash/
+fences/leases/authorization, actual exit/settlement/results, ceilings/delay/event
+time/absolute availability, failure-edge precedence and no intermediate state or
+seals. Parallel causal graph/cancellation proof is unchanged. Calls/gates never
+retry, serial canceled source gates remain refused and admitted Call-child
+cancellation remains refused. Delayed retries and unfinished Calls stay distinct.
+Bounded held/admitted/re-export/local-rewind generations/maps/commands, prefixes
+and deadlines seeded once, historical terminal children and legitimate suffix
+children remain shared. Fresh human/manual root and actual Call-child destination
+admission, per-owner budgets/permissions/capacity/current choices/directories/
+no-secrets, original-key receipt recovery and pending-gate ownership/notifications
+remain existing paths. Future `MAX(number)+1` attempts still use current
+destination time/readiness/capacity/policy.
+
+Issued/Agent/resource/native/effectful/unknown/secret/bundle/owned-Chat families
+gain no eligibility; missing/running/undrained proof stays held. No schema,
+storage-version, DTO, format or dependencies changed. Source only: no tests,
+builds, types or execution were run; timing/durability, notifications, round trips,
+scheduling, rollback, native equivalence, atomicity and whole-Bible/full-portability
+acceptance remain unvalidated. See the [manual mixed-tree proof](branch-foreign-checkpoint-continuation.md#proven-manual-root-mixed-call-tree-script-retries).

@@ -97,6 +97,10 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const definition=evidence?treeFact(evidence.get(o.executionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row).definition_json);
     return scriptTreeRetryDefinitionSupported(definition,o.executionId===c.rootExecutionId)&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&!o.selected.bundles.length&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
   });
+  const manualMixedTreeRetries=c.issuedResources!==true&&rootDefinition.trigger.kind==='manual'&&owners.some(o=>hasParallelControls(evidence?treeFact(evidence.get(o.executionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row).definition_json)))&&owners.some(o=>!hasParallelControls(evidence?treeFact(evidence.get(o.executionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row).definition_json)))&&owners.every(o=>{
+    const definition=evidence?treeFact(evidence.get(o.executionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row).definition_json);
+    return scriptTreeRetryDefinitionSupported(definition)&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&!o.selected.bundles.length&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
+  });
   const automaticTree=automaticScriptDefinitionSupported(rootDefinition,true,false,false,serialTreeRetries,parallelTreeRetries);
   if(root.selected.execution[0].admission_source==='automatic'&&(!automaticTree||!automaticScriptOriginSupported(db,root.selected.execution[0],rootDefinition,evidence?evidence.get(c.rootExecutionId)??null:undefined,true,false,false,serialTreeRetries,parallelTreeRetries)))return false;
   const allIds=treeIds(owners);if(new Set(allIds).size!==allIds.length)return false;
@@ -123,7 +127,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     }
     if(source&&treeFact(source,'provenance').source==='historical_child'&&(!seeds?.has(o.executionId)||!o.audit.some((a:Row)=>a.kind==='tree_historical_rewind')))return false;
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
-    const ownerSerialRetries=serialTreeRetries||parallelTreeRetries&&!hasParallelControls(definition);
+    const ownerSerialRetries=serialTreeRetries||(parallelTreeRetries||manualMixedTreeRetries)&&!hasParallelControls(definition);
     if(automaticTree&&(o.executionId!==c.rootExecutionId&&definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind)||s.failure&&s.failure.action!=='stop'&&!((serialTreeRetries||parallelTreeRetries)&&s.kind==='script'&&s.failure.action==='retry')))return false;
     const automaticRootTree=o.executionId===c.rootExecutionId&&automaticScriptDefinitionSupported(definition,true,false,false,serialTreeRetries,parallelTreeRetries)&&c.issuedResources!==true&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&!o.selected.bundles.length&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
     if(observing&&(definition.trigger.kind!=='manual'&&!automaticRootTree||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||!['sync','async','exit'].includes(o.configuration.checkpointMode??'async')||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;

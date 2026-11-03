@@ -18,7 +18,7 @@ Current choices are established through the existing destination configuration/b
 
 ## Authority and atomicity
 
-Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source standalone Script/approval-gate subset described below. Workflow failure policy must stop. Per-step policies also stop, except canonical Script retries in manual standalone serial or parallel graphs and proven automatic-source standalone serial or parallel graphs as described below, plus the manual serial and proven automatic-root serial/parallel Call-tree successors below; secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work, a proven prepared retry or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
+Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source standalone Script/approval-gate subset described below. Workflow failure policy must stop. Per-step policies also stop, except canonical Script retries in manual standalone serial or parallel graphs and proven automatic-source standalone serial or parallel graphs as described below, plus the manual serial/mixed and proven automatic-root serial/parallel Call-tree successors below; secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work, a proven prepared retry or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
 
 The preview independently verifies the actual recreated-held imported native frontier/maps/participant ownership through existing runtime-data readback. It checks the imported owner remains waiting/unaccepted, current destination availability/pins/configuration/policy and accessible directories. Any unknown custody or native authority on the held owner refuses. `not_applicable` means no selected/latest source or native resource exists; it never means an unavailable receipt was treated as released.
 
@@ -1225,5 +1225,59 @@ Issued/Agent/resource/native/effectful/unknown/secret/bundle/execution-owned Cha
 families gain no support; missing/running/undrained proof stays held. No schema,
 storage-version, DTO, format or dependency changes. This is source implementation
 only: no tests/builds/types or execution were run. Timing/durability, notifications,
+round trips, scheduling, rollback, native equivalence, atomicity and whole-Bible/
+full-portability acceptance remain unvalidated.
+
+
+## Proven manual-root mixed Call-tree Script retries
+
+A proven original manual root may now combine serial and parallel owners with
+canonical per-Script retries in serial owners: a parallel root with a serial retry
+child, a serial retry root with a parallel child, or deeper mixed Call trees.
+The complete owner inventory must contain both a serial owner and an owner using
+existing fork/Map controls. Every owner must have a manual, effect-free Node
+Script/ordinary approval-gate/Call definition, workflow/gate/Call stop policies,
+no secrets and no host/issued/recovery/runtime-outcome/resource/action/bundle
+work. Existing condition/route/loop/JSON state and fork/Map/Join semantics remain.
+
+A separate default-off whole-tree eligibility check supplies the existing
+`serialTreeRetries` context only to serial owners after the full inventory
+qualifies. Parallel owners retain their existing manual codec. No automatic
+origin flag is used to label a manual root. Existing all-serial manual trees,
+automatic-root families and already supported manual parallel-owner retries
+retain their behavior. EXIT structural ancestor eligibility now recognizes
+qualifying manual mixed ancestors; this is only a producer guard, not whole-tree
+replay or current authority. Existing current foreign review and portable
+preflight already accept these per-owner definitions and need no new bypass.
+
+Selected and independent latest whole-tree replay still prove exact root manual
+input/hash/acceptance and actual Call-child parent/attempt/input/hash/admission,
+pins, mapped bindings, depth/ceilings/counters and complete inventory. Serial
+replay retains consecutive attempts, input/purpose/hash/fence/lease/authorization,
+actual process exit/settlement/results, retry ceilings/delay/event time/absolute
+`available_at`, failure-edge precedence and no intermediate seals/state writes.
+Parallel causal replay and cancellation proof are unchanged. Calls/gates never
+retry; canceled serial source gates and cancellation of admitted Call children
+remain refused. Genuine delayed retries remain distinct from unfinished Calls.
+
+Exact committed selected sync/async/default saver bytes/hash/invocation,
+independent latest whole-tree proof and every required child save remain.
+Authentic EXIT interruption/gate closure, actual process-group/pipe drain and
+current authority remain separate requirements. Root bytes cannot replace
+missing/pending child bytes; latest-only observations cannot become executable
+cuts or invented closure history. Held/admitted/re-export/local-rewind manifests,
+maps/commands, prefix-once results/deadlines, historical terminal children and
+legitimate suffix children retain the existing proof. Fresh human/manual root
+and real Call-child destination admission, per-owner budgets/permissions/capacity,
+current choices/directories/no-secrets, original-key receipts and pending-gate
+ownership/notifications remain shared paths. Future `MAX(number)+1` attempts obey
+current destination time/readiness/capacity/policy.
+
+Runtime-tree recreation limits mixed eligibility to the owner's own validated
+manual-root ancestry, excluding unrelated histories; it remains held and grants
+no authority. Issued/Agent/resource/native/effectful/unknown/secret/bundle/owned-Chat
+families gain no support. Missing/running/undrained evidence stays specifically
+held. No schema/storage-version/DTO/format/dependencies changed. Source only:
+no tests/builds/types or execution were run; timing/durability, notifications,
 round trips, scheduling, rollback, native equivalence, atomicity and whole-Bible/
 full-portability acceptance remain unvalidated.
