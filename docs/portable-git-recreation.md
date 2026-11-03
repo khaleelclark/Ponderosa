@@ -1,0 +1,65 @@
+# Fresh Git recreation and external configuration
+
+Bible #8, #12 and #15. This replaces the earlier source-only refusal of mapped
+native recovery; historical inventory paragraphs describe their own candidate.
+
+Full imports keep their existing explicit working-root destinations. Choosing
+`reviewedUserDataActivation.git` additionally creates native Git in those newly
+imported recovery folders. This choice does not change an Agent's saved working
+folder mode, grant access, or adopt a source branch/worktree cleanup receipt.
+The existing hash-bound access review covers activation and every path map.
+Git and provider settings can also use the existing unused NEW managed Shared
+destination; live managed Separate Git ownership is handled by the working-copy
+service, separately from this recovery operation.
+
+Mapped common/private packages require their complete captured association pair,
+the exact reviewed-original hash, every final root and a destination layout that
+keeps `common/worktrees/private`. All selected common originals must agree.
+The writer creates a fresh bare common repository and private worktree slots,
+rewrites `.git`, `commondir`, `gitdir` and current `core.worktree`, and makes new
+destination ownership evidence. Source pointers and process/cleanup authority
+remain historical data. No Git command, hook, provider command, fetch or service
+is invoked by recreation. Existing metadata is never replaced.
+
+Supported logical index entries, including a captured sparse index expanded to
+its verified full representation, and its sparse settings/patterns are restored.
+Worktree-local configuration remains in its own slot. Default Git hook/support
+originals now capture ordinary mode and nanosecond mtime; activating an older
+active hook without that evidence requires a fresh export. Hook originals are
+installed with the captured mode/time; recreation never invokes them.
+
+`gitPathMappings` is an optional nonempty array of `{source,destination}` absolute
+canonical path prefixes. Longest matching prefix wins. Every destination must be
+inside an explicitly chosen fresh imported root. No mapping grants access to an
+old host path. A missing map or transported dependency gives a specific error
+before native metadata creation. Nonsecret native settings and commands retain
+their values; known credential fields remain excluded and must be re-entered.
+
+New Git exports record historical common/private configuration directories and
+home solely to resolve relative and `~/` configuration paths. Those paths never
+authorize reads. External includes, including nested and conditional includes,
+compile only from canonical originals selected in the same package. Each gets a
+relocated activation copy under `ponderosa-includes` inside the newly created
+native Git storage. Source include files remain unchanged and available for
+review. Conditional include directory suffixes and unanchored globs retain
+their meaning; named-user home expansion requires explicit provenance rather
+than guessing another account's home.
+
+The include compiler detects cycles, refuses missing selected dependencies and
+uses the native ten-level include ceiling, 1 MiB per source, 1,000 references and
+32 MiB total source bytes to protect parser memory. Complete source inputs,
+comments and known-field exclusions remain in the original review package; the
+activation copies serialize their native configuration semantics. No include
+target is read from the historical source machine or an unselected destination.
+
+Per-root `applying`, `completed` or `incomplete` receipts enter the existing import
+operation. Failure preserves all destination bytes and authoritative originals.
+An incomplete or uncertain operation is never automatically repeated. Root and
+directory metadata must finalize after all links, Git and provider children.
+
+The source regression covers staged/working state, relocated nested includes,
+unchanged originals, executable hook metadata without hook execution, exact
+mapped pointers, unchanged source registration, dependency refusal and duplicate
+application refusal. It is added to the maintained server inventory. Tests,
+builds and typechecks were deliberately deferred to the integrated final pass.
+Source presence is not round-trip or whole-Bible acceptance evidence.

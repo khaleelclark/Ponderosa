@@ -2376,6 +2376,14 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-git-recreation.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native host, disposable local Git repositories; mapped capture case requires Linux descriptor custody",
+      "origin": "Bible #8 fresh native Git, mapped common/private roots, transported nested configuration and hook metadata"
     }
   ],
   "retainedReleasePayload": [

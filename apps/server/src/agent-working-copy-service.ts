@@ -1,4 +1,4 @@
-import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH} from './portable-reviewed-user-data.js';
+import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
 import {importWorkingFiles} from './portable-working-files.js';
@@ -283,12 +283,12 @@ export class AgentWorkingCopyService {
   }
 
   /** Only called after the importer validates a freshly created, unused managed Project. */
-  async initializeImportProject(project:ProjectDto,original?:{data:Buffer;sha256:string;activation:import('@ponderosa/core').ReviewedUserDataActivation}):Promise<void> {
+  async initializeImportProject(project:ProjectDto,original?:{data:Buffer;sha256:string;activation:import('@ponderosa/core').ReviewedUserDataActivation;configuration?:NativeReviewedGitConfiguration}):Promise<void> {
     if(await realpath(project.hostPath)!==project.hostPath||(await readdir(project.hostPath)).length)throw new Error('Live Shared import requires the empty NEW managed Chat folder');
     if(original){
       if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Git requires the unused NEW managed Project');
       const root=await lstat(project.hostPath,{bigint:true});
-      const files=await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation);
+      const files=await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,original.configuration);
       const after=await lstat(project.hostPath,{bigint:true}),git=await lstat(path.join(project.hostPath,'.git'),{bigint:true});
       if(root.dev!==after.dev||root.ino!==after.ino||!git.isDirectory()||await realpath(path.join(project.hostPath,'.git'))!==path.join(project.hostPath,'.git'))throw new Error('Native Git destination ownership changed');
       this.importedGitRoots.set(project.id,{rootDevice:after.dev,rootInode:after.ino,gitDevice:git.dev,gitInode:git.ino,sha256:original.sha256,files});return;

@@ -4,7 +4,7 @@ import {constants} from 'node:fs';
 import {applyExactFileMetadata} from '@ponderosa/native-host';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir,homedir} from 'node:os';
 import {crc32,deflateSync,inflateSync} from 'node:zlib';
 import type {ReviewedGitUserData,ReviewedUserData,ReviewedUserDataSelection,ReviewedUserDataActivation,ReviewedMetadataActivation,GitStorageSelection,PortableGitStorageBinding} from '@ponderosa/core';
 import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnostic,withoutPortableSecrets} from './portable-secrets.js';
@@ -153,19 +153,87 @@ export function requireReviewedMetadataApplication(value:unknown):never {
   throw new Error('Reviewed metadata application is unsupported: authoritative per-node metadata, observed destination provenance and exclusive custody are not yet connected');
 }
 export function validateReviewedUserDataActivation(value:unknown):asserts value is ReviewedUserDataActivation {
-  fields(value,['git','harness']);
+  fields(value,['git','harness'],['gitPathMappings']);
   const activation=value as ReviewedUserDataActivation;
   if(typeof activation.git!=='boolean'||typeof activation.harness!=='boolean'||!activation.git&&!activation.harness)throw new Error('Choose explicit Git or harness activation');
+  if(activation.gitPathMappings!==undefined){
+    if(!activation.git||!Array.isArray(activation.gitPathMappings)||!activation.gitPathMappings.length||activation.gitPathMappings.length>1000)throw new Error('Choose a bounded nonempty Git path mapping set');
+    const sources=new Set<string>();
+    for(const mapping of activation.gitPathMappings){
+      fields(mapping,['source','destination']);
+      for(const name of [mapping.source,mapping.destination])if(typeof name!=='string'||!path.posix.isAbsolute(name)||path.posix.normalize(name)!==name||Buffer.byteLength(name)>4096||/[\\\x00-\x1f\x7f]/.test(name))throw new Error('Git path mappings require canonical absolute paths');
+      if(sources.has(mapping.source))throw new Error('Duplicate Git source path mapping');sources.add(mapping.source);
+    }
+  }
+}
+
+/** Values stay native configuration; only explicit whole path prefixes relocate. */
+export function reviewedGitConfiguration(value:ReviewedUserData,activation:ReviewedUserDataActivation,includeOverrides:ReadonlyMap<string,string>=new Map(),sourceDirectories?:{common:string;private:string;home?:string}):{common:Buffer;private:Buffer|null;targets:string[];includes:Array<{source:string;destination:string}>} {
+  const mappings=[...(activation.gitPathMappings??[])].sort((a,b)=>b.source.length-a.source.length),targets:string[]=[],includes:Array<{source:string;destination:string}>=[];
+  const map=(source:string):string=>{
+    const match=mappings.find(mapping=>source===mapping.source||source.startsWith((mapping.source==='/'?'':mapping.source)+'/'));
+    if(!match)throw new Error('Choose an imported destination mapping for Git path: '+source);
+    return path.posix.join(match.destination,path.posix.relative(match.source,source));
+  };
+  const sourceDirectory=(worktree:boolean):string=>{
+    const directory=(sourceDirectories??value.git?.configurationSourceDirectories)?.[worktree?'private':'common'];
+    if(directory)return directory;
+    const binding=value.associationReview?.find(binding=>binding.role===(worktree?'private':'common'));
+    const root=binding?.capture?.roots.find(root=>root.rootRef===binding.storageRootRef);
+    if(!binding||!root)throw new Error('Relative external Git includes require captured source-directory provenance; use a new full mapped export');
+    return path.posix.join(root.sourcePath,binding.relativePath);
+  };
+  const expandHome=(name:string):string=>{
+    if(!name.startsWith('~'))return name;
+    const home=(sourceDirectories??value.git?.configurationSourceDirectories)?.home;
+    if(!home||name!=='~'&&!name.startsWith('~/'))throw new Error('Git home-based paths require captured source home provenance');
+    return path.posix.join(home,name.slice(2));
+  };
+  const render=(worktree:boolean):Buffer=>{
+    const rows:string[]=[];
+    for(const original of value.git!.configurationReview.filter(item=>!!item.source===worktree)){
+      let key=original.key,setting=original.value;
+      const conditional=/^includeif\.(gitdir\/i:|gitdir:)(.+)\.path$/i.exec(key);
+      if(conditional){
+        const suffix=conditional[2]!.endsWith('/**')?'/**':conditional[2]!.endsWith('/')?'/':'';
+        let condition=expandHome(conditional[2]!.slice(0,suffix? -suffix.length:undefined));
+        if(condition.startsWith('./'))condition=path.posix.resolve(sourceDirectory(worktree),condition);
+        if(path.posix.isAbsolute(condition))key='includeif.'+conditional[1]+map(condition)+suffix+'.path';
+      }
+      const include=/^(?:include|includeif\..+)\.path$/i.test(key);
+      const pathSetting=include||/^core\.(?:hookspath|attributesfile|excludesfile)$/i.test(key)||/^(?:remote|submodule)\..+\.url$/i.test(key)&&setting.startsWith('/');
+      if(pathSetting&&setting!=='/dev/null'){
+        setting=expandHome(setting);
+        const source=include?(path.posix.isAbsolute(setting)?setting:path.posix.resolve(sourceDirectory(worktree),setting)):setting;
+        if(path.posix.isAbsolute(setting))setting=map(setting);
+        else if(include)setting=map(source);
+        else if(setting.split('/').some(part=>part==='..'))throw new Error('Escaping relative Git settings require explicit source path mapping');
+        targets.push(setting);
+        if(include){includes.push({source,destination:setting});setting=includeOverrides.get(setting)??setting;}
+      }
+      const parts=key.split('.'),section=parts.shift()!,variable=parts.pop()!,subsection=parts.join('.');
+      const quote=(text:string)=>'"'+text.replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n').replace(/\t/g,'\\t').replace(/\x08/g,'\\b')+'"';
+      rows.push('['+section+(subsection?' '+quote(subsection):'')+']\n\t'+variable+(original.implicitBoolean?'':' = '+quote(setting))+'\n');
+    }
+    return Buffer.from(rows.join(''));
+  };
+  const common=render(false),privateConfig=value.git!.configurationOriginalReview[1]!.dataBase64===null?null:render(true);
+  return {common,private:privateConfig,targets,includes};
+}
+
+/** The same lexical/secret normalization used for the captured native configuration. */
+export function parseReviewedGitConfiguration(data:Buffer):{data:Buffer;items:ReviewedGitUserData['configurationReview']} {
+  if(data.length>1024*1024)throw new Error('Included Git configuration exceeds its byte bound');
+  const safe=configSource(data).safe,parsed=configSource(safe);return {data:safe,items:parsed.items};
 }
 
 /** Validate the authoritative artifact before planning any native mutation. */
-export function planReviewedUserDataActivation(data:Buffer,sha256:string,activation:ReviewedUserDataActivation):ReviewedUserData {
+export function planReviewedUserDataActivation(data:Buffer,sha256:string,activation:ReviewedUserDataActivation,mapped=false):ReviewedUserData {
   validateReviewedUserDataActivation(activation);
   if(createHash('sha256').update(data).digest('hex')!==sha256)throw new Error('Reviewed activation original identity changed');
   const value=parseReviewedUserData(data);
   if(activation.git&&!value.selection.git||activation.harness&&!value.selection.harness)throw new Error('Activated family is absent from the authoritative original');
-  if(activation.git&&value.associationReview)throw new Error('Retained mapped Git association native recreation is unsupported');
-  if(activation.git)validateNativeGitSelection(value);
+  if(activation.git)validateNativeGitSelection(value,mapped,activation);
   if(activation.harness&&process.platform==='win32')throw new Error('Exact provider POSIX metadata is unsupported on Windows');
   if(activation.harness&&!value.providerFiles.some(file=>!gitReviewOriginal(file.path))&&!value.providerDirectories.length)throw new Error('No selected harness originals are present');
   const paths=value.providerFiles.filter(file=>!gitReviewOriginal(file.path)).map(file=>file.path);
@@ -182,27 +250,35 @@ export async function assertReviewedProviderDestination(root:string,value:Review
 }
 
 /** Only semantics recreated by the before-initialization Shared-root writer. */
-function validateNativeGitSelection(value:ReviewedUserData):void {
-  if(value.associationReview)throw new Error('Mapped Git association native recreation is unsupported; retain original evidence');
+function validateNativeGitSelection(value:ReviewedUserData,mapped=false,activation:ReviewedUserDataActivation={git:true,harness:false}):void {
+  if(value.associationReview&&!mapped)throw new Error('Mapped Git requires the complete explicit fresh destination root map');
   const git=value.git;if(!git)throw new Error('Native Git original is missing');
-  const safeKeys=new Set(['core.repositoryformatversion','core.bare','core.filemode','core.logallrefupdates','core.ignorecase','core.precomposeunicode','extensions.objectformat','extensions.refstorage','user.name','user.email','core.autocrlf','core.safecrlf','core.eol','core.quotepath','core.whitespace','core.symlinks']);
-  if(git.configurationReview.some(item=>item.source||!safeKeys.has(item.key.toLowerCase()))||git.configurationOriginalReview.some(item=>item.removedFields)||git.configurationOriginalReview[1]!.dataBase64!==null||git.configurationOriginalReview[0]!.dataBase64===null)throw new Error('Native Git configuration semantics need an explicit application contract; preserve review originals');
-  const versions=git.configurationReview.filter(item=>item.key.toLowerCase()==='core.repositoryformatversion'),formats=git.configurationReview.filter(item=>item.key.toLowerCase()==='extensions.objectformat');
+  if(git.configurationOriginalReview[0]!.dataBase64===null||git.configurationReview.some(item=>/^extensions\./i.test(item.key)&&!['extensions.objectformat','extensions.refstorage','extensions.worktreeconfig','extensions.relativeworktrees'].includes(item.key.toLowerCase())))throw new Error('Unsupported native Git repository format declarations');
+  reviewedGitConfiguration(value,activation);
+  const versions=git.configurationReview.filter(item=>!item.source&&item.key.toLowerCase()==='core.repositoryformatversion'),formats=git.configurationReview.filter(item=>!item.source&&item.key.toLowerCase()==='extensions.objectformat');
   if(versions.length!==1||versions[0]!.implicitBoolean||!['0','1'].includes(versions[0]!.value)||formats.length>1||formats.some(item=>item.value!==git.format)||(git.reftableReview||formats.length)&&versions[0]!.value!=='1'||git.format==='sha256'&&formats.length!==1)throw new Error('Native Git format declarations differ from verified storage');
   for(const key of ['core.bare','core.filemode','core.ignorecase','core.precomposeunicode','core.quotepath','core.symlinks'])gitConfigurationBoolean(git.configurationReview,key);
   if(gitConfigurationBoolean(git.configurationReview,'core.bare'))throw new Error('Native Shared Git requires a non-bare source');
-  if(git.sparseReview.patternsBase64!==null||git.sparseReview.directories.length||git.indexOptionalReview.length||git.index.some(entry=>entry.mode==='160000'))throw new Error('Native Git sparse, optional-index or submodule semantics require separate recreation');
-  for(const file of value.providerFiles.filter(file=>gitReviewOriginal(file.path))){
-    const name=file.path.slice(5);
-    if(!gitSelectedOriginalNames.includes(name)&&!gitWebOriginalNames.includes(name)&&!/^hooks\/[^/]+\.sample$/.test(name))throw new Error('Native active hooks/legacy/recovery Git originals require a separate application contract');
+  if(git.indexOptionalReview.length||git.index.some(entry=>entry.mode==='160000'))throw new Error('Native Git optional-index or submodule semantics require separate recreation');
+  for(const file of value.providerFiles.filter(file=>/^\.git\/hooks\/[^/]+$/.test(file.path)&&!file.path.endsWith('.sample'))){
+    if(!file.metadata)throw new Error('Active Git hooks require captured mode and timestamp; export the original again');
   }
 }
 
 /** Create directly into an empty NEW owned root, never replace a generated .git. */
-export async function createReviewedNativeGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
+export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>};
+export async function createReviewedNativeGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation,configuration?:NativeReviewedGitConfiguration):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
   const value=planReviewedUserDataActivation(original,sha256,activation);
   if(!activation.git||!value.git)throw new Error('Explicit native Git selection is required');
-  return writeReviewedGit(root,value.git,value);
+  if(!configuration&&reviewedGitConfiguration(value,activation).includes.length)throw new Error('Native external includes require their complete transported configuration closure');
+  return writeReviewedGit(root,value.git,value,undefined,false,configuration??reviewedGitConfiguration(value,activation));
+}
+
+/** Recovery roots were just created by the importer; existing native metadata is never replaced. */
+export async function createReviewedRecoveryGit(root:string,original:Buffer,sha256:string,activation:ReviewedUserDataActivation,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},configuration?:NativeReviewedGitConfiguration):Promise<void> {
+  const value=planReviewedUserDataActivation(original,sha256,activation,!!layout);
+  if(!activation.git||!value.git)throw new Error('Explicit Git activation is required');
+  await writeReviewedGit(root,value.git,value,layout,true,configuration??reviewedGitConfiguration(value,activation));
 }
 
 /** Only freshly owned native roots; all collisions are checked before creating provider nodes. */
@@ -681,8 +757,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     fields(file,['path','dataBase64','removedSecretFields'],['metadata']);
     if(typeof file.path!=='string'||!providerPath(file.path)||file.path.split('/').some(part=>!part||part==='.'||part==='..')||credentialPath(file.path)||file.path.includes('\\')||file.path.includes('\0')||typeof file.dataBase64!=='string'||typeof file.removedSecretFields!=='boolean'||paths.has(file.path))throw new Error('Invalid reviewed provider original');
     const gitOriginal=gitReviewOriginal(file.path);
-    if(gitOriginal&&file.metadata!==undefined)throw new Error('Git original metadata is not provider metadata');
-    if(!gitOriginal)providerMetadata(file.metadata!);
+    if(!gitOriginal||file.metadata!==undefined)providerMetadata(file.metadata!);
     if(directories.has(file.path)||[...directories].some(directory=>directory.startsWith(file.path+'/')))throw new Error('Provider files cannot be directory parents');
     if(gitOriginal?!value.selection.git||!value.git||file.removedSecretFields:!value.selection.harness)throw new Error('Reviewed original differs from its explicit family selection');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
@@ -1027,7 +1102,8 @@ function decodeReftableReview(value:NonNullable<ReviewedGitUserData['reftableRev
 }
 
 export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','reflogMissingObjects','indexOptionalReview','configurationReview','configurationOriginalReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','fetchHeadReview','exclusions','reftableReview']);
+  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','reflogMissingObjects','indexOptionalReview','configurationReview','configurationOriginalReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','fetchHeadReview','exclusions','reftableReview'],['configurationSourceDirectories']);
+  if(value.configurationSourceDirectories!==undefined){fields(value.configurationSourceDirectories,['common','private'],['home']);for(const directory of Object.values(value.configurationSourceDirectories))if(typeof directory!=='string'||!path.posix.isAbsolute(directory)||path.posix.normalize(directory)!==directory||Buffer.byteLength(directory)>4096||/[\\\x00-\x1f\x7f]/.test(directory))throw new Error('Invalid historical Git configuration directory provenance');}
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const reftable=value.reftableReview===null?undefined:decodeReftableReview(value.reftableReview,value.format);
   if(reftable&&(JSON.stringify(reftable.refs)!==JSON.stringify(value.refs)||JSON.stringify(reftable.head)!==JSON.stringify(value.head)))throw new Error('Logical refs/HEAD differ from authoritative reftable stack');
@@ -1834,7 +1910,7 @@ export async function selectedReviewedGitStorage(root:string,capture?:GitExportC
   return roots.filter(target=>!roots.some(parent=>parent!==target&&target.startsWith(parent+path.sep))).map(target=>path.relative(root,target).split(path.sep).join('/'));
 }
 
-type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer};
+type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer;metadata?:{mode:number;mtimeNs:string}};
 /** Derived local caches are observed for drift, never parsed or supplied to native Git. */
 function derivedGitCache(name:string,format?:'sha1'|'sha256'):boolean {
   const width=format==='sha1'?'{40}':format==='sha256'?'{64}':'{40}(?:[a-f0-9]{24})?';
@@ -1881,7 +1957,7 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
       if(gitOriginal)inspectGitReviewOriginal(data,'.git/'+name);
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
-      inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data});
+      inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data,...(gitOriginal?{metadata:{mode:Number(after.mode&0o777n),mtimeNs:after.mtimeNs.toString()}}:{})});
     }
   };
   // Inspect only the exact common info parent and three allowlisted files, never its other contents.
@@ -2115,14 +2191,14 @@ export async function exportReviewedGit(root:string,capture?:GitExportCapture):P
   const reflogEvidence={bytes:0,entries:0,missing:new Set<string>()},objectInventory=new Map(objects.map(object=>[object.oid,object]));
   for(const file of before.raw.files.filter(file=>file.name.startsWith('logs/')))validateGitReflogData(file.data.toString('base64'),format,objectInventory,reflogEvidence);
   if(reftable)for(const log of reftable.logs)for(const oid of [log.old,log.next])if(oid&&!/^0+$/.test(oid)&&!objectInventory.has(oid))reflogEvidence.missing.add(oid);
-  const result:ReviewedGitUserData={version:1,format,reftableReview,objects,reflogMissingObjects:[...reflogEvidence.missing].sort(),indexOptionalReview:before.storage.indexOptionalReview,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:reftable?reftable.refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,fetchHeadReview:before.raw.fetchHeadReview,configurationReview,configurationOriginalReview,exclusions};
+  const result:ReviewedGitUserData={version:1,format,configurationSourceDirectories:{common:commonDir,private:gitDir,home:homedir()},reftableReview,objects,reflogMissingObjects:[...reflogEvidence.missing].sort(),indexOptionalReview:before.storage.indexOptionalReview,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:reftable?reftable.refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,fetchHeadReview:before.raw.fetchHeadReview,configurationReview,configurationOriginalReview,exclusions};
   // Verify every captured object and graph before deriving any missing logical index entries.
   const directories=sparseReview.directories;
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
   result.index.push(...expandSparseDirectories(directories,new Map(objects.map(object=>[object.oid,object])),format));
   result.index.sort(indexOrder);validateReviewedGit(result);
   // Drafts are selected-worktree data even when gitDir and commonDir coincide.
-  const gitOriginals=before.raw.files.filter(file=>gitReviewOriginal('.git/'+file.name)&&file.source===(gitSelectedOriginalNames.includes(file.name)?'selected':'shared')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false}));
+  const gitOriginals=before.raw.files.filter(file=>gitReviewOriginal('.git/'+file.name)&&file.source===(gitSelectedOriginalNames.includes(file.name)?'selected':'shared')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false,...(file.metadata?{metadata:file.metadata}:{})}));
   return {git:result,gitOriginals};
 }
 
@@ -2131,18 +2207,27 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
   await writeReviewedGit(destination,value);
 }
 
-async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
+async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint}>> {
   validateReviewedGit(value);
-  if(native)validateNativeGitSelection(native);
+  if(native&&!configuration)throw new Error('Native Git requires its validated configuration plan');
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
-  if(native){if(await fs.realpath(destination)!==destination||(await fs.readdir(destination)).length)throw new Error('Native Git requires the empty NEW managed root');}else await fs.mkdir(destination,{mode:0o700});
-  const gitDir=path.join(destination,'.git');await fs.mkdir(gitDir,{mode:0o700});
-  await fs.mkdir(path.join(gitDir,'objects'),{mode:0o700});await fs.mkdir(path.join(gitDir,'refs'),{mode:0o700});
+  if(native){if(await fs.realpath(destination)!==destination||!recovery&&(await fs.readdir(destination)).length)throw new Error('Native Git requires the empty NEW managed root');}else await fs.mkdir(destination,{mode:0o700});
+  const gitDir=layout?.commonDir??path.join(destination,'.git');
+  if(layout){
+    if(!recovery||!native||!path.isAbsolute(gitDir)||path.resolve(gitDir)!==gitDir||path.dirname(layout.privateDir)!==path.join(gitDir,'worktrees')||await fs.realpath(gitDir)!==gitDir)throw new Error('Mapped Git requires its freshly owned canonical common directory and private worktree slot');
+  }else await fs.mkdir(gitDir,{mode:0o700});
+  if(!layout||layout.writeCommon){await fs.mkdir(path.join(gitDir,'objects'),{mode:0o700});await fs.mkdir(path.join(gitDir,'refs'),{mode:0o700});}
+  if(layout){
+    if(layout.writeCommon)await fs.mkdir(path.join(gitDir,'worktrees'),{mode:0o700});
+    await fs.mkdir(layout.privateDir,{mode:0o700});
+  }
   const created:Array<{path:string;sha256:string;device:bigint;inode:bigint}>=[];
   const directories=new Map<string,{device:bigint;inode:bigint}>();
-  for(const target of [destination,gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs')]){const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});}
+  for(const target of [destination,gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs'),...(layout?[path.join(gitDir,'worktrees'),layout.privateDir]:[])]){const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});}
   const checkDirectories=async()=>{for(const [target,identity] of directories){const stat=await fs.lstat(target,{bigint:true});if(!stat.isDirectory()||stat.dev!==identity.device||stat.ino!==identity.inode||await fs.realpath(target)!==target)throw new Error('Git destination directory identity changed');}};
-  const write=async(relative:string,data:Buffer|string)=>{
+  const write=async(relative:string,data:Buffer|string,metadata?:{mode:number;mtimeNs:string},common=false,forcePrivate=false)=>{
+    const privateName=forcePrivate||!common&&(relative==='HEAD'||relative==='index'||relative==='commondir'||relative==='gitdir'||relative==='config.worktree'||relative==='info/sparse-checkout'||relative==='ORIG_HEAD'||relative==='FETCH_HEAD'||relative==='logs/HEAD'||relative==='logs/ORIG_HEAD'||gitSelectedOriginalNames.includes(relative)||privateRef(relative.startsWith('logs/')?relative.slice(5):relative));
+    if(layout){if(!privateName&&!layout.writeCommon)return;if(privateName)relative=path.relative(gitDir,layout.privateDir).split(path.sep).join('/')+'/'+relative;}
     await checkDirectories();const target=path.join(gitDir,relative);let parent=gitDir;
     for(const part of relative.split('/').slice(0,-1)){
       parent=path.join(parent,part);if(directories.has(parent))continue;
@@ -2150,7 +2235,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Git destination parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});
     }
     await checkDirectories();const handle=await fs.open(target,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
-    try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n)throw new Error('Git destination file is not exclusive');await handle.writeFile(data);created.push({path:relative,sha256:createHash('sha256').update(data).digest('hex'),device:stat.dev,inode:stat.ino});}finally{await handle.close();}
+    try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n)throw new Error('Git destination file is not exclusive');await handle.writeFile(data);if(metadata){const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:metadata.mode,mtimeNs:BigInt(metadata.mtimeNs)});if(observed.mode!==metadata.mode||observed.mtimeNs!==BigInt(metadata.mtimeNs))throw new Error('Git original metadata differs after application');}await handle.sync();created.push({path:relative,sha256:createHash('sha256').update(data).digest('hex'),device:stat.dev,inode:stat.ino});}finally{await handle.close();}
   };
   try{
     for(const object of value.objects){const data=Buffer.from(object.dataBase64,'base64');await write(`objects/${object.oid.slice(0,2)}/${object.oid.slice(2)}`,deflateSync(Buffer.concat([Buffer.from(`${object.type} ${data.length}\0`),data])));}
@@ -2159,9 +2244,13 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     if(!value.reftableReview)for(const ref of value.refs)await write(ref.name,ref.symbolic?`ref: ${ref.symbolic}\n`:`${ref.oid}\n`);
     if(value.reftableReview){await write('reftable/tables.list',Buffer.from(value.reftableReview.tablesListBase64,'base64'));for(const table of value.reftableReview.tables)await write('reftable/'+table.name,Buffer.from(table.dataBase64,'base64'));}
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
-    if(native)await write('config',Buffer.from(value.configurationOriginalReview[0]!.dataBase64!,'base64'));else
+    if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
+    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':'')]));else
     await write('config',`[core]\n\trepositoryformatversion = ${value.reftableReview||value.format==='sha256'?1:0}\n\tbare = false\n\thooksPath = /dev/null\n\tfsmonitor = false\n${value.reftableReview||value.format==='sha256'?'[extensions]\n':''}${value.format==='sha256'?'\tobjectFormat = sha256\n':''}${value.reftableReview?'\trefStorage = reftable\n':''}`);
     if(native){
+      const worktreeConfig=configuration!.private;
+      if(layout||worktreeConfig!==null)await write('config.worktree',Buffer.concat([worktreeConfig??Buffer.alloc(0),Buffer.from(layout?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(destination)}\n`:'')]));
+      if(value.sparseReview.patternsBase64!==null)await write('info/sparse-checkout',Buffer.from(value.sparseReview.patternsBase64,'base64'));
       for(const info of value.infoReview)if(info.dataBase64!==null)await write(info.path,Buffer.from(info.dataBase64,'base64'));
       if(value.origHeadReview.dataBase64!==null)await write('ORIG_HEAD',Buffer.from(value.origHeadReview.dataBase64,'base64'));
       if(value.origHeadReview.reflogDataBase64!==null)await write('logs/ORIG_HEAD',Buffer.from(value.origHeadReview.reflogDataBase64,'base64'));
@@ -2172,7 +2261,8 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
         if(pack.keepDataBase64!==null)await write(stem+'.keep',Buffer.from(pack.keepDataBase64,'base64'));
         if(pack.mtimesDataBase64!==null)await write(stem+'.mtimes',Buffer.from(pack.mtimesDataBase64,'base64'));
       }
-      for(const file of native.providerFiles.filter(file=>gitReviewOriginal(file.path)))await write(file.path.slice(5),Buffer.from(file.dataBase64,'base64'));
+      for(const file of native.providerFiles.filter(file=>gitReviewOriginal(file.path)))await write(file.path.slice(5),Buffer.from(file.dataBase64,'base64'),file.metadata);
+      for(const file of configuration!.includeFiles??[])await write(file.path,file.data,undefined,!file.private,!!file.private);
     }
     const entries:Buffer[]=[];
     const extendedIndex=value.index.some(entry=>entry.intentToAdd||entry.skipWorktree);
@@ -2188,9 +2278,17 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     const undo=encodeResolveUndo(value.resolveUndo,value.format),extension=Buffer.alloc(undo.length?8:0);
     if(undo.length){extension.write('REUC');extension.writeUInt32BE(undo.length,4);}
     const index=Buffer.concat([header,...entries,extension,undo]);await write('index',Buffer.concat([index,createHash(value.format).update(index).digest()]));
+    if(layout){
+      await write('commondir',path.relative(layout.privateDir,gitDir).split(path.sep).join('/')+'\n');
+      await write('gitdir',path.relative(layout.privateDir,path.join(destination,'.git')).split(path.sep).join('/')+'\n');
+      const pointer=path.join(destination,'.git'),pointerData=Buffer.from('gitdir: '+path.relative(destination,layout.privateDir).split(path.sep).join('/')+'\n');
+      const handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+      try{const before=await handle.stat({bigint:true});await handle.writeFile(pointerData);await handle.sync();const current=await fs.lstat(pointer,{bigint:true});if(!current.isFile()||current.nlink!==1n||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Mapped Git worktree pointer changed');}finally{await handle.close();}
+    }
     if(!native)await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',reftableReview:value.reftableReview,configuration:value.configurationReview,configurationOriginalReview:value.configurationOriginalReview,reflogMissingObjects:value.reflogMissingObjects,indexOptionalReview:value.indexOptionalReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,fetchHeadReview:value.fetchHeadReview,packRetentionReview:value.packRetentionReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
     await checkDirectories();
     for(const file of created){const target=path.join(gitDir,file.path),{data}=await regularOriginal(target,limit),stat=await fs.lstat(target,{bigint:true});if(stat.dev!==file.device||stat.ino!==file.inode||createHash('sha256').update(data).digest('hex')!==file.sha256)throw new Error('Created Git data changed; preserve partial state');}
+    for(const target of directories.keys()){const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{await handle.sync();}finally{await handle.close();}}
     return created;
   }catch(error){throw Object.assign(new Error(`Git recreation incomplete; preserve all bytes at ${destination}`,{cause:error}),{partialStatePossible:true});}
 }

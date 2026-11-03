@@ -1,5 +1,7 @@
 # U3 recreation inventory and U5 recovery disposition
 
+Current Git follow-on: [fresh mapped recreation and external configuration](portable-git-recreation.md) connects native recovery, sparse/worktree settings, exact hook metadata and transported recursive includes. Earlier candidate rows below remain historical source dispositions, not the current Git implementation inventory.
+
 Source basis: approved `595681b750776c5f3c765de1f040f0931f6d8750`, full
 Behavior Bible #8/#12/#15/#30. This is a field-by-field source disposition, not a
 fresh-machine equivalence verdict or approval to omit nonsecret data. Source and

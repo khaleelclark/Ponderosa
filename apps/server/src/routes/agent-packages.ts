@@ -1,5 +1,6 @@
 import {decodePortableMetadataArtifact} from '../agent-package-codec.js';
 import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
+import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from '../portable-git-recreation.js';
 import {groupJournalAudit} from '../group-journal-audit.js';
 import {checkpointGroupCaptureAbandonment} from '../checkpoint-group-capture-abandonment.js';
 import {lifecycleDiscovery} from '../lifecycle-discovery.js';
@@ -234,16 +235,23 @@ export function registerAgentPackageRoutes(
     agentMessages,
     createOperationalNotification,
   } = context;
-  const validateNativeSelection=(pkg:AgentPortablePackageDto,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingCopyMode'>,projectId:string)=>{
+  const validateNativeSelection=(pkg:AgentPortablePackageDto,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>,projectId:string)=>{
     if(selection.reviewedMetadataActivation!==undefined)requireReviewedMetadataApplication(selection.reviewedMetadataActivation);
     const activation=selection.reviewedUserDataActivation;if(!activation)return;
     validateReviewedUserDataActivation(activation);
+    if(!selection.workingFilesActivation){
+      const owner=pkg.agents.find(node=>node.workingFolder||node.workingFiles?.length);
+      const destinations=selection.workingRootDestinations??(selection.workingFilesDestination&&owner?{[owner.workingRootRef??owner.ref]:selection.workingFilesDestination}:{});
+      planReviewedRecoveryRoots(pkg,destinations,activation);return;
+    }
     if(activation.git&&pkg.gitStorageBindings?.length)throw new Error('Mapped Git storage native recreation is unsupported; keep association originals inert');
     const project=store.getProject(projectId);
+    if(activation.gitPathMappings?.some(mapping=>!project||mapping.destination!==project.hostPath&&!mapping.destination.startsWith(project.hostPath+path.sep)))throw new Error('Native Git path mappings must remain inside the explicitly confirmed NEW Shared root');
     if(pkg.mode!=='full'||!project||!selection.workingFilesActivation||!store.isManagedProjectImportDestination(projectId)||store.listAgents(projectId).length)throw new Error('Native user-data activation requires a full package and unused NEW managed destination');
     const owners=pkg.agents.filter(node=>node.workingFolder||node.workingFiles?.length);
     if(activation.git&&(owners.length!==1||!owners[0]!.workingFolder||pkg.agents.some(node=>(selection.workingCopyMode??node.workingCopyMode??'shared')!=='shared')))throw new Error('Native Git supports one complete Shared root before initialization; Separate Git or multiple roots require distinct adoption contracts');
     if(!owners.length)throw new Error('Native user-data activation requires selected working originals');
+    if(activation.git)planReviewedRecoveryRoots(pkg,{[owners[0]!.workingRootRef??owners[0]!.ref]:project.hostPath},activation);
     for(const node of owners){
       const file=node.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&node.artifacts?.find(artifact=>artifact.ref===file.artifactRef);
       if(!file||!artifact)throw new Error('Every activated root requires its authoritative reviewed original');
@@ -1925,13 +1933,23 @@ export function registerAgentPackageRoutes(
         retainedWorkingFiles=true;
         await importWorkingFiles(destination,files,folder?.directories??[],folder?.mode!==undefined&&folder.mtime?{mode:folder.mode,mtime:folder.mtime}:undefined,undefined,folder?.links,folder?.cyclicLinks);
       }
+      if(body.reviewedUserDataActivation&&!body.workingFilesActivation){
+        const owner=portablePackage.agents.find(node=>node.workingFolder||node.workingFiles?.length);
+        const destinations=body.workingRootDestinations??{[owner!.workingRootRef??owner!.ref]:body.workingFilesDestination!};
+        await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,destinations,body.reviewedUserDataActivation),body.reviewedUserDataActivation,receipt=>{
+          const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
+          if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
+          store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
+        });
+      }
       signal?.throwIfAborted();
       if(body.workingFilesActivation?.sharedRoot!==undefined){
         store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),liveWorkingProjectRoot:project.hostPath}});
         const owner=body.reviewedUserDataActivation?.git?importNodes.find(node=>node.workingFolder||node.workingFiles?.length):undefined;
         const file=owner?.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH),artifact=file&&owner?.artifacts.find(artifact=>artifact.destinationId===file.artifactRef);
         if(body.reviewedUserDataActivation?.git&&(!file||!artifact))throw new Error('Native Git original binding changed before initialization');
-        const original=artifact?{data:artifact.data,sha256:artifact.sha256,activation:body.reviewedUserDataActivation!}:undefined;
+        const configuration=artifact?planReviewedRecoveryRoots(portablePackage,{[owner!.workingRootRef??owner!.ref]:project.hostPath},body.reviewedUserDataActivation!)[0]!.configuration:undefined;
+        const original=artifact?{data:artifact.data,sha256:artifact.sha256,activation:body.reviewedUserDataActivation!,configuration}:undefined;
         const initialization=original?{path:project.hostPath,originalSha256:original.sha256,state:'applying' as 'applying'|'completed'|'incomplete'}:undefined;
         if(initialization)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),nativeGitInitialization:initialization}});
         try{await context.workingCopies!.initializeImportProject(project,original);if(initialization)initialization.state='completed';}catch(error){if(initialization)initialization.state='incomplete';throw error;}finally{if(initialization)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),nativeGitInitialization:initialization}});}

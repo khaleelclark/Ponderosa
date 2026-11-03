@@ -1,5 +1,8 @@
 /** Explicit import authority; export family selection never implies activation. */
-export interface ReviewedUserDataActivation {git:boolean;harness:boolean}
+export interface ReviewedUserDataActivation {git:boolean;harness:boolean;
+  /** Human-selected absolute prefix relocation into the explicitly imported destination roots. */
+  gitPathMappings?:Array<{source:string;destination:string}>;
+}
 /** Human-selected export families; native import activation is a separate choice. */
 export interface ReviewedUserDataSelection {
   git:boolean;harness:boolean;source?:'live'|'retained_originals';
@@ -30,6 +33,8 @@ export interface PortableGitStorageBinding {
 /** Inert user-data transport. No source runtime, credential or worktree authority. */
 export interface ReviewedGitUserData {
   version:1;format:'sha1'|'sha256';
+  /** Historical path-resolution provenance for includes; never a source read or destination grant. */
+  configurationSourceDirectories?:{common:string;private:string;home?:string};
   /** Exact selected common stack; null denotes file ref storage. */
   reftableReview:null|{source:'common_repository';tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
   objects:Array<{oid:string;type:'blob'|'tree'|'commit'|'tag';dataBase64:string}>;
