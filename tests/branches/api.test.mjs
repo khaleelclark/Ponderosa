@@ -133,7 +133,16 @@ test('portable installation import is canonically validated before opening a for
 test('BR004 canonical Workflow use drives complete organized metadata and generation-fenced Recent pages',async t=>{
  let store;
  await withFixture(t,async f=>{
+  // The mandatory Assistant owns an initial workflow before user workflows exist.
+  // Include all initial workflows in the ordinary paged directory assertions.
+  const initialResponse=await f.api('GET','/api/branches');
+  const initial=f.ok(initialResponse);
+  assert.equal(initialResponse.headers['x-collection-has-more'],'false');
+  assert.equal(Number(initialResponse.headers['x-total-count']),initial.length);
+  assert.ok(initial.some(row=>row.name==='Assistant'),'The default Assistant workflow is visible');
   const owners=[];for(let i=0;i<125;i++)owners.push(await branch(f,'Recent '+String(i).padStart(3,'0')));
+  const expectedIds=new Set([...initial,...owners].map(row=>row.id));
+  assert.equal(expectedIds.size,initial.length+owners.length);
   const prefs=f.ok(await f.api('GET','/api/branches/engine/workspace/preferences'));
   f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{branchSort:'last_used',branchFolders:[{id:randomUUID(),name:'Complete',expanded:false,branchIds:owners.map(row=>row.id)}],branchFoldersRevision:prefs.revision,starredResourceIds:['branch:'+owners[0].id]}));
   const use=async owner=>f.ok(await f.api('POST','/api/branches/engine/workspace/recent-resources/use',{kind:'branch',resourceId:owner.id}));
@@ -142,10 +151,10 @@ test('BR004 canonical Workflow use drives complete organized metadata and genera
   for(const query of ['search=a&search=b','chatId=a&chatId=b','cursor=a&cursor=b'])assert.equal((await f.api('GET','/api/branches?'+query)).status,400);
   const used=await use(owners[0]);
   const read=async cursor=>f.api('GET','/api/branches'+(cursor?'?cursor='+encodeURIComponent(cursor):''));
-  let first=await read();assert.equal(first.status,200);assert.equal(first.body.length,100);assert.equal(first.body[0].id,owners[0].id);assert.equal(first.body[0].lastUsedAt,used.lastUsedAt);assert.equal(Number(first.headers['x-total-count']),125);
+  let first=await read();assert.equal(first.status,200);assert.equal(first.body.length,100);assert.equal(first.body[0].id,owners[0].id);assert.equal(first.body[0].lastUsedAt,used.lastUsedAt);assert.equal(Number(first.headers['x-total-count']),expectedIds.size);
   assert.equal((await f.api('GET','/api/branches?before='+owners[0].id)).status,400,'Obsolete cursors must fail visibly instead of repeating page one');
   const cursor=first.headers['x-next-cursor'];assert.ok(cursor);
-  const next=await read(cursor);assert.equal(next.status,200);assert.equal(next.body.length,25);assert.equal(new Set([...first.body,...next.body].map(row=>row.id)).size,125);
+  const next=await read(cursor);assert.equal(next.status,200);assert.equal(next.body.length,expectedIds.size-100);assert.deepEqual(new Set([...first.body,...next.body].map(row=>row.id)),expectedIds);
   const complete=f.ok(await f.api('GET','/api/branches?section=organized'));assert.equal(complete.length,125);assert.equal(complete.find(row=>row.id===owners[0].id).lastUsedAt,used.lastUsedAt);
   await use(owners[1]);assert.equal((await read(cursor)).status,409);
   first=await read();assert.equal(first.body[0].id,owners[1].id);
