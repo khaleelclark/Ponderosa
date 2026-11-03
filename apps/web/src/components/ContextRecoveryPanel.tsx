@@ -3,13 +3,14 @@ import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {useRef,useState} from 'react';
 import {api} from '../api';
 import {createClientId} from '../clientId';
-import {readBrowserStorage,writeBrowserStorage} from '../browserStorage';
+import {readRecoveryKey,writeRecoveryKey} from './contextRecoveryStorage';
 
 /** Recovery measures retained context; original work and its effects stay unknown. */
 export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
  const client=useQueryClient();
  const storageKey=`ponderosa.context-recovery:${agentId}`;
- const [key,setKey]=useState(()=>readBrowserStorage('localStorage',storageKey)||undefined);
+ const [restored]=useState(()=>readRecoveryKey(storageKey));
+ const [key,setKey]=useState(restored.key);
  const [open,setOpen]=useState(false),[acknowledged,setAcknowledged]=useState(''),[dismissAck,setDismissAck]=useState('');
  const [starting,setStarting]=useState(false),[changing,setChanging]=useState(false),[notice,setNotice]=useState(''),[error,setError]=useState('');
  const startLock=useRef(false),changeLock=useRef(false);
@@ -20,14 +21,14 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
  const active=request?.state==='unsupported_fenced';
  const settled=active&&(!request.progress||['held','context_accepted'].includes(request.progress.phase));
  const start=async()=>{
-  if(startLock.current||key||request||!boundary||acknowledged!==boundaryIdentity)return;
+  if(startLock.current||restored.error||key||request||!boundary||acknowledged!==boundaryIdentity)return;
   startLock.current=true;setStarting(true);setError('');setNotice('');
   try{
    const fresh=await status.refetch();
    if(fresh.error)throw fresh.error;
    if(fresh.data?.request||JSON.stringify(fresh.data?.boundary)!==boundaryIdentity){setAcknowledged('');throw new Error('Recovery boundary changed · review status + acknowledge again');}
    const nextKey=createClientId();
-   if(!writeBrowserStorage('localStorage',storageKey,nextKey))throw new Error('Recovery key not saved · no recovery requested');
+   writeRecoveryKey(storageKey,nextKey);
    setKey(nextKey);
    await api.recoverContext(agentId,{idempotencyKey:nextKey,expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true});
    setNotice('Recovery response received · inspect phase · original work unresolved');
@@ -44,7 +45,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
    }else{
     if(!settled||dismissAck!==request.id)return;
     await api.dismissContextRecovery(agentId,request.id);
-    if(!writeBrowserStorage('localStorage',storageKey,''))throw new Error('Dismissal returned · local key not cleared · reload status before another action');
+    writeRecoveryKey(storageKey,'');
     setKey(undefined);setDismissAck('');setAcknowledged('');
     setNotice('Hold dismissed · original work unresolved · no automatic replay');
    }
@@ -56,7 +57,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
   {open&&<>
    <Typography variant="body2">Retained context inspection · original outcome/effects unknown · no original-work retry</Typography>
    {status.isFetching&&<Typography role="status">Reading recovery status…</Typography>}
-   {(error||status.error)&&<Alert severity="error">{error||status.error?.message}</Alert>}
+   {(restored.error||error||status.error)&&<Alert severity="error">{restored.error||error||status.error?.message}</Alert>}
    {notice&&<Alert severity="info">{notice}</Alert>}
    <Button disabled={status.isFetching} onClick={()=>void status.refetch()}>Reload recovery status</Button>
    {status.data&&<>
@@ -70,7 +71,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
      {active&&<Button disabled={changing||status.isError} onClick={()=>void change('stop')}>Stop exact recovery</Button>}
      {settled&&<><FormControlLabel control={<Checkbox checked={dismissAck===request.id} onChange={event=>setDismissAck(event.target.checked?request.id:'')}/>} label="I understand dismissal leaves original work unresolved and does not replay it"/><Button disabled={changing||starting||status.isError||dismissAck!==request.id} onClick={()=>void change('dismiss')}>Dismiss settled hold</Button></>}
     </>}
-    {boundary&&!request&&!key&&<>
+    {boundary&&!request&&!key&&!restored.error&&<>
      {status.data.support.status==='unsupported'&&<Alert severity="warning">Structured recovery unmapped · request records hold only · no provider launch or measurable context restoration</Alert>}
      <FormControlLabel control={<Checkbox checked={acknowledged===boundaryIdentity} onChange={event=>setAcknowledged(event.target.checked?boundaryIdentity:'')}/>} label="I understand prior effects remain unknown and this may compact retained native context"/>
      <Button disabled={starting||changing||status.isFetching||status.isError||acknowledged!==boundaryIdentity} onClick={()=>void start()}>Request context recovery</Button>

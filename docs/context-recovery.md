@@ -125,3 +125,14 @@ not replace their session, replay work or authorize Context Refresh. Ordinary
 turn compatibility and pause recovery keep their existing separate rules.
 Fresh read-only commands without a retained session keep their existing path.
 This observation is not an atomic lock against external credential changes.
+
+### Browser command retention
+
+The recovery control reads its existing exact Agent key directly from durable
+browser storage. A denied read blocks a new request and displays the cause.
+Before recovery POST, the key must be written and read back exactly; in-memory
+preference fallbacks cannot authorize recovery. After a lost POST response, the
+retained key permits only the existing status readback. A failed dismissal-key
+clear reports that dismissal returned and requires status review, without
+automatically repeating either mutation. This storage correction awaits the
+consolidated validation pass.

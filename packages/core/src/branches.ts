@@ -319,6 +319,7 @@ export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTea
 export interface OutputAgentAppDto {
   agentId: string; branchId: string; projectId: string; chatId: string; title: string;
   url: string; speaker: boolean; versionId: string; bindingRevisionId:string; settingsRevision:string; model?: string; engine: string;
+  runtimeSettings: import('./dto/agents.js').AgentRuntimeSettingsSnapshot;
   automatic: boolean; triggerKind: 'manual' | TriggerSourceKind; schedule?: TriggerScheduleConfig; everyMs?: number;
 }
 export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto; setupError?:{message:string;at:string} }

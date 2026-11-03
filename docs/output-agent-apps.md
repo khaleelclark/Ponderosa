@@ -168,3 +168,16 @@ These source changes have not been tested, built, typechecked or browser exercis
 under the current implementation-first direction. Reader/keyboard behavior,
 font layout, visual comparison, streaming recordings and call latency remain
 combined-product validation work; no whole-commandment acceptance is implied.
+
+## Concurrent settings edits
+
+Opening Settings captures separate schedule and model baselines. A background
+refresh updates the chat, but cannot authorize an older draft to overwrite a
+newer workflow or model choice. Schedule saves send the original workflow version
+and schedule revision. Model saves use the ordinary Agent settings route with the
+original provider/model/effort/speed snapshot; a mismatch returns a visible conflict
+before changing any setting. The request-only baseline is never stored in Agent
+metadata. **Discard draft and reload** explicitly replaces both drafts with current
+settings. Each successful save advances only its own baseline, preserving the
+other unsaved draft and its conflict check. Neither save changes Agent identity
+or history. The new component and API regressions await consolidated validation.

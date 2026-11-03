@@ -419,7 +419,15 @@ export interface CreateAgentRequest {
 }
 
 /** PATCH /api/agents/:id body (persistent Agent settings). */
+export interface AgentRuntimeSettingsSnapshot {
+  activeEngine: EngineId;
+  model: string | null;
+  effort: string | null;
+  speed: string | null;
+}
 export interface UpdateAgentRequest {
+  /** Optional human edit baseline; stale runtime changes fail before any write. */
+  expectedRuntimeSettings?: AgentRuntimeSettingsSnapshot;
   title?: string;
   /** Applies at the next Run; null clears the explicit standing role. */
   role?: string | null;

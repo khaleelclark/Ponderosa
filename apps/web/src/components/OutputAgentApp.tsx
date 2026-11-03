@@ -30,6 +30,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const ownerGeneration=useRef(0),mounted=useRef(false);
  const [automatic,setAutomatic]=useState(true),[minutes,setMinutes]=useState('10'),[model,setModel]=useState(''),[engine,setEngine]=useState('');
  const [route,setRoute]=useState<BranchRoute>();
+ const [scheduleBase,setScheduleBase]=useState<OutputAgentAppDto>(),[runtimeBase,setRuntimeBase]=useState<OutputAgentAppDto>();
  const status=useQuery({queryKey:['assistant-status'],enabled:assistant,queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant'),refetchInterval:15000});
  const output=useQuery({queryKey:['output-app',id],enabled:!assistant&&Boolean(id),retry:false,queryFn:()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(id!)}`),refetchInterval:15000});
  const engines=useQuery({queryKey:['output-app-engines'],queryFn:()=>realApi.listEngines()});
@@ -47,26 +48,32 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
   return()=>setStandaloneWorkspaceOwner(undefined);
  },[ownerKey]);
  // Refresh the draft when settings opens; background refreshes must not erase edits.
- useEffect(()=>{if(settings&&app){setAutomatic(app.automatic);setMinutes(String((app.everyMs??600000)/60000));setModel(app.model??'');setEngine(app.engine);}},[settings,ownerKey]);
- const refresh=async()=>{
+ const loadDraft=(value:OutputAgentAppDto)=>{setScheduleBase(value);setRuntimeBase(value);setAutomatic(value.automatic);setMinutes(String((value.everyMs??600000)/60000));setModel(value.model??'');setEngine(value.engine);};
+ useEffect(()=>{if(settings&&app)loadDraft(app);},[settings,ownerKey]);
+ const refresh=async(onFresh?:(value:OutputAgentAppDto)=>void)=>{
   try{
    const result=assistant?await status.refetch():await output.refetch();
+   const fresh=assistant?(result.data as AssistantStatusDto|undefined)?.app:result.data as OutputAgentAppDto|undefined;
+   if(!result.error&&fresh)onFresh?.(fresh);
    return result.error;
   }catch(cause){return cause instanceof Error?cause:new Error(String(cause));}
  };
- const retryRefresh=async()=>{
+ const retryRefresh=async(reloadDraft=false)=>{
+  if(inFlight.current)return;
+  inFlight.current=true;setBusy(true);
   const generation=ownerGeneration.current;
-  const cause=await refresh();
+  const cause=await refresh(value=>{if(reloadDraft&&mounted.current&&generation===ownerGeneration.current)loadDraft(value);});
+  inFlight.current=false;if(mounted.current)setBusy(false);
   if(mounted.current&&generation===ownerGeneration.current){setSaved('');setError(cause?`Could not refresh settings: ${cause.message}`:'');}
  };
- const act=async(work:()=>Promise<unknown>,savedLabel='')=>{
+ const act=async(work:()=>Promise<unknown>,savedLabel='',section?:'schedule'|'model')=>{
   if(inFlight.current)return;
   const generation=ownerGeneration.current;
   const current=()=>mounted.current&&generation===ownerGeneration.current;
   inFlight.current=true;setBusy(true);setError('');setSaved('');
   try{
    await work();
-   const cause=await refresh();
+   const cause=await refresh(value=>{if(current()){if(section==='schedule')setScheduleBase(value);if(section==='model')setRuntimeBase(value);}});
    if(current()){
     setSaved(cause?'':savedLabel);
     setError(cause?`Changes saved, but settings could not be refreshed: ${cause.message}`:'');
@@ -76,15 +83,16 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  };
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({enabled})}));
  useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({initialize:true})}));},[assistant,status.data?.initialized]);
- const editableInterval=app?.triggerKind==='manual'||app?.schedule?.scheduleKind==='interval';
- const intervalChanged=Boolean(editableInterval&&app&&Number(minutes)!==(app.everyMs??600000)/60000);
+ const scheduleSource=settings?scheduleBase:app;
+ const editableInterval=scheduleSource?.triggerKind==='manual'||scheduleSource?.schedule?.scheduleKind==='interval';
+ const intervalChanged=Boolean(editableInterval&&scheduleSource&&Number(minutes)!==(scheduleSource.everyMs??600000)/60000);
  const interval=Number(minutes),validInterval=!editableInterval||minutes.trim()!==''&&Number.isFinite(interval)&&interval>=1&&Number.isSafeInteger(interval*60000);
- const settingsDirty=Boolean(app&&(automatic!==app.automatic||intervalChanged||engine!==app.engine||model!==(app.model??'')));
+ const settingsDirty=Boolean(scheduleBase&&(automatic!==scheduleBase.automatic||intervalChanged)||runtimeBase&&(engine!==runtimeBase.engine||model!==(runtimeBase.model??'')));
  useUnsavedForm('output-app-settings',settings&&settingsDirty);
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
  const saveSchedule=()=>{
-  if(!app||!validInterval)return;
-  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic,...(intervalChanged||(app.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved');
+  if(!app||!scheduleBase||!validInterval)return;
+  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved','schedule');
  };
  return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
@@ -106,7 +114,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
     <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{busy?'Saving…':saved}</Typography>
     <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/>
     {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
-     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>:<Typography>{app.schedule?.scheduleKind==='cron'?`Cron schedule: ${app.schedule.expression} (${app.schedule.timezone})`:app.schedule?.scheduleKind==='once'?`Once at ${app.schedule.at}`:app.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
+     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
      <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>
      {engines.isError&&<Alert severity="error" action={<Button onClick={()=>void engines.refetch()}>Retry</Button>}>{engines.error.message}</Alert>}
      <TextField disabled={busy||engines.isPending} select label="Provider" value={engine} onChange={event=>{setSaved('');setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}>
@@ -116,8 +124,9 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
      <TextField disabled={busy||engines.isPending} select label="Model" SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} value={model} onChange={event=>{setSaved('');setModel(event.target.value);}}>
       <MenuItem value="">Provider default</MenuItem>{model&&!engines.data?.find(item=>item.id===engine)?.models.some(item=>item.id===model)&&<MenuItem value={model}>{model}</MenuItem>}{engines.data?.find(item=>item.id===engine)?.models.filter(item=>item.id).map(item=><MenuItem key={item.id} value={item.id}>{item.label}</MenuItem>)}
      </TextField>
-     <Button disabled={busy||!engine} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null}),'Model saved')}>Save model</Button>
+     <Button disabled={busy||!engine||!runtimeBase?.runtimeSettings} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null,expectedRuntimeSettings:runtimeBase!.runtimeSettings}),'Model saved','model')}>Save model</Button>
      <Button href={`/branches?branch=${encodeURIComponent(app.branchId)}&tab=workflow`}>More options</Button>
+     <Button disabled={busy} onClick={()=>void retryRefresh(true)}>Discard draft and reload</Button>
     </>}
     {assistant&&<Button disabled={busy||status.isPending} onClick={()=>void configure(!status.data?.enabled)}>{status.data?.enabled?'Disable Assistant':'Enable Assistant'}</Button>}
    </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={closeSettings}>Done</Button></DialogActions>

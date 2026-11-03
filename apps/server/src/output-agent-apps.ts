@@ -92,6 +92,7 @@ export class OutputAgentApps {
       trigger:trigger?{id:trigger.id,enabled:trigger.enabled,sourceKind:trigger.sourceKind,sourceConfig:trigger.sourceConfig}:null})).digest('hex');
     return {agentId:id,branchId:branch.id,projectId:chat.projectId,chatId:chat.id,title:agent.title,url:`/apps/${encodeURIComponent(id)}`,
       speaker:this.roles().speakerAgentId===id,versionId:branch.versionId,bindingRevisionId:branch.bindingRevisionId,settingsRevision,model:agent.model??undefined,engine:agent.activeEngine,
+      runtimeSettings:{activeEngine:agent.activeEngine,model:agent.model??null,effort:agent.effort??null,speed:agent.speed??null},
       automatic:Boolean(trigger?.enabled&&branch.enabled),triggerKind:trigger?.sourceKind??'manual',...(config?{schedule:config}:{}),...(config?.scheduleKind==='interval'?{everyMs:config.everyMs}:{})};
   }
   private pause(app:OutputAgentAppDto){

@@ -112,9 +112,23 @@ export function registerAgentMaintenanceRoutes(
       const current = store.getAgent(request.params.id);
       if (!current) return reply.code(404).send({ error: "agent not found" });
       const body = request.body ?? {};
-      const allowedFields = new Set(["title", "role", "activeEngine", "model", "effort", "speed", "workingCopyMode", "managementPermissions"]);
+      const allowedFields = new Set(["title", "role", "activeEngine", "model", "effort", "speed", "workingCopyMode", "managementPermissions", "expectedRuntimeSettings"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
+      }
+      if (body.expectedRuntimeSettings !== undefined) {
+        const expected = body.expectedRuntimeSettings;
+        if (!expected || typeof expected !== "object" || Array.isArray(expected)
+          || Object.keys(expected).sort().join("|") !== "activeEngine|effort|model|speed"
+          || typeof expected.activeEngine !== "string"
+          || [expected.model, expected.effort, expected.speed].some(value => value !== null && typeof value !== "string")
+          || !["activeEngine", "model", "effort", "speed"].some(key => key in body)) {
+          return reply.code(400).send({ error: "An exact runtime settings baseline and runtime change are required" });
+        }
+        if (expected.activeEngine !== current.activeEngine || expected.model !== (current.model ?? null)
+          || expected.effort !== (current.effort ?? null) || expected.speed !== (current.speed ?? null)) {
+          return reply.code(409).send({ error: "Model settings changed. Reload settings before saving." });
+        }
       }
       if (body.role !== undefined) {
         try { body.role = normalizeAgentRole(body.role) ?? null; }
@@ -213,8 +227,9 @@ export function registerAgentMaintenanceRoutes(
         if (speedError) return reply.code(400).send({ error: speedError });
         runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null, speed: speed ?? null };
       }
+      const { expectedRuntimeSettings: _baseline, ...patch } = body;
       const agent = store.updateAgent(request.params.id, {
-        ...body,
+        ...patch,
         workingCopyMode: undefined,
         ...runtimePatch,
         ...(normalizedTitle !== undefined ? { title: normalizedTitle } : {}),

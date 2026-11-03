@@ -433,3 +433,22 @@ test('output automatic enable rolls back trigger changes if ordinary workflow av
   store.sqlite.exec('DROP TRIGGER refuse_output_enable');
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
+
+test('Output model saves compare the original full runtime settings without changing identity or history on conflict',async t=>{
+ await withFixture(t,async f=>{
+  const app=f.ok(await f.api('POST','/api/branches/assistant',{initialize:true})).app;
+  const path='/api/branches/engine/agents/'+app.agentId;
+  const history=f.ok(await f.api('GET',path)).messages;
+  assert.equal(app.runtimeSettings.activeEngine,app.engine);assert.equal(app.runtimeSettings.model,app.model??null);
+  const changedModel=app.model==='fixture'?null:'fixture';
+  f.ok(await f.api('PATCH',path,{model:changedModel,expectedRuntimeSettings:app.runtimeSettings}));
+  const current=f.ok(await f.api('GET','/api/branches/output-apps/'+app.agentId));
+  const stale=await f.api('PATCH',path,{model:app.model??null,expectedRuntimeSettings:app.runtimeSettings});
+  assert.equal(stale.status,409);assert.match(stale.body.error,/Model settings changed/);
+  assert.equal(f.ok(await f.api('GET',path)).agent.model??null,changedModel);
+  assert.deepEqual(f.ok(await f.api('GET',path)).messages,history);
+  assert.equal((await f.api('PATCH',path,{model:null,expectedRuntimeSettings:{...current.runtimeSettings,extra:true}})).status,400);
+  f.ok(await f.api('PATCH',path,{model:null,expectedRuntimeSettings:current.runtimeSettings}));
+  assert.equal(f.ok(await f.api('GET','/api/branches/output-apps/'+app.agentId)).runtimeSettings.model,null);
+ });
+});
