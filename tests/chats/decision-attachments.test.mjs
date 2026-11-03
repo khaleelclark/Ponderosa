@@ -248,3 +248,27 @@ test('UI019 oversized aggregate answers are rejected before resolution or provid
  const answers=questions.map(q=>({questionId:q.id,status:'answered',text:'😀'.repeat(10000)}));const result=await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers});assert.equal(result.status,413,JSON.stringify(result.body));
  assert.equal(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0].status,'pending');assert.equal(f.turns.length,turns);
 }));
+
+
+test('Decision and retained Chat audio ranges retain their owner checks after Agent removal',fixtureTestOptions,t=>withFixture(t,async f=>{
+ const voice=Buffer.concat([Buffer.from('OggS'),Buffer.alloc(22),Buffer.from([1,19]),Buffer.from('OpusHead'),Buffer.alloc(11)]);
+ const x=await ask(f), staged=await upload(f,x,voice,'voice.ogg','audio/ogg');
+ const result=f.ok(await f.api('POST','/api/decisions/'+x.decision.id+'/respond',{attachmentIds:[staged.id]}));
+ const file=result.response.attachments[0];
+ const checkRange=async url=>{
+  const res=await f.api('GET',url+'?playback=audio',undefined,{range:'bytes=0-3'});
+  assert.equal(res.status,206);assert.deepEqual(res.rawBody,voice.subarray(0,4));
+  assert.equal(res.headers['content-range'],'bytes 0-3/'+voice.length);
+  assert.equal(res.headers['content-type'],'audio/ogg');assert.equal(res.headers['content-disposition'],'inline');
+ };
+ await checkRange(file.downloadUrl);
+ assert.equal((await f.api('GET',file.downloadUrl.replace(x.decision.id,randomUUID())+'?playback=audio',undefined,{range:'bytes=0-3'})).status,404);
+ await f.settled(x.agent.id);
+ const preview=f.ok(await f.api('POST','/api/projects/'+x.chat.projectId+'/agent-deletions/preview',{rootAgentIds:[x.agent.id]}));
+ f.ok(await f.api('POST','/api/projects/'+x.chat.projectId+'/agent-deletions/commit',{rootAgentIds:[x.agent.id],previewHash:preview.previewHash}));
+ assert.equal((await f.api('GET','/api/agents/'+x.agent.id)).status,404);
+ await checkRange(file.downloadUrl);
+ const retained='/api/conversations/'+x.chat.id+'/retained-attachments/'+x.agent.id+'/'+file.id+'/download';
+ await checkRange(retained);
+ assert.equal((await f.api('GET',retained.replace(x.agent.id,randomUUID())+'?playback=audio',undefined,{range:'bytes=0-3'})).status,404);
+}));

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
 import { prepareAssetUpload } from '../../apps/server/dist/assets.js';
 import { withFixture, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
@@ -50,4 +51,19 @@ test('verified audio downloads support browser ranges without changing ordinary 
  }
  const text=f.ok(await f.api('POST','/api/conversations/'+chat.id+'/attachments',Buffer.from('not audio'),{'content-type':'application/octet-stream','x-ponderosa-filename':'note.txt','x-ponderosa-media-type':'text/plain'}));
  assert.equal((await f.api('GET','/api/conversations/'+chat.id+'/assets/'+text.id+'/download?playback=audio')).status,404);
+}));
+
+
+test('duplicate wire-level Range headers never expose an unchecked multipart response',options,t=>withFixture(t,async f=>{
+ const chat=await f.createChat('Range headers');
+ const asset=f.ok(await f.api('POST','/api/conversations/'+chat.id+'/attachments',opus,{'content-type':'application/octet-stream','x-ponderosa-filename':'voice.ogg','x-ponderosa-media-type':'audio/ogg'}));
+ const address=await f.listen();
+ const url=address+'/api/conversations/'+chat.id+'/assets/'+asset.id+'/download?playback=audio';
+ const response=await new Promise((resolve,reject)=>{
+  const req=request(url,{headers:['Range','bytes=0-1','Range','bytes=4-5']},res=>{
+   const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:Buffer.concat(chunks)}));res.on('error',reject);
+  });req.on('error',reject);req.end();
+ });
+ assert.equal(response.status,200);assert.deepEqual(response.body,opus);
+ assert.equal(response.headers['content-type'],'audio/ogg');
 }));
