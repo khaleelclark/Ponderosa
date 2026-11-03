@@ -19,6 +19,22 @@ const MAX_FILES_PER_OCCURRENCE = 500;
 const MAX_FILESYSTEM_WINDOW_MS = 60 * 60 * 1_000;
 const DEFAULT_EXCLUDES = [".git/**", "node_modules/**", ".ponderosa/**"];
 
+// Never persist arbitrary exception text in user-visible notifications: database
+// and filesystem errors may contain SQL, paths or private input. Expose only
+// classifications whose wording is controlled here.
+function scheduleFailureReason(error: unknown): string {
+  const code = error !== null && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code : undefined;
+  switch (code) {
+    case "SQLITE_BUSY": case "SQLITE_LOCKED": return "the local database is busy";
+    case "SQLITE_FULL": case "ENOSPC": return "local storage is full";
+    case "SQLITE_READONLY": case "EROFS": return "local storage is read-only";
+    case "SQLITE_IOERR": case "EIO": return "a local storage I/O error occurred";
+    case "SQLITE_CORRUPT": case "SQLITE_NOTADB": return "the local database could not be read";
+    default: return "an internal scheduler error occurred";
+  }
+}
+
 export function normalizeTriggerSourceConfig(
   sourceKind: TriggerSourceKind,
   config: TriggerSourceConfig,
@@ -400,7 +416,7 @@ export class BranchTriggerSourceService {
       if (!due.length) this.scheduleCycleCutoff = undefined;
       this.reportScheduleDiagnostic(() => this.options.onSourceRecovered?.("", "schedule_polling"));
     } catch (error) {
-      const cause=error instanceof Error?error.message:String(error);
+      const cause=scheduleFailureReason(error);
       this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: `Schedule polling failed: ${cause}. No scheduled work was accepted by this check; polling will retry.` }));
       return;
     }
@@ -411,7 +427,7 @@ export class BranchTriggerSourceService {
         if (!this.destinationAvailable(trigger)) continue;
         this.fireSchedule(trigger, now);
       } catch (error) {
-        const cause=error instanceof Error?error.message:String(error);
+        const cause=scheduleFailureReason(error);
         this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ trigger, kind: "schedule", episode,
           error: `Scheduled check could not be accepted: ${cause}. Check current Trigger Events; unchanged due checks retry automatically.` }));
         continue;
@@ -531,7 +547,7 @@ export class BranchTriggerSourceService {
   private ensureSchedulePolling(): void {
     if (this.scheduleTimer||!this.sourceAvailable()) return;
     this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(error => {
-      const cause=error instanceof Error?error.message:String(error);
+      const cause=scheduleFailureReason(error);
       this.reportScheduleDiagnostic(() => this.options.onSourceFailure?.({ kind: "schedule_polling", error: `Schedule polling failed: ${cause}. Polling will retry.` }));
     }); }, 1_000);
     this.scheduleTimer.unref();
