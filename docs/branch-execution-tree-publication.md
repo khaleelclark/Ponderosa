@@ -144,13 +144,20 @@ dispositions. Current source APIs/SDK are usable code contracts, not executed pr
 
 ## Explicit checkpoint continuation after DATA import
 
-A separate reviewed consumer now supports first-generation effect-free synchronous
+A separate reviewed consumer now supports effect-free synchronous
 Script/Call selected owner trees. See `branch-foreign-checkpoint-continuation.md`
 for its exact family and refusals. DATA publication/readback remains held and
 requires disabled unchanged destinations. Explicit enablement does not admit any
 held owner. Continuation separately checks immutable import/native evidence,
 reviews every current destination and allocates fresh acceptances, Call provenance,
 admissions and remapped frontiers in one transaction. Original DATA stays held.
-Repeated tree generations, gates/issued/EXIT/resource/unknown combinations are
-not covered by this consumer. This change has source review only, with no runtime
+Supported held re-exports and admitted continuation generations retain the exact
+root command, reviewed receipt, held manifest and all-owner remap proof. Shared
+canonical replay checks prior selected/latest trees and genuine later Call children;
+held-only generations are validated separately and never treated as admission.
+Re-export checks immutable held evidence even after current enablement and fresh
+continuation owners; the ordinary disabled DATA readback contract is unchanged.
+Tree proof is bounded to 16 nested links, 32 MiB manifests and 128 uncached
+manifest/replay frames per traversal. Local-rewind and gates/issued/EXIT/resource/
+unknown combinations remain outside this consumer. This change has source review only, with no runtime
 round-trip or rollback qualification.

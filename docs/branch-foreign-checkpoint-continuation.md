@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining beyond the first-generation Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; exit/async modes; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the supported Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; exit/async modes; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -44,7 +44,7 @@ This UI change is source-only and has not been run, built or typechecked.
 
 ## Selected state and routing continuation
 
-The same export facts/private checkpoints, reviewed held import and runtime-data readback carry state seals and condition/route/fork/Map/Join frontiers. No extra import format, endpoint, acceptance system or mutable state store is introduced. Source definitions are canonically validated; current definition and nonsecret configuration must still match exactly. A selected cut can stop before or after a supported control, or at an unstarted Script invocation. Unknown, issued, resource, recovery-gate, automatic, bundle and secret families remain refused by this standalone consumer; the separate first-generation Call-tree family is described below.
+The same export facts/private checkpoints, reviewed held import and runtime-data readback carry state seals and condition/route/fork/Map/Join frontiers. No extra import format, endpoint, acceptance system or mutable state store is introduced. Source definitions are canonically validated; current definition and nonsecret configuration must still match exactly. A selected cut can stop before or after a supported control, or at an unstarted Script invocation. Unknown, issued, resource, recovery-gate, automatic, bundle and secret families remain refused by this standalone consumer; the separate Call-tree family is described below.
 
 Human review includes the declared channels/reducers, selected state projection and latest saved source projection, each with revision and evidence hash, plus the actual control definitions. These fields join the existing review digest and are rechecked atomically on confirmation. The UI shows which state revision will resume and reveals the values/reducers and control definitions for review. A later saved state is evidence only; continuation resumes the selected state, never the latest state by accident.
 
@@ -88,7 +88,7 @@ import/foreign chains and each retained rewind chain are limited to 16 links, an
 one portable validation permits at most 128 uncached replay frames. Missing,
 changed, corrupt, cyclic, ambiguous or oversized evidence refuses continuation.
 Unsupported chains may remain imported as evidence-only data; this grants no
-continuation authority. Repeated tree generations and tree/gate combinations, issued/Agent/resource/automatic/unknown,
+continuation authority. Tree/gate combinations, issued/Agent/resource/automatic/unknown,
 recovery-gate/bundle/secret, changed-definition and external-file-proof
 families remain excluded from this standalone continuation path.
 
@@ -178,10 +178,10 @@ Waiting/resolved/canceled round trips, notifications and failure rollback remain
 unqualified until execution checks are authorized.
 
 
-## First-generation foreign Call trees
+## Foreign Call trees and repeated generations
 
 The existing foreign checkpoint review/confirmation/original-key receipt flow also
-accepts first-generation `ponderosa.branch.script-tree-continuation.v1` cuts from
+accepts supported `ponderosa.branch.script-tree-continuation.v1` cuts from
 held execution-tree imports. Supported owners are manual synchronous, quiescent,
 effect-free Script/Call workflows using the canonical state/control/tree codec.
 The selected root must remain runnable or waiting on its selected children;
@@ -192,8 +192,8 @@ inventory comes from the historical checkpoint boundary, never from later work.
 This tree family excludes human gates, issued/native/unknown work, resources,
 custody, actions, bundles, Agents, execution-owned Chats, secrets, automatic,
 async/EXIT, changed historical definitions/configuration and external restoration.
-Repeated imported or continued tree generations and retained rewind trees currently
-refuse rather than invent missing proof. Standalone gate/parallel and repeated
+Supported held re-exports and admitted continuation generations retain exact proof
+as described below. Retained local-rewind tree combinations remain refused. Standalone gate/parallel and repeated
 Script continuation retain their existing supported families; these are not a
 promise of every combination with Call trees.
 
@@ -235,3 +235,36 @@ Source-only implementation: no tests, fixtures/preparation, builds, typechecks,
 Node/runtime/native/browser/provider or live database actions were performed.
 Tree round trips, saved-command recovery, capacity/budget failure and final-owner
 rollback remain execution-unqualified.
+
+### Retained whole-tree generation proof
+
+A continued root exports one private `tree-continuation` fact containing the exact
+root command, reviewed receipt and original held tree manifest/native maps. Each
+current tree owner also exports its exact acceptance/admission fact. Child
+provenance remains `branch_call`; no child is made into a second manual root.
+Export/import validation requires the original held owner and its saved command in
+the current owner inventory, verifies their bytes against that fact, and recursively
+validates retained manifests. The data receipt still conveys no admission.
+
+The canonical local tree composer and private foreign fact reader share a whole-tree
+lineage validator. It independently replays the prior selected tree and latest
+source owner evidence, proves the global remap and every restored owner's current
+pins, real acceptance/admission, parent attempt, occurrence/input identity and prefix
+seal. Previously completed children remain terminal. New suffix children must have
+ordinary Call provenance and admission under the exact reviewed Branch graph.
+Restored child admission events are checked once without resettling old results.
+New checkpoints retain the bounded generation reference in canonical tree provenance.
+
+A held-only re-export follows immutable `tree-import` links separately. Every mapped
+held frontier, counter, definition/configuration and Call edge must match its typed
+remap before the original checkpoint can be selected. Review binds both the outer
+held import and resolved generation identities, while allocating another fresh tree
+through the existing transaction. The checkpoint picker follows the same bounded
+held links; original-key recovery and command persistence are unchanged.
+
+The 32 MiB manifest bound remains. Tree generation validation limits nesting to 16
+links and memoizes at most 128 uncached manifests/replay frames per traversal;
+cycles, missing owners, ambiguous commands, unsupported or oversized proof refuse.
+No source effects or old acceptance authority are replayed. Ordinary disabled DATA
+readers remain unchanged. Repeated round trips, suffix dispatch, rendered recovery
+and rollback are source-reviewed behavior only until separately executed.

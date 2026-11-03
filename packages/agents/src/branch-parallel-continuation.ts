@@ -92,7 +92,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
    for(const map of m.maps!)sealedMaps.add(map.id);
    for(const item of m.items!)if(['arrived','canceled'].includes(find('paths',item.path_id).state))completedItems.add(item.id);
    for(const gate of m.gates!)if(gate.state==='resolved')gateDecisions.set(gate.id,JSON.parse(gate.response_json).decision);
-   for(const a of m.attempts!)if(context?.children[a.id]){admitted.add(a.id);if(context.children[a.id]!.completed)completedChildren.add(a.id);}
+   for(const a of m.attempts!)if(context?.children[a.id]){if(!context.foreignTreePrefix)admitted.add(a.id);if(context.foreignTreePrefix?['completed','failed'].includes(a.state):context.children[a.id]!.completed)completedChildren.add(a.id);}
   }else m.paths!.push({id:root.id,execution_id:e.id,parent_path_id:null,fork_invocation_id:null,edge_id:null,state:'active',node_id:d.entry,step_execution_id:null,input_text:e.input_text,result_json:null,traversals:0,handling_limit:0,last_result_id:null});
   const move=(p:Row,edge:BranchDefinition['edges'][number]|undefined,output:string,result:Row)=>{
    if(edge?.loop){const iteration=1+m.loops!.filter(row=>row.edge_id===edge.id).reduce((n,row)=>n+row.iterations,0);let row=m.loops!.find(row=>row.path_id===p.id&&row.edge_id===edge.id);if(!row){row={execution_id:e.id,path_id:p.id,edge_id:edge.id,iterations:0};m.loops!.push(row);}row.iterations++;pendingLoops.push({pathId:p.id,edgeId:edge.id,iteration});}
@@ -132,6 +132,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
    switch(event.kind){
     case 'trigger_accepted':require(!accepted&&!started&&v.versionId===e.version_id&&v.bindingRevisionId===e.binding_revision_id&&v.inputHash===e.input_hash);accepted=true;break;
     case 'workflow_started':require(accepted&&!started);started=true;break;
+    case 'foreign_tree_selected_prefix':require(context?.foreignTreePrefix&&seed&&accepted&&!started);break;
     case 'foreign_selected_prefix':case 'restored_prefix':case 'historical_rewind':require(seed&&accepted&&!started);break;
     case 'tree_restored_prefix':case 'tree_historical_rewind':require(context&&seed&&accepted&&!started);if(event.kind==='tree_historical_rewind'&&context.restoredTerminal)started=true;break;
     case 'step_prepared':{
@@ -337,6 +338,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
     }
     case 'child_admitted':case 'child_completed':{
      const a=find('attempts',v.attemptId),step=find('steps',a.step_execution_id),p=find('paths',step.path_id),child=context?.children[a.id],node=d.steps.find(row=>row.id===step.step_id);
+     if(event.kind==='child_admitted'&&context?.foreignTreePrefix&&seed&&seed.selected.attempts!.some(old=>seed.idMap[old.id]===v.attemptId)){require(child&&!admitted.has(a.id)&&v.definitionId===child.versionId&&key===`call:${a.id}`&&v.childExecutionId===child.executionId);admitted.add(a.id);break;}
      require(child&&node?.kind==='branch_call'&&p.step_execution_id===step.id&&child.executionId===v.childExecutionId);
      if(event.kind==='child_admitted'){require(!admitted.has(a.id)&&a.state==='prepared'&&v.definitionId===child.versionId&&key===`call:${a.id}`);admitted.add(a.id);a.state=step.state=p.state='waiting';}
      else {require(admitted.has(a.id)&&!completedChildren.has(a.id)&&child.completed&&v.versionId===child.versionId&&v.state===(child.failed?'failed':'completed'));completedChildren.add(a.id);}

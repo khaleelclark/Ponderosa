@@ -1,3 +1,4 @@
+import {heldTreeSource,portableTreeOwners} from './branch-tree-generation.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {insertBranchExecutionTree,readBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
 import {validateBranchRuntimeData,resolveBranchRuntimeSource} from './branch-runtime-package.js';
@@ -672,25 +673,27 @@ export class BranchStore {
     if(!selection||Object.keys(selection).sort().join('|')!==['planId','sourceExecutionId','checkpointKey','checkpointSha256'].sort().join('|')||[selection.planId,selection.sourceExecutionId,selection.checkpointKey].some(v=>typeof v!=='string'||!v||v.length>200)||! /^[a-f0-9]{64}$/.test(selection.checkpointSha256))throw Error('Exact imported tree selection required');
     const saved=readHeldTreeForContinuation(this.sqlite,selection.planId,branchId);if(!saved)throw Error('Imported tree unavailable');
     const all=Object.values(saved.data.branches).flatMap(b=>b.owners),owner=all.find(o=>o.sourceExecutionId===selection.sourceExecutionId);
-    const fact=owner?.facts.find(f=>f.kind==='checkpoint'&&f.key===selection.checkpointKey&&f.sha256===selection.checkpointSha256);
+    const resolved=heldTreeSource(saved.data,selection.sourceExecutionId),sourceOwners=portableTreeOwners(resolved.data),sourceOwner=sourceOwners.find(o=>o.sourceExecutionId===resolved.rootId);
+    const fact=sourceOwner?.facts.find(f=>f.kind==='checkpoint'&&f.key===selection.checkpointKey&&f.sha256===selection.checkpointSha256);
     if(!owner||!fact||owner.sourceBranchId!==saved.data.rootSourceBranchId)throw Error('Select an original root checkpoint');
-    const snapshot=JSON.parse(fact.json),c=portableScriptTreeSupported(this.sqlite,saved.data,owner.sourceExecutionId,snapshot);
-    if(!c||!portableScriptTreeSupported(this.sqlite,saved.data,owner.sourceExecutionId))throw Error('Selected/latest original Call tree failed canonical replay; unsupported generations remain held');
-    for(const o of c.owners)if(saved.receipt.frontiers[o.executionId]?.disposition!=='recreated_held')throw Error('Tree owner lacks an immutable recreated held frontier');
-    return {saved,owner,snapshot,c,importedId:saved.receipt.executionMap[owner.sourceExecutionId]!};
+    const snapshot=JSON.parse(fact.json),c=portableScriptTreeSupported(this.sqlite,resolved.data,resolved.rootId,snapshot);
+    if(!c||!portableScriptTreeSupported(this.sqlite,resolved.data,resolved.rootId))throw Error('Selected/latest original Call tree failed canonical replay; unsupported generations remain held');
+    for(const o of c.owners)if(saved.receipt.frontiers[resolved.aliases[o.executionId]!]?.disposition!=='recreated_held')throw Error('Tree owner lacks an immutable recreated held frontier');
+    return {saved,owner,snapshot,c,resolved,sourceOwners,importedId:saved.receipt.executionMap[owner.sourceExecutionId]!};
   }
   private reviewForeignTree(branchId:string,selection:import('@ponderosa/core').BranchForeignContinuationSelection,now:string):import('@ponderosa/core').BranchForeignContinuationReview {
-    const cut=this.foreignTreeCut(branchId,selection),r=cut.saved.receipt,all=Object.values(cut.saved.data.branches).flatMap(b=>b.owners);
+    const cut=this.foreignTreeCut(branchId,selection),r=cut.saved.receipt,all=cut.sourceOwners;
+    const destination=(source:string)=>r.branchMap[cut.resolved.branches[source]!]!;
     const branches:import('@ponderosa/core').BranchForeignTreeBranchReview[]=Object.values(r.branchMap).map(id=>{
       const branch=this.getBranch(id);if(!branch?.enabled||!branch.versionId||!branch.bindingRevisionId||this.row('SELECT deleting FROM branches WHERE id=?',id)?.deleting)throw Error('Enable every current Call destination before review');
       if(branch.chatId)this.chat(branch.chatId);
       const definition=this.version(id,branch.versionId)!.definition,bindings=this.localConfiguration(id)!,configuration=this.configuration(id),{secretBindings,...nonsecret}=configuration;
       if(definition.trigger.kind!=='manual'||configuration.checkpointMode!=='sync'||!scriptDefinitionSupported(definition,true)||definition.steps.some(s=>!['script','branch_call'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret synchronous Script/Call family');
-      for(const o of all.filter(o=>r.branchMap[o.sourceBranchId]===id)){
+      for(const o of all.filter(o=>destination(o.sourceBranchId)===id)){
         const get=(kind:string)=>JSON.parse(o.facts.find(f=>f.kind===kind)!.json);
         if(payloadHash(definition)!==payloadHash(get('definition'))||stableJson(nonsecret)!==stableJson(get('configuration').configuration))throw Error('Current tree definition/configuration differs from source');
         const original=get('bindings').branches??{};
-        if(stableJson(bindings.branches??{})!==stableJson(Object.fromEntries(Object.entries(original).map(([ref,target])=>[ref,r.branchMap[target as string]]))))throw Error('Current Call target graph differs from original mapped Branches');
+        if(stableJson(bindings.branches??{})!==stableJson(Object.fromEntries(Object.entries(original).map(([ref,target])=>[ref,destination(target as string)]))))throw Error('Current Call target graph differs from original mapped Branches');
       }
       if(this.restricted(id,CAPABILITY_IDS.scripts)||this.restricted(id,CAPABILITY_IDS.branchCalls))throw Error('Current tree Script/Call authority is restricted');
       const directoryChoices=Object.fromEntries(Object.entries(bindings.directories).map(([ref,value])=>{const path=interpolateBranchText(value,definition,configuration),realpath=realpathSync(path),stat=statSync(realpath);if(!stat.isDirectory())throw Error('Tree directory unavailable');accessSync(realpath,fsConstants.R_OK|fsConstants.X_OK);return [ref,{path,realpath,device:stat.dev,inode:stat.ino}];}));
@@ -698,10 +701,10 @@ export class BranchStore {
     });
     const root=branches.find(b=>b.branchId===branchId)!,owners=cut.c.owners.map((o:Row)=>{
       const source=all.find(p=>p.sourceExecutionId===o.executionId)!,definition=JSON.parse(source.facts.find(f=>f.kind==='definition')!.json),latest=JSON.parse(source.facts.find(f=>f.kind==='frontier')!.json);
-      return {sourceExecutionId:o.executionId,branchId:r.branchMap[source.sourceBranchId]!,selectedState:o.selected.execution[0].state,...(definition.state?{sharedState:{channels:definition.state,selected:branchSharedState(definition,o.selected.steps,o.selected.sealedResults),latest:branchSharedState(definition,latest.steps,latest.sealedResults)}}:{})};
+      return {sourceExecutionId:o.executionId,branchId:destination(source.sourceBranchId),selectedState:o.selected.execution[0].state,...(definition.state?{sharedState:{channels:definition.state,selected:branchSharedState(definition,o.selected.steps,o.selected.sealedResults),latest:branchSharedState(definition,latest.steps,latest.sealedResults)}}:{})};
     });
     const {definition,...rootChoices}=root;
-    const value={schema:'ponderosa.branch-foreign-review.v1' as const,selection,importedExecutionId:cut.importedId,manifestSha256:cut.saved.data.sha256,ownerSha256:cut.owner.sha256,checkpoint:cut.snapshot,nativeMaps:r,...rootChoices,definitionSha256:payloadHash(definition),tree:{branches,owners},custody:'not_applicable' as const,engine:'node' as const,secretChoice:'none' as const,accessChoice:'current_destination' as const};
+    const value={schema:'ponderosa.branch-foreign-review.v1' as const,selection,importedExecutionId:cut.importedId,manifestSha256:cut.saved.data.sha256,ownerSha256:cut.owner.sha256,checkpoint:cut.snapshot,nativeMaps:r,generationChain:cut.resolved.chain,...rootChoices,definitionSha256:payloadHash(definition),tree:{branches,owners},custody:'not_applicable' as const,engine:'node' as const,secretChoice:'none' as const,accessChoice:'current_destination' as const};
     return {...value,reviewSha256:this.foreignReviewHash(value)};
   }
   private foreignReviewHash(value:Omit<import('@ponderosa/core').BranchForeignContinuationReview,'reviewSha256'>):string {
@@ -728,14 +731,15 @@ export class BranchStore {
       this.state(next.id,['completed','failed'].includes(e.state)?e.state:restored.paths!.some(p=>p.state==='active')?'running':'waiting',now);
       this.selectedWrite(next.id);
     }
-    const rootId=ids[review.selection.sourceExecutionId]!,receipt:import('@ponderosa/core').BranchForeignContinuationReceipt={schema:'ponderosa.branch-foreign-continuation.v1',branchId,importedExecutionId:importedId,executionId:rootId,commandKey:input.commandKey,inputSha256:payloadHash(input),review,idMap:ids,admission:treeOwners[review.selection.sourceExecutionId]!.admission,treeOwners,createdAt:now};
+    const rootId=ids[cut.c.rootExecutionId]!,receipt:import('@ponderosa/core').BranchForeignContinuationReceipt={schema:'ponderosa.branch-foreign-continuation.v1',branchId,importedExecutionId:importedId,executionId:rootId,commandKey:input.commandKey,inputSha256:payloadHash(input),review,idMap:ids,admission:treeOwners[cut.c.rootExecutionId]!.admission,treeOwners,createdAt:now};
     for(const o of ordered){if(!this.hasRunnableCapacity(ids[o.executionId]!,true))throw Error('Final tree capacity unavailable');}
     this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',importedId,`foreign-continuation:${payloadHash(input.commandKey)}`,payloadHash(receipt),stableJson(receipt),now);
+    this.selectedWrite(rootId);
     return this.foreignContinuationReceipt(branchId,importedId,input.commandKey)!;
   }
   private foreignTreeReceipt(receipt:import('@ponderosa/core').BranchForeignContinuationReceipt):import('@ponderosa/core').BranchForeignContinuationReceipt {
     const review=receipt.review,{reviewSha256,...value}=review,cut=this.foreignTreeCut(receipt.branchId,review.selection),c=cut.c;
-    if(reviewSha256!==this.foreignReviewHash(value)||receipt.inputSha256!==payloadHash({...review.selection,commandKey:receipt.commandKey,reviewSha256,acceptCurrentAuthority:true})||stableJson(cut.saved.receipt)!==stableJson(review.nativeMaps)||cut.saved.data.sha256!==review.manifestSha256||cut.owner.sha256!==review.ownerSha256||stableJson(cut.snapshot)!==stableJson(review.checkpoint)||!receipt.treeOwners||stableJson(Object.keys(receipt.treeOwners).sort())!==stableJson(c.owners.map((o:Row)=>o.executionId).sort())||!treeIdMapSupported(c.owners,receipt.idMap,review.selection.sourceExecutionId,receipt.executionId)||stableJson(receipt.admission)!==stableJson(receipt.treeOwners[review.selection.sourceExecutionId]?.admission))throw Error('Foreign tree receipt/source lineage differs');
+    if(reviewSha256!==this.foreignReviewHash(value)||receipt.inputSha256!==payloadHash({...review.selection,commandKey:receipt.commandKey,reviewSha256,acceptCurrentAuthority:true})||stableJson(cut.saved.receipt)!==stableJson(review.nativeMaps)||cut.saved.data.sha256!==review.manifestSha256||cut.owner.sha256!==review.ownerSha256||stableJson(cut.snapshot)!==stableJson(review.checkpoint)||!receipt.treeOwners||stableJson(Object.keys(receipt.treeOwners).sort())!==stableJson(c.owners.map((o:Row)=>o.executionId).sort())||!treeIdMapSupported(c.owners,receipt.idMap,c.rootExecutionId,receipt.executionId)||stableJson(receipt.admission)!==stableJson(receipt.treeOwners[c.rootExecutionId]?.admission))throw Error('Foreign tree receipt/source lineage differs');
     for(const o of c.owners){
       const e=o.selected.execution[0],mapped=receipt.treeOwners[o.executionId]!,choice=review.tree!.owners.find(p=>p.sourceExecutionId===o.executionId),pins=review.tree!.branches.find(b=>b.branchId===choice?.branchId),next=this.row('SELECT * FROM branch_executions WHERE id=?',mapped.executionId),parent=e.parent_execution_id?receipt.idMap[e.parent_execution_id]:null,attempt=e.parent_attempt_id?receipt.idMap[e.parent_attempt_id]:null;
       if(!pins||!next||mapped.executionId!==receipt.idMap[o.executionId]||next.branch_id!==pins.branchId||next.version_id!==pins.versionId||next.binding_revision_id!==pins.bindingRevisionId||next.configuration_json!==stableJson(pins.configuration)||!next.admitted_at||next.admission_json!==stableJson(mapped.admission)||next.parent_execution_id!==parent||next.parent_attempt_id!==attempt||next.call_depth!==e.call_depth||next.depth_ceiling!==e.depth_ceiling||next.input_text!==e.input_text||next.input_hash!==(attempt?payloadHash({parentAttempt:attempt,input:e.input_text}):e.input_hash)||next.admission_source!==(parent?'call':'manual')||next.occurrence_key!==(attempt?`call:${attempt}`:`foreign-continuation:${receipt.importedExecutionId}:${payloadHash(receipt.commandKey)}`)||next.provenance_json!==stableJson(parent?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:{source:'foreign_tree_continuation',importedExecutionId:receipt.importedExecutionId,reviewSha256,commandKey:receipt.commandKey}))throw Error('Foreign tree fresh owner acceptance/admission differs');

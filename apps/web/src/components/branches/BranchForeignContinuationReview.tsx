@@ -21,8 +21,9 @@ export function BranchForeignContinuationReview({saved,sourceExecutionId,executi
   for(let depth=0;depth<16&&checkpointOwner;depth++){
    const origin=JSON.parse(checkpointOwner.facts.find(f=>f.kind==='provenance')!.json);
    if(origin.source!=='portable_runtime_data')break;
-   const imported=JSON.parse(checkpointOwner.facts.find(f=>f.kind==='import')!.json);
-   checkpointOwner=(imported.data as BranchRuntimeDataReadback['data']).owners.find(o=>o.sourceExecutionId===origin.sourceExecutionId);
+   const imported=JSON.parse(checkpointOwner.facts.find(f=>f.kind===(origin.tree?'tree-import':'import'))!.json);
+   const priorOwners=imported.data.schema==='ponderosa.branch-runtime-tree.v1'?Object.values((imported.data as BranchRuntimeTreeReadback['data']).branches).flatMap(b=>b.owners):(imported.data as BranchRuntimeDataReadback['data']).owners;
+   checkpointOwner=priorOwners.find(o=>o.sourceExecutionId===origin.sourceExecutionId);
   }
  }catch{checkpointOwner=undefined}
  const checkpoints=checkpointOwner?.facts.filter(f=>{if(f.kind!=='checkpoint')return false;try{return JSON.parse(f.json).restore_supported===true}catch{return false}})??[];

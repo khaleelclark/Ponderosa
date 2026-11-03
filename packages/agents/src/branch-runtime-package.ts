@@ -1,3 +1,4 @@
+import {captureForeignTreeGeneration} from './branch-tree-generation.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchPortableRuntimeData,BranchPortableRuntimeOwner,BranchPortableRuntimeFact} from '@ponderosa/core';
@@ -7,7 +8,7 @@ import {captureBranchHostCut} from './branch-host-cut.js';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {validateBranchDefinition} from './branch-definition.js';
 type Row=Record<string,any>;
-const kinds=new Set(['frontier','definition','bindings','configuration','provenance','host','initial','checkpoint','transition','command','custody','import','trigger','tree-import','continuation']);
+const kinds=new Set(['frontier','definition','bindings','configuration','provenance','host','initial','checkpoint','transition','command','custody','import','trigger','tree-import','continuation','tree-continuation','acceptance']);
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 const exact=(v:unknown,keys:string[])=>!!v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('|')===keys.sort().join('|');
 function noCredentials(value:unknown,depth=0):void {
@@ -67,6 +68,10 @@ export function validateBranchRuntimeData(value:unknown,called=false,depth=0):Br
     if(!e.parent_execution_id||!e.parent_attempt_id)throw Error('Call owner requires exact parent ancestry');
    }else if(e.admission_source!=='manual'||e.input_hash!==payloadHash({input:e.input_text,source:'manual'}))throw Error('Runtime original input identity differs');
   }
+  const acceptance=o.facts.filter(f=>f.kind==='acceptance');
+  if(acceptance.length>1||acceptance.length&&(!called||!exact(JSON.parse(acceptance[0]!.json),['admittedAt','admissionJson'])))throw Error('Runtime acceptance fact differs');
+  const treeGenerations=o.facts.filter(f=>f.kind==='tree-continuation');
+  if(treeGenerations.length!==(called&&provenance.source==='foreign_tree_continuation'?1:0))throw Error('Unowned or missing tree continuation evidence');
   const generations=o.facts.filter(f=>f.kind==='continuation');
   if(provenance.source==='foreign_checkpoint_continuation'){
    if(generations.length!==1)throw Error('Retained continuation generation evidence missing');
@@ -99,6 +104,7 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
   const owners:BranchPortableRuntimeOwner[]=rows.map(e=>{
    if(!called&&(e.parent_execution_id||!['manual','automatic'].includes(e.admission_source)||db.prepare('SELECT 1 FROM branch_executions WHERE parent_execution_id=?').get(e.id)))throw Error('Full runtime export currently requires standalone execution owners; called trees cannot be omitted');
    const facts:BranchPortableRuntimeFact[]=[],add=(kind:BranchPortableRuntimeFact['kind'],key:string,json:string)=>{const fact={kind,key,json,sha256:sha(json)};parseFact(fact);facts.push(fact);};
+   if(called)add('acceptance','original',stableJson({admittedAt:e.admitted_at,admissionJson:e.admission_json}));
    const selected=selectBranchUnit(db,e.id);add('frontier','current',stableJson(selected));
    for(const [kind,table,id,column] of [['definition','branch_versions',e.version_id,'definition_json'],['bindings','branch_bindings',e.binding_revision_id,'bindings_json']] as const){
     const pin=db.prepare(`SELECT ${column} json,content_hash FROM ${table} WHERE id=? AND branch_id=?`).get(id,branchId) as Row|undefined;
@@ -131,6 +137,7 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
     if(matches.length!==1)throw Error('Continuation original import evidence missing or ambiguous');
     add('continuation','original',stableJson({receipt,data:JSON.parse(matches[0]!.result_json).data,acceptance:{admittedAt:e.admitted_at,admissionJson:e.admission_json}}));
    }
+   if(origin.source==='foreign_tree_continuation')add('tree-continuation','original',stableJson(captureForeignTreeGeneration(db,e.id,origin)));
    const host=captureBranchHostCut(db,e.id,selected);if(host)add('host','current',stableJson(host));
    for(const [kind,table] of [['initial','branch_initial_checkpoints'],['checkpoint','branch_unit_snapshots']] as const){
     for(const cp of db.prepare(`SELECT id,snapshot_json,content_hash FROM ${table} WHERE execution_id=? ORDER BY id`).all(e.id) as Row[]){if(sha(cp.snapshot_json)!==cp.content_hash)throw Error('Runtime checkpoint integrity failure');add(kind,String(cp.id),cp.snapshot_json);}

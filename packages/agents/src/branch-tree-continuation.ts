@@ -1,3 +1,5 @@
+import {captureForeignTreeGeneration,heldTreeSource,treeFact,portableTreeOwners} from './branch-tree-generation.js';
+import {validateBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
 import {validateBranchDefinition} from './branch-definition.js';
 import {issuedResourceFrontierSupported} from './branch-issued-continuation.js';
 import {retainedResourceCapture} from './branch-resource-capture.js';
@@ -137,19 +139,26 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     }else if(e.depth_ceiling!==o.configuration.limits.maxCallDepth)return false;
     const waiting=resourceFrontier&&!issuedResource||Object.values(children).some(child=>!child.completed);
     if(!terminal&&!hasParallelControls(definition)&&(e.state!==(waiting?'waiting':'running')))return false;
-    const context:ScriptOwnerContext={resourceFrontier,...(issuedResource?{issuedResource:true,issuedOwnerTree:true}:{}),terminal,terminalState:terminal?e.state:undefined,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state===e.state};
-    if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context,o.hostDependencies,evidence?{owner:actual,audit:fullAudit!,tree:true}:undefined))return false;
+    const context:ScriptOwnerContext={foreignTreePrefix:!!seeds?.get(o.executionId)&&o.audit.some((a:Row)=>a.kind==='foreign_tree_selected_prefix'),resourceFrontier,...(issuedResource?{issuedResource:true,issuedOwnerTree:true}:{}),terminal,terminalState:terminal?e.state:undefined,waiting,parent,descendantTraversals:direct.reduce((n,ch)=>n+ch.selected.execution[0].traversals,0),descendantLoops:direct.reduce((n,ch)=>n+ch.selected.execution[0].loop_iterations,0),children,restoredTerminal:terminal&&seeds?.get(o.executionId)?.selected.execution?.[0]?.state===e.state};
+    if(!replayScriptCut(db,o.executionId,o.selected,definition,o.configuration,o.audit,checkpoint(o),seeds?.get(o.executionId),context,o.hostDependencies,evidence?{owner:actual,audit:fullAudit!,tree:true,validatedSeed:!!seeds?.get(o.executionId)}:undefined))return false;
   }
   return true;
 }
 function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
   try {
     const frames:{c:Row;seeds?:Map<string,{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>}>;ref?:Row}[]=[],seen=new Set<string>();
+    const base:Row[]=[];
     let current=c;
     for(;;){
       if(current.schema!==TREE_SCHEMA||seen.has(current.rootExecutionId))return;seen.add(current.rootExecutionId);
       const frame:typeof frames[number]={c:current};frames.push(frame);
       const root=current.owners.find((o:Row)=>o.executionId===current.rootExecutionId);if(!root)return;
+      if(root.audit.some((a:Row)=>a.kind==='foreign_tree_selected_prefix')){
+        const proof=foreignTreeSeeds(db,current);if(!proof)return;
+        frame.seeds=proof.seeds;frame.ref=proof.reference;
+        for(const previous of proof.provenance)base.push(previous);
+        break;
+      }
       const origins=root.audit.filter((a:Row)=>a.kind==='tree_historical_rewind');
       if(!origins.length){if(current.owners.some((o:Row)=>o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))))return;break;}
       if(origins.length!==1)return;
@@ -180,7 +189,7 @@ function compose(db:Database.Database,c:Row,encoding=false):Row[]|undefined {
       for(const o of current.owners)if(!seeds.has(o.executionId)&&o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind)))return;
       frame.seeds=seeds;frame.ref={executionId:current.rootExecutionId,sourceExecutionId:line.sourceExecutionId,lineageId:evidence.lineageId,lineageHash:stored.hash,checkpointId:line.checkpointId,checkpointHash:line.checkpointHash};current=old;
     }
-    const flat:Row[]=[];
+    const flat:Row[]=[...base];
     for(const frame of frames.reverse()){
       if(frame.ref)flat.push(frame.ref);
       if(!(encoding&&frame.c===c)&&stableJson(frame.c.provenance??[])!==stableJson(flat))return;
@@ -203,22 +212,86 @@ export function issuedScriptTreeSupported(db:Database.Database,c:Row):boolean {
 }
 
 /** Private fact readers feed the canonical owner-tree validator; no foreign rows are inserted. */
-export function portableScriptTreeSupported(db:Database.Database,data:BranchPortableExecutionTree,rootId:string,snapshot?:Row):Row|undefined {
+export function portableScriptTreeSupported(db:Database.Database,data:BranchPortableExecutionTree,rootId:string,snapshot?:Row,work:{remaining:number;active:Set<string>;cache:Map<string,Row>}={remaining:128,active:new Set(),cache:new Map()},depth=0):Row|undefined {
  try {
+  if(depth>16)return;
+  const key=data.sha256+':'+rootId+':'+(snapshot?payloadHash(snapshot):'latest');
+  if(work.active.has(key))return;const cached=work.cache.get(key);if(cached)return cached;
+  if(--work.remaining<0)return;work.active.add(key);
   const all=Object.values(data.branches).flatMap(b=>b.owners),byId=new Map(all.map(o=>[o.sourceExecutionId,o]));
   const fact=(o:BranchPortableRuntimeOwner,kind:string)=>JSON.parse(o.facts.find(f=>f.kind===kind)!.json);
   const root=byId.get(rootId);if(!root||fact(root,'frontier').execution[0].parent_execution_id)return;
   const related=all.filter(o=>{let e=fact(o,'frontier').execution[0];const seen=new Set<string>();for(;;){if(e.id===rootId)return true;if(!e.parent_execution_id||seen.has(e.id))return false;seen.add(e.id);const p=byId.get(e.parent_execution_id);if(!p)return false;e=fact(p,'frontier').execution[0];}});
   for(const o of related){
    const d=validateBranchDefinition(fact(o,'definition')),config=fact(o,'configuration'),s=fact(o,'frontier');
+   const origin=fact(o,'provenance');if(o.sourceExecutionId===rootId?!['manual','foreign_tree_continuation'].includes(origin.source):origin.source!=='branch_call')return;
    if(o.chatRefs.length||o.facts.some(f=>['custody','tree-import','import','continuation'].includes(f.kind))||config.requiredSecretRefs.length||config.configuration.checkpointMode!=='sync'||d.trigger.kind!=='manual'||d.steps.some((s:Row)=>!['script','branch_call'].includes(s.kind))||!scriptDefinitionSupported(d,true)||
     s.resources.length||s.actions.length||s.bundles.length||s.gates.length||s.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))||o.facts.filter(f=>f.kind==='transition').some(f=>['tree_historical_rewind','tree_restored_prefix','historical_rewind','restored_prefix','foreign_selected_prefix'].includes(JSON.parse(f.json).kind)))return;
   }
   const latestOwners=related.map(o=>{const s=fact(o,'frontier'),e=s.execution[0],config=fact(o,'configuration').configuration;return {executionId:o.sourceExecutionId,versionId:e.version_id,versionHash:payloadHash(fact(o,'definition')),bindingRevisionId:e.binding_revision_id,bindingHash:payloadHash(fact(o,'bindings')),configuration:config,selected:s,audit:o.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json))};});
   const c=snapshot?.continuation??{schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:rootId,owners:latestOwners,provenance:[]};
-  if(c.schema!==TREE_SCHEMA||c.rootExecutionId!==rootId||c.issuedResources||stableJson(c.provenance)!=='[]'||snapshot&&(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!=='sync'||!treeSnapshotMetadata(snapshot,c)))return;
+  if(c.schema!==TREE_SCHEMA||c.rootExecutionId!==rootId||c.issuedResources||snapshot&&(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!=='sync'||!treeSnapshotMetadata(snapshot,c)))return;
   if(c.owners.some((o:Row)=>!related.some(p=>p.sourceExecutionId===o.executionId)||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.gates.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return;
-  if(!validateOwners(db,c,undefined,false,byId,!snapshot))return;
-  return c;
+  const proof=foreignTreeSeeds(db,c,data,work,depth);
+  if(!proof||snapshot&&stableJson(c.provenance)!==stableJson([...proof.provenance,...(proof.reference?[proof.reference]:[])]))return;
+  if(!snapshot)c.provenance=[...proof.provenance,...(proof.reference?[proof.reference]:[])];
+  if(!validateOwners(db,c,proof.seeds,false,byId,!snapshot))return;
+  work.active.delete(key);work.cache.set(key,c);return c;
+ }catch{return;}
+}
+
+/** One root receipt accounts for every restored owner; later children prove ordinary Call admission. */
+function foreignTreeSeeds(db:Database.Database,c:Row,data?:BranchPortableExecutionTree,work={remaining:128,active:new Set<string>(),cache:new Map<string,Row>()},depth=0):Row|undefined {
+ try {
+  const root=c.owners.find((o:Row)=>o.executionId===c.rootExecutionId),prefixes=root?.audit.filter((a:Row)=>a.kind==='foreign_tree_selected_prefix');
+  if(!prefixes?.length){if(c.owners.some((o:Row)=>o.audit.some((a:Row)=>a.kind==='foreign_tree_selected_prefix')))return;return {provenance:[]};}
+  if(depth>=16||prefixes.length!==1)return;
+  const byId=new Map((data?portableTreeOwners(data):[]).map(o=>[o.sourceExecutionId,o]));
+  const get=(id:string,kind:string)=>{const o=byId.get(id);return o?treeFact(o,kind):undefined;};
+  const execution=(id:string)=>data?{...get(id,'frontier')?.execution[0],admitted_at:get(id,'acceptance')?.admittedAt,admission_json:get(id,'acceptance')?.admissionJson}:db.prepare('SELECT * FROM branch_executions WHERE id=?').get(id) as Row|undefined;
+  const origin=data?get(c.rootExecutionId,'provenance'):JSON.parse(execution(c.rootExecutionId)!.provenance_json);
+  if(origin.source!=='foreign_tree_continuation')return;
+  const retained=data?get(c.rootExecutionId,'tree-continuation'):captureForeignTreeGeneration(db,c.rootExecutionId,origin);
+  if(!retained||stableJson(Object.keys(retained).sort())!==stableJson(['command','held','receipt']))return;
+  const {receipt:r,held,command}=retained,review=r.review,{reviewSha256,...value}=review;
+  const source=validateBranchExecutionTree(held.data,depth+1),resolved=heldTreeSource(source,review.selection.sourceExecutionId);
+  const owner=portableTreeOwners(source).find(o=>o.sourceExecutionId===review.selection.sourceExecutionId),sourceRoot=portableTreeOwners(resolved.data).find(o=>o.sourceExecutionId===resolved.rootId);
+  const cp=sourceRoot?.facts.find(f=>f.kind==='checkpoint'&&f.key===review.selection.checkpointKey&&f.sha256===review.selection.checkpointSha256);
+  const budget=(b:Row)=>Object.fromEntries(Object.entries(b).filter(([k])=>k!=='observedAt'));
+  if(!owner||!cp||r.schema!=='ponderosa.branch-foreign-continuation.v1'||r.executionId!==c.rootExecutionId||r.importedExecutionId!==origin.importedExecutionId||r.commandKey!==origin.commandKey||reviewSha256!==origin.reviewSha256||
+   payloadHash({...value,budget:budget(value.budget),tree:{...value.tree,branches:value.tree.branches.map((b:Row)=>({...b,budget:budget(b.budget)}))}})!==reviewSha256||
+   r.inputSha256!==payloadHash({...review.selection,commandKey:r.commandKey,reviewSha256,acceptCurrentAuthority:true})||stableJson(review.checkpoint)!==cp.json||review.manifestSha256!==source.sha256||review.ownerSha256!==owner.sha256||stableJson(review.generationChain??resolved.chain)!==stableJson(resolved.chain)||stableJson(review.nativeMaps)!==stableJson(held.receipt)||held.receipt.executionMap[review.selection.sourceExecutionId]!==r.importedExecutionId||
+   command.command_key!==`foreign-continuation:${payloadHash(r.commandKey)}`||command.input_hash!==payloadHash(r)||command.result_json!==stableJson(r))return;
+  if(data){
+   const imported=byId.get(r.importedExecutionId),savedCommand=imported?.facts.find(f=>f.kind==='command'&&f.key===command.command_key);
+   if(!imported||stableJson(treeFact(imported,'tree-import'))!==stableJson(held)||!savedCommand||stableJson(JSON.parse(savedCommand.json))!==stableJson(command))return;
+   // Validate the held generation independently from its admitted successor.
+   heldTreeSource(data,r.importedExecutionId);
+  }else if(stableJson(readHeldTreeForContinuation(db,held.receipt.planId,held.receipt.rootBranchId))!==stableJson(held))return;
+  const old=portableScriptTreeSupported(db,resolved.data,resolved.rootId,JSON.parse(cp.json),work,depth+1);
+  if(!old||!portableScriptTreeSupported(db,resolved.data,resolved.rootId,undefined,work,depth+1)||!treeIdMapSupported(old.owners,r.idMap,old.rootExecutionId,c.rootExecutionId)||!r.treeOwners||stableJson(Object.keys(r.treeOwners).sort())!==stableJson(old.owners.map((o:Row)=>o.executionId).sort())||stableJson(r.admission)!==stableJson(r.treeOwners[old.rootExecutionId]?.admission))return;
+  const seeds=new Map<string,{selected:Selected;idMap:Record<string,string>}>();
+  for(const previous of old.owners){
+   const target=c.owners.find((o:Row)=>o.executionId===r.idMap[previous.executionId]),e=target&&execution(target.executionId),pe=previous.selected.execution[0],mapped=r.treeOwners[previous.executionId],choice=review.tree.owners.find((o:Row)=>o.sourceExecutionId===previous.executionId),pins=review.tree.branches.find((b:Row)=>b.branchId===choice?.branchId);
+   const sourceOwner=portableTreeOwners(resolved.data).find(o=>o.sourceExecutionId===previous.executionId)!;
+   if(!target||!e||!pins||mapped.executionId!==target.executionId||held.receipt.frontiers[resolved.aliases[previous.executionId]!]?.disposition!=='recreated_held'||pins.branchId!==held.receipt.branchMap[resolved.branches[sourceOwner.sourceBranchId]!]||!e.admitted_at||e.admission_json!==stableJson(mapped.admission)||e.branch_id!==pins.branchId||e.version_id!==pins.versionId||e.binding_revision_id!==pins.bindingRevisionId||target.versionHash!==payloadHash(pins.definition)||target.bindingHash!==payloadHash(pins.bindings)||stableJson(target.configuration)!==stableJson(pins.configuration)||payloadHash(pins.definition)!==previous.versionHash||stableJson(target.configuration)!==stableJson(previous.configuration)||e.input_text!==pe.input_text||e.parent_execution_id!==(pe.parent_execution_id?r.idMap[pe.parent_execution_id]:null)||e.parent_attempt_id!==(pe.parent_attempt_id?r.idMap[pe.parent_attempt_id]:null)||e.call_depth!==pe.call_depth||e.depth_ceiling!==pe.depth_ceiling||e.recovery_traversals!==pe.recovery_traversals||['completed','failed'].includes(pe.state)&&(target.selected.execution[0].state!==pe.state||target.selected.execution[0].output_text!==pe.output_text))return;
+   const targetOrigin=data?get(e.id,'provenance'):JSON.parse(e.provenance_json),parent=e.parent_execution_id,attempt=e.parent_attempt_id;
+   if(stableJson(targetOrigin)!==stableJson(parent?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:origin)||e.admission_source!==(parent?'call':'manual')||e.input_hash!==(attempt?payloadHash({parentAttempt:attempt,input:e.input_text}):payloadHash({input:e.input_text,source:'manual'}))||e.occurrence_key!==(attempt?`call:${attempt}`:`foreign-continuation:${r.importedExecutionId}:${payloadHash(r.commandKey)}`))return;
+   const prefix=target.audit.filter((a:Row)=>a.kind==='foreign_tree_selected_prefix');
+   if(prefix.length!==1||target.audit[0]?.kind!=='trigger_accepted'||target.audit[1]!==prefix[0]||target.audit[2]?.kind!=='workflow_started'||prefix[0].transition_key!=='foreign-tree-prefix'||prefix[0].evidence_json!==stableJson({importedExecutionId:r.importedExecutionId,sourceExecutionId:previous.executionId,reviewSha256})||target.audit[2].evidence_json!==stableJson({admission:mapped.admission}))return;
+   if(parent){const p=c.owners.find((o:Row)=>o.executionId===parent),event=p?.audit.find((a:Row)=>a.transition_key===`call:${attempt}`);if(event?.kind!=='child_admitted'||event.evidence_json!==stableJson({attemptId:attempt,childExecutionId:e.id,definitionId:e.version_id}))return;}
+   const originalBindings=treeFact(sourceOwner,'bindings').branches??{};
+   if(stableJson(pins.bindings.branches??{})!==stableJson(Object.fromEntries(Object.entries(originalBindings).map(([ref,b])=>[ref,held.receipt.branchMap[resolved.branches[b as string]!]]))))return;
+   seeds.set(e.id,{selected:previous.selected,idMap:r.idMap});
+  }
+  for(const o of c.owners){
+   const e=execution(o.executionId),pins=review.tree.branches.find((b:Row)=>b.branchId===e?.branch_id);
+   if(!e||!pins||o.configuration.checkpointMode!=='sync'||o.hostDependencies||o.selected.resources.length||o.selected.gates.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.runtime_outcome_json||a.recovery_of_request_id)||o.versionId!==pins.versionId||o.bindingRevisionId!==pins.bindingRevisionId||o.versionHash!==payloadHash(pins.definition)||o.bindingHash!==payloadHash(pins.bindings)||stableJson(o.configuration)!==stableJson(pins.configuration))return;
+   if(!seeds.has(o.executionId)){
+    const origin=data?get(o.executionId,'provenance'):JSON.parse(e.provenance_json);
+    if(!e.parent_execution_id||!e.admitted_at||!e.admission_json||stableJson(origin)!==stableJson({source:'branch_call',parentExecutionId:e.parent_execution_id,parentAttemptId:e.parent_attempt_id})||o.audit.some((a:Row)=>a.kind==='foreign_tree_selected_prefix')||o.audit.find((a:Row)=>a.kind==='workflow_started')?.evidence_json!==stableJson({admission:JSON.parse(e.admission_json)}))return;
+   }
+  }
+  return {seeds,provenance:old.provenance,reference:{executionId:c.rootExecutionId,foreignReviewSha256:reviewSha256,manifestSha256:source.sha256,checkpointSha256:review.selection.checkpointSha256}};
  }catch{return;}
 }

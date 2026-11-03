@@ -29,7 +29,7 @@ export function portableScriptDefinitionSupported(definition:BranchDefinition):b
   return definition.trigger.kind==='manual'&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
-export type ScriptOwnerContext={resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
+export type ScriptOwnerContext={foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 // Only a standalone terminal observation may retain serial gate evidence with context.
 const standaloneGateContext=(context:ScriptOwnerContext|undefined)=>!context||context.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
@@ -262,7 +262,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
-    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind))))return false;
+    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(!context||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');
@@ -346,7 +346,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       node=sp.node_id;input=sp.input_text;traversals=sp.traversals;last=sp.last_result_id?ids[sp.last_result_id]!:null;
       current=!['completed','failed'].includes(old.execution![0]!.state)&&sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
       if(context?.restoredTerminal){finished={node:sp.node_id,input:sp.input_text,stepId:ids[sp.step_execution_id],result:JSON.parse(sp.result_json)};terminalObserved=true;}
-      for(const attempt of old.attempts!){if(context?.children[ids[attempt.id]!]){admitted.add(ids[attempt.id]!);if(['completed','failed'].includes(attempt.state))completedChildren.add(ids[attempt.id]!);}}
+      for(const attempt of old.attempts!){if(context?.children[ids[attempt.id]!]){if(!context.foreignTreePrefix)admitted.add(ids[attempt.id]!);if(['completed','failed'].includes(attempt.state))completedChildren.add(ids[attempt.id]!);}}
       for(const loop of old.loops!)loops.set(loop.edge_id,loop.iterations);
     }
     const stateSeals:Row[]=seed?selected.sealedResults!.filter(r=>seed!.selected.sealedResults!.some(old=>seed!.idMap[old.id]===r.id)):[];
@@ -367,6 +367,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(accepted||started||v.versionId!==e.version_id||v.bindingRevisionId!==e.binding_revision_id||v.inputHash!==e.input_hash)return false;
           accepted=true;break;
         case 'workflow_started':if(!accepted||started)return false;started=true;break;
+        case 'foreign_tree_selected_prefix':if(!context?.foreignTreePrefix||!seed||!accepted||started)return false;break;
         case 'foreign_selected_prefix':if(!seed||!accepted||started)return false;break;
         case 'restored_prefix':case 'historical_rewind':if(!seed||!accepted||started)return false;break;
         case 'tree_restored_prefix':case 'tree_historical_rewind':if(!context||!seed||!accepted||started)return false;if(event.kind==='tree_historical_rewind'&&context.restoredTerminal)started=true;break;
@@ -482,6 +483,9 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         }
         case 'child_admitted':case 'child_completed':{
           const child=context?.children[v.attemptId],a=selected.attempts!.find(row=>row.id===v.attemptId),step=selected.steps!.find(row=>row.id===a?.step_execution_id);
+          if(event.kind==='child_admitted'&&context?.foreignTreePrefix&&seed&&seed.selected.attempts!.some(old=>seed.idMap[old.id]===v.attemptId)){
+            if(!child||admitted.has(v.attemptId)||event.transition_key!==`call:${v.attemptId}`||v.definitionId!==child.versionId||v.childExecutionId!==child.executionId)return false;admitted.add(v.attemptId);break;
+          }
           if(!child||!current||step?.id!==current.id||!definition.steps.some(row=>row.id===step!.step_id&&row.kind==='branch_call')||child.executionId!==v.childExecutionId)return false;
           if(event.kind==='child_admitted'){if(admitted.has(a!.id)||v.definitionId!==child.versionId)return false;admitted.add(a!.id);}
           else {if(!child.completed||!admitted.has(a!.id)||completedChildren.has(a!.id)||v.versionId!==child.versionId||v.state!==(child.failed?'failed':'completed'))return false;completedChildren.add(a!.id);}

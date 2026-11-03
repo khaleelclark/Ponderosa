@@ -23,10 +23,13 @@ function selected(o:BranchPortableRuntimeOwner,depth=0):Selected {
  }
  return current;
 }
-export function validateBranchExecutionTree(value:unknown,depth=0):BranchPortableExecutionTree {
- if(depth>32)throw Error('Runtime tree manifest nesting exceeds bound');
+export function validateBranchExecutionTree(value:unknown,depth=0,proof={remaining:128,active:new Set<string>(),cache:new Map<string,BranchPortableExecutionTree>()}):BranchPortableExecutionTree {
+ if(depth>16)throw Error('Runtime tree manifest nesting exceeds bound');
  const d=value as BranchPortableExecutionTree;
  if(!d||d.schema!=='ponderosa.branch-runtime-tree.v1'||Object.keys(d).sort().join('|')!==['schema','rootSourceBranchId','branches','sha256'].sort().join('|')||typeof d.rootSourceBranchId!=='string'||!d.branches||Array.isArray(d.branches)||Object.keys(d.branches).length>100||payloadHash({schema:d.schema,rootSourceBranchId:d.rootSourceBranchId,branches:d.branches})!==d.sha256||Buffer.byteLength(stableJson(d))>32*1024*1024)throw Error('Runtime tree manifest integrity failure');
+ if(proof.active.has(d.sha256))throw Error('Runtime tree generation cycle');
+ const cached=proof.cache.get(d.sha256);if(cached)return cached;
+ if(--proof.remaining<0)throw Error('Runtime tree generation replay work exceeds bound');proof.active.add(d.sha256);
  for(const [id,b] of Object.entries(d.branches))if(validateBranchRuntimeData(b,true).sourceBranchId!==id)throw Error('Runtime tree Branch pin differs');
  if(!Object.hasOwn(d.branches,d.rootSourceBranchId))throw Error('Runtime tree root Branch omitted');
  const all=owners(d),byId=new Map(all.map(o=>[o.sourceExecutionId,o]));
@@ -42,9 +45,15 @@ export function validateBranchExecutionTree(value:unknown,depth=0):BranchPortabl
   const e=fact(o,'frontier').execution[0],origin=fact(o,'provenance');
   const originalConfiguration=fact(o,'configuration').configuration;if(stableJson(validateBranchConfiguration(originalConfiguration,fact(o,'definition'),true))!==stableJson(originalConfiguration)||['call_depth','depth_ceiling','traversals','loop_iterations','recovery_traversals'].some(key=>!Number.isSafeInteger(e[key])||e[key]<0)||e.depth_ceiling<1||e.call_depth>e.depth_ceiling||!(e.output_text===null||typeof e.output_text==='string'))throw Error('Runtime tree native scalar/configuration facts are noncanonical');
   if(origin.source==='portable_runtime_data'&&origin.tree===true){
-   const saved=fact(o,'tree-import') as BranchRuntimeTreeReadback,source=validateBranchExecutionTree(saved.data,depth+1),prior=owners(source).find(p=>p.sourceExecutionId===origin.sourceExecutionId);
+   const saved=fact(o,'tree-import') as BranchRuntimeTreeReadback,source=validateBranchExecutionTree(saved.data,depth+1,proof),prior=owners(source).find(p=>p.sourceExecutionId===origin.sourceExecutionId);
    if(!prior||saved.receipt.schema!=='ponderosa.branch-runtime-tree-import.v1'||saved.receipt.planId!==origin.planId||saved.receipt.manifestSha256!==origin.manifestSha256||source.sha256!==origin.manifestSha256||saved.receipt.executionMap[origin.sourceExecutionId]!==o.sourceExecutionId||saved.receipt.branchMap[prior.sourceBranchId]!==o.sourceBranchId||saved.receipt.held!==true||saved.receipt.currentAuthority!==false||saved.receipt.dispatched!==false||fact(prior,'frontier').execution[0].input_text!==e.input_text)throw Error('Runtime tree private re-export provenance differs');
    const previous=fact(prior,'frontier').execution[0],pins=saved.receipt.ownerPins[origin.sourceExecutionId];if(e.parent_execution_id!==(previous.parent_execution_id?saved.receipt.executionMap[previous.parent_execution_id]:null)||e.parent_attempt_id!==(previous.parent_attempt_id?saved.receipt.frontiers[previous.parent_execution_id]!.idMap[previous.parent_attempt_id]:null)||!previous.parent_execution_id&&e.input_hash!==previous.input_hash||e.version_id!==pins?.versionId||e.binding_revision_id!==pins?.bindingRevisionId)throw Error('Private tree original-to-native ancestry/pin mapping differs');
+  }
+  const generation=o.facts.find(f=>f.kind==='tree-continuation');
+  if(generation){
+   const retained=JSON.parse(generation.json),r=retained.receipt,held=retained.held,command=retained.command;
+   const source=validateBranchExecutionTree(held.data,depth+1,proof),imported=byId.get(r.importedExecutionId),importFact=imported?.facts.find(f=>f.kind==='tree-import'),commandFact=imported?.facts.find(f=>f.kind==='command'&&f.key===`foreign-continuation:${payloadHash(r.commandKey)}`);
+   if(Object.keys(retained).sort().join('|')!==['command','held','receipt'].sort().join('|')||origin.source!=='foreign_tree_continuation'||r.executionId!==e.id||r.commandKey!==origin.commandKey||r.importedExecutionId!==origin.importedExecutionId||r.review.reviewSha256!==origin.reviewSha256||r.review.manifestSha256!==source.sha256||stableJson(r.review.nativeMaps)!==stableJson(held.receipt)||!importFact||stableJson(JSON.parse(importFact.json))!==stableJson(held)||!commandFact||stableJson(JSON.parse(commandFact.json))!==stableJson(command)||command.input_hash!==payloadHash(r)||command.result_json!==stableJson(r))throw Error('Retained tree generation command/import ownership differs');
   }
   for(const call of fact(o,'definition').steps)if(call.kind==='branch_call'&&!Object.hasOwn(d.branches,fact(o,'bindings').branches?.[call.branchRef]))throw Error('Historical runtime Call dependency omitted');
   if(Boolean(e.parent_execution_id)!==Boolean(e.parent_attempt_id))throw Error('Incomplete runtime tree parent edge');
@@ -59,7 +68,7 @@ export function validateBranchExecutionTree(value:unknown,depth=0):BranchPortabl
    while(cursor){if(seen.has(cursor.sourceExecutionId))throw Error('Execution ancestry cycle');seen.add(cursor.sourceExecutionId);const id:string|null=fact(cursor,'frontier').execution[0].parent_execution_id;cursor=id?byId.get(id):undefined;if(id&&!cursor)throw Error('Owned execution parent omitted');}
   }else if(e.admission_source==='call')throw Error('Call owner lost its parent');
  }
- return d;
+ proof.active.delete(d.sha256);proof.cache.set(d.sha256,d);return d;
 }
 function supported(d:BranchPortableExecutionTree,o:BranchPortableRuntimeOwner):boolean {
  const all=owners(d),s=selected(o),e=s.execution![0]!,definition=fact(o,'definition'),configuration=fact(o,'configuration');
