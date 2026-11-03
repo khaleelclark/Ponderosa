@@ -36,7 +36,7 @@ function claudeOpaqueOriginal(value:string,directory=false):boolean {
 function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
-const gitDirectoryOriginalNames=['hooks','branches','remotes','rr-cache'];
+const gitDirectoryOriginalNames=['hooks','branches','remotes','rr-cache','lost-found'];
 const gitWebOriginalNames=['description','category','cloneurl','README.html'];
 function gitReviewOriginal(value:string):boolean {
   return value==='.git/COMMIT_EDITMSG'||gitWebOriginalNames.some(name=>value==='.git/'+name)||gitDirectoryOriginalNames.some(name=>value.startsWith('.git/'+name+'/'))&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);

@@ -926,11 +926,12 @@ still requires separate human review/action.
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations survive as ordered inactive literals from exact common config or selected config.worktree, with target resolution disabled; external contents are uncollected and never supply effective settings. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
+| Git common recovery originals | Explicit Git selection carries optional common `lost-found/` UTF-8 files through inactive `.git/lost-found/...` records, including existing `commit/`, `other/` and supported custom descendants. No regeneration or active installation. See [contract](#inactive-common-git-lost-found-originals). |
 | Git dormant resolution cache and commit draft originals | Explicit Git selection carries optional common `rr-cache/` UTF-8 originals and only the exact selected-gitdir `COMMIT_EDITMSG` through inactive `.git/rr-cache/...` and `.git/COMMIT_EDITMSG` records. No replay, editor, operation recovery or active installation. See [contract](#inactive-common-rerere-and-selected-commit-draft-originals). |
 | Git legacy common remote shorthand originals | Explicit Git selection carries optional common `branches/` and `remotes/` regular UTF-8 originals through inactive `.git/branches/...` and `.git/remotes/...` records. No native remote installation or syntax/version compatibility claim. See [contract](#inactive-common-legacy-git-remote-originals). |
 | Git fixed common Gitweb metadata originals | Explicit Git selection carries only optional common `description`, `category`, `cloneurl` and `README.html` as exact inactive `.git/{name}` originals. Empty present files survive; no HTML rendering, URL fetching or native Gitweb recreation. See [contract](#inactive-fixed-common-gitweb-metadata-originals). |
 | Git default common hook/support originals | Explicit Git selection carries bounded regular UTF-8 originals from the validated common repository `hooks/` through `providerFiles` as virtual `.git/hooks/...` paths, never active hooks. Configured `core.hooksPath` targets are not followed; their nonsecret setting remains inactive configuration text. See [scope and limits](#inactive-default-common-git-hook-originals). |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, exact selected-worktree `.git/COMMIT_EDITMSG` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, `.git/lost-found/...`, exact selected-worktree `.git/COMMIT_EDITMSG` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft, lost-found recovery and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -1033,7 +1034,7 @@ to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal pres
 the source instead of truncating data.
 
 The existing source fence and before/after checks do not drain independent native
-writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote and rr-cache originals plus the exact selected-gitdir COMMIT_EDITMSG are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
+writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote, rr-cache and lost-found originals plus the exact selected-gitdir COMMIT_EDITMSG are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
 not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
@@ -1678,3 +1679,54 @@ uses only the authoritative original manifest, never generated review copies.
 No new traversal, selection, DTO/schema/storage-version/format/cap/dependency or
 parallel codec. Ordinary working-file `.git` refusal remains. Source-only changes:
 no parser/native/runtime execution, round-trip, atomicity or whole-Bible acceptance.
+
+
+### Inactive common Git lost-found originals
+
+Explicit `git: true` includes optional validated COMMON `lost-found/` regular
+UTF-8 recovery originals and contained support directories, using the existing
+shared directory-original classifier, raw snapshot and `providerFiles` carrier.
+Virtual `.git/lost-found/...` paths always mean the exact associated common
+repository, including already reciprocally validated linked associations; no
+selected-private/main/other-worktree substitution or additional traversal authority.
+Selected-private lost-found storage remains unsupported under the existing guard.
+
+The official [fsck --lost-found contract](https://git-scm.com/docs/git-fsck#Documentation/git-fsck.txt---lost-found)
+describes `commit/` and `other/`, with blob contents written directly. Pinned Git
+[path.c common_list](https://github.com/git/git/blob/v2.56.0/path.c#L90-L109)
+marks lost-found common, and [fsck.c](https://github.com/git/git/blob/v2.56.0/builtin/fsck.c#L288-L308)
+shows those recovery writes. These references identify existing data, not native
+recovery equivalence. Edited recovery files or mappings remaining after object
+pruning are independent originals; all-object capture cannot replace them, and
+the ordinary working-file lane refuses `.git` components.
+
+Existing contained nonempty nondot path grammar accepts `commit/`, `other/` and
+custom text descendants without requiring OID names, object existence, hash equality
+or content interpretation. A family-root file refuses. Exact accepted UTF-8 bytes,
+BOM and empty-present files survive; initial optional absence yields no original.
+Recognized-secret, NUL/binary/invalid-UTF-8, malformed/escaping/credential
+paths, symlinks/hardlinks/special nodes, foreign ownership and topology/collisions
+refuse without rewriting or silently dropping files. Sensitive prose and concealed
+secrets remain limits of recognized-secret inspection.
+
+Canonical same-owner directories, single-link regular no-follow bounded reads and
+complete before/after directory/file identity, byte hash, explicit absence and
+reciprocal-association checks cover the entire family. Discovered descendants may
+not disappear; observed appearance/disappearance/drift refuses, preserving source
+and partial bytes. Existing 1 MiB/original, 1,000 combined review files/32 MiB,
+20,000 raw nodes/32 MiB and 1,000 hook-entry bounds stay unchanged.
+
+Shared parsing requires explicit Git selection, its required valid Git manifest
+and `removedSecretFields: false`; other provider records still require harness
+selection. Working export validates the full manifest; import parses before
+numbered mode0600 nonexecutable `.review` originals and exact path/removal maps.
+Retained re-export uses only the authoritative original manifest. The shared first
+native-view skip excludes these files before copying/parsing/pack pairing. They
+never install into recreated `.git/lost-found` or active configuration. No fsck,
+GC, regeneration, recovery/revival, ref creation, checkout, hook/editor activation,
+OID/link chasing, source cleanup/writes or outside-scope discovery is added.
+Existing graph/config/format/sparse/index/log/shallow and operation checks remain.
+No DTO/schema/storage-version/format/cap/dependency or codec changes. Original
+mode/mtime, empty directories, binary data and independent-writer atomicity remain
+unrepresented. Source-only: no capture execution, native equivalence, round-trip,
+atomicity or whole-Bible acceptance claim.
