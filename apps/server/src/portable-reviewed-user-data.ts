@@ -37,7 +37,7 @@ function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
 function opaqueProviderOriginal(value:string,directory=false):boolean {
-  if(claudeOpaqueOriginal(value,directory)||['.claude/CLAUDE.md','.codex/instructions.md'].includes(value))return true;
+  if(claudeOpaqueOriginal(value,directory)||['.claude/CLAUDE.md','.claude/AGENTS.md','.codex/instructions.md'].includes(value))return true;
   return /^\.(?:claude\/(?:commands|agents|rules)|codex\/(?:skills|rules))\//.test(value)&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
 }
 function providerPath(value:string):boolean {
@@ -1325,7 +1325,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
   validateReviewedUserDataSelection(selection);
   if(selection.source==='retained_originals')throw new Error('Retained originals require their canonical artifact binding');
   const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness},recreationScope:{...recreationScope},providerFiles:[],exclusions:[]};let bytes=0;
-  const fixed=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'],selected=[...fixed];
+  const fixed=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.claude/AGENTS.md','.codex/config.toml','.codex/instructions.md'],selected=[...fixed];
   let entries=0,outputStyleOwner:bigint|undefined,opaqueOwner:bigint|undefined;
   const walk=async(relative:string,opaque=false,optional=false):Promise<void>=>{
     const target=path.join(root,relative);
