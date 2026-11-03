@@ -226,6 +226,19 @@ test('rollover continuation compilation failure holds original task and handoff'
     const receipt=receipts.find(row=>row.targetAgentId===agent.id);
     assert.equal(receipt.contextRolloverHold,'retry_available');assert.equal(receipt.canRetry,true);
     assert.equal(receipt.retryMayDuplicate,true);
+    const {heldHumanRollover,canRetryHeldHumanRollover}=await import('../../packages/agents/dist/coordination-v3-rollover-held-task.js');
+    const proofWriter=new Database(path.join(f.dataDir,'ponderosa.db'),{fileMustExist:true});
+    try{
+      const assertGuard=(mutate)=>assert.throws(()=>proofWriter.transaction(()=>{
+        mutate();assert.equal(canRetryHeldHumanRollover(heldHumanRollover(proofWriter,chat.projectId,receipt.activationId)),false);
+        throw Error('rollback adversarial evidence');
+      })(),/rollback adversarial evidence/);
+      assertGuard(()=>proofWriter.prepare('UPDATE scheduler_runs SET provider_session_id=? WHERE id=?').run('conflicting-provider-session',candidate.id));
+      assertGuard(()=>proofWriter.prepare('UPDATE scheduler_prompt_injections SET provider_turn_id=? WHERE run_id=?').run('conflicting-provider-turn',candidate.id));
+      assertGuard(()=>proofWriter.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='context_rollover'").run(rollover.continuation_activation_id));
+      assertGuard(()=>proofWriter.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.rolloverId',?) WHERE id=?").run('wrong-rollover',rollover.continuation_activation_id));
+      assertGuard(()=>proofWriter.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(candidate.id,receipt.activationId,new Date().toISOString()));
+    }finally{proofWriter.close();}
     let replacement;
     f.plans.set(agent.id,[{run:async(s,input)=>{
       replacement=s.engineAgentId;assert.notEqual(replacement,session.engineAgentId);
