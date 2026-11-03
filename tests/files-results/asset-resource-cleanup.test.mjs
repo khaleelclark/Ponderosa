@@ -8,7 +8,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import vm from 'node:vm';
 import { AssetStore } from '../../apps/server/dist/assets.js';
-import { AgentStore } from '../../packages/agents/dist/index.js';
+import { AgentStore, withSourceMutation } from '../../packages/agents/dist/index.js';
 import { createServer } from '../../apps/server/dist/app.js';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url)), ts = require('typescript');
@@ -23,7 +23,7 @@ function probe(fault, close = async () => {}) {
   const hit = phase => { if (fault === phase) throw failure; };
   const handle = { fd: 123, async close() { calls.close++; await close(); }, async sync() { hit('sync'); } };
   const info = { isFile: () => true, isDirectory: () => true, isSymbolicLink: () => false, dev: 1, ino: 2, size: 4, mtimeMs: 0 };
-  const context = { Buffer, Date, path: path.posix, createHash, Error, Set, Map, AssetError: class extends Error { constructor(status, message) { super(message); this.statusCode = status; } },
+  const context = { Buffer, Date, path: path.posix, createHash, withSourceMutation, Error, Set, Map, AssetError: class extends Error { constructor(status, message) { super(message); this.statusCode = status; } },
     fsConstants: { O_RDONLY: 0, O_DIRECTORY: 0, O_NOFOLLOW: 0 }, randomUUID: () => id, STAGED_TTL_MS: 1000, ID: /^[a-f0-9-]{36}$/u,
     lstat: async () => info, mkdir: async () => {},
     realpath: async name => { if (name.startsWith('/proc/')) { hit('realpath'); return fault === 'mismatch' ? '/replaced' : '/owned/projects/project/agents/agent/attachments'; } return name; },
@@ -34,7 +34,7 @@ function probe(fault, close = async () => {}) {
     canonicalFiles: () => ({ originalFile: id + '.bin' }), assetUrls: () => ({}), publicDto: asset => asset,
     writeAtomic: async () => { hit('write'); }, unlink: async () => {}, rm: async () => { hit('reconcile-rm'); },
   };
-  vm.runInNewContext(ts.transpileModule('class Probe {' + ['safeDirectory', 'syncDirectory', 'stage', 'reconcile'].map(method).join('\n') + '} exports.Probe=Probe;', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, { ...context, exports: context });
+  vm.runInNewContext(ts.transpileModule('class Probe {' + ['safeDirectory', 'syncDirectory', 'stage', 'stageUntracked', 'reconcile', 'reconcileUntracked'].map(method).join('\n') + '} exports.Probe=Probe;', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, { ...context, exports: context });
   const value = new context.Probe(); value.dataDir = '/owned'; value.dir = () => '/owned/projects/project/agents/agent/attachments'; value.portableFiles = false;
   value.authority = {
     syncAgent() { hit('quota-sync'); }, reserve() { calls.reserve++; hit('reserve'); return 'owned-reservation'; },
