@@ -2552,6 +2552,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native agents; disposable canonical SQLite/owned folders; no provider account",
       "origin": "Generated hook canonical issuance, immutable durable result preservation, restart and exact current owner/original lookup"
+    },
+    {
+      "path": "tests/organizations/generic-live-roots.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built workspaces; isolated owned import roots and Git fixtures",
+      "origin": "Generic imported root grouping and contained live placement"
     }
   ],
   "retainedReleasePayload": [
