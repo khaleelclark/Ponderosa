@@ -37,6 +37,16 @@ conditions/routes, forks/joins, maps, loops, tool-using Agents, memory-bearing
 Agents and subgraph calls use the normal published `BranchDefinition` and local
 bindings. Existing persistent Agent history and human access settings apply.
 
+Large Join outputs can be canonical `branch-result-bundle` references. Use
+`resultBundle(executionId, bundleId)` to read their retained content and hash through
+the existing execution-scoped public route. The client does not substitute bundle
+text into arbitrary authored input or treat it as continuation authority.
+
+`export(branchId, mode, {includeValues:true}, fileSelections)` explicitly selects
+nonsecret parameter values through the existing export contract; omission preserves
+the existing default. File-family selections remain separate. Known secret fields
+stay excluded, and full packages can contain sensitive history and stored data.
+
 `streamWorkspace` and `streamAgent` make one SSE connection. Messages preserve the
 wire event name, id, JSON payload, reset and snapshot indications. Callers persist
 their last delivered cursor and choose reconnect policy explicitly; neither an
@@ -103,6 +113,13 @@ portable-role reviews continue to require collision acknowledgement and never
 silently replace a local speaker. Model/prompt edits retain the speaker identity;
 the existing persistent-Agent settings path supplies its model to subsequent
 workflow Requests and resumes provider-blocked work through normal recovery.
+
+The public client exposes `designateOutput(agentId, {enabled, speaker})` and
+`configureAssistant({enabled, initialize})` through those same server controls.
+`initialize:true` requests ordinary first setup; `enabled:true` explicitly enables
+or retries setup, and `enabled:false` disables it. Use `assistant()` to inspect the
+current status after an uncertain response; these calls have no automatic retries.
+`moveSpeaker` retains the reviewed-current-speaker check described above.
 
 Output settings include `settingsRevision`, a hash of graph/binding/configuration
 revisions, availability and trigger settings (excluding routine fire-time advances).

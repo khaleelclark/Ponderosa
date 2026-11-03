@@ -19,7 +19,7 @@ interface Context {
 const failure=(message:string,statusCode=403)=>Object.assign(new Error(message),{statusCode});
 const hash=(value:unknown)=>createHash('sha256').update(stableJson(value)).digest('hex');
 const toolFor=(operation:string)=>operation==='check'?'ponderosa_assistant_check':`ponderosa_workspace_${operation}`;
-const required=(body:Record<string,unknown>,key:string,max=200)=>{const v=body[key];if(typeof v!=='string'||!v.trim()||Buffer.byteLength(v,'utf8')>max)throw failure(`Invalid ${key}`,400);return v.trim();};
+const required=(body:Record<string,unknown>,key:string,max=200)=>{const v=body[key];if(typeof v!=='string'||!v.trim()||Buffer.byteLength(v,'utf8')>max)throw failure(`Invalid ${key}`,400);return key==='text'?v:v.trim();};
 
 /** Workspace actions are a separate host relay, never cross-Chat Communication authority. */
 export function registerAgentWorkspaceActions(app:FastifyInstance,context:Context):void {
@@ -42,10 +42,20 @@ export function registerAgentWorkspaceActions(app:FastifyInstance,context:Contex
     if(denied(ids,id))throw failure('Human workspace access settings restrict this action');return ids;};sourceAllows();
    const fence=()=>{sourceAllows();coordinationV3.requireCurrentPromptInjection(authorization,typeof body.steeringInjectionId==='string'?body.steeringInjectionId:null);};
    if(operation==='projects'){
-    exactObjectFields(body,['operation','afterId'],'project listing');
+    exactObjectFields(body,['operation','afterId','chatId','afterAgentId'],'project listing');
     if(body.afterId!==undefined&&typeof body.afterId!=='string')throw failure('Invalid afterId',400);
-    const rows=store.sqlite.prepare(`SELECT id,project_id projectId,title FROM conversations WHERE id>? ORDER BY id LIMIT 51`).all(body.afterId??'') as Array<{id:string;projectId:string;title:string}>;
-    const items=rows.slice(0,50).filter(row=>chatAllowed(row.id,CAPABILITY_IDS.workspaceRead)).map(row=>({...row,agents:store.listAgents(row.projectId).filter(a=>a.conversationId===row.id&&activeChatResourceOwner(store,'agent',a.id)&&!policies.resolveForAgent(a.id).restrictedCapabilityIds.includes(CAPABILITY_IDS.workspaceRead)).slice(0,50).map(a=>({id:a.id,title:a.title,state:a.state}))}));
+    const afterId=body.afterId as string|undefined;
+    const chatId=body.chatId===undefined?undefined:required(body,'chatId');
+    const afterAgentId=body.afterAgentId===undefined?undefined:required(body,'afterAgentId');
+    if((afterAgentId!==undefined&&chatId===undefined)||(chatId!==undefined&&afterId!==undefined))throw failure('Use afterId for Chats, or chatId and optional afterAgentId for Agents',400);
+    if(chatId!==undefined&&!chatAllowed(chatId,CAPABILITY_IDS.workspaceRead))throw failure('Chat is unavailable or restricted');
+    const rows=(chatId===undefined
+     ?store.sqlite.prepare(`SELECT id,project_id projectId,title FROM conversations WHERE id>? ORDER BY id LIMIT 51`).all(afterId??'')
+     :store.sqlite.prepare('SELECT id,project_id projectId,title FROM conversations WHERE id=?').all(chatId)) as Array<{id:string;projectId:string;title:string}>;
+    const items=rows.slice(0,50).filter(row=>chatAllowed(row.id,CAPABILITY_IDS.workspaceRead)).map(row=>{
+     const agents=store.listAgents(row.projectId).filter(a=>a.conversationId===row.id&&a.id>(afterAgentId??'')&&activeChatResourceOwner(store,'agent',a.id)&&!policies.resolveForAgent(a.id).restrictedCapabilityIds.includes(CAPABILITY_IDS.workspaceRead)).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0).slice(0,51);
+     return {...row,agents:agents.slice(0,50).map(a=>({id:a.id,title:a.title,state:a.state})),hasMoreAgents:agents.length>50,...(agents.length>50?{afterAgentId:agents[49]!.id}:{})};
+    });
     return {items,hasMore:rows.length>50,...(rows.length>50?{afterId:rows[49]!.id}:{})};
    }
    if(operation==='check'){

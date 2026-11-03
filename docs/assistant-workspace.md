@@ -11,6 +11,13 @@ Memory, browser grants and communication-history retrieval are unchanged.
 
 - `ponderosa_workspace_projects` returns at most 50 registered Chats with up to
   50 visible Agents each. Use the returned `afterId` while `hasMore` is true.
+  Each Chat also returns `hasMoreAgents` and, when needed, `afterAgentId`.
+  Pass that Chat's `chatId` and returned `afterAgentId` to page its Agents in
+  stable ID order; omit `afterAgentId` to restart that Chat's Agent listing.
+  `afterId` cannot be combined with `chatId`, and `afterAgentId` requires `chatId`.
+  Each page rechecks current human settings and resource ownership. Cursors are
+  positions, not snapshots: removed/restricted Agents disappear, and newly added
+  Agents before a consumed cursor appear when the listing is restarted.
   Restricted Chats/Agents and execution-owned temporary resources are omitted.
 - `ponderosa_workspace_create_chat` creates a managed empty Chat, with an explicit
   label, configured engine and idempotency key. It accepts no host path or access
@@ -19,6 +26,10 @@ Memory, browser grants and communication-history retrieval are unchanged.
   an existing Agent ID, or a title/engine to create a tracked idle Agent. New Agent
   creation also respects the source managed-Agent creation restriction. The
   scheduler starts ordinary next-Run work; it never interrupts existing work.
+
+Workspace work requests preserve the accepted task text, including leading and
+trailing whitespace. Nonempty/UTF-8 byte bounds still apply; identifier and label
+normalization does not rewrite the authored task carried by the relay.
 
 Each mutation returns a durable `workspace_agent_actions` receipt with its source
 Agent and Run. New Agents retain immutable spawner provenance. The destination
