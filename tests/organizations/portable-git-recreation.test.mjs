@@ -142,7 +142,9 @@ test('native Separate import owns a fresh independent repository, preserves stag
  try{
   const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data'),moduleSource=path.join(base,'module-source');
   await initialize(source);await initialize(shared);await initialize(moduleSource);await mkdir(data);
-  await git(source,'-c','protocol.file.allow=always','submodule','add',moduleSource,'child');await git(source,'commit','--no-gpg-sign','-m','Add initialized child');
+  await git(source,'-c','protocol.file.allow=always','submodule','add',moduleSource,'child');
+  await git(source,'config','-f','.gitmodules','submodule.child.url','https://example.invalid/child');await git(source,'config','submodule.child.url','https://example.invalid/child');await git(path.join(source,'child'),'remote','set-url','origin','https://example.invalid/child');
+  await git(source,'add','.gitmodules');await git(source,'commit','--no-gpg-sign','-m','Add initialized child');
   await writeFile(path.join(source,'file.txt'),'source staged\n');await git(source,'add','file.txt');await writeFile(path.join(source,'file.txt'),'source working\n');
   await git(source,'tag','retained-source-tag');
   const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest,{'file.txt':'source working\n','.gitmodules':await readFile(path.join(source,'.gitmodules'),'utf8'),'child/file.txt':await readFile(path.join(source,'child','file.txt'),'utf8')});
@@ -161,7 +163,9 @@ test('native Separate import owns a fresh independent repository, preserves stag
   try{
    const issued=await service.populateImportedRoot(imported,project,files,[],undefined,path.join(imported.workingCopy.rootPath,'.ponderosa-import-backups'),[],'refuse',{git:true,harness:false});
    const {lstat}=await import('node:fs/promises'),copied=await lstat(imported.workingCopy.rootPath,{bigint:true});
-   assert.deepEqual(issued,{device:copied.dev.toString(),inode:copied.ino.toString()},'The working-copy service forwards the exact populated-root identity');
+   assert.deepEqual({device:issued.device,inode:issued.inode},{device:copied.dev.toString(),inode:copied.ino.toString()},'The working-copy service forwards the exact populated-root identity');
+   assert.ok(Object.keys(issued.directories??{}).length>0,'Nested directory identities are retained');
+   for(const [relative,identity] of Object.entries(issued.directories)){const actual=await lstat(path.join(imported.workingCopy.rootPath,relative),{bigint:true});assert.deepEqual(identity,{device:actual.dev.toString(),inode:actual.ino.toString()});}
    const receipts=[];
    await service.completeImportedGitRoots(project,pkg,{work:imported.workingCopy.rootPath},{git:true,harness:false},receipt=>receipts.push(structuredClone(receipt)),[agent.id]);
    assert.equal(receipts.at(-1).state,'completed');
@@ -232,7 +236,7 @@ test('typed contained roots get local parent-child inode receipts before Shared 
   assert.equal((await service.resolve(bound,childProject)).rootPath,reservation.rootPath);
   assert.equal(bound.workingCopy.importedParent.parentAgentId,parent.id);
   assert.deepEqual(await service.inspectPreparedImportedRoot(bound,childProject),{rootPath:reservation.rootPath,phase:'allocated'});
-  await service.populateImportedRoot(bound,childProject,[],[],undefined,path.join(base,'backups'),[],'refuse',{git:false,harness:false},undefined,undefined,true);
+  await service.populateImportedRoot(bound,childProject,[],[],undefined,path.join(reservation.rootPath,'.ponderosa-import-backups'),[],'refuse',{git:false,harness:false},undefined,undefined,true);
   assert.equal((await service.inspectPreparedImportedRoot(bound,childProject)).phase,'populated');
   assert.equal(store.getAgent(parent.id).workingCopy.containedRootPreparations[0].phase,'bound');
   const next=await service.reserveImportedContainedRoot(store.getAgent(parent.id),project,'modules/separate-child'),separate=store.createAgent(project.id,{title:'Separate child owner',engine:'codex',conversationId:chat.id});releases.push(service.beginModeChange(separate.id));
@@ -240,7 +244,7 @@ test('typed contained roots get local parent-child inode receipts before Shared 
   await assert.rejects(service.bindImportedContainedRoot(separate,project,forged,'separate_git'),/exact local reservation/);
   const separateBound=await service.bindImportedContainedRoot(separate,project,next,'separate_git');
   assert.equal(separateBound.workingCopy.repositoryRoot,next.rootPath);assert.equal(separateBound.workingCopy.importedParent.parentInode,(await lstat(allocated.workingCopy.rootPath,{bigint:true})).ino.toString());
-  await service.populateImportedRoot(separateBound,project,[],[],undefined,path.join(base,'separate-backups'),[],'refuse',undefined,undefined,undefined,true);
+  await service.populateImportedRoot(separateBound,project,[],[],undefined,path.join(next.rootPath,'.ponderosa-import-backups'),[],'refuse',undefined,undefined,undefined,true);
   await service.completeImportedGitRoots(project,packageFor({}),{child:next.rootPath},undefined,()=>{throw new Error('No native selection should apply source data');},[separate.id]);
   assert.equal((await service.resolve(store.getAgent(separate.id),project)).rootPath,next.rootPath);
   await assert.rejects(lstat(path.join(reservation.rootPath,'.git')),{code:'ENOENT'},'Contained Shared remains an ordinary folder without selected native Git');
