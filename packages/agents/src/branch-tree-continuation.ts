@@ -46,6 +46,16 @@ function owner(db:Database.Database,id:string,selected:Selected):Row|undefined {
   return {...(hostDependencies?{hostDependencies,hostDependenciesHash:payloadHash(hostDependencies)}:{}),executionId:id,versionId:e.version_id,versionHash:row.version_hash,bindingRevisionId:e.binding_revision_id,bindingHash:row.binding_hash,configuration,selected,audit:audit(db,id),
     invocation:{id:inv.id,ordinal:inv.ordinal,mode:inv.mode,state:inv.state,primaryOutcome:inv.primary_outcome??null,interruptionId:inv.interruptionId??null}};
 }
+/** Child async cuts need their own committed saver bytes, not an ancestor's pending capture. */
+function asyncOwnerSaved(db:Database.Database,o:Row,evidence?:Map<string,BranchPortableRuntimeOwner>):boolean {
+ try {
+  const rows=evidence?evidence.get(o.executionId)?.facts.filter(f=>f.kind==='checkpoint').map(f=>({snapshot_json:f.json,content_hash:f.sha256}))??[]:db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=?').all(o.executionId) as Row[];
+  return rows.some(row=>{
+   const saved=JSON.parse(row.snapshot_json),inv=o.invocation;
+   return stableJson(saved)===row.snapshot_json&&payloadHash(saved)===row.content_hash&&saved.schema==='branch-unit-selected.v2'&&saved.mode==='async'&&saved.invocationId===inv.id&&saved.closing===(inv.state==='interrupted'||inv.state==='terminal')&&stableJson(saved.selected)===stableJson(o.selected);
+  });
+ }catch{return false;}
+}
 function checkpoint(o:Row):Row|undefined {
   if(o.invocation?.mode!=='exit')return;
   const v=o.invocation;return {invocationId:v.id,mode:v.mode,closing:true,invocation:{id:v.id,ordinal:v.ordinal,mode:v.mode,state:v.state,primaryOutcome:v.primaryOutcome,interruptionId:v.interruptionId}};
@@ -98,7 +108,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     const issuedResource=c.issuedResources===true;
     const workflowGates=definition.steps.some(s=>s.kind==='human_gate');
-    if(workflowGates&&(o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))&&!seeds?.has(o.executionId)||issuedResource||o.configuration.checkpointMode!=='sync'||definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
+    if(workflowGates&&(o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))&&!seeds?.has(o.executionId)||issuedResource||!['sync','async'].includes(o.configuration.checkpointMode??'async')||definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
     if(issuedResource&&(hasParallelControls(definition)||o.selected.resources.length!==1||o.configuration.checkpointMode==='exit'))return false;
     const resourceFrontier=issuedResource?issuedResourceFrontierSupported(o.selected,definition,o.hostDependencies,false,true):resourceReservationSupported(o.selected,definition);
     if(issuedResource&&!resourceFrontier)return false;
@@ -121,8 +131,9 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     }
 
     if(owners.length===1&&!resourceFrontier&&!definition.steps.some(s=>s.kind==='branch_call'))return false;
-    if(!scriptDefinitionSupported(definition,true,resourceFrontier)||!latest&&(inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1))return false;
+    if(!scriptDefinitionSupported(definition,true,resourceFrontier)||!latest&&(inv.mode!==(o.configuration.checkpointMode??'async')||typeof inv.id!=='string'||!inv.id||!Number.isSafeInteger(inv.ordinal)||inv.ordinal<1))return false;
     const descendant=o.executionId!==c.rootExecutionId,terminal=['completed','failed'].includes(e.state);
+    if(!issuedResource&&!resourceFrontier&&!latest&&!encoding&&descendant&&(o.configuration.checkpointMode??'async')==='async'&&!asyncOwnerSaved(db,o,evidence))return false;
     if(terminal?(!descendant&&!latest||!latest&&(inv.state!=='terminal'||inv.primaryOutcome!==e.state)):!['running','waiting'].includes(e.state))return false;
     if(!descendant&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'))return false;
     const pendingGate=o.selected.gates.find((g:Row)=>g.state==='waiting');
@@ -258,12 +269,12 @@ export function portableScriptTreeSupported(db:Database.Database,data:BranchPort
   for(const o of related){
    const d=validateBranchDefinition(fact(o,'definition')),config=fact(o,'configuration'),s=fact(o,'frontier');
    const origin=fact(o,'provenance');if(o.sourceExecutionId===rootId?!['manual','foreign_tree_continuation'].includes(origin.source):!['branch_call','historical_child'].includes(origin.source))return;
-   if(o.chatRefs.length||o.facts.some(f=>['custody','tree-import','import','continuation'].includes(f.kind))||config.requiredSecretRefs.length||config.configuration.checkpointMode!=='sync'||d.trigger.kind!=='manual'||d.steps.some((s:Row)=>!['script','branch_call','human_gate'].includes(s.kind))||!scriptDefinitionSupported(d,true)||
+   if(o.chatRefs.length||o.facts.some(f=>['custody','tree-import','import','continuation'].includes(f.kind))||config.requiredSecretRefs.length||!['sync','async'].includes(config.configuration.checkpointMode??'async')||d.trigger.kind!=='manual'||d.steps.some((s:Row)=>!['script','branch_call','human_gate'].includes(s.kind))||!scriptDefinitionSupported(d,true)||
     s.resources.length||s.actions.length||s.bundles.length||s.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))||o.facts.filter(f=>f.kind==='transition').some(f=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(JSON.parse(f.json).kind)))return;
   }
   const latestOwners=related.map(o=>{const s=fact(o,'frontier'),e=s.execution[0],config=fact(o,'configuration').configuration;return {executionId:o.sourceExecutionId,versionId:e.version_id,versionHash:payloadHash(fact(o,'definition')),bindingRevisionId:e.binding_revision_id,bindingHash:payloadHash(fact(o,'bindings')),configuration:config,selected:s,audit:o.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json))};});
   const c=snapshot?.continuation??{schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:rootId,owners:latestOwners,provenance:[]};
-  if(c.schema!==TREE_SCHEMA||c.rootExecutionId!==rootId||c.issuedResources||snapshot&&(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!=='sync'||!treeSnapshotMetadata(snapshot,c)))return;
+  if(c.schema!==TREE_SCHEMA||c.rootExecutionId!==rootId||c.issuedResources||snapshot&&(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||!['sync','async'].includes(snapshot.mode)||!treeSnapshotMetadata(snapshot,c)||!root.facts.some(f=>f.kind==='checkpoint'&&f.json===stableJson(snapshot)&&f.sha256===payloadHash(snapshot))))return;
   if(c.owners.some((o:Row)=>!related.some(p=>p.sourceExecutionId===o.executionId)||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return;
   const provenance=compose(db,c,!snapshot,data,work,depth,!snapshot);if(!provenance)return;
   if(!snapshot)c.provenance=provenance;
@@ -317,7 +328,7 @@ function foreignTreeSeeds(db:Database.Database,c:Row,data?:BranchPortableExecuti
   }
   for(const o of c.owners){
    const e=execution(o.executionId),pins=review.tree.branches.find((b:Row)=>b.branchId===e?.branch_id);
-   if(!e||!pins||o.configuration.checkpointMode!=='sync'||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.runtime_outcome_json||a.recovery_of_request_id)||o.versionId!==pins.versionId||o.bindingRevisionId!==pins.bindingRevisionId||o.versionHash!==payloadHash(pins.definition)||o.bindingHash!==payloadHash(pins.bindings)||stableJson(o.configuration)!==stableJson(pins.configuration))return;
+   if(!e||!pins||!['sync','async'].includes(o.configuration.checkpointMode??'async')||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.runtime_outcome_json||a.recovery_of_request_id)||o.versionId!==pins.versionId||o.bindingRevisionId!==pins.bindingRevisionId||o.versionHash!==payloadHash(pins.definition)||o.bindingHash!==payloadHash(pins.bindings)||stableJson(o.configuration)!==stableJson(pins.configuration))return;
    if(!seeds.has(o.executionId)){
     const origin=data?get(o.executionId,'provenance'):JSON.parse(e.provenance_json);
     if(!e.parent_execution_id||!e.admitted_at||!e.admission_json||stableJson(origin)!==stableJson({source:'branch_call',parentExecutionId:e.parent_execution_id,parentAttemptId:e.parent_attempt_id})||o.audit.some((a:Row)=>a.kind==='foreign_tree_selected_prefix')||o.audit.find((a:Row)=>a.kind==='workflow_started')?.evidence_json!==stableJson({admission:JSON.parse(e.admission_json)}))return;

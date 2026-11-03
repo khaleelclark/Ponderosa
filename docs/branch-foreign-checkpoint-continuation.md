@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining beyond the supported Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; EXIT mode and async Call trees; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the supported Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; EXIT mode; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -182,7 +182,7 @@ unqualified until execution checks are authorized.
 
 The existing foreign checkpoint review/confirmation/original-key receipt flow also
 accepts supported `ponderosa.branch.script-tree-continuation.v1` cuts from
-held execution-tree imports. Supported owners are manual synchronous, quiescent,
+held execution-tree imports. Supported owners are manual sync/async, quiescent,
 effect-free Script/Call workflows using the canonical state/control/tree codec.
 The selected root must remain runnable or waiting on its selected children;
 completed/failed children are immutable prefix data. Latest source owner evidence
@@ -191,7 +191,7 @@ inventory comes from the historical checkpoint boundary, never from later work.
 
 This tree family supports serial and parallel human workflow gates and excludes issued/native/unknown work, resources,
 custody, actions, bundles, Agents, execution-owned Chats, secrets, automatic,
-async/EXIT, changed historical definitions/configuration and external restoration.
+EXIT, changed historical definitions/configuration and external restoration.
 Supported held re-exports and admitted continuation generations retain exact proof
 as described below. Supported local tree rewinds, including ordinary approval gates, retain portable proof as described below. Standalone gate/parallel and repeated
 Script continuation retain their existing supported families; these are not a
@@ -272,7 +272,7 @@ and rollback are source-reviewed behavior only until separately executed.
 
 ### Human gates in serial and parallel Call trees
 
-Manual synchronous effect-free Script/Call owners may contain ordinary
+Manual sync/async effect-free Script/Call owners may contain ordinary
 `human_gate` steps, including a root gate before the first child is admitted.
 Selected and latest trees independently replay prompt, proposal, choices,
 response/revision, checkpoint closure, routing and sealed results. A pending
@@ -309,14 +309,14 @@ unknown outcome does not qualify, and never authorizes a replacement command.
 
 Canceled serial gates, recovery-purpose gates,
 unproven local rewinds, issued/resource/unknown/effectful work, automatic and
-async/EXIT trees remain refused. Standalone serial/parallel gate behavior is
+EXIT trees remain refused. Standalone serial/parallel gate behavior is
 unchanged. Source review does not qualify live gate notifications, round trips,
 suffix scheduling or rollback.
 
 
 ### Portable local tree rewind lineage
 
-Successful local historical rewinds of supported manual synchronous effect-free
+Successful local historical rewinds of supported manual sync/async effect-free
 Script/Call trees, including ordinary serial and parallel approval gates, can use the existing foreign review/confirm/source and
 original-key recovery flow. The shared canonical tree composer reads either local
 private rows or their exact retained portable checkpoint/command facts. No foreign
@@ -354,7 +354,7 @@ Parallel canceled gates still require canonical Join/path/item cancellation proo
 Original-key recovery after later destination cancellation retains the complete
 current-tree replay and supported quiescent-frontier requirement described above.
 
-Recovery-purpose gates, unproven coordination lineage, issued/resource/native/unknown/effectful, automatic and async/EXIT
+Recovery-purpose gates, unproven coordination lineage, issued/resource/native/unknown/effectful, automatic and EXIT
 combinations remain refused. Original data, partial/failure evidence and existing
 standalone gate/parallel/rewind behavior are preserved. This is source support;
 round trips, suffix scheduling and rollback remain execution-unqualified.
@@ -393,7 +393,47 @@ command. A copied pending gate later canceled in the destination additionally
 requires complete current Script replay, including causal Join/path/item/gate
 events and exact attempt fences. Recovery refuses a running/leased Script attempt
 or unknown outcome; it requires a supported quiescent current frontier. Serial
-canceled gates without supported canonical replay remain refused. Tree async, EXIT, automatic and effectful work remain excluded.
+canceled gates without supported canonical replay remain refused. EXIT, automatic and effectful work remain excluded.
 
 This extension changes source support only. No async timing, durability, runtime,
 notification delivery, round-trip or rollback validation was performed.
+
+
+## Durable async Call trees
+
+The shared tree consumer accepts manual effect-free Script/Call/ordinary approval
+owners in sync or async mode, including native default async when configuration
+omits the mode. Each owner's exact configuration stays unchanged; a tree may mix
+sync and async owners. Every current destination must still match its source
+configuration and mapped definition/bindings and be explicitly enabled, reviewed
+and admitted under current choices.
+
+The selected root must be the exact complete committed saver snapshot retained
+in its private checkpoint fact, with matching hash, root selected state and
+invocation metadata. Every selected async descendant additionally needs its own
+committed saver snapshot with exact selected inventory, invocation identity,
+resolved async mode and closing flag. A child saver snapshot need not itself be
+standalone-restorable: its Call context and audit are proven by the complete root
+tree codec. Missing or pending child saves cannot be inferred from a root save.
+A different saved child cut does not qualify. The original exporter refuses
+recorded async durability failure; no failed or pending write becomes saved proof.
+
+Saver capture remains possible before child writes drain; this only creates a
+candidate. Portable validation later requires those committed child bytes. The
+latest tree is independently replayed from full retained audit and inventory,
+with the existing bounds, exact lineage, acceptance and Call ancestry. Latest
+proof makes no claim that a newer pending save has become durable. Local rewind,
+held and admitted generations retain the same shared proof, including actual
+nonadmission of copied terminal historical children and real admission of
+unfinished or genuine suffix owners.
+
+Fresh acceptance still uses the existing transaction and per-owner saver and
+readiness rules. Sync ancestors wait for matching saves; async owners retain
+normal failure/backpressure checks and no immediate durability acknowledgement.
+Pending decisions get new destination notifications; completed prefix decisions
+remain historical once. Original-key receipt recovery keeps complete current-tree
+causal cancellation proof and its supported quiescent-frontier limit. No new
+command, codec, storage format or execution authority is introduced. EXIT,
+automatic, issued, resource, secret and unknown/in-flight cuts remain refused.
+This is source support only; async timing, durability, round trips and scheduling
+were not executed or qualified.

@@ -144,7 +144,7 @@ dispositions. Current source APIs/SDK are usable code contracts, not executed pr
 
 ## Explicit checkpoint continuation after DATA import
 
-A separate reviewed consumer now supports effect-free synchronous
+A separate reviewed consumer now supports effect-free sync/async
 Script/Call selected owner trees. See `branch-foreign-checkpoint-continuation.md`
 for its exact family and refusals. DATA publication/readback remains held and
 requires disabled unchanged destinations. Explicit enablement does not admit any
@@ -162,7 +162,7 @@ manifest/replay frames per traversal. Unproven local rewind and issued/EXIT/reso
 unknown combinations remain outside this consumer. This change has source review only, with no runtime
 round-trip or rollback qualification.
 
-Serial and parallel workflow approval gates are supported in the manual synchronous effect-free
+Serial and parallel workflow approval gates are supported in the manual sync/async effect-free
 foreign Script/Call consumer, including root gates before the first Call, completed
 selected decisions, newly mapped pending decisions and later suffix gates. Each
 owner review separates selected/latest gate evidence; fresh pending notifications
@@ -174,7 +174,7 @@ tree and requires a supported quiescent frontier.
 Canceled serial and recovery-purpose gates remain unsupported. See the foreign continuation guide for
 the exact scope. Live notification delivery and rollback remain unqualified.
 
-Supported manual synchronous Script/Call trees, including ordinary approval gates, may also migrate after a
+Supported manual sync/async Script/Call trees, including ordinary approval gates, may also migrate after a
 local historical rewind. Existing private snapshot/command/acceptance facts retain
 the original source checkpoint and authentic root/child lineage. The same canonical
 composer uses bounded retained readers, independently replays selected/latest source
@@ -185,5 +185,25 @@ invented admission; genuine suffix children keep normal Call provenance. Selecte
 pending gates stay pending, prefix decisions remain historical, and fresh mapped
 notifications belong to fresh owners. Gate-bearing links require exact rewind seeds
 and independently replayed selected/latest proof. Recovery gates, unproven lineage
-and effectful/issued/resource/automatic/async/EXIT combinations remain
+and effectful/issued/resource/automatic/EXIT combinations remain
 unsupported. See the foreign continuation guide; no runtime qualification is claimed.
+
+
+## Saved async tree cuts
+
+Portable continuation also supports mixed sync/async manual effect-free Call
+trees while preserving each exact configuration, including an omitted native
+async default. The complete selected root checkpoint must match retained committed
+bytes and hash. Each selected async child must separately match a committed saver
+snapshot's selected inventory, invocation identity, mode and closing flag. A
+pending child save is not covered merely because the ancestor saved. Child
+snapshots may be non-restorable on their own; the root tree proves their Call
+context, exact audit, pins and lineage. Full latest-tree replay remains independent.
+
+The same source proof is used after supported local rewinds and retained held or
+admitted generations. Fresh all-destination review/admission, destination-owned
+gate notifications and per-owner mode-aware saver/readiness rules are unchanged.
+Original-key cancellation recovery still requires complete causal tree replay at
+a supported quiescent frontier. Missing matching child bytes and recorded async
+save failures refuse; no mode conversion or pending-write acknowledgement is
+invented. Async timing, durability, round trips and scheduling remain unvalidated.
