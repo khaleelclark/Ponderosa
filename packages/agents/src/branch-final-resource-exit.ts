@@ -7,6 +7,7 @@ import {captureFinalProviderStarts,verifyFinalProviderStarts} from './provider-s
 import {captureFinalProviderExits,verifyFinalProviderExits,verifyRetainedProviderExitEvidence} from './provider-exit-evidence.js';
 import {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
 import {issuedResourceCapture} from './branch-issued-resource-capture.js';
+import {receiptMatchesSource,resourceCaptureFrontierHash} from './branch-resource-capture.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
@@ -21,7 +22,11 @@ function issuedCaptureCommands(db:Database.Database,executionId:string,stepId:st
   if(journal.schema!=='branch-issued-resource-capture.v1'||stableJson(journal)!==row.result_json||!['capturing','retained'].includes(journal.state)
     ||!commandKey||typeof intent?.resourceStepId!=='string'||!intent.resourceStepId||intent.executionId!==executionId
     ||!Number.isSafeInteger(intent.resourceGeneration)||intent.resourceGeneration<0
-    ||row.input_hash!==payloadHash({stepId:intent.resourceStepId,generation:intent.resourceGeneration,commandKey}))throw Error('Issued capture command owner differs');
+    ||row.input_hash!==payloadHash({stepId:intent.resourceStepId,generation:intent.resourceGeneration,commandKey})
+    ||!journal.snapshot||payloadHash(journal.snapshot.hostDependencies)!==intent.hostCutSha256
+    ||resourceCaptureFrontierHash(journal.snapshot.selected)!==intent.frontierSha256
+    ||intent.resourceGeneration>0&&journal.reviewHash!==payloadHash({selected:journal.snapshot.selected,host:journal.snapshot.hostDependencies,generationRetry:journal.snapshot.issuedContinuation?.generationRetry,issuedContinuation:journal.snapshot.issuedContinuation})
+    ||journal.state==='retained'&&!receiptMatchesSource(journal.receipt,journal.source))throw Error('Issued capture command owner differs');
   const disposed=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-abandoned:${payloadHash(row.command_key)}`) as Row|undefined;
   if(disposed){
    const d=JSON.parse(disposed.result_json),input=d.input,custodyId=typeof journal.source?.checkpointId==='string'?createHash('sha256').update(journal.source.checkpointId).digest('hex'):'';
