@@ -734,11 +734,20 @@ export class AgentWorkingCopyService {
       throw new Error("This Agent's working folder is changing; retry the Run safely");
     }
     const current = this.store.getAgent(agentId);
-    if (!current || current.workingCopy.state !== "ready" ||
-        current.workingCopy.id !== expected.id ||
+    if (!current || current.workingCopy.id !== expected.id ||
         current.workingCopy.mode !== expected.mode ||
         current.workingCopy.rootPath !== expected.rootPath) {
       throw new Error("This Agent's working folder changed before the Run started; retry safely");
+    }
+    if (current.workingCopy.state !== "ready") {
+      // Only these fixed import states are safe to surface verbatim. Other
+      // native failures can contain filesystem paths or tool output.
+      const reason = current.workingCopy.failure;
+      if (reason === "Native import metadata and ownership proof are pending; preserve the exact import operation." ||
+          reason === "Native Git import proof is incomplete; preserve its exact root and original import operation.") {
+        throw new Error(reason);
+      }
+      throw new Error("This Agent's working folder is unavailable; inspect its status before retrying.");
     }
   }
 

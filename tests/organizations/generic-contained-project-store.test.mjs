@@ -6,6 +6,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {AgentStore,managedWorkspacePath,resolveAgentWorkingCopy} from '@ponderosa/agents';
 import {destinationAdmissionHeld} from '../../packages/agents/dist/coordination-v3-destination-staging.js';
+import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 
 const read=filename=>JSON.parse(readFileSync(filename,'utf8'));
 const write=(filename,value)=>writeFileSync(filename,JSON.stringify(value));
@@ -103,5 +104,21 @@ test('Shared import custody stays unavailable until the exact metadata operation
   assert.throws(()=>f.store.updateAgentWorkingCopy(agent.id,{...pending,state:'ready'}),/Shared folder identity/);
   f.store.updateAgentWorkingCopy(agent.id,{...pending,state:'ready',failure:undefined});
   assert.equal(resolveAgentWorkingCopy(f.store.getAgent(agent.id),project).rootPath,project.hostPath);
+ }finally{f.dispose();}
+});
+
+test('Run admission reports known pending import proof and redacts unknown native details',()=>{
+ const f=fixture();try{
+  const original=f.store.getAgent(f.ids[0]),service=new AgentWorkingCopyService(f.data,f.store);
+  const pending='Native import metadata and ownership proof are pending; preserve the exact import operation.';
+  f.store.updateAgentWorkingCopy(original.id,{...original.workingCopy,state:'unavailable',failure:pending});
+  assert.throws(()=>service.assertRunAdmission(original.id,original.workingCopy),error=>error.message===pending);
+  const incomplete='Native Git import proof is incomplete; preserve its exact root and original import operation.';
+  f.store.updateAgentWorkingCopy(original.id,{...original.workingCopy,state:'unavailable',failure:incomplete});
+  assert.throws(()=>service.assertRunAdmission(original.id,original.workingCopy),error=>error.message===incomplete);
+  const privateDetail='native failure at /private/synthetic/file';
+  f.store.updateAgentWorkingCopy(original.id,{...original.workingCopy,state:'unavailable',failure:privateDetail});
+  assert.throws(()=>service.assertRunAdmission(original.id,original.workingCopy),error=>/working folder is unavailable/.test(error.message)&&!error.message.includes('/private/'));
+  assert.throws(()=>service.assertRunAdmission(original.id,{...original.workingCopy,rootPath:f.newRoot}),/changed before the Run/);
  }finally{f.dispose();}
 });
