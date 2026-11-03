@@ -200,8 +200,6 @@ export function registerEngineRoutes(
         return engineDto(registration);
       }
       if (!auth.authenticated || auth.diagnosticFailure) return engineDto(registration);
-      const selectedMode = workspace.getPreferences().providerBillingModes?.[request.params.id];
-      if (selectedMode && auth.billingMode !== selectedMode) return engineDto(registration);
       if (!registration.availabilityProbe) {
         const refreshed = await engineDto(registration, true);
         if (refreshed.intakeReady) {

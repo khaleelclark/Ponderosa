@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 
 /** Human operator routes, intentionally absent from managed tool schemas. */
 export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
+  assertRetainedAuthentication(id:string,session:import("@ponderosa/core").RuntimeSession):void;
   store:AgentStore;coordinationV3:CoordinationV3Store;activeRuns:Map<string,ActiveRun>;
   deletingAgentIds:ReadonlySet<string>;deletingProjectIds:ReadonlySet<string>;
   persistentRuntimeForTermination(id:string):PersistentRuntime|undefined;
@@ -22,6 +23,7 @@ export function registerNativeHistoryRoutes(app:FastifyInstance,context:{
        context.activeRuns.has(id)||context.coordinationV3.activeAgentRun(id)||context.coordinationV3.contextRecovery.active(id)||
        store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(id)||
        runtime.session.engineAgentId!==b.providerSessionId||!runtime.session.isAlive())return undefined;
+    try { context.assertRetainedAuthentication(id,runtime.session); } catch { return undefined; }
     return {runtime,boundary:{agentId:id,projectId:a.projectId,conversationId:a.conversationId,engine:a.activeEngine,
       sessionId:b.providerSessionId,runId:b.executionId,fence:b.fencingToken,toolContractHash:b.toolContractHash,rootPath:a.workingCopy.rootPath}};
   };

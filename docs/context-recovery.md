@@ -22,7 +22,7 @@ hold. The historical storage state is named `unsupported_fenced`; executable
 progress and response code describe the actual recovery outcome.
 
 Future input manifests retain the exact non-secret native launch contract: engine,
-working-copy identity/path, model/effort/speed, expected billing mode, tool schemas
+working-copy identity/path, model/effort/speed, tool schemas
 and native restrictions. Exact system text is retained in the same input ledger.
 The accepted-session event selects that record. Old capability tokens, credentials
 and callback closures are never stored in the retained contract. Legacy sessions
@@ -36,7 +36,7 @@ For a future retained contract, recovery performs:
 1. Reserve the exact source once in SQLite (`reserved`).
 2. Observe retained/recovered process-group exit (`drained`).
 3. Reopen the same native session with its retained normal configuration. Current
-   human restrictions and billing selection must still match. There is no new Run,
+   human restrictions must still match. There is no new Run,
    no replayed task, and no expired host-tool/elicitation capability.
 4. Persist `native_started` before invoking the existing structured native Compact.
 5. Require matching native compaction completion and fresh exact session occupancy.
@@ -113,3 +113,15 @@ for as a conservative tail estimate. The measurement is usable for an independen
 new instruction after explicit hold dismissal. It never marks the old Run completed
 or retries its original Activation/Request. This separation permits useful ongoing
 work without inventing certainty about past effects.
+
+Retained native commands and managed recovery require the accepted contract's
+nonsecret observed authentication mode to match a current, unexpired native-auth
+observation. Missing, unknown, stale or mismatched evidence holds the operation
+before reopening or mutation; recheck native sign-in to renew an expired
+observation. Old accepted packets are never rewritten, and their former selector
+or a bare hash is not evidence of observed authentication. Historical packets
+without this evidence cannot authorize retained commands or recovery; this does
+not replace their session, replay work or authorize Context Refresh. Ordinary
+turn compatibility and pause recovery keep their existing separate rules.
+Fresh read-only commands without a retained session keep their existing path.
+This observation is not an atomic lock against external credential changes.

@@ -97,6 +97,33 @@ export function providerSessionContractHash(
   })).digest("hex");
 }
 
+/** Preserve a retained pre-selector-removal digest only when its entire contract
+ * still matches, including observed native auth. New sessions omit the selector. */
+export function providerRuntimeSessionContractHash(
+  input: {
+    runtimeSessionContractHash: string;
+    speed?: string;
+    billingMode?: "subscription" | "api";
+    systemPromptHash: string;
+    scopeKey?: string;
+  },
+  retainedHash?: string,
+): string {
+  const hash = (expectedBillingMode?: "subscription" | "api") =>
+    createHash("sha256").update(JSON.stringify({
+      runtimeSessionContractHash: input.runtimeSessionContractHash,
+      speed: input.speed,
+      ...(expectedBillingMode ? { expectedBillingMode } : {}),
+      ...(input.billingMode ? { billingMode: input.billingMode } : {}),
+      systemPromptHash: input.systemPromptHash,
+      scopeKey: input.scopeKey,
+    })).digest("hex");
+  const current = hash();
+  if (!input.billingMode || !retainedHash) return current;
+  const previous = hash(input.billingMode);
+  return retainedHash === previous ? previous : current;
+}
+
 function runtimeModelOptions(adapter: Adapter, additionalModels?: ModelOption[]): ModelOption[] {
   return projectProviderModelOptions(additionalModels ?? adapter.listModels());
 }
@@ -222,3 +249,16 @@ export {
   normalizedRuntimeSelection,
   concreteRuntimeSelection,
 };
+
+export class RetainedNativeAuthenticationError extends Error {}
+
+/** Retained packets without native-mode evidence stay immutable and held. */
+export function assertRetainedNativeAuthentication(
+  contract: import("@ponderosa/core").RetainedNormalRuntimeContract,
+  observed: { state: "known" | "unknown"; authenticated?: boolean; billingMode?: "subscription" | "api"; diagnosticFailure?: unknown },
+): void {
+  if (!contract.observedBillingMode || observed.state !== "known" || !observed.authenticated ||
+      observed.diagnosticFailure || observed.billingMode !== contract.observedBillingMode) {
+    throw new RetainedNativeAuthenticationError("Retained native authentication is missing, stale, unknown or incompatible. Session and unfinished work remain held; recheck native sign-in. Historical packets without observed-mode evidence cannot authorize this operation.");
+  }
+}

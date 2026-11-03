@@ -25,8 +25,8 @@ Code installed and signed in on your machine with your subscription under the sa
 account that runs Ponderosa Engine. If you access Ponderosa from another device, provider setup
 belongs on the Engine host. The public beta guide below describes subscription setup. Current source also
 supports subscription or API-key mode through the same native harness; configure
-credentials with that harness on the Engine host, then select its billing mode
-in Provider Settings. Ponderosa does not store provider credentials.
+credentials with that harness on the Engine host. Ponderosa uses the configured
+native authentication automatically and does not store provider credentials.
 
 Ponderosa packages include Node. Node and pnpm are needed only to build or develop
 Ponderosa from source; a provider's installation method can have its own runtime

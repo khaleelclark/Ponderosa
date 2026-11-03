@@ -6,6 +6,7 @@ import type { ActiveRun, PersistentRuntime } from "../app-contracts.js";
 
 /** Operator HTTP only: deliberately absent from managed Agent tool schemas. */
 export function registerNativeControlRoutes(app: FastifyInstance, context: {
+  assertRetainedAuthentication(id: string, session: import("@ponderosa/core").RuntimeSession): void;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   activeRuns: Map<string, ActiveRun>;
@@ -21,6 +22,7 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
     if (!agent || !runtime || context.isClosed() || context.deletingAgentIds.has(id) ||
         context.deletingProjectIds.has(agent.projectId) || context.coordinationV3.contextRecovery.active(id)) return undefined;
     if (context.store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(id)) return undefined;
+    try { context.assertRetainedAuthentication(id, runtime.session); } catch { return undefined; }
     const run = context.activeRuns.get(id);
     if (run) {
       if (run.controller.signal.aborted || run.persistentRuntimeIdentity !== runtime.identity ||

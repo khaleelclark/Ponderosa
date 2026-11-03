@@ -85,8 +85,6 @@ export interface WorkspacePreferencesDto {
   fontFamily: "inter" | "system" | "sans";
   /** Operator-controlled global runtime switches. Missing engines default to enabled. */
   providerAvailability: Record<string, boolean>;
-  /** Human-selected expected CLI mode; absent uses the configured harness. No credentials. */
-  providerBillingModes?: Record<string, "subscription" | "api">;
   /** Provider whose subscription quota is shown by default when several are authenticated. */
   defaultUsageProvider?: EngineId;
   /** Concrete model/effort defaults chosen independently for each engine. */

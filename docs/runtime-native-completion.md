@@ -1,8 +1,9 @@
 # Native runtime implementation
 
 Both configured subscription and API-key modes use the existing Codex/Claude
-harness adapters. Billing-mode selection describes the expected native login;
-it does not collect credentials or change Agent identity, history or permissions.
+harness adapters and their already configured native authentication, with no
+separate billing selector. Ponderosa does not collect credentials or change Agent
+identity, history or permissions.
 
 ## Exact token counters
 
@@ -49,7 +50,7 @@ scope, product, memory-exposure and Run checks remain in place.
 ## Retained contracts and managed recovery
 
 Future provider-input V3 manifests retain `normalRuntimeContract`: exact engine,
-working-copy identity/path, model, effort, speed, human billing selection, tool
+working-copy identity/path, model, effort, speed, tool
 schemas and native restriction configuration. The exact system text already lives
 in the same provider-input record. The existing accepted-session event selects
 that record; later rejected packets cannot become its contract. Capability tokens,
@@ -59,7 +60,7 @@ of the session hash. Legacy sessions without the full contract remain held.
 Cold native commands can reopen the accepted session with that retained normal
 configuration instead of reconstructing a small model hash. Commands have no
 scheduler Run and cannot borrow an expired Run's host-tool or elicitation authority.
-Current human restrictions and billing selection must still match. Normal native
+Current human restrictions must still match. Normal native
 capabilities are retained; no permission change or fresh task is used as recovery.
 
 Codex advertises `managed_compaction`, with `hold_without_native_query` crash
@@ -129,7 +130,7 @@ work or runner preparation were performed for this implementation slice.
 | 5 | Existing text budget reused for partial accumulation, with a visible pause notice | No new limit policy or required third-party service introduced |
 | 7, 20 | No network login, token gate, remote dependency or credential store added | Existing implementation is inherited; no fresh audit verdict implied |
 | 12, 14, 19 | `claude-stream-session.ts` discloses diagnostic loss; exact voice query reaches store facade/authority/projection and `routes/voice-replies.ts` | Durable reservation/drain/native-mutation/context-acceptance phases are implemented; unknown source effects remain held |
-| 25 | `token-count.ts`, both Codex mappers, `claude-events.ts` retain exact counters and unavailable totals | Both existing native harness modes and identity-preserving selection retained; executing-process admission added. External/native refresh races are a limitation, not a Bible prerequisite |
+| 25 | `token-count.ts`, both Codex mappers, `claude-events.ts` retain exact counters and unavailable totals | Both configured native harness modes retained without a separate selector; exact legacy session digests preserve unchanged context. External/native refresh races are a limitation, not a Bible prerequisite |
 | 30 | Memory authority and default permissions untouched | No new memory implementation credit; use existing local-memory owner’s changes with this runtime stream |
 | 31 browser delivery | No source change | `terminalDelivery` in Event Timing collector is qualification instrumentation, deferred by current direction |
 
@@ -190,23 +191,26 @@ provisional bytes never become a separate authored log or context source.
 Interrupted persisted drafts retain their text and derive failed state from the
 durable terminal Run outcome. Reading status does not append an event.
 
-## Native billing admission
+## Native authentication and retained sessions
 
-The human selection is frozen during Run preparation, included in the immutable
-session contract and passed through all launch callers. Codex reads `account/read`
-over the executing app-server before opening a thread, each start/steer and
-host dynamic-tool dispatch. Account-update generation changes during admission
-refuse the operation. Explicitly selected-mode one-shot callers use this same
-native app-server path rather than a separate cached CLI status probe. Claude
-snapshots existing environment selectors at process creation; API mode requires
-a sole configured API key, while subscription refuses API/proxy selectors.
-No key is collected, persisted, printed, exported or changed by this logic.
+Ponderosa uses the authentication already configured in Codex or Claude Code,
+without a separate billing page, login flow or expected-mode preference. The
+existing native-auth probes, credential exclusion and ambiguous-credential holds
+remain. Launches pass the configured environment through the shared harness.
 
-Both billing modes use the same native harness and keep Agent identity/history/settings
-intact. This meets the requested source behavior without an extra native atomic-lock
-prerequisite. Admission is not a transaction against external account changes or
-native credential refresh after the read. The mapped native interface has no
-immutable billed-account binding; that limitation remains visible and unqualified.
+Observed authentication mode remains part of session compatibility. A retained
+digest from the removed selector is accepted only when recomputing the complete
+old contract with the currently observed mode produces that exact digest. New
+sessions omit the selector. Changes to native mode, provider/model, tools,
+permissions, instructions or scope still invalidate compatibility; unknown-outcome
+and cleanup holds are unchanged. No provider history is reseeded solely because
+the selector field disappeared.
+
+Saved selector preferences have no execution authority. Obsolete clients receive
+HTTP 400 when writing `providerBillingModes` and must reload/update. Existing
+unrelated preferences remain; this correction changes no native credentials.
+Native authentication observation is not an atomic account lock against external
+credential changes, and Ponderosa does not invent one.
 
 Regression source extends native voice/publication, RPC boundaries and recovery
 fixtures. All execution, builds, typechecks, browser work and test preparation
@@ -254,3 +258,15 @@ for as a conservative tail estimate. The measurement is usable for an independen
 new instruction after explicit hold dismissal. It never marks the old Run completed
 or retries its original Activation/Request. This separation permits useful ongoing
 work without inventing certainty about past effects.
+
+Retained native commands and managed recovery require the accepted contract's
+nonsecret observed authentication mode to match a current, unexpired native-auth
+observation. Missing, unknown, stale or mismatched evidence holds the operation
+before reopening or mutation; recheck native sign-in to renew an expired
+observation. Old accepted packets are never rewritten, and their former selector
+or a bare hash is not evidence of observed authentication. Historical packets
+without this evidence cannot authorize retained commands or recovery; this does
+not replace their session, replay work or authorize Context Refresh. Ordinary
+turn compatibility and pause recovery keep their existing separate rules.
+Fresh read-only commands without a retained session keep their existing path.
+This observation is not an atomic lock against external credential changes.

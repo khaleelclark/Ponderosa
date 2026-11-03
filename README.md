@@ -123,20 +123,33 @@ Codex and Claude Code can use a subscription or configured API credentials throu
 those same CLIs. Ponderosa does not collect, store, export, or log credential
 values. Configure login using the native Codex CLI; for Claude API billing set
 `ANTHROPIC_API_KEY` in the daemon's host environment. Host environment changes
-require a normal daemon restart; this setting never edits the environment or logs
+require a normal daemon restart; Ponderosa never edits the environment or logs
 in on your behalf. No direct provider HTTP integration is used.
 
-In Settings → Providers, Billing mode selects the expected native harness mode.
-The default uses the configured harness. Explicit Subscription or API key/token
-holds new work until the observed native status matches; recheck sign-in after
-changing native login. Changing this selection does not interrupt an existing Run. Selecting
-a different mode retains Agent identity, canonical history, model, permissions,
-and settings. At the next turn the existing immutable session-contract boundary
-retires incompatible provider caches; existing uncertainty, reconstruction and
-cleanup guards still apply and may require normal context recovery. This control
-cannot provision a missing account or override a provider's entitlement decision.
+Ponderosa automatically uses the authentication already configured in the native
+harness. There is no separate billing-mode selection in Provider Settings.
+Recheck sign-in after changing native login. Agent identity, canonical history,
+model, permissions and settings are retained. At the next turn, an observed mode
+change retires incompatible provider caches through the existing session-contract
+boundary; uncertainty, reconstruction and cleanup guards still apply.
+Removing the former selector alone preserves an existing session when its complete
+contract and observed native authentication still match. Saved selector preferences
+are ignored. Older clients that submit `providerBillingModes` receive HTTP 400 and
+must reload/update; unrelated preferences are retained. No credentials are migrated.
 
 Status distinguishes CLI login / environment presence from a successful provider
 request. Claude key presence is explicitly unverified. Recheck/model tests can
 incur the selected account's normal charges and run only on explicit request.
 No real-account/API parity qualification is implied by controlled fixture tests.
+
+Retained native commands and managed recovery require the accepted contract's
+nonsecret observed authentication mode to match a current, unexpired native-auth
+observation. Missing, unknown, stale or mismatched evidence holds the operation
+before reopening or mutation; recheck native sign-in to renew an expired
+observation. Old accepted packets are never rewritten, and their former selector
+or a bare hash is not evidence of observed authentication. Historical packets
+without this evidence cannot authorize retained commands or recovery; this does
+not replace their session, replay work or authorize Context Refresh. Ordinary
+turn compatibility and pause recovery keep their existing separate rules.
+Fresh read-only commands without a retained session keep their existing path.
+This observation is not an atomic lock against external credential changes.

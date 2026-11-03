@@ -1041,6 +1041,7 @@ registerBrowserRoutes(app, {
 });
 
 registerProviderCommandRoutes(app, {
+  engineAuthStatuses,
   store,
   coordinationV3,
   workspace,

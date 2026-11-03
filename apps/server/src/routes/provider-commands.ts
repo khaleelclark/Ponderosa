@@ -33,8 +33,9 @@ import type {
   PersistentRuntime,
 } from "../app-contracts.js";
 import {
+  RetainedNativeAuthenticationError,
+  assertRetainedNativeAuthentication,
   concreteRuntimeSelection,
-  providerSessionContractHash,
 } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
 import type { ProviderProcessAuthority } from "../provider-process-authority.js";
@@ -60,6 +61,7 @@ import {
 import { registerAgentRunHistoryRoute } from "./agent-audit.js";
 
 interface ProviderCommandRoutesContext {
+  engineAuthStatuses: import("../engine-auth-cache.js").EngineAuthStatusCache;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -118,6 +120,8 @@ function publicProviderCommandFailure(error: unknown): {
   remediation: string;
   retryable?: false;
 } {
+  if (error instanceof RetainedNativeAuthenticationError) return { error: error.message, category: "unknown",
+    remediation: "Recheck native sign-in. Existing session and uncertain work remain held; do not replay or replace them.", retryable: false };
   if (error instanceof NativeContextUnavailableError) return { error: error.message, category: "unknown",
     remediation: "Use Context Refresh after resolving any unfinished work or uncertain outcome.", retryable: false };
   const code = guardedProviderExceptionStringProperty(error, "code")
@@ -140,9 +144,9 @@ export function registerProviderCommandRoutes(
   app: FastifyInstance,
   context: ProviderCommandRoutesContext,
 ): void {
-  registerNativeControlRoutes(app, context);
   const {
     store,
+    engineAuthStatuses,
     coordinationV3,
     workspace,
     engines,
@@ -176,8 +180,27 @@ export function registerProviderCommandRoutes(
     return isClosed() || !project || deletingAgentIds.has(agentId) || deletingProjectIds.has(project.id);
   } });
 
+const assertRetainedCommand = (agentId: string, session?: RuntimeSession, expectedExecutionId?: string) => {
+  const agent = store.getAgent(agentId);
+  const saved = store.resumeSessionState(agentId);
+  const packet = store.acceptedProviderSessionInput(agentId);
+  const contract = packet?.sourceManifest.schemaVersion === 3 ? packet.sourceManifest.normalRuntimeContract : undefined;
+  if (!agent || !saved || !contract || contract.contractHash !== saved.toolContractHash ||
+      contract.engineId !== agent.activeEngine || agent.workingCopy.state !== "ready" ||
+      contract.workingCopyId !== agent.workingCopy.id || contract.cwd !== agent.workingCopy.rootPath ||
+      packet?.exactSystemPrompt === undefined ||
+      (expectedExecutionId !== undefined && packet.executionId !== expectedExecutionId) ||
+      (session && saved.sessionId !== readProviderSessionIdentifier(session)) ||
+      !retainedPermissionsMatch(agentId, agent.activeEngine, contract) ||
+      isClosed() || deletingAgentIds.has(agentId) || deletingProjectIds.has(agent.projectId)) {
+    throw new Error("Retained native session contract or access is incompatible; existing work remains held.");
+  }
+  assertRetainedNativeAuthentication(contract, engineAuthStatuses.snapshot(agent.activeEngine));
+  return packet.executionId;
+};
+registerNativeControlRoutes(app, { ...context, assertRetainedAuthentication: assertRetainedCommand });
 const activeAgentProviderCommands = new Set<string>();
-registerNativeHistoryRoutes(app,{store,coordinationV3,activeRuns,deletingAgentIds,deletingProjectIds,persistentRuntimeForTermination,isClosed,workingCopies,busy:activeAgentProviderCommands});
+registerNativeHistoryRoutes(app,{assertRetainedAuthentication:assertRetainedCommand,store,coordinationV3,activeRuns,deletingAgentIds,deletingProjectIds,persistentRuntimeForTermination,isClosed,workingCopies,busy:activeAgentProviderCommands});
 const activeContextRecoveries = new Map<string,{id:string;controller:AbortController;stopped?:boolean}>();
 const retainedPermissionsMatch = (agentId:string, engineId:string, contract:import("@ponderosa/core").RetainedNormalRuntimeContract, sourceRunId?:string) => {
   const current=runtimeRestrictions(new CapabilityPolicyStore(store.sqlite).resolveForAgent(agentId,sourceRunId),engineId);
@@ -215,10 +238,18 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
     // Legacy unknown sessions cannot be reconstructed from hashes or authored Chat.
     if (!engine?.adapter.openSession || !contract || packet?.exactSystemPrompt === undefined ||
         contract.contractHash !== recovery.toolContractHash || contract.engineId !== agent.activeEngine ||
-        contract.expectedBillingMode !== workspace.getPreferences().providerBillingModes?.[agent.activeEngine] ||
         !retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId)) return;
     const project = store.getChatContext(agent.conversationId);
     if (!project || project.id !== recovery.projectId) return;
+    const assertRecoveryAuthentication = () => {
+      const current = store.acceptedProviderSessionInput(agent.id);
+      if (current?.executionId !== packet.executionId ||
+          store.getAgent(agent.id)?.activeEngine !== contract.engineId ||
+          !retainedPermissionsMatch(agent.id, agent.activeEngine, contract, recovery.sourceRunId)) {
+        throw new Error("Accepted recovery contract or human access changed; recovery remains held.");
+      }
+      assertRetainedNativeAuthentication(contract, engineAuthStatuses.snapshot(agent.activeEngine));
+    };
     const release = workingCopies.beginUse(agent.id);
     let authority: CapabilityDiscoveryAuthority | undefined;
     let phase: import("@ponderosa/core").ProviderContextRecoveryProgress["phase"] = "reserved";
@@ -229,6 +260,7 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
       const workingCopy = await workingCopies.resolve(agent, project);
       workingCopies.assertRunAdmission(agent.id, workingCopy);
       if (workingCopy.id !== contract.workingCopyId || workingCopy.rootPath !== contract.cwd) return;
+      assertRecoveryAuthentication();
       if (!coordinationV3.contextRecovery.reserveOperation(agent.id,recovery.id)) return;
       reserved = true;
       const recoveryControl={id:recovery.id,controller:new AbortController()};
@@ -248,10 +280,11 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
       engineCapabilityDiscoveryAuthorities.add(authority);
       const owner = authority;
       const operation = (async () => {
+        assertRecoveryAuthentication();
         const raw = await providerRuntimeOperation("open retained recovery session", () => engine.adapter.openSession!({
           agentId:agent.id,cwd:contract.cwd,resumeSessionId:recovery.providerSessionId,history:[],
           systemPrompt:packet.exactSystemPrompt,model:contract.model,effort:contract.effort,speed:contract.speed,
-          expectedBillingMode:contract.expectedBillingMode,dynamicTools:contract.dynamicTools,
+          dynamicTools:contract.dynamicTools,
           capabilityRestrictions:contract.capabilityRestrictions,
           handleDynamicToolCall:async()=>{throw new Error("Recovery commands have no live Run tool authority");},
           handleElicitation:async()=>({action:"cancel" as const}),
@@ -268,9 +301,9 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
         const session=providerSessionFacade(raw);
         if (readProviderSessionIdentifier(session)!==recovery.providerSessionId || !session.invokeCommand) throw new Error("Recovery native session changed or has no compaction command");
         if (owner.controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id)) throw new Error("Recovery stopped or interrupted by shutdown or deletion");
-        if (!retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId) ||
-            contract.expectedBillingMode!==workspace.getPreferences().providerBillingModes?.[agent.activeEngine])
-          throw new Error("Human access or billing selection changed during recovery admission");
+        if (!retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId))
+          throw new Error("Human access changed during recovery admission");
+        assertRecoveryAuthentication();
         // Commit before the mutating RPC. A lost acknowledgement is never retried.
         coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,phase,"native_started"); phase="native_started";
         const result=projectProviderCommandResult(await session.invokeCommand("compact"));
@@ -283,6 +316,7 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
       owner.operation=operation;
       await operation;
     } catch (error) {
+      if (!reserved && error instanceof RetainedNativeAuthenticationError) throw error;
       failure=publicProviderCommandFailure(error).error;
       app.log.error({providerError:restrictedProviderExceptionLogDetail(error),agentId:agent.id},"Context recovery held");
     } finally {
@@ -300,8 +334,7 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
         if (reserved) {
           if (acceptedUsage && !failure && !activeContextRecoveries.get(agent.id)?.stopped && !isClosed() && !deletingAgentIds.has(agent.id) && !deletingProjectIds.has(project.id) &&
               store.getAgent(agent.id)?.activeEngine===contract.engineId &&
-              retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId) &&
-              contract.expectedBillingMode===workspace.getPreferences().providerBillingModes?.[agent.activeEngine]) {
+              retainedPermissionsMatch(agent.id,agent.activeEngine,contract,recovery.sourceRunId)) {
             const event=store.recordProviderRecoveryContextUsage(agent.id,recovery.id,acceptedUsage);
             if(!event)throw new Error("Recovery context-usage publication boundary changed");
             coordinationV3.contextRecovery.advanceOperation(agent.id,recovery.id,phase,"context_accepted",{...acceptedUsage,contextUsageEventSequence:event.seq});
@@ -563,7 +596,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         return reply.code(409).send(publicProviderCommandFailure(error));
       }
     }
-    const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; goal?: import("@ponderosa/core").NativeGoalSnapshot | null; goalCleared?: boolean }> => {
+    const invoke = async (session: RuntimeSession, retainedInvocation = true): Promise<{ catalog: EngineCapabilities; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; goal?: import("@ponderosa/core").NativeGoalSnapshot | null; goalCleared?: boolean }> => {
+      const retainedExecutionId = retainedInvocation ? assertRetainedCommand(agent.id, session) : undefined;
       const catalog = session.capabilities
         ? projectProviderCapabilities(await session.capabilities())
         : {
@@ -586,6 +620,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         throw error;
       }
       if(coordinationV3.contextRecovery.active(agent.id)) throw new NativeContextUnavailableError("An explicit context recovery hold is active");
+      if (retainedInvocation) assertRetainedCommand(agent.id, session, retainedExecutionId);
       const commandBoundary = name === "compact" ? store.providerCommandContextBoundary(agent.id) : undefined;
       const invocationId = randomUUID();
       if (name === "compact") {
@@ -605,7 +640,6 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         const saved = store.resumeSessionState(agent.id);
         if (!saved || !contract || contract.engineId !== agent.activeEngine || saved.toolContractHash !== contract.contractHash ||
             saved.sessionId !== readProviderSessionIdentifier(session) || !retainedPermissionsMatch(agent.id, agent.activeEngine, contract) ||
-            contract.expectedBillingMode !== workspace.getPreferences().providerBillingModes?.[agent.activeEngine] ||
             isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id)) throw new Error("Native goal operation requires the current accepted session and human limits");
       }
       const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
@@ -709,12 +743,6 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       workspace.getPreferences().engineDefaults?.[agent.activeEngine],
     ], cachedModelOptions(engine.adapter, project.id));
       const persisted = store.resumeSessionState(agent.id);
-      const runtimeSessionContractHash = providerSessionContractHash(
-      agent.activeEngine,
-      workingCopy.id,
-      selection.model,
-      selection.effort,
-    );
       const acceptedInput = store.acceptedProviderSessionInput(agent.id);
       const retainedContract = acceptedInput?.sourceManifest.schemaVersion === 3
         ? acceptedInput.sourceManifest.normalRuntimeContract : undefined;
@@ -722,11 +750,15 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         retainedContract.contractHash === persisted.toolContractHash &&
         retainedContract.engineId === agent.activeEngine && retainedContract.workingCopyId === workingCopy.id &&
         retainedContract.cwd === workingCopy.rootPath && acceptedInput?.exactSystemPrompt !== undefined &&
-        retainedContract.expectedBillingMode === workspace.getPreferences().providerBillingModes?.[agent.activeEngine] &&
         retainedPermissionsMatch(agent.id,agent.activeEngine,retainedContract,latestRun?.id)
         ? retainedContract : undefined;
-      const resumeSessionId = exactContract ? persisted!.sessionId :
-        persisted?.toolContractHash === runtimeSessionContractHash ? persisted.sessionId : undefined;
+      if (persisted) {
+        try {
+          if (!exactContract) throw new Error("Retained native contract is unavailable or incompatible; no replacement session was opened.");
+          assertRetainedCommand(agent.id);
+        } catch (error) { return reply.code(409).send(publicProviderCommandFailure(error)); }
+      }
+      const resumeSessionId = exactContract ? persisted!.sessionId : undefined;
       if (name === "compact" && (!exactContract || !resumeSessionId || !store.providerCommandContextBoundary(agent.id))) {
         return reply.code(409).send({ error: "Native /compact requires the accepted compatible provider runtime. Use Context Refresh to rebuild this Agent's context." });
       }
@@ -759,6 +791,10 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       };
       let invocation: Awaited<ReturnType<typeof invoke>> | undefined;
       const operation = Promise.resolve().then(async () => {
+      if (resumeSessionId) {
+        assertRetainedCommand(agent.id, undefined, acceptedInput!.executionId);
+        if (store.resumeSessionState(agent.id)?.sessionId !== resumeSessionId) throw new Error("Retained native session changed before reopen");
+      }
       const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
         agentId: agent.id,
         cwd: workingCopy.rootPath,
@@ -769,7 +805,6 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         ...(exactContract ? {
           systemPrompt: acceptedInput!.exactSystemPrompt,
           speed: exactContract.speed,
-          expectedBillingMode: exactContract.expectedBillingMode,
           dynamicTools: exactContract.dynamicTools,
           capabilityRestrictions: exactContract.capabilityRestrictions,
           // A command is not a scheduler Run. Keep the native tool declarations,
@@ -783,7 +818,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         signal: authority.controller.signal,
       }));
       const session = providerSessionFacade(rawSession);
-      invocation = await invoke(session);
+      if (resumeSessionId) assertRetainedCommand(agent.id, session, acceptedInput!.executionId);
+      invocation = await invoke(session, Boolean(resumeSessionId));
       return invocation.catalog;
       });
       authority.operation = operation;

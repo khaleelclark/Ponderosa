@@ -1,3 +1,4 @@
+import { RetainedNativeAuthenticationError } from "../runtime-selection.js";
 import { ContextRecoveryConflictError } from "@ponderosa/agents";
 import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
 import type { FastifyInstance } from "fastify";
@@ -64,6 +65,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
       const refusal=new ProviderContextRecoveryUnavailableError();
       return reply.code(409).send({...result,sourceEvidence:sourceEvidence(agent.id,result.request.sourceRunId),support:context.support(agent.activeEngine) ?? UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY,code:refusal.code,error:result.request.state==='dismissed' ? "This request was dismissed without recovering context. The original context guard remains." : refusal.message,retryable:false});
     } catch (error) {
+      if(error instanceof RetainedNativeAuthenticationError) return reply.code(409).send({code:'retained_native_authentication_held',error:error.message,retryable:false,sourceWork:'held_unknown'});
       if(error instanceof ContextRecoveryConflictError) return reply.code(409).send({code:'context_recovery_conflict',error:error.message,retryable:false});
       // A write exception is not proof of non-commit. Read by exact key before
       // another action; even this read can fail, so do not infer absence here.

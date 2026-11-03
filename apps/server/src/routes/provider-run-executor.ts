@@ -129,7 +129,6 @@ export interface ProviderRunExecutionInput {
   runId: string;
   runtimeEngineId: string;
   runtimeSessionContractHash: string;
-  expectedBillingMode?: "subscription" | "api";
   workingCopy: ResolvedAgentWorkingCopy;
   inputFiles?: RuntimeInputFile[];
   runtimeAttachmentDirectory: string | undefined;
@@ -244,7 +243,6 @@ export function startProviderRunExecution(
     runId,
     runtimeEngineId,
     runtimeSessionContractHash,
-    expectedBillingMode,
     workingCopy,
     inputFiles = [],
     runtimeAttachmentDirectory,
@@ -383,7 +381,6 @@ export function startProviderRunExecution(
           effort: effectiveEffort,
           speed: effectiveSpeed,
           environment,
-          expectedBillingMode,
           dynamicTools: availableRuntimeTools,
           capabilityRestrictions,
           handleDynamicToolCall: createProviderDynamicToolHandler(
@@ -751,7 +748,6 @@ export function startProviderRunExecution(
               effort: effectiveEffort,
               speed: effectiveSpeed,
               environment,
-              expectedBillingMode,
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
@@ -822,7 +818,6 @@ export function startProviderRunExecution(
               effort: effectiveEffort,
               speed: effectiveSpeed,
               environment,
-              expectedBillingMode,
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,

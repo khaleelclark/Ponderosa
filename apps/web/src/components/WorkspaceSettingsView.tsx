@@ -748,25 +748,6 @@ function ProviderSettingsSection({
               Disabled providers finish active Runs, then hold queued work until
               re-enabled.
             </Typography>
-            {["codex", "claude"].includes(engine.id) ? <FormControl fullWidth sx={{ mb: 2 }}>
-              <InputLabel id={`billing-mode-${engine.id}`}>Billing mode</InputLabel>
-              <Select labelId={`billing-mode-${engine.id}`} label="Billing mode"
-                value={preferences.providerBillingModes?.[engine.id] ?? "configured"} disabled={updatePending}
-                onChange={event => {
-                  const modes = { ...preferences.providerBillingModes };
-                  if (event.target.value === "configured") delete modes[engine.id];
-                  else modes[engine.id] = event.target.value as "subscription" | "api";
-                  onPreferences({ providerBillingModes: modes });
-                }}>
-                <MenuItem value="configured">Use configured harness mode</MenuItem>
-                <MenuItem value="subscription">Subscription</MenuItem>
-                <MenuItem value="api">API key / token</MenuItem>
-              </Select>
-              <Typography variant="caption" sx={{ mt: 1 }}>
-                {engine.billingMode ? `Configured: ${engine.billingMode}` : "Mode not checked"}
-                {engine.billingModeMatches === false ? " · Mode mismatch; configure native login and recheck." : ""}
-              </Typography>
-            </FormControl> : null}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <FormControl fullWidth>
                 <InputLabel id={`settings-model-${engine.id}`}>

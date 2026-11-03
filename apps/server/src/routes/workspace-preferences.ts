@@ -156,7 +156,7 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
-    if (patch.providerBillingModes !== undefined && (typeof patch.providerBillingModes !== "object" || patch.providerBillingModes === null || Array.isArray(patch.providerBillingModes) || Object.entries(patch.providerBillingModes).some(([id, mode]) => !["codex", "claude"].includes(id) || !engines.has(id) || !["subscription", "api"].includes(mode)))) return reply.code(400).send({ error: "billing modes must name a configured harness and subscription or api" });
+    if ("providerBillingModes" in patch) return reply.code(400).send({ error: "Provider authentication is configured through the native CLI" });
     if ('outputApps' in patch) return reply.code(400).send({error:'Use output-app designation settings to change output roles'});
     if (patch.notificationScopes !== undefined) return reply.code(400).send({ error: "use the resource notification settings endpoint" });
     for (const key of ["projectFolders", "chatFolders", "branchFolders"] as const) {

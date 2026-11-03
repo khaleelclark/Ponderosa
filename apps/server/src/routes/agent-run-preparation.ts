@@ -56,6 +56,7 @@ import {
   communicationV3Prompt,
   providerDynamicTools,
   providerSessionContractHash,
+  providerRuntimeSessionContractHash,
   providerToolContractHash,
 } from "../runtime-selection.js";
 import {
@@ -403,15 +404,14 @@ export async function prepareAgentRun(
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
   const schedulerRunScopeKey = v3SchedulerRunId
     ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id) : undefined;
-  const expectedBillingMode = workspacePreferences.providerBillingModes?.[runtimeEngineId];
-  const effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
+  const runtimeAuthentication = runContext.engineAuthStatuses.snapshot(runtimeEngineId);
+  const effectiveRuntimeSessionContractHash = providerRuntimeSessionContractHash({
     runtimeSessionContractHash,
     speed: effectiveSpeed,
-    expectedBillingMode,
-    ...(runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode ? { billingMode: runContext.engineAuthStatuses.snapshot(runtimeEngineId).billingMode } : {}),
+    ...(runtimeAuthentication.billingMode ? { billingMode: runtimeAuthentication.billingMode } : {}),
     systemPromptHash,
     scopeKey: schedulerRunScopeKey,
-  })).digest("hex");
+  }, pauseRecovery ? undefined : preflightResumeSessionState?.toolContractHash);
   const ownsFrozenHandoff = preflightActiveRollover?.state === "requested" &&
     manifestActivationPayloads.some((activation) => activation.kind === "context_rollover_handoff" &&
       activation.payload && typeof activation.payload === "object" &&
@@ -1357,9 +1357,12 @@ export async function prepareAgentRun(
   for (const manifest of [effectiveProviderInputManifest, effectiveFreshProviderInputManifest]) {
     if (manifest.schemaVersion === 3 && !recoveryManifest) manifest.normalRuntimeContract = {
       version: 1, contractHash: effectiveRuntimeSessionContractHash,
+      ...(runtimeAuthentication.state === "known" && runtimeAuthentication.authenticated &&
+          !runtimeAuthentication.diagnosticFailure && runtimeAuthentication.billingMode
+        ? { observedBillingMode: runtimeAuthentication.billingMode } : {}),
       engineId: runtimeEngineId, workingCopyId: workingCopy.id, cwd: workingCopy.rootPath,
       model: effectiveModel, effort: effectiveEffort, speed: effectiveSpeed,
-      expectedBillingMode, dynamicTools: availableRuntimeTools, capabilityRestrictions,
+      dynamicTools: availableRuntimeTools, capabilityRestrictions,
     };
   }
   const manifestArtifactIds = [...effectiveProviderInputManifest.artifactIds];
@@ -1392,7 +1395,6 @@ export async function prepareAgentRun(
     systemPrompt: effectiveSystemPrompt,
     systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
-    expectedBillingMode,
     workingCopy,
     availableRuntimeTools,
     capabilityRestrictions,

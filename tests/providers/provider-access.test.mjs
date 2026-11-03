@@ -110,7 +110,7 @@ test('Claude model test ignores custom MCP workflows without spending extra turn
 import { defaultEngineRegistrations } from '@ponderosa/engines';
 import { createRequire } from 'node:module';
 import { createEngineControlPlane } from '../../apps/server/dist/engine-control-plane.js';
-import { runtimeSelectionError } from '../../apps/server/dist/runtime-selection.js';
+import { runtimeSelectionError, providerRuntimeSessionContractHash, providerSessionContractHash, providerToolContractHash, communicationV3SessionPrompt, providerDynamicTools } from '../../apps/server/dist/runtime-selection.js';
 import { registerEngineRoutes } from '../../apps/server/dist/routes/engines.js';
 import { EngineAuthStatusCache } from '../../apps/server/dist/engine-auth-cache.js';
 const Fastify = createRequire(new URL('../../apps/server/package.json', import.meta.url))('fastify');
@@ -671,61 +671,121 @@ test('Bible25 configured API and subscription status is truthful and never retur
 
 });
 
-test('Bible25 mode selection persists, holds mismatched work, and preserves Agent identity/history/settings', { timeout: 30000 }, t => {
+test('Bible25 native authentication needs no billing selection and preserves Agent identity/history/settings', { timeout: 30000 }, t => {
   let mode = 'subscription';
+  let validations = 0;
   return withFixture(t, async f => {
-    const chat = await f.createChat('Billing mode preservation');
-    const agent = await f.createAgent(chat, 'Persistent billing Agent');
+    const chat = await f.createChat('Native authentication preservation');
+    const agent = await f.createAgent(chat, 'Persistent native-auth Agent');
     const before = await f.detail(agent.id);
     const beforeHistory = before.messages;
     assert.ok(beforeHistory.length > 0, 'Preservation requires populated history');
-    const count = f.turns.length;
-    for (const invalid of [{ codex: 'SYNTHETIC_PRIVATE_KEY' }, { unknown: 'api' }, [], null]) {
-      assert.equal((await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: invalid })).status, 400);
+    const preferences = f.ok(await f.api('GET', '/api/workspace/preferences'));
+    for (const selection of [{ codex: 'api' }, { codex: 'subscription' }, {}, null]) {
+      assert.equal((await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: selection })).status, 400);
     }
-    f.ok(await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: { codex: 'api' } }));
-    const [blocked] = f.ok(await f.api('GET', '/api/engines'));
-    assert.equal(blocked.selectedBillingMode, 'api'); assert.equal(blocked.billingMode, 'subscription');
-    assert.equal(blocked.billingModeMatches, false); assert.equal(blocked.intakeReady, false);
-    assert.match(blocked.availabilityDetail, /selected billing mode/);
-    const probes = f.providerProbes.length;
-    assert.equal((await f.api('POST', `/api/projects/${chat.projectId}/engine-models/codex/validate`, { modelId: 'fixture' })).status, 409);
-    f.ok(await f.api('POST', '/api/engines/codex/recheck'));
-    assert.equal(f.providerProbes.length, probes, 'Mismatched selection must not charge a diagnostic request');
-    const after = await f.detail(agent.id);
-    assert.deepEqual(after.agent, before.agent);
-    assert.deepEqual(after.messages, beforeHistory);
-    assert.equal(f.turns.length, count, 'Changing preference must not execute or replay work');
-    mode = 'api'; await f.reopen();
-    const [ready] = f.ok(await f.api('GET', '/api/engines'));
-    assert.equal(ready.billingMode, 'api'); assert.equal(ready.selectedBillingMode, 'api');
-    assert.equal(ready.billingModeMatches, true); assert.equal(ready.intakeReady, true);
-    assert.deepEqual((await f.detail(agent.id)).agent, before.agent);
-    assert.equal(f.turns.length, count);
-    assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).providerBillingModes.codex, 'api');
-    await f.send(agent.id, 'Controlled API-mode successor');
-    const apiDone = await f.settled(agent.id, before.runs.map(run => run.id));
-    assert.equal(apiDone.agent.id, before.agent.id);
-    assert.equal(apiDone.agent.title, before.agent.title);
-    assert.equal(apiDone.agent.model, before.agent.model);
-    assert.equal(apiDone.agent.activeEngine, before.agent.activeEngine);
-    const apiSession = f.turns.at(-1).sessionId;
+    for (const nativeMode of ['api', 'subscription']) {
+      const beforeObservation = await f.detail(agent.id);
+      const turnsBeforeObservation = f.turns.length;
+      mode = nativeMode;
+      await f.reopen();
+      const [ready] = f.ok(await f.api('GET', '/api/engines'));
+      assert.equal(ready.billingMode, nativeMode);
+      assert.equal(ready.authentication, 'authenticated');
+      assert.equal(ready.intakeReady, true);
+      assert.equal(Object.hasOwn(ready, 'selectedBillingMode'), false);
+      assert.equal(Object.hasOwn(ready, 'billingModeMatches'), false);
+      assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).providerBillingModes, undefined);
+      f.ok(await f.api('POST', '/api/engines/codex/recheck'));
+      const validation = f.ok(await f.api('POST', '/api/projects/' + chat.projectId + '/engine-models/codex/validate', { modelId: 'fixture' }));
+      assert.equal(validation.valid, true);
+      assert.deepEqual((await f.detail(agent.id)).agent, beforeObservation.agent);
+      assert.deepEqual(f.ok(await f.api('GET', '/api/workspace/preferences')), preferences);
+      assert.equal(f.turns.length, turnsBeforeObservation, 'Authentication observation must not execute or replay work');
+      const previous = await f.detail(agent.id);
+      const previousSession = f.turns.at(-1).sessionId;
+      await f.send(agent.id, 'Controlled native ' + nativeMode + ' successor');
+      const done = await f.settled(agent.id, previous.runs.map(run => run.id));
+      assert.equal(done.agent.id, before.agent.id);
+      assert.equal(done.agent.title, before.agent.title);
+      assert.equal(done.agent.model, before.agent.model);
+      assert.equal(done.agent.activeEngine, before.agent.activeEngine);
+      assert.notEqual(f.turns.at(-1).sessionId, previousSession, 'Observed mode change must retire the previous native session');
+      for (const message of beforeHistory) assert.deepEqual(done.messages.find(item => item.id === message.id), message);
+      assert.match(JSON.stringify(done.messages), new RegExp('Controlled native ' + nativeMode + ' successor'));
+    }
+    assert.equal(validations, 2);
+    assert.equal(f.providerProbes.length, 2);
+  }, {
+    modelValidator: async () => { validations++; return { valid: true, model: { id: 'fixture', label: 'Fixture', kind: 'alias', source: 'provider-probe' } }; },
+    providerAuthStatus: () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }),
+  });
+});
 
-    f.ok(await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: { codex: 'subscription' } }));
-    assert.equal(f.ok(await f.api('GET', '/api/engines'))[0].intakeReady, false);
-    mode = 'subscription'; await f.reopen();
-    assert.equal(f.ok(await f.api('GET', '/api/engines'))[0].intakeReady, true);
-    await f.send(agent.id, 'Controlled subscription-mode successor');
-    const subscriptionDone = await f.settled(agent.id, apiDone.runs.map(run => run.id));
-    assert.equal(subscriptionDone.agent.id, before.agent.id);
-    assert.equal(subscriptionDone.agent.title, before.agent.title);
-    assert.equal(subscriptionDone.agent.model, before.agent.model);
-    assert.notEqual(f.turns.at(-1).sessionId, apiSession, 'Mode change must retire the previous native session');
-    const text = JSON.stringify(subscriptionDone.messages);
-    for (const message of beforeHistory) assert.deepEqual(subscriptionDone.messages.find(item => item.id === message.id), message);
-    assert.match(text, /Controlled API-mode successor/);
-    assert.match(text, /Controlled subscription-mode successor/);
-  }, { modelValidator: async () => assert.fail('Mismatched billing selection reached model validation'), providerAuthStatus: () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }) });
+test('Bible25 selector-removal compatibility accepts only the exact unchanged native contract', async () => {
+  const { createHash } = await import('node:crypto');
+  const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const input = { runtimeSessionContractHash: 'provider-model-tools', speed: 'standard', billingMode: 'api',
+    systemPromptHash: 'instructions', scopeKey: 'scope' };
+  const old = digest({ runtimeSessionContractHash: input.runtimeSessionContractHash, speed: input.speed,
+    expectedBillingMode: 'api', billingMode: 'api', systemPromptHash: input.systemPromptHash, scopeKey: input.scopeKey });
+  assert.equal(providerRuntimeSessionContractHash(input, old), old);
+  assert.notEqual(providerRuntimeSessionContractHash(input), old, 'New sessions must omit the obsolete selector');
+  for (const change of [
+    { billingMode: 'subscription' }, { billingMode: undefined }, { speed: 'fast' },
+    { runtimeSessionContractHash: 'changed-provider-model-tools-or-permissions' },
+    { systemPromptHash: 'changed-instructions' }, { scopeKey: 'other-scope' },
+  ]) {
+    assert.notEqual(providerRuntimeSessionContractHash({ ...input, ...change }, old), old);
+  }
+  const mismatchedSelection = digest({ runtimeSessionContractHash: input.runtimeSessionContractHash, speed: input.speed,
+    expectedBillingMode: 'subscription', billingMode: 'api', systemPromptHash: input.systemPromptHash, scopeKey: input.scopeKey });
+  assert.notEqual(providerRuntimeSessionContractHash(input, mismatchedSelection), mismatchedSelection);
+  assert.equal(providerRuntimeSessionContractHash(input, 'unknown-old-hash'), providerRuntimeSessionContractHash(input));
+});
+
+for (const mode of ['api', 'subscription']) test('Bible25 removing the selector resumes the existing ' + mode + ' native generation without reseeding', { timeout: 30000 }, async t => {
+  const { AgentStore } = await import('@ponderosa/agents');
+  const { createHash } = await import('node:crypto');
+  const { PONDEROSA_HISTORY_TOOL } = await import('@ponderosa/core');
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Selector removal continuity');
+    const agent = await f.createAgent(chat, 'Retained native generation');
+    const before = await f.detail(agent.id);
+    const retained = store.resumeSessionState(agent.id);
+    const packet = store.acceptedProviderSessionInput(agent.id);
+    const contract = packet.sourceManifest.normalRuntimeContract;
+    // Stored JSON canonicalizes key order; hash the original runtime definitions.
+    const originalTools = [...providerDynamicTools(), PONDEROSA_HISTORY_TOOL];
+    assert.deepEqual(contract.dynamicTools, originalTools);
+    const tools = providerToolContractHash(originalTools, communicationV3SessionPrompt());
+    assert.equal(contract.capabilityRestrictions?.restrictedCapabilityIds.length ?? 0, 0);
+    const input = {
+      runtimeSessionContractHash: providerSessionContractHash(contract.engineId, contract.workingCopyId, contract.model, contract.effort, tools),
+      speed: contract.speed, billingMode: mode, systemPromptHash: packet.systemPromptHash,
+      scopeKey: store.sqlite.prepare('SELECT scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(packet.schedulerRunId, agent.id).scope_key,
+    };
+    assert.equal(providerRuntimeSessionContractHash(input), retained.toolContractHash, 'Fixture must reconstruct the exact complete current contract');
+    const old = createHash('sha256').update(JSON.stringify({
+      runtimeSessionContractHash: input.runtimeSessionContractHash, speed: input.speed,
+      expectedBillingMode: mode, billingMode: mode, systemPromptHash: input.systemPromptHash, scopeKey: input.scopeKey,
+    })).digest('hex');
+    // Model the persisted pre-removal compatibility representation, preserving
+    // its exact session, accepted Run, context and artifacts.
+    store.appendEvent(agent.id, { type: 'session_snapshot', sessionId: retained.sessionId,
+      executionId: packet.executionId, toolContractHash: old, artifactIds: retained.artifactIds });
+    await f.reopen();
+    await f.send(agent.id, 'Continue the retained native context');
+    const after = await f.settled(agent.id, before.runs.map(run => run.id));
+    const turn = f.turns.at(-1);
+    assert.equal(turn.sessionId, retained.sessionId, 'Selector removal must resume the same native generation');
+    assert.deepEqual(turn.history, [], 'A retained generation must receive no replacement seed');
+    assert.equal(store.resumeSessionState(agent.id).toolContractHash, old);
+    assert.equal(after.agent.id, before.agent.id);
+    for (const message of before.messages) assert.deepEqual(after.messages.find(item => item.id === message.id), message);
+  }, { storeFactory: dataDir => (store = new AgentStore(dataDir)),
+    providerAuthStatus: () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }) });
 });
 
 test('Bible25 both native harness probe launches preserve configured modes without putting credentials in argv or results', async () => {

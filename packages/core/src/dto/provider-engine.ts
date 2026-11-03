@@ -52,13 +52,14 @@ export interface RuntimeEnvironmentFactsDto {
 export interface RetainedNormalRuntimeContract {
   version: 1;
   contractHash: string;
+  /** Observed native authentication, never a human selector or credential. */
+  observedBillingMode?: "subscription" | "api";
   engineId: string;
   workingCopyId: string;
   cwd: string;
   model?: string;
   effort?: string;
   speed?: string;
-  expectedBillingMode?: "subscription" | "api";
   dynamicTools: import("../adapter.js").RuntimeDynamicToolSpec[];
   capabilityRestrictions?: import("../capability-policy.js").RuntimeCapabilityRestrictions;
 }
@@ -306,8 +307,6 @@ export interface EngineDto {
    * successful authentication does not prove provider reachability. */
   authentication: "checking" | "authenticated" | "unauthenticated" | "error";
   billingMode?: "subscription" | "api";
-  selectedBillingMode?: "subscription" | "api";
-  billingModeMatches?: boolean;
   authDetail?: string;
   authObservedAt?: string;
   authReason?: import("../adapter.js").EngineAuthStatus["reason"];
