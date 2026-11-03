@@ -1,5 +1,42 @@
 # Phase 2 remaining implementation inventory
 
+## Latest integrated native mechanisms: 2026-11-03
+
+Current combined source baseline: `1171947bbafab9074a5cbc7e5a2a909a9d73e875`,
+sole parent `bdc910cdb5200194a1fa696ff4f2bd06f170c184`. Delivery adopted the
+exact independently reviewed native commit without a new source commit or
+cherry-pick. **Phase 2 remains incomplete.** This section supersedes earlier
+baseline/count and absent-native-mechanism statements only; the complete earlier
+inventory, all 32 commandment rows and all 24 Build behavior rows remain retained.
+
+| Area | Integrated source | Remaining work and limits |
+| --- | --- | --- |
+| Extended metadata | Descriptor-bound Linux inspection and selected `user.*`/POSIX ACL restore with source-qualified principal mappings, explicit destination owner/group mapping, exact selected readback and partial-failure evidence. | No product importer caller, capture/secret-selection carrier or destination mapping/grant UI is integrated. `allNamespacesComplete:false` remains explicit; hidden namespaces and full metadata equivalence are unproved. No chown or security/trusted namespace application. |
+| Persistent nodes | Held-parent no-follow metadata-only inspection for FIFO/socket/character/block nodes and exclusive FIFO-only creation with exact mode/mtime evidence. | Product carrier/caller and exclusive destination directory/name custody remain required. No device creation, source ownership recreation, socket service recreation or adoption contract is implemented. No content/device open or socket activation is granted. |
+| Coherent capture | [The native metadata contract](native-portable-metadata-contract.md) records the primary-source-backed snapshot/drain assessment and smallest backend proposal. | No coherent independent-writer snapshot backend or acquire API is integrated. Drift checks, timestamps, advisory fences and per-file copying do not establish all-root atomicity. |
+| Portability and Runtime | The prior integrated sources remain unchanged by this four-file native addition. | Newer Portability cleanup/activation/extra-root work and Runtime seed/retained-source replay tranches remain separate until exact review, owner release, root verification and Delivery composition. Their drafts or bounded prerequisite reviews do not qualify the full lanes. Backend activation/UI controls remain absent from this combined baseline. |
+
+The earlier exact `applyExactFileMetadata` implementation remains intact.
+The new public bindings/types, native include and full limits are documented in
+[native-portable-metadata-contract.md](native-portable-metadata-contract.md).
+Native owner release `auto:e857214ab9b50b22d66bb77ba800946e687b28a53638616130832f0b69948ddf`
+contains the actual full independent Quality SUPPORT for exact `1171947`; Delivery
+release `auto:2314880d9e9d1e4c7acf29e094e3c37229ce19843edeb7380aff97dd70df565d`
+records direct adoption. Root independently verified all 134 required manifest
+rows (88 distinct paths), all 1554 tracked physical blobs, exact commit/parent/tree,
+registration, clean state, no upstream, whitespace and complete outside-four-file
+preservation. Of the original 130 rows, 128 are unchanged; two native-host rows
+intentionally change. Both duplicate inventory rows remain present.
+
+These are source-preservation checks. Compilation, installed kernel/header and
+filesystem support, permissions, platform precision, native parity, round trips,
+durability, accessibility and atomicity remain unqualified. Tests, new tests,
+fixtures/preparation, builds, typechecks and product/native/provider/browser/live
+database execution remain deferred. No Bible or Build verdict is promoted to True,
+and no push, deployment, restart or unknown-outcome clearance follows.
+
+## Retained prior reviewed baseline and requirement accounting
+
 ## Current reviewed source: 2026-11-03
 
 Combined source baseline: `1daf3b6fc79707d7944fc4a7a4844ee132b1d00c`.
