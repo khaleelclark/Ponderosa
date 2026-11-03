@@ -219,10 +219,51 @@ authority; no DTO, selection or version changes are needed.
 Git documents commit-graphs as [supplemental acceleration](https://git-scm.com/docs/commit-graph)
 that can be rebuilt from the object database, with the above
 [file layout](https://git-scm.com/docs/gitformat-commit-graph.html). Rebuilding is
-not performed here. Unknown metadata, multipack-index, cruft, reftable, promisor
+not performed here. Unknown metadata, unsupported multi-pack-index names/topologies, cruft, reftable, promisor
 and alternate stores retain their existing refusals. This is source-only
 support, with no runtime/capture, round-trip, native-equivalence or arbitrary
 writer atomicity acceptance.
+
+### Derived local multi-pack-index caches
+
+The same observation-and-omission path also accepts these exact common
+repository names under `objects/pack/`:
+
+- `multi-pack-index`;
+- `multi-pack-index-{hash}.bitmap` and `multi-pack-index-{hash}.rev`;
+- directory `multi-pack-index.d`, containing only `multi-pack-index-chain` and
+  `multi-pack-index-{hash}.{midx,bitmap,rev}` files.
+
+Each hash is lowercase hexadecimal of the declared SHA-1/SHA-256 width. These
+names follow pinned Git v2.54.0 [filename helpers](https://github.com/git/git/blob/v2.54.0/midx.c),
+[extension definitions](https://github.com/git/git/blob/v2.54.0/midx.h),
+[bitmap callers](https://github.com/git/git/blob/v2.54.0/pack-bitmap.c) and
+[reverse-index callers](https://github.com/git/git/blob/v2.54.0/pack-revindex.c).
+The [MIDX design](https://git-scm.com/docs/multi-pack-index) keeps individual pack
+indexes, so this acceleration can be omitted without losing object information.
+No rebuild runs during export or import.
+
+The existing derived-cache bounds and known-secret inspection apply unchanged:
+4 MiB per raw file, a separate 4 MiB UTF-8 inspection bound for its lossless
+Latin-1 view, and the shared 32 MiB/20,000-node raw limits. Canonical same-owner
+directories and single-link regular no-follow files participate in exact raw
+before/after identity/hash/absence observations, including optional pack,
+monolithic cache, incremental directory and chain paths. Source changes refuse;
+original source and partial recovery bytes remain. Other worktrees and external
+stores are not read; chain text is never followed.
+
+Bodies remain opaque: no cache checksum, chain membership/completeness or graph
+validity is asserted. The shared cache-name helper rechecks declared hash width
+and skips these files **before** ordinary pack pairing or native copying.
+Normal `pack-{hash}.pack`/`.idx` pairing and filename checks remain mandatory;
+no missing object is supplied by a MIDX. Independently verified object and
+ref/log/index/REUC/sparse/shallow semantics remain authority. Export explicitly
+lists the cache omission. Cache bytes enter neither the DTO, separate recreated
+review repository nor native working metadata; original manifest re-export
+remains unchanged. Unknown names, nested directories, locks, symlinks, special
+nodes, foreign-owner/multiple-link files, alternates, promisor, cruft and reftable
+storage still refuse. No runtime/capture, round-trip, native-equivalence or
+arbitrary-writer atomicity acceptance is claimed.
 
 ### Ordinary shallow history
 
