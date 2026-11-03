@@ -285,14 +285,15 @@ export async function assertReviewedProviderDestination(root:string,value:Review
 }
 
 /** Only semantics recreated by the before-initialization Shared-root writer. */
-function validateNativeGitSelection(value:ReviewedUserData,mapped=false):void {
+function validateNativeGitSelection(value:ReviewedUserData,mapped=false,allowBare=false):void {
   if(value.associationReview&&!mapped)throw new Error('Mapped Git requires the complete explicit fresh destination root map');
   const git=value.git;if(!git)throw new Error('Native Git original is missing');
   if(git.configurationOriginalReview[0]!.dataBase64===null||git.configurationReview.some(item=>/^extensions\./i.test(item.key)&&!['extensions.objectformat','extensions.refstorage','extensions.worktreeconfig','extensions.relativeworktrees'].includes(item.key.toLowerCase())))throw new Error('Unsupported native Git repository format declarations');
   const versions=git.configurationReview.filter(item=>!item.source&&item.key.toLowerCase()==='core.repositoryformatversion'),formats=git.configurationReview.filter(item=>!item.source&&item.key.toLowerCase()==='extensions.objectformat');
   if(versions.length!==1||versions[0]!.implicitBoolean||!['0','1'].includes(versions[0]!.value)||formats.length>1||formats.some(item=>item.value!==git.format)||(git.reftableReview||formats.length)&&versions[0]!.value!=='1'||git.format==='sha256'&&formats.length!==1)throw new Error('Native Git format declarations differ from verified storage');
   for(const key of ['core.bare','core.filemode','core.ignorecase','core.precomposeunicode','core.quotepath','core.symlinks'])gitConfigurationBoolean(git.configurationReview,key);
-  if(gitConfigurationBoolean(git.configurationReview,'core.bare'))throw new Error('Native Shared Git requires a non-bare source');
+  const bare=gitConfigurationBoolean(git.configurationReview,'core.bare')===true;
+  if(bare!==allowBare||allowBare&&git.configurationReview.some(item=>item.key.toLowerCase()==='core.worktree'))throw new Error(allowBare?'Declared bare Git capsule differs from its effective source configuration':'Native Shared Git requires a non-bare source');
   if(git.indexOptionalReview.length)throw new Error('Native Git optional-index semantics require separate recreation');
   if(git.index.some(entry=>entry.mode==='160000')&&!Object.hasOwn(git,'modules'))throw new Error('Gitlink activation requires a fresh export with inspected module presence or absence');
   for(const file of value.providerFiles.filter(file=>/^\.git\/hooks\/[^/]+$/.test(file.path)&&!file.path.endsWith('.sample'))){
@@ -303,15 +304,17 @@ function validateNativeGitSelection(value:ReviewedUserData,mapped=false):void {
 /** Create directly into an empty NEW owned root, never replace a generated .git. */
 export interface ReviewedGitModuleData {name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string;configurationSha256:string;initialized:boolean;embedded?:true};worktreeRelativePath:string|null;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}
 export function reviewedGitModules(value:ReviewedGitUserData):readonly ReviewedGitModuleData[] {return (value as ReviewedGitUserData&{modules?:ReviewedGitModuleData[]}).modules??[];}
-export interface NativeReviewedGitModulePlan {gitDir:string;worktreePath:string;initialized:boolean;value:ReviewedUserData;activation:ReviewedUserDataActivation;configuration:NativeReviewedGitConfiguration;layout?:{commonDir:string;privateDir:string;writeCommon:true}}
+export interface NativeReviewedGitModulePlan {gitDir:string;worktreePath:string;initialized:boolean;value:ReviewedUserData;activation:ReviewedUserDataActivation;configuration:NativeReviewedGitConfiguration;bare?:true;layout?:{commonDir:string;privateDir:string;writeCommon:true}}
 export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{nativeMetadataScope?:object;deferNativeMetadata?:boolean;prepareNativeMetadata?:()=>Promise<void>;finalizeNativeMetadata?:()=>Promise<void>;nativeMetadata?:import('./portable-working-files.js').WorkingNativeMetadata;fileProofs?:Map<string,import('./portable-working-files.js').WorkingNativeFileProof>;directoryMetadataProofs?:Map<string,import('./portable-working-files.js').WorkingNativeDirectoryProof>;workingAliases?:ReadonlyArray<{path:string;target:string;rootPath:string;identity:import('./portable-working-files.js').WorkingRootIdentity}>;directoryProofs?:Map<string,{device:string;inode:string}>;includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>;modules?:NativeReviewedGitModulePlan[];external?:{
   /** Original import custody, injected by the caller; never inferred by the planner. */
   worktreeIdentity?:import('./portable-working-files.js').WorkingRootIdentity;
-  directories:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner';mode:number;mtimeNs:string}>;
-  files:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner';data:Buffer;mode:number;mtimeNs:string}>;
-  links:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner';target:string;targetContext?:'gitdir'|'private'|'worktree'|'owner';kind:'symlink'|'hardlink';mtimeNs?:string}>;
+  rootMetadata?:{context:'worktree';mode:number;mtimeNs:string};
+  absentPaths?:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree'}>;
+  directories:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';mode:number;mtimeNs:string}>;
+  files:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';data:Buffer;mode:number;mtimeNs:string}>;
+  links:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';target:string;targetContext?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';kind:'symlink'|'hardlink';mtimeNs?:string}>;
 }};
-export interface NativeReviewedGitStorage {gitDir:string;worktreePath:string;initialized:boolean;existingRoot?:boolean}
+export interface NativeReviewedGitStorage {gitDir:string;worktreePath:string;initialized:boolean;existingRoot?:boolean;bare?:true}
 type SelectedWorktreeReftable={tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
 export function selectedWorktreeReftable(value:ReviewedGitUserData):SelectedWorktreeReftable|undefined {
   return (value.reftableReview as (NonNullable<ReviewedGitUserData['reftableReview']>&{selectedWorktree?:SelectedWorktreeReftable})|null)?.selectedWorktree;
@@ -2557,60 +2560,66 @@ type NativeGitWriteFinalization={
   files:Map<string,{device:bigint;inode:bigint;data:Buffer;sha256:string;mode:number;mtimeNs:string;mutate:boolean}>;
   links:Map<string,{path:string;target:string;kind:'symlink'|'hardlink';mtimeNs?:string;mutate:boolean}>;
   directories:Map<string,{device:bigint;inode:bigint;mode:number;mtimeNs:string}>;
-  checks:Array<()=>Promise<void>>;
+  checks:Array<()=>Promise<void>>;absences:Array<()=>Promise<void>>;
   receipts:Map<string,{sha256:string;device:bigint;inode:bigint;expectedLinkCount?:bigint}>;
   proofs:Map<string,{device:string;inode:string}>;
 };
 const nativeGitMetadataScopes=new WeakMap<object,NativeGitWriteFinalization>();
 
-async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration,storage?:NativeReviewedGitStorage,ownerExternal?:{root:string;nodes:ReadonlyMap<string,'directory'|'file'|'symlink'|'hardlink'>;directories:ReadonlyMap<string,{device:bigint;inode:bigint}>},finalization?:NativeGitWriteFinalization):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint;expectedLinkCount?:bigint}>> {
+async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration,storage?:NativeReviewedGitStorage,ownerExternal?:{root:string;nodes:ReadonlyMap<string,'directory'|'file'|'symlink'|'hardlink'|'absent'>;directories:ReadonlyMap<string,{device:bigint;inode:bigint}>;worktreeRoot:string;worktreeNodes:ReadonlyMap<string,'directory'|'file'|'symlink'|'hardlink'|'absent'>;worktreeIdentity?:import('./portable-working-files.js').WorkingRootIdentity},finalization?:NativeGitWriteFinalization):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint;expectedLinkCount?:bigint}>> {
   validateReviewedGit(value);
   if(native&&!configuration)throw new Error('Native Git requires its validated configuration plan');
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
   const topLevel=!finalization,scope=configuration?.nativeMetadataScope;
   if(scope&&(typeof scope!=='object'||configuration?.deferNativeMetadata!==true))throw new Error('A shared native metadata scope requires explicit deferred finalization');
   const prior=scope?nativeGitMetadataScopes.get(scope):undefined;
-  const state:NativeGitWriteFinalization=finalization??prior??{phase:'collecting',files:new Map(),links:new Map(),directories:new Map(),checks:[],receipts:new Map(),proofs:configuration?.directoryProofs??new Map(),configurations:new Set(),workingAliases:new Map(),metadata:configuration?.nativeMetadata??{files:configuration?.fileProofs??new Map(),directories:configuration?.directoryMetadataProofs??new Map(),protectedFiles:new Map(),protectedDirectories:new Map(),deferredMetadata:new Map()}};
+  const state:NativeGitWriteFinalization=finalization??prior??{phase:'collecting',files:new Map(),links:new Map(),directories:new Map(),checks:[],absences:[],receipts:new Map(),proofs:configuration?.directoryProofs??new Map(),configurations:new Set(),workingAliases:new Map(),metadata:configuration?.nativeMetadata??{files:configuration?.fileProofs??new Map(),directories:configuration?.directoryMetadataProofs??new Map(),protectedFiles:new Map(),protectedDirectories:new Map(),deferredMetadata:new Map()}};
   if(state.phase!=='collecting')throw new Error('Native metadata scope cannot collect more work after preparation starts');
+  if(configuration?.nativeMetadata&&configuration.nativeMetadata!==state.metadata)throw new Error('A native metadata scope requires one shared canonical metadata sink');
   if(scope&&!prior)nativeGitMetadataScopes.set(scope,state);
   if(configuration){state.configurations.add(configuration);configuration.nativeMetadata=state.metadata;configuration.fileProofs=state.metadata.files;configuration.directoryMetadataProofs=state.metadata.directories;for(const row of configuration.workingAliases??[]){const old=state.workingAliases.get(row.path);if(old&&(old.target!==row.target||old.rootPath!==row.rootPath))throw new Error('Conflicting declared working-file alias evidence');state.workingAliases.set(row.path,row);}}
 
   const ownerRoot=ownerExternal?.root??layout?.commonDir??storage?.gitDir??path.join(destination,'.git');
-  const declaredOwnerNodes=new Map<string,'directory'|'file'|'symlink'|'hardlink'>(ownerExternal?.nodes);
+  const declaredOwnerNodes=new Map<string,'directory'|'file'|'symlink'|'hardlink'|'absent'>(ownerExternal?.nodes);
+  const ownerWorktreeRoot=ownerExternal?.worktreeRoot??storage?.worktreePath??destination,declaredOwnerWorktreeNodes=new Map<string,'directory'|'file'|'symlink'|'hardlink'|'absent'>(ownerExternal?.worktreeNodes);let needsOwnerWorktree=false;
   if(!ownerExternal){
     const visited=new Set<NativeReviewedGitConfiguration>();let count=0;
     const collect=(plan:NativeReviewedGitConfiguration|undefined,common:string,worktree:string,privateDir:string,depth:number)=>{
       if(!plan)return;if(depth>32||visited.has(plan)||++count>1000)throw new Error('Native external repository graph is cyclic or exceeds its capture bound');visited.add(plan);
-      for(const [kind,nodes] of [['directory',plan.external?.directories??[]],['file',plan.external?.files??[]],['link',plan.external?.links??[]]] as const)for(const node of nodes){
-        storageRelativePath(node.path);const context=node.context??'gitdir',base=context==='worktree'?worktree:context==='private'?privateDir:common,target=path.join(base,node.path),relative=path.relative(ownerRoot,target);
-        if(relative&&!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)){const key=relative.split(path.sep).join('/'),type=kind==='link'?(node as NonNullable<NativeReviewedGitConfiguration['external']>['links'][number]).kind:kind,prior=declaredOwnerNodes.get(key);if(prior&&prior!==type)throw new Error('Native external owner graph has conflicting node kinds');declaredOwnerNodes.set(key,type);}
+      for(const [kind,nodes] of [['directory',plan.external?.directories??[]],['file',plan.external?.files??[]],['link',plan.external?.links??[]],['absent',plan.external?.absentPaths??[]]] as const)for(const node of nodes){
+        storageRelativePath(node.path);const context=node.context??'gitdir',base=context==='worktree'?worktree:context==='private'?privateDir:context==='ownerWorktree'?ownerWorktreeRoot:context==='owner'?ownerRoot:common,target=path.join(base,node.path),type=kind==='link'?(node as NonNullable<NativeReviewedGitConfiguration['external']>['links'][number]).kind:kind;
+        for(const [root,graph] of [[ownerRoot,declaredOwnerNodes],[ownerWorktreeRoot,declaredOwnerWorktreeNodes]] as const){const relative=path.relative(root,target);if(relative&&!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)){const key=relative.split(path.sep).join('/'),prior=graph.get(key);if(prior&&prior!==type)throw new Error('Native external owner graph has conflicting node kinds');graph.set(key,type);}}
       }
+      if(plan.external?.links.some(link=>link.targetContext==='ownerWorktree'))needsOwnerWorktree=true;
+      if(plan.external?.rootMetadata){const relative=path.relative(ownerWorktreeRoot,worktree);if(!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep))declaredOwnerWorktreeNodes.set(relative.split(path.sep).join('/')||'.','directory');}
       for(const module of plan.modules??[])collect(module.configuration,module.gitDir,module.worktreePath,module.layout?.privateDir??module.gitDir,depth+1);visited.delete(plan);
     };collect(configuration,ownerRoot,storage?.worktreePath??destination,layout?.privateDir??ownerRoot,0);
   }
   const external=native?configuration?.external:undefined;
-  type ExternalContext='gitdir'|'private'|'worktree'|'owner';
-  const externalContext=(value:ExternalContext|undefined):ExternalContext=>{if(value!==undefined&&value!=='gitdir'&&value!=='private'&&value!=='worktree'&&value!=='owner')throw new Error('Invalid external Git root context');return value??'gitdir';};
+  type ExternalContext='gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';
+  const externalContext=(value:ExternalContext|undefined):ExternalContext=>{if(value!==undefined&&value!=='gitdir'&&value!=='private'&&value!=='worktree'&&value!=='owner'&&value!=='ownerWorktree')throw new Error('Invalid external Git root context');return value??'gitdir';};
   const externalKey=(name:string,context?:ExternalContext)=>externalContext(context)+':'+name;
-  const externalNodes=new Map<string,'directory'|'file'|'symlink'|'hardlink'>();
+  const externalNodes=new Map<string,'directory'|'file'|'symlink'|'hardlink'|'absent'>();
   const externalPath=(name:string)=>{storageRelativePath(name);if(name==='.')throw new Error('External Git nodes require a named owned path');};
   const externalMetadata=(node:{mode:number;mtimeNs:string})=>{if(!Number.isInteger(node.mode)||node.mode<0||node.mode>0o7777||typeof node.mtimeNs!=='string'||! /^-?(?:0|[1-9][0-9]{0,19})$/.test(node.mtimeNs))throw new Error('External Git metadata is not canonical');};
   if(external){
-    if(!Array.isArray(external.directories)||!Array.isArray(external.files)||!Array.isArray(external.links)||external.directories.length+external.files.length+external.links.length>10000)throw new Error('External Git graph is incomplete or exceeds its capture bound');
+    if(!Array.isArray(external.directories)||!Array.isArray(external.files)||!Array.isArray(external.links)||external.absentPaths!==undefined&&!Array.isArray(external.absentPaths)||external.directories.length+external.files.length+external.links.length+(external.absentPaths?.length??0)+(external.rootMetadata?1:0)>10000)throw new Error('External Git graph is incomplete or exceeds its capture bound');
     for(const node of external.directories){externalPath(node.path);externalMetadata(node);const key=externalKey(node.path,node.context);if(externalNodes.has(key))throw new Error('External Git graph has colliding nodes');externalNodes.set(key,'directory');}
     for(const node of external.files){externalPath(node.path);externalMetadata(node);const key=externalKey(node.path,node.context);if(externalNodes.has(key)||!Buffer.isBuffer(node.data))throw new Error('External Git file original is absent or colliding');externalNodes.set(key,'file');}
-    for(const node of external.links){externalPath(node.path);externalPath(node.target);const key=externalKey(node.path,node.context);if(externalNodes.has(key)||!['symlink','hardlink'].includes(node.kind))throw new Error('External Git alias is invalid or colliding');externalNodes.set(key,node.kind);if(node.mtimeNs!==undefined&&! /^-?(?:0|[1-9][0-9]{0,19})$/.test(node.mtimeNs))throw new Error('External Git link timestamp is not canonical');}
-    for(const key of externalNodes.keys())if(key.startsWith('owner:'))throw new Error('External owner context is a reference-only declared closure');
+    if(external.rootMetadata){if(external.rootMetadata.context!=='worktree')throw new Error('Native root metadata requires its issued working root');externalMetadata(external.rootMetadata);externalNodes.set('worktree:.','directory');}
+    for(const node of external.absentPaths??[]){externalPath(node.path);const key=externalKey(node.path,node.context);if(externalNodes.has(key))throw new Error('Declared native absence collides with a node');externalNodes.set(key,'absent');}
+    for(const node of external.links){externalPath(node.path);if(node.target==='.') {if(node.kind!=='symlink'||node.targetContext!=='worktree'&&node.targetContext!=='ownerWorktree')throw new Error('Only an explicitly anchored working-root symlink can target its root');}else externalPath(node.target);const key=externalKey(node.path,node.context);if(externalNodes.has(key)||!['symlink','hardlink'].includes(node.kind))throw new Error('External Git alias is invalid or colliding');externalNodes.set(key,node.kind);if(node.mtimeNs!==undefined&&! /^-?(?:0|[1-9][0-9]{0,19})$/.test(node.mtimeNs))throw new Error('External Git link timestamp is not canonical');}
+    for(const [key,kind] of externalNodes)if((key.startsWith('owner:')||key.startsWith('ownerWorktree:'))&&kind!=='absent')throw new Error('External owner context is a reference-only declared closure');
     for(const link of external.links){
       const target=externalKey(link.target,link.targetContext);
-      if(link.targetContext==='owner'){const kind=declaredOwnerNodes.get(link.target);if(!kind||link.kind==='hardlink'&&kind!=='file')throw new Error('External owner references require a named declared original target');continue;}
+      if(link.targetContext==='owner'||link.targetContext==='ownerWorktree'){const kind=(link.targetContext==='owner'?declaredOwnerNodes:declaredOwnerWorktreeNodes).get(link.target);if(!kind||link.kind==='hardlink'&&kind!=='file'||link.target==='.'&&kind!=='directory')throw new Error('External owner references require a named declared original target');continue;}
       if(!externalNodes.has(target)||link.kind==='hardlink'&&externalNodes.get(target)!=='file')throw new Error('External Git alias escapes its named original closure');
       if(link.kind==='hardlink'&&link.mtimeNs!==undefined&&link.mtimeNs!==external.files.find(file=>externalKey(file.path,file.context)===target)!.mtimeNs)throw new Error('External hardlink metadata differs from its shared original inode');
     }
     for(const [key] of externalNodes){const separator=key.indexOf(':'),context=key.slice(0,separator) as ExternalContext;let parent=path.posix.dirname(key.slice(separator+1));while(parent!=='.'){if(externalNodes.has(externalKey(parent,context))&&externalNodes.get(externalKey(parent,context))!=='directory')throw new Error('External Git node traverses an alias or file parent');parent=path.posix.dirname(parent);}}
   }
   const externalWorktree=storage?.worktreePath??destination;
-  if(external&&[...externalNodes.keys()].some(key=>key.startsWith('worktree:'))){
+  if(external&&([...externalNodes.keys()].some(key=>key.startsWith('worktree:'))||!ownerExternal&&needsOwnerWorktree)){
     const expected=external.worktreeIdentity;
     if(!expected||![expected.device,expected.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('External worktree nodes require the original issued import-root identity');
     const stat=await fs.lstat(externalWorktree,{bigint:true});
@@ -2646,15 +2655,15 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
   const directories=new Map<string,{device:bigint;inode:bigint}>();
   for(const target of [destination,gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs'),...(layout?[path.join(gitDir,'worktrees'),layout.privateDir]:[])]){const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});if(posixPermissions&&initialPermissionTargets.has(target)&&!permissionDirectories.has(target))permissionDirectories.set(target,Number(stat.mode)&0o7777);}
   const checkDirectories=async()=>{for(const [target,identity] of directories){const stat=await fs.lstat(target,{bigint:true});if(!stat.isDirectory()||stat.dev!==identity.device||stat.ino!==identity.inode||await fs.realpath(target)!==target)throw new Error('Git destination directory identity changed');}};
-  const externalRoot=(context?:ExternalContext)=>externalContext(context)==='worktree'?storage?.worktreePath??destination:externalContext(context)==='private'?layout?.privateDir??gitDir:externalContext(context)==='owner'?ownerExternal?.root??gitDir:gitDir;
-  if(external&&[...externalNodes.keys()].some(key=>key.startsWith('worktree:'))){
+  const externalRoot=(context?:ExternalContext)=>externalContext(context)==='worktree'?storage?.worktreePath??destination:externalContext(context)==='private'?layout?.privateDir??gitDir:externalContext(context)==='owner'?ownerExternal?.root??gitDir:externalContext(context)==='ownerWorktree'?ownerWorktreeRoot:gitDir;
+  if(external&&([...externalNodes.keys()].some(key=>key.startsWith('worktree:'))||!ownerExternal&&needsOwnerWorktree)){
     const expected=external.worktreeIdentity,root=externalRoot('worktree');
     if(!expected||![expected.device,expected.inode].every(value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('External worktree nodes require the original issued import-root identity');
     const stat=await fs.lstat(root,{bigint:true});
     if(!stat.isDirectory()||stat.isSymbolicLink()||stat.dev.toString()!==expected.device||stat.ino.toString()!==expected.inode||await fs.realpath(root)!==root)throw new Error('External worktree lost its original import-root custody');
     const prior=directories.get(root);if(prior&&(prior.device!==stat.dev||prior.inode!==stat.ino))throw new Error('External worktree conflicts with retained native custody');directories.set(root,{device:stat.dev,inode:stat.ino});
   }
-  const owningExternal=ownerExternal??{root:gitDir,nodes:declaredOwnerNodes,directories};
+  const owningExternal=ownerExternal??{root:gitDir,nodes:declaredOwnerNodes,directories,worktreeRoot:ownerWorktreeRoot,worktreeNodes:declaredOwnerWorktreeNodes,worktreeIdentity:external?.worktreeIdentity};
   const activeExternal=(context?:ExternalContext)=>externalContext(context)!=='gitdir'||!layout||layout.writeCommon;
   const externalTarget=(name:string,context?:ExternalContext)=>path.join(externalRoot(context),...name.split('/'));
   if(external){const physical=new Set<string>();for(const key of externalNodes.keys()){const separator=key.indexOf(':'),target=externalTarget(key.slice(separator+1),key.slice(0,separator) as ExternalContext);if(physical.has(target))throw new Error('External Git root contexts collide on one physical node');physical.add(target);}}
@@ -2723,7 +2732,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
     if(layout&&!native)await write('HEAD','ref: refs/heads/.invalid\n',undefined,true);
     else if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
-    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':storage?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(storage.worktreePath)}\n`:'')]));else
+    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':storage?storage.bare?'\n[core]\n\tbare = true\n':`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(storage.worktreePath)}\n`:'')]));else
     await write('config','[core]\n\trepositoryformatversion = '+(value.reftableReview||value.format==='sha256'||layout?1:0)+'\n\tbare = '+(layout?'true':'false')+'\n\thooksPath = /dev/null\n\tfsmonitor = false\n'+(value.reftableReview||value.format==='sha256'||layout?'[extensions]\n':'')+(value.format==='sha256'?'\tobjectFormat = sha256\n':'')+(value.reftableReview?'\trefStorage = reftable\n':'')+(layout?'\tworktreeConfig = true\n':''));
     if(layout&&!native)await write('config.worktree','[core]\n\tbare = false\n\tworktree = '+JSON.stringify(destination)+'\n');
     if(native){
@@ -2777,6 +2786,8 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       }
     }
 
+    if(external?.rootMetadata){const target=externalRoot('worktree'),proof=directories.get(target);if(!proof)throw new Error('Native root metadata lacks its issued root identity');state.directories.set(target,{...proof,mode:external.rootMetadata.mode,mtimeNs:external.rootMetadata.mtimeNs});}
+    for(const missing of external?.absentPaths??[]){const target=externalTarget(missing.path,missing.context),root=externalRoot(missing.context);state.absences.push(async()=>{if(await fs.realpath(root)!==root)throw new Error('Declared native absence root changed');let parent=root;for(const part of missing.path.split('/').slice(0,-1)){parent=path.join(parent,part);const node=await fs.lstat(parent,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});if(!node)break;if(!node.isDirectory()||node.isSymbolicLink()||await fs.realpath(parent)!==parent)throw new Error('Declared native absence traverses an unknown alias');const issued=state.proofs.get(parent);if(issued&&(node.dev.toString()!==issued.device||node.ino.toString()!==issued.inode))throw new Error('Declared native absence parent lost its issued custody');}try{await fs.lstat(target);throw new Error('Declared native absent target now exists');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}});}
     if(external){
       for(const original of externalFiles.values()){
         const next={device:original.device,inode:original.inode,data:original.file.data,sha256:original.sha256,mode:original.file.mode,mtimeNs:original.file.mtimeNs,mutate:activeExternal(original.file.context)},prior=state.files.get(original.target);
@@ -2821,9 +2832,9 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
         if(!directories.has(parent)){await createDirectory(parent);const stat=await fs.lstat(parent,{bigint:true});if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Native module storage parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});}
       }
       await checkDirectories();
-      validateNativeGitSelection(module.value);
+      validateNativeGitSelection(module.value,false,module.bare===true);
       let childConfiguration=module.configuration;const childExternal=childConfiguration.external;
-      if(childExternal&&!childExternal.worktreeIdentity&&([...childExternal.directories,...childExternal.files,...childExternal.links].some(node=>node.context==='worktree')||childExternal.links.some(node=>node.targetContext==='worktree'))){
+      if(childExternal&&!childExternal.worktreeIdentity&&([...childExternal.directories,...childExternal.files,...childExternal.links].some(node=>node.context==='worktree')||childExternal.links.some(node=>node.targetContext==='worktree')||!!childExternal.rootMetadata)){
         const issued=createdByWriterDirectories.get(module.worktreePath),held=directories.get(module.worktreePath);
         if(!issued||!held||issued.device!==held.device||issued.inode!==held.inode)throw new Error('Repository capsule worktree has no exact parent-created directory custody');
         const descendants:Record<string,{device:string;inode:string}>=Object.create(null);
@@ -2831,7 +2842,10 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
         childConfiguration={...childConfiguration,external:{...childExternal,worktreeIdentity:{device:issued.device.toString(),inode:issued.inode.toString(),directories:descendants}}};
       }
       let children:Awaited<ReturnType<typeof writeReviewedGit>>;
-      if(module.layout){
+      if(module.bare){
+        const issued=createdByWriterDirectories.get(module.gitDir),held=directories.get(module.gitDir);if(module.initialized||module.layout||module.worktreePath!==module.gitDir||!issued||!held||issued.device!==held.device||issued.inode!==held.inode)throw new Error('Bare capsule lacks exact parent-created storage custody');
+        children=await writeReviewedGit(module.gitDir,module.value.git!,module.value,undefined,true,childConfiguration,{gitDir:module.gitDir,worktreePath:module.gitDir,initialized:false,existingRoot:true,bare:true},owningExternal,state);
+      }else if(module.layout){
         if(!module.initialized||module.layout.commonDir!==module.gitDir)throw new Error('Repository capsule layout differs from its owned common directory');
         // Preserve the normal kernel/default-ACL creation mode for the child
         // writer to observe; every ancestor is still restricted and owned.
@@ -2877,7 +2891,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       state.prepare=async()=>{
       if(state.phase!=='collecting')throw new Error('Native metadata preparation cannot be replayed');state.phase='preparing';
       try{
-      for(const check of state.checks)await check();
+      for(const check of state.checks)await check();for(const absence of state.absences)await absence();
       const canonicalWorkingTarget=(target:string)=>{const seen=new Set<string>();while(state.workingAliases.has(target)){if(seen.has(target))throw new Error('Declared working/native original graph is cyclic');seen.add(target);target=state.workingAliases.get(target)!.target;}return target;};
       for(const row of state.workingAliases.values()){
         if(!path.isAbsolute(row.rootPath)||path.resolve(row.rootPath)!==row.rootPath||!path.isAbsolute(row.path)||path.resolve(row.path)!==row.path||!path.isAbsolute(row.target)||path.resolve(row.target)!==row.target||row.path===row.target)throw new Error('Invalid declared working-file alias paths');
@@ -2918,6 +2932,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
         }catch(error){primary=error;throw error;}
         finally{const cleanup:unknown[]=[];if(descriptor!==undefined)try{closeSync(descriptor);}catch(error){cleanup.push(error);}try{await heldParent.close();}catch(error){cleanup.push(error);}if(cleanup.length)throw Object.assign(new Error('Native alias descriptor cleanup failed',{cause:primary??cleanup[0]}),{partialStatePossible:true,cleanupErrors:cleanup});}
       }
+      for(const absence of state.absences)await absence();
       // Read every original before applying any source file or directory mode.
       // Descriptors stay bounded: one at a time, while all directories retain
       // copy-phase traversal and every source original remains readable.
@@ -2935,13 +2950,13 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       if(state.phase==='collecting')await state.prepare!();
       if(state.phase!=='prepared')throw new Error('Native metadata finalization cannot be replayed');state.phase='finalizing';
       try{
-      for(const check of state.checks)await check();
+      for(const check of state.checks)await check();for(const absence of state.absences)await absence();
       for(const [target,original] of state.files)await withHandle(await openPortableRegular(target),async handle=>{
         const count=expectedCounts.get(target)!,stat=await handle.stat({bigint:true}),proof=verified.get(target)!;if(stat.dev!==original.device||stat.ino!==original.inode||stat.nlink!==count||stat.size!==proof.size||stat.mtimeNs!==proof.mtimeNs||stat.ctimeNs!==proof.ctimeNs||stat.uid!==proof.uid||stat.gid!==proof.gid)throw new Error('Native original custody changed before final metadata');
         const hash=createHash('sha256'),buffer=Buffer.alloc(Math.min(1024*1024,original.data.length+1));let position=0;while(position<original.data.length){const read=await handle.read(buffer,0,Math.min(buffer.length,original.data.length-position),position);if(!read.bytesRead)break;hash.update(buffer.subarray(0,read.bytesRead));position+=read.bytesRead;}const verifiedNow=await handle.stat({bigint:true});if(position!==original.data.length||(await handle.read(buffer,0,1,position)).bytesRead||hash.digest('hex')!==original.sha256||verifiedNow.mtimeNs!==stat.mtimeNs||verifiedNow.ctimeNs!==stat.ctimeNs||verifiedNow.nlink!==count)throw new Error('Native original changed before final metadata');
         const names=new Set([target,...[...state.links.values()].filter(link=>link.kind==='hardlink'&&link.target===target).map(link=>link.path)]);for(const name of names){const deferred=state.metadata.deferredMetadata.get(name);if(deferred){if(deferred.kind!=='file'||deferred.mode!==original.mode||deferred.mtimeNs!==original.mtimeNs)throw new Error('Filesystem and native Git original metadata disagree');await deferred.apply({fd:handle.fd,expectedDevice:original.device,expectedInode:original.inode,expectedLinkCount:count});}}
         if(original.mutate){const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:original.device,expectedInode:original.inode,expectedLinkCount:count,kind:'file',mode:original.mode,mtimeNs:BigInt(original.mtimeNs)});if(observed.mode!==original.mode||observed.mtimeNs!==BigInt(original.mtimeNs))throw new Error('Native original metadata differs');await handle.sync();}else if(Number(stat.mode&0o7777n)!==original.mode||stat.mtimeNs!==BigInt(original.mtimeNs))throw new Error('Shared native original metadata changed');
-        const after=await handle.stat({bigint:true}),finalProof={device:after.dev.toString(),inode:after.ino.toString(),mode:Number(after.mode&0o7777n),mtimeNs:after.mtimeNs.toString(),ctimeNs:after.ctimeNs.toString(),sha256:original.sha256,expectedLinkCount:count.toString()};
+        const after=await handle.stat({bigint:true}),finalProof={device:after.dev.toString(),inode:after.ino.toString(),mode:Number(after.mode&0o7777n),mtimeNs:after.mtimeNs.toString(),ctimeNs:after.ctimeNs.toString(),uid:after.uid.toString(),gid:after.gid.toString(),size:after.size.toString(),nlink:after.nlink.toString(),sha256:original.sha256,expectedLinkCount:count.toString()};
         state.metadata.files.set(target,finalProof);for(const link of state.links.values())if(link.kind==='hardlink'&&link.target===target)state.metadata.files.set(link.path,{...finalProof});
         for(const receipt of state.receipts.values())if(receipt.device===original.device&&receipt.inode===original.inode)receipt.expectedLinkCount=count;
       });
@@ -2952,7 +2967,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       for(const [target,proof] of [...state.directories].sort(([a],[b])=>b.split(path.sep).length-a.split(path.sep).length||a.localeCompare(b)))await withHandle(await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW),async handle=>{
         const stat=await handle.stat({bigint:true}),named=await fs.lstat(target,{bigint:true});if(stat.dev!==proof.device||stat.ino!==proof.inode||named.dev!==proof.device||named.ino!==proof.inode||typeof process.geteuid!=='function'||stat.uid!==BigInt(process.geteuid()))throw new Error('Native directory lost its issued custody');
         const deferred=state.metadata.deferredMetadata.get(target);if(deferred){if(deferred.kind!=='directory'||deferred.mode!==proof.mode||deferred.mtimeNs!==proof.mtimeNs)throw new Error('Filesystem and native Git directory metadata disagree');await deferred.apply({fd:handle.fd,expectedDevice:proof.device,expectedInode:proof.inode});}
-        const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:proof.device,expectedInode:proof.inode,kind:'directory',mode:proof.mode,mtimeNs:BigInt(proof.mtimeNs)});if(observed.mode!==proof.mode||observed.mtimeNs!==BigInt(proof.mtimeNs))throw new Error('Native source directory metadata differs');await handle.sync();const after=await handle.stat({bigint:true});state.metadata.directories.set(target,{device:after.dev.toString(),inode:after.ino.toString(),mode:Number(after.mode&0o7777n),mtimeNs:after.mtimeNs.toString(),ctimeNs:after.ctimeNs.toString()});
+        const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:proof.device,expectedInode:proof.inode,kind:'directory',mode:proof.mode,mtimeNs:BigInt(proof.mtimeNs)});if(observed.mode!==proof.mode||observed.mtimeNs!==BigInt(proof.mtimeNs))throw new Error('Native source directory metadata differs');await handle.sync();const after=await handle.stat({bigint:true});const finalDirectoryProof={device:after.dev.toString(),inode:after.ino.toString(),mode:Number(after.mode&0o7777n),mtimeNs:after.mtimeNs.toString(),ctimeNs:after.ctimeNs.toString(),uid:after.uid.toString(),gid:after.gid.toString(),size:after.size.toString(),nlink:after.nlink.toString()};state.metadata.directories.set(target,finalDirectoryProof);
       });
       state.phase='finalized';
       }catch(error){state.phase='failed';throw error;}

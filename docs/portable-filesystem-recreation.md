@@ -289,3 +289,12 @@ Runtime-only file and directory metadata proofs are issued after exact readback;
 they are not a cached-byte authorization for future Runs. A failed/started callback
 cannot be replayed. Fully declared existing working aliases are counted only after
 original root/parent custody and exact same-inode checks; missing proof refuses.
+
+Additional endpoints remain bounded by the same plan. `ownerWorktree` names only
+explicit nodes below the original top working root, with its issued identity;
+`rootMetadata` restores only that root's mode/timestamp and grants no recursive
+payload ownership. A symlink may target that exact root only when this explicit
+anchor exists. Named `absentPaths` preserve dangling links only after ENOENT checks
+before and after alias creation and before final metadata; access errors never
+mean absence. Bare repository capsules require an explicit matching bare source,
+parent-created storage, and no working pointer or forced core.worktree override.

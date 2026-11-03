@@ -7,7 +7,7 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fstatSync} from 'node:fs';
-import {exportReviewedUserData,reviewedGitConfiguration,createReviewedRecoveryGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,reviewedGitConfiguration,createReviewedRecoveryGit,parseReviewedGitConfiguration} from '../../apps/server/dist/portable-reviewed-user-data.js';
 
 const exec=promisify(execFile),git=async(cwd,...args)=>(await exec('git',['--no-optional-locks',...args],{cwd,env:{...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}})).stdout.trim();
 const options={skip:process.platform!=='linux'};
@@ -161,5 +161,33 @@ test('fully issued plain-working aliases count once and receive the native preci
   f.external.worktreeIdentity=identity;f.external.files.push({path:'.hooks/run',context:'worktree',data:f.data,mode:0o751,mtimeNs:f.ns});
   const configuration={...f.configuration(),workingAliases:[{path:alias,target,rootPath:f.destination,identity}]};await f.apply(configuration);
   const actual=await lstat(alias,{bigint:true});assert.equal(actual.nlink,2n);assert.equal(actual.mtimeNs,BigInt(f.ns));assert.equal(configuration.fileProofs.get(alias).inode,actual.ino.toString());assert.equal(configuration.fileProofs.get(alias).expectedLinkCount,'2');assert.equal(configuration.nativeMetadata.protectedFiles.get(alias).mtimeNs,f.ns);
+ }finally{await f.dispose();}
+});
+
+
+test('passive symlinks preserve only explicitly declared absent destinations',options,async()=>{
+ const f=await fixture();try{
+  f.external.absentPaths=[{path:'ponderosa-external/capsule/missing'}];f.external.links.push({path:'ponderosa-external/capsule/dangling',target:'ponderosa-external/capsule/missing',kind:'symlink'});
+  await f.apply(f.configuration());const linkPath=path.join(f.destination,'.git/ponderosa-external/capsule/dangling');assert.equal(await readlink(linkPath),'missing');await assert.rejects(lstat(path.join(path.dirname(linkPath),'missing')),{code:'ENOENT'});
+ }finally{await f.dispose();}
+});
+
+test('top-worktree references and metadata-only root anchors use the original issued root',options,async()=>{
+ const f=await fixture();try{
+  const source=path.join(f.destination,'support');await mkdir(source);await writeFile(path.join(source,'script'),f.data);const root=await lstat(f.destination,{bigint:true}),directory=await lstat(source,{bigint:true});
+  f.external.worktreeIdentity={device:root.dev.toString(),inode:root.ino.toString(),directories:{support:{device:directory.dev.toString(),inode:directory.ino.toString()}}};
+  f.external.rootMetadata={context:'worktree',mode:0o700,mtimeNs:f.ns};f.external.files.push({path:'support/script',context:'worktree',data:f.data,mode:0o751,mtimeNs:f.ns});
+  f.external.links.push({path:'ponderosa-external/capsule/from-working-root',target:'support/script',targetContext:'ownerWorktree',kind:'hardlink',mtimeNs:f.ns},{path:'.ponderosa-portable-review/active-git-hooks/root',context:'worktree',target:'.',targetContext:'worktree',kind:'symlink'});
+  await f.apply(f.configuration());const original=await lstat(path.join(source,'script'),{bigint:true}),alias=await lstat(path.join(f.destination,'.git/ponderosa-external/capsule/from-working-root'),{bigint:true});assert.equal(original.ino,alias.ino);assert.equal(original.nlink,2n);assert.equal((await lstat(f.destination,{bigint:true})).mtimeNs,BigInt(f.ns));assert.equal(await realpath(path.join(f.destination,'.ponderosa-portable-review/active-git-hooks/root')),f.destination);
+ }finally{await f.dispose();}
+});
+
+test('explicit bare repository capsules retain their root layout and never create a working pointer',options,async()=>{
+ const f=await fixture();try{
+  const value=structuredClone(f.manifest),bytes=Buffer.from(value.git.configurationOriginalReview[0].dataBase64,'base64').toString('utf8').replace(/bare[ \t]*=[ \t]*false/,'bare = true'),parsed=parseReviewedGitConfiguration(Buffer.from(bytes));
+  value.git.configurationOriginalReview[0].dataBase64=parsed.data.toString('base64');value.git.configurationReview=parsed.items;
+  const relative='ponderosa-repositories/bare',gitDir=path.join(f.destination,'.git',relative);f.external.directories.push({path:'ponderosa-repositories',mode:0o700,mtimeNs:f.ns},{path:relative,mode:0o750,mtimeNs:f.ns});
+  const configuration={...f.configuration(),modules:[{gitDir,worktreePath:gitDir,initialized:false,bare:true,value,activation:{git:true,harness:false},configuration:reviewedGitConfiguration(value,{git:true,harness:false})}]};
+  await f.apply(configuration);assert.equal(await git(gitDir,'rev-parse','--is-bare-repository'),'true');await assert.rejects(lstat(path.join(gitDir,'.git')),{code:'ENOENT'});assert.ok((await lstat(path.join(gitDir,'objects'))).isDirectory());
  }finally{await f.dispose();}
 });
