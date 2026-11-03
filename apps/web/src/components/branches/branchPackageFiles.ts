@@ -1,3 +1,4 @@
+import {branchWorkingDataFileError} from './branchWorkingDataFiles';
 import {nativeImportChoiceError} from '../nativeDataPreview';
 import type {BranchImportFileSelections,InstalledBranchPackage} from '@ponderosa/core';
 import {validWorkingRootDestinations} from '../workingRootDestinations';
@@ -7,6 +8,7 @@ export function branchPackageFileTargets(pkg:InstalledBranchPackage){
 }
 export type BranchRootInventory=Record<string,string[]>;
 export function branchPackageFileError(pkg:InstalledBranchPackage,files:BranchImportFileSelections,retained:Set<string>,inventory:BranchRootInventory={}):string|undefined{
+ if(pkg.workingData){const error=branchWorkingDataFileError(pkg,files,retained);if(error)return error;for(const choice of Object.values(files)){const native=nativeImportChoiceError(choice);if(native)return native;}return;}
  const destinations:Record<string,string>={};
  for(const target of branchPackageFileTargets(pkg)){
   const selection=files[target.key];

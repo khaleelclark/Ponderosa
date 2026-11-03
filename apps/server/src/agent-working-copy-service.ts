@@ -245,7 +245,7 @@ export class AgentWorkingCopyService {
     private readonly store: Pick<
       AgentStore,
       "getAgent" | "listProjectWorkingCopies" | "updateAgentWorkingCopy" |
-      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents" | "getProject"
+      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents" | "getProject" | "bindStagedImportedProjectRoot"
     >,
   ) {
     this.managedRoot = path.join(realpathSync(dataDir), "working-copies");
@@ -457,6 +457,27 @@ export class AgentWorkingCopyService {
     this.containedReservations.delete(issued.id);return bound;
   }
 
+  /** Bind only a locally reserved contained root to an inactive staged Project. */
+  async bindImportedContainedProject(agent:AgentDto,project:ProjectDto,reservation:ImportedContainedRootReservation,planId:string):Promise<AgentDto> {
+    const owners=this.store.listAgents(project.id);
+    if(owners.some(owner=>!this.modeChanges.has(owner.id)||this.activeUses.has(owner.id)))throw new Error('Final contained Project binding requires every destination owner fence');
+    const parent=this.store.getAgent(reservation.parent.parentAgentId),issued=parent?.workingCopy.containedRootPreparations?.find(item=>item.id===reservation.id);
+    if(!parent||!this.modeChanges.has(parent.id)||issued?.phase!=='created'||issued.rootPath!==reservation.rootPath||issued.device!==reservation.parent.device||issued.inode!==reservation.parent.inode||await this.containedRootPath(reservation.parent)!==reservation.rootPath)throw new Error('Final Project binding requires its exact locally created contained-root receipt');
+    const rebound=this.store.bindStagedImportedProjectRoot(project.id,planId,project.hostPath,reservation.rootPath,owners.map(owner=>owner.id));
+    const bound=await this.bindImportedContainedRoot(this.store.getAgent(agent.id)!,rebound,reservation,'shared');
+    for(const owner of owners)if(owner.id!==agent.id&&this.store.getAgent(owner.id)!.workingCopy.mode==='shared')this.requireUpdated(owner.id,{...this.store.getAgent(owner.id)!.workingCopy,importedParent:bound.workingCopy.importedParent});
+    return bound;
+  }
+
+  /** Same captured Shared root may have several independently owned Chat namespaces. */
+  async bindImportedContainedProjectAlias(agent:AgentDto,project:ProjectDto,rootOwner:AgentDto,planId:string):Promise<AgentDto> {
+    const proof=rootOwner.workingCopy.importedParent,owners=this.store.listAgents(project.id);
+    if(!proof||!this.modeChanges.has(rootOwner.id)||owners.some(owner=>!this.modeChanges.has(owner.id)||this.activeUses.has(owner.id))||await this.containedRootPath(proof)!==rootOwner.workingCopy.rootPath||!this.stagedImportedGitRoots.has(rootOwner.workingCopy.rootPath))throw new Error('Contained Shared alias requires the exact fenced canonical root owner');
+    this.store.bindStagedImportedProjectRoot(project.id,planId,project.hostPath,rootOwner.workingCopy.rootPath,owners.map(owner=>owner.id));
+    for(const owner of owners)if(this.store.getAgent(owner.id)!.workingCopy.mode==='shared')this.requireUpdated(owner.id,{...this.store.getAgent(owner.id)!.workingCopy,importedParent:proof});
+    return this.store.getAgent(agent.id)!;
+  }
+
   /** Capture directory or locally recreated pointer layouts without assuming
    * source Git paths are destination authority. No hooks or filters execute. */
   private async importedGitSnapshot(rootPath:string,allowedRoots:string[]=[rootPath],anchors:string[]=[]):Promise<string> {
@@ -591,7 +612,7 @@ export class AgentWorkingCopyService {
     }
     // Seal after every local branch is established: common Git storage can be
     // shared by multiple selected roots, so earlier snapshots would be obsolete.
-    for(const task of tasks){const anchors=getNativeGitModuleAnchors(task.configuration);this.importedGitRoots.set(task.destination,{sha256:task.sha256,snapshot:await this.importedGitSnapshot(task.destination,roots,anchors),allowedRoots:roots,anchors});}
+    for(const task of tasks.filter(task=>task.activation.git&&task.value.git)){const anchors=getNativeGitModuleAnchors(task.configuration);this.importedGitRoots.set(task.destination,{sha256:task.sha256,snapshot:await this.importedGitSnapshot(task.destination,roots,anchors),allowedRoots:roots,anchors});}
     for(const root of roots)this.stagedImportedGitRoots.delete(root);
     for(const receipt of receipts.values())onReceipt({...receipt,state:'completed'});
     }catch(error){

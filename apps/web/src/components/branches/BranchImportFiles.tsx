@@ -1,3 +1,4 @@
+import {BranchWorkingDataFiles} from './BranchWorkingDataFiles';
 import {useEffect,useState} from 'react';
 import {NativePortableImportChoices,type NativeImportChoices} from '../NativePortableDataChoices';
 import {nativeDataPreview,nativePreviewForGroupedRoots,type NativeDataPreview} from '../nativeDataPreview';
@@ -5,6 +6,7 @@ import {Alert,MenuItem,Stack,TextField,Typography} from '@mui/material';
 import type {BranchImportFileSelection,BranchImportFileSelections,InstalledBranchPackage} from '@ponderosa/core';
 import {branchPackageTarget,type BranchRootInventory,branchPackageFileTargets} from './branchPackageFiles';
 export function BranchImportFiles({pkg,value,onChange,retained,disabled,inventory,metadataInventory={}}:{pkg:InstalledBranchPackage;value:BranchImportFileSelections;onChange(value:BranchImportFileSelections):void;retained:Set<string>;disabled:boolean;inventory:BranchRootInventory;metadataInventory?:BranchRootInventory}):JSX.Element {
+ if(pkg.workingData)return <BranchWorkingDataFiles pkg={pkg} value={value} onChange={onChange} disabled={disabled}/>;
  return <Stack spacing={2}><Typography variant="h6">Included working folders</Typography>
   <Typography>Recovery · new folders · live activation optional · native ownership, sessions and credentials excluded</Typography>
   {branchPackageFileTargets(pkg).filter(target=>target.hasFiles||target.chat.agents.some(agent=>agent.definition.agents.some(node=>Boolean(node.workingFolder)||Boolean(node.workingFiles?.length)))).map(target=>{

@@ -1,8 +1,9 @@
+import {readPortableHistoryJson,readPortableHistoryJsonAsync,writePortableHistoryJson,writePortableHistoryJsonAsync} from './portable-history-json.js';
 import {recordProviderStartCoverage} from './provider-start-journal.js';
 import { withSourceMutation } from "./source-capture-boundary.js";
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "@ponderosa/native-host/fs";
+import { constants, closeSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
 import { promises as fs } from "@ponderosa/native-host/fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
@@ -19,7 +20,7 @@ import type {
   PortableAgentNodeDto,
   ProjectDto,
 } from "@ponderosa/core";
-import { isCommunicationEvent, allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
+import { isCommunicationEvent, allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes,agentPackageJsonPieces, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
 import { CompactionHistoryQueryError } from "./compaction-history-retrieval.js";
 import { decodeImportedUtf8Window, normalizeImportedHistorySearchText, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
 import type { Db } from "./db.js";
@@ -688,7 +689,7 @@ export class AgentCatalogAuthority {
     };
     this.validateImportedArchiveSize(imported);
     this.importedIndexQueue.delete(agentId);
-    writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), imported, 0);
+    writePortableHistoryJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), imported);
     this.projectImportedHistory(agent.id, imported);
   }
 
@@ -710,34 +711,10 @@ export class AgentCatalogAuthority {
   /** One sanctioned archive writer; portable metadata attachment preserves every history field. */
   private async writeImportedArchiveAsync(agentId:string,imported:ImportedArchive):Promise<void>{
     const agent=this.getAgent(agentId);if(!agent)throw new Error("agent not found");
-    const messages=imported.messages,initialInstructions=imported.initialInstructions,portableState=imported.portableState;
-    this.validateImportedArchiveSize(imported);
-    this.importedIndexQueue.delete(agentId);
-    const pathname = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
-    const directory = dirname(pathname);
-    await fs.mkdir(directory, { recursive: true });
-    const temporary = join(directory, `.${randomUUID()}.json.tmp`);
-    const handle = await fs.open(temporary, "wx", 0o600);
-    try {
-      await handle.writeFile(JSON.stringify({ source: imported.source, importedAt: imported.importedAt }).slice(0, -1) + ',"messages":[');
-      for (let index = 0; index < messages.length; index++) {
-        await handle.writeFile((index ? "," : "") + JSON.stringify(messages[index]));
-      }
-      await handle.writeFile("]" + (initialInstructions !== undefined
-        ? ',"initialInstructions":' + JSON.stringify(initialInstructions) + ',"initialInstructionsSeparated":true' : "") + (portableState?',"portableState":'+JSON.stringify(portableState):'') + "}\n");
-      await handle.sync();
-      await handle.close();
-      await fs.rename(temporary, pathname);
-      if (process.platform !== "win32") {
-        const parent = await fs.open(directory, "r");
-        try { await parent.sync(); } finally { await parent.close(); }
-      }
-    } catch (error) {
-      await handle.close().catch(() => undefined);
-      await fs.unlink(temporary).catch(() => undefined);
-      throw error;
-    }
-    await this.projectImportedHistoryAsync(agentId, imported, importedArchiveVersion(pathname)!);
+    this.validateImportedArchiveSize(imported);this.importedIndexQueue.delete(agentId);
+    const pathname=importedAgentHistoryPath(this.dataDir,agent.projectId,agent.id);
+    await writePortableHistoryJsonAsync(pathname,imported);
+    await this.projectImportedHistoryAsync(agentId,imported,importedArchiveVersion(pathname)!);
   }
 
   /** The exact staged Branch owner may attach imported originals without replacing authored history. */
@@ -746,10 +723,42 @@ export class AgentCatalogAuthority {
       const agent=this.getAgent(agentId);if(!agent)throw new Error("agent not found");
       const owner=this.client.prepare("SELECT r.creation_operation_id FROM branch_installation_resources r JOIN agent_creation_operations o ON o.id=r.creation_operation_id JOIN agent_creation_operation_members m ON m.operation_id=o.id AND m.agent_id=r.local_id WHERE r.local_id=? AND r.staging_plan_id=? AND r.state='staging' AND o.status='completed'").get(agentId,planId);
       if(!owner)throw new Error("Working originals require the exact completed staged Branch import");
-      const previous=this.getImportedHistory(agentId);
-      if(previous?.portableState)throw new Error("Imported working originals are already bound; an uncertain attachment is never repeated");
-      const imported:ImportedArchive=previous??{source:"Branch working-data import",importedAt:new Date().toISOString(),messages:[]};
-      await this.writeImportedArchiveAsync(agentId,{...imported,portableState});
+      const pathname=importedAgentHistoryPath(this.dataDir,agent.projectId,agent.id);
+      const version=importedArchiveVersion(pathname);
+      if(!version){await this.writeImportedArchiveAsync(agentId,{source:"Branch working-data import",importedAt:new Date().toISOString(),messages:[],portableState});return;}
+      const index=this.client.prepare("SELECT * FROM imported_history_indexes WHERE agent_id=?").get(agentId) as ImportedIndex|undefined;
+      if(!index||index.archive_version!==version||index.status!=="ready"||this.importedIndexActive.has(agentId))throw new Error("Existing imported-history projection is not settled for metadata attachment");
+      const operation=this.client.prepare("SELECT o.id,o.result_json FROM agent_creation_operations o JOIN agent_creation_operation_members m ON m.operation_id=o.id WHERE m.agent_id=? AND o.status='completed'").get(agentId) as {id:string;result_json:string}|undefined;
+      if(!operation)throw new Error("Canonical import receipt unavailable");
+      const result=JSON.parse(operation.result_json??"{}"),attachments=result.branchWorkingStateAttachments??{};
+      if(attachments[agentId])throw new Error("Original working-state attachment is already attempted; inspect its exact receipt");
+      this.client.prepare("UPDATE agent_creation_operations SET result_json=? WHERE id=?").run(JSON.stringify({...result,branchWorkingStateAttachments:{...attachments,[agentId]:{planId,state:"attaching",originalArchiveVersion:version}}}),operation.id);
+      const original=await fs.open(pathname,constants.O_RDONLY|constants.O_NOFOLLOW),temporary=join(dirname(pathname),"."+randomUUID()+".json.tmp");
+      let target:Awaited<ReturnType<typeof fs.open>>|undefined;
+      try{
+        const stat=await original.stat({bigint:true});if(!stat.isFile()||stat.size<2n||stat.size>BigInt(Number.MAX_SAFE_INTEGER))throw new Error("Imported archive shape is unsupported");
+        const footer=Buffer.alloc(2);await original.read(footer,0,2,Number(stat.size)-2);
+        const tail=footer.toString("utf8"),closingBytes=tail==="}\n"?2:tail.endsWith("}")?1:0;
+        if(!closingBytes)throw new Error("Imported archive framing changed");
+        const attachmentBytes=agentPackageJsonUtf8Bytes(portableState);
+        if(stat.size-BigInt(closingBytes)+BigInt(attachmentBytes)+18n>BigInt(AGENT_PACKAGE_MAX_BYTES))throw new Error("Working-state attachment exceeds the imported archive byte limit");
+        target=await fs.open(temporary,"wx",0o600);
+        // Copy bytes, not a giant JS string. Existing messages, source, importedAt and offsets stay exact.
+        for await(const chunk of original.createReadStream({autoClose:false,start:0,end:Number(stat.size)-closingBytes-1}))await target.writeFile(chunk);
+        await target.writeFile(',"portableState":');
+        for(const part of agentPackageJsonPieces(portableState))await target.writeFile(part);
+        await target.writeFile('}\n');await target.sync();await target.close();target=undefined;
+        const after=await original.stat({bigint:true});
+        if(importedArchiveVersion(pathname)!==version||after.dev!==stat.dev||after.ino!==stat.ino||after.size!==stat.size||after.mtimeNs!==stat.mtimeNs||after.ctimeNs!==stat.ctimeNs)throw new Error("Imported archive changed during working-state attachment");
+        await original.close();await fs.rename(temporary,pathname);
+        if(process.platform!=="win32"){const parent=await fs.open(dirname(pathname),"r");try{await parent.sync();}finally{await parent.close();}}
+        const next=importedArchiveVersion(pathname)!;
+        this.client.transaction(()=>{
+          this.client.prepare("UPDATE imported_history_indexes SET archive_version=? WHERE agent_id=? AND archive_version=? AND status='ready'").run(next,agentId,version);
+          const latest=this.client.prepare("SELECT result_json FROM agent_creation_operations WHERE id=?").get(operation.id) as {result_json:string};const saved=JSON.parse(latest.result_json);
+          this.client.prepare("UPDATE agent_creation_operations SET result_json=? WHERE id=?").run(JSON.stringify({...saved,branchWorkingStateAttachments:{...saved.branchWorkingStateAttachments,[agentId]:{planId,state:"completed",originalArchiveVersion:version,archiveVersion:next}}}),operation.id);
+        })();
+      }finally{await target?.close().catch(()=>undefined);await original.close().catch(()=>undefined);}
     });
   }
 
@@ -793,7 +802,7 @@ export class AgentCatalogAuthority {
     if (!agent) return undefined;
     const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
     if (!existsSync(file)) return undefined;
-    return readJson(file);
+    return readPortableHistoryJson(file);
   }
 
   private beginImportedProjection(agentId: string, imported: ImportedArchive, version: string): {
@@ -913,9 +922,8 @@ export class AgentCatalogAuthority {
           const row = this.client.prepare("SELECT project_id FROM agents WHERE id = ? AND deleted_at IS NULL").get(agentId) as { project_id: string } | undefined;
           if (!row) continue;
           const file = importedAgentHistoryPath(this.dataDir, row.project_id, agentId);
-          const raw = await fs.readFile(file, "utf8");
+          const imported = await readPortableHistoryJsonAsync<ImportedArchive>(file);
           if (this.importedIndexClosed || epoch !== this.importedIndexEpoch || importedArchiveVersion(file) !== job.version) continue;
-          const imported = JSON.parse(raw) as ImportedArchive;
           this.validateImportedArchiveSize(imported);
           await this.projectImportedHistoryAsync(agentId, imported, job.version, true);
           continue;

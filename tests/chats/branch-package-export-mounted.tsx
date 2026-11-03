@@ -26,7 +26,7 @@ export async function branchPackageAllFoldersRegression():Promise<void>{
   const selections=Object.values(exports[1]!);assert(selections.length===2,'global mapping preserves complete workflow root selection');
   const bindings=selections[0]!.gitStorageBindings!;
   assert(bindings.length===1&&bindings[0]!.worktreeAgentId==='local-root'&&bindings[0]!.storageAgentId==='local-child'&&bindings[0]!.role==='common'&&bindings[0]!.relativePath==='.git','friendly selectors produce exact Agent/root storage binding');
-  assert(selections.every(selection=>JSON.stringify(selection.gitStorageBindings)===JSON.stringify(bindings)),'each file selection carries the same global bindings for one export-wide capture');
+  assert(selections.filter(selection=>selection.gitStorageBindings).length===1,'one compact global declaration preserves the complete source root context');
 
  }finally{root.unmount();client.clear();host.remove();realApi.listBranchAgents=original;}
 }

@@ -74,6 +74,8 @@ export interface ProjectJson {
   defaultEffort?: string;
   lastConversationId?: string;
   instructions?: string;
+  /** Internal final working-root bind; original managed creation remains provenance only. */
+  importedRootBinding?: {planId:string;previousPath:string;managedWorkspaceName?:string};
   /** Durable identity for an HTTP create retry. Missing on pre-idempotency Projects. */
   creationIdempotencyKey?: string;
   creationPayloadHash?: string;

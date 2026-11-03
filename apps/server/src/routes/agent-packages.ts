@@ -1,4 +1,5 @@
 import {packageExportDownloads} from '../package-export-downloads.js';
+import {applyBranchWorkingData,prepareBranchWorkingDataChild,type ApplyBranchWorkingDataInput,type BranchWorkingDataApplication,type PrepareBranchWorkingDataChildInput,type BranchWorkingDataPreparation} from '../apply-branch-working-data.js';
 import {collectBranchGitStorageSelections} from '../branch-export-selections.js';
 import {decodePortableMetadataArtifact} from '../agent-package-codec.js';
 import {retainedOrphanDiscovery} from '../retained-orphan-discovery.js';
@@ -114,6 +115,8 @@ export interface BranchPackageImportOptions {
 export interface BranchAgentExportSet {agents:Record<string,AgentPortablePackageDto>;working?:AgentPortablePackageDto}
 /** Shared packaging boundary; callers own durable human review and destination selection. */
 export interface BranchPackageEngine {
+  prepareWorkingDataChild(input:PrepareBranchWorkingDataChildInput,onReceipt:(receipt:BranchWorkingDataPreparation)=>void):Promise<NonNullable<BranchWorkingDataPreparation['reservation']>>;
+  applyWorkingData(input:ApplyBranchWorkingDataInput,onReceipt:(receipt:BranchWorkingDataApplication)=>void,signal?:AbortSignal):Promise<BranchWorkingDataApplication>;
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
   captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
@@ -2908,6 +2911,8 @@ export function registerAgentPackageRoutes(
     }
   });
   return {packageEngine:{
+    prepareWorkingDataChild:(input,onReceipt)=>prepareBranchWorkingDataChild(store,context.workingCopies!,input,onReceipt),
+    applyWorkingData:(input,onReceipt,signal)=>withAgentImportAdmission(()=>applyBranchWorkingData(context.dataDir,store,context.workingCopies!,input,onReceipt,signal)),
     inspectCheckpoint:source=>checkpointCustody.inspect(source),
     captureCheckpoint:(source,seal)=>withAgentImportAdmission(async()=>{
       const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};

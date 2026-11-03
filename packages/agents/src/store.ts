@@ -1271,6 +1271,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.getManagedCreationHostPath(key, name);
   }
 
+  bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[]):ProjectDto {
+    return this.workspaceCatalog.bindStagedImportedProjectRoot(projectId,planId,oldRoot,newRoot,exactAgentIds);
+  }
+
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
     return this.workspaceCatalog.updateProject(id, input);
   }

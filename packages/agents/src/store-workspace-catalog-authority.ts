@@ -30,9 +30,11 @@ import type {
   ConversationJson,
   PresetEvent,
   ProjectJson,
+  AgentJson,
 } from "./store-types.js";
 import {
   agentPresets,
+  agents,
   conversationDeletionReceipts,
   conversations,
   projectDeletionReceipts,
@@ -41,6 +43,7 @@ import {
 } from "./schema.js";
 import {
   agentPresetsPath,
+  agentJsonPath,
   agentsDir,
   conversationDir,
   conversationsDir,
@@ -485,6 +488,36 @@ export class AgentWorkspaceCatalogAuthority {
       throw error;
     }
     return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
+  }
+
+  /** Internal only: final binding of an inactive NEW Branch-import namespace. */
+  bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[]):ProjectDto {
+    const record=readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId));
+    const current=this.listAgents(projectId);
+    if(!this.isManagedProjectImportDestination(projectId)||record.hostPath!==oldRoot||!record.ownerConversationId||
+       current.length!==exactAgentIds.length||new Set(exactAgentIds).size!==exactAgentIds.length||current.some(agent=>!exactAgentIds.includes(agent.id)))throw new Error('Final imported root requires the complete unused managed Project');
+    if(!this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state='staging'").get(record.ownerConversationId,planId))throw new Error('Final imported root requires its exact staged Chat');
+    for(const agent of current){
+      if(!this.client.prepare("SELECT 1 FROM branch_installation_resources r JOIN agent_creation_operations o ON o.id=r.creation_operation_id JOIN agent_creation_operation_members m ON m.operation_id=o.id AND m.agent_id=r.local_id WHERE r.local_id=? AND r.staging_plan_id=? AND r.state='staging' AND o.status='completed'").get(agent.id,planId)||
+         this.client.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown')").get(agent.id))throw new Error('Imported Project binding requires idle canonical staged owners');
+    }
+    const chatFile=conversationJsonPath(this.dataDir,projectId,record.ownerConversationId),chat=readJson<ConversationJson>(chatFile);
+    if(chat.workingDirectory!==oldRoot)throw new Error('Provisional Chat root changed');
+    const shared=current.filter(agent=>agent.workingCopy.mode==='shared'),files=[projectJsonPath(this.dataDir,projectId),chatFile,...shared.map(agent=>agentJsonPath(this.dataDir,projectId,agent.id))];
+    return this.progress.run(files,()=>{
+      this.assertProjectMetadataMutable(projectId);
+      // Caller has already saved the exact local contained reservation in the
+      // installation receipt. Failure here is held; startup never reallocates.
+      writeJson(projectJsonPath(this.dataDir,projectId),{...record,hostPath:newRoot,managedWorkspaceName:undefined,importedRootBinding:{planId,previousPath:oldRoot,managedWorkspaceName:record.managedWorkspaceName}});
+      writeJson(chatFile,{...chat,workingDirectory:newRoot,managedWorkspaceName:undefined});
+      this.db.update(projects).set({hostPath:newRoot}).where(eq(projects.id,projectId)).run();
+      for(const agent of shared){
+        const filename=agentJsonPath(this.dataDir,projectId,agent.id),json=readJson<AgentJson>(filename),workingCopy={...agent.workingCopy,rootPath:newRoot,updatedAt:new Date().toISOString()};
+        writeJson(filename,{...json,workingCopy,updatedAt:workingCopy.updatedAt});
+        this.db.update(agents).set({workingCopyJson:JSON.stringify(workingCopy),updatedAt:workingCopy.updatedAt}).where(eq(agents.id,agent.id)).run();
+      }
+      return this.getProject(projectId)!;
+    });
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
