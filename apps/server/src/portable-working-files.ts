@@ -259,6 +259,7 @@ export async function materializeGitExternalReview(folder:string,data:ReviewedGi
   try{
   const held=await parentHandle.stat({bigint:true});
   if(held.dev.toString()!==parentIdentity.device||held.ino.toString()!==parentIdentity.inode)throw new Error('Git review parent identity changed');
+  if(process.platform==='linux'&&(await fs.statfs('/proc/self/fd')).type!==0x9fa0)throw new Error('Qualified procfs descriptor access is unavailable');
   const heldParent=process.platform==='linux'?'/proc/self/fd/'+parentHandle.fd:parent;
   if(process.platform==='linux'){const proc=await fs.stat(heldParent,{bigint:true});if(proc.dev!==held.dev||proc.ino!==held.ino)throw new Error('Held Git review parent is unavailable');}
   await fs.mkdir(path.join(heldParent,path.basename(folder)),{mode:0o700});
