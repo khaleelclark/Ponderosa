@@ -463,7 +463,7 @@ test('staged access preview is mutation-free and imported provenance exposes onl
   for(const artifact of page.artifacts){assert.match(artifact.downloadUrl,/^\/api\/projects\//);assert.equal(f.store.agentCanReadProjectArtifact(f.project.id,artifact.id,result.rootAgentId),true);}
   assert.equal((await f.request({method:'GET',url:`/api/agents/${result.rootAgentId}/imported-communications?archiveVersion=stale`})).statusCode,409);
   assert.equal((await f.request({method:'GET',url:`/api/agents/${randomUUID()}/imported-communications`})).statusCode,404);
-}));
+},{handlerDeadlineMs:5000,packageHandlerDeadlineMs:10000}));
 
  test('recorded audio keeps canonical media type and immutable bytes across reload',options,t=>withPortability(t,async f=>{
   const page=Buffer.alloc(28);page.write('OggS');page[26]=1;page[27]=19;
@@ -607,10 +607,17 @@ test('native live receipts include Git A only while metadata-only B remains iner
  const manifests=[await exportReviewedUserData(source,{git:true,harness:false}),await exportReviewedUserData(other,{git:false,harness:false,persistentNodes:{fifo:false,evidenceOnly:true}})],refs=[randomUUID(),randomUUID()];
  const agents=manifests.map((manifest,i)=>({ref:'node-'+i,title:'Root '+i,engine:'codex',...(i?{managerRef:'node-0'}:{}),managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingCopyMode:'separate_git',workingRootRef:refs[i],workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:[{path:'.ponderosa-portable-review/user-data.json',artifactRef:'manifest-'+i}],artifacts:[{ref:'manifest-'+i,kind:'document',path:'manifest.json',createdAt:new Date().toISOString(),dataBase64:Buffer.from(JSON.stringify(manifest)).toString('base64')}]}));
  const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',sourceLabel:'Per-root native receipts',exportedAt:new Date().toISOString(),rootRef:'node-0',agents};
- const choices={workingRootDestinations:{[refs[0]]:path.join(f.dataDir,'workspaces','recover-a'),[refs[1]]:path.join(f.dataDir,'workspaces','recover-b')},workingFilesActivation:{},reviewedUserDataActivation:{git:true,harness:false}};
+ const choices={workingRootDestinations:{[refs[0]]:path.join(f.dataDir,'workspaces','recover-a'),[refs[1]]:path.join(f.dataDir,'workspaces','recover-b')},workingFilesActivation:{},workingCopyMode:'separate_git',reviewedUserDataActivation:{git:true,harness:false}};
  const review=await f.packageEngine.reviewAccess(pkg,f.destination.id,choices);
  const result=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{...choices,accessSettingsResolution:{action:'keep_destination',reviewSha256:review.reviewSha256}});
- assert.deepEqual(result.reviewedUserDataApplications.map(receipt=>({ref:receipt.ref,selection:receipt.selection,state:receipt.state})),[{ref:refs[0],selection:{git:true,harness:false},state:'completed'}]);
+ assert.equal(result.reviewedUserDataApplications.length,1);
+ const receipt=result.reviewedUserDataApplications[0],active=result.liveWorkingRoots.find(root=>root.ref===refs[0]);
+ assert.equal(receipt.ref,refs[0]);assert.equal(receipt.state,'completed');assert.equal(receipt.selection.git,true);assert.equal(receipt.selection.harness,false);assert.ok(active);
+ const mappings=receipt.selection.gitPathMappings;assert.ok(Array.isArray(mappings));
+ assert.deepEqual(mappings.map(mapping=>mapping.source).sort(),[source,path.join(source,'.git'),path.join(source,'.git','hooks')].sort());
+ assert.equal(mappings.find(mapping=>mapping.source===source).destination,active.path);
+ assert.equal(mappings.find(mapping=>mapping.source===path.join(source,'.git')).destination,path.join(active.path,'.git'));
+ assert.ok(mappings.find(mapping=>mapping.source===path.join(source,'.git','hooks')).destination.startsWith(path.join(active.path,'.git')+path.sep));
  const inert=result.liveWorkingRoots.find(root=>root.ref===refs[1]);assert.ok(inert);assert.ok(!result.reviewedUserDataApplications.some(receipt=>receipt.path===inert.path));
 }));
 test('nested recovery metadata finalizes child before restrictive parent permissions',{...options,skip:process.platform==='win32'||process.getuid?.()===0},t=>withPortability(t,async f=>{
@@ -618,6 +625,7 @@ test('nested recovery metadata finalizes child before restrictive parent permiss
  const node=(ref,root,folder,files=[])=>({ref,title:ref,engine:'codex',...(ref==='child'?{managerRef:'parent'}:{}),managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingCopyMode:'shared',workingRootRef:root,workingFolder:folder,workingFiles:files.map((file,i)=>({path:file.path,artifactRef:ref+'-'+i,mode:0o640,mtime:stamp})),artifacts:files.map((file,i)=>({ref:ref+'-'+i,kind:'document',path:file.path,createdAt:stamp,dataBase64:Buffer.from(file.data).toString('base64')}))});
  const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',sourceLabel:'Restrictive nested metadata',exportedAt:stamp,rootRef:'parent',workingRootNesting:[{parentRootRef:parent,childRootRef:child,path:'child'}],agents:[node('parent',parent,{directories:[],excludedPaths:['child'],mode:0,mtime:stamp}),node('child',child,{directories:[],excludedPaths:[],mode:0o750,mtime:stamp},[{path:'original',data:'exact original'}])]};
  const destination=path.join(f.dataDir,'workspaces','restricted-parent'),nested=path.join(destination,'child');
+ await (await import('node:fs/promises')).mkdir(path.dirname(destination),{recursive:true});
  try{
   const result=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{workingRootDestinations:{[parent]:destination,[child]:nested}});
   assert.equal(result.agentIds.length,2);assert.equal((await lstat(destination)).mode&0o777,0);

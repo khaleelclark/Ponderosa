@@ -105,7 +105,7 @@ test('deferred links and final metadata reject a substituted root before any mut
   const links=[{kind:'symlink',path:'parent/alias',target:'missing'}];
   const identity=await importWorkingFiles(destination,[],[],undefined,undefined,links,'refuse',undefined,true,undefined,true);
   const original=await lstat(destination,{bigint:true});
-  assert.deepEqual(identity,{device:original.dev.toString(),inode:original.ino.toString()});
+  assert.deepEqual(identity,{device:original.dev.toString(),inode:original.ino.toString(),directories:{}});
   await rename(destination,retained);await mkdir(destination);await writeFile(path.join(destination,'sentinel'),'replacement bytes');
   const replacement=await lstat(destination,{bigint:true});
   await assert.rejects(importWorkingLinks(destination,links,undefined,undefined,identity),error=>error.code==='ERR_WORKING_ROOT_IDENTITY');

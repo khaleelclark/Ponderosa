@@ -359,13 +359,13 @@ test('native recovery refuses replaced original roots before creating Git metada
 
 test('native Git configuration failures retain their exact redacted cause',async()=>{
  const {applyNativeGitPermissions}=await import('../../apps/server/dist/portable-git-permissions.js');
- const root=await realpath(await mkdtemp(path.join(tmpdir(),'portable-git-config-cause-')));
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-git-config-cause-'))),root=path.join(base,'repository');
  try{
   await initialize(root);await writeFile(path.join(root,'.git','config'),'[malformed section\n');
   await assert.rejects(applyNativeGitPermissions({gitDir:path.join(root,'.git'),worktreePath:root},[],[]),error=>{
    assert.equal(error.code,'ERR_GIT_SHARED_CONFIGURATION');assert.match(error.message,/bad config|config.*line/i);assert.ok(error.cause);return true;
   });
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(base,{recursive:true,force:true});}
 });
 
 test('live native held-open rejects replacement after service precheck before any native write',async()=>{

@@ -108,6 +108,7 @@ export interface BranchPackageImportOptions {
   branchHooks?:BranchImportHooks;
   accessSettingsResolution?:ImportAgentPackageRequest['accessSettingsResolution'];
   workingFilesDestination?:ImportAgentPackageRequest['workingFilesDestination'];
+  workingCopyMode?:ImportAgentPackageRequest['workingCopyMode'];
   workingRootDestinations?:ImportAgentPackageRequest['workingRootDestinations'];
   workingFilesActivation?:ImportAgentPackageRequest['workingFilesActivation'];
   reviewedUserDataActivation?:ImportAgentPackageRequest['reviewedUserDataActivation'];
@@ -3055,7 +3056,7 @@ export function registerAgentPackageRoutes(
     importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
       let status=200,body:unknown;
       const response={code(value:number){status=value;return this;},send(value:unknown){body=value;return value;}} as unknown as FastifyReply;
-      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.workingFilesDestination?{workingFilesDestination:options.workingFilesDestination}:{}),...(options?.reviewedUserDataActivation?{reviewedUserDataActivation:options.reviewedUserDataActivation}:{}),...(options?.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:options.reviewedMetadataActivation}:{}),...(options?.workingFilesActivation?{workingFilesActivation:options.workingFilesActivation}:{}),...(options?.workingRootDestinations?{workingRootDestinations:options.workingRootDestinations}:{}),...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
+      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true,...(options?.workingCopyMode!==undefined?{workingCopyMode:options.workingCopyMode}:{}),...(options?.workingFilesDestination?{workingFilesDestination:options.workingFilesDestination}:{}),...(options?.reviewedUserDataActivation?{reviewedUserDataActivation:options.reviewedUserDataActivation}:{}),...(options?.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:options.reviewedMetadataActivation}:{}),...(options?.workingFilesActivation?{workingFilesActivation:options.workingFilesActivation}:{}),...(options?.workingRootDestinations?{workingRootDestinations:options.workingRootDestinations}:{}),...(options?.accessSettingsResolution?{accessSettingsResolution:options.accessSettingsResolution}:{})},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
       if(status>=400){
         const accessSettingsReview=status===409&&typeof body==='object'&&body&&'reviewSha256' in body
           ? {reviewSha256:(body as AgentAccessImportReviewDto).reviewSha256,source:(body as AgentAccessImportReviewDto).source,destination:(body as AgentAccessImportReviewDto).destination}:undefined;

@@ -59,7 +59,7 @@ test('an undeclared existing hardlink cannot grant metadata authority over a reu
  const f=await fixture();try{
   const target=path.join(f.destination,'hook');await writeFile(target,f.data);await link(target,path.join(f.destination,'undeclared-alias'));const before=await lstat(target,{bigint:true}),root=await lstat(f.destination,{bigint:true});
   f.external.worktreeIdentity={device:root.dev.toString(),inode:root.ino.toString()};f.external.files.push({path:'hook',context:'worktree',data:f.data,mode:0o700,mtimeNs:f.ns});
-  await assert.rejects(f.apply(f.configuration()),/aliases outside its declared owned graph/);const after=await lstat(target,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.deepEqual(await readFile(path.join(f.destination,'undeclared-alias')),f.data);
+  await assert.rejects(f.apply(f.configuration()),/aliases outside its complete declared graph/);const after=await lstat(target,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.deepEqual(await readFile(path.join(f.destination,'undeclared-alias')),f.data);
  }finally{await f.dispose();}
 });
 
