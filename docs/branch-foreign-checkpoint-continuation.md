@@ -1491,3 +1491,68 @@ Execution, timing/durability, notifications, round trips, scheduling, rollback,
 native equivalence, atomicity and whole-Bible/full-portability acceptance remain
 unvalidated. No new trigger engine, codec, schema, storage-version, DTO, format,
 size limit or dependency.
+
+
+## One-owner standalone Join bundles through runtime-tree packages
+
+The runtime-tree package route now consumes the same supported manual or proven
+schedule/webhook/filesystem standalone effect-free parallel Node Script/ordinary
+approval-gate family with authentic same-owner Join bundles. This narrow extension
+supersedes earlier blanket tree-route bundle refusals only for a related root family
+containing exactly one owner. No Call ancestor/descendant, branch_call definition,
+Branch target binding, Agent binding, child adoption or cross-owner reference is
+allowed. Eligibility remains root-local; another unrelated root gains no authority.
+Actual Call/multiowner trees and issued/Agent/resource/native/effectful/cross-owner
+bundles retain their exclusions, as do secrets, custody, execution-Chat dependencies
+and unknown/in-flight attempts. Existing state/controls/loops/Script retries retain
+their exact causal rules; Calls and gates gain no retry policy.
+
+The native saver normally prefers the existing standalone Script checkpoint for
+this source graph. The tree consumer verifies those exact committed private bytes
+with the standalone snapshot and selected-cut validator before exposing a transient
+one-owner view to the existing tree review/admission/receipt flow. It does not save
+a replacement tree checkpoint or synthesize invocation metadata. Original selected
+and independent latest cuts still require their own authentic replay. Held native
+recreation of bundle-bearing owners requires canonical latest proof before frontier
+insertion; the installation planner supplies its database handle to shared replay,
+whose foreign source reads remain private facts with no source-SQL fallback. Without
+that proof context the bundle frontier stays evidence-only. Publication rechecks
+proof before inserting. Held re-export unwraps original facts through the existing
+root-scoped generation resolver; unsupported unrelated histories stay evidence-only.
+
+After fresh manual tree-route admission, the existing tree saver/lineage validator
+can encode the same one-owner family and its subsequent suffix. The shared bundle
+validator is structural only: complete owned rows, unique typed identities, exact
+UTF-8 content/hash, the native 8,000,000-byte cap and beyond-inline condition, one
+legitimate closed producing fork and canonical owned references are mandatory.
+Full causal replay separately reconstructs ordered Join labels/partial bytes and
+proves Script inputBundleId/hash, lease/fence/source/authorization/observed process
+exit/settlement, retry timing/failure precedence and state seals. Missing, altered,
+injected, extra, cross-owner or otherwise unproven rows and bytes refuse.
+
+Terminal execution output is remapped only when its entire value is a canonical
+owned bundle reference. Held insertion/readback, held-generation checks, fresh
+admission, retained generation and receipt comparisons use that same typed rule.
+Ordinary output text is preserved byte-for-byte, as are immutable bundle contents,
+authored literals/choices, embedded strings and JSON state. Existing typed frontier
+remapping changes only owned links and dependent hashes. Receipts verify exact
+immutable prefix bundle owner/fork/content/hash while allowing genuine suffix
+bundles. Current Script claim resolves the copied native owned bytes normally.
+
+Current matching definition/configuration/directories, human confirmation, policy,
+permissions, budget/readiness/capacity and fresh manual root acceptance remain
+required. Automatic activated-occurrence/payload/input/hash/snapshot/accepted/started
+proof stays historical currentAuthority:false data; no timer, scheduler grant,
+occurrence regeneration, trigger replay or source redispatch is inherited. Existing
+held/admitted/re-exported/local-rewind lineage remains bounded and replays original
+selected/latest proof plus fresh acceptance and mapped prefix. Exact sync/async/
+default saver bytes/hash/invocation and authentic closed EXIT/process-group/pipe
+drain evidence remain required. Terminal/latest-only observations are evidence and
+never become executable selected cuts; missing closure evidence is not fabricated.
+
+Source implementation only. No tests or preparation, builds, typechecks, Node/parser,
+native/runtime/browser/provider/live database execution or executed reproduction.
+Execution, timing/durability, notifications, round trips, scheduling, rollback,
+native equivalence, atomicity and whole-Bible/full-portability acceptance remain
+unvalidated. No new execution engine, codec, module, schema/storage-version, DTO,
+format, size cap or dependency.

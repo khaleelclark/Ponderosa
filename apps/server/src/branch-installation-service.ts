@@ -412,7 +412,7 @@ export class BranchInstallationService {
     if(n.chatRefs.length&&!destination.directories.workspace)throw new Error('Choose each Branch Chat working directory');
     for(const c of pkg.chats.filter(c=>n.chatRefs.includes(c.ref)))for(const a of c.agents)this.engine.validateAgent(a.definition,destination.engines??n.engines??{});
    }
-   tree={...(pkg.executionTree?{runtime:planBranchExecutionTree(pkg.executionTree,pkg.definitionTree!)}:{}),reviewSha256:createHash('sha256').update(stableJson({manifestSha256:inventory.sha256,bindings:reviewed})).digest('hex'),bindings:reviewed,branchMap:Object.fromEntries(inventory.nodes.map(n=>[n.sourceBranchId,randomUUID()])),chatOwners:Object.fromEntries(inventory.nodes.flatMap(n=>n.chatRefs.map(ref=>[ref,n.sourceBranchId])))};
+   tree={...(pkg.executionTree?{runtime:planBranchExecutionTree(pkg.executionTree,pkg.definitionTree!,this.store.sqlite)}:{}),reviewSha256:createHash('sha256').update(stableJson({manifestSha256:inventory.sha256,bindings:reviewed})).digest('hex'),bindings:reviewed,branchMap:Object.fromEntries(inventory.nodes.map(n=>[n.sourceBranchId,randomUUID()])),chatOwners:Object.fromEntries(inventory.nodes.flatMap(n=>n.chatRefs.map(ref=>[ref,n.sourceBranchId])))};
    bindings=reviewed[inventory.rootSourceBranchId]!;
   }else if(treeBindings!==undefined)throw new Error('Destination tree bindings require a tree manifest');
   if(pkg.runtimeData&&branchId)throw new Error('Runtime data requires a NEW workflow installation; existing owners cannot be overwritten');

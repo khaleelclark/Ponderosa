@@ -7,7 +7,7 @@ import {retainedResourceCapture} from './branch-resource-capture.js';
 import {hostRequestPayload,coordinationLineageSupported} from './branch-host-provenance.js';
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import {branchContinuationIds} from './branch-continuation-remap.js';
-import {hasParallelControls,portableScriptBundlesSupported,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
+import {hasParallelControls,portableScriptBundlesSupported,standaloneBundleTreeOwnerSupported,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
@@ -295,7 +295,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
-    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||!portableScriptBundlesSupported(selected,definition)||foreign.tree&&selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
+    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||!portableScriptBundlesSupported(selected,definition)||foreign.tree&&selected.bundles!.length&&(!context||context.parent||Object.keys(context.children).length||!standaloneBundleTreeOwnerSupported(selected,definition,JSON.parse(foreign.runtimeOwner!.facts.find(f=>f.kind==='bindings')!.json)))||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(workflowGateContext(context)||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');

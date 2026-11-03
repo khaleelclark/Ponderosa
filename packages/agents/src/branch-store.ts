@@ -22,7 +22,7 @@ import {insertBranchFrontier} from './branch-frontier-storage.js';
 import {restoredRequestUpdatePayload,validateHistoricalRequest} from './coordination-v3-cut-restoration-authority.js';
 import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} from './branch-host-adoption.js';
-import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
+import {branchContinuationIds,remapBranchFrontier,remapBranchOutput} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
 import {manualSerialTreeDefinitionSupported,automaticSerialTreeDefinitionSupported,scriptTreeRetryDefinitionSupported,resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptSnapshotSupported,scriptLatestSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
@@ -732,7 +732,7 @@ export class BranchStore {
       const e=o.selected.execution[0],choice=review.tree!.owners.find(p=>p.sourceExecutionId===o.executionId)!,parent=e.parent_execution_id?ids[e.parent_execution_id]:null,attempt=e.parent_attempt_id?ids[e.parent_attempt_id]:null;
       const next=this.acceptInput(choice.branchId,attempt?`call:${attempt}`:`foreign-continuation:${importedId}:${payloadHash(input.commandKey)}`,e.input_text,attempt?payloadHash({parentAttempt:attempt,input:e.input_text}):payloadHash({input:branchText(e.input_text),source:'manual'}),attempt?{source:'branch_call',parentExecutionId:parent,parentAttemptId:attempt}:{source:'foreign_tree_continuation',importedExecutionId:importedId,reviewSha256:review.reviewSha256,commandKey:input.commandKey},now,attempt?'call':'manual');
       ids[o.executionId]=next.id;
-      this.run('UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,traversals=?,loop_iterations=?,recovery_traversals=?,output_text=? WHERE id=?',parent,attempt,e.call_depth,e.depth_ceiling,e.traversals,e.loop_iterations,e.recovery_traversals,e.output_text,next.id);
+      this.run('UPDATE branch_executions SET parent_execution_id=?,parent_attempt_id=?,call_depth=?,depth_ceiling=?,traversals=?,loop_iterations=?,recovery_traversals=?,output_text=? WHERE id=?',parent,attempt,e.call_depth,e.depth_ceiling,e.traversals,e.loop_iterations,e.recovery_traversals,remapBranchOutput(o.selected,ids,o.executionId,next.id),next.id);
       const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,ids[id]!])),o.executionId,next.id);
       insertBranchFrontier(this.sqlite,next.id,restored,now);
       for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,next.id,g.prompt_text,g.purpose,now,now);
@@ -761,7 +761,7 @@ export class BranchStore {
       const accepted=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='accepted' AND kind='trigger_accepted'",next.id),prefix=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='foreign-tree-prefix' AND kind='foreign_tree_selected_prefix'",next.id),started=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='workflow-started' AND kind='workflow_started'",next.id);
       if(accepted?.evidence_json!==stableJson({versionId:next.version_id,bindingRevisionId:next.binding_revision_id,inputHash:next.input_hash})||prefix?.evidence_json!==stableJson({importedExecutionId:receipt.importedExecutionId,sourceExecutionId:o.executionId,reviewSha256})||started?.evidence_json!==stableJson({admission:mapped.admission}))throw Error('Foreign tree canonical acceptance/prefix/start differs');
       if(parent&&this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='child_admitted'",parent,`call:${attempt}`)?.evidence_json!==stableJson({attemptId:attempt,childExecutionId:next.id,definitionId:next.version_id}))throw Error('Foreign tree genuine child admission differs');
-      if(['completed','failed'].includes(e.state)&&(next.state!==e.state||next.output_text!==e.output_text))throw Error('Foreign tree terminal prefix differs');
+      if(['completed','failed'].includes(e.state)&&(next.state!==e.state||next.output_text!==remapBranchOutput(o.selected,receipt.idMap,o.executionId,next.id)))throw Error('Foreign tree terminal prefix differs');
       const restored=remapBranchFrontier(o.selected,Object.fromEntries(branchContinuationIds(o.selected).map(id=>[id,receipt.idMap[id]!])),o.executionId,next.id);
       this.verifyForeignPrefix(next,restored,choice?.sharedState);
       canceledGate ||= restored.gates!.some(g=>g.state==='waiting'&&this.row('SELECT state FROM branch_gates WHERE id=?',g.id)?.state==='canceled');

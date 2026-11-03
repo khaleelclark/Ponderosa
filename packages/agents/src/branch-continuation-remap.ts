@@ -5,6 +5,14 @@ type Row=Record<string,any>;
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const identityTables=['paths','steps','attempts','sealedResults','gates','forks','items','bundles'] as const;
 
+/** Execution output is a typed reference only when the entire value names an owned bundle. */
+export function remapBranchOutput(selected:Selected,ids:Record<string,string>,source:string,target:string):string|null {
+ const value=selected.execution![0]!.output_text,match=typeof value==='string'?/^branch-result-bundle:([0-9a-f-]{36}):([0-9a-f-]{36})$/u.exec(value):null;
+ if(!match)return value;
+ if(match[1]!==source||!selected.bundles!.some(b=>b.id===match[2]&&b.execution_id===source)||!ids[match[2]!])throw Error('Execution output bundle escapes its owner');
+ return `branch-result-bundle:${target}:${ids[match[2]!]}`;
+}
+
 /** A Map and its Fork intentionally share one identity; no other aliases are valid. */
 export function branchContinuationIds(selected:Selected):string[] {
  const ids=identityTables.flatMap(key=>selected[key]!.map(row=>row.id));

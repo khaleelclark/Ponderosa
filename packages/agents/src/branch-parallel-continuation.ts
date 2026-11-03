@@ -48,6 +48,16 @@ export function portableScriptBundlesSupported(s:Selected,d:BranchDefinition):bo
   return true;
  }catch{return false;}
 }
+/** One related owner must be proved by the caller; this is only its standalone codec boundary. */
+export function standaloneBundleTreeOwnerSupported(s:Selected,d:BranchDefinition,bindings:Row):boolean {
+ const e=s.execution?.[0];
+ return !!e&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth&&['manual','automatic'].includes(e.admission_source)
+  &&(d.trigger.kind==='manual'||automaticScriptDefinitionSupported(d,false,false,true))&&parallelDefinitionSupported(d)&&d.steps.every(step=>step.kind==='script'||step.kind==='human_gate')
+  &&!Object.keys(bindings.branches??{}).length&&!Object.keys(bindings.agents??{}).length
+  &&!s.resources!.length&&!s.actions!.length&&!s.gates!.some(g=>g.purpose!=='approval')
+  &&!s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))
+  &&portableScriptBundlesSupported(s,d);
+}
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{
   branchSharedState(d,s.steps!,s.sealedResults!);
