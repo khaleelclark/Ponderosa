@@ -339,6 +339,7 @@ function validatePackRetention(records:ReviewedGitUserData['packRetentionReview'
     for(let i=0;i<count;i++)if(record.objects[i]!.mtime!==(mtimes?mtimes.readUInt32BE(12+i*4):null))fail();
     const ordered=[...entries].sort((a,b)=>a.offset-b.offset),byOffset=new Map(entries.map(entry=>[entry.offset,entry])),byOid=new Map(entries.map(entry=>[entry.oid,entry]));
     if(count===0&&pack.length!==12+width||count>0&&ordered[0]!.offset!==12)fail();
+    const packed=new Map<typeof entries[number],{base:typeof entries[number]|undefined;cursor:number;end:number;size:number;type:number}>();
     for(let i=0;i<count;i++){
       const entry=ordered[i]!,end=i+1<count?ordered[i+1]!.offset:pack.length-width;
       if(entry.offset<12||entry.offset>=end||end>pack.length-width)fail();
@@ -352,7 +353,21 @@ function validatePackRetention(records:ReviewedGitUserData['packRetentionReview'
       if(type===6){let b=byte(),distance=b&127;parts=0;while(b&128){if(++parts>4)fail();b=byte();distance=(distance+1)*128+(b&127);}base=byOffset.get(entry.offset-distance);}
       else if(type===7){if(cursor+width>end)fail();base=byOid.get(pack.subarray(cursor,cursor+width).toString('hex'));cursor+=width;}
       else if(![1,2,3,4].includes(type))fail();
-      if((type===6||type===7)&&(!base||base.offset>=entry.offset))fail();
+      if((type===6||type===7)&&(!base||base===entry||type===6&&base.offset>=entry.offset))fail();
+      packed.set(entry,{base,cursor,end,size,type});
+    }
+    // Schedule each complete indexed entry once, with its same-pack base first.
+    const state=new Map<typeof entries[number],1|2>(),verificationOrder:typeof entries=[];
+    for(const entry of ordered){
+      const chain:typeof entries=[];let next:typeof entry|undefined=entry;
+      while(next&&state.get(next)!==2){
+        if(state.get(next)===1)fail();
+        state.set(next,1);chain.push(next);next=packed.get(next)!.base;
+      }
+      while(chain.length){const ready=chain.pop()!;state.set(ready,2);verificationOrder.push(ready);}
+    }
+    for(const entry of verificationOrder){
+      const {base,cursor,end,size,type}=packed.get(entry)!;
       const inflated=inflateSync(pack.subarray(cursor,end),{maxOutputLength:limit,info:true}) as unknown as {buffer:Buffer;engine:{bytesWritten:number}};
       if(inflated.engine.bytesWritten!==end-cursor||inflated.buffer.length!==size)fail();
       let data=inflated.buffer,objectType=['','commit','tree','blob','tag'][type];

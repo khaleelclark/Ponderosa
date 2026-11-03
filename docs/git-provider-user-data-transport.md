@@ -289,9 +289,12 @@ unreachable objects. No missing or previously pruned object is invented.
 Supported [MTME v1](https://git-scm.com/docs/pack-format#_pack_mtimes_files_have_the_format)
 requires exact magic/version/declared hash ID, network-order length/count, index
 order, corresponding pack trailer and self-checksum. The original bytes and
-canonical per-object timestamps must agree. Full non-delta entries and OFS/REF
-deltas to earlier entries in the same complete pack are supported. REF deltas to
-forward, external or missing bases, v1/large-offset index forms and unsupported
+canonical per-object timestamps must agree. Full non-delta entries, backward OFS
+deltas and REF deltas to earlier or later entries in the same complete pack are
+supported, including mixed delta chains. An iterative dependency walk checks each
+complete indexed base before its dependent entry, without repeated expansion;
+self-references, cycles and external or missing bases refuse even when a matching
+canonical object exists outside the pack. V1/large-offset index forms and unsupported
 MTME forms refuse; this is not universal pack/cruft support. Delta instructions
 validate original/target sizes, copy/insert ranges, reserved opcodes and complete
 output. No external base lookup or native index command is used for this check.
