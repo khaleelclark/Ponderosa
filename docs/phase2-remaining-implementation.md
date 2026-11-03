@@ -1,22 +1,49 @@
 # Phase 2 remaining implementation inventory
 
-Source snapshot: native task controls successor integrated onto `82b6e8385`, integration worktree.
-Includes bounded called-owner-tree UI, correlated Claude native command recovery,
-original host-effect reconciliation and bounded in-root link/preserve-unknown transport;
-M1, M5 and M6 are resolved in source, with runtime qualification deferred.
+Current source reconciliation: `07579e0edbfa7dd9e865fb4447f95a9168716384`,
+2026-11-03. This includes reviewed Git/index/sparse/settings transport, selected
+linked-worktree support, standalone continuation UI and original-receipt recovery,
+Output automatic controls with corrected docs, and the paired auth selector-removal
+and continuity changes with retained-native-mode guards. The standalone foreign
+Script consumer now also preserves declared JSON state/reducers and serial
+condition/route controls. Explicitly selected working folders also preserve
+bounded passive in-root symlink cycles under the declared transport policy.
+These are implemented
+source, not new assignments or whole-Bible acceptance. Historical source/evidence
+entries below retain their original attribution.
 Basis: full `/tmp/ponderosa-phase2-upgrade-c8ace/published/bible-2.md`, all 32
 commandments, verification/Phase 2 instructions and all Build-list text. Source/document reconciliation; current guides and coverage are maintained together.
-No owner worktrees changed, no workers created, no execution or preparation.
+This reconciliation changes only this inventory in a separately owned source tree;
+it does not execute or prepare tests or change another owner's worktree.
 
-**No: the earlier four categories were not four final tasks.** This inventory
-accounts for all 35 top-level requirements (32 commandments + 3 Build features),
-with 24 explicit Build behavior rows below. It identifies **8 tracked source
-work/disposition entries: 2 tracked M items (external M2, partially delivered M3) and 6
-U entries (U1 native contracts, classified U2, partial U3, recorded U4, U5 backend/UI disposition delivered with external evidence limits, minimal U6 state delivered)**, plus **1 separate deferred-fixture source repair**.
-These are finite inventory counts, not acceptance percentages or a promise that
-future verification cannot discover another defect. Unresolved does not mean code
+This inventory accounts for all 35 top-level requirements (32 commandments + 3
+Build features), with 24 explicit Build behavior rows below. M2/M3 and U1–U6 are
+work/disposition categories, not a final task count. Deferred fixture notes are
+separate from missing product implementation. Unresolved does not mean code
 must be invented: disposition may establish an existing implementation or a
 justified limit. No whole-commandment True verdict follows from source presence.
+
+## Current implementation batches
+
+| Owner | Confirmed source gap and bounded next implementation | Status / evidence |
+| --- | --- | --- |
+| Delivery | First-generation standalone foreign Script checkpoint continuation with declared JSON state/reducers and condition/route controls, retaining serial manual sync and effect-free limits. | Implemented and integrated at `b7c3f85a`; all five changed files and the complete integration tree match independent-Quality-cleared writer release `cc179c914`. Actual state/control continuation and rendered behavior remain unqualified. |
+| Portability | Passive symbolic-link cycles wholly within an explicitly selected working folder, preserving original link spellings without dereference. | Implemented and integrated at `07579e0e`; all ten changed files and the complete delta match independent-Quality-cleared writer release `c39d09871`. Explicit folder policy reaches existing callers; old or absent refusal policy stays enforced. Escaping, credential/native and unsupported topology remain refused. Runtime/platform timestamps and worst-case validation cost remain unmeasured. |
+| Portability data specialist; Delivery recovery specialist | Explicit whole-folder re-export of previously imported inactive Git/provider review originals. | The original handoff ended without a canonical result; Delivery's recovery activation then failed before execution because retained context requires recovery. Root assigned the existing Delivery runtime specialist read-only reconciliation and the existing Portability data specialist prerequisite recovery followed by implementation in a separately confirmed owned tree. They must establish existing work before any new write. No source release or integration is claimed. `inventoryWorkingFolder` still refuses `.ponderosa-portable-review`; existing package-history re-export does not implement this working-folder consumer. New source builds on the integrated cyclic-link contract. |
+| Quality | Independent exact-frozen-source review, including callers, evidence, docs and failure retention. | Existing Quality specialists provide tracked source review alongside implementation. Source clearance does not imply execution acceptance. |
+
+Patrick's current implementation-first direction defers broad testing and test
+preparation until requested implementation is complete. Earlier narrow recording
+and portability execution permissions do not extend to these batches. Missing
+native no-ID result recovery and automatic-goal admission contracts remain honest
+external limits; they do not block independent feasible implementation or authorize
+replay of uncertain work.
+
+The failed lead activations remain recorded; their unavailable contexts are not
+requeued. Existing specialists keep their reporting lines. Delivery retains
+integration ownership; no replacement integration writer is authorized by these
+recovery assignments. Documentation source clearance also remains separate from
+writer release and composition.
 
 ## Single remaining implementation/disposition checklist
 
@@ -29,7 +56,7 @@ Agents; Integration owns assembled docs. Cliff resolves scope across owners.
 | M3 — host source delivered; external evidence unresolved | #12 work survives restart; #13 unfinished work retained; #17 reliability | Exact original outcome_unknown Run/fence and drained custody now support host-receipt GET inventory, hash/fence/key-bound POST reconciliation and exact-key GET receipt recovery. Communication, Request version, coordinate, artifact import and queued-information commits are identified; telemetry remains unknown. | Reliability + Runtime | [Host reconciliation](original-source-effect-reconciliation.md) is implemented in source. Unreceipted native/external effects still require exact external evidence. No scheduler/source Run/Request mutation, original replay or source settlement; sourceWork remains held_unknown. |
 | U1 — eight named implementation/disposition contracts | #4 **every** native harness capability | G1–G8 below identify native surfaces requiring implementation or an explicit source disposition; they are not eight proven missing features. G1 exact human native approval callbacks, G4 correlated Claude controls with Agent Settings, and G7 console/recording tools/API/SDK are delivered in bounded source; native tools/discovery and correlated compact paths do not establish universal parity. | Assigned owners below; G5 bounded backend/UI source delivered | Pinned native-surface mapping and exact contracts; compatibility execution remains separate. |
 | U2 — classified; unjustified cap removed | #5/#6/#32 limits | Removed maxAttempts<=33 restriction unrelated to retained proof size; original validated policies through100 preserve consumed attempts and remaining budget. Generation32/group32/byte/parser/scheduler bounds retained for documented stability; human budgets and access/proof boundaries distinguished. | Features source disposition | Exact bounds/purposes in branch-finite-contract-dispositions.md; not a universal core-limit audit or approved exception. |
-| U3 — explicit field/topology disposition; concrete limits remain | #8 everything needed to recreate Agent/org/workflow, excluding known secrets | [Complete current package-field/native/file inventory](portability-recreation-inventory.md): in-root relative/dangling symlinks and complete hardlink sets now travel through the existing new/live-root importer and Shared composer. Full installation now carries bounded standalone runtime/private checkpoint/command data and execution-owned Chats into fresh held owners; effect-free shared-codec frontiers receive fresh native IDs. Supported called/cross-Branch held DATA trees now have source export/composer/readback/re-export through branch-execution-tree-publication.md; unsupported parent/automatic/bundle families and runtime qualification remain concrete #8 gaps. Tree review/readback UI and first-generation standalone Script continuation now have source-only successors below; continuation UI remains absent. Git user history/refs/index, nonsecret native-directory configuration, cross-root/absolute/cyclic links and required special-node/extended metadata remain explicitly unsupported, not approved exclusions. | Reliability + Features; Cliff scope | Implement required Git/nonsecret native data formats and exact filesystem semantics where needed; no raw foreign ownership adoption or invented cross-Chat relocation. Fresh-machine/platform qualification unrun. |
+| U3 — explicit field/topology disposition; concrete limits remain | #8 everything needed to recreate Agent/org/workflow, excluding known secrets | [Current package-field/native/file inventory](portability-recreation-inventory.md) records implemented in-root relative/dangling links, complete hardlink sets, bounded full/split/v4/sparse Git logical state, selected linked-worktree Git and nonsecret project settings as inactive review data. Full installation carries bounded standalone runtime/private checkpoint/command data and execution-owned Chats into fresh held owners; supported called/cross-Branch held DATA trees have export/composer/readback/re-export. Tree review/readback and first-generation standalone Script continuation UI with original-receipt recovery are present. The bounded standalone foreign Script consumer now preserves declared JSON state/reducers and serial condition/route controls. Passive in-root cycles are implemented under the explicit folder policy; whole-folder re-export of imported inactive Git/provider review originals remains the current missing-code batch above. Unsupported tree/automatic/issued/resource/bundle continuation families, Git/layout/config/re-export cases and required absolute/cross-root/special-node/extended filesystem semantics remain concrete gaps; see the current transport docs rather than historical blanket Git/settings exclusions. | Portability + Delivery; Quality source review | Extend exact supported consumers and data semantics without foreign ownership adoption, invented evidence or unapproved traversal. Source-presence and source review do not establish fresh-machine/platform/runtime equivalence. |
 | U4 — named-capability contract recorded | #8/#32 recreation/checkpoints | Nine-operation matrix distinguishes portable workflow/Agent data, selected proven continuations, current human policy/secrets, missing/unknown evidence, and genuinely unimplemented codec/package combinations. Shared state now survives selected cuts. No mandatory Cartesian product inferred and no erased proof fabricated. | Features disposition; existing Runtime/Reliability dependencies retained | Details and exact composition limits in branch-finite-contract-dispositions.md. Bounded full installation exports exact execution/private checkpoint history as held data; runnable foreign-cut adoption, unsupported tree families and external-proof expansion remain explicit U3/#8 boundaries, not a migration claim. |
 | U5 — backend and UI preserve-unknown disposition implemented | #12 no silent data loss; #15 files; #30 memory | New operator `POST /api/local-memory/mutation-holds/:id/preserve-unknown` binds the original inventory hash, retains an immutable decision and untouched hold; works for legacy missing-effect metadata and known unavailable backends. Outcome stays unknown and capture stays held. [Exact receipt/field dispositions](portability-recreation-inventory.md). Existing evidence-bearing backend snapshot reconciliation stays separate. | Reliability + Runtime + UI source delivered | Distinct Preserve unknown dialog consumes preserveUnknownReviewSha256, persists the original hold/hash/key/reason before POST, separately confirms unchanged repeats and recovers exact disposition by GET without automatic replay. Existing Reconcile eligibility stays separate. Original-effect completion without exact backend/native receipt remains unavailable, never inferred from stable reads/exit. Independent shell writers and erased original evidence stay explicit unknown; no replay or cascade/disk cleanup. |
 | U6 — minimal shared/reducer state implemented | #32 pinned state | Pinned1.0.5/1.0.8 source disproves immutable-input/results equivalence. Added declared JSON channels/partial writes, sum/append/replace reducers, exact revisioned immutable projection, Script/Agent dispatch snapshots, public read/SDK, shared serial/parallel checkpoint replay and composed custom Script aggregate. | Features source complete for documented minimal contract | Settlement ordering differs from supersteps; message-ID/manual-edit/cross-Call state semantics and finer API parity remain unclaimed. See branch-finite-contract-dispositions.md; fixtures unexecuted. |
@@ -90,7 +117,7 @@ criteria, a complete audit may still find concrete missing code.
 | 14 | S | Explicit provider errors/unconfirmed recovery and shared UI errors; induced failure/clarity trials deferred. |
 | 15 | S + U5 | `empty-tombstone.ts` unlinks marker and nonrecursive rmdir; `portable-working-files.ts` retains displaced/import bytes. Race/folder equivalence trials deferred. |
 | 16 | S | `branch-trigger-service.ts`, `branch-trigger-store.ts`; occurrence keys/catch-up source present, clock/timing trials deferred. |
-| 17 | S + F1 below | `state-admission.ts`, `db.ts`, additive0035–0041 registered once; existing deferred fixture source mismatch is concrete, repeated suites/upgrades unrun. |
+| 17 | S + fixture notes below | `state-admission.ts`, `db.ts`, additive0035–0041 registered once; fixture work and repeated suites/upgrades remain separate from current implementation batches. |
 | 18 | S | `notification-routing.ts`, `notificationActiveView.tsx`, Assistant report cursor; burst/default-settings trials deferred. |
 | 19 | S | Canonical audit receipts, `group-journal-audit.ts`, activity/UI projections; random action trails/redaction/log judging deferred. |
 | 20 | S | Same origin/domain authority disposition as #7; no new token-gate deletion justified by inspected source. |
@@ -120,7 +147,7 @@ assumed from the absence of a dedicated implementation for each shared behavior.
 | O4 | Attachments | S: shared chat upload/attachment path inherited by standalone BranchChats; reload/media acceptance unverified. |
 | O5 | Voice messages | S: shared `VoiceMessageRecorder.tsx`, audio attachment admission; microphone/playback unverified. |
 | O6 | Phone calls/iOS phone feel | S: shared `speech/VoiceConversation.tsx` and voice stream; latency/polish unverified. |
-| O7 | Simple automatic on/off and frequency settings reach workflow | S: Output Settings schedule PUT with expected version/settings revision; event schedules explicitly redirect to More options. |
+| O7 | Simple automatic on/off and frequency settings reach workflow | S: Output Settings schedule PUT with expected version/settings revision; automatic on/off also supports cron, one-time, filesystem and webhook triggers. The interval editor applies to manual/interval workflows; other trigger configuration uses More options. |
 | O8 | Model setting reaches bound Agent | S: Output Settings `realApi.updateAgent(activeEngine,model)`; identity/history not replaced by this control. |
 | O9 | More options opens owning workflow | S: explicit Branch workflow URL in Output Settings. |
 | O10 | iOS Messages quality, no paragraphs, streaming | S plus verification: same shared shell/streams and concise-copy successor; no visual or stream acceptance claimed. |
@@ -147,6 +174,14 @@ assumed from the absence of a dedicated implementation for each shared behavior.
 snapshot scope now directly queried by `group-journal-audit.ts`. Reconcile mocks
 with the stronger owner-scope contract; do not weaken production validation.
 This is not an observed failing test: nothing ran. It is not a new user feature.
+
+This F1 diagnosis belongs to the earlier source snapshot; later evidence entries
+must be reconciled against exact fixture source before treating it as a new repair.
+**F2 — retained-auth fixture callback:** the auth handoff identifies an existing
+native-control-routes fixture that omits the now-required
+`assertRetainedAuthentication` callback. Fixture preparation remains deferred;
+unchanged success paths cannot qualify the guard. Neither fixture note blocks the
+independent product implementation assigned above.
 
 All Bible execution gates remain deferred: repeated core/upgrade/crash trials;
 provider capabilities and subscription/API mode trials; export/fresh import data
