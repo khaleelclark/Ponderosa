@@ -78,7 +78,7 @@ export interface ReviewedGitUserData {
   configurationOriginalReview:Array<{path:'config'|'config.worktree';source:'common_repository'|'selected_worktree';dataBase64:string|null;removedFields:boolean}>;
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true;source?:'config.worktree'}>;
   /** Recursively selected native modules; paths are inert original provenance. */
-  modules?:Array<{name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string;configurationSha256:string;initialized:boolean;embedded?:true};
+  modules?:Array<{name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string|null;configurationSha256:string;initialized:boolean;embedded?:true;dormantAssociation?:{gitmodulesOid:string;gitlinkOid:string}};
     worktreeRelativePath:string|null;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}>;
   exclusions:string[];
 }

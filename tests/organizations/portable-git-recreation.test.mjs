@@ -71,11 +71,26 @@ test('native recreation retains initialized and deinitialized module repositorie
     assert.equal(await readFile(path.join(destination,'module','.git'),'utf8'),'gitdir: ../.git/modules/module\n');
     assert.equal(await git(path.join(destination,'module'),'status','--porcelain=v1'),'M file.txt');
     await git(source,'submodule','deinit','-f','module');
-    const inactive=await exportReviewedUserData(source,{git:true,harness:false});assert.equal(inactive.git.modules[0].source.initialized,false);
+    const inactive=await exportReviewedUserData(source,{git:true,harness:false});assert.equal(inactive.git.modules[0].source.initialized,false);assert.equal(inactive.git.modules[0].source.coreWorktree,null);
+    const direct=path.join(root,'direct-without-module-plan');await mkdir(direct);
+    const inactiveBytes=Buffer.from(JSON.stringify(inactive)),inactiveHash=createHash('sha256').update(inactiveBytes).digest('hex');
+    await assert.rejects(createReviewedNativeGit(direct,inactiveBytes,inactiveHash,activation),/complete exact reviewed recreation plan/);
+    await assert.rejects(lstat(path.join(direct,'.git')),{code:'ENOENT'});
     const recovery=path.join(root,'inactive');await mkdir(recovery);await mkdir(path.join(recovery,'module'));await writeFile(path.join(recovery,'file.txt'),'committed\n');await writeFile(path.join(recovery,'.gitmodules'),gitmodules);
+    const missing=packageFor(inactive,{'file.txt':'committed\n'}),changed=packageFor(inactive,{'file.txt':'committed\n','.gitmodules':gitmodules+'\n# changed\n'});
+    assert.throws(()=>planReviewedRecoveryRoots(missing,{work:recovery},activation),/exact selected \.gitmodules/);
+    assert.throws(()=>planReviewedRecoveryRoots(changed,{work:recovery},activation),/exact selected \.gitmodules/);
+    const divergent={...activation,gitPathMappings:[{source:inactive.git.modules[0].source.worktreePath,destination:path.join(recovery,'different')}]};
+    assert.throws(()=>planReviewedRecoveryRoots(packageFor(inactive,{'file.txt':'committed\n','.gitmodules':gitmodules}),{work:recovery},divergent),/destination must follow|mapping/i);
+    await assert.rejects(lstat(path.join(recovery,'.git')),{code:'ENOENT'});
     await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(packageFor(inactive,{'file.txt':'committed\n','.gitmodules':gitmodules}),{work:recovery},activation),activation,()=>{});
     await assert.rejects(lstat(path.join(recovery,'module','.git')),{code:'ENOENT'});
+    assert.doesNotMatch(await readFile(path.join(recovery,'.git','modules','module','config'),'utf8'),/worktree\s*=/i,'Dormant module native config must omit core.worktree');
     assert.equal(await git(recovery,'--git-dir='+path.join(recovery,'.git','modules','module'),'rev-parse','HEAD'),childHead);
+    const roundtrip=await exportReviewedUserData(recovery,{git:true,harness:false});
+    assert.equal(roundtrip.git.modules[0].source.initialized,false);
+    assert.equal(roundtrip.git.modules[0].source.coreWorktree,null);
+    assert.equal(roundtrip.git.modules[0].source.dormantAssociation.gitlinkOid,childHead);
   }finally{await rm(root,{recursive:true,force:true});}
 });
 

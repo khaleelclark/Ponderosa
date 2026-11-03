@@ -10,7 +10,7 @@ import {assertAgentPackageMemoryAvailable,decodePortableArtifactData} from './ag
 import {importWorkingFiles,importWorkingLinks,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,validateWorkingRootNesting,type WorkingRootIdentity} from './portable-working-files.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
 import {branchWorkingDataHash} from './branch-working-data.js';
-import {REVIEWED_USER_DATA_PATH} from './portable-reviewed-user-data.js';
+import {REVIEWED_USER_DATA_PATH,verifyDormantModuleDeclarations} from './portable-reviewed-user-data.js';
 
 type NativeReceipt=NonNullable<ImportAgentPackageResponse['reviewedUserDataApplications']>[number];
 type MetadataReceipt=NonNullable<ImportAgentPackageResponse['reviewedMetadataApplications']>[number];
@@ -168,7 +168,7 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
  for(const binding of pkg.gitStorageBindings??[])edges.push([binding.worktreeRootRef,binding.storageRootRef]);
  for(const boundary of pkg.workingRootNesting??[])edges.push([boundary.parentRootRef,boundary.childRootRef]);
  for(const [left,right] of edges)if(byRef.get(left)!.live!==byRef.get(right)!.live)throw Error('Linked, nested and Git storage folders must activate together to preserve the complete physical graph');
- if(native)planReviewedRecoveryRoots(pkg,destinations,native);
+ if(native)for(const task of planReviewedRecoveryRoots(pkg,destinations,native))if(task.activation.git&&task.value.git)await verifyDormantModuleDeclarations(task.value.git);
  const ordered=[...roots].sort((a,b)=>a.destination.split(path.sep).length-b.destination.split(path.sep).length);
  const receipt:BranchWorkingDataApplication={schema:'ponderosa.branch-working-application.v1',sourceSha256:data.sha256,inputSha256,state:'applying',phase:'reserved',
   roots:roots.map(root=>({ref:root.ref,recoveryPath:root.destination,agentIds:root.members.map(member=>agents.get(member.ref)!.id),state:'planned'})),

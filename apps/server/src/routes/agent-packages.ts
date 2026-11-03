@@ -22,7 +22,7 @@ export type {AgentPackageCompositionInput,AgentPackageComposition} from '../comp
 import {withoutPortableSecrets,redactPortableDiagnostic} from '../portable-secrets.js';
 import {REVIEWED_USER_DATA_PATH,validateReviewedUserDataActivation,validateReviewedUserDataSelection,validateReviewedMetadataActivation,requireReviewedMetadataApplication,validateGitStorageSelections,createGitExportCapture,verifyGitExportAssociations,validatePortableGitStorageBindings,type GitExportCapture,type SelectedGitBinding} from '../portable-reviewed-user-data.js';
 import {filesystemMetadataProvenance,planFilesystemMetadata} from '../portable-filesystem-metadata.js';
-import {parseReviewedUserData} from '../portable-reviewed-user-data.js';
+import {parseReviewedUserData,verifyDormantModuleDeclarations} from '../portable-reviewed-user-data.js';
 import {validateWorkingRootNesting,exportWorkingFiles,importWorkingFiles,importWorkingLinks,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,type WorkingFolderInventory,type WorkingRootIdentity} from '../portable-working-files.js';
 import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
 import {CapabilityPolicyStore} from '@ponderosa/agents';
@@ -247,7 +247,7 @@ export function registerAgentPackageRoutes(
     agentMessages,
     createOperationalNotification,
   } = context;
-  const validateNativeSelection=(pkg:AgentPortablePackageDto,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>,projectId:string)=>{
+  const validateNativeSelection=async(pkg:AgentPortablePackageDto,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>,projectId:string)=>{
     if(selection.reviewedMetadataActivation!==undefined){
       const metadataActivation=selection.reviewedMetadataActivation;requireReviewedMetadataApplication(metadataActivation);
       if(pkg.mode!=='full')throw new Error('Metadata restoration requires a full package');
@@ -268,7 +268,7 @@ export function registerAgentPackageRoutes(
     if(!selection.workingFilesActivation){
       const owner=pkg.agents.find(node=>node.workingFolder||node.workingFiles?.length);
       const destinations=selection.workingRootDestinations??(selection.workingFilesDestination&&owner?{[owner.workingRootRef??owner.ref]:selection.workingFilesDestination}:{});
-      planReviewedRecoveryRoots(pkg,destinations,activation);return;
+      for(const task of planReviewedRecoveryRoots(pkg,destinations,activation))if(task.activation.git&&task.value.git)await verifyDormantModuleDeclarations(task.value.git);return;
     }
     const project=store.getProject(projectId),owners=pkg.agents.filter(node=>node.workingFolder||node.workingFiles?.length);
     if(pkg.mode!=='full'||!project||!owners.length)throw new Error('Native activation requires selected full-package working roots');
@@ -277,14 +277,14 @@ export function registerAgentPackageRoutes(
     const first=owners[0]!,destinations=selection.workingRootDestinations??(selection.workingFilesDestination?{[first.workingRootRef??first.ref]:selection.workingFilesDestination}:{});
     // Review against the user's selected recovery map. At application the same
     // included paths relocate to server-issued live roots, never arbitrary hosts.
-    planReviewedRecoveryRoots(pkg,destinations,activation);
+    for(const task of planReviewedRecoveryRoots(pkg,destinations,activation))if(task.activation.git&&task.value.git)await verifyDormantModuleDeclarations(task.value.git);
 
   };
   const reviewAccess = async(pkg:AgentPortablePackageDto,chatId:string,selection:Pick<ImportAgentPackageRequest,'reviewedUserDataActivation'|'reviewedMetadataActivation'|'workingFilesActivation'|'workingFilesDestination'|'workingRootDestinations'|'workingCopyMode'>={}):Promise<AgentAccessImportReviewDto>=>{
     const portable=validatePortableAgentPackage(pkg).package;
     const chat=store.getConversation(chatId);
     if(!chat||deletingConversationIds.has(chat.id)||deletingProjectIds.has(chat.projectId))throw Object.assign(new Error('Import destination unavailable'),{statusCode:404});
-    if(selection.reviewedUserDataActivation!==undefined||selection.reviewedMetadataActivation!==undefined)validateNativeSelection(portable,selection,chat.projectId);
+    if(selection.reviewedUserDataActivation!==undefined||selection.reviewedMetadataActivation!==undefined)await validateNativeSelection(portable,selection,chat.projectId);
     const destination=new CapabilityPolicyStore(store.sqlite).resolveForChat(chat.id);
     const reviewSha256=await portableImportPayloadHash({package:portable,destination:chat.id,destinationPolicy:destination,...(selection.reviewedUserDataActivation||selection.reviewedMetadataActivation?{nativeApplication:{reviewedMetadataActivation:selection.reviewedMetadataActivation,reviewedUserDataActivation:selection.reviewedUserDataActivation,workingFilesActivation:selection.workingFilesActivation,workingFilesDestination:selection.workingFilesDestination,workingRootDestinations:selection.workingRootDestinations,workingCopyMode:selection.workingCopyMode,projectRoot:store.getProject(chat.projectId)?.hostPath,newManagedDestination:store.isManagedProjectImportDestination(chat.projectId)}}:{})});
     return {reviewSha256,source:portable.agents.map(node=>({ref:node.ref,settings:node.accessSettings})),destination};
@@ -1567,7 +1567,7 @@ export function registerAgentPackageRoutes(
           if(portablePackage.agents.some(node=>node.workingFiles?.length||node.workingFolder)&&!body.workingFilesDestination)throw new Error('Choose a new destination folder for selected working files');
           if(body.workingFilesDestination&&portablePackage.agents.filter(node=>node.workingFiles?.length||node.workingFolder).length!==1)throw new Error('One selected working folder is required for this destination');
         }
-        validateNativeSelection(portablePackage,body,project.id);
+        await validateNativeSelection(portablePackage,body,project.id);
         if(body.workingFilesActivation){
           if(portablePackage.mode!=='full'||!portablePackage.agents.some(node=>node.workingFolder||node.workingFiles?.length))throw new Error('Live activation requires a full package with selected folder originals');
           if(!context.workingCopies)throw new Error('Live working-copy import service is unavailable');

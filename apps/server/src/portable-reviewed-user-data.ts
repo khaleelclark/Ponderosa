@@ -305,9 +305,9 @@ function validateNativeGitSelection(value:ReviewedUserData,mapped=false,allowBar
 }
 
 /** Create directly into an empty NEW owned root, never replace a generated .git. */
-export interface ReviewedGitModuleData {name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string;configurationSha256:string;initialized:boolean;embedded?:true};worktreeRelativePath:string|null;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}
+export interface ReviewedGitModuleData {name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string|null;configurationSha256:string;initialized:boolean;embedded?:true;dormantAssociation?:{gitmodulesOid:string;gitlinkOid:string}};worktreeRelativePath:string|null;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}
 export function reviewedGitModules(value:ReviewedGitUserData):readonly ReviewedGitModuleData[] {return (value as ReviewedGitUserData&{modules?:ReviewedGitModuleData[]}).modules??[];}
-export interface NativeReviewedGitModulePlan {gitDir:string;worktreePath:string;initialized:boolean;value:ReviewedUserData;activation:ReviewedUserDataActivation;configuration:NativeReviewedGitConfiguration;bare?:true;layout?:{commonDir:string;privateDir:string;writeCommon:true}}
+export interface NativeReviewedGitModulePlan {gitDir:string;worktreePath:string;initialized:boolean;value:ReviewedUserData;activation:ReviewedUserDataActivation;configuration:NativeReviewedGitConfiguration;worktreeUnconfigured?:true;bare?:true;layout?:{commonDir:string;privateDir:string;writeCommon:true}}
 export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfiguration>&{nativeMetadataScope?:object;deferNativeMetadata?:boolean;prepareNativeMetadata?:()=>Promise<void>;finalizeNativeMetadata?:()=>Promise<void>;nativeMetadata?:import('./portable-working-files.js').WorkingNativeMetadata;fileProofs?:Map<string,import('./portable-working-files.js').WorkingNativeFileProof>;directoryMetadataProofs?:Map<string,import('./portable-working-files.js').WorkingNativeDirectoryProof>;workingAliases?:ReadonlyArray<{path:string;target:string;rootPath:string;identity:import('./portable-working-files.js').WorkingRootIdentity}>;directoryProofs?:Map<string,{device:string;inode:string}>;includeFiles?:Array<{path:string;data:Buffer;private?:boolean}>;modules?:NativeReviewedGitModulePlan[];external?:{
   /** Original import custody, injected by the caller; never inferred by the planner. */
   worktreeIdentity?:import('./portable-working-files.js').WorkingRootIdentity;
@@ -317,7 +317,7 @@ export type NativeReviewedGitConfiguration=ReturnType<typeof reviewedGitConfigur
   files:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';data:Buffer;mode:number;mtimeNs:string}>;
   links:Array<{path:string;context?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';target:string;targetContext?:'gitdir'|'private'|'worktree'|'owner'|'ownerWorktree';kind:'symlink'|'hardlink';mtimeNs?:string}>;
 }};
-export interface NativeReviewedGitStorage {gitDir:string;worktreePath:string;initialized:boolean;existingRoot?:boolean;bare?:true}
+export interface NativeReviewedGitStorage {gitDir:string;worktreePath:string;initialized:boolean;worktreeUnconfigured?:true;existingRoot?:boolean;bare?:true}
 type SelectedWorktreeReftable={tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
 export function selectedWorktreeReftable(value:ReviewedGitUserData):SelectedWorktreeReftable|undefined {
   return (value.reftableReview as (NonNullable<ReviewedGitUserData['reftableReview']>&{selectedWorktree?:SelectedWorktreeReftable})|null)?.selectedWorktree;
@@ -326,6 +326,7 @@ export async function createReviewedNativeGit(root:string,original:Buffer,sha256
   const source=parseReviewedUserData(original),module=source.associationReview?.length===1&&source.associationReview[0]!.role==='module';
   const value=planReviewedUserDataActivation(original,sha256,activation,module);
   if(!activation.git||!value.git)throw new Error('Explicit native Git selection is required');
+  await verifyDormantModuleDeclarations(value.git);
   if(selectedWorktreeReftable(value.git))throw new Error('Selected-worktree reftable requires fresh common/private native initialization');
   if(!configuration&&reviewedGitConfiguration(value,activation).includes.length)throw new Error('Native external includes require their complete transported configuration closure');
   return writeReviewedGit(root,value.git,value,undefined,false,configuration??reviewedGitConfiguration(value,activation));
@@ -336,6 +337,7 @@ export async function createReviewedRecoveryGit(root:string,original:Buffer,sha2
   const source=parseReviewedUserData(original),module=source.associationReview?.length===1&&source.associationReview[0]!.role==='module';
   const value=planReviewedUserDataActivation(original,sha256,activation,!!layout||module);
   if(!activation.git||!value.git)throw new Error('Explicit Git activation is required');
+  await verifyDormantModuleDeclarations(value.git);
   await writeReviewedGit(root,value.git,value,layout,true,configuration??reviewedGitConfiguration(value,activation),storage);
 }
 
@@ -1184,6 +1186,38 @@ function decodeReftableReview(value:NonNullable<ReviewedGitUserData['reftableRev
   return {refs:logical,head,peeledBindings:[...refs.values()].filter(ref=>ref.peeled),rootRefs:[...refs.values()].filter(ref=>!ref.name.startsWith('refs/')).map(ref=>({...ref,oid:resolve(ref.name)})),logs:[...logs.values()]};
 }
 
+/** Bind an inactive module name to the exact indexed .gitmodules blob.
+ * The parsed declaration stays inside an already verified Git object; no URL
+ * or source credential is copied into the association record. */
+function dormantModulePath(data:Buffer,name:string):string {
+ const parsed=configSource(data);
+ if(parsed.removedFields||!parsed.safe.equals(data)||parsed.items.some(item=>/^(?:include|includeif)\./i.test(item.key)))throw new Error('Dormant module declaration contains excluded or external configuration');
+ const declarations=parsed.items.filter(item=>/^submodule\..+\.path$/.test(item.key));
+ const keys=new Set<string>(),paths=new Set<string>();
+ for(const entry of declarations){
+  if(entry.implicitBoolean||keys.has(entry.key))throw new Error('Ambiguous dormant module declaration');
+  storageRelativePath(entry.value);
+  if(entry.value==='.'||paths.has(entry.value))throw new Error('Duplicate dormant module path');
+  keys.add(entry.key);paths.add(entry.value);
+ }
+ const expected=declarations.filter(entry=>entry.key==='submodule.'+name+'.path');
+ if(expected.length!==1)throw new Error('Dormant module name lacks an exact .gitmodules declaration');
+ return expected[0]!.value;
+}
+/** Compare our bounded parser with Git before any restored native bytes are written. */
+export async function verifyDormantModuleDeclarations(value:ReviewedGitUserData):Promise<void> {
+ validateReviewedGit(value);
+ for(const module of value.modules??[]){
+  if(module.source.coreWorktree===null){
+   const blob=value.objects.find(object=>object.oid===module.source.dormantAssociation!.gitmodulesOid&&object.type==='blob')!;
+   const data=Buffer.from(blob.dataBase64,'base64'),relative=dormantModulePath(data,module.name);
+   const native=await parseCapturedGitConfiguration(data),key='submodule.'+module.name+'.path';
+   const rows=(native?native.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n'))===key);
+   if(!native.endsWith('\0')||rows.length!==1||rows[0]!.slice(rows[0]!.indexOf('\n')+1)!==relative)throw new Error('Dormant module declaration differs from native Git parsing');
+  }
+  await verifyDormantModuleDeclarations(module.git);
+ }
+}
 export function validateReviewedGit(value:ReviewedGitUserData,depth=0):void {
   if(depth>16)throw new Error('Native Git module nesting exceeds the capture bound');
   fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','reflogMissingObjects','indexOptionalReview','configurationReview','configurationOriginalReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','fetchHeadReview','exclusions','reftableReview'],['modules','configurationSourceDirectories']);
@@ -1340,11 +1374,32 @@ export function validateReviewedGit(value:ReviewedGitUserData,depth=0):void {
     const names=new Set<string>();
     for(const module of value.modules){
       fields(module,['name','source','worktreeRelativePath','git','originals']);storageRelativePath(module.name);
-      fields(module.source,['storagePath','worktreePath','coreWorktree','configurationSha256','initialized'],['embedded']);
+      fields(module.source,['storagePath','worktreePath','coreWorktree','configurationSha256','initialized'],['embedded','dormantAssociation']);
       const source=module.source;
-      if(module.name==='.'||[...names].some(name=>name===module.name||name.startsWith(module.name+'/')||module.name.startsWith(name+'/'))||typeof source.initialized!=='boolean'||typeof source.coreWorktree!=='string'||!source.coreWorktree||/[\0\r\n]/.test(source.coreWorktree)||!/^[a-f0-9]{64}$/.test(source.configurationSha256)||!canonicalSourcePath(source.storagePath)||!canonicalSourcePath(source.worktreePath)||!sourcePathsEqual(resolveSourcePath(source.storagePath,source.coreWorktree),source.worktreePath))throw new Error('Native module association provenance differs');
+      validateReviewedGit(module.git,depth+1);
+      if(module.name==='.'||[...names].some(name=>name===module.name||name.startsWith(module.name+'/')||module.name.startsWith(name+'/'))||typeof source.initialized!=='boolean'||!/^[a-f0-9]{64}$/.test(source.configurationSha256)||!canonicalSourcePath(source.storagePath)||!canonicalSourcePath(source.worktreePath))throw new Error('Native module association provenance differs');
+      if(source.coreWorktree===null){
+        const proof=source.dormantAssociation,dirs=value.configurationSourceDirectories;
+        if(!proof||source.initialized||source.embedded!==undefined||!dirs||!sourcePathsEqual(dirs.common,dirs.private)||basenameSourcePath(dirs.common)!=='.git')throw new Error('Dormant module association requires standalone source provenance');
+        fields(proof,['gitmodulesOid','gitlinkOid']);
+        const config=module.git.configurationOriginalReview;
+        if(config.some(record=>record.removedFields)||config[0]!.dataBase64===null||
+          createHash('sha256').update(Buffer.from(config[0]!.dataBase64,'base64')).digest('hex')!==source.configurationSha256||
+          config.some(record=>record.dataBase64!==null&&configSource(Buffer.from(record.dataBase64,'base64')).items.some(item=>item.key.toLowerCase()==='core.worktree')))throw new Error('Dormant module configuration does not prove absent core.worktree');
+        const declarations=value.index.filter(entry=>entry.path==='.gitmodules'),indexed=declarations.find(entry=>entry.stage===0);
+        const blob=ids.get(proof.gitmodulesOid);
+        if(declarations.length!==1||!indexed||!['100644','100755'].includes(indexed.mode)||indexed.oid!==proof.gitmodulesOid||!blob||blob.type!=='blob')throw new Error('Dormant module declaration lacks its exact indexed Git blob');
+        const relative=dormantModulePath(Buffer.from(blob.dataBase64,'base64'),module.name),links=value.index.filter(entry=>entry.path===relative);
+        if(links.length!==1||links[0]!.stage!==0||links[0]!.mode!=='160000'||links[0]!.oid!==proof.gitlinkOid||module.worktreeRelativePath!==relative||
+          !sourcePathsEqual(source.storagePath,joinSourcePath(dirs.common,'modules',module.name))||
+          !sourcePathsEqual(source.worktreePath,joinSourcePath(dirnameSourcePath(dirs.common),relative)))throw new Error('Dormant module gitlink or source mapping differs');
+        if(!module.git.objects.some(object=>object.type==='commit'&&object.oid===proof.gitlinkOid))throw new Error('Dormant module gitlink commit is not captured');
+      }else{
+        if(source.dormantAssociation!==undefined||typeof source.coreWorktree!=='string'||!source.coreWorktree||/[\0\r\n]/.test(source.coreWorktree)||!sourcePathsEqual(resolveSourcePath(source.storagePath,source.coreWorktree),source.worktreePath))throw new Error('Native module association provenance differs');
+        safeText(source.coreWorktree,'Module core.worktree');
+      }
       if(source.embedded!==undefined&&(source.embedded!==true||!sourcePathsEqual(source.storagePath,joinSourcePath(source.worktreePath,'.git'))||!source.initialized))throw new Error('Embedded module association differs');
-      safeText(source.coreWorktree,'Module core.worktree');names.add(module.name);
+      names.add(module.name);
       if(module.worktreeRelativePath!==null){storageRelativePath(module.worktreeRelativePath);if(module.worktreeRelativePath==='.')throw new Error('Native module cannot replace its parent root');}
       if(!Array.isArray(module.originals)||module.originals.length>1000)throw new Error('Invalid native module originals');
       const originals=new Set<string>();for(const original of module.originals){
@@ -1353,7 +1408,6 @@ export function validateReviewedGit(value:ReviewedGitUserData,depth=0):void {
         const data=Buffer.from(original.dataBase64,'base64');if(data.toString('base64')!==original.dataBase64)throw new Error('Invalid module original encoding');inspectGitReviewOriginal(data,original.path);originals.add(original.path);
         if(original.metadata){fields(original.metadata,['mode','mtimeNs']);if(!Number.isInteger(original.metadata.mode)||original.metadata.mode<0||original.metadata.mode>0o7777||typeof original.metadata.mtimeNs!=='string'||!/^-?\d+$/.test(original.metadata.mtimeNs))throw new Error('Invalid module original metadata');}
       }
-      validateReviewedGit(module.git,depth+1);
     }
   }
 
@@ -2337,7 +2391,7 @@ async function configuredExternalModulePointer(worktreePath:string,storagePath:s
 }
 
 type CapturedModuleSource={name:string;source:NonNullable<ReviewedGitUserData['modules']>[number]['source'];worktreeRelativePath:string|null;evidence:string};
-async function captureModuleSources(root:string,association:GitAssociation,fs:GitSourceFs,capture?:GitExportCapture,index:IndexEntry[]=[],allowConfiguredExternalSource=false):Promise<{modules:CapturedModuleSource[];evidence:string}> {
+async function captureModuleSources(root:string,association:GitAssociation,fs:GitSourceFs,capture?:GitExportCapture,index:IndexEntry[]=[],allowConfiguredExternalSource=false,objects:GitObject[]=[]):Promise<{modules:CapturedModuleSource[];evidence:string}> {
   const modules:CapturedModuleSource[]=[],evidence:unknown[]=[],base=path.join(association.commonDir,'modules');
   const owner=(await fs.lstat(association.root,{bigint:true})).uid;let count=0;
   const walk=async(target:string,name:string):Promise<void>=>{
@@ -2350,10 +2404,27 @@ async function captureModuleSources(root:string,association:GitAssociation,fs:Gi
       const config=path.join(target,'config'),start=await fs.lstat(config,{bigint:true}),{data}=await regularOriginal(config,1024*1024,owner,fs),end=await fs.lstat(config,{bigint:true});
       if(originalIdentity(start)!==originalIdentity(end))throw new Error('Native module configuration changed');
       const parsed=await parseCapturedGitConfiguration(data),values=(parsed?parsed.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n')).toLowerCase()==='core.worktree');
-      if(!parsed.endsWith('\0')||values.length!==1)throw new Error('Native module storage needs one literal core.worktree');
-      const coreWorktree=values[0]!.slice(values[0]!.indexOf('\n')+1);safeText(coreWorktree,'Native module worktree path');
-      if(!coreWorktree||/[\0\r\n]/.test(coreWorktree)||process.platform!=='win32'&&coreWorktree.includes('\\'))throw new Error('Malformed native module worktree path');
-      const worktreePath=path.resolve(target,coreWorktree),contained=worktreePath.startsWith(root+path.sep),relative=contained?path.relative(root,worktreePath).split(path.sep).join('/'):null;
+      if(!parsed.endsWith('\0')||values.length>1)throw new Error('Native module storage needs one literal core.worktree or an exact dormant declaration');
+      let coreWorktree:string|null,worktreePath:string,dormantAssociation:{gitmodulesOid:string;gitlinkOid:string}|undefined;
+      if(values.length){
+        coreWorktree=values[0]!.slice(values[0]!.indexOf('\n')+1);safeText(coreWorktree,'Native module worktree path');
+        if(!coreWorktree||/[\0\r\n]/.test(coreWorktree)||process.platform!=='win32'&&coreWorktree.includes('\\'))throw new Error('Malformed native module worktree path');
+        worktreePath=path.resolve(target,coreWorktree);
+      }else{
+        if(association.linked||association.commonDir!==association.gitDir||association.commonDir!==path.join(root,'.git'))throw new Error('Dormant module needs a selected standalone parent with indexed declaration');
+        const declaration=index.filter(entry=>entry.path==='.gitmodules'),entry=declaration[0],blob=entry&&objects.find(item=>item.oid===entry.oid&&item.type==='blob');
+        if(declaration.length!==1||!entry||entry.stage!==0||!['100644','100755'].includes(entry.mode)||!blob)throw new Error('Dormant module needs one captured indexed .gitmodules blob');
+        const original=await regularOriginal(path.join(root,'.gitmodules'),1024*1024,owner,fs),bytes=Buffer.from(blob.dataBase64,'base64');
+        if(!original.data.equals(bytes))throw new Error('Dormant module requires unchanged indexed .gitmodules bytes');
+        const relative=dormantModulePath(original.data,name),native=await parseCapturedGitConfiguration(original.data),key='submodule.'+name+'.path';
+        const nativeRows=(native?native.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n'))===key);
+        if(!native.endsWith('\0')||nativeRows.length!==1||nativeRows[0]!.slice(nativeRows[0]!.indexOf('\n')+1)!==relative)throw new Error('Dormant module declaration differs from native Git parsing');
+        const links=index.filter(item=>item.path===relative);
+        if(links.length!==1||links[0]!.stage!==0||links[0]!.mode!=='160000')throw new Error('Dormant module needs one exact indexed gitlink');
+        coreWorktree=null;worktreePath=path.join(root,...relative.split('/'));
+        dormantAssociation={gitmodulesOid:entry.oid,gitlinkOid:links[0]!.oid};
+      }
+      const contained=worktreePath.startsWith(root+path.sep),relative=contained?path.relative(root,worktreePath).split(path.sep).join('/'):null;
       // Source pathname disclosure is inert. A live external read needs either
       // selected-root custody or the separate configured-dependency human grant.
       const selected=contained||!!capture?.bindings.some(binding=>worktreePath===binding.worktreePath||worktreePath.startsWith(binding.worktreePath+path.sep));
@@ -2370,7 +2441,8 @@ async function captureModuleSources(root:string,association:GitAssociation,fs:Gi
         if(originalIdentity(pointerStat)!==originalIdentity(pointerAfter)||!value.startsWith('gitdir: ')||/[\0\r\n]/.test(value)||path.resolve(worktreePath,value.slice(8))!==target)throw new Error('Native module working pointer differs from selected storage');
         initialized=true;pointerEvidence={identity:originalIdentity(pointerAfter),data:pointerData.toString('base64')};
       }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-      const source={storagePath:target,worktreePath,coreWorktree,configurationSha256:createHash('sha256').update(data).digest('hex'),initialized};
+      if(dormantAssociation&&initialized)throw new Error('Dormant module unexpectedly has a live worktree pointer');
+      const source={storagePath:target,worktreePath,coreWorktree,configurationSha256:createHash('sha256').update(data).digest('hex'),initialized,...(dormantAssociation?{dormantAssociation}:{})};
       const original=JSON.stringify({identity:originalIdentity(end),source,pointerEvidence});evidence.push(original);
       modules.push({name,source,worktreeRelativePath:relative,evidence:original});
       if(modules.length>1000)throw new Error('Native module repository inventory exceeds its bound');
@@ -2562,7 +2634,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   result.index.sort(indexOrder);validateReviewedGit(result);
   // Drafts are selected-worktree data even when gitDir and commonDir coincide.
   const gitOriginals=before.raw.files.filter(file=>gitReviewOriginal('.git/'+file.name)&&file.source===(gitSelectedOriginalNames.includes(file.name)?'selected':'shared')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false,...(file.metadata?{metadata:file.metadata}:{})}));
-  const moduleSources=association.bare?{modules:[],evidence:'bare'}:await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource);
+  const moduleSources=association.bare?{modules:[],evidence:'bare'}:await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource,result.objects);
   result.modules=[];
   if(moduleSources.modules.length){
     for(const module of moduleSources.modules){
@@ -2571,12 +2643,13 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
     }
     validateReviewedGit(result,depth);
   }
-  if(!association.bare&&(await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource)).evidence!==moduleSources.evidence)throw new Error('Native module inventory changed during capture');
+  if(!association.bare&&(await captureModuleSources(root,association,fs,capture,result.index,allowConfiguredExternalSource,result.objects)).evidence!==moduleSources.evidence)throw new Error('Native module inventory changed during capture');
   return {git:result,gitOriginals};
 }
 
 /** Recreate a separate review repository, never the native-owned destination .git. No Git command or hook runs. */
 export async function recreateReviewedGit(destination:string,value:ReviewedGitUserData):Promise<void> {
+  await verifyDormantModuleDeclarations(value);
   if(!selectedWorktreeReftable(value)){await writeReviewedGit(destination,value);return;}
   // A selected native stack cannot be flattened into loose files: reftable
   // names and logs belong to their original common/private backends.
@@ -2606,6 +2679,16 @@ const nativeGitMetadataScopes=new WeakMap<object,NativeGitWriteFinalization>();
 async function writeReviewedGit(destination:string,value:ReviewedGitUserData,native?:ReviewedUserData,layout?:{commonDir:string;privateDir:string;writeCommon:boolean},recovery=false,configuration?:NativeReviewedGitConfiguration,storage?:NativeReviewedGitStorage,ownerExternal?:{root:string;nodes:ReadonlyMap<string,'directory'|'file'|'symlink'|'hardlink'|'absent'>;directories:ReadonlyMap<string,{device:bigint;inode:bigint}>;worktreeRoot:string;worktreeNodes:ReadonlyMap<string,'directory'|'file'|'symlink'|'hardlink'|'absent'>;worktreeIdentity?:import('./portable-working-files.js').WorkingRootIdentity},finalization?:NativeGitWriteFinalization):Promise<Array<{path:string;sha256:string;device:bigint;inode:bigint;expectedLinkCount?:bigint}>> {
   validateReviewedGit(value);
   if(native&&!configuration)throw new Error('Native Git requires its validated configuration plan');
+  if(native&&value.modules?.length){
+    const common=layout?.commonDir??storage?.gitDir??path.join(destination,'.git'),planned=configuration!.modules??[];
+    for(const module of value.modules){
+      const expected=path.join(common,'modules',...module.name.split('/')),matches=planned.filter(item=>item.gitDir===expected);
+      if(matches.length!==1||matches[0]!.initialized!==module.source.initialized||
+        Boolean(matches[0]!.worktreeUnconfigured)!==(module.source.coreWorktree===null)||
+        JSON.stringify(matches[0]!.value.git)!==JSON.stringify(module.git)||
+        JSON.stringify(matches[0]!.value.providerFiles)!==JSON.stringify(module.originals))throw new Error('Native module requires its complete exact reviewed recreation plan');
+    }
+  }
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
   const topLevel=!finalization,scope=configuration?.nativeMetadataScope;
   if(scope&&(typeof scope!=='object'||configuration?.deferNativeMetadata!==true))throw new Error('A shared native metadata scope requires explicit deferred finalization');
@@ -2769,7 +2852,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
     if(layout&&!native)await write('HEAD','ref: refs/heads/.invalid\n',undefined,true);
     else if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
-    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':storage?storage.bare?'\n[core]\n\tbare = true\n':`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(storage.worktreePath)}\n`:'')]));else
+    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':storage?storage.worktreeUnconfigured?'\n[core]\n\tbare = false\n':storage.bare?'\n[core]\n\tbare = true\n':`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(storage.worktreePath)}\n`:'')]));else
     await write('config','[core]\n\trepositoryformatversion = '+(value.reftableReview||value.format==='sha256'||layout?1:0)+'\n\tbare = '+(layout?'true':'false')+'\n\thooksPath = /dev/null\n\tfsmonitor = false\n'+(value.reftableReview||value.format==='sha256'||layout?'[extensions]\n':'')+(value.format==='sha256'?'\tobjectFormat = sha256\n':'')+(value.reftableReview?'\trefStorage = reftable\n':'')+(layout?'\tworktreeConfig = true\n':''));
     if(layout&&!native)await write('config.worktree','[core]\n\tbare = false\n\tworktree = '+JSON.stringify(destination)+'\n');
     if(native){
@@ -2889,7 +2972,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
         await fs.mkdir(module.gitDir,{mode:posixPermissions?0o777:0o700});const issued=await fs.lstat(module.gitDir,{bigint:true});
         if(!issued.isDirectory()||await fs.realpath(module.gitDir)!==module.gitDir||posixPermissions&&issued.uid!==BigInt(process.geteuid!()))throw new Error('Repository capsule common directory changed');directories.set(module.gitDir,{device:issued.dev,inode:issued.ino});
         children=await writeReviewedGit(module.worktreePath,module.value.git!,module.value,module.layout,true,childConfiguration,undefined,owningExternal,state);
-      }else children=await writeReviewedGit(destination,module.value.git!,module.value,undefined,true,childConfiguration,{gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized},owningExternal,state);
+      }else children=await writeReviewedGit(destination,module.value.git!,module.value,undefined,true,childConfiguration,{gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized,...(module.worktreeUnconfigured?{worktreeUnconfigured:true as const}:{})},owningExternal,state);
       const moduleStat=await fs.lstat(module.gitDir,{bigint:true});if(!moduleStat.isDirectory()||await fs.realpath(module.gitDir)!==module.gitDir)throw new Error('Created module storage identity changed');directories.set(module.gitDir,{device:moduleStat.dev,inode:moduleStat.ino});
       for(const file of children)created.push({...file,path:path.relative(gitDir,module.gitDir).split(path.sep).join('/')+'/'+file.path});
     }

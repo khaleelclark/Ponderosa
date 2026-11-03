@@ -91,7 +91,7 @@ export function getNativeGitExternalGraph(configuration:NativeReviewedGitConfigu
 
 export interface NativeExternalScope {
   value:ReviewedUserData;sourceWorkingRoot:string;sourceCommon:string;sourcePrivate:string;
-  gitDir:string;privateDir:string;worktreePath:string;initialized:boolean;bare?:true;
+  gitDir:string;privateDir:string;worktreePath:string;initialized:boolean;worktreeUnconfigured?:true;bare?:true;
   external:NativeGitExternalApplication;
 }
 export interface NativeExternalProjection {source:string;destination:string;value:string}
@@ -122,9 +122,14 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     for(const module of parent.value.git?.modules??[]){
       const gitDir=path.join(parent.gitDir,'modules',...module.name.split('/'));
       const worktreePath=module.worktreeRelativePath!==null?path.join(parent.worktreePath,...module.worktreeRelativePath.split('/')):mapped(module.source.worktreePath)??ownedTree(module.source.worktreePath);
+      if(module.source.coreWorktree===null){
+        const explicit=mapped(module.source.worktreePath),blob=parent.value.git!.objects.find(object=>object.oid===module.source.dormantAssociation!.gitmodulesOid&&object.type==='blob');
+        if(explicit&&explicit!==worktreePath)throw new Error('Dormant module destination must follow the selected parent declaration');
+        if(!blob||!read(path.join(parent.worktreePath,'.gitmodules'))?.equals(Buffer.from(blob.dataBase64,'base64')))throw new Error('Dormant module needs its exact selected .gitmodules original');
+      }
       bind(module.source.storagePath,gitDir,true);bind(module.source.worktreePath,worktreePath,true);
       const childValue:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:true,harness:false},recreationScope:value.recreationScope,git:module.git,providerFiles:module.originals,providerDirectories:[],exclusions:[]};
-      const scope:NativeExternalScope={value:childValue,sourceWorkingRoot:module.source.worktreePath,sourceCommon:module.git.configurationSourceDirectories?.common??module.source.storagePath,sourcePrivate:module.git.configurationSourceDirectories?.private??module.source.storagePath,gitDir,privateDir:gitDir,worktreePath,initialized:module.source.initialized,external:emptyApplication()};scopes.push(scope);moduleScopes(scope,depth+1);
+      const scope:NativeExternalScope={value:childValue,sourceWorkingRoot:module.source.worktreePath,sourceCommon:module.git.configurationSourceDirectories?.common??module.source.storagePath,sourcePrivate:module.git.configurationSourceDirectories?.private??module.source.storagePath,gitDir,privateDir:gitDir,worktreePath,initialized:module.source.initialized,...(module.source.coreWorktree===null?{worktreeUnconfigured:true as const}:{}),external:emptyApplication()};scopes.push(scope);moduleScopes(scope,depth+1);
     }
   };
   moduleScopes(rootScope);

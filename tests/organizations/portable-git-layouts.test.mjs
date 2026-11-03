@@ -96,11 +96,41 @@ test('Include Git captures contained initialized and deinitialized module reposi
   const metadata=JSON.parse(await readFile(path.join(review,'CONFIGURATION-REVIEW.json'),'utf8'));
   assert.equal(metadata.modules[0].source.initialized,true);
   native(parent,'submodule','deinit','-f','libs/child');
-  const dormant=await exportReviewedGit(parent);
-  assert.equal(dormant.git.modules[0].source.initialized,false);
-  assert.deepEqual(dormant.git.modules[0].git.objects,child.git.objects);
+  const dormant=await exportReviewedGit(parent),inactive=dormant.git.modules[0];
+  assert.equal(inactive.source.initialized,false);assert.equal(inactive.source.coreWorktree,null);
+  assert.equal(inactive.source.dormantAssociation.gitmodulesOid,dormant.git.index.find(entry=>entry.path==='.gitmodules').oid);
+  assert.equal(inactive.source.dormantAssociation.gitlinkOid,dormant.git.index.find(entry=>entry.path==='libs/child').oid);
+  assert.deepEqual(inactive.git.objects,child.git.objects);validateReviewedGit(dormant.git);
+  for(const mutate of [
+   value=>value.modules[0].source.dormantAssociation.gitmodulesOid='0'.repeat(40),
+   value=>value.modules[0].source.dormantAssociation.gitlinkOid='0'.repeat(40),
+   value=>value.modules[0].source.worktreePath=path.join(root,'foreign'),
+   value=>value.modules[0].worktreeRelativePath='foreign',
+   value=>value.modules[0].source.initialized=true,
+   value=>value.modules[0].git.configurationOriginalReview[0].removedFields=true,
+  ]){const changed=structuredClone(dormant.git);mutate(changed);assert.throws(()=>validateReviewedGit(changed),/dormant|module|configuration|gitlink/i);}
+  const declared=await readFile(path.join(parent,'.gitmodules'));
+  await writeFile(path.join(parent,'.gitmodules'),Buffer.concat([declared,Buffer.from('\n# uncommitted change\n')]));
+  await assert.rejects(exportReviewedGit(parent),/unchanged indexed/);
+  await writeFile(path.join(parent,'.gitmodules'),declared);
+  await writeFile(path.join(parent,'libs/child','.git'),'gitdir: ../../.git/modules/libs/child\n');
+  await assert.rejects(exportReviewedGit(parent),/unexpectedly|pointer/);
+  await rm(path.join(parent,'libs/child','.git'));
   const forged=structuredClone(live.git);forged.modules[0].source.worktreePath=path.join(root,'foreign');
   assert.throws(()=>validateReviewedGit(forged),/association/);
+});
+
+test('dormant module name and contained path are bound through the indexed declaration',async t=>{
+  const root=await fixture(t),source=path.join(root,'named-source'),parent=path.join(root,'named-parent');
+  const moduleOid=await repository(source);await repository(parent);
+  native(parent,'submodule','add','--name','custom/name',source,'content/child');native(parent,'commit','-m','named module');
+  native(parent,'submodule','deinit','-f','content/child');
+  const dormant=await exportReviewedGit(parent),module=dormant.git.modules[0];
+  assert.equal(module.name,'custom/name');assert.equal(module.worktreeRelativePath,'content/child');
+  assert.equal(module.source.coreWorktree,null);assert.equal(module.source.dormantAssociation.gitlinkOid,moduleOid);
+  validateReviewedGit(dormant.git);
+  const tampered=structuredClone(dormant.git);tampered.modules[0].name='content/child';
+  assert.throws(()=>validateReviewedGit(tampered),/declaration|mapping/i);
 });
 
 test('explicit module binding proves its .git pointer and core.worktree against nested selected roots',async t=>{

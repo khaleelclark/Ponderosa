@@ -8,7 +8,7 @@ import path from 'node:path';
 import {sourcePathWithin,relativeSourcePath} from './portable-source-paths.js';
 import type {AgentPortablePackageDto,PortableGitStorageBinding,ReviewedUserData,ReviewedUserDataActivation,PortableArtifactDto} from '@ponderosa/core';
 import {bindReviewedGitDirectories,compileReviewedGitConfiguration} from './portable-git-configuration.js';
-import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,parseReviewedUserData,planReviewedUserDataActivation,reviewedGitModules,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings,validateReviewedUserDataActivation,type NativeReviewedGitModulePlan,type NativeReviewedGitStorage} from './portable-reviewed-user-data.js';
+import {applyReviewedProviderData,assertReviewedProviderDestination,createReviewedRecoveryGit,gitBindingSourceEvidence,parseReviewedUserData,planReviewedUserDataActivation,reviewedGitModules,selectedWorktreeReftable,REVIEWED_USER_DATA_PATH,validatePortableGitStorageBindings,validateReviewedUserDataActivation,verifyDormantModuleDeclarations,type NativeReviewedGitModulePlan,type NativeReviewedGitStorage} from './portable-reviewed-user-data.js';
 import {redactPortableDiagnostic} from './portable-secrets.js';
 import {validateWorkingRootNesting} from './portable-working-files.js';
 
@@ -99,13 +99,18 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
         const sourceMap=[...(activation.gitPathMappings??[])].sort((a,b)=>b.source.length-a.source.length).find(mapping=>sourcePathWithin(mapping.source,module.source.worktreePath));
         const worktreePath=sourceMap?path.join(sourceMap.destination,...relativeSourcePath(sourceMap.source,module.source.worktreePath).split('/')):module.worktreeRelativePath!==null?path.join(workingRoot,module.worktreeRelativePath):undefined;
         if(!worktreePath||!paths.some(root=>worktreePath===root||worktreePath.startsWith(root+path.sep)))throw new Error('Choose a selected destination root mapping for external module worktree: '+module.source.worktreePath);
+        if(module.source.coreWorktree===null){
+          const expected=module.worktreeRelativePath===null?undefined:path.join(workingRoot,...module.worktreeRelativePath.split('/')),blob=value.git!.objects.find(object=>object.oid===module.source.dormantAssociation!.gitmodulesOid&&object.type==='blob');
+          if(!expected||worktreePath!==expected)throw new Error('Dormant module destination must follow the selected parent declaration');
+          if(!blob||!read(path.join(workingRoot,'.gitmodules'))?.equals(Buffer.from(blob.dataBase64,'base64')))throw new Error('Dormant module needs its exact selected .gitmodules original');
+        }
         const gitDir=path.join(common,'modules',module.name);
         const moduleValue:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:true,harness:false},recreationScope:value.recreationScope,git:module.git,providerFiles:module.originals,providerDirectories:[],exclusions:[]};
         const moduleActivation=bindReviewedGitDirectories(moduleValue,{git:true,harness:false,...(current.gitPathMappings?{gitPathMappings:current.gitPathMappings}:{})},{common:gitDir,private:gitDir});
         for(const original of module.originals){if(!original.path.startsWith('.git/'))throw new Error('Module originals must belong to their captured Git storage');addOriginal(path.join(gitDir,original.path.slice(5)),{dataBase64:original.dataBase64});}
         for(const record of module.git.configurationOriginalReview)if(record.dataBase64!==null)addOriginal(path.join(gitDir,record.path),{dataBase64:record.dataBase64});
         const configuration:ReturnType<typeof compileReviewedGitConfiguration>={common:Buffer.alloc(0),private:null,targets:[],includes:[],modules:collectModules(moduleValue,gitDir,worktreePath,moduleActivation,depth+1)};
-        return {gitDir,worktreePath,initialized:module.source.initialized,value:moduleValue,activation:moduleActivation,configuration};
+        return {gitDir,worktreePath,initialized:module.source.initialized,...(module.source.coreWorktree===null?{worktreeUnconfigured:true as const}:{}),value:moduleValue,activation:moduleActivation,configuration};
       });
     };
     for(const task of tasks.filter(task=>task.activation.git)){
@@ -119,7 +124,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
         for(const original of scope.value.providerFiles){if(!original.path.startsWith('.git/'))throw new Error('Repository capsule originals must belong to captured Git storage');addOriginal(path.join(scope.gitDir,original.path.slice(5)),{dataBase64:original.dataBase64});}
         for(const record of scope.value.git!.configurationOriginalReview)if(record.dataBase64!==null)addOriginal(path.join(record.source==='selected_worktree'?scope.privateDir:scope.gitDir,record.path),{dataBase64:record.dataBase64});
         const children=external.scopes.filter(child=>child!==root&&parentOf(child)===scope).map(child=>build(child,depth+1));
-        return {gitDir:scope.gitDir,worktreePath:scope.worktreePath,initialized:scope.initialized,value:scope.value,activation:current,...(scope.bare?{bare:true as const}:{}),...(layout?{layout}:{}),configuration:{common:Buffer.alloc(0),private:null,targets:[],includes:[],modules:children}};
+        return {gitDir:scope.gitDir,worktreePath:scope.worktreePath,initialized:scope.initialized,...(scope.worktreeUnconfigured?{worktreeUnconfigured:true as const}:{}),value:scope.value,activation:current,...(scope.bare?{bare:true as const}:{}),...(layout?{layout}:{}),configuration:{common:Buffer.alloc(0),private:null,targets:[],includes:[],modules:children}};
       };
       modulePlans.set(task,external.scopes.filter(scope=>scope!==root&&parentOf(scope)===root).map(scope=>build(scope,1)));
     }
@@ -151,7 +156,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
   const signatures=new Map<string,string>(),privatePaths=new Set<string>();
   const moduleSignature=(modules:readonly NativeReviewedGitModulePlan[]):unknown=>modules.map(module=>{
     const {modules:_modules,...git}=module.value.git as NonNullable<ReviewedUserData['git']>&{modules?:unknown};
-    return {gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized,git,originals:module.value.providerFiles,configuration:module.configuration.common.toString('base64'),privateConfiguration:module.configuration.private?.toString('base64'),includes:module.configuration.includeFiles?.map(file=>({path:file.path,private:file.private,data:file.data.toString('base64')})),modules:moduleSignature(module.configuration.modules??[])};
+    return {gitDir:module.gitDir,worktreePath:module.worktreePath,initialized:module.initialized,worktreeUnconfigured:module.worktreeUnconfigured??false,git,originals:module.value.providerFiles,configuration:module.configuration.common.toString('base64'),privateConfiguration:module.configuration.private?.toString('base64'),includes:module.configuration.includeFiles?.map(file=>({path:file.path,private:file.private,data:file.data.toString('base64')})),modules:moduleSignature(module.configuration.modules??[])};
   });
   for(const task of tasks.filter(task=>task.layout)){
     const {commonDir,privateDir}=task.layout!;
@@ -168,6 +173,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
 /** Apply once to fresh recovery roots. An incomplete receipt never authorizes a retry. */
 export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planReviewedRecoveryRoots>,activation:ReviewedUserDataActivation,onReceipt:(receipt:RecoveryReceipt)=>void,expectedRoots?:Readonly<Record<string,WorkingRootIdentity>>,nativeMetadata:WorkingNativeMetadata=createWorkingNativeMetadataEvidence(),beforeNativeFinalize?:()=>Promise<void>):Promise<void> {
   validateReviewedUserDataActivation(activation);
+  for(const task of tasks)if(task.activation.git&&task.value.git)await verifyDormantModuleDeclarations(task.value.git);
   const opened:Array<{path:string;handle:Awaited<ReturnType<typeof fs.open>>;device:bigint;inode:bigint}>=[];
   const commonCreated=new Set<string>();
   let failure:unknown;
