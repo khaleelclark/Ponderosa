@@ -29,6 +29,8 @@ export interface ReviewedGitUserData {
 export interface ReviewedUserData {
   version:1;activation:'inert_review_only';selection:Pick<ReviewedUserDataSelection,'git'|'harness'>;git?:ReviewedGitUserData;
   recreationScope:{absoluteLinks:'refuse';crossRootLinks:'refuse';cyclicLinks:'refuse'|'passive_in_root';specialNodes:'refuse';acl:'not_inspected_preserve_source';xattrs:'not_inspected_preserve_source'};
-  providerFiles:Array<{path:string;dataBase64:string;removedSecretFields:boolean}>;
+  /** Selected harness metadata is evidence, never permission to apply executable modes. */
+  providerDirectories:Array<{path:string;mode:number;mtimeNs:string}>;
+  providerFiles:Array<{path:string;dataBase64:string;removedSecretFields:boolean;metadata?:{mode:number;mtimeNs:string}}>;
   exclusions:string[];
 }

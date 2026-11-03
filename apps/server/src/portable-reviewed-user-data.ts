@@ -27,11 +27,19 @@ function codexReviewToml(value:string):boolean {
 function claudeOutputStyle(value:string):boolean {
   return /^\.claude\/output-styles\/[^/]+\.md$/.test(value);
 }
+const providerDirectoryRoots=['.claude/commands','.claude/agents','.claude/rules','.codex/skills','.codex/rules','.codex/agents','.claude/output-styles','.claude/agent-memory','.claude/agent-memory-local','.claude/skills','.claude/hooks'];
 const claudeNamedRoots=['.claude/agent-memory','.claude/agent-memory-local','.claude/skills'];
 function claudeOpaqueOriginal(value:string,directory=false):boolean {
   const parts=value.split('/'),family=parts.slice(0,2).join('/');
   const minimum=claudeNamedRoots.includes(family)?(directory?3:4):family==='.claude/hooks'?3:Infinity;
   return parts.length>=minimum&&parts.slice(2).every(part=>!!part&&!part.startsWith('.')&&!/[\\\0]/.test(part))&&!credentialPath(value);
+}
+function providerDirectory(value:string):boolean {
+  return providerDirectoryRoots.includes(value)||providerDirectoryRoots.some(root=>value.startsWith(root+'/'))&&opaqueProviderOriginal(value,true)&&!gitReviewOriginal(value);
+}
+function providerMetadata(value:{mode:number;mtimeNs:string}):void {
+  fields(value,['mode','mtimeNs']);
+  if(!Number.isInteger(value.mode)||value.mode<0||value.mode>0o7777||typeof value.mtimeNs!=='string'||!/^(?:0|-?[1-9][0-9]{0,20})$/.test(value.mtimeNs))throw new Error('Invalid provider original metadata');
 }
 function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
@@ -283,7 +291,7 @@ function scrubReviewToml(value:string):{safe:string;removedSecretFields:boolean}
   }
   safe+=value.slice(kept);return {safe,removedSecretFields:removals.length>0};
 }
-async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:bigint):Promise<{data:Buffer;mode:number}> {
+async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:bigint):Promise<{data:Buffer;mode:number;mtimeNs:string;identity:string}> {
   if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Reviewed original parent is not canonical');
   const observed=await fs.lstat(target,{bigint:true});
   if(!observed.isFile()||observed.nlink!==1n||observed.size>BigInt(maxBytes)||expectedOwner!==undefined&&observed.uid!==expectedOwner)throw new Error('Reviewed data requires a bounded regular original');
@@ -295,7 +303,7 @@ async function regularOriginal(target:string,maxBytes=1024*1024,expectedOwner?:b
     while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error('Reviewed original shortened');offset+=read.bytesRead;}
     const after=await handle.stat({bigint:true}),current=await fs.lstat(target,{bigint:true});
     if(before.uid!==after.uid||current.uid!==after.uid||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||current.dev!==after.dev||current.ino!==after.ino||current.nlink!==1n)throw new Error('Reviewed original changed during reading');
-    return {data,mode:Number(before.mode)&0o777};
+    return {data,mode:Number(before.mode)&0o7777,mtimeNs:before.mtimeNs.toString(),identity:originalIdentity(before)};
   }finally{await handle.close();}
 }
 function refName(value:string):string {
@@ -315,18 +323,28 @@ function excludedGitKey(key:string):boolean {
 export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   if(data.length>48*1024*1024)throw new Error('Reviewed user-data manifest exceeds its bound');
   const value=JSON.parse(text(data)) as ReviewedUserData;
-  fields(value,['version','activation','selection','recreationScope','providerFiles','exclusions'],['git']);
+  fields(value,['version','activation','selection','recreationScope','providerFiles','providerDirectories','exclusions'],['git']);
   if(!value||value.version!==1||value.activation!=='inert_review_only'||!Array.isArray(value.providerFiles)||value.providerFiles.length>1000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid reviewed user-data manifest');
   fields(value.selection,['git','harness']);
   validateReviewedUserDataSelection(value.selection);
   if(Object.hasOwn(value,'git')&&!value.git)throw new Error('Invalid selected Git data');
   if(!value.selection.git&&value.git||value.selection.git&&!value.git)throw new Error('Reviewed data differs from its explicit family selection');
   if(!value.recreationScope||Object.keys(value.recreationScope).length!==Object.keys(recreationScope).length||Object.entries(recreationScope).some(([key,status])=>(key==='cyclicLinks'? !['refuse','passive_in_root'].includes(value.recreationScope.cyclicLinks):(value.recreationScope as Record<string,string>)[key]!==status)))throw new Error('Required recreation semantics cannot be silently downgraded');
+  if(!Array.isArray(value.providerDirectories)||value.providerDirectories.length+value.providerFiles.length>1000)throw new Error('Provider topology exceeds its bound');
+  const directories=new Set<string>();
+  for(const directory of value.providerDirectories){
+    fields(directory,['path','mode','mtimeNs']);
+    if(!value.selection.harness||typeof directory.path!=='string'||!providerDirectory(directory.path)||directory.path.split('/').some(part=>!part||part==='.'||part==='..')||directory.path.includes('\\')||directory.path.includes('\0')||credentialPath(directory.path)||directories.has(directory.path))throw new Error('Invalid selected provider directory');
+    providerMetadata({mode:directory.mode,mtimeNs:directory.mtimeNs});directories.add(directory.path);
+  }
   const paths=new Set<string>();let bytes=0;
   for(const file of value.providerFiles){
-    fields(file,['path','dataBase64','removedSecretFields']);
+    fields(file,['path','dataBase64','removedSecretFields'],['metadata']);
     if(typeof file.path!=='string'||!providerPath(file.path)||file.path.split('/').some(part=>!part||part==='.'||part==='..')||credentialPath(file.path)||file.path.includes('\\')||file.path.includes('\0')||typeof file.dataBase64!=='string'||typeof file.removedSecretFields!=='boolean'||paths.has(file.path))throw new Error('Invalid reviewed provider original');
     const gitOriginal=gitReviewOriginal(file.path);
+    if(gitOriginal&&file.metadata!==undefined)throw new Error('Git original metadata is not provider metadata');
+    if(!gitOriginal)providerMetadata(file.metadata!);
+    if(directories.has(file.path)||[...directories].some(directory=>directory.startsWith(file.path+'/')))throw new Error('Provider files cannot be directory parents');
     if(gitOriginal?!value.selection.git||!value.git||file.removedSecretFields:!value.selection.harness)throw new Error('Reviewed original differs from its explicit family selection');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
@@ -1362,13 +1380,17 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
 export async function exportReviewedUserData(root:string,selection:ReviewedUserDataSelection):Promise<ReviewedUserData> {
   validateReviewedUserDataSelection(selection);
   if(selection.source==='retained_originals')throw new Error('Retained originals require their canonical artifact binding');
-  const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness},recreationScope:{...recreationScope},providerFiles:[],exclusions:[]};let bytes=0;
+  const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness},recreationScope:{...recreationScope},providerFiles:[],providerDirectories:[],exclusions:[]};let bytes=0;
   const fixed=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.claude/AGENTS.md','.codex/config.toml','.codex/instructions.md'],selected=[...fixed];
+  const capturedProvider=new Map<string,string>();
   let entries=0,outputStyleOwner:bigint|undefined,opaqueOwner:bigint|undefined;
   const walk=async(relative:string,opaque=false,optional=false):Promise<void>=>{
     const target=path.join(root,relative);
     let stat;try{stat=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&optional)return;throw error;}
     if(!stat.isDirectory()||await fs.realpath(target)!==target)throw new Error('Custom provider configuration must have canonical directory parents');
+    result.providerDirectories.push({path:relative,mode:Number(stat.mode)&0o7777,mtimeNs:stat.mtimeNs.toString()});
+    if(result.providerDirectories.length>1000)throw new Error('Provider topology exceeds its bound');
+    capturedProvider.set(relative,originalIdentity(stat));
     if(opaque){
       opaqueOwner??=(await fs.lstat(root,{bigint:true})).uid;
       if(stat.uid!==opaqueOwner)throw new Error('Opaque provider directory owner differs from the selected root');
@@ -1387,16 +1409,19 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     }
     const after=await fs.lstat(target,{bigint:true});if(stat.ino!==after.ino||stat.mtimeNs!==after.mtimeNs||stat.ctimeNs!==after.ctimeNs)throw new Error('Custom provider configuration inventory changed');
   };
-  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/rules','.codex/skills','.codex/rules','.codex/agents','.claude/output-styles',...claudeNamedRoots,'.claude/hooks']:[]))await walk(directory,directory!=='.codex/agents'&&directory!=='.claude/output-styles',true);
+  for(const directory of (selection.harness?providerDirectoryRoots:[]))await walk(directory,directory!=='.codex/agents'&&directory!=='.claude/output-styles',true);
   for(const relative of selection.harness?selected:[]){
     const target=path.join(root,relative);
     if(opaqueProviderOriginal(relative))opaqueOwner??=(await fs.lstat(root,{bigint:true})).uid;
     if(fixed.includes(relative))try{await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+    if(result.providerDirectories.length+result.providerFiles.length>=1000)throw new Error('Provider topology exceeds its bound');
     const originalFile=await regularOriginal(target,1024*1024,opaqueProviderOriginal(relative)?opaqueOwner:claudeOutputStyle(relative)?outputStyleOwner:undefined);
+    capturedProvider.set(relative,originalFile.identity);
+    const metadata={mode:originalFile.mode,mtimeNs:originalFile.mtimeNs};
     if(providerSupportOriginal(relative)){
       inspectProviderSupportOriginal(originalFile.data);
       bytes+=originalFile.data.length;if(bytes>limit)throw new Error('Provider configuration bound exceeded');
-      result.providerFiles.push({path:relative,dataBase64:originalFile.data.toString('base64'),removedSecretFields:false});
+      result.providerFiles.push({path:relative,dataBase64:originalFile.data.toString('base64'),removedSecretFields:false,metadata});
       continue;
     }
     {
@@ -1407,7 +1432,7 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
         ({safe,removedSecretFields}=scrubReviewToml(original));
       }
       safeText(safe,'Provider configuration');bytes+=Buffer.byteLength(safe);if(bytes>limit)throw new Error('Provider configuration bound exceeded');
-      result.providerFiles.push({path:relative,dataBase64:Buffer.from(safe).toString('base64'),removedSecretFields});
+      result.providerFiles.push({path:relative,dataBase64:Buffer.from(safe).toString('base64'),removedSecretFields,metadata});
     }
   }
   if(selection.git){
@@ -1416,12 +1441,16 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
       result.git=captured.git;
       for(const original of captured.gitOriginals){
         bytes+=Buffer.from(original.dataBase64,'base64').length;
-        if(result.providerFiles.length>=1000||bytes>limit)throw new Error('Combined review originals exceed their bound');
+        if(result.providerFiles.length+result.providerDirectories.length>=1000||bytes>limit)throw new Error('Combined review originals exceed their bound');
         result.providerFiles.push(original);
       }
     }
   }
   if(selection.git&&!result.git)throw new Error('Selected Git data is unavailable in this working root');
+  for(const [relative,identity] of capturedProvider){
+    const target=path.join(root,relative),current=await fs.lstat(target,{bigint:true});
+    if(originalIdentity(current)!==identity||await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Provider original changed after capture');
+  }
   result.exclusions.push('Provider settings are inert review data: commands, hooks, MCP servers and permissions are never installed or executed','Other provider files and custom formats require explicit inventory; sessions/auth/profile ownership remain excluded');
   return result;
 }

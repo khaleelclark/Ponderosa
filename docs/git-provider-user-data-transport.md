@@ -935,7 +935,7 @@ still requires separate human review/action.
 | Git legacy common remote shorthand originals | Explicit Git selection carries optional common `branches/` and `remotes/` regular UTF-8 originals through inactive `.git/branches/...` and `.git/remotes/...` records. No native remote installation or syntax/version compatibility claim. See [contract](#inactive-common-legacy-git-remote-originals). |
 | Git fixed common Gitweb metadata originals | Explicit Git selection carries only optional common `description`, `category`, `cloneurl` and `README.html` as exact inactive `.git/{name}` originals. Empty present files survive; no HTML rendering, URL fetching or native Gitweb recreation. See [contract](#inactive-fixed-common-gitweb-metadata-originals). |
 | Git default common hook/support originals | Explicit Git selection carries bounded regular UTF-8 originals from the validated common repository `hooks/` through `providerFiles` as virtual `.git/hooks/...` paths, never active hooks. Configured `core.hooksPath` targets are not followed; their nonsecret setting remains inactive configuration text. See [scope and limits](#inactive-default-common-git-hook-originals). |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, `.git/lost-found/...`, exact selected-worktree `.git/COMMIT_EDITMSG`/`.git/SQUASH_MSG`/`.git/TAG_EDITMSG`/`.git/MERGE_MSG`/`.git/EDIT_DESCRIPTION` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft, lost-found recovery and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields,metadata?}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, `.git/lost-found/...`, exact selected-worktree `.git/COMMIT_EDITMSG`/`.git/SQUASH_MSG`/`.git/TAG_EDITMSG`/`.git/MERGE_MSG`/`.git/EDIT_DESCRIPTION` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft, lost-found recovery and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -1944,7 +1944,7 @@ Bible #8. Source completion of the two additions above is not full portability.
 | Reflogs and missing objects | Current normal local reflog parser requires resolvable retained object identities. Missing/pruned objects cannot be fabricated; preserving dangling history and its absence needs a distinct validated representation. Unknown reflog encodings need exact readers. |
 | Submodule originals | A gitlink OID is preserved, not the nested repository. Requires independently selected nested roots, ownership and per-root import mapping through the package consumer; no recursive acquisition from an OID or .gitmodules. |
 | Config and external support | Ordered local nonsecret config/include declarations are retained logically, not exact source formatting. External include contents/configured hooks need explicit additional source selection and destination mapping, not automatic path chasing. Other structured formats need actual parser/scrub contracts. |
-| Provider directories and metadata | Existing core providerFiles carries only path/base64/removal; working import writes numbered review files. Empty directories and original mode/mtime require coordinated core DTO/parser/import/map changes; native executable installation additionally requires explicit activation/application selection. |
+| Provider directories and metadata | Current providerDirectories and harness-file metadata carry selected empty directories, low 12 mode bits and exact mtimeNs through capture, shared validation, review maps and authoritative re-export. Native directory/mode/timestamp application remains unfinished and needs explicit activation/application selection, destination conflict handling and nanosecond-capable host application. Inactive maps are not native recreation. |
 | Native application | Include Git/harness authorizes inactive inspection only. Recreating a native-owned live repository/settings requires a reviewed apply contract with exact destination ownership, replacement/conflict handling and user-selected activation. Inactive copies do not satisfy that requirement. |
 | Absolute and cross-root links | Existing working link format and validation require relative in-root targets. Multi-root destination mapping must bind source root identities, user-selected destination roots, external-target absence and retained target spelling; no rewriting or acquisition of unselected roots. This requires package/root-selection and importer ownership, not a refusal-literal change. |
 | Special nodes | Persistent FIFO/device topology requires a node-kind/mode/device identity carrier and platform creation actions; sockets additionally require the actual process/service recreation contract. Live kernel state cannot be synthesized as regular bytes. No such package carrier exists. |
@@ -1953,3 +1953,42 @@ Bible #8. Source completion of the two additions above is not full portability.
 
 No tests, fixtures, preparation, builds, typechecks or native/runtime execution
 were performed for this tranche. Combined-product validation remains deferred.
+
+
+### Selected provider directory and metadata evidence
+
+The current reviewed-user-data manifest requires `providerDirectories`, including
+an empty array for Git-only selection. Harness files require `metadata` with
+`mode` (the original low 12 POSIX mode bits, including special bits) and
+`mtimeNs` (canonical signed decimal nanoseconds since the Unix epoch). Git virtual
+originals have no provider metadata. Selected provider directories carry their
+path and the same metadata, including empty directories and selected family
+roots. No source UID, ownership or destination authority is transported.
+
+Live capture uses the existing fixed family roots and opaque subtree classifier;
+it does not follow configured or external paths. Directory identities are
+recorded before enumeration and checked again after all capture, as are file
+identities returned by the bounded no-follow original reader. This detects
+observed changes, not an atomic snapshot against independent writers. Files and
+directories share a 1000-record cap; byte caps and secret rules remain unchanged.
+The shared parser rejects unselected families, duplicate or conflicting file and
+directory paths, noncanonical timestamp integers and out-of-range modes before
+working-folder destination writes. This is the current pre-release format;
+missing metadata is refused rather than guessed or upgraded.
+
+Import retains the authoritative original manifest unchanged. Numbered mode0600
+nonexecutable review files and their map retain file metadata, and the map's
+`directories` records preserve directory existence and metadata even when there
+are no files. These records are evidence for a subsequent reviewed application;
+source execute/set-ID/sticky bits are never applied to review copies. No active
+provider settings, skill, hook or executable is installed. Retained re-export
+revalidates the authoritative original manifest and its exact artifact bytes;
+it never promotes generated maps or review files into authority.
+
+This completes metadata transport and review-map preservation only. Native
+recreation of the directories and metadata remains unfinished: it requires an
+explicit user-selected application operation, exact destination ownership and
+conflict/replacement handling, plus a host operation capable of applying the
+retained nanosecond timestamps without silently rounding them. Inert records do
+not satisfy full native recreation under Bible #8. No tests, test preparation,
+builds, typechecks or runtime/native/provider execution qualified this change.

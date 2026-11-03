@@ -194,15 +194,15 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     if(reviewedData){
       // Separate repository only: never overwrite this working root's native-owned .git or provider settings.
       if(reviewedData.git)await recreateReviewedGit(path.join(destination,'.ponderosa-portable-review','git-repository'),reviewedData.git);
-      if(reviewedData.providerFiles.length){
+      if(reviewedData.providerFiles.length||reviewedData.providerDirectories.length){
         const folder=path.join(destination,'.ponderosa-portable-review','provider-files');await fs.mkdir(folder,{mode:0o700});
         const manifest=[];
         for(const [index,file] of reviewedData.providerFiles.entries()){
           const reviewFile=`${index}.review`;
           await fs.writeFile(path.join(folder,reviewFile),Buffer.from(file.dataBase64,'base64'),{flag:'wx',mode:0o600});
-          manifest.push({path:file.path,reviewFile,removedSecretFields:file.removedSecretFields});
+          manifest.push({path:file.path,reviewFile,removedSecretFields:file.removedSecretFields,...(file.metadata?{metadata:file.metadata}:{})});
         }
-        await fs.writeFile(path.join(folder,'manifest.json'),JSON.stringify({activation:'inert_review_only',files:manifest},null,2),{flag:'wx',mode:0o600});
+        await fs.writeFile(path.join(folder,'manifest.json'),JSON.stringify({activation:'inert_review_only',files:manifest,directories:reviewedData.providerDirectories},null,2),{flag:'wx',mode:0o600});
       }
     }
     for(const folder of [...directories].sort((a,b)=>b.path.split('/').length-a.path.split('/').length)){

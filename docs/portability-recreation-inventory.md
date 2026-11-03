@@ -773,3 +773,42 @@ APIs and representation; independent-writer snapshot/drain contracts.
 These are remaining recreation requirements, not approved exclusions or evidence
 that Bible #8 is complete. Source additions are untested; no execution validation,
 native equivalence, round trip or arbitrary-writer atomicity is claimed.
+
+
+### Selected provider directory and metadata evidence
+
+The current reviewed-user-data manifest requires `providerDirectories`, including
+an empty array for Git-only selection. Harness files require `metadata` with
+`mode` (the original low 12 POSIX mode bits, including special bits) and
+`mtimeNs` (canonical signed decimal nanoseconds since the Unix epoch). Git virtual
+originals have no provider metadata. Selected provider directories carry their
+path and the same metadata, including empty directories and selected family
+roots. No source UID, ownership or destination authority is transported.
+
+Live capture uses the existing fixed family roots and opaque subtree classifier;
+it does not follow configured or external paths. Directory identities are
+recorded before enumeration and checked again after all capture, as are file
+identities returned by the bounded no-follow original reader. This detects
+observed changes, not an atomic snapshot against independent writers. Files and
+directories share a 1000-record cap; byte caps and secret rules remain unchanged.
+The shared parser rejects unselected families, duplicate or conflicting file and
+directory paths, noncanonical timestamp integers and out-of-range modes before
+working-folder destination writes. This is the current pre-release format;
+missing metadata is refused rather than guessed or upgraded.
+
+Import retains the authoritative original manifest unchanged. Numbered mode0600
+nonexecutable review files and their map retain file metadata, and the map's
+`directories` records preserve directory existence and metadata even when there
+are no files. These records are evidence for a subsequent reviewed application;
+source execute/set-ID/sticky bits are never applied to review copies. No active
+provider settings, skill, hook or executable is installed. Retained re-export
+revalidates the authoritative original manifest and its exact artifact bytes;
+it never promotes generated maps or review files into authority.
+
+This completes metadata transport and review-map preservation only. Native
+recreation of the directories and metadata remains unfinished: it requires an
+explicit user-selected application operation, exact destination ownership and
+conflict/replacement handling, plus a host operation capable of applying the
+retained nanosecond timestamps without silently rounding them. Inert records do
+not satisfy full native recreation under Bible #8. No tests, test preparation,
+builds, typechecks or runtime/native/provider execution qualified this change.
