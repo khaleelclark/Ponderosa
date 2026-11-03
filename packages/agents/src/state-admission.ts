@@ -112,7 +112,7 @@ const predecessorVersions = [
   "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
   "0029_assistant_workspace.sql", "0030_agent_run_pauses.sql",
   "0031_branch_initial_checkpoints.sql", "0032_branch_unit_snapshots.sql",
-  "0033_branch_checkpoint_invocations.sql",
+  "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql",
 ] as const;
 const predecessorContracts = new Map<string, string>();
 function isPredecessorContract(actual: string, budget: StateReadBudget): boolean {
@@ -322,6 +322,11 @@ export class StateAdmission {
     return state;
   }
   retain(): StateAdmission { return StateAdmission.issue(this.#state()); }
+  /** Run only with the live native data-root capability, never a serialized
+   * path as proof. The caller must retain this admission for its entire use. */
+  withDirectoryAuthority<T>(use:(authority:DataDirectoryAuthority)=>T):T {
+    return use(this.#state().authority);
+  }
   assertRoot(path: string): void {
     const state = this.#state();
     if (physicalDirectoryIdentity(path) !== state.physicalIdentity) refuse();

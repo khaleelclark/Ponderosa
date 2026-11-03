@@ -1261,7 +1261,7 @@ export function registerAgentPackageRoutes(
     return result;
   });
 
-  const downloads=packageExportDownloads(app,context.dataDir);
+  const downloads=packageExportDownloads(app,context.dataDir,context.store.sqlite,undefined,typeof context.store.stateAdmission==='function'?()=>context.store.stateAdmission():undefined);
   const exportPackage=async(agentId:string,input:Record<string,unknown>,reply:FastifyReply,attachment=false)=>withAgentImportAdmission(async()=>{
     exactObjectFields(input,['mode','organization','download','workingFiles','wholeWorkingFolder','organizationWorkingFolders','reviewedUserData','gitStorageBindings'],'Agent export');
     for(const key of ['organization','download','wholeWorkingFolder','organizationWorkingFolders'])if(input[key]!==undefined&&typeof input[key]!=='boolean')throw new AssetError(400,'Export choices must be explicit booleans');

@@ -269,7 +269,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   app.post<{Params:{id:string}}>('/api/branches/installations/:id/cancel',async(request,reply)=>{
     try{const result=await context.installations.cancel(request.params.id);await sources.refresh();notify();return result}catch(error){return reply.code(409).send({error:(error as Error).message})}
   });
-  const packageDownloads=packageExportDownloads(app,context.dataDir);
+  const packageDownloads=packageExportDownloads(app,context.dataDir,context.store.sqlite,undefined,typeof context.store.stateAdmission==='function'?()=>context.store.stateAdmission():undefined);
   const exportPackage=async(id:string,input:Record<string,unknown>,reply:import('fastify').FastifyReply)=>{
     try{
       exactObjectFields(input,['mode','includeValues','fileSelections','download'],'Branch export');

@@ -2576,6 +2576,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, isolated owned native data directory; Linux pool authority, no production files",
       "origin": "Held export pool identity, issuance, replacement and restrictive umask"
+    },
+    {
+      "path": "tests/organizations/sqlite-package-export.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces, owned disposable local SQLite stores; no provider account or production state",
+      "origin": "Bounded durable SQLite export cache, exact retry/restart, repeated expiry reclaim and unknown reader hold"
     }
   ],
   "retainedReleasePayload": [
