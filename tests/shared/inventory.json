@@ -1850,6 +1850,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server workspaces; locked existing dependencies; inert private fixtures, no provider account",
       "origin": "Register existing deferred fixture with the owned workspace resolver"
+    },
+    {
+      "path": "tests/organizations/retained-evidence-discovery.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; temporary metadata-only evidence directories; no providers or production state",
+      "origin": "Bible12/19 recovery discovery: no silent thousand-entry omission; revision-bound pages, stale cursor refusal and preserved evidence bytes"
     }
   ],
   "retainedReleasePayload": [
