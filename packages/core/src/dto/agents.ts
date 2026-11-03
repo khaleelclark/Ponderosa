@@ -200,6 +200,8 @@ export interface AgentPortablePackageDto {
   /** Explicit independent same-Chat roots for grouped imports; never synthesizes reporting edges. */
   rootRefs?: string[];
   agents: PortableAgentNodeDto[];
+  /** Inert selected-root association evidence; never destination authority. */
+  gitStorageBindings?: import('../portable-reviewed-user-data.js').PortableGitStorageBinding[];
   outputRoles?: PortableOutputRoleDto[];
   /** Full-mode selected Chat/team and included Agent private memory; grants are never transported. */
   memory?: PortablePackageMemoryDto[];
@@ -217,6 +219,7 @@ export interface ImportAgentPackageRequest {
   /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
   workingFilesActivation?: {sharedRoot?:string};
   reviewedUserDataActivation?: import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;
+  reviewedMetadataActivation?: import('../portable-reviewed-user-data.js').ReviewedMetadataActivation;
   accessSettingsResolution?: {action:"keep_destination"|"use_source";reviewSha256:string;
     /** Exhaustive per-node human choices for one reviewed organization import. */
     agentActions?:Record<string,"keep_destination"|"use_source">};
@@ -239,6 +242,7 @@ export interface CopyAgentPackageRequest {
   /** Explicitly populate fresh native roots; Shared requires the NEW managed Chat root confirmation. */
   workingFilesActivation?: {sharedRoot?:string};
   reviewedUserDataActivation?: import('../portable-reviewed-user-data.js').ReviewedUserDataActivation;
+  reviewedMetadataActivation?: import('../portable-reviewed-user-data.js').ReviewedMetadataActivation;
   /** Optional new name for the copied organization root; descendants retain their names. */
   rootTitle?: string;
   /** Template copies omit history and files. Defaults to full. */

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import type {AgentPortablePackageDto,PortableAgentNodeDto,PortableArtifactDto,PortablePackageMemoryDto} from '@ponderosa/core';
+import type {AgentPortablePackageDto,PortableAgentNodeDto,PortableArtifactDto,PortablePackageMemoryDto,PortableGitStorageBinding} from '@ponderosa/core';
 import {stableJson} from '@ponderosa/agents';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 import {rewritePortableArtifactReferences} from './artifact-refs.js';
@@ -14,12 +14,23 @@ export interface AgentPackageComposition {
 }
 const identity=(kind:string,...parts:string[])=>`composed-${kind}-${createHash('sha256').update(JSON.stringify(parts)).digest('hex')}`;
 
+/** Remap the entire captured closure, including inert originals' provenance refs. Missing roots refuse. */
+export function remapPortableGitStorageBinding(binding:PortableGitStorageBinding,roots:ReadonlyMap<string,string>,id:string):PortableGitStorageBinding {
+  const map=(ref:string)=>{const mapped=roots.get(ref);if(!mapped)throw new Error('Composition requires the complete Git storage root closure');return mapped;};
+  return {...binding,id,worktreeRootRef:map(binding.worktreeRootRef),storageRootRef:map(binding.storageRootRef),
+    ...(binding.capture?{capture:{...binding.capture,
+      roots:binding.capture.roots.map(root=>({...root,rootRef:map(root.rootRef)})).sort((a,b)=>a.rootRef<b.rootRef?-1:a.rootRef>b.rootRef?1:0),
+      records:binding.capture.records.map(record=>({...record,rootRef:map(record.rootRef)})),
+    }}:{})};
+}
+
 /** Pure deterministic composition. Conflicting independently captured snapshots refuse, never win by order. */
 export async function composeAgentPackages(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>{
   if(!inputs.length||new Set(inputs.map(input=>input.ref)).size!==inputs.length)throw new Error('Compose distinct nonempty Agent identities');
   const nodes:PortableAgentNodeDto[]=[],artifactRefs:AgentPackageComposition['artifactRefs']=Object.fromEntries(inputs.map(input=>[input.ref,{}])),workingRootRefs:Record<string,string>=Object.fromEntries(inputs.map(input=>[input.ref,'']));
   const memories=new Map<string,PortablePackageMemoryDto>();
   const sourceChats=new Set<string>();
+  const gitStorageBindings:NonNullable<AgentPortablePackageDto['gitStorageBindings']>=[];
   const folders=new Map<string,{owner:PortableAgentNodeDto;files:Map<string,{file:NonNullable<PortableAgentNodeDto['workingFiles']>[number];sha256:string}>}>();
   const mode=inputs[0]!.package.mode;
   const instructions=inputs[0]!.package.sourceProjectInstructions;
@@ -66,6 +77,12 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
     }
     const rootKey=node.workingCopyMode==='shared'&&node.sourceChat?identity('root','shared',node.sourceChat.ref):identity('root',input.ref,node.workingRootRef??oldRef);
     workingRootRefs[input.ref]=rootKey;
+    if(pkg.gitStorageBindings){
+      const finalRoots=new Map(node.workingRootRef?[[node.workingRootRef,rootKey]]:[]);
+      for(const binding of pkg.gitStorageBindings){
+        gitStorageBindings.push(remapPortableGitStorageBinding(binding,finalRoots,identity('git-binding',input.ref,binding.id)));
+      }
+    }
     if(!node.workingFolder&&!node.workingFiles?.length)continue;
     const previous=folders.get(rootKey);
     const group=previous??{owner:node,files:new Map()};
@@ -105,6 +122,7 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
   if(!roots.length)throw new Error('Composed Agents need a reporting root');
   const result:AgentPortablePackageDto={schema:'ponderosa.agent-package.v1',mode,kind:nodes.length===1?'agent':'organization',exportedAt:inputs.map(input=>input.package.exportedAt).sort().at(-1)!,sourceLabel:inputs[0]!.package.sourceLabel,rootRef:roots[0]!,...(roots.length>1?{rootRefs:roots}:{}),agents:nodes,...(instructions!==undefined?{sourceProjectInstructions:instructions}:{}),...(memories.size?{memory:[...memories.values()]}:{})};
   const roles=inputs.flatMap(input=>(input.package.outputRoles??[]).map(role=>({...role,ref:input.ref})));
+  if(gitStorageBindings.length)result.gitStorageBindings=gitStorageBindings;
   if(roles.length)result.outputRoles=roles;
   validatePortableAgentPackage(result);
   return {package:result,orderedRefs:nodes.map(node=>node.ref),artifactRefs,workingRootRefs};

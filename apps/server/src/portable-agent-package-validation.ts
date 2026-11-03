@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
 import {portableWorkingPath,validateWorkingTopology} from './portable-working-files.js';
 import {BUILT_IN_CAPABILITIES,parseConnectorCapabilityId} from '@ponderosa/core';
@@ -7,6 +8,7 @@ import {validateMemorySnapshot} from './portable-memory-snapshot.js';
 import {normalizeAgentRole,AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed,AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
 import {CANONICAL_ARTIFACT_ID,portableAgentTopologyError} from './artifact-refs.js';
 import {exactObjectFields,validatedObject} from './object-validation.js';
+import {validatePortableGitStorageBindings,parseReviewedUserData,gitBindingSourceEvidence} from './portable-reviewed-user-data.js';
 import {portableBase64ByteLength} from './agent-package-codec.js';
 
 
@@ -19,7 +21,7 @@ export interface ValidatedPortableAgentPackage {
 /** Mutation-free parser shared by standalone and Branch package imports. */
 export function validatePortableAgentPackage(value:unknown):ValidatedPortableAgentPackage {
   const record=validatedObject(value,'Agent package');
-  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','rootRefs','agents','memory','outputRoles'],'Agent package');
+  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','rootRefs','agents','memory','outputRoles','gitStorageBindings'],'Agent package');
   if(record.schema!=='ponderosa.agent-package.v1'||(record.mode!=='template'&&record.mode!=='full')||!Array.isArray(record.agents)||record.agents.length<1)throw new Error('invalid Ponderosa Agent package');
   if(record.agents.length>AGENT_PACKAGE_MAX_AGENTS)throw Object.assign(new Error(`Agent package contains ${record.agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`),{statusCode:413});
   if(typeof record.exportedAt!=='string'||!Number.isFinite(Date.parse(record.exportedAt))||typeof record.sourceLabel!=='string'||(record.sourceProjectInstructions!==undefined&&(typeof record.sourceProjectInstructions!=='string'||record.sourceProjectInstructions.length>100_000)))throw new Error('Agent package metadata is invalid');
@@ -105,6 +107,28 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
     }
   }
   const rootRefs=new Set(portable.agents.flatMap(node=>node.workingRootRef?[node.workingRootRef]:[]));
+  if(portable.gitStorageBindings!==undefined){
+    if(portable.mode!=='full')throw new Error('Git storage bindings require full selected working-root evidence');
+    validatePortableGitStorageBindings(portable.gitStorageBindings,rootRefs);
+    const originalProofs=new Map<string,{sha256:string;review:ReturnType<typeof parseReviewedUserData>}>();
+    for(const binding of portable.gitStorageBindings){
+      if(!binding.capture)continue;
+      const worktree=portable.agents.find(node=>node.workingRootRef===binding.worktreeRootRef&&node.workingFolder);
+      const file=worktree?.workingFiles?.find(file=>file.path==='.ponderosa-portable-review/user-data.json'),artifact=worktree?.artifacts?.find(artifact=>artifact.ref===file?.artifactRef);
+      if(!artifact||!binding.capture.reviewSha256)throw new Error('Captured Git storage needs its included authoritative review original and hash');
+      let original=originalProofs.get(artifact.ref);
+      if(!original){
+        if(artifactBytes.get(artifact)!>48*1024*1024)throw new Error('Git association review original exceeds its bound');
+        const data=Buffer.from(artifact.dataBase64,'base64');
+        original={sha256:createHash('sha256').update(data).digest('hex'),review:parseReviewedUserData(data)};originalProofs.set(artifact.ref,original);
+      }
+      if(original.sha256!==binding.capture.reviewSha256||original.review.git?.reftableReview!==null||!original.review.associationReview?.some(captured=>gitBindingSourceEvidence(captured)===gitBindingSourceEvidence(binding)))throw new Error('Git captured topology differs from the authoritative file-ref review original');
+      for(const node of portable.agents.filter(node=>node.workingRootRef===binding.storageRootRef)){
+        const inStorage=(name:string)=>binding.relativePath==='.'||name===binding.relativePath||name.startsWith(binding.relativePath+'/');
+        if(node.workingFiles?.some(file=>inStorage(file.path))||node.workingFolder?.directories.some(directory=>inStorage(directory.path))||node.workingFolder?.links?.some(link=>inStorage(link.path)))throw new Error('Captured Git storage cannot also be ordinary working-file topology');
+      }
+    }
+  }
   for(const ref of rootRefs){const members=portable.agents.filter(node=>node.workingRootRef===ref);if(members.filter(node=>node.workingFolder).length!==1||members.filter(node=>node.workingFiles?.length).length>1)throw new Error('A working root needs exactly one folder manifest and one originals owner');}
   if(rootRefs.size&&portable.agents.some(node=>!node.workingRootRef))throw new Error('Organization folder bundles must identify every Agent root');
   return {package:portable,artifactBytes,totalArtifactBytes};

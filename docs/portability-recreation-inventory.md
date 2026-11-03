@@ -1065,3 +1065,217 @@ The shared local Git config lexer follows pinned Git v2.56.0 `get_next_char`/`pa
 Provider application owns every opened descriptor before its first stat, attempts all closes, and preserves the primary application code/observed partial-state evidence when cleanup also fails. Cleanup failure after otherwise successful application reports an incomplete, possibly partial result; it never authorizes rollback or retry. Root-inspection cleanup failure preserves its primary cause before any provider mutation. These are source changes awaiting independent exact-head review; no parser/native execution or installed qualification was performed.
 
 Destination-root finalization also owns its descriptor before stat, runs after ordinary/provider children, attempts close on every path, and keeps the primary finalization cause/code plus any cleanup failures. A failed finalization collects held-descriptor observed identity/mode/mtime where stat remains available; successful metadata application followed by failed cleanup is explicitly incomplete and possibly partial. No automatic retry, deletion or rollback is authorized.
+
+## Unreviewed selected-root and metadata contract candidate after 24a
+
+This candidate is incomplete implementation, not an owner release or evidence of
+Quality SUPPORT. The released 24a source and its review remain separate. No native
+117 implementation is copied into this tree and no new native function is called.
+
+The public selection type adds independently selectable
+`extendedMetadata:{userXattrs,posixAcl}` and
+`persistentNodes:{fifo,evidenceOnly}`. Both keys in each supplied family are
+required booleans. Omit an unused family; all-false family objects, unknown keys,
+wrong types and an entirely empty selection refuse. Git/harness booleans remain
+explicit. The retained selection type no longer projects away these families,
+and retained-original selection equality checks them. Live capture of either
+new family currently refuses before any metadata values are inspected. A
+manifest claiming these families without authoritative node evidence also
+refuses. There is no serialized metadata evidence carrier yet. In particular,
+unsupported/unread/error states have not been represented as successful absence.
+
+The separate `reviewedMetadataActivation` shape is
+`{sourceQualifier,destinationQualifier,principalMappings,replaceInheritedUserAndPosixAcl:true,rootRefs,fifo}`.
+Mappings contain `{sourceQualifier,kind:'user'|'group',sourceId,destinationId}`.
+Validation bounds qualifiers, rejects unknown fields and duplicate roots, requires
+canonical decimal IDs in 0..4294967294, and rejects duplicate source or collapsing
+destination mappings of the same kind. This is structural validation only:
+completeness against captured owners/named ACLs, observed destination provenance,
+current destination ownership, combined selected-family evidence and exclusive
+custody are not implemented. Consequently ordinary and Branch paths explicitly
+refuse metadata application before it can reach filesystem mutation. No new
+per-root applying/completed/incomplete metadata receipt is fabricated.
+
+The activation field is retained in ordinary request/upload allowlists, JSON
+worker and direct canonical hashes, copy identity/forwarding, access-review
+selection/hash inputs and ordinary Branch grouped/single forwarding. The
+unsupported gate currently prevents a successful metadata access preview.
+The existing git/harness activation is independent and unchanged in authority.
+
+Incoming export `gitStorageBindings` use
+`{id,worktreeAgentId,storageAgentId,relativePath,role:'common'|'private'|'module'}`.
+The ordinary export query takes a JSON array; the internal Branch export options
+carry the same array. Selections require a full organization, all whole working
+folders, live Git selection, included current Agent selectors, and same observed
+owners. Relative paths are canonical contained spellings; `.` names the selected
+storage root itself. No selected path is followed from the binding yet: reciprocal
+descriptor-relative association/content capture is unfinished and explicitly
+refuses. The current per-Agent Branch exporter cannot supply another root's
+authority; no new export-wide Branch orchestration has been implemented.
+
+Ordinary organization-folder export now allocates the complete selected-root ref
+map before associated Git reads. POSIX roots are opened no-follow and descriptors
+enter cleanup ownership before fallible stat. Canonical root identities and
+registered current Agent membership are checked before each root capture and
+before return. Identical canonical roots share a ref. Different canonical aliases
+with equal device/inode refuse until mount/view equivalence is proved; root inode
+equality does not prove identical nested mount views. Windows ordinary export
+retains named identity checks without claiming held-descriptor cross-root proof.
+Every owned descriptor close is attempted, and cleanup failure preserves the
+primary cause/code and observed evidence. These checks are drift detection,
+not coherent acquisition against independent writers.
+
+The package carrier `gitStorageBindings` uses
+`{id,worktreeRootRef,storageRootRef,relativePath,role}`. Shared validation requires
+both final roots in actual full-package closure, unique IDs/role associations and
+nonconflicting storage roles. The composer deterministically remaps both root
+refs and binding IDs for its currently supported complete single-Agent inputs;
+it refuses incomplete closure and validates the result. Multi-root individual
+Branch composition/capture and reciprocal provenance remain unfinished. Imported
+bindings are inert declarations, never proof of source association or a current
+grant. Native Git activation of a package carrying bindings refuses until mapped
+recreation is implemented; original host absolute pointers are never installed.
+
+### Finite eleven-row disposition at this candidate
+
+| Row | Current source disposition |
+| --- | --- |
+| 1. Git refs/storage | Existing contained file refs and standalone reftable retained; external association capture and linked common/private stack provenance remain unfinished. |
+| 2. Index semantics | Existing supported full/split/sparse review evidence retained; unsupported native optional/mandatory semantics still refuse. |
+| 3. Historical refs/logs | Existing historical pointer/reflog/reftable evidence retained; no new execution qualification. |
+| 4. Extra roots/modules | Selection types/validation, prebuilt ordinary root map, inert package closure and both-ref composition added; actual reciprocal capture/native recreation and Branch-wide orchestration unfinished. |
+| 5. Configuration/hooks | Existing spans and narrow literal native configuration retained; external includes/hooks/path activation unfinished. |
+| 6. Provider metadata | Released 24a descriptor/cleanup/finalization corrections retained; no new execution claim. |
+| 7. Native roots | Existing one-complete-Shared NEW native Git flow retained; multiple-root/Separate Git mapped recreation unfinished. |
+| 8. Links | Existing passive in-root topology retained; absolute/cross-root link mapping and callers unfinished. |
+| 9. Persistent nodes | Selection/activation structural contract added; native117 FIFO/evidence inspection not called, no carrier/creation/grant receipts; device/socket recreation absent. |
+| 10. ACL/user xattrs | Structural selection/activation validation, retained-selection guard and forwarding added; source/destination qualifier observation, node evidence, secret-safe capture, native application and receipts unfinished. |
+| 11. Coherent acquisition | No actual snapshot or independent-writer drain backend. Root identity/drift checks do not establish atomicity. |
+
+### Frozen backend wire and reserved UI caller list
+
+This describes the candidate wire only; metadata capture/restore and cross-root
+controls must not be advertised as working. Web remains UI-owned. Later caller
+work includes ordinary Agent export selections (naming full attribute VALUES and
+possible sensitive contents before affirmative capture), organization storage
+Agent selectors, import/copy/upload activation choices, exact access-review
+binding, Branch staged export/import selections and grouped/single forwarding,
+and observed partial-application display once real receipts exist. No source
+Agent IDs or imported principal IDs become destination authority. The current
+full-package sensitive-data warning and secret exclusions remain mandatory.
+
+The candidate was limited to source editing, Git metadata, physical bytes/hashes
+and whitespace. No tests, fixtures/preparation, builds, typechecks, compilation,
+Node/parser/native/product/provider/browser/liveDB/capture execution or new
+Agents. Native parity, roundtrip, durability, atomicity and Bible acceptance are
+unqualified. Remaining implementation is feasible source work; approved
+abc903/14ae/13f817 are not pending approval and no new external technical blocker
+has been established by this candidate.
+
+
+## Bounded ordinary organization common/private capture increment (unreviewed source)
+
+This section records the current increment; earlier 256 candidate dispositions
+above describe its predecessor. This is a source candidate awaiting independent
+review. No capture, native command, parser, build, typecheck, or test was executed
+for qualification of this increment.
+
+Ordinary full organization export now connects `gitStorageBindings` to the
+existing supported file-ref Git capture. The human selects included source
+Agents, whole working folders and Git. The server allocates the complete final
+working-root map first, deduplicates roots, checks current organization membership,
+registered roots and owners, then proves each common/private pair. Modules,
+linked reftable, non-Linux cross-root capture, overlapping selected roots and
+cross-device descendant traversal and unproved physical aliases refuse. A storage-only root can participate
+without fabricating a Git review for that root; whole-root storage combined with
+harness review refuses because it cannot also carry ordinary working files.
+
+All source Git directory components are opened relative to held selected root
+or descendant descriptors with no-follow and same-owner checks. Source files
+remain held across comparison snapshots; readers borrow handles and do not
+reopen source originals. Raw absolute and relative pointers are interpreted
+component by component against canonical selected roots and their known
+ancestors. A declaration is checked against the exact pointer target before
+association-target reads. The selected `.git` file must identify the selected
+private directory; its `commondir` must identify the selected common directory;
+its `gitdir` backlink must identify that exact selected worktree `.git` file.
+The private directory must have the common `worktrees/<name>` topology. The
+common `worktrees` directory is held, never enumerated. Only explicitly selected
+private storage is enumerated. Membership, roots, directory entries, held file
+identities and reciprocal originals are checked before and after capture; drift,
+unsupported evidence and cleanup failures fail closed. Every descriptor cleanup
+is attempted and preserves primary and cleanup errors. No source rollback,
+automatic retry or source deletion was added.
+
+The connected capture retains the existing bounded object, loose/packed ref,
+selected/shared reflog, HEAD/historical-pointer, index/split/sparse and literal
+configuration review families, secret exclusions and exact absence/error
+rules. Native parsing only receives the existing isolated copies/stdin, never
+live source pointer authority, includes, URLs or module initialization. Selected
+common/private storage is excluded from ordinary working-file topology, including
+storage roots selected as `.`. Unsupported required formats still refuse.
+
+### Frozen backend carrier and caller scope
+
+Incoming selectors remain
+`{id,worktreeAgentId,storageAgentId,relativePath,role:'common'|'private'|'module'}`;
+module capture stays unsupported. Generated package bindings retain
+`{id,worktreeRootRef,storageRootRef,relativePath,role}` and add optional
+`capture:{version:1,currentAuthority:false,reviewSha256?,roots,records}`.
+`roots` are `{rootRef,sourcePath,identity}`. `records` are
+`{rootRef,relativePath,identity,dataBase64?,absent?:true}`. Identities retain
+observed device/inode/mode/owner/size/mtime-ns/ctime-ns, as evidence only. Exact
+bounded gitfile/commondir/backlink bytes remain inert; common association
+absences are explicit. Package captures require the SHA256 of the included
+canonical review artifact. `ReviewedUserData.associationReview` retains the
+unhashed proof pair inside that original, avoiding a circular hash.
+
+Shared validation checks both final-root refs, proof closure, reciprocal pointer
+semantics, directory evidence, explicit common absences, the authoritative review
+artifact hash/content and storage-versus-working-topology collisions. Composer
+remapping updates both binding refs and every nested provenance ref while
+retaining original bytes/hash. The current single-Agent Branch composer still
+refuses incomplete cross-root closure; Branch-wide capture/composition is a
+follow-on. Retained-original export preserves the embedded association proof
+verbatim and never recaptures source paths or manufactures new live closure.
+Mapped native activation refuses both outer bindings and embedded association
+originals, including retained originals without outer bindings. Recreating
+mapped roots remains separate work.
+
+Exact changed caller surfaces are `routes/agent-packages.ts`:
+`buildPortablePackage` (HTTP organization export and existing internal
+`exportAgent`); `portable-working-files.ts`: `inventoryWorkingFolder`,
+`exportWorkingFiles`; `portable-reviewed-user-data.ts`:
+`createGitExportCapture`, `verifyGitExportAssociations`, `gitAssociation`,
+`selectedReviewedGitStorage`, `exportReviewedGit`, `exportReviewedUserData`,
+`regularOriginal`, `captureSparseConfiguration`, `captureIndexStorage`,
+`captureGitRaw`, `validatePortableGitStorageBindings`,
+`gitBindingSourceEvidence`, `parseReviewedUserData`,
+`planReviewedUserDataActivation`, `validateNativeGitSelection`;
+`portable-agent-package-validation.ts`: `validatePortableAgentPackage`;
+`compose-agent-packages.ts`: `remapPortableGitStorageBinding`,
+`composeAgentPackages`; and the shared core portable user-data carriers.
+No worker-envelope field changed: bindings/proofs are inside the package and its
+existing canonical payload hash. Metadata flags and activation retain their
+explicit unsupported guards. UI remains reserved; later UI controls must use
+these source-Agent selectors and existing full-package sensitive-data review.
+No UI or Runtime custody/staging source was edited.
+
+### Finite eleven-row disposition for this increment
+
+| Row | Current source disposition |
+| --- | --- |
+| 1. Git refs/storage | Ordinary selected cross-root common/private file-ref capture connected; linked reftable and mapped recreation remain unsupported. Existing standalone reftable source retained. |
+| 2. Index semantics | Existing bounded full/split/sparse review capture reused through held source IO; unsupported formats still refuse. |
+| 3. Historical refs/logs | Existing selected/shared historical-pointer and reflog capture retained; no new execution qualification. |
+| 4. Extra roots/modules | Complete ordinary selected-root context, reciprocal capture provenance, closure validation and both-ref remap connected. Modules, overlapping roots and Branch-wide orchestration remain follow-on. |
+| 5. Configuration/hooks | Existing exact nonsecret/literal configuration and narrow hook evidence retained; external include/hook/path activation remains unsupported. |
+| 6. Provider metadata | Released predecessor behavior retained; no native117 metadata calls or new harness equivalence claim. |
+| 7. Native roots | Mapped native Git activation still refuses; multiple-root/Separate Git recreation remains follow-on. |
+| 8. Links | Existing passive in-root topology retained; mapped absolute/cross-root links remain follow-on. |
+| 9. Persistent nodes | Metadata selection contract retained with unsupported capture/application guards; FIFO integration and device/socket recreation remain absent. |
+| 10. ACL/user xattrs | Structural selection/activation retained; metadata evidence/native callers/current grants/receipts remain follow-on. |
+| 11. Coherent acquisition | No snapshot or independent-writer drain backend. Held custody and observed-change refusal provide no atomicity or durability qualification. |
+
+This bounded source candidate makes no native parity, roundtrip, durability,
+atomicity, review, release, integration or whole-Bible acceptance claim.

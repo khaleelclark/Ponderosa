@@ -1,5 +1,5 @@
-import {validateReviewedUserDataActivation} from './portable-reviewed-user-data.js';
-import {validateReviewedUserDataSelection} from './portable-reviewed-user-data.js';
+import {validateReviewedUserDataActivation,requireReviewedMetadataApplication} from './portable-reviewed-user-data.js';
+import {validateReviewedUserDataSelection,validateGitStorageSelections} from './portable-reviewed-user-data.js';
 import {composeBranchChat} from './branch-package-group.js';
 import {isAbsolute,resolve,sep} from 'node:path';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
@@ -209,7 +209,8 @@ export class BranchInstallationService {
   if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid export file selections');
   const requested=new Set(Object.keys(fileSelections));
   for(const selection of Object.values(fileSelections)){
-   if(!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['selectedWorkingFiles','wholeWorkingFolder','reviewedUserData'].includes(k))||selection.wholeWorkingFolder!==undefined&&typeof selection.wholeWorkingFolder!=='boolean'||selection.selectedWorkingFiles!==undefined&&(!Array.isArray(selection.selectedWorkingFiles)||selection.selectedWorkingFiles.some(p=>typeof p!=='string')))throw new Error('Invalid export file selection');
+   if(!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['selectedWorkingFiles','wholeWorkingFolder','reviewedUserData','gitStorageBindings'].includes(k))||selection.wholeWorkingFolder!==undefined&&typeof selection.wholeWorkingFolder!=='boolean'||selection.selectedWorkingFiles!==undefined&&(!Array.isArray(selection.selectedWorkingFiles)||selection.selectedWorkingFiles.some(p=>typeof p!=='string')))throw new Error('Invalid export file selection');
+   if(selection.gitStorageBindings!==undefined){validateGitStorageSelections(selection.gitStorageBindings);throw new Error('Cross-root Branch capture requires an export-wide selected-root context; an individual Agent export cannot authorize another root');}
    if(selection.reviewedUserData!==undefined){validateReviewedUserDataSelection(selection.reviewedUserData);if(mode!=='full'||!selection.wholeWorkingFolder)throw new Error('Git/settings review data requires full export and explicit whole working-folder selection');}
   }
   const branch=this.branches.getBranch(branchId),definition=branch&&this.branches.version(branchId,branch.versionId)?.definition;
@@ -420,7 +421,7 @@ export class BranchInstallationService {
   if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid working folder destinations');
   const targetKeys=new Set(pkg.chats.flatMap(c=>c.agents.map(a=>JSON.stringify([c.ref,a.ref])))),paths:string[]=[];
   for(const [key,selection] of Object.entries(fileSelections)){
-   if(!targetKeys.has(key)||!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['workingFilesDestination','workingRootDestinations','workingFilesActivation','reviewedUserDataActivation','newManagedChatFolderName'].includes(k)))throw new Error('Invalid working folder destination target');
+   if(!targetKeys.has(key)||!selection||typeof selection!=='object'||Array.isArray(selection)||Object.keys(selection).some(k=>!['workingFilesDestination','workingRootDestinations','workingFilesActivation','reviewedUserDataActivation','reviewedMetadataActivation','newManagedChatFolderName'].includes(k)))throw new Error('Invalid working folder destination target');
    if(selection.workingFilesDestination&&selection.workingRootDestinations)throw new Error('Choose one folder destination format');
    if(selection.newManagedChatFolderName!==undefined){
     if(typeof selection.newManagedChatFolderName!=='string'||! /^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(selection.newManagedChatFolderName))throw new Error('Choose a safe NEW managed Chat folder name');
@@ -428,6 +429,7 @@ export class BranchInstallationService {
     if(group.agents.length>1){const combined=await composeBranchChat(group,this.engine!);if(combined.rootRef!==agentRef||Object.keys(fileSelections).some(k=>k!==key&&JSON.parse(k)[0]===chatRef))throw new Error('Choose grouped activation and recovery destinations on the first authored reporting root only');}
     if(selection.workingFilesActivation===undefined||selection.workingFilesActivation.sharedRoot!==undefined)throw new Error('Choose live activation, then confirm the actual created root in the staged review');
    }
+   if(selection.reviewedMetadataActivation!==undefined)requireReviewedMetadataApplication(selection.reviewedMetadataActivation);
    if(selection.reviewedUserDataActivation!==undefined){
     validateReviewedUserDataActivation(selection.reviewedUserDataActivation);
     if(!selection.workingFilesActivation)throw new Error('Reviewed user-data activation requires fresh live working roots');
@@ -547,7 +549,7 @@ export class BranchInstallationService {
  }
  private async importAccess(plan:Row,chatRef:string,agentRef:string,chatId:string,pkg:AgentPortablePackageDto):Promise<AccessChoice|undefined>{
   const selection=this.rolePlan(plan).fileSelections?.[JSON.stringify([chatRef,agentRef])];
-  if(!selection?.reviewedUserDataActivation&&!pkg.agents.some(node=>node.accessSettings?.restrictedCapabilityIds.length))return;
+  if(!selection?.reviewedUserDataActivation&&!selection?.reviewedMetadataActivation&&!pkg.agents.some(node=>node.accessSettings?.restrictedCapabilityIds.length))return;
   const review=await this.engine!.reviewAccess(pkg,chatId,selection);
   this.ensureApplying(plan.id,plan.branch_id);
   const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!,state=this.rolePlan(current),choice=state.accessChoices?.[JSON.stringify([chatRef,agentRef])];
@@ -736,7 +738,7 @@ export class BranchInstallationService {
      if(!resources.length||resources.every(r=>!r)){
       const accessSettingsResolution=await this.importAccess(plan,c.ref,combined.rootRef,chatId,combined);
       this.ensureApplying(plan.id,branchId);
-      const result=await this.engine!.importAgent(chat.projectId,chatId,combined,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':group',{signal:controller.signal,accessSettingsResolution,workingFilesDestination:groupChoice!.workingFilesDestination,workingRootDestinations:groupChoice!.workingRootDestinations,workingFilesActivation:groupChoice!.workingFilesActivation,reviewedUserDataActivation:groupChoice!.reviewedUserDataActivation,branchHooks:{
+      const result=await this.engine!.importAgent(chat.projectId,chatId,combined,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':group',{signal:controller.signal,accessSettingsResolution,workingFilesDestination:groupChoice!.workingFilesDestination,workingRootDestinations:groupChoice!.workingRootDestinations,workingFilesActivation:groupChoice!.workingFilesActivation,reviewedUserDataActivation:groupChoice!.reviewedUserDataActivation,reviewedMetadataActivation:groupChoice!.reviewedMetadataActivation,branchHooks:{
        plan:(ids,receiptId)=>{if(!receiptId||ids.length!==refs.length||new Set(ids).size!==ids.length)throw new Error('Grouped import identity plan mismatch');this.store.sqlite.transaction(()=>{refs.forEach((ref,i)=>bind(c.ref,ref,ids[i]!,receiptId));})();},
        commit:result=>{if(refs.some((ref,i)=>result.agentRefs?.[ref]!==result.agentIds[i])||result.agentIds.length!==refs.length||refs.some((ref,i)=>get(c.ref,ref)?.local_id!==result.agentIds[i])||get(c.ref,combined.rootRef)?.local_id!==result.rootAgentId)throw new Error('Grouped import commit identity mismatch');}
       }});
@@ -767,7 +769,7 @@ export class BranchInstallationService {
       this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);
       await this.engine!.verifyStagedMemory(resource.creation_operation_id,a.definition);
      }
-     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,...(fileChoice?{workingFilesDestination:fileChoice.workingFilesDestination,workingRootDestinations:fileChoice.workingRootDestinations,workingFilesActivation:fileChoice.workingFilesActivation,reviewedUserDataActivation:fileChoice.reviewedUserDataActivation}:{}),branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});this.ensureApplying(plan.id,branchId);this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
+     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,...(fileChoice?{workingFilesDestination:fileChoice.workingFilesDestination,workingRootDestinations:fileChoice.workingRootDestinations,workingFilesActivation:fileChoice.workingFilesActivation,reviewedUserDataActivation:fileChoice.reviewedUserDataActivation,reviewedMetadataActivation:fileChoice.reviewedMetadataActivation}:{}),branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});this.ensureApplying(plan.id,branchId);this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
      const node=a.definition.agents[0]!;
      if(resource?.state!=='active')this.store.updateAgent(id,{title:node.title,activeEngine:bindings.engines?.[node.engine]??pkg.engines?.[node.engine]??node.engine,model:node.model??null,effort:node.effort??null,managementPermissions:node.managementPermissions});
     }

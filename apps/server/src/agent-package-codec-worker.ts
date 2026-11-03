@@ -29,7 +29,7 @@ async function parse(): Promise<void> {
   let canonicalPayloadHash: string | undefined;
   if (input.jsonEnvelope) {
     const envelope = validatedObject(portable, "Agent import request");
-    exactObjectFields(envelope, ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation"], "Agent import request");
+    exactObjectFields(envelope, ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId", "accessSettingsResolution", "workingCopyMode", "workingFilesDestination", "workingRootDestinations", "workingFilesActivation", "reviewedUserDataActivation", "reviewedMetadataActivation"], "Agent import request");
     metadata = Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== "package"));
     try { agentPackageJsonUtf8Bytes(metadata, AGENT_PACKAGE_METADATA_MAX_BYTES); }
     catch (error) {
@@ -58,6 +58,7 @@ async function parse(): Promise<void> {
       engineMapping: Object.fromEntries(Object.entries(mapping).map(([source, target]) => [source, (target as string).trim()])),
       ...(metadata.accessSettingsResolution?{accessSettingsResolution:metadata.accessSettingsResolution}:{}),
       ...(metadata.reviewedUserDataActivation?{reviewedUserDataActivation:metadata.reviewedUserDataActivation}:{}),
+      ...(metadata.reviewedMetadataActivation!==undefined?{reviewedMetadataActivation:metadata.reviewedMetadataActivation}:{}),
       ...(metadata.workingFilesActivation?{workingFilesActivation:metadata.workingFilesActivation}:{}),
       ...(metadata.workingRootDestinations?{workingRootDestinations:metadata.workingRootDestinations}:{}),
       ...(metadata.workingFilesDestination?{workingFilesDestination:metadata.workingFilesDestination}:{}),

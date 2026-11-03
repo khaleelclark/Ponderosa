@@ -1,7 +1,32 @@
 /** Explicit import authority; export family selection never implies activation. */
 export interface ReviewedUserDataActivation {git:boolean;harness:boolean}
 /** Human-selected export families; native import activation is a separate choice. */
-export interface ReviewedUserDataSelection {git:boolean;harness:boolean;source?:'live'|'retained_originals'}
+export interface ReviewedUserDataSelection {
+  git:boolean;harness:boolean;source?:'live'|'retained_originals';
+  /** Explicit complete nonsecret user.* names AND values; absence never grants capture. */
+  extendedMetadata?:{userXattrs:boolean;posixAcl:boolean};
+  /** Metadata only. Evidence for devices/sockets never grants recreation or adoption. */
+  persistentNodes?:{fifo:boolean;evidenceOnly:boolean};
+}
+/** Separate current human restore choice, never authority imported from a package. */
+export interface ReviewedMetadataActivation {
+  sourceQualifier:string;destinationQualifier:string;
+  principalMappings:Array<{sourceQualifier:string;kind:'user'|'group';sourceId:string;destinationId:string}>;
+  replaceInheritedUserAndPosixAcl:true;
+  rootRefs:string[];
+  fifo:boolean;
+}
+/** Incoming source Agent selectors, resolved only inside one selected full export. */
+export interface GitStorageSelection {
+  id:string;worktreeAgentId:string;storageAgentId:string;relativePath:string;role:'common'|'private'|'module';
+}
+/** Inert package topology. Both roots must belong to the final package closure. */
+export interface PortableGitStorageBinding {
+  id:string;worktreeRootRef:string;storageRootRef:string;relativePath:string;role:'common'|'private'|'module';
+  /** Exact captured source association. Historical evidence, never current source/destination authority. */
+  capture?:{version:1;currentAuthority:false;reviewSha256?:string;roots:Array<{rootRef:string;sourcePath:string;identity:string}>;
+    records:Array<{rootRef:string;relativePath:string;identity:string;dataBase64?:string;absent?:true}>};
+}
 /** Inert user-data transport. No source runtime, credential or worktree authority. */
 export interface ReviewedGitUserData {
   version:1;format:'sha1'|'sha256';
@@ -37,7 +62,10 @@ export interface ReviewedGitUserData {
   exclusions:string[];
 }
 export interface ReviewedUserData {
-  version:1;activation:'inert_review_only';selection:Pick<ReviewedUserDataSelection,'git'|'harness'>;git?:ReviewedGitUserData;
+  version:1;activation:'inert_review_only';
+  /** Retained verbatim with the canonical original; never activates or recaptures source paths. */
+  associationReview?:PortableGitStorageBinding[];
+  selection:Omit<ReviewedUserDataSelection,'source'>;git?:ReviewedGitUserData;
   recreationScope:{absoluteLinks:'refuse';crossRootLinks:'refuse';cyclicLinks:'refuse'|'passive_in_root';specialNodes:'refuse';acl:'not_inspected_preserve_source';xattrs:'not_inspected_preserve_source'};
   /** Selected harness metadata is evidence, never permission to apply executable modes. */
   providerDirectories:Array<{path:string;mode:number;mtimeNs:string}>;

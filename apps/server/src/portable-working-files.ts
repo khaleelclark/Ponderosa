@@ -4,7 +4,7 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import type {PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection} from '@ponderosa/core';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
-import {captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH} from './portable-reviewed-user-data.js';
+import {captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
 
 export function portableWorkingPath(value:unknown):string {
   if(typeof value!=='string'||!value||value.includes('\\')||value.includes('\0')||value.includes(':')||value.startsWith('/')||value.split('/').some(p=>!p||p==='.'||p==='..'))throw new Error('Select relative regular-file paths inside the working folder');
@@ -75,10 +75,10 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
 }
 
 /** Explicit selection only; no implicit traversal of user folders or native profiles. */
-export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string}):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
+export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string},gitCapture?:GitExportCapture):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
   const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
-  const gitStorage=reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
-  if(selected.some(name=>gitStorage.some(storage=>name===storage||name.startsWith(storage+'/'))))throw new Error('Selected Git storage cannot also be exported as ordinary working files');
+  const gitStorage=gitCapture?gitCapture.exclusions(root):reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
+  if(selected.some(name=>gitStorage.some(storage=>storage==='.'||name===storage||name.startsWith(storage+'/'))))throw new Error('Selected Git storage cannot also be exported as ordinary working files');
   const retained=reviewedSelection?.source==='retained_originals'?await captureRetainedReviewOriginal(root,reviewedSelection,retainedOriginal?.data??Buffer.alloc(0)):undefined;
   validateWorkingTopology([...selected.map(path=>({path})),...(reviewedSelection?[{path:REVIEWED_USER_DATA_PATH}]:[])],[],links,'passive_in_root');
   const verifyLinks=async()=>{for(const link of links){
@@ -115,9 +115,10 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
   }
   await verifyLinks();
   if(reviewedSelection){
-    const data=retained?.data??Buffer.from(JSON.stringify(await exportReviewedUserData(root,reviewedSelection)));
+    const data=retained?.data??Buffer.from(JSON.stringify(await exportReviewedUserData(root,reviewedSelection,gitCapture)));
     await retained?.verify();
     parseReviewedUserData(data);
+    if(gitCapture&&reviewedSelection.git)gitCapture.bindReview(root,data);
     bytes+=data.length;if(bytes>maxBytes)throw new Error('Reviewed Git/provider data exceeds the portable artifact limit');
     const ref=randomUUID();files.push({path:REVIEWED_USER_DATA_PATH,artifactRef:ref,mode:retainedOriginal?.mode??0o600,...(retainedOriginal?.mtime?{mtime:retainedOriginal.mtime}:{})});
     artifacts.push({ref,kind:'document',path:REVIEWED_USER_DATA_PATH,summary:'Inert Git and provider configuration review',createdAt:new Date().toISOString(),mediaType:'application/json',dataBase64:data.toString('base64')});
@@ -217,9 +218,9 @@ export async function importWorkingFiles(destination:string,files:readonly {path
 }
 
 /** Explicit whole-folder selection. Omit native ownership/credential paths and report every omission. */
-export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:ReviewedUserDataSelection):Promise<{mode:number;mtime:string;paths:string[];directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links:PortableWorkingLinkDto[]}> {
+export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:ReviewedUserDataSelection,gitCapture?:GitExportCapture):Promise<{mode:number;mtime:string;paths:string[];directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links:PortableWorkingLinkDto[]}> {
   const root=await fs.realpath(rootPath),paths:string[]=[],directories:Array<{path:string;mode:number;mtime:string}>=[],excludedPaths:string[]=[];
-  const gitStorage=reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
+  const gitStorage=gitCapture?gitCapture.exclusions(root):reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
   const links:PortableWorkingLinkDto[]=[],originals=new Map<string,{path:string;nlink:bigint;count:number}>();
   let entries=0;
   const walk=async(relative:string):Promise<void>=>{
@@ -229,7 +230,7 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
     for(const entry of (await fs.readdir(directory,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>10000)throw new Error('Whole working folder exceeds 10000 entries');
       const name=relative?`${relative}/${entry.name}`:entry.name;
-      if(gitStorage.includes(name)){excludedPaths.push(name);continue;}
+      if(gitStorage.includes('.')||gitStorage.includes(name)){excludedPaths.push(name);continue;}
       if(name==='.ponderosa-portable-review'){
         if(reviewedSelection?.source!=='retained_originals')throw new Error('Existing imported review data requires explicit retained-original selection');
         const folder=path.join(root,name),stat=await fs.lstat(folder);
@@ -256,7 +257,7 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
     const after=await fs.lstat(directory,{bigint:true});
     if(before.dev!==after.dev||before.ino!==after.ino||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Working folder changed during inventory');
   };
-  await walk('');
+  if(!gitStorage.includes('.'))await walk('');
   for(const original of originals.values())if(original.nlink!==BigInt(original.count))throw new Error(`Hardlink has aliases outside the selected nonsecret root; include a complete root or preserve separately: ${original.path}`);
   for(const link of links)if(link.target.split('/').includes('.ponderosa-portable-review'))throw new Error('Working links cannot traverse the inactive review namespace');
   validateWorkingTopology(paths.map(path=>({path})),directories,links,'passive_in_root');
