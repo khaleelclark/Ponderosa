@@ -222,7 +222,39 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
 }
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
-export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[],cyclicLinks:'refuse'|'passive_in_root'='refuse',metadataActivation?:ReviewedMetadataActivation,deferMetadataApplication=false,rootDestinations?:Readonly<Record<string,string>>):Promise<void>{
+/** Shared link phase; global root imports call this only after every original exists. */
+async function placeWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations:Readonly<Record<string,string>>|undefined,preserveBaseline:(relative:string)=>Promise<void>):Promise<void>{
+    for(const link of [...links].sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
+      const target=path.join(destination,link.path),parent=path.dirname(target);
+      let current=destination;
+      for(const component of link.path.split('/').slice(0,-1)){
+        current=path.join(current,component);
+        try{await fs.mkdir(current,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+        if(!(await fs.lstat(current)).isDirectory()||await fs.realpath(current)!==current)throw new Error('Working-link destination parent changed');
+      }
+      if(await fs.realpath(parent)!==parent)throw new Error('Working-link destination parent changed');
+      await preserveBaseline(link.path);
+      if(link.kind==='hardlink'){
+        const original=path.join(link.targetRootRef?rootDestinations![link.targetRootRef]:destination,link.target),stat=await fs.lstat(original);
+        if(!stat.isFile()||stat.isSymbolicLink()||await fs.realpath(original)!==original)throw new Error('Hardlink original changed');
+        if(stat.dev!==(await fs.lstat(parent)).dev)throw new Error('Mapped hardlink destinations must use the same filesystem; partial originals retained');
+        await fs.link(original,target);
+      }else{
+        const mappedRoot=link.targetRootRef?rootDestinations![link.targetRootRef]:undefined;
+        const symbolicTarget=mappedRoot?path.relative(parent,link.target==='.'?mappedRoot:path.join(mappedRoot,link.target)):link.target;
+        await fs.symlink(symbolicTarget||'.',target);
+        if(link.mtime)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
+      }
+    }
+}
+/** Existing imported root only. A collision preserves the observed entry and refuses, never overwrites it. */
+export async function importWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations?:Readonly<Record<string,string>>):Promise<void>{
+ if(await fs.realpath(destination)!==destination)throw new Error('Imported link root changed');
+ for(const link of links){portableLinkTarget(link);if(link.targetRootRef&&!rootDestinations?.[link.targetRootRef])throw new Error('Mapped link target root is missing');}
+ await placeWorkingLinks(destination,links,rootDestinations,async()=>{});
+}
+
+export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[],cyclicLinks:'refuse'|'passive_in_root'='refuse',metadataActivation?:ReviewedMetadataActivation,deferMetadataApplication=false,rootDestinations?:Readonly<Record<string,string>>,deferLinks=false):Promise<void>{
   validateWorkingTopology(files,directories,links,cyclicLinks);
   for(const link of links)if(link.targetRootRef){
     const targetRoot=rootDestinations?.[link.targetRootRef];
@@ -283,28 +315,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
       const handle=await fs.open(path.join(destination,relative),'wx',0o600);
       try{await handle.writeFile(file.data);await handle.sync();}finally{await handle.close();}
     }
-    for(const link of [...links].sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
-      const target=path.join(destination,link.path),parent=path.dirname(target);
-      let current=destination;
-      for(const component of link.path.split('/').slice(0,-1)){
-        current=path.join(current,component);
-        try{await fs.mkdir(current,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
-        if(!(await fs.lstat(current)).isDirectory()||await fs.realpath(current)!==current)throw new Error('Working-link destination parent changed');
-      }
-      if(await fs.realpath(parent)!==parent)throw new Error('Working-link destination parent changed');
-      await preserveBaseline(link.path);
-      if(link.kind==='hardlink'){
-        const original=path.join(link.targetRootRef?rootDestinations![link.targetRootRef]:destination,link.target),stat=await fs.lstat(original);
-        if(!stat.isFile()||stat.isSymbolicLink()||await fs.realpath(original)!==original)throw new Error('Hardlink original changed');
-        if(stat.dev!==(await fs.lstat(parent)).dev)throw new Error('Mapped hardlink destinations must use the same filesystem; partial originals retained');
-        await fs.link(original,target);
-      }else{
-        const mappedRoot=link.targetRootRef?rootDestinations![link.targetRootRef]:undefined;
-        const symbolicTarget=mappedRoot?path.relative(parent,link.target==='.'?mappedRoot:path.join(mappedRoot,link.target)):link.target;
-        await fs.symlink(symbolicTarget||'.',target);
-        if(link.mtime)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
-      }
-    }
+    if(!deferLinks)await placeWorkingLinks(destination,links,rootDestinations,preserveBaseline);
     if(reviewedData){
       // Separate repository only: never overwrite this working root's native-owned .git or provider settings.
       if(reviewedData.git)await recreateReviewedGit(path.join(destination,'.ponderosa-portable-review','git-repository'),reviewedData.git);

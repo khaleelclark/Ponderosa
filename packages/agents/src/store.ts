@@ -1658,6 +1658,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.setImportedHistoryAsync(agentId, source, messages, initialInstructions, portableState);
   }
 
+  attachImportedWorkingStateAsync(agentId:string,planId:string,portableState:NonNullable<Parameters<AgentCatalogAuthority['setImportedHistoryAsync']>[4]>):Promise<void>{
+    return this.agentCatalog.attachImportedWorkingStateAsync(agentId,planId,portableState);
+  }
+
   getImportedHistory(agentId: string): { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[]; initialInstructions?: string } | undefined {
     return this.agentCatalog.getImportedHistory(agentId);
   }

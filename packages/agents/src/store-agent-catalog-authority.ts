@@ -697,6 +697,13 @@ export class AgentCatalogAuthority {
     const imported: ImportedArchive = { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages,
       ...(portableState?{portableState}:{}),
       ...(initialInstructions !== undefined ? { initialInstructions, initialInstructionsSeparated: true } : {}) };
+    await this.writeImportedArchiveAsync(agent.id, imported);
+  }
+
+  /** One sanctioned archive writer; portable metadata attachment preserves every history field. */
+  private async writeImportedArchiveAsync(agentId:string,imported:ImportedArchive):Promise<void>{
+    const agent=this.getAgent(agentId);if(!agent)throw new Error("agent not found");
+    const messages=imported.messages,initialInstructions=imported.initialInstructions,portableState=imported.portableState;
     this.validateImportedArchiveSize(imported);
     this.importedIndexQueue.delete(agentId);
     const pathname = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
@@ -724,6 +731,19 @@ export class AgentCatalogAuthority {
       throw error;
     }
     await this.projectImportedHistoryAsync(agentId, imported, importedArchiveVersion(pathname)!);
+  }
+
+  /** The exact staged Branch owner may attach imported originals without replacing authored history. */
+  attachImportedWorkingStateAsync(agentId:string,planId:string,portableState:NonNullable<ImportedArchive['portableState']>):Promise<void>{
+    return withSourceMutation(async()=>{
+      const agent=this.getAgent(agentId);if(!agent)throw new Error("agent not found");
+      const owner=this.client.prepare("SELECT r.creation_operation_id FROM branch_installation_resources r JOIN agent_creation_operations o ON o.id=r.creation_operation_id JOIN agent_creation_operation_members m ON m.operation_id=o.id AND m.agent_id=r.local_id WHERE r.local_id=? AND r.staging_plan_id=? AND r.state='staging' AND o.status='completed'").get(agentId,planId);
+      if(!owner)throw new Error("Working originals require the exact completed staged Branch import");
+      const previous=this.getImportedHistory(agentId);
+      if(previous?.portableState)throw new Error("Imported working originals are already bound; an uncertain attachment is never repeated");
+      const imported:ImportedArchive=previous??{source:"Branch working-data import",importedAt:new Date().toISOString(),messages:[]};
+      await this.writeImportedArchiveAsync(agentId,{...imported,portableState});
+    });
   }
 
   setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']}): Promise<void> {

@@ -301,7 +301,7 @@ export class AgentWorkingCopyService {
   }
 
   /** Fresh local ownership is checked before any imported file enters a live root. */
-  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse',activation?:import('@ponderosa/core').ReviewedUserDataActivation,metadataActivation?:import('@ponderosa/core').ReviewedMetadataActivation,rootDestinations?:Readonly<Record<string,string>>,deferFinalMetadata=false):Promise<void> {
+  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse',activation?:import('@ponderosa/core').ReviewedUserDataActivation,metadataActivation?:import('@ponderosa/core').ReviewedMetadataActivation,rootDestinations?:Readonly<Record<string,string>>,deferFinalMetadata=false,deferLinks=false):Promise<void> {
     if(!this.modeChanges.has(agent.id))throw new Error('Live import was not fenced');
     const staged=this.stagedImportedGitRoots.get(agent.workingCopy.rootPath);
     if(staged){const stat=await lstat(agent.workingCopy.rootPath,{bigint:true});if(staged.phase!=='allocated'||stat.dev!==staged.device||stat.ino!==staged.inode||staged.agentId&&staged.agentId!==agent.id)throw new Error('Staged Git root changed or population was already attempted');staged.phase='populating';}
@@ -322,7 +322,7 @@ export class AgentWorkingCopyService {
       if(activation.git&&!staged)await this.verifyImportedGitRoot(project,original!.sha256,resolved.rootPath);
       if(resolved.mode!=='separate_git'&&!this.store.isManagedProjectImportDestination(project.id))throw new Error('Native Shared activation requires the NEW managed import destination');
     }
-    await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot},links,cyclicLinks,metadataActivation,deferFinalMetadata||!!activation||!!metadataActivation,rootDestinations);
+    await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot},links,cyclicLinks,metadataActivation,deferFinalMetadata||!!activation||!!metadataActivation,rootDestinations,deferLinks);
     if(activation&&original){
       const current=staged?resolved:await this.resolve(agent,project);
       if(current.rootPath!==resolved.rootPath||!this.modeChanges.has(agent.id))throw new Error('Native activation root membership changed');
@@ -422,6 +422,13 @@ export class AgentWorkingCopyService {
     const current=this.store.listAgents(project.id).map(agent=>agent.id);
     if(!this.store.isManagedProjectImportDestination(project.id)||current.length!==exactOwnedAgentIds.length||new Set(exactOwnedAgentIds).size!==exactOwnedAgentIds.length||current.some(id=>!exactOwnedAgentIds.includes(id)))throw new Error('Native Shared Git requires the unused NEW managed Chat');
     await this.stageImportedGitRoot(project.hostPath);
+  }
+
+  /** New recovery-root custody supplied by the one-shot Branch physical importer, never a source receipt. */
+  async retainImportedRecoveryGitRoot(rootPath:string,identity:{device:bigint;inode:bigint}):Promise<void>{
+    const stat=await lstat(rootPath,{bigint:true});
+    if(!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||!stat.isDirectory()||stat.isSymbolicLink()||await realpath(rootPath)!==rootPath||stat.dev!==identity.device||stat.ino!==identity.inode||this.stagedImportedGitRoots.has(rootPath))throw new Error('Imported recovery Git root lost its exact new-directory identity');
+    this.stagedImportedGitRoots.set(rootPath,{device:stat.dev,inode:stat.ino,phase:'populated'});
   }
 
   /** Allocate local ownership before mutation; never copy this path from source. */
