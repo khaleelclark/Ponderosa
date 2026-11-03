@@ -1,3 +1,4 @@
+import {redactPortableDiagnostic} from './portable-secrets.js';
 import {execFile} from 'node:child_process';
 import {constants} from 'node:fs';
 import {promises as fs} from '@ponderosa/native-host/fs';
@@ -13,7 +14,11 @@ function configuration(context:Context,args:string[]):Promise<Buffer>{
     execFile('git',['--no-pager','--git-dir='+ (context.privateDir??context.gitDir),'--work-tree='+context.worktreePath,'-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','config','--includes','--null',...args],{
       cwd:context.gitDir,encoding:'buffer',timeout:30000,maxBuffer:32*1024*1024,
       env:{PATH:process.env.PATH,LANG:'C',LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_GLOBAL:'/dev/null',GIT_OPTIONAL_LOCKS:'0',GIT_NO_LAZY_FETCH:'1',GIT_TERMINAL_PROMPT:'0'},
-    },(error,stdout,stderr)=>error||stderr.length?reject(Object.assign(new Error('Native Git shared-permission configuration could not be resolved from its owned destination'),{code:'ERR_GIT_SHARED_CONFIGURATION'})):resolve(stdout));
+    },(error,stdout,stderr)=>{
+      if(!error&&!stderr.length){resolve(stdout);return;}
+      const detail=redactPortableDiagnostic([error?.message,stderr.toString('utf8')].filter(Boolean).join('\n'));
+      reject(Object.assign(new Error('Native Git shared-permission configuration failed: '+detail,{cause:error??new Error(detail)}),{code:'ERR_GIT_SHARED_CONFIGURATION'}));
+    });
   });
 }
 
