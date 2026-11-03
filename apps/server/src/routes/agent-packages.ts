@@ -21,7 +21,7 @@ import {withoutPortableSecrets,redactPortableDiagnostic} from '../portable-secre
 import {planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,validateReviewedUserDataActivation,validateReviewedUserDataSelection,validateReviewedMetadataActivation,requireReviewedMetadataApplication,validateGitStorageSelections,createGitExportCapture,verifyGitExportAssociations,validatePortableGitStorageBindings,type GitExportCapture,type SelectedGitBinding} from '../portable-reviewed-user-data.js';
 import {filesystemMetadataProvenance,planFilesystemMetadata} from '../portable-filesystem-metadata.js';
 import {parseReviewedUserData} from '../portable-reviewed-user-data.js';
-import {validateWorkingRootNesting,exportWorkingFiles,importWorkingFiles,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,type WorkingFolderInventory} from '../portable-working-files.js';
+import {validateWorkingRootNesting,exportWorkingFiles,importWorkingFiles,importWorkingLinks,validateWorkingFileData,inventoryWorkingFolder,validateMappedWorkingLinks,createWorkingHardlinkCapture,verifyWorkingHardlinkCapture,orderWorkingRoots,finalizeWorkingFolderMetadata,workingLinkCounts,type WorkingFolderInventory} from '../portable-working-files.js';
 import type {AgentWorkingCopyService} from '../agent-working-copy-service.js';
 import {CapabilityPolicyStore} from '@ponderosa/agents';
 import {portableCommunicationVisible,portableCommunicationMessage} from '../portable-communication.js';
@@ -2022,7 +2022,7 @@ export function registerAgentPackageRoutes(
           const metadataApplication=metadataActivation&&reviewedOriginal?{ref,path:root.path,originalSha256:reviewedOriginal.sha256,state:'applying' as 'applying'|'completed'|'incomplete',error:undefined as ReturnType<typeof metadataFailure>|undefined}:undefined;
           if(metadataApplication){metadataApplications.push(metadataApplication);saveMetadataApplications();}
           const release=context.workingCopies!.beginModeChange(agent.id);
-          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links,node.workingFolder?.cyclicLinks,body.reviewedUserDataActivation,metadataActivation,liveLinkDestinations,true,true);if(application&&!body.reviewedUserDataActivation?.git)application.state='completed';pendingLiveMetadata.push({...(metadataApplication?{receipt:metadataApplication}:{}),apply:async()=>{const release=context.workingCopies!.beginModeChange(agent.id);try{await context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(agent.id)!,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,node.workingFolder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()));}finally{release();}}});}catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}if(application){application.state='incomplete';const failure=error as {code?:string;partialStatePossible?:boolean;observed?:unknown};application.error={code:failure.code,partialStatePossible:true,observed:failure.observed===undefined?null:JSON.parse(JSON.stringify(failure.observed,(_key,value)=>typeof value==='bigint'?value.toString():value))};}throw error;}finally{release();if(metadataApplication)saveMetadataApplications();if(application)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});}
+          try{await context.workingCopies!.populateImportedRoot(agent,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,backupRoot,node.workingFolder?.links,node.workingFolder?.cyclicLinks,undefined,metadataActivation,liveLinkDestinations,true,true);pendingLiveMetadata.push({...(metadataApplication?{receipt:metadataApplication}:{}),apply:async()=>{const release=context.workingCopies!.beginModeChange(agent.id);try{await context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(agent.id)!,project,files,node.workingFolder?.directories??[],node.workingFolder?.mode!==undefined&&node.workingFolder.mtime?{mode:node.workingFolder.mode,mtime:node.workingFolder.mtime}:undefined,node.workingFolder?.links??[],metadataActivation,workingLinkCounts(ref,metadataRootLinks()));}finally{release();}}});}catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}if(application){application.state='incomplete';const failure=error as {code?:string;partialStatePossible?:boolean;observed?:unknown};application.error={code:failure.code,partialStatePossible:true,observed:failure.observed===undefined?null:JSON.parse(JSON.stringify(failure.observed,(_key,value)=>typeof value==='bigint'?value.toString():value))};}throw error;}finally{release();if(metadataApplication)saveMetadataApplications();if(application)store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});}
         }
         for(const node of owners){
           const agent=created.get(node.ref)!,release=context.workingCopies!.beginModeChange(agent.id);
@@ -2030,17 +2030,21 @@ export function registerAgentPackageRoutes(
           catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
           finally{release();}
         }
-        if(body.reviewedUserDataActivation?.git){
+        if(body.reviewedUserDataActivation){
           const liveDestinations=Object.fromEntries(owners.map(node=>[node.workingRootRef??node.ref,created.get(node.ref)!.workingCopy.rootPath]));
           const recoveryDestinations=body.workingRootDestinations??{[owners[0]!.workingRootRef??owners[0]!.ref]:body.workingFilesDestination!};
           const relocate=(target:string)=>{const entries=Object.entries(recoveryDestinations).filter(([,root])=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b[1].length-a[1].length);const entry=entries[0];if(!entry)throw new Error('Git activation path lost its included source root');return path.join(liveDestinations[entry[0]]!,path.relative(entry[1],target));};
           const activation={...body.reviewedUserDataActivation,...(body.reviewedUserDataActivation.gitPathMappings?{gitPathMappings:body.reviewedUserDataActivation.gitPathMappings.map(mapping=>({...mapping,destination:relocate(mapping.destination)}))}:{})};
           const releases=[...new Set([...created.values()].map(agent=>agent.id))].map(id=>context.workingCopies!.beginModeChange(id));
-          try{await context.workingCopies!.completeImportedGitRoots(project,portablePackage,liveDestinations,activation,receipt=>{
-            const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
-            if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
-            store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
-          },[...created.values()].map(agent=>agent.id));}finally{for(const release of releases)release();}
+          try{
+            const record=(receipt:NonNullable<ImportAgentPackageResponse['reviewedUserDataApplications']>[number])=>{
+              const index=reviewedApplications.findIndex(application=>application.ref===receipt.ref);
+              if(index<0)reviewedApplications.push(receipt);else reviewedApplications[index]=receipt;
+              store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),reviewedUserDataApplications:reviewedApplications}});
+            };
+            if(activation.git)await context.workingCopies!.completeImportedGitRoots(project,portablePackage,liveDestinations,activation,record,[...created.values()].map(agent=>agent.id));
+            else await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(portablePackage,liveDestinations,activation),activation,record);
+          }finally{for(const release of releases)release();}
           for(const [ref,agent] of created)created.set(ref,store.getAgent(agent.id)!);
 
         }

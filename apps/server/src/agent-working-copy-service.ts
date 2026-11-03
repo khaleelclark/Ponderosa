@@ -556,10 +556,10 @@ export class AgentWorkingCopyService {
       staged.phase='adopting';
     }
     // The shared recreation engine validates included target/config closure and
-    // records each applying/incomplete outcome. Harness files are already placed.
+    // records each applying/incomplete outcome for exactly the requested families.
     const receipts=new Map<string,Parameters<typeof onReceipt>[0]>();
     try{
-    if(activation)await applyReviewedRecoveryRoots(tasks,{...activation,harness:false},receipt=>{const current={...receipt,selection:activation,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);});
+    if(activation)await applyReviewedRecoveryRoots(tasks,activation,receipt=>{const current={...receipt,state:receipt.state==='completed'?'applying' as const:receipt.state};receipts.set(receipt.ref,current);onReceipt(current);});
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root)!;if(!staged.agentId)continue;
       const agent=this.store.getAgent(staged.agentId);if(!agent||agent.workingCopy.repositoryRoot!==root||agent.workingCopy.state!=='unavailable')throw new Error('Imported Separate Git ownership changed before activation');
