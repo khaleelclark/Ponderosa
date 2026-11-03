@@ -23,6 +23,17 @@ export function branchKey(value: unknown): string {
   if (typeof value !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/u.test(value)) throw new Error("Invalid Branch identity/ref");
   return value;
 }
+/** Shared workflow gate response contract; this never grants host capabilities. */
+export function branchGateResolutionOutput(step:Extract<BranchDefinition['steps'][number],{kind:'human_gate'}>,proposal:string,input:unknown,revision:number):string {
+  const response=keys(input,['commandKey','expectedRevision','decision','choice','output']);
+  branchKey(response.commandKey);
+  if(response.expectedRevision!==revision||!['approve','reject'].includes(response.decision as string))throw Error('Invalid gate decision or revision');
+  let output=proposal;
+  if(response.choice!==undefined){if(!step.choices?.includes(response.choice as string)||response.output!==undefined)throw Error('Invalid gate choice');output=response.choice as string;}
+  else if(step.choices?.length&&response.decision==='approve')throw Error('Choose a gate option');
+  if(response.output!==undefined){if(!step.editable)throw Error('Gate text is not editable');output=branchText(response.output);}
+  return output;
+}
 function boundedInteger(value: unknown, min: number, max: number, name: string): void {
   if (!Number.isSafeInteger(value) || Number(value) < min || Number(value) > max) throw new Error(`${name} must be a whole number from ${min} to ${max}.`);
 }

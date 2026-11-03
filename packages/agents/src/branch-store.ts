@@ -46,7 +46,7 @@ import {
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
 } from "@ponderosa/core";
 import { CoordinationV3Store } from "./coordination-v3-store.js";
-import { branchKey, branchText, validateBranchBindings, validateBranchDefinition } from "./branch-definition.js";
+import { branchKey, branchText,branchGateResolutionOutput, validateBranchBindings, validateBranchDefinition } from "./branch-definition.js";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { CapabilityPolicyStore } from "./capability-policy-store.js";
 
@@ -684,8 +684,8 @@ export class BranchStore {
       ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||c.checkpoint
       ||!e||e.id!==sourceOwner.sourceExecutionId||e.branch_id!==resolved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.admission_source!=='manual'
       ||!portableScriptDefinitionSupported(definition)
-      ||configuration.configuration.checkpointMode!=='sync'||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only supported standalone manual sync effect-free Script cuts with JSON state and condition/route/fork/Map/Join controls, without secrets, are supported');
-    const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.length
+      ||configuration.configuration.checkpointMode!=='sync'||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only supported standalone manual sync effect-free Script/human-gate cuts with JSON state and condition/route/fork/Map/Join controls, without secrets, are supported');
+    const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.some(g=>g.purpose!=='approval')
       &&!cut.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state));
     if(!effectFree(selected)||!effectFree(current)||sourceOwner.facts.some(f=>f.kind==='custody')||sourceOwner.chatRefs.length)throw Error('Issued, unknown, bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
     if(e.input_text!==current.execution![0]!.input_text||e.input_hash!==current.execution![0]!.input_hash||e.version_id!==sourceOwner.facts.find(f=>f.kind==='definition')!.key||e.binding_revision_id!==bindingFact.key||c.versionId!==e.version_id||c.bindingRevisionId!==e.binding_revision_id
@@ -713,8 +713,14 @@ export class BranchStore {
     return this.unitTransaction(()=>{
       const cut=this.foreignCut(branchId,selection),budget=this.executionBudgets.read(branchId,now);
       const directoryChoices=Object.fromEntries(Object.entries(cut.bindings.directories).map(([ref,value])=>{const path=interpolateBranchText(value,cut.definition,cut.config),realpath=realpathSync(path),stat=statSync(realpath);if(!stat.isDirectory())throw Error('Current destination directory unavailable');accessSync(realpath,fsConstants.R_OK|fsConstants.X_OK);return [ref,{path,realpath,device:stat.dev,inode:stat.ino}];}));
+      const gateEvidence=(selected:Selected):import('@ponderosa/core').BranchGateDto[]=>selected.gates!.map(g=>{
+        const step=selected.steps!.find(step=>step.id===g.step_execution_id)!,node=cut.definition.steps.find(node=>node.id===step.step_id)!;
+        if(node.kind!=='human_gate'||g.purpose!=='approval')throw Error('Unsupported foreign gate');
+        return {id:g.id,stepExecutionId:g.step_execution_id,attemptId:g.attempt_id,state:g.state,purpose:g.purpose,revision:g.revision,prompt:g.prompt_text,proposal:g.proposal_text,editable:node.editable===true,...(g.choices_json?{choices:JSON.parse(g.choices_json)}:{}),...(g.response_json?{resolution:JSON.parse(g.response_json)}:{})};
+      });
+      const selectedGates=gateEvidence(cut.selected),latestGates=gateEvidence(JSON.parse(resolveBranchRuntimeSource(cut.saved.data,selection.sourceExecutionId).owner.facts.find(f=>f.kind==='frontier')!.json));
       const value={schema:'ponderosa.branch-foreign-review.v1' as const,selection,branchId,importedExecutionId:cut.importedId,manifestSha256:cut.saved.data.sha256,ownerSha256:cut.owner.sha256,
-        generationChain:cut.generationChain,checkpoint:cut.snapshot,nativeMaps:cut.saved.receipt,versionId:cut.branch.versionId!,bindingRevisionId:cut.branch.bindingRevisionId!,configurationRevision:this.row('SELECT configuration_revision FROM branches WHERE id=?',branchId)!.configuration_revision,definitionSha256:payloadHash(cut.definition),bindings:cut.bindings,configuration:cut.config,
+        generationChain:cut.generationChain,...(selectedGates.length||latestGates.length?{gates:{selected:selectedGates,latest:latestGates}}:{}),checkpoint:cut.snapshot,nativeMaps:cut.saved.receipt,versionId:cut.branch.versionId!,bindingRevisionId:cut.branch.bindingRevisionId!,configurationRevision:this.row('SELECT configuration_revision FROM branches WHERE id=?',branchId)!.configuration_revision,definitionSha256:payloadHash(cut.definition),bindings:cut.bindings,configuration:cut.config,
         ...(cut.sharedState?{sharedState:cut.sharedState}:{}),controls:cut.definition.controls,directoryChoices,capabilityPolicy:{effective:this.capabilityPolicies.resolveForBranch(branchId),records:[this.capabilityPolicies.get('global','ponderosa')??null,this.capabilityPolicies.get('product','branches')??null,this.capabilityPolicies.get('branch',branchId)??null]},budget,custody:'not_applicable' as const,engine:'node' as const,secretChoice:'none' as const,accessChoice:'current_destination' as const};
       return {...value,reviewSha256:payloadHash({...value,budget:Object.fromEntries(Object.entries(budget).filter(([key])=>key!=='observedAt'))})};
     }).immediate();
@@ -772,6 +778,39 @@ export class BranchStore {
     }
     for(const step of restored.steps!){const row=this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',step.id,next.id);if(!row||['path_id','step_id','invocation','input_text'].some(key=>row[key]!==step[key])||['completed','failed','canceled'].includes(step.state)&&(row.state!==step.state||row.result_json!==step.result_json))throw Error('Continuation mapped prefix differs');}
     for(const attempt of restored.attempts!){const row=this.row('SELECT * FROM branch_attempts WHERE id=?',attempt.id);if(!row||['step_execution_id','number','input_hash'].some(key=>row[key]!==attempt[key])||row.request_id||['completed','failed','canceled'].includes(attempt.state)&&['state','result_json','fence','runtime_outcome_json'].some(key=>row[key]!==attempt[key]))throw Error('Continuation mapped attempt differs');}
+    for(const gate of restored.gates!){
+      const row=this.row('SELECT g.* FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE g.id=? AND s.execution_id=?',gate.id,next.id);
+      if(!row||['step_execution_id','attempt_id','proposal_text','choices_json','purpose','prompt_text'].some(key=>row[key]!==gate[key])||row.purpose!=='approval')throw Error('Continuation mapped gate differs');
+      if(gate.state!=='waiting'){
+        if(['state','revision','response_json'].some(key=>row[key]!==gate[key])||row.resolution_key!==null)throw Error('Continuation settled gate prefix differs');
+        continue;
+      }
+      const notification=this.row('SELECT * FROM branch_gate_notifications WHERE gate_id=? AND gate_revision=?',gate.id,gate.revision);
+      if(!notification||notification.execution_id!==next.id||notification.prompt_text!==gate.prompt_text||notification.purpose!==gate.purpose)throw Error('Destination gate notification differs');
+      if(row.state==='waiting'){
+        if(row.revision!==gate.revision||row.response_json!==null||row.resolution_key!==null||!['pending','open'].includes(notification.state)||
+          this.row('SELECT state FROM branch_step_executions WHERE id=?',gate.step_execution_id)?.state!=='waiting'||this.row('SELECT state FROM branch_attempts WHERE id=?',gate.attempt_id)?.state!=='waiting')throw Error('Destination pending gate differs');
+      }else if(row.state==='resolved'){
+        if(!['closing_unpublished','closing','resolved'].includes(notification.state))throw Error('Destination resolved notification differs');
+        const response=JSON.parse(row.response_json),definition=this.version(branchId,next.version_id)!.definition;
+        const step=this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',gate.step_execution_id,next.id)!,node=definition.steps.find(node=>node.id===step.step_id);
+        if(node?.kind!=='human_gate')throw Error('Destination gate definition differs');
+        const output=branchGateResolutionOutput(node,gate.proposal_text,response,gate.revision);
+        const command=this.row('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?',next.id,response.commandKey);
+        const event=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='gate_resolved'",next.id,`gate-resolved:${gate.id}:${gate.revision}`);
+        if(row.revision!==gate.revision+1||row.resolution_key!==`${next.id}:${response.commandKey}`||!command||command.input_hash!==payloadHash({gateId:gate.id,...response})||
+          event?.evidence_json!==stableJson({gateId:gate.id,revision:gate.revision,decision:response.decision,output}))throw Error('Destination gate resolution proof differs');
+        const routed=response.decision==='approve'||definition.edges.some(edge=>edge.from===node.id&&edge.on==='rejected'),result=stableJson({failed:false,output:routed?output:`Approval rejected at ${node.label||node.id}.`});
+        const attempt=this.row('SELECT * FROM branch_attempts WHERE id=? AND step_execution_id=?',gate.attempt_id,step.id),seal=this.row('SELECT * FROM branch_sealed_results WHERE execution_id=? AND step_execution_id=?',next.id,step.id);
+        const settled=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='step_settled'",next.id,`settled:${gate.attempt_id}`);
+        if(step.state!=='completed'||step.result_json!==result||attempt?.state!=='completed'||attempt.result_json!==result||!seal||seal.path_id!==step.path_id||seal.terminal_attempt_id!==gate.attempt_id||seal.result_json!==result||seal.content_hash!==createHash('sha256').update(result).digest('hex')||
+          settled?.evidence_json!==stableJson({attemptId:gate.attempt_id,result:JSON.parse(result)}))throw Error('Destination gate settlement differs');
+      }else if(row.state==='canceled'){
+        if(!['closing_unpublished','closing','resolved'].includes(notification.state)||this.row('SELECT state FROM branch_step_executions WHERE id=?',gate.step_execution_id)?.state!=='canceled'||this.row('SELECT state FROM branch_attempts WHERE id=?',gate.attempt_id)?.state!=='canceled')throw Error('Destination canceled gate differs');
+        const event=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='gate_canceled'",next.id,`gate-canceled:${gate.id}:${gate.revision}`);
+        if(row.revision!==gate.revision+1||row.response_json!==null||row.resolution_key!==null||event?.evidence_json!==stableJson({gateId:gate.id,revision:gate.revision}))throw Error('Destination gate cancellation proof differs');
+      }else throw Error('Destination gate state differs');
+    }
     // Prefix seals are immutable even after legitimate suffix progress. Never fold a copied update twice.
     for(const seal of restored.sealedResults!){const row=this.row('SELECT * FROM branch_sealed_results WHERE id=? AND execution_id=?',seal.id,next.id);if(!row||['path_id','step_execution_id','terminal_attempt_id','result_json','content_hash'].some(key=>row[key]!==seal[key]))throw Error('Continuation mapped state seal differs');}
     if(receipt.review.sharedState){
@@ -800,12 +839,14 @@ export class BranchStore {
       for(const item of cut.selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
       const restored=remapBranchFrontier(cut.selected,ids,cut.e.id,next.id);
       insertBranchFrontier(this.sqlite,next.id,restored,now);
+      for(const g of restored.gates!)if(g.state==='waiting')this.run("INSERT INTO branch_gate_notifications(gate_id,gate_revision,execution_id,state,prompt_text,purpose,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?,?)",g.id,g.revision,next.id,g.prompt_text,g.purpose,now,now);
       if(cut.sharedState&&stableJson(this.sharedState(next.id))!==stableJson(cut.sharedState.selected))throw Error('Fresh continuation state differs from selected prefix');
       this.run('UPDATE branch_executions SET traversals=?,loop_iterations=?,depth_ceiling=? WHERE id=?',cut.e.traversals,cut.e.loop_iterations,cut.e.depth_ceiling,next.id);
       const admission=JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',next.id)!.admission_json);
       this.checkpoint(next.id,'foreign-prefix','foreign_selected_prefix',{importedExecutionId:importedId,manifestSha256:review.manifestSha256,checkpointSha256:selection.checkpointSha256,idMap:ids,reviewSha256:review.reviewSha256},now);
       this.checkpoint(next.id,'workflow-started','workflow_started',{admission},now);
-      this.state(next.id,'running',now);
+      const active=restored.paths!.some(p=>p.state==='active');
+      this.state(next.id,active?'running':'waiting',now,active?undefined:restored.gates!.some(g=>g.state==='waiting')?'Waiting for approval':'Waiting for paths');
       const receipt:import('@ponderosa/core').BranchForeignContinuationReceipt={schema:'ponderosa.branch-foreign-continuation.v1',branchId,importedExecutionId:importedId,executionId:next.id,commandKey:input.commandKey,inputSha256,review,idMap:ids,admission,createdAt:now};
       this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',importedId,`foreign-continuation:${payloadHash(input.commandKey)}`,payloadHash(receipt),stableJson(receipt),now);
       this.selectedWrite(next.id);
@@ -2897,11 +2938,8 @@ export class BranchStore {
       if (current.purpose === "recovery") {
         if (!["retry", "reject"].includes(input.decision) || input.output !== undefined || input.choice !== undefined) throw new Error("Recovery gates support retry or reject");
       } else {
-        if (step.kind !== "human_gate" || !["approve", "reject"].includes(input.decision)) throw new Error("Invalid gate decision");
-        if (input.choice !== undefined) {
-          if (!step.choices?.includes(input.choice)) throw new Error("Invalid gate choice"); output = input.choice;
-        } else if (step.choices?.length && input.decision === "approve") throw new Error("Choose a gate option");
-        if (input.output !== undefined) { if (!step.editable || input.choice !== undefined) throw new Error("Gate text is not editable"); output = branchText(input.output); }
+        if(step.kind!=='human_gate')throw Error('Invalid gate node');
+        output=branchGateResolutionOutput(step,current.proposal_text,input,current.revision);
       }
       this.run("UPDATE branch_gates SET state = 'resolved', revision = revision + 1, resolution_key = ?, response_json = ? WHERE id = ?", `${gate.execution_id}:${input.commandKey}`, stableJson(input), id);
       this.selectedWrite(gate.execution_id);

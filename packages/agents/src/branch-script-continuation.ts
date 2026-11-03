@@ -10,7 +10,7 @@ import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
-import {branchText} from './branch-definition.js';
+import {branchText,branchGateResolutionOutput} from './branch-definition.js';
 import {interpolateBranchText,validateBranchConfiguration} from './branch-parameters.js';
 import type {BranchHostCut} from './branch-host-cut.js';
 import {issuedRequestFrontierSupported,issuedResourceFrontierSupported,retainedAgentResult} from './branch-issued-continuation.js';
@@ -26,10 +26,12 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
 }
 /** Portable replay admits only the effect-free subset of the canonical graph codec. */
 export function portableScriptDefinitionSupported(definition:BranchDefinition):boolean {
-  return definition.trigger.kind==='manual'&&definition.steps.every(step=>step.kind==='script'&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
+  return definition.trigger.kind==='manual'&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
 export type ScriptOwnerContext={resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
+// Only a standalone terminal observation may retain serial gate evidence with context.
+const standaloneGateContext=(context:ScriptOwnerContext|undefined)=>!context||context.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
   try {
     branchSharedState(definition,selected.steps!,selected.sealedResults!);
@@ -48,8 +50,8 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
       ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
       ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting&&!context?.issuedGroup?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
-    if(!scriptDefinitionSupported(definition,!!context,context?.resourceFrontier,context?.resourceGeneration))return false;
-    if(['forks','joins','maps','items','bundles',...(context?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
+    if(!scriptDefinitionSupported(definition,!!context&&!standaloneGateContext(context),context?.resourceFrontier,context?.resourceGeneration))return false;
+    if(['forks','joins','maps','items','bundles',...(!standaloneGateContext(context)?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
     if(context?.resourceFrontier&&!(context.issuedResource?issuedResourceFrontierSupported(selected,definition,hostCut,context?.issuedGroup,context?.issuedOwnerTree,context?.resourceGeneration):resourceReservationSupported(selected,definition)))return false;
     if(!definition.steps.some(s=>s.id===p.node_id)&&!definition.controls.some(c=>c.id===p.node_id))return false;
     const ids=new Set<string>();
@@ -75,7 +77,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     }
     for(const gate of selected.gates!){
       const step=selected.steps!.find(s=>s.id===gate.step_execution_id),node=definition.steps.find(s=>s.id===step?.step_id),attempt=selected.attempts!.find(a=>a.id===gate.attempt_id);
-      if(context||!step||node?.kind!=='human_gate'||!attempt||attempt.step_execution_id!==step.id||gate.purpose!=='approval'||gate.revision!==(gate.state==='resolved'?1:0)
+      if(!standaloneGateContext(context)||!step||node?.kind!=='human_gate'||!attempt||attempt.step_execution_id!==step.id||gate.purpose!=='approval'||gate.revision!==(gate.state==='resolved'?1:0)
         ||gate.proposal_text!==step.input_text
         ||gate.choices_json!==(node.choices?stableJson(node.choices):null)||!['waiting','resolved'].includes(gate.state)
         ||gate.state==='waiting'&&(step.state!=='waiting'||gate.response_json!==null)
@@ -259,9 +261,8 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
 export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean}):boolean {
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
-    const foreignTerminal=context?.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0
-      &&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
-    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script')||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind))))return false;
+    const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
+    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal||configuration.checkpointMode!=='sync'||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate')||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(!context||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');
@@ -333,7 +334,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         const gate=selected.gates!.find(g=>g.id===ids[oldGate.id]);
         if(!gate||gate.step_execution_id!==ids[oldGate.step_execution_id]||gate.attempt_id!==ids[oldGate.attempt_id]
           ||['proposal_text','choices_json','purpose','prompt_text'].some(k=>gate[k]!==oldGate[k])
-          ||oldGate.state==='resolved'&&(gate.state!=='resolved'||gate.response_json!==oldGate.response_json))return false;
+          ||oldGate.state==='resolved'&&(gate.state!=='resolved'||gate.revision!==oldGate.revision||gate.response_json!==oldGate.response_json))return false;
         openedGates.add(gate.id);
         if(oldGate.state==='resolved')resolvedGates.set(gate.id,JSON.parse(oldGate.response_json).decision);
       }
@@ -422,7 +423,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         }
         case 'gate_opened':{
           const gate=selected.gates!.find(g=>g.id===v.gateId),step=definition.steps.find(s=>s.id===current?.step_id);
-          if(context||!current||!gate||step?.kind!=='human_gate'||gate.step_execution_id!==current.id||openedGates.has(gate.id)
+          if(!standaloneGateContext(context)||!current||!gate||step?.kind!=='human_gate'||gate.step_execution_id!==current.id||openedGates.has(gate.id)
             ||v.revision!==0||v.purpose!=='approval'||v.prompt!==text(step.prompt)||v.prompt!==gate.prompt_text
             ||v.proposal!==current.input_text||event.transition_key!==`gate:${gate.id}:0`)return false;
           openedGates.add(gate.id);break;
@@ -435,14 +436,11 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         }
         case 'gate_resolved':{
           const gate=selected.gates!.find(g=>g.id===v.gateId),step=definition.steps.find(s=>s.id===current?.step_id);
-          if(context||!current||!gate||step?.kind!=='human_gate'||gate.step_execution_id!==current.id||!openedGates.has(gate.id)||resolvedGates.has(gate.id)
+          if(!standaloneGateContext(context)||!current||!gate||step?.kind!=='human_gate'||gate.step_execution_id!==current.id||!openedGates.has(gate.id)||resolvedGates.has(gate.id)
             ||gate.state!=='resolved'||v.revision!==0||event.transition_key!==`gate-resolved:${gate.id}:0`)return false;
           const response=JSON.parse(gate.response_json);
           if(response.decision!==v.decision||!['approve','reject'].includes(response.decision)||response.expectedRevision!==0||typeof response.commandKey!=='string')return false;
-          let output=gate.proposal_text;
-          if(response.choice!==undefined){if(!step.choices?.includes(response.choice)||response.output!==undefined)return false;output=response.choice;}
-          else if(step.choices?.length&&response.decision==='approve')return false;
-          if(response.output!==undefined){if(!step.editable)return false;output=branchText(response.output);}
+          const output=branchGateResolutionOutput(step,gate.proposal_text,response,0);
           if(v.output!==output)return false;
           resolvedGates.set(gate.id,response.decision);break;
         }
@@ -507,7 +505,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(node?.kind==='human_gate'){
             const gate=selected.gates!.find(g=>g.step_execution_id===current!.id),decision=gate&&resolvedGates.get(gate.id);
             if(!gate||!decision)return false;
-            const response=JSON.parse(gate.response_json),output=response.output??response.choice??gate.proposal_text;
+            const response=JSON.parse(gate.response_json),output=branchGateResolutionOutput(node,gate.proposal_text,response,0);
             const routed=decision==='approve'||definition.edges.some(edge=>edge.from===node.id&&edge.on==='rejected');
             if(stableJson(v.result)!==stableJson({failed:false,output:routed?output:`Approval rejected at ${node.label||node.id}.`}))return false;
           }
@@ -587,9 +585,9 @@ export function portableScriptCutSupported(db:Database.Database,data:import("@po
   budget.cache.set(cacheKey,false);
   const read=(kind:string)=>JSON.parse(owner.facts.find(f=>f.kind===kind)!.json);
   const definition=read('definition'),configuration=read('configuration'),e=selected.execution?.[0];
-  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||configuration.configuration.checkpointMode!=='sync'||
+  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||configuration.configuration.checkpointMode!=='sync'||
     owner.chatRefs.length||owner.facts.some(f=>f.kind==='custody'||f.kind==='tree-import')||
-    [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.length||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
+    [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.some((g:Row)=>g.purpose!=='approval')||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
   if(continuation&&(continuation.schema!=='ponderosa.branch.script-continuation.v1'||continuation.checkpoint||stableJson(continuation.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||
     continuation.versionId!==e.version_id||continuation.bindingRevisionId!==e.binding_revision_id||continuation.versionHash!==payloadHash(definition)||continuation.bindingHash!==payloadHash(read('bindings'))||stableJson(continuation.configuration)!==stableJson(configuration.configuration)))return false;
   const context=['completed','failed'].includes(e.state)?{terminal:true,terminalState:e.state,descendantTraversals:0,descendantLoops:0,children:{}} as ScriptOwnerContext:undefined;

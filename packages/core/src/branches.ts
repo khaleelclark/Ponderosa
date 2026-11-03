@@ -469,6 +469,7 @@ export interface BranchForeignContinuationSelection {planId:string;sourceExecuti
 export interface BranchForeignContinuationReview {
  schema:'ponderosa.branch-foreign-review.v1';selection:BranchForeignContinuationSelection;branchId:string;importedExecutionId:string;
  generationChain?:Array<{manifestSha256:string;ownerSha256:string;executionId:string}>;
+ gates?:{selected:BranchGateDto[];latest:BranchGateDto[]};
  sharedState?:{channels:NonNullable<BranchDefinition['state']>;selected:BranchSharedStateDto;latest:BranchSharedStateDto};controls?:BranchDefinition['controls'];
  manifestSha256:string;ownerSha256:string;checkpoint:unknown;nativeMaps:BranchRuntimeDataReceipt;
  versionId:string;bindingRevisionId:string;configurationRevision:number;definitionSha256:string;bindings:BranchBindings;configuration:BranchConfiguration;

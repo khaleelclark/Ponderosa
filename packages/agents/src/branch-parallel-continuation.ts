@@ -2,7 +2,7 @@ import {branchSharedState,validateBranchStateSeal,branchResultWithoutState} from
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import {createHash} from 'node:crypto';
 import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
-import {branchText} from './branch-definition.js';
+import {branchText,branchGateResolutionOutput} from './branch-definition.js';
 import {extractBranchMapItems} from './branch-map-items.js';
 import {interpolateBranchText} from './branch-parameters.js';
 import {stableJson,payloadHash} from './coordination-v3-canonical-json.js';
@@ -211,7 +211,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
      if(node?.kind==='script')require(a.state==='running'&&authorized.has(a.id)&&exited.has(a.id));
      else if(node?.kind==='agent'){const prior=retry?.generations[retryIndex]?.prior,result=prior&&prior.id===a.id?JSON.parse(prior.result_json):retainedAgentResult(hostCut,a.request_id);require(a.state==='waiting'&&boundRequests.has(a.id)&&!node.requireUserCommunication&&result&&stableJson(branchResultWithoutState(v.result))===stableJson(result));}
      else if(node?.kind==='branch_call')require(a.state==='waiting'&&completedChildren.has(a.id)&&stableJson(v.result)===stableJson({failed:context!.children[a.id]!.failed===true,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})}));
-     else {require(a.state==='waiting'&&node?.kind==='human_gate');const gate=m.gates!.find(row=>row.step_execution_id===step.id);require(gate&&gateDecisions.has(gate.id));const response=JSON.parse(gate.response_json),output=response.output??response.choice??gate.proposal_text,routed=gateDecisions.get(gate.id)==='approve'||d.edges.some(edge=>edge.from===node.id&&edge.on==='rejected');require(stableJson(v.result)===stableJson({failed:false,output:routed?output:`Approval rejected at ${node.label||node.id}.`}));}
+     else {require(a.state==='waiting'&&node?.kind==='human_gate');const gate=m.gates!.find(row=>row.step_execution_id===step.id);require(gate&&gateDecisions.has(gate.id));const response=JSON.parse(gate.response_json),output=branchGateResolutionOutput(node,gate.proposal_text,response,0),routed=gateDecisions.get(gate.id)==='approve'||d.edges.some(edge=>edge.from===node.id&&edge.on==='rejected');require(stableJson(v.result)===stableJson({failed:false,output:routed?output:`Approval rejected at ${node.label||node.id}.`}));}
      a.state=step.state=v.result.failed?'failed':'completed';a.result_json=step.result_json=stableJson(v.result);break;
     }
     case 'retry_scheduled':{
@@ -323,10 +323,7 @@ export function replayParallelCut(s:Selected,d:BranchDefinition,c:BranchConfigur
     case 'gate_resolved':{
      const g=find('gates',v.gateId),step=find('steps',g.step_execution_id),node=d.steps.find(row=>row.id===step.step_id),response=JSON.parse(final('gates',g.id).response_json);
      require(node?.kind==='human_gate'&&g.state==='waiting'&&g.revision===0&&v.revision===0&&key===`gate-resolved:${g.id}:0`&&response.decision===v.decision&&['approve','reject'].includes(v.decision)&&response.expectedRevision===0&&typeof response.commandKey==='string');
-     let output=g.proposal_text;
-     if(response.choice!==undefined){require(node.choices?.includes(response.choice)&&response.output===undefined);output=response.choice;}
-     else require(!node.choices?.length||response.decision!=='approve');
-     if(response.output!==undefined){require(node.editable);output=branchText(response.output);}
+     const output=branchGateResolutionOutput(node,g.proposal_text,response,0);
      require(output===v.output);g.state='resolved';g.revision=1;g.response_json=stableJson(response);gateDecisions.set(g.id,v.decision);break;
     }
     case 'gate_checkpoint_closed':{
