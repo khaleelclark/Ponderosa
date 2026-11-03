@@ -299,3 +299,28 @@ metadata; only validated original manifest bytes supply re-export. See the
 [contract and primary reference](git-provider-user-data-transport.md#inactive-project-claude-subagent-memory).
 No DTO/schema/dependency/cap change, native memory/runtime, round-trip, independent
 writer atomicity or whole-portability acceptance is claimed.
+
+### Project Claude hook-support review files
+
+Explicit harness selection includes selected-root `.claude/hooks/` regular UTF-8
+originals: top-level scripts plus bounded recursive supporting text. Shared
+live/import classification requires a contained nonempty non-dot path and
+refuses malformed/escaping/null/backslash/credential paths and file/ancestor
+collisions. Traversed directories/files require selected-root ownership;
+canonical single-link no-follow reads, inventory/read drift checks and existing
+1,000-entry / 1 MiB original / 32 MiB aggregate limits remain. Links/special nodes,
+foreign owners, disappearing discovered originals, invalid encoding and exceeded
+bounds fail. Accepted bytes including BOM stay exact regardless of extension;
+JSON support text is not settings and is never rewritten. Existing known-secret
+inspection refuses recognizable credentials; arbitrary sensitive prose may remain.
+
+No settings-command chasing, script/reference/environment interpretation, native
+binding, home/ancestor/managed/nested-project/session/history discovery,
+installation, activation, executable chmod, provider/hook execution or source
+writes occur. Existing numbered mode0600 nonexecutable review files retain exact
+path/removal metadata; only validated original manifest bytes supply re-export.
+Empty directories and original executable mode/mtime have no representation in
+the existing DTO and are not recreated. See the
+[contract and primary reference](git-provider-user-data-transport.md#inactive-project-claude-hook-support-originals).
+No caller/DTO/schema/version/dependency/cap change or native equivalence,
+round-trip, independent-writer atomicity or whole-portability acceptance is claimed.

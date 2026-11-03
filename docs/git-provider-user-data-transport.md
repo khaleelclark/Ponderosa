@@ -1238,3 +1238,44 @@ Other provider families and existing output-style/Codex/TOML/Git/settings behavi
 remain unchanged. Existing sensitive-prose warning and independent-writer race
 limits remain. Source-only review: no tests, native memory/configuration/runtime,
 round-trip, atomicity or whole-portability acceptance.
+
+### Inactive project Claude hook-support originals
+
+Explicit `harness: true` selection includes contained regular UTF-8 originals in
+selected-root `.claude/hooks/`, including top-level scripts and bounded recursive
+supporting files. One shared live/import classification handles hook and memory
+originals; hooks require at least one nonempty non-dot component beneath their
+root, while memory still requires a named Agent directory. Dot/empty/escaping/
+null/backslash components, known credential names and imported file/ancestor
+collisions refuse. Only an absent family root is optional; discovered files or
+directories disappearing fail with source originals preserved.
+
+Every traversed hook directory and file must share the selected-root owner.
+Existing canonical-parent, single-link no-follow reads, inventory/read drift
+checks and shared 1,000-entry / 1 MiB original / 32 MiB aggregate limits remain.
+Links, special nodes, foreign owners, invalid UTF-8 and exceeded bounds refuse.
+Accepted bytes including BOM stay exact. Contents are opaque text regardless of
+extension: `.json` support files bypass settings parsing and rewriting, while
+existing recognizable/embedded known-secret inspection still applies. Live
+`removedSecretFields` remains false; recognized credentials refuse instead.
+Arbitrary concealed secrets and sensitive prose remain outside this guarantee.
+
+The [official hooks reference](https://code.claude.com/docs/en/hooks#reference-scripts-by-path)
+documents project scripts under `.claude/hooks/` referenced with
+`CLAUDE_PROJECT_DIR`, including Bash and PowerShell examples. This transport
+captures only that selected-root directory. It does not parse settings commands
+to chase files, interpret shell/YAML/Markdown, expand imports/paths/environment
+variables, bind native hooks, discover home/ancestor/managed/nested-project or
+session/history/credential data, install, activate, reload, grant tools, spawn,
+execute hooks/providers or write source files.
+
+The existing generic file DTO carries neither empty directories nor original
+executable mode or mtime; these are not recreated. Import validates the original
+manifest before writing numbered mode0600 nonexecutable `.review` copies and
+exact original path/removal metadata, never active `.claude/hooks` files.
+Retained-original re-export validates and returns exact original manifest bytes,
+never generated review copies. Shared callers, DTO/schema/version/dependencies
+and caps need no change. Other provider families remain unchanged, including
+memory/output-style/Codex/TOML/Git/settings behavior. Existing sensitive-data
+warning and independent-writer limits remain. Source-only review; no native
+execution/equivalence, round-trip, atomicity or whole-portability acceptance.
