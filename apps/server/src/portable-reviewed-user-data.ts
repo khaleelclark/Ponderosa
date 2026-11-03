@@ -36,7 +36,7 @@ function claudeOpaqueOriginal(value:string,directory=false):boolean {
 function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
-const gitSelectedOriginalNames=['COMMIT_EDITMSG','SQUASH_MSG','TAG_EDITMSG','MERGE_MSG'];
+const gitSelectedOriginalNames=['COMMIT_EDITMSG','SQUASH_MSG','TAG_EDITMSG','MERGE_MSG','EDIT_DESCRIPTION'];
 const gitDirectoryOriginalNames=['hooks','branches','remotes','rr-cache','lost-found'];
 const gitWebOriginalNames=['description','category','cloneurl','README.html'];
 function gitReviewOriginal(value:string):boolean {
@@ -55,6 +55,16 @@ function opaqueProviderOriginal(value:string,directory=false):boolean {
 }
 function providerPath(value:string):boolean {
   return codexReviewToml(value)||claudeOutputStyle(value)||opaqueProviderOriginal(value)||providerJsonSettings(value);
+}
+function providerSupportOriginal(value:string):boolean {
+  return opaqueProviderOriginal(value)&&['.claude/skills/','.codex/skills/','.claude/hooks/'].some(prefix=>value.startsWith(prefix));
+}
+function inspectProviderSupportOriginal(data:Buffer):void {
+  // Match binary Git-object inspection without decoding/re-encoding the retained original.
+  safeText(data.toString('latin1'),'Provider support original');
+  let decoded:string;
+  try{decoded=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data);}catch{return;}
+  safeText(decoded,'Provider support original');
 }
 function credentialPath(value:string):boolean {
   return value.split('/').some(part=>['.ssh','.aws','.gnupg','browser-profiles'].includes(part.toLowerCase())||/^\.env(?:\.|$)/i.test(part)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(part));
@@ -322,7 +332,10 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
     if(gitOriginal)inspectGitReviewOriginal(data,file.path);
     if(codexReviewToml(file.path)&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
-    safeText(text(data),'Reviewed provider configuration');
+    if(providerSupportOriginal(file.path)){
+      if(file.removedSecretFields)throw new Error('Opaque provider support originals cannot claim secret removal');
+      inspectProviderSupportOriginal(data);
+    }else safeText(text(data),'Reviewed provider configuration');
     if(providerJsonSettings(file.path))assertPortableSecretsAbsent(JSON.parse(text(data)),'Reviewed provider configuration');
     if(opaqueProviderOriginal(file.path)&&[...paths].some(existing=>existing.startsWith(file.path+'/')||file.path.startsWith(existing+'/')))throw new Error('Conflicting opaque provider-original topology');
     paths.add(file.path);
@@ -1380,6 +1393,12 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     if(opaqueProviderOriginal(relative))opaqueOwner??=(await fs.lstat(root,{bigint:true})).uid;
     if(fixed.includes(relative))try{await fs.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
     const originalFile=await regularOriginal(target,1024*1024,opaqueProviderOriginal(relative)?opaqueOwner:claudeOutputStyle(relative)?outputStyleOwner:undefined);
+    if(providerSupportOriginal(relative)){
+      inspectProviderSupportOriginal(originalFile.data);
+      bytes+=originalFile.data.length;if(bytes>limit)throw new Error('Provider configuration bound exceeded');
+      result.providerFiles.push({path:relative,dataBase64:originalFile.data.toString('base64'),removedSecretFields:false});
+      continue;
+    }
     {
       const {data}=originalFile;
       const original=codexReviewToml(relative)||claudeOutputStyle(relative)||opaqueProviderOriginal(relative)?new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data):text(data);let safe=original,removedSecretFields=false;

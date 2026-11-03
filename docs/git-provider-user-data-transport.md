@@ -926,6 +926,7 @@ still requires separate human review/action.
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations survive as ordered inactive literals from exact common config or selected config.worktree, with target resolution disabled; external contents are uncollected and never supply effective settings. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
+| Git selected branch-description draft | Explicit Git selection carries optional exact selected-gitdir `EDIT_DESCRIPTION` through inactive `.git/EDIT_DESCRIPTION`. No branch association inference, config synthesis or editor continuation. See [contract](#inactive-selected-git-branch-description-draft). |
 | Git selected merge-message original | Explicit Git selection carries optional exact selected-gitdir `MERGE_MSG` through inactive `.git/MERGE_MSG` only when all existing export holds pass. Presence or absence proves no quiescence; no active recovery. See [contract](#inactive-selected-git-merge-message-original). |
 | Git selected tag-message draft | Explicit Git selection carries optional exact selected-gitdir `TAG_EDITMSG` through inactive `.git/TAG_EDITMSG`. No tag/sign/editor continuation or active installation. See [contract](#inactive-selected-git-tag-message-draft). |
 | Git selected squash-message draft | Explicit Git selection carries optional exact selected-gitdir `SQUASH_MSG` through inactive `.git/SQUASH_MSG`, alongside `COMMIT_EDITMSG`. No message interpretation, operation continuation or active installation. See [contract](#inactive-selected-git-squash-message-draft). |
@@ -934,7 +935,7 @@ still requires separate human review/action.
 | Git legacy common remote shorthand originals | Explicit Git selection carries optional common `branches/` and `remotes/` regular UTF-8 originals through inactive `.git/branches/...` and `.git/remotes/...` records. No native remote installation or syntax/version compatibility claim. See [contract](#inactive-common-legacy-git-remote-originals). |
 | Git fixed common Gitweb metadata originals | Explicit Git selection carries only optional common `description`, `category`, `cloneurl` and `README.html` as exact inactive `.git/{name}` originals. Empty present files survive; no HTML rendering, URL fetching or native Gitweb recreation. See [contract](#inactive-fixed-common-gitweb-metadata-originals). |
 | Git default common hook/support originals | Explicit Git selection carries bounded regular UTF-8 originals from the validated common repository `hooks/` through `providerFiles` as virtual `.git/hooks/...` paths, never active hooks. Configured `core.hooksPath` targets are not followed; their nonsecret setting remains inactive configuration text. See [scope and limits](#inactive-default-common-git-hook-originals). |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, `.git/lost-found/...`, exact selected-worktree `.git/COMMIT_EDITMSG`/`.git/SQUASH_MSG`/`.git/TAG_EDITMSG`/`.git/MERGE_MSG` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft, lost-found recovery and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, `.git/lost-found/...`, exact selected-worktree `.git/COMMIT_EDITMSG`/`.git/SQUASH_MSG`/`.git/TAG_EDITMSG`/`.git/MERGE_MSG`/`.git/EDIT_DESCRIPTION` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft, lost-found recovery and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -1037,7 +1038,7 @@ to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal pres
 the source instead of truncating data.
 
 The existing source fence and before/after checks do not drain independent native
-writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote, rr-cache and lost-found originals plus the exact selected-gitdir COMMIT_EDITMSG, SQUASH_MSG, TAG_EDITMSG and MERGE_MSG are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
+writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote, rr-cache and lost-found originals plus the exact selected-gitdir COMMIT_EDITMSG, SQUASH_MSG, TAG_EDITMSG, MERGE_MSG and EDIT_DESCRIPTION are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
 not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
@@ -1246,7 +1247,7 @@ round-trip, atomicity or whole-portability acceptance.
 
 ### Inactive project Claude hook-support originals
 
-Explicit `harness: true` selection includes contained regular UTF-8 originals in
+Explicit `harness: true` selection includes contained regular text or binary support originals in
 selected-root `.claude/hooks/`, including top-level scripts and bounded recursive
 supporting files. One shared live/import classification handles hook and memory
 originals; hooks require at least one nonempty non-dot component beneath their
@@ -1258,7 +1259,7 @@ directories disappearing fail with source originals preserved.
 Every traversed hook directory and file must share the selected-root owner.
 Existing canonical-parent, single-link no-follow reads, inventory/read drift
 checks and shared 1,000-entry / 1 MiB original / 32 MiB aggregate limits remain.
-Links, special nodes, foreign owners, invalid UTF-8 and exceeded bounds refuse.
+Links, special nodes, foreign owners and exceeded bounds refuse.
 Accepted bytes including BOM stay exact. Contents are opaque text regardless of
 extension: `.json` support files bypass settings parsing and rewriting, while
 existing recognizable/embedded known-secret inspection still applies. Live
@@ -1288,8 +1289,8 @@ execution/equivalence, round-trip, atomicity or whole-portability acceptance.
 ### Inactive project Claude skill-support originals
 
 Explicit `harness: true` selection carries selected-root
-`.claude/skills/<skill>/...` regular UTF-8 originals, including `SKILL.md` and
-bounded recursive supporting text. The shared live/import opaque classification
+`.claude/skills/<skill>/...` regular text or binary support originals, including `SKILL.md` and
+bounded recursive supporting files. The shared live/import opaque classification
 requires a nonempty non-dot skill directory followed by a contained file; files
 directly in `.claude/skills` refuse. No `SKILL.md` presence, frontmatter or manifest
 parser is required for this inactive data transport.
@@ -1306,16 +1307,16 @@ The existing owner checks now cover every traversed skill directory and original
 against the selected-root owner. Canonical parents, single-link no-follow bounded
 reads, inventory/read drift checks and shared 1,000-entry / 1 MiB original /
 32 MiB aggregate limits remain. Dot/empty/escaping/null/backslash/credential paths,
-links/special nodes, foreign owners, invalid UTF-8, exceeded bounds and imported
+links/special nodes, foreign owners, exceeded bounds and imported
 file/ancestor collisions refuse. Only absent family roots are optional;
 discovered directories/files disappearing fail with source bytes preserved.
-Binary resources remain unsupported; this is not full native skill preservation.
+Binary support resources in this selected family now use the [byte-preserving support contract](#inactive-binary-provider-support-originals); this is not full native skill preservation.
 Empty directories and original executable mode/mtime remain unrepresented by the
 existing file DTO and are not recreated.
 
 The [official skills documentation](https://code.claude.com/docs/en/skills#add-supporting-files)
 describes named project skill directories with `SKILL.md`, reference files and
-support scripts. This transport captures only selected-root contained text.
+support scripts. This transport captures only selected-root contained support files.
 It does not interpret SKILL/frontmatter/Markdown/JSON/script instructions or
 expand references, imports, paths or environment variables. No home, ancestor,
 managed, nested-project, session/history/credential discovery, native binding,
@@ -1366,9 +1367,10 @@ Shared 1,000-entry / 1 MiB original / 32 MiB aggregate limits are unchanged.
 Shared working export validates the manifest; import parses it before numbered
 mode0600 nonexecutable `.review` copies with exact path/removal metadata.
 Retained-original re-export uses validated original manifest bytes, never generated
-copies. No caller, DTO/schema/version/dependency/cap change is needed. Binary
-resources, empty directories and original executable mode/mtime remain unsupported
-by this text/file DTO. There is no instruction/frontmatter/Markdown/JSON/script
+copies. No caller, DTO/schema/version/dependency/cap change is needed. Binary support resources in the three explicitly listed families use the
+[byte-preserving support contract](#inactive-binary-provider-support-originals).
+Empty directories and original executable mode/mtime remain unsupported
+by this file DTO. There is no instruction/frontmatter/Markdown/JSON/script
 interpretation beyond known-secret inspection, reference chasing, environment/
 path/import expansion, native binding/install/activation/chmod/reload/grants/spawn,
 provider/script execution, source write or outside-root discovery. Existing
@@ -1865,3 +1867,89 @@ hook bounds, graph/config/format/sparse/index/log/shallow checks and harness sel
 remain. No DTO/schema/storage-version/format/cap/dependency changes. Mode/mtime/empty
 directories/binary and independent-writer atomicity remain limits. Source-only: no
 capture execution, native equivalence, round-trip, atomicity or whole-Bible acceptance.
+
+
+### Inactive selected Git branch-description draft
+
+Explicit `git: true` carries optional exact selected-gitdir `EDIT_DESCRIPTION`
+through `.git/EDIT_DESCRIPTION` in the existing `providerFiles` carrier, with
+`removedSecretFields: false`. The shared selected-original list reaches capture,
+provenance validation, the narrow linked-private storage allowlist and export.
+The selected slot stays selected even when gitdir and commondir coincide. Linked
+capture never stats, reads or substitutes common/main/other-worktree drafts.
+
+Pinned [Git v2.56.0 branch.c850–879](https://raw.githubusercontent.com/git/git/v2.56.0/builtin/branch.c#L850-L879)
+writes an editor buffer from the current description, then stores stripped text
+in branch configuration. Raw draft comments and formatting therefore differ from
+the final config value. Editor failure returns before that config update. The
+function does not unlink the draft; an external editor may still remove/change it.
+A later edit overwrites the fixed slot from configuration. The draft is not a
+reliable branch-name association or a native continuation receipt.
+[The path macro](https://raw.githubusercontent.com/git/git/v2.56.0/path.h#L276-L283)
+uses repo_git_path; the [resolver and common list](https://raw.githubusercontent.com/git/git/v2.56.0/path.c#L90-L115)
+leave this exact name in selected gitdir (path.c331–415). This is pinned-source
+evidence, not a guarantee across every Git release.
+
+Absence creates no original; present empty, BOM and accepted UTF-8 bytes remain
+exact. Same-owner canonical single-link regular no-follow bounded reads,
+identity/hash/absence/association drift checks, known-secret refusal, collisions
+and caps remain. All operation/storage/object/ref/index/shallow/sparse/config
+holds apply independently. Presence or absence proves no quiescence or recovery.
+The first native-view skip excludes the draft before copy/parse/pack pairing.
+Import requires explicit Git selection, a valid Git manifest and false removal,
+validates before writes and produces only numbered mode0600 nonexecutable review
+files/maps. Retained re-export uses the authoritative original manifest only.
+No active EDIT_DESCRIPTION, branch-config synthesis, editor/hook continuation,
+message interpretation or source write occurs. Sensitive prose/concealed secrets,
+no general draft-body URL-userinfo guarantee, binary/mode/mtime and independent
+writer atomicity remain limits. Source complete; execution validation deferred.
+
+### Inactive binary provider support originals
+
+Explicit `harness: true` now retains exact regular support bytes, including NUL
+and invalid UTF-8, only inside the already selected `.claude/skills/`,
+`.codex/skills/` and `.claude/hooks/` families. Existing family/path/owner checks
+still apply; this adds no traversal root, reference expansion or configured target.
+The original Buffer is base64 encoded directly, without decode/re-encode, and
+`removedSecretFields` must be false in live capture and import.
+
+Shared inspection scans a Latin-1 view for recognizable ASCII credential syntax,
+matching the existing binary Git-object inspection. When bytes are valid UTF-8,
+it also checks that decoded text for embedded/escaped known-secret structures.
+An invalid UTF-8 sequence does not bypass the ASCII scan. This is not a decoder
+for archives, images, UTF-16, compressed or encrypted payloads; concealed secrets
+remain possible and the existing sensitive-data warning remains required.
+Structured JSON settings and bounded TOML keep their parsers/removal behavior;
+other instructions/output styles/memory and Git originals keep their text rules.
+Earlier text-only contracts above are superseded only for these three families.
+
+Bounds stay 1 MiB per file, 1,000 originals and 32 MiB aggregate. Canonical
+same-owner single-link no-follow reads and observed inventory/read drift checks
+remain. Import validates the same bytes/secret/removal policy before writing
+numbered nonexecutable mode0600 `.review` files with the original path map.
+Retained re-export reads the authoritative manifest, never generated copies.
+No script/skill execution, binary interpretation or native installation occurs.
+Empty directories, original mode/mtime and native activation are still required
+remaining work where a workflow needs them; byte transport alone is not recreation.
+
+### Finite remaining portability implementation checklist
+
+This list reconciles the current source gaps; it does not approve omissions under
+Bible #8. Source completion of the two additions above is not full portability.
+
+| Item | Current source boundary and required next implementation |
+| --- | --- |
+| Git associations and ref storage | `gitAssociation` admits in-root .git or exact reciprocal common/worktrees/id layout. Separated gitdirs, nested submodule gitdirs and reftable need explicit selected-storage association plus bounded native-format readers. Linked selected packed-refs and unknown private storage remain refused. Common packed public refs already work. These are parser/association implementation gaps, not proof that external contracts cannot exist. |
+| Index and sparse layouts | `decodeIndex` supports bounded v2/v3/v4, link/sdir separately, REUC and listed derived caches; combined split/sparse and unknown flags/extensions refuse. Extend only with a pinned producer/consumer grammar, graph/path/flag validation and all before/after storage evidence. Unknown mandatory semantics cannot be discarded. |
+| Reflogs and missing objects | Current normal local reflog parser requires resolvable retained object identities. Missing/pruned objects cannot be fabricated; preserving dangling history and its absence needs a distinct validated representation. Unknown reflog encodings need exact readers. |
+| Submodule originals | A gitlink OID is preserved, not the nested repository. Requires independently selected nested roots, ownership and per-root import mapping through the package consumer; no recursive acquisition from an OID or .gitmodules. |
+| Config and external support | Ordered local nonsecret config/include declarations are retained logically, not exact source formatting. External include contents/configured hooks need explicit additional source selection and destination mapping, not automatic path chasing. Other structured formats need actual parser/scrub contracts. |
+| Provider directories and metadata | Existing core providerFiles carries only path/base64/removal; working import writes numbered review files. Empty directories and original mode/mtime require coordinated core DTO/parser/import/map changes; native executable installation additionally requires explicit activation/application selection. |
+| Native application | Include Git/harness authorizes inactive inspection only. Recreating a native-owned live repository/settings requires a reviewed apply contract with exact destination ownership, replacement/conflict handling and user-selected activation. Inactive copies do not satisfy that requirement. |
+| Absolute and cross-root links | Existing working link format and validation require relative in-root targets. Multi-root destination mapping must bind source root identities, user-selected destination roots, external-target absence and retained target spelling; no rewriting or acquisition of unselected roots. This requires package/root-selection and importer ownership, not a refusal-literal change. |
+| Special nodes | Persistent FIFO/device topology requires a node-kind/mode/device identity carrier and platform creation actions; sockets additionally require the actual process/service recreation contract. Live kernel state cannot be synthesized as regular bytes. No such package carrier exists. |
+| ACL, xattrs and extended metadata | Current host fs interface has no portable inventory/apply action; native offline-copy helpers explicitly refuse such metadata. Needs bounded per-platform enumerate/read/apply support, identity mapping and package representation. Modes/mtime alone do not recreate ACLs or labels. |
+| Independent writers | Existing evidence detects observed drift, not an arbitrary-writer atomic snapshot. A consistent filesystem snapshot or participating writer drain contract is required to promise atomic capture; no retry count supplies it. |
+
+No tests, fixtures, preparation, builds, typechecks or native/runtime execution
+were performed for this tranche. Combined-product validation remains deferred.
