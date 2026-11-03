@@ -22,25 +22,33 @@ export type Selected=Record<string,Row[]>;
 export const SCRIPT_CONTINUATION_COMPATIBILITY={format:'script-control-frontier.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const standaloneScriptRetryFamily=(definition:BranchDefinition)=>(definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition,false,true))&&definition.steps.every(s=>s.kind==='script'||s.kind==='human_gate')&&definition.steps.some(s=>s.kind==='script'&&s.failure?.action==='retry');
-export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false,resourceGeneration=0,scriptRetries=false):boolean {
+export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false,resourceGeneration=0,scriptRetries=false,serialTreeRetries=false):boolean {
   if(hasParallelControls(definition))return parallelDefinitionSupported(definition,calls,resources);
-  const retries=scriptRetries&&!calls&&!resources&&standaloneScriptRetryFamily(definition);
+  const retries=!resources&&(scriptRetries&&!calls&&standaloneScriptRetryFamily(definition)||serialTreeRetries&&calls&&manualSerialTreeFamily(definition));
   return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop'&&!(retries&&s.kind==='script'&&s.failure.action==='retry')&&!(resourceGeneration&&s.kind==='agent'&&s.target.kind==='ephemeral_organization'&&s.failure.action==='retry'&&s.failure.freshContext===true&&Number.isSafeInteger(s.failure.maxAttempts)&&s.failure.maxAttempts>=resourceGeneration+1&&Number.isSafeInteger(s.failure.delayMs)&&s.failure.delayMs>=0))&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
+// Complete tree consumers opt in; standalone, automatic and issued/resource callers retain their defaults.
+const manualSerialTreeFamily=(definition:BranchDefinition)=>definition.trigger.kind==='manual'&&!hasParallelControls(definition)&&definition.steps.every(s=>s.kind==='script'||s.kind==='human_gate'||s.kind==='branch_call');
+export const manualSerialTreeDefinitionSupported=(definition:BranchDefinition)=>manualSerialTreeFamily(definition)&&scriptDefinitionSupported(definition,true,false,0,false,true);
+export const scriptRetryWaiting=(selected:Selected,definition:BranchDefinition)=>selected.paths?.[0]?.state==='waiting'&&selected.steps!.some(s=>s.id===selected.paths![0]!.step_execution_id&&s.state==='prepared'&&selected.attempts!.filter(a=>a.step_execution_id===s.id).length>1&&definition.steps.some(node=>node.id===s.step_id&&node.kind==='script'&&node.failure?.action==='retry'&&node.failure.delayMs>0));
 /** Portable replay admits only the effect-free subset of the canonical graph codec. */
 export function portableScriptDefinitionSupported(definition:BranchDefinition):boolean {
   // Portable standalone automatic retries opt into their existing serial or parallel codec.
   return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition,false,true,true))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'||step.kind==='script'&&step.failure.action==='retry'))&&scriptDefinitionSupported(definition,false,false,0,true);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
-export type ScriptOwnerContext={automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
+export type ScriptOwnerContext={serialTreeRetries?:boolean;automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
 // Only a standalone terminal observation may retain serial gate evidence with context.
 const standaloneGateContext=(context:ScriptOwnerContext|undefined)=>!context||context.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
 // Tree owners opt in separately from standalone eligibility and origin proof.
 const workflowGateContext=(context:ScriptOwnerContext|undefined)=>standaloneGateContext(context)||context?.workflowGates===true;
 // Retained automatic origins and fresh manual destinations share serial proof, never admission authority.
 const standaloneSerialRetries=(definition:BranchDefinition,e:Row|undefined,context?:ScriptOwnerContext)=>standaloneScriptRetryFamily(definition)&&!hasParallelControls(definition)&&standaloneGateContext(context)&&!!e&&['manual','automatic'].includes(e.admission_source)&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth;
+const serialRetriesSupported=(definition:BranchDefinition,e:Row|undefined,context?:ScriptOwnerContext)=>standaloneSerialRetries(definition,e,context)
+  ||context?.serialTreeRetries===true&&manualSerialTreeDefinitionSupported(definition)&&definition.steps.some(s=>s.kind==='script'&&s.failure?.action==='retry')
+    &&!context.automaticRootTree&&!context.resourceFrontier&&!context.issuedResource&&!context.issuedOwnerTree&&!context.issuedGroup&&!context.resourceRetry&&!context.resourceGeneration&&!context.resourceCleanup&&!!e
+    &&(context.parent?e.admission_source==='call'&&e.parent_execution_id===context.parent.executionId&&e.parent_attempt_id===context.parent.attemptId&&e.input_text===context.parent.input:e.admission_source==='manual'&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth);
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
   try {
     branchSharedState(definition,selected.steps!,selected.sealedResults!);
@@ -54,14 +62,14 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     if(context?.resourceCleanup&&(!context.issuedResource||!context.resourceFrontier||!terminal
       ||!['active','draining'].includes(selected.resources![0]?.state)||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
     const waitingGate=workflowGateContext(context)&&selected.gates!.some(g=>g.state==='waiting');
-    const serialRetries=standaloneSerialRetries(definition,e,context);
-    const waitingRetry=serialRetries&&p?.state==='waiting'&&selected.steps!.some(s=>s.id===p.step_execution_id&&s.state==='prepared'&&selected.attempts!.filter(a=>a.step_execution_id===s.id).length>1&&definition.steps.some(node=>node.id===s.step_id&&node.kind==='script'&&node.failure?.action==='retry'&&node.failure.delayMs>0));
+    const serialRetries=serialRetriesSupported(definition,e,context);
+    const waitingRetry=serialRetries&&scriptRetryWaiting(selected,definition);
     const waiting=context?.waiting||waitingGate||waitingRetry;
     if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':e.admission_source==='automatic'&&(standaloneGateContext(context)&&automaticScriptDefinitionSupported(definition,false,serialRetries)||context?.automaticRootTree===true&&!context.parent&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth&&automaticScriptDefinitionSupported(definition,true))?'automatic':'manual')
       ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
       ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting&&!context?.issuedGroup?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
-    if(!scriptDefinitionSupported(definition,!!context&&!standaloneGateContext(context),context?.resourceFrontier,context?.resourceGeneration,serialRetries))return false;
+    if(!scriptDefinitionSupported(definition,!!context&&!standaloneGateContext(context),context?.resourceFrontier,context?.resourceGeneration,serialRetries,context?.serialTreeRetries))return false;
     if(['forks','joins','maps','items','bundles',...(!workflowGateContext(context)?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
     if(context?.resourceFrontier&&!(context.issuedResource?issuedResourceFrontierSupported(selected,definition,hostCut,context?.issuedGroup,context?.issuedOwnerTree,context?.resourceGeneration):resourceReservationSupported(selected,definition)))return false;
     if(!definition.steps.some(s=>s.id===p.node_id)&&!definition.controls.some(c=>c.id===p.node_id))return false;
@@ -327,7 +335,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     if(hasParallelControls(definition))return replayParallelCut(selected,definition,configuration,events,checkpoint,seed,context,hostCut);
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let finished:Row|undefined,terminalObserved=false;
-    const serialRetries=standaloneSerialRetries(definition,e,context),scriptStates=new Map<string,string>();
+    const serialRetries=serialRetriesSupported(definition,e,context),scriptStates=new Map<string,string>();
     let scriptAttempt:Row|undefined,scriptWaiting=false;
     const admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();
     let resourceReserved=!!seed?.selected.resources?.length,gateClosing:Row|undefined;
@@ -620,8 +628,9 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       ||!selected.gates!.some(g=>g.id===gateClosing!.gateId&&g.state==='waiting')))return false;
     if(configuration.checkpointMode==='exit'&&!context?.terminal&&(!waitingGate||closing?.interruptionId!==undefined)&&(!interruption||interruption.interruptionId!==closing.interruptionId
       ||interruption.invocationId!==closing.id||interruption.ordinal!==closing.ordinal||[...authorized.keys()].some(id=>!exited.has(id))))return false;
+    const waitingCall=context?.serialTreeRetries===true&&current?.state==='waiting'&&definition.steps.some(s=>s.id===current!.step_id&&s.kind==='branch_call')&&Object.entries(context.children).some(([id,child])=>!child.completed&&selected.attempts!.some(a=>a.id===id&&a.step_execution_id===current!.id));
     if(serialRetries&&(selected.attempts!.some(a=>definition.steps.some(node=>node.id===selected.steps!.find(s=>s.id===a.step_execution_id)?.step_id&&node.kind==='script')&&scriptStates.get(a.id)!==a.state)
-      ||!context?.terminal&&p.state!==(waitingGate||scriptWaiting?'waiting':'active')))return false;
+      ||!context?.terminal&&p.state!==(waitingGate||scriptWaiting||waitingCall?'waiting':'active')))return false;
     if((context||waitingGate||serialRetries)&&[...authorized.keys()].some(id=>!exited.has(id)))return false;
     if(retry&&(retryIndex!==retry.generations.length||retrySettled||retryScheduled))return false;
     if(context?.resourceFrontier&&(!resourceReserved||context.issuedGroup&&reservedResources.size!==selected.resources!.length))return false;

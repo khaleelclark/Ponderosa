@@ -230,7 +230,7 @@ Manual standalone effect-free Script/ordinary-approval-gate graphs with existing
 Fork/Map/Join controls can now pass the portable consumer with canonical Script
 retry histories. The shared portable definition guard permits retry only on Script
 steps in that family; the serial successor below extends manual standalone
-Script retries; the automatic serial successor below extends proven automatic sources. The automatic parallel successor below extends that family; human-gate retry policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
+Script retries; the automatic serial successor below extends proven automatic sources. The automatic parallel successor below extends that family; human-gate retry policies remain refused. Manual serial Call-tree retries use the separate successor below. No import, manifest,
 DTO, storage-version or scheduler format is added.
 
 Existing capture retains all attempt rows, failed results, retry transition bytes
@@ -279,8 +279,9 @@ selected checkpoint with canonical Script retries. Definitions may omit controls
 or use the existing condition/route/loop family. The shared serial definition guard has
 an explicit retry opt-in; structural frontier/replay enables it only for actual
 parentless manual standalone owners or their exact terminal observation context.
-The automatic serial successor below extends proven automatic sources. Call-tree, issued/Agent/resource serial eligibility and manual
-parallel retry behavior are unchanged. Workflow and gate policies still stop.
+The automatic serial successor below extends proven automatic sources. The manual
+serial Call-tree successor below has a separate context; issued/Agent/resource
+serial eligibility and manual parallel retry behavior are unchanged. Workflow and gate policies still stop.
 
 Capture already retains all original attempts, failed results, timestamps and
 retry audit events. The serial frontier now validates consecutive attempt numbers,
@@ -412,3 +413,69 @@ store callers and both guides. See [parallel automatic proof](branch-foreign-che
 Source only: no tests/preparation/builds/types/Node/parser/native/runtime/browser/
 provider/liveDB execution. Execution, timing/durability, notifications, round trips,
 scheduling, rollback, atomicity and whole-Bible acceptance remain unvalidated.
+
+## Manual serial Call-tree retry successor
+
+Private tree recreation and selected continuation now admit proven manual serial
+Node Script/ordinary-approval-gate/branch_call owners with canonical per-Script
+retries. Every retained owner must have a manual, effect-free serial definition,
+with no parallel controls and stop policies for workflow, gates and Calls.
+Existing condition/route, edge loops and JSON state remain supported. Automatic
+root trees, parallel-tree retry families and issued/Agent/resource/native/
+effectful/unknown retries retain their previous boundaries. Existing standalone
+manual/automatic serial/parallel support is unchanged.
+
+The shared consumer adds a default-off serial-tree retry opt-in and a separate
+`serialTreeRetries` owner context. Complete-tree validation and runtime-tree
+recreation opt in only when the whole owner inventory qualifies; each owner's
+actual manual-root or matching Call ancestry/input is checked separately. Local
+and foreign selected/latest replay use the existing serial retry engine, not a
+second replay implementation. The normal/default definition guard and automatic
+origin validators remain unchanged.
+
+Runtime capture already retains every attempt, result, timestamp, transition and
+acceptance fact. Recreation uses the existing exact tree validation, parent Call
+binding/input/hash/occurrence/depth/ceiling proof and fresh identity maps. Held
+owners acquire no acceptance, leases or dispatch authority. Runtime readback and
+re-export continue to verify exact remapped rows and original private manifests.
+No transport, storage version, schema, DTO or dependency changed.
+
+Serial replay now preserves retry attempt numbers, absolute availability and
+waiting paths inside each owner. Each consumed attempt still needs exact input,
+purpose/hash/fence/lease/authorization, actual exit/result and settlement proof,
+canonical retry event/creation/deadline/delay/ceiling and failure-edge precedence.
+Intermediate failures cannot seal or update state. Waiting Calls must match actual
+unfinished admitted children; Calls themselves never retry. Existing typed remap
+retains consumed prefix attempts/results/deadlines once; future attempts still use
+`MAX(number)+1`, with current destination time/readiness/capacity/policy in charge.
+
+Both selected and independent latest complete trees must replay, including
+terminal/current supported evidence. Exact selected committed saver bytes/hash,
+per-owner invocation/configuration and required child saves remain mandatory.
+Sync/async/default async and authentic closed EXIT are preserved without mode
+conversion. Missing child bytes cannot qualify through a root save. Actual EXIT
+interruption or gate closure/drain/current-authority proof remains necessary;
+latest-only terminal observations never become selected executable cuts. The
+EXIT structural producer recognizes only qualifying manual/Call serial ancestor
+chains, then retains its existing lifecycle and current-owner checks.
+
+Existing bounded held/admitted/re-export/local-rewind generations, terminal
+historical child nonadmission, fresh human review, current mapped destinations,
+directories, no-secret choices, Script/Call permissions, per-owner budgets and
+capacity remain connected. Foreign acceptance creates an actual manual root and
+actual Call children; the source supplies proof, never destination authority.
+Original-key receipt verification retains immutable prefix attempts/deadlines
+after legitimate suffix work. Pending gates use existing destination notification
+and response ownership; serial canceled source gates remain refused.
+
+Necessary caller changes are limited to shared serial frontier/replay, complete
+tree validation/portable preflight, runtime-tree recreation, current foreign tree
+review and the EXIT structural producer. Saver freeze/after-commit/readiness,
+remap/insertion, generation/receipt/local rewind, API/SDK/UI, scheduler claim/finish,
+Call creation and server process-group/pipe drain use existing code. See the
+[full tree retry proof](branch-foreign-checkpoint-continuation.md#manual-serial-call-tree-script-retries).
+
+This is source-only. No tests, builds, typechecks, preparation, Node/parser/native,
+runtime/browser/provider/liveDB or integration actions were performed. Execution,
+timing/durability, notifications, round trips, scheduling, rollback, atomicity and
+whole-Bible/portability acceptance remain unvalidated.

@@ -24,7 +24,7 @@ import {reviewBranchHostRequest,adoptBranchHostRequest,type HostArtifactGrant} f
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {TREE_SCHEMA,scriptTreeLatestSupported,portableScriptTreeSupported,scriptTreeSnapshotSupported,treeIds,treeIdMapSupported,treeCoordinationLineageSupported,childTreeLineage} from './branch-tree-continuation.js';
-import {resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptSnapshotSupported,scriptLatestSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
+import {manualSerialTreeDefinitionSupported,resourceReservationSupported,scriptDefinitionSupported,scriptCutSupported,scriptFrontierSupported,portableScriptCutSupported,portableScriptSnapshotSupported,scriptLatestSupported,portableScriptDefinitionSupported,SCRIPT_CONTINUATION_COMPATIBILITY,type Selected} from './branch-script-continuation.js';
 import {BranchUnitSaver, type BranchUnitContext} from "./branch-unit-saver.js";
 import {readBranchRunCounts,readBranchLiveOutputs} from './branch-run-status.js';
 import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
@@ -253,7 +253,7 @@ export class BranchStore {
   private checkpointDefinitionSupported(executionId:string):boolean {
     const execution=this.execution(executionId)!,definition=this.definition(execution);
     const owner=this.row('SELECT admission_source,parent_execution_id,parent_attempt_id,call_depth FROM branch_executions WHERE id=?',executionId)!;
-    return scriptDefinitionSupported(definition,true)||['manual','automatic'].includes(owner.admission_source)&&!owner.parent_execution_id&&!owner.parent_attempt_id&&!owner.call_depth&&!this.row('SELECT 1 FROM branch_executions WHERE parent_execution_id=?',executionId)&&portableScriptDefinitionSupported(definition)
+    return scriptDefinitionSupported(definition,true)||manualSerialTreeDefinitionSupported(definition)&&this.ancestors(executionId).every(owner=>manualSerialTreeDefinitionSupported(this.definition(this.execution(owner.id)!))&&owner.admission_source===(owner.parent_execution_id?'call':'manual'))||['manual','automatic'].includes(owner.admission_source)&&!owner.parent_execution_id&&!owner.parent_attempt_id&&!owner.call_depth&&!this.row('SELECT 1 FROM branch_executions WHERE parent_execution_id=?',executionId)&&portableScriptDefinitionSupported(definition)
       ||scriptDefinitionSupported(definition,false,true)&&resourceReservationSupported(selectBranchUnit(this.sqlite,executionId),definition);
   }
   private checkpointOwnerChainSupported(executionId:string):boolean {
@@ -697,7 +697,7 @@ export class BranchStore {
       const branch=this.getBranch(id);if(!branch?.enabled||!branch.versionId||!branch.bindingRevisionId||this.row('SELECT deleting FROM branches WHERE id=?',id)?.deleting)throw Error('Enable every current Call destination before review');
       if(branch.chatId)this.chat(branch.chatId);
       const definition=this.version(id,branch.versionId)!.definition,bindings=this.localConfiguration(id)!,configuration=this.configuration(id),{secretBindings,...nonsecret}=configuration;
-      if(definition.trigger.kind!=='manual'&&!(id===branchId&&automaticScriptDefinitionSupported(definition,true))||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||!scriptDefinitionSupported(definition,true)||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret sync/async or proven closed EXIT Script/Call family');
+      if(definition.trigger.kind!=='manual'&&!(id===branchId&&automaticScriptDefinitionSupported(definition,true))||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||!(scriptDefinitionSupported(definition,true)||manualSerialTreeDefinitionSupported(definition))||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret sync/async or proven closed EXIT Script/Call family');
       for(const o of all.filter(o=>destination(o.sourceBranchId)===id)){
         const get=(kind:string)=>JSON.parse(o.facts.find(f=>f.kind===kind)!.json);
         if(payloadHash(definition)!==payloadHash(get('definition'))||stableJson(nonsecret)!==stableJson(get('configuration').configuration))throw Error('Current tree definition/configuration differs from source');
