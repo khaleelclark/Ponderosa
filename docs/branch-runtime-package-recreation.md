@@ -934,3 +934,72 @@ Execution, timing/durability, notifications, round trips, scheduling, rollback,
 native equivalence, atomicity and whole-Bible/full-portability acceptance remain
 unvalidated. No new execution engine, codec, module, schema/storage-version, DTO,
 format, size cap or dependency.
+
+
+### Manual Call trees with root-owned Join bundles
+
+Runtime-tree packages can recreate and continue the existing effect-free manual
+Call-tree family when only the related root owns authentic Join result bundles.
+The root has no Call parent or ancestor. Every definition in that related tree
+uses a manual trigger and the existing Node Script, Branch Call, ordinary approval
+gate and graph-control codecs. Existing declared JSON state, conditions, routes,
+loops and qualified Script retries keep their normal replay rules. Calls and gates
+do not gain retry policies.
+
+A shared root-family validator checks the actual selected owner cuts, definitions
+and bindings. It checks complete parent reachability and Call binding/input/hash
+links, refuses Agent bindings and effects, and reuses the standalone validator's
+owned-bundle checks without widening its public default. Existing canonical tree
+replay independently checks complete child coverage, owner pins, acceptance,
+Call results, state seals and every causal Script/Join transition.
+
+Only the root can produce or consume a bundle. Every descendant must have no
+bundle rows or typed bundle references. Every actual or prepared Call input and
+result must be ordinary inline text; exact child input/output and parent-attempt
+hashes remain mandatory. Returned references, forwarded bundles, child-owned
+bundles, child adoption and cross-owner bundle remapping remain unsupported.
+Unrelated execution roots cannot supply eligibility or missing proof.
+
+Owned bundles retain unique typed identities, complete rows, exact UTF-8 content
+and hash, the existing 8 MB limit and beyond-inline requirement, and one legitimate
+closed producer Fork. Canonical replay reconstructs deterministic Join ordering,
+labels and partial-result bytes. Script input bundle ID/hash, lease/fence,
+authorization, process exit and drain, settlement, retry timing/failure precedence
+and shared-state proof remain required. Extra, altered, unavailable or unrelated
+bundles and forged references refuse continuation.
+
+Held recreation resolves the original related root through retained generations
+and requires canonical original latest tree proof before inserting any native
+frontier for a bundle-bearing family. Publication rechecks the same proof. Missing
+proof context cannot grant recreation. Existing frontier insertion/readback and
+typed output remapping preserve exact bundle bytes and hashes; authored text,
+choices, definition literals and JSON state are not rewritten.
+
+An older committed tree cut before bundle production can be selected while latest
+independently proves later root bundles. Selected and latest retain their own
+complete historical owner sets; genuine later children need their ordinary Call
+proof, not an equal-owner-count shortcut. A bundle-bearing selected cut needs its
+own exact committed tree snapshot, hash, invocation metadata and required child
+saver coverage. Actual Call trees do not use the one-owner standalone Script-to-tree
+adapter. No snapshot or invocation is backfilled. EXIT owners still need their own
+exact closed saver evidence and the existing complete-tree latest proof. A
+terminal latest-only observation is evidence, never an executable selected cut;
+the selected root remains nonterminal.
+
+Held, admitted, re-exported and local-rewind generations use existing retained
+manifest/command/receipt and saved-tree lineage. Current generations independently
+prove root-only bundle ownership and inline Call boundaries; immutable copied
+prefix bundles keep their owner/Fork/content/hash while genuine suffix bundles
+must arise through canonical production. Original-key recovery retains exact
+source selection, maps, prefix and admission checks.
+
+Continuation requires fresh human confirmation, a fresh manual destination root
+and ordinary Call child admission, current matching configuration and bindings,
+Script/Branch Call permissions, directories, budget, capacity and readiness.
+Historical source acceptance confers no destination authority. This adds no
+automatic-root Call-tree bundle support, scheduler/trigger replay, native/effectful,
+issued/Agent/resource, secret/custody/execution-Chat or unknown/in-flight family.
+
+This is source implementation, not executed qualification. Saver timing,
+durability, scheduling, notifications, round trips, rollback, native equivalence,
+atomicity and whole-Bible/full-portability acceptance remain unvalidated.

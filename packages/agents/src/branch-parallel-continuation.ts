@@ -25,6 +25,9 @@ export function parallelDefinitionSupported(d:BranchDefinition,calls=false,issue
 }
 /** Foreign bundles are owned Join results; causal replay separately proves their production. */
 export function portableScriptBundlesSupported(s:Selected,d:BranchDefinition):boolean {
+ return ownedScriptBundlesSupported(s,d);
+}
+function ownedScriptBundlesSupported(s:Selected,d:BranchDefinition,calls=false):boolean {
  try {
   const e=s.execution![0]!,outputs=(rows:Row[])=>rows.map(row=>row.result_json===null?undefined:JSON.parse(row.result_json).output);
   const texts=[e.input_text,e.output_text,...s.paths!.map(p=>p.input_text),...s.steps!.map(p=>p.input_text),...s.joins!.map(p=>p.output_text),...s.items!.map(p=>p.input_text),...s.gates!.map(g=>g.proposal_text),...s.gates!.map(g=>g.response_json===null?undefined:JSON.parse(g.response_json).output),...outputs(s.paths!),...outputs(s.steps!),...outputs(s.attempts!),...outputs(s.sealedResults!),...outputs(s.forks!)];
@@ -32,7 +35,7 @@ export function portableScriptBundlesSupported(s:Selected,d:BranchDefinition):bo
   if(!s.bundles!.length&&!references.length)return true;
   // Automatic origins need separate occurrence replay; their admitted descendants are fresh manual owners.
   const automatic=automaticScriptDefinitionSupported(d,false,false,true);
-  if(d.trigger.kind!=='manual'&&!automatic||!parallelDefinitionSupported(d)||d.steps.some(step=>!['script','human_gate'].includes(step.kind))||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
+  if(d.trigger.kind!=='manual'&&!automatic||!parallelDefinitionSupported(d,calls)||d.steps.some(step=>!['script','human_gate',...(calls?['branch_call']:[])].includes(step.kind))||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
   if(branchContinuationIds(s).includes(e.id))return false;
   const producers=new Set<string>();
   for(const bundle of s.bundles!){
@@ -57,6 +60,41 @@ export function standaloneBundleTreeOwnerSupported(s:Selected,d:BranchDefinition
   &&!s.resources!.length&&!s.actions!.length&&!s.gates!.some(g=>g.purpose!=='approval')
   &&!s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))
   &&portableScriptBundlesSupported(s,d);
+}
+export type ManualRootBundleOwner={selected:Selected;definition:BranchDefinition;bindings:Row};
+/** Complete related cuts only; canonical replay still proves children, saves and bundle production. */
+export function manualRootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string):boolean {
+ try {
+  const byId=new Map(owners.map(o=>[o.selected.execution![0]!.id,o])),root=byId.get(rootId);
+  const inline=(value:unknown)=>value===null||value===undefined||typeof value==='string'&&!value.startsWith('branch-result-bundle:')&&branchText(value)===value;
+  if(!root||byId.size!==owners.length||!root.definition.steps.some(s=>s.kind==='branch_call')||!parallelDefinitionSupported(root.definition,true))return false;
+  for(const o of owners){
+   const s=o.selected,d=o.definition,e=s.execution![0]!;
+   if(d.trigger.kind!=='manual'||d.policy.failure.action!=='stop'||Object.values(d.parameters??{}).some(p=>p.type==='secret')
+    ||d.steps.some(step=>!(step.kind==='script'&&step.runtime==='node'||step.kind==='branch_call'||step.kind==='human_gate')||step.failure&&step.failure.action!=='stop'&&!(step.kind==='script'&&step.failure.action==='retry'))
+    ||d.controls.some(c=>!['condition','route','fork','map','join'].includes(c.kind))||Object.keys(o.bindings.agents??{}).length
+    ||s.resources!.length||s.actions!.length||s.gates!.some(g=>g.purpose!=='approval')||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state)))return false;
+   if(e.id===rootId){
+    if(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!inline(e.input_text)||!ownedScriptBundlesSupported(s,d,true))return false;
+   }else{
+    if(e.admission_source!=='call'||!e.parent_execution_id||!e.parent_attempt_id||s.bundles!.length||!portableScriptBundlesSupported(s,d)||!inline(e.input_text)||!inline(e.output_text))return false;
+    const seen=new Set<string>();let current=o;
+    while(current!==root){
+     const ce=current.selected.execution![0]!;if(seen.has(ce.id))return false;seen.add(ce.id);
+     const parent=byId.get(ce.parent_execution_id);if(!parent)return false;
+     const attempt=parent.selected.attempts!.find(a=>a.id===ce.parent_attempt_id),step=parent.selected.steps!.find(s=>s.id===attempt?.step_execution_id),call=parent.definition.steps.find(s=>s.id===step?.step_id);
+     if(!step||call?.kind!=='branch_call'||parent.bindings.branches?.[call.branchRef]!==ce.branch_id||ce.input_text!==step.input_text||ce.input_hash!==payloadHash({parentAttempt:ce.parent_attempt_id,input:step.input_text}))return false;
+     current=parent;
+    }
+   }
+   // Even a prepared Call must not transport a root bundle into a later child.
+   for(const step of s.steps!.filter(step=>d.steps.some(node=>node.id===step.step_id&&node.kind==='branch_call'))){
+    if(!inline(step.input_text)||!inline(step.result_json===null?undefined:JSON.parse(step.result_json).output))return false;
+    if(s.attempts!.filter(a=>a.step_execution_id===step.id).some(a=>!inline(a.result_json===null?undefined:JSON.parse(a.result_json).output)))return false;
+   }
+  }
+  return true;
+ }catch{return false;}
 }
 export function parallelFrontierSupported(s:Selected,d:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
  try{

@@ -1,5 +1,5 @@
 import {automaticScriptDefinitionSupported,automaticScriptOriginSupported} from './branch-script-origin.js';
-import {hasParallelControls,standaloneBundleTreeOwnerSupported} from './branch-parallel-continuation.js';
+import {hasParallelControls,standaloneBundleTreeOwnerSupported,manualRootBundleTreeSupported} from './branch-parallel-continuation.js';
 import {randomUUID} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchPortableExecutionTree,BranchPortableRuntimeOwner,BranchRuntimeTreePlan,BranchRuntimeTreeReadback,BranchRuntimeTreeReceipt,BranchPortableDefinitionTree} from '@ponderosa/core';
@@ -79,10 +79,11 @@ function supported(d:BranchPortableExecutionTree,o:BranchPortableRuntimeOwner,db
  // Package validation already proves complete, acyclic parent links; eligibility belongs to one root.
  const rootOf=(owner:BranchPortableRuntimeOwner)=>{while(fact(owner,'frontier').execution[0].parent_execution_id)owner=byId.get(fact(owner,'frontier').execution[0].parent_execution_id)!;return owner;};
  const rootOwner=rootOf(o),all=inventory.filter(owner=>rootOf(owner)===rootOwner),s=selected(o),e=s.execution![0]!,definition=fact(o,'definition'),configuration=fact(o,'configuration');
+ const rootCallBundles=manualRootBundleTreeSupported(all.map(owner=>({selected:selected(owner),definition:fact(owner,'definition'),bindings:fact(owner,'bindings')})),rootOwner.sourceExecutionId);
  // Bundle-bearing held recreation needs canonical original latest proof, including retained generations.
- if(all.length===1&&s.bundles!.length&&standaloneBundleTreeOwnerSupported(s,definition,fact(o,'bindings'))){
-  if(!db||configuration.requiredSecretRefs.length||o.chatRefs.length||o.facts.some(f=>['host','custody'].includes(f.kind)))return false;
-  try{const original=heldTreeSource(d,o.sourceExecutionId);return portableRootTreeOwners(original.data,original.rootId).length===1&&!!portableScriptTreeSupported(db,original.data,original.rootId);}catch{return false;}
+ if(all.length===1&&s.bundles!.length&&standaloneBundleTreeOwnerSupported(s,definition,fact(o,'bindings'))||rootCallBundles&&all.some(owner=>selected(owner).bundles!.length)){
+  if(!db||all.some(owner=>fact(owner,'configuration').requiredSecretRefs.length||owner.chatRefs.length||owner.facts.some(f=>['host','custody'].includes(f.kind))))return false;
+  try{const original=heldTreeSource(d,rootOwner.sourceExecutionId);return (rootCallBundles||portableRootTreeOwners(original.data,original.rootId).length===1)&&!!portableScriptTreeSupported(db,original.data,original.rootId);}catch{return false;}
  }
  const direct=all.filter(c=>fact(c,'frontier').execution[0].parent_execution_id===o.sourceExecutionId),children:ScriptOwnerContext['children']=Object.create(null);
  for(const c of direct){const ce=selected(c).execution![0]!;children[ce.parent_attempt_id]={executionId:c.sourceExecutionId,versionId:ce.version_id,output:ce.output_text,completed:['completed','failed'].includes(ce.state),failed:ce.state==='failed'};}
