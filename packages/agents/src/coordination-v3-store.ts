@@ -520,6 +520,18 @@ export class CoordinationV3Store {
     return this.runtimeCommunicationReadModel.runtimeCommunication(id);
   }
 
+  /** Message event IDs are distinct from the exact Agent-specific dispatch
+   * identity used by direct Agent requests. Resolve only its owned activation. */
+  runtimeCommunicationForEvent(eventId: string, agentId: string): RuntimeCommunicationV3View | undefined {
+    const canonical = this.runtimeCommunication(eventId);
+    if (canonical) return canonical;
+    const dispatched = this.runtimeCommunication('dispatch:' + eventId + ':' + agentId);
+    const payload = dispatched?.payload as {communication?:{eventId?:unknown}} | undefined;
+    if (payload?.communication?.eventId !== eventId ||
+        !dispatched?.activations?.some(activation => activation.agentId === agentId)) return undefined;
+    return dispatched;
+  }
+
   runtimeArtifacts(ownerKind?: RuntimeArtifactV3["ownerKind"], ownerId?: string): RuntimeArtifactV3[] {
     return this.runtimeCommunicationReadModel.runtimeArtifacts(ownerKind, ownerId);
   }
@@ -813,7 +825,7 @@ export class CoordinationV3Store {
   voiceReplyRunTiming(communicationId: string, agentId: string): {
     runId: string; leasedAt: string; runStartedAt?: string; runStatus: string;
   } | undefined {
-    const activation = this.runtimeCommunication(communicationId)?.activations?.find(a => a.agentId === agentId);
+    const activation = this.runtimeCommunicationForEvent(communicationId, agentId)?.activations?.find(a => a.agentId === agentId);
     if (!activation) return undefined;
     const row = this.sqlite.prepare(`SELECT r.id, r.created_at, r.started_at, r.status
       FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id

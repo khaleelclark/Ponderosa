@@ -69,13 +69,13 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
     presentation === "voice" ? "/api/conversations/:id/voice-replies/:messageId/:agentId" : "/api/conversations/:id/reply-streams/:messageId/:agentId", async (request, reply) => {
       const { id, messageId, agentId } = request.params;
       const chat = c.store.getConversation(id); const agent = c.store.getAgent(agentId);
-      const runtime = c.coordinationV3.runtimeCommunication(messageId);
+      const runtime = c.coordinationV3.runtimeCommunicationForEvent(messageId,agentId);
       const input = (runtime?.payload as { communication?: CommunicationEvent } | undefined)?.communication;
       const report=presentation==="text"?c.coordinationV3.getRequest(messageId):undefined;
       const reportSource=report?.recipientAgentId===agentId && report.projectId===chat?.projectId && report.conversationId===id
         ?c.store.sqlite.prepare("SELECT created_at FROM coordination_requests WHERE id=?").get(messageId) as {created_at:string}|undefined:undefined;
       if (!chat || !resourceInProduct(c.store,"conversation",id,requestProduct(request)) || !resourceInProduct(c.store,"agent",agentId,requestProduct(request)) || !activeChatResourceOwner(c.store,"conversation",id) || !agent || !activeChatResourceOwner(c.store,"agent",agentId) || agent.conversationId !== id ||
-          agent.projectId !== chat.projectId || (!reportSource && (input?.conversationId !== id || input.projectId !== chat.projectId)) ||
+          agent.projectId !== chat.projectId || (!reportSource && (input?.eventId !== messageId || input.conversationId !== id || input.projectId !== chat.projectId)) ||
           (presentation === "voice" && (input?.intent !== "user_dm" || input.sender.kind !== "user" || input.sender.userId !== "local-operator" ||
           input.audience.kind !== "user_agents" || input.audience.userId !== "local-operator" ||
           input.audience.agentIds.length !== 1 || input.audience.agentIds[0] !== agentId))) {

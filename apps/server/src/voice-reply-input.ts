@@ -28,7 +28,7 @@ export function canonicalVoiceReplyInput(
   } | undefined;
   const eventId = payload?.communication?.eventId;
   if (typeof eventId !== "string" || payload?.dispatch?.voiceReply !== true) return undefined;
-  const canonical = coordination.runtimeCommunication(eventId);
+  const canonical = coordination.runtimeCommunicationForEvent(eventId, agentId);
   if (!canonical?.activations?.some(a => a.id === ids[0] && a.agentId === agentId)) return undefined;
   const accepted = canonical.payload as {
     communication?: CommunicationEvent;
@@ -72,9 +72,9 @@ export function canonicalTextReplyInput(store: AgentStore, coordination: Coordin
     const payload=source.payload as {communication?:CommunicationEvent;dispatch?:{voiceReply?:boolean}}|undefined;
     const id=payload?.communication?.eventId;
     if(!id || payload?.dispatch?.voiceReply===true)continue;
-    const canonical=coordination.runtimeCommunication(id);
+    const canonical=coordination.runtimeCommunicationForEvent(id, agentId);
     const input=(canonical?.payload as {communication?:CommunicationEvent}|undefined)?.communication;
-    if(!input || input.projectId!==chat.projectId || input.conversationId!==chat.id ||
+    if(!input || input.eventId!==id || input.projectId!==chat.projectId || input.conversationId!==chat.id ||
         !canonical?.activations?.some(a=>a.id===source.id&&a.agentId===agentId))continue;
     const direct=route.intent==='direct_to_user' && input.intent==='user_dm' && input.sender.kind==='user' &&
       input.sender.userId==='local-operator' && (input.audience.kind==='user_agent' ? input.audience.agentId===agentId

@@ -204,9 +204,10 @@ async function fixture(options={},runCheck){
  if(options.restricted)new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]});
  if(options.exposureFull)for(let i=0;i<128;i++)localMemoryFor(app).speech.set('occupied-'+i,{authority:{actor:{id:'occupied-'+i},runId:'occupied-'+i},refs:new Map(),invalid:false,started:false,expires:Date.now()+3600000});
  const input={text:'Synthetic voice input' ,idempotencyKey:'turn',recipients:[{agentId:agent.id}],activeRunDelivery:'queue',...(!options.ordinary&&!options.textStream?{voiceReply:true}:{})};
- const sendUrl=`/api/branches/engine/conversations/${chat.id}/direct-messages`;
- const sent=await app.inject({method:'POST',url:sendUrl,headers,payload:input});assert.equal(sent.statusCode,200,sent.body);
- const messageId=sent.json().message.communicationEventId;
+ const sendUrl=options.agentDispatch?`/api/branches/engine/agents/${agent.id}/messages`:`/api/branches/engine/conversations/${chat.id}/direct-messages`;
+ const payload=options.agentDispatch?{text:input.text,idempotencyKey:input.idempotencyKey,activeRunDelivery:'queue'}:input;
+ const sent=await app.inject({method:'POST',url:sendUrl,headers,payload});assert.ok(options.agentDispatch?[200,202].includes(sent.statusCode):sent.statusCode===200,sent.body);
+ const messageId=options.agentDispatch?sent.json().communicationEventId:sent.json().message.communicationEventId;assert.ok(messageId);
  await boundedWait(()=>options.noVoiceTool?reached:armed,'provider ready');
  await boundedWait(()=>options.unsupported||options.ordinary||reached,'candidate processed');
  const url=`/api/branches/engine/conversations/${chat.id}/voice-replies/${messageId}/${agent.id}`;
@@ -640,6 +641,18 @@ for (const claudeNative of [false,true]) test('explicit nonvoice publication str
  const final=await f.app.inject({method:'GET',url:f.url,headers:f.headers});assert.equal(final.json().reply.presentation,'text');assert.equal(final.json().reply.state,'completed');
 }));
 
+test('Agent direct dispatch resolves scoped text streaming by canonical event identity',async()=>fixture({textStream:true,agentDispatch:true},async f=>{
+ assert.equal(f.armed.statusCode,200,f.armed.body);
+ const target='/api/branches/engine/conversations/'+f.chat.id+'/reply-streams/'+f.messageId+'/'+f.agent.id;
+ const early=await f.app.inject({method:'GET',url:target,headers:f.headers});assert.equal(early.statusCode,200,early.body);assert.equal(early.json().reply.text,'First stable phrase. ');
+ assert.equal(f.coord.runtimeCommunication(f.messageId),undefined,'Direct dispatch is stored by its scoped dispatch identity');
+ const runtime=f.coord.runtimeCommunicationForEvent(f.messageId,f.agent.id);assert.equal(runtime.payload.communication.eventId,f.messageId);
+ assert.equal(f.coord.runtimeCommunicationForEvent(f.messageId,'foreign-agent'),undefined,'Another Agent cannot resolve the dispatch');
+ const forbidden=await f.app.inject({method:'GET',url:'/api/branches/engine/conversations/'+f.chat.id+'/reply-streams/'+f.messageId+'/foreign-agent',headers:f.headers});assert.equal(forbidden.statusCode,404);
+ f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'text completion');
+ const final=await f.app.inject({method:'GET',url:target,headers:f.headers});assert.equal(final.statusCode,200,final.body);assert.equal(final.json().reply.text,'First stable phrase. Second phrase.');assert.equal(final.json().reply.state,'completed');
+}));
+
 test('normalized Claude receipt survives the actual closed adapter projection and rejects orphan operation identity',async()=>{
  const {projectAgentEvent}=await import('../../packages/engines/dist/index.js');
  const receipt={type:'tool_result',id:'native-call',output:'',isError:false,voiceReplyStreamId:'stream',voiceReplyOperationId:'host-operation'};
@@ -658,7 +671,7 @@ test('text streaming selects canonical shared/private/peer routes and refuses co
    audience:intent==='broadcast'?{kind:'organization',organizationId:'org'}:intent==='collaboration'?{kind:'agents',agentIds:[f.agent.id]}:{kind:'user_agents',userId:'local-operator',agentIds:[f.agent.id]}};
   const activation={id:'activation',kind:'human_message',promptClass:'human',payload:{communication:input}};
   const fake={requestIdsAttachedToRun:()=>[],requiredReplyObligationsForRun:()=>[{state:'pending',replyAuthority:{intent,...(intent==='collaboration'?{recipientAgentIds:['peer']}:{})}}],
-   activationIdsAttachedToRun:()=>['activation'],activationPayloads:()=>[activation],runtimeCommunication:()=>({projectId:f.project.id,payload:{communication:input},activations:[{id:'activation',agentId:f.agent.id}]})};
+   activationIdsAttachedToRun:()=>['activation'],activationPayloads:()=>[activation],runtimeCommunicationForEvent:()=>({projectId:f.project.id,payload:{communication:input},activations:[{id:'activation',agentId:f.agent.id}]})};
   const scope={runId:'run',agentId:f.agent.id,conversationId:f.chat.id};
   assert.equal(canonicalVoiceReplyInput(f.store,fake,scope,'text').input.eventId,'source');
   assert.equal(canonicalVoiceReplyInput(f.store,{...fake,requestIdsAttachedToRun:()=>['correlated']},scope,'text'),undefined);

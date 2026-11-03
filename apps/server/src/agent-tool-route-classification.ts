@@ -15,6 +15,7 @@ export const AGENT_API_ROUTES = [
   {path:"/api/agent-workspace",match:"exact",audience:"agent"},
   {path:"/api/agent-local-memory",match:"exact",audience:"agent"},
   {path:"/api/agent-voice-reply",match:"exact",audience:"agent"},
+  {path:"/api/agent-reply-stream",match:"exact",audience:"agent"},
   { path: "/api/agent-messages", match: "exact", audience: "agent" },
   { path: "/api/agent-coordinate", match: "exact", audience: "agent" },
   { path: "/api/agent-request-updates", match: "exact", audience: "agent" },
