@@ -1163,3 +1163,36 @@ tools or spawns agents. Re-export uses only the original validated manifest, nev
 generated review copies. Other provider families are unchanged. This is a
 source-only change; no tests, native configuration, runtime, round-trip or
 atomicity qualification was performed.
+
+### Inactive project Claude output styles
+
+Explicit `harness: true` selection captures regular top-level
+`.claude/output-styles/*.md` from the selected root only. A shared path
+classification permits exactly these originals at capture and parsed-manifest
+validation. The directory and files must share the selected root owner; canonical
+parents, single-link no-follow reads and existing inventory/read drift checks
+apply. Inventoried styles disappearing before reading refuse. Nested directories,
+unknown formats, links/special nodes, known credential names, invalid UTF-8 and
+exceeded bounds refuse with originals preserved. Existing 1,000-entry inventory,
+1 MiB original and 32 MiB aggregate limits remain unchanged. Accepted UTF-8
+bytes, including any BOM, are retained exactly. Existing known-secret inspection
+refuses recognizable credentials; it cannot identify every secret in arbitrary
+prose. No structured style fields are removed, so `removedSecretFields` is false
+for live style capture.
+
+The [official custom-output-style documentation](https://code.claude.com/docs/en/output-styles#create-a-custom-output-style)
+describes Markdown frontmatter and instructions at project, user and managed
+levels, including ancestor-project discovery. This transport selects only the
+exact local directory: no home, managed, ancestor or nested-project discovery.
+Frontmatter and instruction bodies remain opaque text, with no YAML parsing,
+metadata interpretation, command/path/include/reference expansion or native
+loader/system-prompt compatibility claim. No source write, installation, tool
+grant, native spawn, configuration reload or activation occurs.
+
+The generic provider-file DTO and existing shared callers need no changes.
+Working-file export validates the manifest; import parses it before creating
+numbered mode0600 nonexecutable `.review` copies and exact original path/removal
+metadata. Retained-original re-export validates and returns original manifest
+bytes, never generated review copies. Other provider families and existing
+Codex/TOML/Git/settings behavior remain unchanged. Source review only: no tests,
+builds, native configuration, runtime, round-trip or atomicity qualification.

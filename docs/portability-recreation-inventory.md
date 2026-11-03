@@ -258,3 +258,21 @@ validated original manifest controls re-export. See the
 [scope, primary references and limits](git-provider-user-data-transport.md#inactive-project-codex-agent-originals).
 No schema/DTO/dependency change or native configuration, runtime, round-trip or
 atomicity acceptance is claimed.
+
+### Project Claude output-style review files
+
+Explicit harness selection includes top-level regular
+`.claude/output-styles/*.md` from the selected root as inactive originals. Shared
+capture/import path classification, canonical same-owner single-link no-follow
+reads, inventory/read drift checks and existing 1,000-entry / 1 MiB original /
+32 MiB aggregate bounds apply. Disappearing originals, nested directories,
+unknown formats, links/special nodes, credential names and invalid UTF-8 refuse.
+Accepted bytes, including BOM, remain exact; known-secret inspection still
+refuses recognizable credentials without claiming universal prose-secret
+detection. Frontmatter/instructions remain opaque, with no YAML parsing, path or
+reference expansion, home/managed/ancestor discovery or activation. Existing
+numbered mode0600 review copies retain exact original path/removal metadata; only
+the validated original manifest supplies re-export. See the
+[contract and primary reference](git-provider-user-data-transport.md#inactive-project-claude-output-styles).
+No DTO/schema/dependency/cap change or native configuration, runtime, round-trip
+or atomicity acceptance is claimed.
