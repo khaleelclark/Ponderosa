@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import {createHash} from 'node:crypto';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {fenceBranchFinalResourceExit} from './branch-generation-exit-fence.js';
 import {captureFinalResourceExitEnvelope} from './branch-generation-exit-capture.js';
@@ -14,10 +15,35 @@ type Row=Record<string,any>;
 export const finalResourceExitKey=(stepId:string,generation=0)=>`resource-final-exit:${stepId}:${generation}`;
 function issuedCaptureCommands(db:Database.Database,executionId:string,stepId:string):string[]{
  const prefix='issued-resource-capture:';
- return (db.prepare("SELECT command_key,result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-resource-capture:%'").all(executionId) as Row[])
-  .filter(row=>{const journal=JSON.parse(row.result_json);return journal.source?.intent?.resourceStepId===stepId
-    &&!db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-abandoned:${payloadHash(row.command_key)}`);})
-  .map(row=>row.command_key.slice(prefix.length));
+ const matches:string[]=[];
+ for(const row of db.prepare("SELECT command_key,input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key LIKE 'issued-resource-capture:%'").all(executionId) as Row[]){
+  const journal=JSON.parse(row.result_json),intent=journal.source?.intent,commandKey=row.command_key.slice(prefix.length);
+  if(journal.schema!=='branch-issued-resource-capture.v1'||stableJson(journal)!==row.result_json||!['capturing','retained'].includes(journal.state)
+    ||!commandKey||typeof intent?.resourceStepId!=='string'||!intent.resourceStepId||intent.executionId!==executionId
+    ||!Number.isSafeInteger(intent.resourceGeneration)||intent.resourceGeneration<0
+    ||row.input_hash!==payloadHash({stepId:intent.resourceStepId,generation:intent.resourceGeneration,commandKey}))throw Error('Issued capture command owner differs');
+  const disposed=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-abandoned:${payloadHash(row.command_key)}`) as Row|undefined;
+  if(disposed){
+   const d=JSON.parse(disposed.result_json),input=d.input,custodyId=typeof journal.source?.checkpointId==='string'?createHash('sha256').update(journal.source.checkpointId).digest('hex'):'';
+   if(stableJson(d)!==disposed.result_json||d.schema!=='branch-custody-abandon.v1'||disposed.input_hash!==payloadHash(input)||input?.captureKey!==row.command_key
+    ||input.captureSha256!==payloadHash(journal)||stableJson(input.source)!==stableJson(journal.source)||typeof input.commandKey!=='string'||!input.commandKey||typeof input.expectedRevision!=='string'||!input.expectedRevision||d.custodyId!==custodyId||!custodyId)throw Error('Issued capture disposition differs');
+   if(d.state==='abandoned'){
+    if(journal.state!=='capturing'||journal.receipt||d.packageRetirement?.custodyId!==custodyId||d.packageRetirement?.sourceSha256!==payloadHash(journal.source)||typeof d.packageRetirement?.revision!=='string'||!d.packageRetirement.revision)throw Error('Issued capture abandonment proof differs');
+   }else if(d.state==='retired'){
+    const retirement=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`custody-retired-checkpoints:${payloadHash(input.commandKey)}`) as Row|undefined;
+    const proof=retirement&&JSON.parse(retirement.result_json),checkpoint=proof?.checkpointEvidence?.find((item:Row)=>item.id===journal.checkpointId&&item.execution_id===executionId);
+    if(journal.state!=='retained'||!retirement||stableJson(proof)!==retirement.result_json||retirement.input_hash!==payloadHash(proof.input)
+      ||proof.schema!=='branch-custody-checkpoint-retirement.v1'||proof.state!=='retired'||proof.custodyId!==custodyId
+      ||proof.input?.commandKey!==input.commandKey||proof.input?.expectedRevision!==input.expectedRevision||stableJson(proof.input?.source)!==stableJson(journal.source)
+      ||!proof.input?.checkpoints?.some((item:Row)=>item.id===journal.checkpointId&&item.sha256===journal.checkpointHash)
+      ||!checkpoint||checkpoint.content_hash!==journal.checkpointHash||payloadHash(JSON.parse(checkpoint.snapshot_json))!==journal.checkpointHash
+      ||stableJson(JSON.parse(checkpoint.snapshot_json))!==stableJson({...journal.snapshot,issuedResourceCustody:journal.receipt}))throw Error('Issued checkpoint retirement proof differs');
+   }else throw Error('Issued capture disposition state differs');
+   continue;
+  }
+  if(intent.resourceStepId===stepId)matches.push(commandKey);
+ }
+ return matches;
 }
 export function finalResourceIssuedCheckpointRequired(db:Database.Database,executionId:string,stepId:string):boolean{
  if(issuedCaptureCommands(db,executionId,stepId).length)return true;
@@ -28,11 +54,14 @@ export function finalResourceIssuedCheckpointRequired(db:Database.Database,execu
 }
 function issuedCheckpoint(db:Database.Database,executionId:string,stepId:string){
  // A retained journal remains an obligation even if its committed snapshot goes missing.
- for(const command of issuedCaptureCommands(db,executionId,stepId))if(issuedResourceCapture(db,executionId,stepId,command)?.state!=='retained')throw Error('Issued resource checkpoint capture remains unresolved');
- return (db.prepare('SELECT id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? ORDER BY id DESC').all(executionId) as Row[]).find(row=>{
+ const journals=issuedCaptureCommands(db,executionId,stepId).map(command=>issuedResourceCapture(db,executionId,stepId,command));
+ if(journals.some(journal=>journal?.state!=='retained'))throw Error('Issued resource checkpoint capture remains unresolved');
+ const checkpoint=(db.prepare('SELECT id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? ORDER BY id DESC').all(executionId) as Row[]).find(row=>{
   const snapshot=JSON.parse(row.snapshot_json);
   return snapshot.captureKind==='issued_resource'&&snapshot.selected?.resources?.some((resource:Row)=>resource.step_execution_id===stepId);
  });
+ if(checkpoint&&!journals.some(journal=>journal?.checkpointId===checkpoint.id&&journal?.checkpointHash===checkpoint.content_hash))throw Error('Issued checkpoint retained capture journal unavailable');
+ return checkpoint;
 }
 function scope(db:Database.Database,stepId:string){
  const r=db.prepare('SELECT r.*,e.branch_id,e.version_id,e.binding_revision_id,e.configuration_json,e.parent_execution_id,e.parent_attempt_id,e.call_depth,e.admission_source,e.provenance_json FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepId) as Row|undefined;

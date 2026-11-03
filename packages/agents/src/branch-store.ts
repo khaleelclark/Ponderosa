@@ -2144,7 +2144,9 @@ export class BranchStore {
       }
       // Final capture diagnostics are operational state, not part of its replay
       // frontier; otherwise a temporary unfenced hold prevents every later retry.
-      if(r.chat_id&&this.finalResourceExitRequired(stepExecutionId)){
+      let finalCaptureRequired=false;
+      try {finalCaptureRequired=this.finalResourceExitRequired(stepExecutionId);} catch {finalCaptureRequired=true;}
+      if(r.chat_id&&finalCaptureRequired){
         this.run('INSERT INTO branch_retirement_errors VALUES(?,?,?) ON CONFLICT(resource_id) DO UPDATE SET error=excluded.error,updated_at=excluded.updated_at',r.chat_id,branchText(error),new Date().toISOString());
         return;
       }
