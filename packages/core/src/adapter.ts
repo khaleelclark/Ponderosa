@@ -226,7 +226,7 @@ export interface RuntimeNativeApprovalIdentity {
   requestId: string;
   sessionId: string;
   turnId: string;
-  kind: "command" | "file" | "permissions" | "tool";
+  kind: "command" | "file" | "permissions" | "tool" | "question";
 }
 
 export interface NativeRuntimeControlRequest {
@@ -248,6 +248,8 @@ export type RuntimeElicitationRequest =
   | {
       /** Exact live native callback; never eligible for remembered grants. */
       nativeApproval?: RuntimeNativeApprovalIdentity;
+      /** A native nonblocking question never suspends unrelated owned work. */
+      blocking?: boolean;
       mode: "form" | "openai/form";
       serverName: string;
       message: string;

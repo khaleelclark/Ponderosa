@@ -56,5 +56,5 @@ test('Claude launches with one combined deny list so baseline and policy restric
  const bin=path.join(root,'inert-claude');await writeFile(bin,"#!/usr/bin/env node\nrequire('node:fs').writeFileSync('argv.json',JSON.stringify(process.argv.slice(2)));process.stdin.resume();",{mode:0o700});
  session=new ClaudeStreamSession({bin,signal:new AbortController().signal,agentId:randomUUID(),cwd:root,history:[],permissionMode:'bypassPermissions',killGraceMs:100,capabilityRestrictions:restrictions,environment:{PATH:path.dirname(process.execPath)+path.delimiter+(process.env.PATH??'')},onRuntimeSpawned:handle=>handles.push(handle)});
  const argv=await until(async()=>{try{return JSON.parse(await readFile(path.join(root,'argv.json'),'utf8'))}catch{return false}},'inert adapter startup');
- assert.equal(argv.filter(value=>value==='--disallowedTools').length,1);const denied=argv[argv.indexOf('--disallowedTools')+1].split(',').sort();assert.deepEqual(denied,['AskUserQuestion','Bash','Edit','NotebookEdit','PowerShell','Write','mcp__job-tracker'].sort());passed=true;
+ assert.equal(argv.filter(value=>value==='--disallowedTools').length,1);const denied=argv[argv.indexOf('--disallowedTools')+1].split(',').sort();assert.deepEqual(denied,['Bash','Edit','NotebookEdit','PowerShell','Write','mcp__job-tracker'].sort());passed=true;
 });

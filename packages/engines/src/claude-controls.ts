@@ -28,7 +28,7 @@ export class ClaudeControls {
 
   observe(raw: unknown): boolean {
     if (!raw || typeof raw !== "object") return false;
-    const envelope = raw as {type?: unknown; session_id?: unknown; response?: {request_id?: unknown; subtype?: unknown; response?: unknown}};
+    const envelope = raw as {type?: unknown; session_id?: unknown; response?: {request_id?: unknown; subtype?: unknown; response?: unknown; error?: unknown}};
     if (envelope.type !== "control_response" || typeof envelope.response?.request_id !== "string") return false;
     const response = envelope.response;
     const pending = this.pending.get(response.request_id as string);
@@ -38,7 +38,12 @@ export class ClaudeControls {
       this.uncertain = true; pending.reject(new Error("Claude control session changed")); return true;
     }
     if (response.subtype === "success") pending.resolve(response.response);
-    else if (response.subtype === "error") pending.reject(new Error("Claude rejected native control"));
+    else if (response.subtype === "error") {
+      // Keep the native cause for the existing host diagnostic/redaction path.
+      // A correlated rejection is definite; it never authorizes mutation replay.
+      pending.reject(new Error(typeof response.error === "string" && response.error.trim()
+        ? `Claude rejected native control: ${response.error}` : "Claude rejected native control"));
+    }
     else { this.uncertain = true; pending.reject(new Error("Malformed Claude control acknowledgement; outcome unknown")); }
     return true;
   }

@@ -67,8 +67,8 @@ asynchronously so their human waits do not block the single stdout reader.
 The existing operator-configured/default Claude permission mode is preserved,
 including the existing `bypassPermissions` default. Adding callbacks does not
 silently lower human access. Native prompts appear when the human selects a mode
-whose native rules require them. Existing AskUserQuestion replacement remains a
-separate question domain; generic questions do not impersonate native approvals.
+whose native rules require them. Native user questions now use the same human form broker with a distinct question
+identity; generic questions never impersonate native permission approvals.
 
 ## Claude live controls
 
@@ -169,3 +169,13 @@ and human stop controls are also present in source; their remaining limits are
 listed in [native reconciliation](native-harness-reconciliation.md). Native
 TaskOutput was removed upstream; inherited output-file Read remains its disposition.
 No source effects are inferred or replayed by these controls.
+
+## Codex native-question successor
+
+[Runtime completion](codex-phase2-runtime-completion.md) replaces model-level native
+question refusal with exact Codex/Claude callback handling through the existing
+human form broker. Questions carry their own identity kind and never grant native
+permissions. Claude retains human capability restrictions without globally removing
+AskUserQuestion. Exact native control failure causes are now redacted through the
+shared diagnostic path and retained in operator response/work history. Execution
+validation remains deferred to the combined-product pass.

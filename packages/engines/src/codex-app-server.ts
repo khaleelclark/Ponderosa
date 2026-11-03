@@ -1,3 +1,4 @@
+import { answerCodexNativeQuestions } from "./native-questions.js";
 import { codexTurnContent } from "./typed-input.js";
 import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
 import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
@@ -580,7 +581,7 @@ export class CodexAppServerSession implements RuntimeSession {
         session?.observeNotification(notification);
       },
       handleServerRequest: async (requestId, method, params) => {
-        if (CODEX_NATIVE_APPROVAL_METHODS.has(method)) {
+        if (CODEX_NATIVE_APPROVAL_METHODS.has(method) || method === "item/tool/requestUserInput") {
           if (!session || nativeApprovalRequests.has(String(requestId)) || nativeApprovalRequests.size >= 10_000) throw new Error("Native approval has no fresh owned identity");
           nativeApprovalRequests.add(String(requestId));
           const controller = new AbortController();
@@ -588,7 +589,10 @@ export class CodexAppServerSession implements RuntimeSession {
           if (typeof turnId !== "string") throw new Error("Native approval has no exact turn");
           pendingNativeApprovals.set(String(requestId), { turnId, controller });
           try {
-            return await answerCodexNativeApproval({ ...opts, signal: AbortSignal.any([opts.signal, controller.signal]) }, session.engineAgentId, () => session?.activeTurnId, String(requestId), method, params);
+            const questionOptions = { ...opts, signal: AbortSignal.any([opts.signal, controller.signal]) };
+            return method === "item/tool/requestUserInput"
+              ? await answerCodexNativeQuestions(questionOptions, session.engineAgentId, () => session?.activeTurnId, String(requestId), params)
+              : await answerCodexNativeApproval(questionOptions, session.engineAgentId, () => session?.activeTurnId, String(requestId), method, params);
           } finally { pendingNativeApprovals.delete(String(requestId)); }
         }
         if (method === "mcpServer/elicitation/request") {

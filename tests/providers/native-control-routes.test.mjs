@@ -10,6 +10,7 @@ function fixture(invokeCommand) {
   const run={runId:'run',v3SchedulerRunId:'run',v3FencingToken:4,persistentRuntimeIdentity:identity,runtimeSession:session,controller:new AbortController()};
   const activeRuns=new Map([['agent',run]]);
   const context={store:{getAgent:()=>({id:'agent',projectId:'project'}),sqlite:{prepare:sql=>({get:()=>sql.includes("agent_run_pauses")?undefined:{}})},appendEvent:(_id,event)=>audit.push(event)},
+    assertRetainedAuthentication:()=>{},
     coordinationV3:{contextRecovery:{active:()=>undefined},activeAgentRun:()=>undefined},activeRuns,
     deletingAgentIds:new Set(),deletingProjectIds:new Set(),persistentRuntimeForTermination:()=>runtime,isClosed:()=>false};
   registerNativeControlRoutes({get:(path,handler)=>handlers.set('GET',handler),post:(path,handler)=>handlers.set('POST',handler)},context);
@@ -47,4 +48,16 @@ test('native permission decisions never inherit generic remembered confirmation 
   const controller=new AbortController();const waiting=broker.wait('decision',request,controller.signal);
   controller.abort();assert.deepEqual(await waiting,{action:'cancel'});
   assert.equal(broker.respond('decision',{action:'accept',content:{approve:true}}),false);
+});
+
+test('native control failures retain the actual cause in the response and durable work log, with secrets redacted',async()=>{
+  let calls=0;
+  const f=fixture(async()=>{calls++;throw Error('Claude rejected native control: selected mode is unavailable; api_key=SYNTHETIC_NATIVE_SECRET');});
+  const result=await f.handlers.get('POST')({params:{id:'agent'},body},f.reply);
+  assert.equal(f.reply.status,409);assert.equal(calls,1);
+  assert.match(result.error,/selected mode is unavailable/);
+  assert.match(result.error,/Do not automatically retry/);
+  const event=f.audit.find(event=>event.type==='tool_result');
+  assert.equal(event.isError,true);assert.equal(event.output,result.error);
+  assert.doesNotMatch(JSON.stringify({result,audit:f.audit}),/SYNTHETIC_NATIVE_SECRET/);
 });

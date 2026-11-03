@@ -1,3 +1,4 @@
+import { answerClaudeNativeQuestions } from "./native-questions.js";
 import { ClaudeReplayFraming } from "./claude-replay-framing.js";
 import { claudeTurnContent } from "./typed-input.js";
 import { ClaudeControls } from "./claude-controls.js";
@@ -144,9 +145,8 @@ export class ClaudeStreamSession implements RuntimeSession {
       ...(opts.transcriptFork
         ? ["--resume",opts.transcriptFork.sourceSessionId,"--fork-session","--session-id",this.engineAgentId,"--resume-session-at",opts.transcriptFork.throughId]
         : opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
-      // Native questions have no Ponderosa response bridge. Keep the managed
-      // ponderosa_decision tool as the only user-question path in this host.
-      "--disallowedTools", ["AskUserQuestion",...(restrictionArgs[1]?[restrictionArgs[1]]:[])].join(","),
+      // Native questions use the same human form and exact callback lifetime.
+      ...restrictionArgs,
     ];
     opts.assertHistoryCurrent?.();
     const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false" };
@@ -457,15 +457,18 @@ export class ClaudeStreamSession implements RuntimeSession {
     const turnId = this.activeInputId;
     void (async () => {
       let allowed = false;
+      let updatedInput = request?.input;
       try {
         if (request?.subtype === "can_use_tool" && typeof request.tool_name === "string" &&
-            request.tool_name !== "AskUserQuestion" && request.input && typeof request.input === "object" &&
+            request.input && typeof request.input === "object" &&
             !Array.isArray(request.input) && this.active && turnId && !this.nativeCommand &&
             (frame.session_id === undefined || frame.session_id === this.engineAgentId)) {
-          allowed = await requestNativeApproval({ ...this.opts,
-            signal: AbortSignal.any([this.opts.signal, controller.signal]) }, {
-            requestId, sessionId: this.engineAgentId, turnId, kind: "tool",
-          }, request);
+          const callbackOptions = { ...this.opts, signal: AbortSignal.any([this.opts.signal, controller.signal]) };
+          const identity = { requestId, sessionId: this.engineAgentId, turnId, kind: "tool" as const };
+          if (request.tool_name === "AskUserQuestion") {
+            updatedInput = await answerClaudeNativeQuestions(callbackOptions, { ...identity, kind: "question" }, request.input);
+            allowed = updatedInput !== undefined;
+          } else allowed = await requestNativeApproval(callbackOptions, identity, request);
         }
         if (controller.signal.aborted || this.closed) return;
         if (request?.subtype !== "can_use_tool") {
@@ -474,7 +477,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         }
         allowed = allowed && this.active && this.activeInputId === turnId && !this.nativeCommand;
         await this.writeFrame({ type: "control_response", response: { subtype: "success", request_id: requestId,
-          response: allowed ? { behavior: "allow", updatedInput: request!.input }
+          response: allowed ? { behavior: "allow", updatedInput }
             : { behavior: "deny", message: "Human approval absent, refused, restricted or expired" } } });
       } catch { void this.close().catch(() => undefined); }
       finally { this.approvals.delete(requestId); }

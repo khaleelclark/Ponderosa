@@ -1,5 +1,10 @@
 # Native harness source reconciliation
 
+Codex successor: [runtime completion](codex-phase2-runtime-completion.md) adds native
+user-question callbacks, truthful diagnostic cancellation/cleanup holds and exact
+redacted control causes. The source-only status and external proof boundaries below
+remain; this successor does not promote any execution verdict.
+
 Baseline: `f9f964ff50dc064d21e3e06cf1055858037ba9ac`, 2026-11-03.
 Bible-2 SHA-256: `ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
 Scope is Bible #1/#4/#12/#13/#25 and the eight named native groups.

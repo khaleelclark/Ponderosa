@@ -47,8 +47,8 @@ test('Claude controls match exact IDs and subtype success; error and close rejec
   await pending;
   assert.equal(frames.length,1);
   const refused=controls.request({subtype:'set_permission_mode',mode:'default'});
-  controls.observe({type:'control_response',response:{request_id:frames[1].request_id,subtype:'error'}});
-  await assert.rejects(refused,/rejected/);
+  controls.observe({type:'control_response',response:{request_id:frames[1].request_id,subtype:'error',error:'Native permission mode is unavailable for this session'}});
+  await assert.rejects(refused,/rejected native control: Native permission mode is unavailable for this session/);
   const cancelled=controls.request({subtype:'set_model',model:'exact'});
   controls.close(); await assert.rejects(cancelled,/closed/);
   await assert.rejects(()=>controls.request({subtype:'interrupt'}),/uncertain/);
@@ -94,4 +94,80 @@ test('Claude session live methods dispatch structured controls, apply typed turn
   const usage=await session.invokeCommand('native-context-usage');assert.equal(usage.contextUsage.usedTokens,123);
   await assert.rejects(()=>session.invokeCommand('native-permission-mode','invented'),/Invalid/);
   controls.close();
+});
+
+import { answerCodexNativeQuestions, answerClaudeNativeQuestions } from '../../packages/engines/dist/native-questions.js';
+
+const nativeQuestion = {id:'choice',header:'Format',question:'Which format should be used?',isOther:true,isSecret:false,
+  options:[{label:'Brief',description:'A short answer'},{label:'Detailed',description:'A complete answer'}]};
+const nativeQuestionParams = {threadId:'session',turnId:'turn',itemId:'item',questions:[nativeQuestion],isBlocking:false,autoResolutionMs:null};
+
+test('native Codex questions preserve original IDs, free-text choices, secret metadata and nonblocking intent',async()=>{
+  const controller=new AbortController();
+  const result=await answerCodexNativeQuestions({signal:controller.signal,handleElicitation:async request=>{
+    assert.equal(request.nativeApproval.kind,'question');
+    assert.equal(request.nativeApproval.requestId,'original-rpc');
+    assert.equal(request.blocking,false);
+    assert.deepEqual(request.requestedSchema.properties.answer0.enum,['Brief','Detailed']);
+    assert.equal(request.requestedSchema.properties.answer0['x-allow-other'],true);
+    assert.equal(request.requestedSchema.properties.answer1.writeOnly,true);
+    return {action:'accept',content:{answer0:'A custom human answer',answer1:'private value'}};
+  }},'session',()=> 'turn','original-rpc',{...nativeQuestionParams,questions:[nativeQuestion,
+    {...nativeQuestion,id:'private',header:'Secret',question:'Enter the private value',isSecret:true,options:null}]});
+  assert.deepEqual(result,{answers:{choice:{answers:['A custom human answer']},private:{answers:['private value']}}});
+});
+
+test('native questions reject foreign or duplicate scope and cannot supply answers after cancellation or turn replacement',async()=>{
+  let calls=0;
+  const opts={signal:new AbortController().signal,handleElicitation:async()=>{calls++;return {action:'accept',content:{answer0:'Brief'}};}};
+  await assert.rejects(()=>answerCodexNativeQuestions(opts,'foreign',()=> 'turn','rpc',nativeQuestionParams),/Foreign/);
+  await assert.rejects(()=>answerCodexNativeQuestions(opts,'session',()=> 'turn','rpc',
+    {...nativeQuestionParams,questions:[nativeQuestion,nativeQuestion]}),/alias/);
+  assert.equal(calls,0);
+  await assert.rejects(()=>answerCodexNativeQuestions({...opts,handleElicitation:async()=>({action:'decline'})},
+    'session',()=> 'turn','rpc',nativeQuestionParams),/cancelled/);
+  let turn='turn';
+  await assert.rejects(()=>answerCodexNativeQuestions({...opts,handleElicitation:async()=>{turn='replacement';return {action:'accept',content:{answer0:'Brief'}};}},
+    'session',()=> turn,'rpc',nativeQuestionParams),/expired/);
+  const controller=new AbortController();
+  await assert.rejects(()=>answerCodexNativeQuestions({signal:controller.signal,handleElicitation:async()=>{
+    controller.abort();return {action:'accept',content:{answer0:'Brief'}};
+  }},'session',()=> 'turn','rpc',nativeQuestionParams),/cancelled/);
+  await assert.rejects(()=>answerCodexNativeQuestions({...opts,handleElicitation:async()=>({action:'accept',content:{answer0:'Other'}})},
+    'session',()=> 'turn','rpc',{...nativeQuestionParams,questions:[{...nativeQuestion,isOther:false}]}),/outside/);
+});
+
+test('Claude native questions return original questions plus human multi-select and free text through the existing form',async()=>{
+  const questions=[{header:'Sections',question:'Which sections?',multiSelect:true,options:[
+    {label:'Intro',description:'Opening'},{label:'Conclusion',description:'Closing'}]},
+    {header:'Format',question:'Which format?',multiSelect:false,options:nativeQuestion.options}];
+  const original={questions};
+  const result=await answerClaudeNativeQuestions({signal:new AbortController().signal,handleElicitation:async request=>{
+    assert.equal(request.nativeApproval.kind,'question');
+    assert.equal(request.requestedSchema.properties.answer0_0.type,'boolean');
+    return {action:'accept',content:{answer0_0:true,answer0_1:true,answer0_other:'Appendix',answer1:'Custom format'}};
+  }},{requestId:'rpc',sessionId:'session',turnId:'turn',kind:'question'},original);
+  assert.deepEqual(result,{questions,answers:{'Which sections?':'Intro, Conclusion, Appendix','Which format?':'Custom format'}});
+  assert.deepEqual(original,{questions},'Native tool input was not mutated');
+});
+
+test('Claude native question callback writes answers only while the original turn is current',async()=>{
+  const session=Object.create(ClaudeStreamSession.prototype);
+  const frames=[];let release;
+  Object.assign(session,{engineAgentId:'session',active:true,activeInputId:'turn',approvals:new Map(),seenApprovalIds:new Set(),
+    opts:{signal:new AbortController().signal,handleElicitation:()=>new Promise(resolve=>{release=resolve;})},
+    writeFrame:async frame=>{frames.push(frame);}});
+  const input={questions:[{header:'Format',question:'Which format?',multiSelect:false,options:nativeQuestion.options}]};
+  const callback={type:'control_request',request_id:'question-1',request:{subtype:'can_use_tool',tool_name:'AskUserQuestion',input}};
+  session.handleNativeRequest(callback);
+  release({action:'accept',content:{answer0:'Brief'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(frames[0].response.response,{behavior:'allow',updatedInput:{...input,answers:{'Which format?':'Brief'}}});
+  session.handleNativeRequest({...callback,request_id:'question-2'});
+  session.activeInputId='replacement';
+  release({action:'accept',content:{answer0:'Detailed'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(frames[1].response.response.behavior,'deny');
+  session.handleNativeRequest(callback);
+  assert.equal(frames.length,2,'A duplicate original question cannot be replayed');
 });

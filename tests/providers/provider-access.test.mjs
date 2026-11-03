@@ -655,19 +655,30 @@ test('Bible25 configured API and subscription status is truthful and never retur
     assert.equal(status.authenticated, true); assert.equal(status.billingMode, mode);
     assert.doesNotMatch(JSON.stringify(status), /SYNTHETIC_PRIVATE_KEY/);
   }
-  for (const text of ['not authenticated with API key', 'API key rejected', 'No access token', 'Error: logged in using an API key', '']) {
+  for (const text of ['not authenticated with API key', 'API key rejected', 'No access token', 'Error: logged in using an API key', 'Error: logged in using ChatGPT', 'ChatGPT authenticated but access rejected', 'Logged in using ChatGPT\nAuthentication failed', '']) {
     const status = parseCodexLoginStatus(text);
     assert.equal(status.authenticated, false); assert.equal(status.status, 'unknown');
   }
-  const status = await claudeAuthStatus({ ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY' });
-  assert.equal(status.authenticated, true); assert.equal(status.billingMode, 'api');
-  assert.equal(status.source, 'environment_presence'); assert.match(status.detail, /not verified/);
-  assert.doesNotMatch(JSON.stringify(projectProviderAuthStatus(status)), /SYNTHETIC_PRIVATE_KEY/);
-  assert.throws(() => projectProviderAuthStatus({ authenticated: true, billingMode: 'SYNTHETIC_PRIVATE_KEY' }));
-  const ambiguous = await claudeAuthStatus({ ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY', CLAUDE_CODE_OAUTH_TOKEN: 'SYNTHETIC_OTHER_TOKEN' });
-  assert.equal(ambiguous.status, 'unknown'); assert.equal(ambiguous.authenticated, false);
-  assert.equal(ambiguous.billingMode, undefined);
-  assert.doesNotMatch(JSON.stringify(ambiguous), /SYNTHETIC_PRIVATE_KEY|SYNTHETIC_OTHER_TOKEN/);
+  // The native CLI owns precedence. A configured environment key alone is
+  // neither authenticated-mode evidence nor a reason to bypass its status.
+  const dir = await mkdtemp(path.join(tmpdir(), 'ponderosa-native-auth-'));
+  const bin = path.join(dir, 'claude');
+  try {
+    await writeFile(bin, '#!' + process.execPath + '\n' +
+      'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["auth", "status"])) process.exit(9);\n' +
+      'process.stdout.write(JSON.stringify({loggedIn:true,authMethod:"oauth_token",email:"SYNTHETIC_PRIVATE_ID"}));\n');
+    await chmod(bin, 0o700);
+    const status = await claudeAuthStatus({ PONDEROSA_CLAUDE_BIN: bin,
+      ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY', CLAUDE_CODE_OAUTH_TOKEN: 'SYNTHETIC_OTHER_TOKEN' });
+    assert.equal(status.authenticated, true); assert.equal(status.billingMode, 'subscription');
+    assert.equal(status.source, 'cli_status');
+    assert.doesNotMatch(JSON.stringify(projectProviderAuthStatus(status)), /SYNTHETIC_PRIVATE/);
+    assert.throws(() => projectProviderAuthStatus({ authenticated: true, billingMode: 'SYNTHETIC_PRIVATE_KEY' }));
+    await writeFile(bin, '#!' + process.execPath + '\nprocess.stdout.write(JSON.stringify({loggedIn:false,authMethod:"none"})); process.exitCode=1;\n');
+    const signedOut = await claudeAuthStatus({ PONDEROSA_CLAUDE_BIN: bin, ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY' });
+    assert.equal(signedOut.authenticated, false); assert.equal(signedOut.status, undefined);
+    assert.equal(signedOut.billingMode, undefined); assert.match(signedOut.detail, /sign in/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 
 });
 
@@ -840,4 +851,38 @@ test('root-exit diagnostic bound still rejects invalid provider data', () => {
   assert.throws(()=>projectProviderRootExitDetail({stderr,exitCode:7}));
  }
  assert.throws(()=>projectProviderRootExitDetail({stderr:'valid',exitCode:1.5}));
+});
+
+test('native availability holds unresolved auth cleanup and cancellation before any model request', async () => {
+  const { codexAvailabilityStatus, claudeAvailabilityStatus } = await import('../../packages/engines/dist/auth.js');
+  for (const probe of [codexAvailabilityStatus, claudeAvailabilityStatus]) {
+    let calls = 0;
+    const run = async () => { calls++; throw Error('No provider request should be started'); };
+    const held = await probe({}, run, async () => ({ authenticated: true, diagnosticFailure: 'cleanup_failed' }));
+    assert.equal(held.available, false); assert.equal(held.failureCategory, 'unavailable');
+    assert.match(held.detail, /cleanup.*unconfirmed/);
+    const controller = new AbortController();
+    await assert.rejects(() => probe({}, run, async () => {
+      controller.abort(); return { authenticated: true };
+    }, { signal: controller.signal }), { name: 'AbortError' });
+    assert.equal(calls, 0);
+  }
+});
+
+test('direct Codex availability passes cancellation and exact spawned-process ownership to native auth', async () => {
+  const { codexAvailabilityStatus } = await import('../../packages/engines/dist/auth.js');
+  const dir = await mkdtemp(path.join(tmpdir(), 'ponderosa-native-auth-cancel-'));
+  const bin = path.join(dir, 'codex');
+  const controller = new AbortController();
+  let spawned = 0, modelRequests = 0;
+  try {
+    await writeFile(bin, '#!' + process.execPath + '\nsetInterval(() => {}, 1000);\n');
+    await chmod(bin, 0o700);
+    await assert.rejects(() => codexAvailabilityStatus({ PONDEROSA_CODEX_BIN: bin },
+      async () => { modelRequests++; throw Error('Unexpected model request'); }, undefined, {
+        signal: controller.signal,
+        onRuntimeSpawned: () => { spawned++; controller.abort(); },
+      }), { name: 'AbortError' });
+    assert.equal(spawned, 1); assert.equal(modelRequests, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

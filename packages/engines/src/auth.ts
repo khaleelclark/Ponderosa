@@ -77,6 +77,7 @@ async function containedAuthCommand(
       }
     };
     const collect = (stream: "stdout" | "stderr", chunk: Buffer | string): void => {
+      if (finished) return;
       const text = chunk.toString();
       bytes += Buffer.byteLength(text);
       if (stream === "stdout") stdout += text;
@@ -151,10 +152,13 @@ export async function codexAuthStatus(
 export async function codexAvailabilityStatus(
   env: NodeJS.ProcessEnv = process.env,
   run: AuthCommandRunner = containedAuthCommand,
-  readAuth: () => Promise<EngineAuthStatus> = () => codexAuthStatus(env),
+  readAuth: (() => Promise<EngineAuthStatus>) | undefined = undefined,
   options: import("@ponderosa/core").EngineProbeOptions & { model?: string } = {},
 ): Promise<EngineAvailabilityStatus> {
-  const auth = await readAuth();
+  options.signal?.throwIfAborted();
+  const auth = await (readAuth ? readAuth() : codexAuthStatus(env, options));
+  options.signal?.throwIfAborted();
+  if (auth.diagnosticFailure) return { available: false, failureCategory: "unavailable", detail: "Codex authentication probe cleanup is unconfirmed; no test request was started." };
   if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
   if (!auth.authenticated) {
     return { available: false, failureCategory: "authentication", detail: auth.detail };
@@ -284,7 +288,10 @@ export async function claudeAvailabilityStatus(
   readAuth: (() => Promise<EngineAuthStatus>) | undefined = undefined,
   options: import("@ponderosa/core").EngineProbeOptions = {},
 ): Promise<EngineAvailabilityStatus> {
+  options.signal?.throwIfAborted();
   const auth = await (readAuth ? readAuth() : claudeAuthStatus(env, options));
+  options.signal?.throwIfAborted();
+  if (auth.diagnosticFailure) return { available: false, failureCategory: "unavailable", detail: "Claude authentication probe cleanup is unconfirmed; no test request was started." };
   if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
   if (!auth.authenticated) {
     return { available: false, failureCategory: "authentication", detail: auth.detail };
@@ -371,12 +378,7 @@ export function parseCodexLoginStatus(output: string): EngineAuthStatus {
     return { authenticated: true, billingMode: "api", source: "cli_status", detail: API_AUTH_DETAIL };
   }
 
-  if (
-    normalized.includes("chatgpt") &&
-    (normalized.includes("logged in") || normalized.includes("authenticated")) &&
-    !normalized.includes("not logged in") &&
-    !normalized.includes("not authenticated")
-  ) {
+  if (/^(?:logged in|authenticated) (?:using|with) (?:an? )?chatgpt[.]?$/iu.test(detail)) {
     return { authenticated: true, billingMode: "subscription", source: "cli_status", detail: "Codex subscription login present" };
   }
 

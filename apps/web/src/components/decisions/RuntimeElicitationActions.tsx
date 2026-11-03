@@ -1,6 +1,7 @@
 import LaunchIcon from "@mui/icons-material/Launch";
 import {
   Alert,
+  Autocomplete,
   Button,
   Checkbox,
   FormControlLabel,
@@ -22,6 +23,8 @@ interface FormField {
   type: "string" | "number" | "integer" | "boolean";
   required: boolean;
   options?: string[];
+  allowOther?: boolean;
+  secret?: boolean;
 }
 
 interface FormDescription {
@@ -70,7 +73,8 @@ function describeForm(action: RuntimeElicitationActionDto | undefined): FormDesc
       ...(typeof property.description === "string" ? { description: property.description } : {}),
       type,
       required: required.has(name),
-      ...(options ? { options } : {}),
+      ...(options ? { options, allowOther: property["x-allow-other"] === true } : {}),
+      ...(property.writeOnly === true || property.format === "password" ? { secret: true } : {}),
     }];
   });
   if ([...required].some((name) => !Object.hasOwn(properties, name))) supported = false;
@@ -224,6 +228,23 @@ export function RuntimeElicitationActions({
           />
           {fieldErrors[field.name] ? <Typography variant="caption" color="error">{fieldErrors[field.name]}</Typography> : null}
         </Stack>
+      ) : field.options?.length && field.allowOther ? (
+        <Autocomplete
+          key={field.name}
+          freeSolo
+          options={field.options}
+          inputValue={String(values[field.name] ?? "")}
+          onInputChange={(_event, value) => {
+            setValues((current) => ({ ...current, [field.name]: value }));
+            setFieldErrors((current) => {
+              const { [field.name]: _removed, ...rest } = current;
+              return rest;
+            });
+          }}
+          renderInput={(params) => <TextField {...params} fullWidth size="small" label={field.label}
+            required={field.required} type={field.secret ? "password" : "text"}
+            error={Boolean(fieldErrors[field.name])} helperText={fieldErrors[field.name] ?? field.description} />}
+        />
       ) : (
         <TextField
           key={field.name}
@@ -231,9 +252,9 @@ export function RuntimeElicitationActions({
           size="small"
           label={field.label}
           required={field.required}
-          multiline={field.type === "string" && !field.options?.length}
-          minRows={field.type === "string" && !field.options?.length ? 2 : undefined}
-          type={field.type === "number" || field.type === "integer" ? "number" : "text"}
+          multiline={field.type === "string" && !field.options?.length && !field.secret}
+          minRows={field.type === "string" && !field.options?.length && !field.secret ? 2 : undefined}
+          type={field.secret ? "password" : field.type === "number" || field.type === "integer" ? "number" : "text"}
           value={String(values[field.name] ?? "")}
           error={Boolean(fieldErrors[field.name])}
           helperText={fieldErrors[field.name] ?? field.description}
@@ -265,7 +286,9 @@ export function RuntimeElicitationActions({
           disabled={submitDisabled}
           onClick={() => void submit()}
         >
-          {action.data.nativeApproval
+          {action.data.nativeApproval?.kind === "question"
+            ? "Send answers"
+            : action.data.nativeApproval
             ? "Respond to native request"
             : fields.length > 0
             ? "Submit"

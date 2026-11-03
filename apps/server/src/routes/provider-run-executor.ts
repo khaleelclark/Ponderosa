@@ -421,14 +421,18 @@ export function startProviderRunExecution(
               runId: currentRun.runId,
               ...(currentRun.v3SchedulerRunId ? { coordinationRunId: currentRun.v3SchedulerRunId } : {}),
               mode: "choice",
-              question: nativeApproval
+              question: nativeApproval?.kind === "question"
+                ? `${agent.title} has a question for you.`
+                : nativeApproval
                 ? `${agent.title} needs your approval for a native ${nativeApproval.kind} operation.`
                 : request.mode === "url"
                 ? `${agent.title} needs a ${connectionKind} ${providerName} connection before it can continue.`
                 : rememberableConfirmation
                   ? `${agent.title} needs permission for ${providerName} before it can continue.`
                 : `${agent.title} needs information for ${providerName} before it can continue.`,
-              context: nativeApproval
+              context: nativeApproval?.kind === "question"
+                ? "Your answer goes directly to the waiting provider."
+                : nativeApproval
                 ? nativeApproval.kind === "permissions"
                   ? "Review the requested native permissions below. A grant lasts for this native turn and cannot change saved access rules."
                   : "Review the exact native operation below. Approval applies once to this waiting request; it cannot change saved access rules."
@@ -453,7 +457,7 @@ export function startProviderRunExecution(
                     { id: "decline", label: "Not Now" },
                   ],
               allowOther: true,
-              blocking: true,
+              blocking: request.mode === "url" || request.blocking !== false,
               runtimeAction: {
                 kind: "mcp_elicitation",
                 mode: request.mode,
@@ -468,7 +472,7 @@ export function startProviderRunExecution(
               return { action: "cancel" };
             }
             if (nativeApproval) await persistRuntimeEvent(agent.id, currentRun, { type: "tool_call",
-              id: `native-approval:${nativeApproval.sessionId}:${nativeApproval.requestId}`, name: "native_approval", input: nativeApproval });
+              id: `native-approval:${nativeApproval.sessionId}:${nativeApproval.requestId}`, name: nativeApproval.kind === "question" ? "native_question" : "native_approval", input: nativeApproval });
             const waiting = runtimeElicitations.wait(decision.id, request, requestSignal
               ? AbortSignal.any([currentRun.controller.signal, requestSignal]) : currentRun.controller.signal);
             workspace.createNotification({
@@ -510,7 +514,9 @@ export function startProviderRunExecution(
                 currentRun.controller.signal.aborted || requestSignal?.aborted || currentRun.persistentRuntimeIdentity !== identity ||
                 nativeApproval && currentRun.runtimeSession?.engineAgentId !== nativeApproval.sessionId) return { action: "cancel" };
             if (nativeApproval) await persistRuntimeEvent(agent.id, currentRun, { type: "tool_result",
-              id: `native-approval:${nativeApproval.sessionId}:${nativeApproval.requestId}`, output: response.action === "accept" && response.content &&
+              id: `native-approval:${nativeApproval.sessionId}:${nativeApproval.requestId}`, output: nativeApproval.kind === "question"
+                ? response.action === "accept" ? "Human answered the native question" : "Native question declined"
+                : response.action === "accept" && response.content &&
                 typeof response.content === "object" && (response.content as {approve?:unknown}).approve === true
                 ? "Human allowed this native request once" : "Native request declined" });
             if (activeRuns.get(agent.id) !== currentRun || !ownsActiveRun(agent.id, currentRun) || currentRun.controller.signal.aborted || requestSignal?.aborted) return { action: "cancel" };

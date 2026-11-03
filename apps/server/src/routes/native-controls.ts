@@ -3,6 +3,8 @@ import type { FastifyInstance } from "fastify";
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import type { NativeRuntimeControlRequest } from "@ponderosa/core";
 import type { ActiveRun, PersistentRuntime } from "../app-contracts.js";
+import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
+import { redactProviderDiagnostic } from "../provider-failure-event.js";
 
 /** Operator HTTP only: deliberately absent from managed Agent tool schemas. */
 export function registerNativeControlRoutes(app: FastifyInstance, context: {
@@ -80,9 +82,11 @@ export function registerNativeControlRoutes(app: FastifyInstance, context: {
       if (!unchanged(id, current)) return reply.code(409).send({outcome:"outcome_unknown",error:"Native response arrived after authority changed; do not replay"});
       context.store.appendEvent(id, { type:"tool_result", id:callId, output:"Native control acknowledged; source work remains independently governed" });
       return result;
-    } catch {
-      context.store.appendEvent(id, { type:"tool_result", id:callId, output:"Native control refused or unconfirmed; no retry authorized", isError:true });
-      return reply.code(409).send({error:"Native control refused or unconfirmed; do not automatically retry"});
+    } catch (error) {
+      const detail = redactProviderDiagnostic(restrictedProviderExceptionLogDetail(error));
+      const message = `Native control refused or unconfirmed: ${detail}. Do not automatically retry.`;
+      context.store.appendEvent(id, { type:"tool_result", id:callId, output:message, isError:true });
+      return reply.code(409).send({error:message});
     } finally { busy.delete(id); }
   });
 }
