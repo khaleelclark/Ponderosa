@@ -28,7 +28,9 @@ export interface PortableGitStorageBinding {
   id:string;worktreeRootRef:string;storageRootRef:string;relativePath:string;role:'common'|'private'|'module';
   /** Exact captured source association. Historical evidence, never current source/destination authority. */
   capture?:{version:1;currentAuthority:false;reviewSha256?:string;roots:Array<{rootRef:string;sourcePath:string;identity:string}>;
-    records:Array<{rootRef:string;relativePath:string;identity:string;dataBase64?:string;absent?:true}>};
+    records:Array<{rootRef:string;relativePath:string;identity:string;dataBase64?:string;absent?:true;
+      /** Nonsecret exact core.worktree scalar bound to the original config hash. */
+      moduleWorktree?:{value:string;sha256:string}}>};
 }
 /** Selected visible filesystem metadata. Historical IDs require an explicit destination map. */
 export interface PortableFilesystemMetadata {
@@ -43,7 +45,9 @@ export interface ReviewedGitUserData {
   /** Historical path-resolution provenance for includes; never a source read or destination grant. */
   configurationSourceDirectories?:{common:string;private:string;home?:string};
   /** Exact selected common stack; null denotes file ref storage. */
-  reftableReview:null|{source:'common_repository';tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>};
+  reftableReview:null|{source:'common_repository';tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>;
+    /** Original selected linked-worktree stack, independently ordered from the common stack. */
+    selectedWorktree?:{tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>}};
   objects:Array<{oid:string;type:'blob'|'tree'|'commit'|'tag';dataBase64:string}>;
   refs:Array<{name:string;oid:string;symbolic?:string}>;
   head:{symbolic:string}|{oid:string};
@@ -71,6 +75,9 @@ export interface ReviewedGitUserData {
   /** Exact surviving source spans and explicit absence; includes remain literal inactive declarations. */
   configurationOriginalReview:Array<{path:'config'|'config.worktree';source:'common_repository'|'selected_worktree';dataBase64:string|null;removedFields:boolean}>;
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true;source?:'config.worktree'}>;
+  /** Recursively selected native modules; paths are inert original provenance. */
+  modules?:Array<{name:string;source:{storagePath:string;worktreePath:string;coreWorktree:string;configurationSha256:string;initialized:boolean;embedded?:true};
+    worktreeRelativePath:string|null;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}>;
   exclusions:string[];
 }
 export interface ReviewedUserData {

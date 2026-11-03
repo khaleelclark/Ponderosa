@@ -71,7 +71,7 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
     if(binding.capture!==undefined){
       const proof=binding.capture;fields(proof,['version','currentAuthority','roots','records'],['reviewSha256']);
       if(proof.reviewSha256!==undefined&&(typeof proof.reviewSha256!=='string'||!/^[a-f0-9]{64}$/.test(proof.reviewSha256)))throw new Error('Invalid Git review original hash');
-      if(proof.version!==1||proof.currentAuthority!==false||binding.role==='module'||!Array.isArray(proof.roots)||!proof.roots.length||proof.roots.length>3||!Array.isArray(proof.records)||!proof.records.length||proof.records.length>12)throw new Error('Invalid inert Git capture provenance');
+      if(proof.version!==1||proof.currentAuthority!==false||!Array.isArray(proof.roots)||!proof.roots.length||proof.roots.length>3||!Array.isArray(proof.records)||!proof.records.length||proof.records.length>12)throw new Error('Invalid inert Git capture provenance');
       const roots=new Set<string>(),paths=new Set<string>(),records=new Set<string>();
       for(const root of proof.roots){
         fields(root,['rootRef','sourcePath','identity']);portableBindingIdentity(root.rootRef);
@@ -82,7 +82,7 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
       if(!roots.has(binding.worktreeRootRef)||!roots.has(binding.storageRootRef))throw new Error('Git binding differs from its captured root closure');
       let bytes=0;
       for(const record of proof.records){
-        fields(record,['rootRef','relativePath','identity'],['dataBase64','absent']);storageRelativePath(record.relativePath);
+        fields(record,['rootRef','relativePath','identity'],['dataBase64','absent','moduleWorktree']);storageRelativePath(record.relativePath);
         const key=JSON.stringify([record.rootRef,record.relativePath]);
         if(!roots.has(record.rootRef)||records.has(key)||typeof record.identity!=='string'||(record.absent===true?record.identity!==''||record.dataBase64!==undefined:record.absent!==undefined||!/^[0-9]+(?::[0-9]+){4}:-?[0-9]+:-?[0-9]+$/.test(record.identity)))throw new Error('Invalid or duplicate Git association original identity');
         if(record.dataBase64!==undefined){
@@ -90,6 +90,11 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
           const data=Buffer.from(record.dataBase64,'base64');bytes+=data.length;
           if(data.length>4096||data.toString('base64')!==record.dataBase64||bytes>12288)throw new Error('Invalid bounded Git association original bytes');
           safeText(text(data),'Git association original');
+        }
+        if(record.moduleWorktree!==undefined){
+          fields(record.moduleWorktree,['value','sha256']);
+          if(binding.role!=='module'||record.dataBase64!==undefined||record.absent||typeof record.moduleWorktree.value!=='string'||!record.moduleWorktree.value||Buffer.byteLength(record.moduleWorktree.value)>4096||/[\\\0\r\n]/.test(record.moduleWorktree.value)||!/^[a-f0-9]{64}$/.test(record.moduleWorktree.sha256))throw new Error('Invalid selected module worktree configuration proof');
+          safeText(record.moduleWorktree.value,'Module worktree path');
         }
         records.add(key);
       }
@@ -100,6 +105,17 @@ export function validatePortableGitStorageBindings(value:unknown,rootRefs:Readon
   }
   for(const binding of value as PortableGitStorageBinding[]){
     if(!binding.capture)continue;
+    if(binding.role==='module'){
+      const proof=binding.capture,source=(ref:string)=>proof.roots.find(root=>root.rootRef===ref)!.sourcePath;
+      const storage=path.posix.join(source(binding.storageRootRef),binding.relativePath),worktree=source(binding.worktreeRootRef);
+      const original=proof.records.find(record=>record.rootRef===binding.worktreeRootRef&&record.relativePath==='.git');
+      const pointer=original?.dataBase64?text(Buffer.from(original.dataBase64,'base64')).replace(/\n$/,''):'';
+      const config=proof.records.filter(record=>record.moduleWorktree);
+      if(!pointer.startsWith('gitdir: ')||/[\0\r\n]/.test(pointer)||path.posix.resolve(worktree,pointer.slice(8))!==storage||config.length!==1||path.posix.join(source(config[0]!.rootRef),config[0]!.relativePath)!==path.posix.join(storage,'config')||path.posix.resolve(storage,config[0]!.moduleWorktree!.value)!==worktree)throw new Error('Selected module pointer and core.worktree proof differ');
+      for(const target of [worktree,storage])if(!proof.records.some(record=>!record.absent&&record.dataBase64===undefined&&!record.moduleWorktree&&path.posix.join(source(record.rootRef),record.relativePath)===target))throw new Error('Module capture lacks held directory proof');
+      for(const name of ['gitdir','commondir'])if(!proof.records.some(record=>record.absent===true&&path.posix.join(source(record.rootRef),record.relativePath)===path.posix.join(storage,name)))throw new Error('Module capture lacks explicit association absences');
+      continue;
+    }
     const peer=(value as PortableGitStorageBinding[]).find(other=>other.worktreeRootRef===binding.worktreeRootRef&&other.role===(binding.role==='common'?'private':'common'));
     if(!peer?.capture||JSON.stringify(peer.capture)!==JSON.stringify(binding.capture))throw new Error('Captured Git association requires a complete matching common/private proof pair');
     if(binding.role!=='private')continue;
@@ -126,7 +142,7 @@ export function gitBindingSourceEvidence(binding:PortableGitStorageBinding):stri
   const source=(ref:string)=>{const root=proof.roots.find(root=>root.rootRef===ref);if(!root)throw new Error('Git source evidence lacks root closure');return root.sourcePath;};
   return JSON.stringify([source(binding.worktreeRootRef),source(binding.storageRootRef),binding.relativePath,binding.role,
     proof.roots.map(root=>({sourcePath:root.sourcePath,identity:root.identity})).sort((a,b)=>a.sourcePath<b.sourcePath?-1:a.sourcePath>b.sourcePath?1:0),
-    proof.records.map(record=>({sourcePath:source(record.rootRef),relativePath:record.relativePath,identity:record.identity,...(record.dataBase64!==undefined?{dataBase64:record.dataBase64}:{}),...(record.absent?{absent:true}:{})})),
+    proof.records.map(record=>({sourcePath:source(record.rootRef),relativePath:record.relativePath,identity:record.identity,...(record.dataBase64!==undefined?{dataBase64:record.dataBase64}:{}),...(record.absent?{absent:true}:{}),...(record.moduleWorktree?{moduleWorktree:record.moduleWorktree}:{})})),
   ]);
 }
 
@@ -743,7 +759,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     if(!value.selection?.git||!Array.isArray(value.associationReview))throw new Error('Git association evidence requires the original Git selection');
     const roots=new Set(value.associationReview.flatMap(binding=>binding.capture?.roots.map(root=>root.rootRef)??[]));
     validatePortableGitStorageBindings(value.associationReview,roots);
-    if(value.associationReview.length!==2||value.associationReview.some(binding=>!binding.capture||binding.capture.reviewSha256!==undefined)||new Set(value.associationReview.map(binding=>binding.worktreeRootRef)).size!==1)throw new Error('Retained association evidence requires one unhashed original common/private proof pair');
+    if(!((value.associationReview.length===1&&value.associationReview[0]!.role==='module')||(value.associationReview.length===2&&value.associationReview.every(binding=>binding.role!=='module')))||value.associationReview.some(binding=>!binding.capture||binding.capture.reviewSha256!==undefined)||new Set(value.associationReview.map(binding=>binding.worktreeRootRef)).size!==1)throw new Error('Retained association evidence requires one unhashed original common/private proof pair');
   }
   if(!value||value.version!==1||value.activation!=='inert_review_only'||!Array.isArray(value.providerFiles)||value.providerFiles.length>1000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid reviewed user-data manifest');
   fields(value.selection,['git','harness'],['extendedMetadata','persistentNodes']);
@@ -1088,18 +1104,35 @@ function decodeReftable(data:Buffer,format:'sha1'|'sha256',budget:{records:numbe
 }
 
 function decodeReftableReview(value:NonNullable<ReviewedGitUserData['reftableReview']>,format:'sha1'|'sha256') {
-  fields(value,['source','tablesListBase64','tables']);
-  if(value.source!=='common_repository'||typeof value.tablesListBase64!=='string'||value.tablesListBase64.length>87384||!Array.isArray(value.tables))throw new Error('Invalid reftable provenance');
-  const list=Buffer.from(value.tablesListBase64,'base64');if(list.toString('base64')!==value.tablesListBase64)throw new Error('Invalid reftable list encoding');
-  const names=reftableNames(list);if(names.length!==value.tables.length)throw new Error('Reftable stack is incomplete');
-  const refs=new Map<string,ReftableRef>(),logs=new Map<string,ReftableLog>();let prior=-1n,bytes=list.length;const budget={records:0,inflated:0,keys:0};
-  for(const [index,table] of value.tables.entries()){
-    fields(table,['name','dataBase64']);if(table.name!==names[index]||typeof table.dataBase64!=='string'||table.dataBase64.length>Math.ceil(4*1024*1024/3)*4)throw new Error('Reftable stack order differs');
-    const data=Buffer.from(table.dataBase64,'base64');bytes+=data.length;if(bytes>limit||data.toString('base64')!==table.dataBase64)throw new Error('Invalid bounded reftable original');
-    const parsed=decodeReftable(data,format,budget);if(parsed.min<=prior)throw new Error('Overlapping reftable update ranges');prior=parsed.max;
-    for(const ref of parsed.refs)refs.set(ref.name,ref);for(const log of parsed.logs)logs.set(log.key,log);
+  fields(value,['source','tablesListBase64','tables'],['selectedWorktree']);
+  if(value.source!=='common_repository')throw new Error('Invalid reftable provenance');
+  const budget={records:0,inflated:0,keys:0};let bytes=0;
+  const stack=(original:{tablesListBase64:string;tables:Array<{name:string;dataBase64:string}>})=>{
+    if(typeof original.tablesListBase64!=='string'||original.tablesListBase64.length>87384||!Array.isArray(original.tables))throw new Error('Invalid reftable stack');
+    const list=Buffer.from(original.tablesListBase64,'base64');bytes+=list.length;
+    if(list.toString('base64')!==original.tablesListBase64)throw new Error('Invalid reftable list encoding');
+    const names=reftableNames(list);if(names.length!==original.tables.length)throw new Error('Reftable stack is incomplete');
+    const refs=new Map<string,ReftableRef>(),logs=new Map<string,ReftableLog>();let prior=-1n;
+    for(const [index,table] of original.tables.entries()){
+      fields(table,['name','dataBase64']);if(table.name!==names[index]||typeof table.dataBase64!=='string'||table.dataBase64.length>Math.ceil(4*1024*1024/3)*4)throw new Error('Reftable stack order differs');
+      const data=Buffer.from(table.dataBase64,'base64');bytes+=data.length;if(bytes>limit||data.toString('base64')!==table.dataBase64)throw new Error('Invalid bounded reftable original');
+      const parsed=decodeReftable(data,format,budget);if(parsed.min<=prior)throw new Error('Overlapping reftable update ranges');prior=parsed.max;
+      for(const ref of parsed.refs)refs.set(ref.name,ref);for(const log of parsed.logs)logs.set(log.key,log);
+    }
+    for(const [name,ref] of refs)if(ref.deleted)refs.delete(name);for(const [key,log] of logs)if(log.deleted)logs.delete(key);
+    return {refs,logs};
+  };
+  let {refs,logs}=stack(value);
+  if(value.selectedWorktree!==undefined){
+    fields(value.selectedWorktree,['tablesListBase64','tables']);
+    const selected=stack(value.selectedWorktree),shared=(name:string)=>name.startsWith('refs/')&&!privateRef(name);
+    // Native Git selects the common backend for shared refs and the selected
+    // worktree backend for pseudorefs/private namespaces. Never inherit main HEAD.
+    refs=new Map([...refs].filter(([name])=>shared(name)));
+    logs=new Map([...logs].filter(([,log])=>shared(log.name)));
+    for(const [name,ref] of selected.refs){if(shared(name))throw new Error('Selected reftable stack contains a foreign shared ref');refs.set(name,ref);}
+    for(const [key,log] of selected.logs){if(shared(log.name))throw new Error('Selected reftable log contains a foreign shared ref');logs.set(key,log);}
   }
-  for(const [name,ref] of refs)if(ref.deleted)refs.delete(name);for(const [key,log] of logs)if(log.deleted)logs.delete(key);
   const resolve=(name:string)=>{let current=refs.get(name);const seen=new Set<string>();while(current?.symbolic){if(seen.has(current.name))throw new Error('Cyclic reftable symbolic ref');seen.add(current.name);current=refs.get(current.symbolic);}return current?.oid;};
   const logical:ReviewedGitUserData['refs']=[];
   for(const ref of refs.values())if(ref.name.startsWith('refs/')){const oid=resolve(ref.name);if(!oid)throw new Error('Unresolved reftable symbolic ref');logical.push({name:ref.name,oid,...(ref.symbolic?{symbolic:ref.symbolic}:{})});}
@@ -1111,8 +1144,9 @@ function decodeReftableReview(value:NonNullable<ReviewedGitUserData['reftableRev
   return {refs:logical,head,peeledBindings:[...refs.values()].filter(ref=>ref.peeled),rootRefs:[...refs.values()].filter(ref=>!ref.name.startsWith('refs/')).map(ref=>({...ref,oid:resolve(ref.name)})),logs:[...logs.values()]};
 }
 
-export function validateReviewedGit(value:ReviewedGitUserData):void {
-  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','reflogMissingObjects','indexOptionalReview','configurationReview','configurationOriginalReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','fetchHeadReview','exclusions','reftableReview'],['configurationSourceDirectories']);
+export function validateReviewedGit(value:ReviewedGitUserData,depth=0):void {
+  if(depth>16)throw new Error('Native Git module nesting exceeds the capture bound');
+  fields(value,['version','format','objects','refs','head','index','resolveUndo','reflogs','reflogMissingObjects','indexOptionalReview','configurationReview','configurationOriginalReview','sparseReview','infoReview','shallowReview','packRetentionReview','origHeadReview','fetchHeadReview','exclusions','reftableReview'],['modules','configurationSourceDirectories']);
   if(value.configurationSourceDirectories!==undefined){fields(value.configurationSourceDirectories,['common','private'],['home']);for(const directory of Object.values(value.configurationSourceDirectories))if(typeof directory!=='string'||!path.posix.isAbsolute(directory)||path.posix.normalize(directory)!==directory||Buffer.byteLength(directory)>4096||/[\\\x00-\x1f\x7f]/.test(directory))throw new Error('Invalid historical Git configuration directory provenance');}
   if(value.version!==1||!['sha1','sha256'].includes(value.format)||!Array.isArray(value.objects)||value.objects.length>10000||!Array.isArray(value.refs)||value.refs.length>10000||!Array.isArray(value.index)||value.index.length>10000||!Array.isArray(value.configurationReview)||value.configurationReview.length>10000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid bounded Git user-data manifest');
   const reftable=value.reftableReview===null?undefined:decodeReftableReview(value.reftableReview,value.format);
@@ -1261,6 +1295,28 @@ export function validateReviewedGit(value:ReviewedGitUserData):void {
   validateRelativeWorktrees(value.configurationReview);
   validateGitInfoReview(value.infoReview);
   validateSparseReview(value,ids);
+  if(value.modules!==undefined){
+    if(!Array.isArray(value.modules)||value.modules.length>1000||Buffer.byteLength(JSON.stringify(value.modules))>limit)throw new Error('Invalid bounded native module inventory');
+    const names=new Set<string>();
+    for(const module of value.modules){
+      fields(module,['name','source','worktreeRelativePath','git','originals']);storageRelativePath(module.name);
+      fields(module.source,['storagePath','worktreePath','coreWorktree','configurationSha256','initialized'],['embedded']);
+      const source=module.source;
+      if(module.name==='.'||[...names].some(name=>name===module.name||name.startsWith(module.name+'/')||module.name.startsWith(name+'/'))||typeof source.initialized!=='boolean'||typeof source.coreWorktree!=='string'||!source.coreWorktree||/[\\\0\r\n]/.test(source.coreWorktree)||!/^[a-f0-9]{64}$/.test(source.configurationSha256)||typeof source.storagePath!=='string'||typeof source.worktreePath!=='string'||![source.storagePath,source.worktreePath].every(target=>target.startsWith('/')&&path.posix.normalize(target)===target&&Buffer.byteLength(target)<=4096)||path.posix.resolve(source.storagePath,source.coreWorktree)!==source.worktreePath)throw new Error('Native module association provenance differs');
+      if(source.embedded!==undefined&&(source.embedded!==true||source.storagePath!==path.posix.join(source.worktreePath,'.git')||!source.initialized))throw new Error('Embedded module association differs');
+      safeText(source.coreWorktree,'Module core.worktree');names.add(module.name);
+      if(module.worktreeRelativePath!==null){storageRelativePath(module.worktreeRelativePath);if(module.worktreeRelativePath==='.')throw new Error('Native module cannot replace its parent root');}
+      if(!Array.isArray(module.originals)||module.originals.length>1000)throw new Error('Invalid native module originals');
+      const originals=new Set<string>();for(const original of module.originals){
+        fields(original,['path','dataBase64','removedSecretFields'],['metadata']);
+        if(!gitReviewOriginal(original.path)||originals.has(original.path)||original.removedSecretFields!==false||typeof original.dataBase64!=='string')throw new Error('Invalid selected module Git original');
+        const data=Buffer.from(original.dataBase64,'base64');if(data.toString('base64')!==original.dataBase64)throw new Error('Invalid module original encoding');inspectGitReviewOriginal(data,original.path);originals.add(original.path);
+        if(original.metadata){fields(original.metadata,['mode','mtimeNs']);if(!Number.isInteger(original.metadata.mode)||original.metadata.mode<0||original.metadata.mode>0o7777||typeof original.metadata.mtimeNs!=='string'||!/^-?\d+$/.test(original.metadata.mtimeNs))throw new Error('Invalid module original metadata');}
+      }
+      validateReviewedGit(module.git,depth+1);
+    }
+  }
+
 }
 
 /** Validate boundary syntax before native reads, then require captured commit identities in graph validation. */
@@ -1661,8 +1717,8 @@ export interface GitExportCapture {
 /** Linux descriptor traversal only. No declaration is sufficient to read an association target. */
 export function createGitExportCapture(roots:SelectedGitRoot[],bindings:SelectedGitBinding[]):GitExportCapture {
   if(process.platform!=='linux')throw new Error('Cross-root Git capture requires Linux held descriptor traversal');
-  if(!roots.length||!bindings.length||bindings.some(binding=>binding.role==='module'))throw new Error('Only explicit common/private Git storage capture is supported');
-  if(roots.some(root=>roots.some(other=>root!==other&&root.pathname.startsWith(other.pathname+path.sep))))throw new Error('Overlapping selected working roots require separate root-view proof');
+  if(!roots.length||!bindings.length)throw new Error('Explicit selected Git storage bindings are required');
+  if(new Set(roots.map(root=>root.pathname)).size!==roots.length||new Set(roots.map(root=>root.ref)).size!==roots.length)throw new Error('Selected Git roots must have distinct canonical paths and identities');
   const selected=[...roots].sort((a,b)=>b.pathname.length-a.pathname.length);
   const locate=(target:string)=>{
     const root=selected.find(root=>target===root.pathname||target.startsWith(root.pathname+path.sep));
@@ -1800,7 +1856,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
       return bindings.map(({worktreePath,storagePath,...binding})=>{
         const original=evidence.get(worktreePath);if(!original)throw new Error('Git binding has no reciprocal capture');
         const reviewSha256=reviewHashes.get(worktreePath);if(includeHashes&&!reviewSha256)throw new Error('Git binding has no completed authoritative review original');
-        const records=JSON.parse(original) as Array<{path:string;identity:string;data?:string;absent?:true}>;
+        const records=JSON.parse(original) as Array<{path:string;identity:string;data?:string;absent?:true;moduleWorktree?:{value:string;sha256:string}}>;
         const proofRoots=[...new Set(records.map(record=>locate(record.path).ref))].sort().map(ref=>{
           const root=roots.find(root=>root.ref===ref)!;
           safeText(root.pathname,'Git source root provenance');
@@ -1808,7 +1864,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
           return {rootRef:ref,sourcePath:root.pathname,identity};
         });
         return {...binding,capture:{version:1 as const,currentAuthority:false as const,...(includeHashes?{reviewSha256}:{}),roots:proofRoots,records:records.map(record=>{
-          const root=locate(record.path);return {rootRef:root.ref,relativePath:path.relative(root.pathname,record.path).split(path.sep).join('/')||'.',identity:record.identity,...(record.data!==undefined?{dataBase64:record.data}:{}),...(record.absent?{absent:true as const}:{})};
+          const root=locate(record.path);return {rootRef:root.ref,relativePath:path.relative(root.pathname,record.path).split(path.sep).join('/')||'.',identity:record.identity,...(record.data!==undefined?{dataBase64:record.data}:{}),...(record.absent?{absent:true as const}:{}),...(record.moduleWorktree?{moduleWorktree:record.moduleWorktree}:{})};
         })}};
       });
     },
@@ -1816,7 +1872,7 @@ export function createGitExportCapture(roots:SelectedGitRoot[],bindings:Selected
   return context;
 }
 
-type GitAssociation={root:string;gitDir:string;commonDir:string;linked:boolean;evidence:string};
+type GitAssociation={root:string;gitDir:string;commonDir:string;linked:boolean;module?:true;moduleData?:true;evidence:string};
 function originalIdentity(stat:{dev:bigint;ino:bigint;mode:bigint;uid:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint}):string {
   return [stat.dev,stat.ino,stat.mode,stat.uid,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
 }
@@ -1844,7 +1900,7 @@ async function gitAssociation(root:string,capture?:GitExportCapture):Promise<Git
   const resolveDirectory=capture?capture.resolveDirectory:associationDirectory;
   const pointer=path.join(root,'.git');
   let node;try{node=await fs.lstat(pointer,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;}
-  const owner=(await fs.lstat(root,{bigint:true})).uid,evidence:Array<{path:string;identity:string;data?:string;absent?:true}>=[];
+  const owner=(await fs.lstat(root,{bigint:true})).uid,evidence:Array<{path:string;identity:string;data?:string;absent?:true;moduleWorktree?:{value:string;sha256:string}}>=[];
   const directory=async(target:string)=>{
     const stat=await fs.lstat(target,{bigint:true});
     if(!stat.isDirectory()||stat.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git association requires canonical same-owner directories');
@@ -1870,11 +1926,25 @@ async function gitAssociation(root:string,capture?:GitExportCapture):Promise<Git
   const value=await associationFile(pointer);
   if(!value.startsWith('gitdir: ')||!value.slice(8))throw new Error('Unsupported Git pointer');
   const gitTarget=path.resolve(root,value.slice(8));
-  if(capture&&!capture.bindings.some(binding=>binding.worktreePath===root&&binding.role==='private'&&path.join(binding.storagePath,binding.relativePath)===gitTarget))throw new Error('Git private pointer lacks an exact selected binding');
+  if(capture&&!capture.bindings.some(binding=>binding.worktreePath===root&&['private','module'].includes(binding.role)&&path.join(binding.storagePath,binding.relativePath)===gitTarget))throw new Error('Git private pointer lacks an exact selected binding');
   const gitDir=await resolveDirectory(root,value.slice(8));await directory(gitDir);
   let hasBacklink=true;
   try{await fs.lstat(path.join(gitDir,'gitdir'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')hasBacklink=false;else throw error;}
   if(!hasBacklink){
+    const moduleBinding=capture?.bindings.find(binding=>binding.worktreePath===root&&binding.role==='module'&&path.join(binding.storagePath,binding.relativePath)===gitDir);
+    if(moduleBinding){
+      for(const name of ['gitdir','commondir'])await absence(path.join(gitDir,name));
+      const target=path.join(gitDir,'config'),before=await fs.lstat(target,{bigint:true}),{data}=await regularOriginal(target,1024*1024,owner,fs),after=await fs.lstat(target,{bigint:true});
+      if(originalIdentity(before)!==originalIdentity(after))throw new Error('Module configuration changed during association capture');
+      const parsed=await parseCapturedGitConfiguration(data);
+      const entries=(parsed?parsed.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n')).toLowerCase()==='core.worktree');
+      if(!parsed.endsWith('\0')||entries.length!==1)throw new Error('Selected module requires one literal core.worktree association');
+      const value=entries[0]!.slice(entries[0]!.indexOf('\n')+1);
+      safeText(value,'Module worktree path');
+      if(await resolveDirectory(gitDir,value)!==root)throw new Error('Module core.worktree does not identify the selected working root');
+      evidence.push({path:target,identity:originalIdentity(after),moduleWorktree:{value,sha256:createHash('sha256').update(data).digest('hex')}});
+      return {root,gitDir,commonDir:gitDir,linked:false,module:true,evidence:JSON.stringify(evidence)};
+    }
     if(!gitDir.startsWith(root+path.sep))throw new Error('Separated Git storage outside the selected root requires explicit storage selection');
     await absentGitPath(path.join(gitDir,'commondir'),fs);
     return {root,gitDir,commonDir:gitDir,linked:false,evidence:JSON.stringify(evidence)};
@@ -1904,9 +1974,10 @@ async function gitAssociation(root:string,capture?:GitExportCapture):Promise<Git
 export async function verifyGitExportAssociations(capture:GitExportCapture):Promise<void> {
   for(const root of new Set(capture.bindings.map(binding=>binding.worktreePath))){
     const selected=capture.bindings.filter(binding=>binding.worktreePath===root);
-    if(selected.length!==2||!selected.some(binding=>binding.role==='common')||!selected.some(binding=>binding.role==='private'))throw new Error('Select the complete common/private binding pair');
+    const module=selected.length===1&&selected[0]!.role==='module';
+    if(!module&&(selected.length!==2||!selected.some(binding=>binding.role==='common')||!selected.some(binding=>binding.role==='private')))throw new Error('Select one module binding or the complete common/private binding pair');
     const association=await gitAssociation(root,capture);
-    if(!association?.linked)throw new Error('Mapped Git capture requires reciprocal linked common/private storage');
+    if(module?!association?.module:!association?.linked)throw new Error('Mapped Git capture lacks its exact module or common/private association');
     capture.record(root,association.evidence);
   }
   await capture.verify();
@@ -1963,7 +2034,7 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
       if(objects&&!cache&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap|keep|mtimes))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
       if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/')&&!(source==='selected'&&name==='logs/ORIG_HEAD'))reflogPath(name.slice(5));
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
-      const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:name.startsWith('reftable/')?4*1024*1024:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner,fs),after=await fs.lstat(target,{bigint:true});
+      const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:/^(?:selected-)?reftable\//.test(name)?4*1024*1024:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner,fs),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
       if(gitOriginal)inspectGitReviewOriginal(data,'.git/'+name);
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
@@ -1985,14 +2056,16 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
   for(const name of ['config','shallow',...(reftable?[]:['packed-refs','refs']),'objects',...gitDirectoryOriginalNames,...gitWebOriginalNames])await walk(path.join(commonDir,name),name,'shared',name==='objects');
-  if(reftable){
-    if(linked)throw new Error('Selected linked reftable requires separate shared/private stack provenance; not implemented');
-    const directory=path.join(commonDir,'reftable'),before=await fs.lstat(directory,{bigint:true});
+  if(reftable)for(const [directory,source,prefix] of [
+    [path.join(commonDir,'reftable'),'shared','reftable'],
+    ...(linked?[[path.join(gitDir,'reftable'),'selected','selected-reftable']]:[]),
+  ] as Array<[string,'selected'|'shared',string]>){
+    const before=await fs.lstat(directory,{bigint:true});
     if(!before.isDirectory()||before.uid!==owner||await fs.realpath(directory)!==directory)throw new Error('Reftable storage must be canonical and same-owner');
-    inventory.push({name:'reftable',source:'shared',identity:originalIdentity(before)});
-    await walk(path.join(directory,'tables.list'),'reftable/tables.list','shared',false,false);
-    const list=files.find(file=>file.name==='reftable/tables.list')!;
-    for(const name of reftableNames(list.data))await walk(path.join(directory,name),'reftable/'+name,'shared',false,false);
+    inventory.push({name:prefix,source,identity:originalIdentity(before)});
+    await walk(path.join(directory,'tables.list'),prefix+'/tables.list',source,false,false);
+    const list=files.find(file=>file.source===source&&file.name===prefix+'/tables.list')!;
+    for(const name of reftableNames(list.data))await walk(path.join(directory,name),prefix+'/'+name,source,false,false);
     const after=await fs.lstat(directory,{bigint:true});if(originalIdentity(before)!==originalIdentity(after))throw new Error('Reftable stack directory changed');
   }
   for(const directory of new Set([gitDir,commonDir])){
@@ -2005,7 +2078,7 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
   }
   await walk(path.join(gitDir,'logs','ORIG_HEAD'),'logs/ORIG_HEAD','selected');
   await walk(path.join(gitDir,'logs','HEAD'),'logs/HEAD','selected');await walk(path.join(commonDir,'logs','refs'),'logs/refs','shared');
-  if(linked){
+  if(linked&&!reftable){
     await walk(path.join(gitDir,'refs'),'refs','selected');
     await walk(path.join(gitDir,'logs','refs'),'logs/refs','selected');
   }
@@ -2033,12 +2106,12 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256',re
     // Object enumeration needs no traversal boundary: shallow and grafts stay out of this read view.
     // Nothing copied here can route Git to a live repository or settings file.
     await mkdir(path.join(root,'.git','refs'));await mkdir(path.join(root,'.git','objects'));
-    await write('config',Buffer.from(`[core]\nrepositoryformatversion = ${reftable||format==='sha256'?1:0}\nbare = true\nhooksPath = /dev/null\nfsmonitor = false\n${reftable||format==='sha256'?'[extensions]\n':''}${format==='sha256'?'objectformat = sha256\n':''}${reftable?'refstorage = reftable\n':''}`));
+    await write('config',Buffer.from('[core]\nrepositoryformatversion = '+(format==='sha256'?1:0)+'\nbare = true\nhooksPath = /dev/null\nfsmonitor = false\n'+(format==='sha256'?'[extensions]\nobjectformat = sha256\n':'')));
     const oidPattern=format==='sha1'?/^[a-f0-9]{40}$/:/^[a-f0-9]{64}$/;
     const expectedRefs=new Map<string,{oid?:string;symbolic?:string}>();
     if(reftable){for(const ref of reftable.refs)expectedRefs.set(ref.name,ref);await write('HEAD',Buffer.from('symbolic' in reftable.head?'ref: '+reftable.head.symbolic+'\n':reftable.head.oid+'\n'));}
     for(const file of files){
-      if(reftable){if(file.name.startsWith('reftable/')){await write(file.name,file.data);continue;}if(!file.name.startsWith('objects/'))continue;}
+      if(reftable&&!file.name.startsWith('objects/'))continue;
       if(gitReviewOriginal('.git/'+file.name))continue;
       if(file.name==='ORIG_HEAD'||file.name==='logs/ORIG_HEAD'||file.name==='FETCH_HEAD')continue;
       if(derivedGitCache(file.name)){
@@ -2087,7 +2160,7 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256',re
     }
     for(const name of expectedRefs.keys())if(!reftable&&refDirectories.has(name))throw new Error('Captured Git refs shadow a directory');
     const directoryIdentities=await Promise.all(directories.map(async target=>({target,identity:originalIdentity(await fs.lstat(target,{bigint:true}))})));
-    const refs=await git(root,['for-each-ref','--format=%(refname)%00%(objectname)%00%(symref)']);
+    const refs=reftable?Buffer.from(reftable.refs.map(ref=>[ref.name,ref.oid,ref.symbolic??''].join('\0')).join('\n')+'\n'):await git(root,['for-each-ref','--format=%(refname)%00%(objectname)%00%(symref)']);
     const actualRefs=new Map<string,{oid:string;symbolic:string}>();
     for(const row of text(refs).split('\n').filter(Boolean)){
       const parts=row.split('\0');if(parts.length!==3||actualRefs.has(parts[0]!))throw new Error('Invalid captured Git ref inventory');
@@ -2107,10 +2180,91 @@ async function readCapturedGit(files:CapturedGitFile[],format:'sha1'|'sha256',re
   }catch(error){throw new Error(`Git capture view incomplete; preserve private originals at ${root}`,{cause:error});}
 }
 
+type CapturedModuleSource={name:string;source:NonNullable<ReviewedGitUserData['modules']>[number]['source'];worktreeRelativePath:string|null;evidence:string};
+async function captureModuleSources(root:string,association:GitAssociation,fs:GitSourceFs,capture?:GitExportCapture,index:IndexEntry[]=[]):Promise<{modules:CapturedModuleSource[];evidence:string}> {
+  const modules:CapturedModuleSource[]=[],evidence:unknown[]=[],base=path.join(association.commonDir,'modules');
+  const owner=(await fs.lstat(association.root,{bigint:true})).uid;let count=0;
+  const walk=async(target:string,name:string):Promise<void>=>{
+    let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&target===base){evidence.push({path:target,absent:true});return;}throw error;}
+    if(++count>20000||!before.isDirectory()||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Native module storage must be bounded canonical same-owner directories');
+    const entries=(await fs.readdir(target)).sort();evidence.push({path:target,identity:originalIdentity(before),entries});
+    if(name&&entries.includes('config')&&entries.includes('HEAD')&&entries.includes('objects')){
+      storageRelativePath(name);
+      for(const name of ['gitdir','commondir'])await absentGitPath(path.join(target,name),fs);
+      const config=path.join(target,'config'),start=await fs.lstat(config,{bigint:true}),{data}=await regularOriginal(config,1024*1024,owner,fs),end=await fs.lstat(config,{bigint:true});
+      if(originalIdentity(start)!==originalIdentity(end))throw new Error('Native module configuration changed');
+      const parsed=await parseCapturedGitConfiguration(data),values=(parsed?parsed.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n')).toLowerCase()==='core.worktree');
+      if(!parsed.endsWith('\0')||values.length!==1)throw new Error('Native module storage needs one literal core.worktree');
+      const coreWorktree=values[0]!.slice(values[0]!.indexOf('\n')+1);safeText(coreWorktree,'Native module worktree path');
+      if(!coreWorktree||/[\\\0\r\n]/.test(coreWorktree))throw new Error('Malformed native module worktree path');
+      const worktreePath=path.resolve(target,coreWorktree),contained=worktreePath.startsWith(root+path.sep),relative=contained?path.relative(root,worktreePath).split(path.sep).join('/'):null;
+      // Source pathname disclosure is inert. Reading a working pointer still requires a selected root.
+      if(!contained&&!capture?.bindings.some(binding=>worktreePath===binding.worktreePath||worktreePath.startsWith(binding.worktreePath+path.sep)))throw new Error('Module working root is outside the selected closure; include its Agent root and module storage binding');
+      let initialized=false,pointerEvidence:unknown={absent:true};
+      const pointer=path.join(worktreePath,'.git');
+      try{
+        const resolved=capture?await capture.resolveDirectory(association.root,worktreePath):await associationDirectory(association.root,path.relative(association.root,worktreePath));
+        if(resolved!==worktreePath)throw new Error('Native module working root is not canonical');
+        const pointerStat=await fs.lstat(pointer,{bigint:true});
+        const {data:pointerData}=await regularOriginal(pointer,4096,owner,fs),pointerAfter=await fs.lstat(pointer,{bigint:true});
+        const value=text(pointerData).replace(/\n$/,'');
+        if(originalIdentity(pointerStat)!==originalIdentity(pointerAfter)||!value.startsWith('gitdir: ')||/[\0\r\n]/.test(value)||path.resolve(worktreePath,value.slice(8))!==target)throw new Error('Native module working pointer differs from selected storage');
+        initialized=true;pointerEvidence={identity:originalIdentity(pointerAfter),data:pointerData.toString('base64')};
+      }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+      const source={storagePath:target,worktreePath,coreWorktree,configurationSha256:createHash('sha256').update(data).digest('hex'),initialized};
+      const original=JSON.stringify({identity:originalIdentity(end),source,pointerEvidence});evidence.push(original);
+      modules.push({name,source,worktreeRelativePath:relative,evidence:original});
+      if(modules.length>1000)throw new Error('Native module repository inventory exceeds its bound');
+    }else for(const entry of entries){storageRelativePath(entry);await walk(path.join(target,entry),name?name+'/'+entry:entry);}
+    if(originalIdentity(await fs.lstat(target,{bigint:true}))!==originalIdentity(before))throw new Error('Native module directory changed during capture');
+  };
+  await walk(base,'');
+  for(const entry of new Map(index.filter(entry=>entry.mode==='160000').map(entry=>[entry.path,entry])).values()){
+    const worktreePath=path.join(root,entry.path),pointer=path.join(worktreePath,'.git');
+    if(modules.some(module=>module.source.worktreePath===worktreePath))continue;
+    let stat;
+    try{
+      const resolved=capture?await capture.resolveDirectory(association.root,worktreePath):await associationDirectory(association.root,path.relative(association.root,worktreePath));
+      if(resolved!==worktreePath)throw new Error('Gitlink working root is not canonical');
+      stat=await fs.lstat(pointer,{bigint:true});
+    }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){evidence.push({worktreePath,pointerAbsent:true});continue;}throw error;}
+    if(stat.isDirectory()){
+      if(await fs.realpath(pointer)!==pointer||stat.uid!==owner)throw new Error('Embedded module storage is not canonical and same-owner');
+      for(const name of ['gitdir','commondir'])await absentGitPath(path.join(pointer,name),fs);
+      const config=path.join(pointer,'config'),start=await fs.lstat(config,{bigint:true}),{data}=await regularOriginal(config,1024*1024,owner,fs),end=await fs.lstat(config,{bigint:true});
+      if(originalIdentity(start)!==originalIdentity(end))throw new Error('Embedded module configuration changed');
+      const parsed=await parseCapturedGitConfiguration(data),values=(parsed?parsed.slice(0,-1).split('\0'):[]).filter(row=>row.slice(0,row.indexOf('\n')).toLowerCase()==='core.worktree');
+      if(!parsed.endsWith('\0')||values.length>1)throw new Error('Embedded module has ambiguous core.worktree');
+      const coreWorktree=values.length?values[0]!.slice(values[0]!.indexOf('\n')+1):'..';
+      if(!coreWorktree||/[\\\0\r\n]/.test(coreWorktree)||path.resolve(pointer,coreWorktree)!==worktreePath)throw new Error('Embedded module core.worktree differs');
+      const source={storagePath:pointer,worktreePath,coreWorktree,configurationSha256:createHash('sha256').update(data).digest('hex'),initialized:true,embedded:true as const};
+      const original=JSON.stringify({source,identity:originalIdentity(end),directoryIdentity:originalIdentity(stat)});evidence.push(original);
+      modules.push({name:entry.path,source,worktreeRelativePath:entry.path,evidence:original});
+    }else{
+      // Absorbed modules outside modules/ still need an exact human-selected storage root.
+      const selected=capture?.bindings.find(binding=>binding.role==='module'&&binding.worktreePath===worktreePath);
+      if(!selected)throw new Error('Gitlink pointer lacks selected module storage; include its Agent root and module binding');
+      const current=await gitAssociation(worktreePath,capture);
+      if(!current?.module)throw new Error('Gitlink module binding lacks a native association');
+      const config=path.join(current.gitDir,'config'),{data}=await regularOriginal(config,1024*1024,owner,fs);
+      const parsed=await parseCapturedGitConfiguration(data),values=parsed.slice(0,-1).split('\0').filter(row=>row.slice(0,row.indexOf('\n')).toLowerCase()==='core.worktree');
+      if(values.length!==1)throw new Error('Selected module has ambiguous core.worktree');
+      const source={storagePath:current.gitDir,worktreePath,coreWorktree:values[0]!.slice(values[0]!.indexOf('\n')+1),configurationSha256:createHash('sha256').update(data).digest('hex'),initialized:true};
+      evidence.push(current.evidence);modules.push({name:entry.path,source,worktreeRelativePath:entry.path,evidence:current.evidence});
+    }
+    if(modules.length>1000)throw new Error('Native module repository inventory exceeds its bound');
+  }
+  return {modules,evidence:JSON.stringify(evidence)};
+}
+
 /** Bounded immutable originals with observed-change refusal; this does not drain independent writers. */
 export async function exportReviewedGit(root:string,capture?:GitExportCapture):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}|undefined> {
-  const fs=capture?.io??sourceFs;
   const association=await gitAssociation(root,capture);if(!association)return undefined;
+  return captureReviewedGit(root,association,capture);
+}
+async function captureReviewedGit(root:string,association:GitAssociation,capture?:GitExportCapture,depth=0):Promise<{git:ReviewedGitUserData;gitOriginals:ReviewedUserData['providerFiles']}> {
+  if(depth>16)throw new Error('Native Git module nesting exceeds the capture bound');
+  const fs=capture?.io??sourceFs;
   const {gitDir,commonDir,linked}=association;
   const assertTopology=async()=>{
     for(const name of ['MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock'])await absentGitPath(path.join(gitDir,name),fs);
@@ -2120,16 +2274,15 @@ export async function exportReviewedGit(root:string,capture?:GitExportCapture):P
       await absentGitPath(path.join(gitDir,'packed-refs'),fs);
       // Unknown private storage/pseudorefs must not silently disappear from the review copy.
       const names=await fs.readdir(gitDir);if(names.length>20000)throw new Error('Selected Git storage inventory exceeds its bound');
-      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD',...gitSelectedOriginalNames,'index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
+      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD',...gitSelectedOriginalNames,'index','config.worktree','info','refs','logs','locked','reftable'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
     }
   };
   const snapshot=async()=>{
-    const current=await gitAssociation(root,capture);if(!current||current.evidence!==association.evidence)throw new Error('Git association changed during capture');
+    const current=association.moduleData?association:await gitAssociation(root,capture);if(!current||current.evidence!==association.evidence)throw new Error('Git association changed during capture');
     await assertTopology();
     const sparse=await captureSparseConfiguration(gitDir,commonDir,fs);
     const storage=sparse.configuration.filter(item=>!item.source&&item.key.toLowerCase()==='extensions.refstorage');
     if(storage.length>1||storage.some(item=>!['files','reftable'].includes(item.value)))throw new Error('Unsupported Git reference storage declaration');
-    if(capture&&storage[0]?.value==='reftable')throw new Error('Mapped linked reftable capture is unsupported');
     const raw=await captureGitRaw(association,storage[0]?.value==='reftable',fs);
     return {sparse,raw};
   };
@@ -2145,8 +2298,12 @@ export async function exportReviewedGit(root:string,capture?:GitExportCapture):P
   validateGitShallowReview(before.raw.shallowReview,format);
   parseGitOrigHeadReview(before.raw.origHeadReview,format);
   parseGitFetchHeadReview(before.raw.fetchHeadReview,format);
-  const stackList=before.raw.files.find(file=>file.name==='reftable/tables.list');
-  const reftableReview:ReviewedGitUserData['reftableReview']=stackList?{source:'common_repository',tablesListBase64:stackList.data.toString('base64'),tables:reftableNames(stackList.data).map(name=>({name,dataBase64:before.raw.files.find(file=>file.name==='reftable/'+name)!.data.toString('base64')}))}:null;
+  const stackOriginal=(prefix:string)=>{
+    const list=before.raw.files.find(file=>file.name===prefix+'/tables.list');if(!list)return undefined;
+    return {tablesListBase64:list.data.toString('base64'),tables:reftableNames(list.data).map(name=>({name,dataBase64:before.raw.files.find(file=>file.name===prefix+'/'+name)!.data.toString('base64')}))};
+  };
+  const sharedStack=stackOriginal('reftable'),selectedStack=stackOriginal('selected-reftable');
+  const reftableReview:ReviewedGitUserData['reftableReview']=sharedStack?{source:'common_repository',...sharedStack,...(selectedStack?{selectedWorktree:selectedStack}:{})}:null;
   const reftable=reftableReview?decodeReftableReview(reftableReview,format):undefined;
   const captured=await readCapturedGit(before.raw.files,format,reftable),batch=captured.batch;
   const objects:GitObject[]=[];let offset=0;
@@ -2160,8 +2317,8 @@ export async function exportReviewedGit(root:string,capture?:GitExportCapture):P
   }
   const after={...await snapshot(),storage:await captureIndexStorage(gitDir,format,fs)};
   if(before.raw.evidence!==after.raw.evidence||JSON.stringify(before.sparse)!==JSON.stringify(after.sparse)||!before.storage.originals.equals(after.storage.originals)||JSON.stringify(before.storage.logical)!==JSON.stringify(after.storage.logical)||JSON.stringify(before.storage.resolveUndo)!==JSON.stringify(after.storage.resolveUndo))throw new Error('Git selection changed during capture; preserve source and retry');
-  const finalAssociation=await gitAssociation(root,capture);if(!finalAssociation||finalAssociation.evidence!==association.evidence)throw new Error('Git association changed after capture');
-  if(capture){await capture.verify();capture.record(root,association.evidence);}
+  const finalAssociation=association.moduleData?association:await gitAssociation(root,capture);if(!finalAssociation||finalAssociation.evidence!==association.evidence)throw new Error('Git association changed after capture');
+  if(capture){await capture.verify();if(!association.moduleData)capture.record(root,association.evidence);}
   const originalIndex:IndexEntry[]=before.storage.logical;
   const sparseSnapshot=before.sparse;
   const sparseReview:ReviewedGitUserData['sparseReview']={patternsBase64:sparseSnapshot.patternsBase64,directories:originalIndex.filter(entry=>entry.mode==='40000')};
@@ -2209,6 +2366,16 @@ export async function exportReviewedGit(root:string,capture?:GitExportCapture):P
   result.index.sort(indexOrder);validateReviewedGit(result);
   // Drafts are selected-worktree data even when gitDir and commonDir coincide.
   const gitOriginals=before.raw.files.filter(file=>gitReviewOriginal('.git/'+file.name)&&file.source===(gitSelectedOriginalNames.includes(file.name)?'selected':'shared')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false,...(file.metadata?{metadata:file.metadata}:{})}));
+  const moduleSources=await captureModuleSources(root,association,fs,capture,result.index);
+  result.modules=[];
+  if(moduleSources.modules.length){
+    for(const module of moduleSources.modules){
+      const child=await captureReviewedGit(module.source.worktreePath,{root:association.root,gitDir:module.source.storagePath,commonDir:module.source.storagePath,linked:false,moduleData:true,evidence:module.evidence},capture,depth+1);
+      result.modules.push({name:module.name,source:module.source,worktreeRelativePath:module.worktreeRelativePath,git:child.git,originals:child.gitOriginals});
+    }
+    validateReviewedGit(result,depth);
+  }
+  if((await captureModuleSources(root,association,fs,capture,result.index)).evidence!==moduleSources.evidence)throw new Error('Native module inventory changed during capture');
   return {git:result,gitOriginals};
 }
 
@@ -2304,7 +2471,15 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       const handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try{const before=await handle.stat({bigint:true});await handle.writeFile(pointerData);await handle.sync();const current=await fs.lstat(pointer,{bigint:true});if(!current.isFile()||current.nlink!==1n||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Mapped Git worktree pointer changed');}finally{await handle.close();}
     }
-    if(!native)await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',reftableReview:value.reftableReview,configuration:value.configurationReview,configurationOriginalReview:value.configurationOriginalReview,reflogMissingObjects:value.reflogMissingObjects,indexOptionalReview:value.indexOptionalReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,fetchHeadReview:value.fetchHeadReview,packRetentionReview:value.packRetentionReview,exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
+    if(!native&&value.modules?.length){
+      const parent=path.join(destination,'MODULES-REVIEW');await fs.mkdir(parent,{mode:0o700});
+      for(const module of value.modules){
+        let target=parent;const parts=module.name.split('/');
+        for(const part of parts.slice(0,-1)){target=path.join(target,part);try{await fs.mkdir(target,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}if(await fs.realpath(target)!==target)throw new Error('Module review parent changed');}
+        await recreateReviewedGit(path.join(target,parts.at(-1)!),module.git);
+      }
+    }
+    if(!native)await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',reftableReview:value.reftableReview,configuration:value.configurationReview,configurationOriginalReview:value.configurationOriginalReview,reflogMissingObjects:value.reflogMissingObjects,indexOptionalReview:value.indexOptionalReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,fetchHeadReview:value.fetchHeadReview,packRetentionReview:value.packRetentionReview,modules:value.modules??[],exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
     await checkDirectories();
     for(const file of created){const target=path.join(gitDir,file.path),{data}=await regularOriginal(target,limit),stat=await fs.lstat(target,{bigint:true});if(stat.dev!==file.device||stat.ino!==file.inode||createHash('sha256').update(data).digest('hex')!==file.sha256)throw new Error('Created Git data changed; preserve partial state');}
     for(const target of directories.keys()){const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{await handle.sync();}finally{await handle.close();}}

@@ -124,7 +124,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
         const data=decodePortableMetadataArtifact(artifact);
         original={sha256:createHash('sha256').update(data).digest('hex'),review:parseReviewedUserData(data)};originalProofs.set(artifact.ref,original);
       }
-      if(original.sha256!==binding.capture.reviewSha256||original.review.git?.reftableReview!==null||!original.review.associationReview?.some(captured=>gitBindingSourceEvidence(captured)===gitBindingSourceEvidence(binding)))throw new Error('Git captured topology differs from the authoritative file-ref review original');
+      if(original.sha256!==binding.capture.reviewSha256||!original.review.associationReview?.some(captured=>gitBindingSourceEvidence(captured)===gitBindingSourceEvidence(binding)))throw new Error('Git captured topology differs from the authoritative Git review original');
       for(const node of portable.agents.filter(node=>node.workingRootRef===binding.storageRootRef)){
         const inStorage=(name:string)=>binding.relativePath==='.'||name===binding.relativePath||name.startsWith(binding.relativePath+'/');
         if(node.workingFiles?.some(file=>inStorage(file.path))||node.workingFolder?.directories.some(directory=>inStorage(directory.path))||node.workingFolder?.links?.some(link=>inStorage(link.path)))throw new Error('Captured Git storage cannot also be ordinary working-file topology');
