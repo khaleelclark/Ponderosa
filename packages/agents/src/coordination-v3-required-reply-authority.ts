@@ -1003,6 +1003,23 @@ export class CoordinationV3RequiredReplyAuthority {
   }
 
   recoverPending(runId: string, now: string): RequiredReplyObligation[] {
+    // A failed or uncertain, unverified rollover owns its original handoff and
+    // task obligations. Ordinary reply recovery must not silently resume the
+    // old provider session or replay potentially uncertain effects.
+    const heldRollover = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run
+      JOIN context_rollovers rollover ON rollover.agent_id=run.agent_id
+        AND rollover.project_id=run.project_id AND rollover.scope_key=run.scope_key
+      WHERE run.id=? AND rollover.state IN ('failed','outcome_unknown')
+        AND rollover.replacement_verified_at IS NULL AND (
+          rollover.replacement_run_id=run.id OR EXISTS (
+            SELECT 1 FROM scheduler_run_activations attached
+            LEFT JOIN activation_sources recovery ON recovery.activation_id=attached.activation_id
+              AND recovery.source_kind='context_rollover_recovery' AND recovery.source_id=rollover.id
+            WHERE attached.run_id=run.id
+              AND (attached.activation_id=rollover.continuation_activation_id OR recovery.activation_id IS NOT NULL)
+          )
+        ) LIMIT 1`).get(runId);
+    if (heldRollover) return this.forRun(runId);
     if (!this.repairCanonicalDecisionWait(runId, now)) return this.forRun(runId);
     const run = this.sqlite.prepare('SELECT provider_failure_json FROM scheduler_runs WHERE id=?').get(runId) as { provider_failure_json: string | null } | undefined;
     let failure: Record<string, unknown> | undefined;

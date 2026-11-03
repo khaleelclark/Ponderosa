@@ -144,3 +144,36 @@ for (const windowTokens of [200000, undefined]) test(`checks 93, 94: automatic p
   assert.equal(all.filter(x => x.type === 'context_rollover_completed').length, 1);
   assert.equal(f.turns.filter(x => x.agentId === unrelated.id).length, 0, 'Unrelated Agent woke for another Agent\'s pressure');
 }));
+
+
+for(const phase of ['before packet commit','after packet commit']) test(`failed unaccepted rollover keeps the task pending without old-session reply recovery (${phase})`, options, t=>withFixture(t,async f=>{
+  const chat=await f.createChat('Failed replacement retains task'),agent=await f.createAgent(chat,'Task owner');
+  const session=await f.hold(agent.id);
+  f.plans.set(agent.id,[{run:async s=>s.events.push({type:'text',delta:'Preserve the original unfinished task and inspect any uncertain effects.'})}]);
+  const originalCommit=CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement;
+  CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=function(input){
+    if(input.sourceManifest?.providerSessionDisposition==='reseeded'){
+      if(phase==='after packet commit')originalCommit.call(this,input);
+      throw Error('controlled unaccepted replacement');
+    }
+    return originalCommit.call(this,input);
+  };
+  t.after(()=>{CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=originalCommit;});
+  session.events.push({type:'context_usage',providerSessionId:session.engineAgentId,providerSessionGeneration:session.engineAgentId,usedTokens:160000,windowTokens:200000});
+  const db=new Database(path.join(f.dataDir,'ponderosa.db'),{readonly:true,fileMustExist:true});
+  try {
+    await until(()=>db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'rollover requested');
+    session.finish();
+    const expected=phase==='before packet commit'?'failed':'outcome_unknown';
+    await until(()=>db.prepare('SELECT 1 FROM context_rollovers WHERE agent_id=? AND state=?').get(agent.id,expected),'replacement held');
+    const rollover=db.prepare('SELECT * FROM context_rollovers WHERE agent_id=?').get(agent.id);
+    const candidate=db.prepare('SELECT run.id FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id WHERE attached.activation_id=?').get(rollover.continuation_activation_id);
+    assert.ok(candidate);
+    const obligations=db.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').all(candidate.id);
+    assert.ok(obligations.length>0);assert.ok(obligations.every(row=>row.state==='pending'));
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    const recoveries=db.prepare("SELECT COUNT(*) AS n FROM agent_activations WHERE kind='required_reply_recovery' AND json_extract(payload_json,'$.requiredReplyRecovery.sourceRunId')=?").get(candidate.id).n;
+    assert.equal(recoveries,0,'no ordinary recovery may resume the old session');
+    assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,3,'only opening, held task and handoff ran');
+  } finally {db.close();}
+}));
