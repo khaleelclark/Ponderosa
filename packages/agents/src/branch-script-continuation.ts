@@ -1,3 +1,4 @@
+import {automaticScriptDefinitionSupported,automaticScriptOriginSupported} from './branch-script-origin.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {validateBranchRuntimeData,resolveBranchRuntimeSource} from './branch-runtime-package.js';
 import {branchSharedState,validateBranchStateSeal,branchResultWithoutState} from './branch-shared-state.js';
@@ -27,7 +28,7 @@ export function scriptDefinitionSupported(definition:BranchDefinition,calls=fals
 }
 /** Portable replay admits only the effect-free subset of the canonical graph codec. */
 export function portableScriptDefinitionSupported(definition:BranchDefinition):boolean {
-  return definition.trigger.kind==='manual'&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
+  return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'))&&scriptDefinitionSupported(definition);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
 export type ScriptOwnerContext={workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
@@ -49,7 +50,7 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
       ||!['active','draining'].includes(selected.resources![0]?.state)||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
     const waitingGate=workflowGateContext(context)&&selected.gates!.some(g=>g.state==='waiting');
     const waiting=context?.waiting||waitingGate;
-    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':'manual')
+    if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':e.admission_source==='automatic'&&standaloneGateContext(context)&&automaticScriptDefinitionSupported(definition)?'automatic':'manual')
       ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
       ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting&&!context?.issuedGroup?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
@@ -202,6 +203,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
         const snapshot=review.checkpoint,c=snapshot.continuation;
         if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||!portableScriptSnapshotSupported(sourceOwner,snapshot,configuration)||!c||!portableScriptCutSupported(db,resolved.data,sourceOwner,snapshot.selected,c,depth+1,budget)||
           !portableScriptCutSupported(db,resolved.data,sourceOwner,JSON.parse(sourceOwner.facts.find(f=>f.kind==='frontier')!.json),undefined,depth+1,budget))return;
+        if(e.admission_source!=='manual'||e.input_text!==snapshot.selected.execution[0].input_text||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||e.occurrence_key!==`foreign-continuation:${origin.importedExecutionId}:${payloadHash(origin.commandKey)}`)return;
         const ids=branchContinuationIds(snapshot.selected);
         if(stableJson(Object.keys(receipt.idMap).sort())!==stableJson(ids.sort())||new Set(Object.values(receipt.idMap)).size!==ids.length||
           Object.values(receipt.idMap).some(id=>typeof id!=='string'||!id||ids.includes(id as string)))return;
@@ -251,7 +253,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
     for(const frame of frames.reverse()){
       if(frame.reference)composed.push(frame.reference);
       if(!(encoding&&frame.executionId===executionId)&&stableJson(frame.provenance??[])!==stableJson(composed))return;
-      if(!replayScriptCut(db,frame.executionId,frame.selected,definition,configuration,frame.audit,frame.checkpoint,frame.seed,frame.executionId===executionId?terminalContext:undefined,frame.hostCut,evidence?{owner:{...frame.selected.execution![0],configuration_json:stableJson(configuration)},audit:fact(frame.executionId,'frontier')?evidenceOwner(frame.executionId)!.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json)):[],validatedSeed:!!frame.seed}:undefined))return;
+      if(!replayScriptCut(db,frame.executionId,frame.selected,definition,configuration,frame.audit,frame.checkpoint,frame.seed,frame.executionId===executionId?terminalContext:undefined,frame.hostCut,evidence?{owner:{...frame.selected.execution![0],configuration_json:stableJson(configuration)},audit:fact(frame.executionId,'frontier')?evidenceOwner(frame.executionId)!.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json)):[],validatedSeed:!!frame.seed,runtimeOwner:evidenceOwner(frame.executionId)}:undefined))return;
     }
     return composed;
   }catch{return;}
@@ -262,7 +264,7 @@ export function scriptCutSupported(db:Database.Database,executionId:string,selec
 }
 
 /** The audit and inventory must describe the same committed single-path cut. */
-export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean;tree?:boolean}):boolean {
+export function replayScriptCut(db:Database.Database,executionId:string,selected:Selected,definition:BranchDefinition,configuration:BranchConfiguration,audit:unknown,checkpoint?:Row,seed?:{selected:Selected;idMap:Record<string,string>;requestMap?:Record<string,string>},context?:ScriptOwnerContext,hostCut?:BranchHostCut,foreign?:{owner:Row;audit:Row[];validatedSeed?:boolean;tree?:boolean;runtimeOwner?:import("@ponderosa/core").BranchPortableRuntimeOwner}):boolean {
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
@@ -280,7 +282,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     }else if(checkpoint&&!context?.terminal)return false;
     const owner=foreign?.owner??db.prepare('SELECT branch_id,version_id,binding_revision_id,input_hash,configuration_json FROM branch_executions WHERE id=?').get(executionId) as Row|undefined;
     if(!owner||e.id!==executionId||['branch_id','version_id','binding_revision_id','input_hash'].some(key=>e[key]!==owner[key])
-      ||e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'}))
+      ||(e.admission_source==='automatic'?!automaticScriptOriginSupported(db,e,definition,foreign?foreign.runtimeOwner??null:undefined):e.input_hash!==(context?.parent?payloadHash({parentAttempt:context.parent.attemptId,input:context.parent.input}):payloadHash({input:branchText(e.input_text),source:'manual'})))
       ||stableJson(configuration)!==stableJson(context?.issuedResource?Object.fromEntries(Object.entries(JSON.parse(owner.configuration_json)).filter(([key])=>key!=='secretBindings')):JSON.parse(owner.configuration_json)))return false;
     if(context?.issuedResource&&Object.keys(JSON.parse(owner.configuration_json).secretBindings??{}).length)return false;
     const boundRequests=new Set<string>();
@@ -629,7 +631,7 @@ export function portableScriptCutSupported(db:Database.Database,data:import("@po
   budget.cache.set(cacheKey,false);
   const read=(kind:string)=>JSON.parse(owner.facts.find(f=>f.kind===kind)!.json);
   const definition=read('definition'),configuration=read('configuration'),e=selected.execution?.[0];
-  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||
+  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||!['manual','automatic'].includes(e.admission_source)||e.admission_source==='automatic'&&!automaticScriptOriginSupported(db,e,definition,owner)||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||
     owner.chatRefs.length||owner.facts.some(f=>f.kind==='custody'||f.kind==='tree-import')||
     [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.some((g:Row)=>g.purpose!=='approval')||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
   if(continuation&&['async','exit'].includes(configuration.configuration.checkpointMode??'async')&&!owner.facts.some(f=>{

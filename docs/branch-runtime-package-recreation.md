@@ -97,11 +97,19 @@ provenance, trigger snapshot, media type, activation configuration and input has
 when the occurrence still exists. Missing original occurrence bytes are explicitly
 `unavailable_held`; no current trigger, schedule, occurrence or native activation is
 created. Trigger-origin manual admission likewise retains its original trigger hash
-rather than requiring the unrelated ordinary-manual-input hash. The existing runnable
-frontier codec still requires manual/called admission, so original automatic-source
-frontiers are retained as `evidence_only`; their fresh held execution owner and Chat
-ownership are recreated, but their native path/Step frontier is not. Unknown source
-families still refuse. This is data preservation, not trigger lifetime recreation.
+rather than requiring the unrelated ordinary-manual-input hash. Proven standalone
+automatic serial Script/state/condition/route owners can now recreate their native
+frontier **held**, through the same shared origin proof used for continuation. It
+requires the exact retained activated occurrence, canonical original payload/media/
+provenance/trigger snapshot and native envelope or large-input reference, original
+input hash and accepted/started audit. Missing/unavailable/changed or unsupported
+automatic gate/parallel/Call-tree evidence remains `evidence_only`. No acceptance,
+trigger lifetime, scheduler lease or occurrence is recreated. Only a separate human
+review/confirm can accept an earlier genuine supported checkpoint with a fresh
+manual destination input hash/admission; the source automatic hash stays historical.
+The selected and latest cuts independently retain canonical replay and sync/async/
+closed-EXIT saver/process-drain requirements. Existing manual behavior is unchanged.
+See [the continuation proof and limits](branch-foreign-checkpoint-continuation.md#proven-automatic-source-standalone-serial-scripts).
 
 An imported held owner can be exported again. A private `import` fact retains the
 complete original manifest and receipt, including private checkpoint/custody facts

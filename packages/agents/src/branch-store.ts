@@ -1,3 +1,4 @@
+import {automaticScriptOriginSupported,branchTriggerInput} from './branch-script-origin.js';
 import {heldTreeSource,portableTreeOwners} from './branch-tree-generation.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {insertBranchExecutionTree,readBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
@@ -88,10 +89,7 @@ export class BranchStore {
     this.capabilityPolicies = new CapabilityPolicyStore(sqlite);
     this.triggers = new BranchTriggerStore(sqlite, input => {
       if (this.getBranch(input.branchId)?.triggerId !== input.triggerId) throw new Error("Branch trigger is no longer attached");
-      const envelope = { payload: input.payload, occurrenceId: input.occurrenceId, provenance: input.provenance, payloadMediaType: input.payloadMediaType };
-      let text: string;
-      try { text = branchText(stableJson(envelope)); }
-      catch { text = stableJson({ artifactRef: `trigger-occurrence:${input.occurrenceId}`, notice: "Event exceeds inline input limit. Retrieve this explicit occurrence reference for its complete untrusted payload and provenance." }); }
+      const text=branchTriggerInput(input.payload,input.occurrenceId,input.provenance,input.payloadMediaType);
       return this.acceptInput(input.branchId, `trigger:${input.occurrenceId}`, text, input.inputHash,
         { ...input.provenance, source: "trigger", occurrenceId: input.occurrenceId, contentInjected: false }, input.now, input.admissionSource).id;
     },(id,now)=>this.coordination.cancelUndeliveredBranchScheduleUpdate(id,now),operation=>this.unitTransaction(operation));
@@ -625,7 +623,9 @@ export class BranchStore {
         const resolvedSelected=resolved?JSON.parse(resolved.owner.facts.find(f=>f.kind==='frontier')!.json) as Selected:undefined;
         const resolvedState=resolvedSelected?.execution?.[0]?.state;
         const resolvedContext=['completed','failed'].includes(resolvedState)?{terminal:true,terminalState:resolvedState as 'completed'|'failed',descendantTraversals:0,descendantLoops:0,children:{}}:undefined;
-        const supportedFrontier=!unresolvedGeneration&&(resolvedSelected?scriptFrontierSupported(resolvedSelected,definition,resolvedContext):scriptFrontierSupported(selected,definition,context));
+        const originalSelected=resolvedSelected??selected,originalOwner=resolved?.owner??owner;
+        const supportedOrigin=originalSelected.execution![0]!.admission_source!=='automatic'||automaticScriptOriginSupported(this.sqlite,originalSelected.execution![0]!,definition,originalOwner);
+        const supportedFrontier=supportedOrigin&&!unresolvedGeneration&&(resolvedSelected?scriptFrontierSupported(resolvedSelected,definition,resolvedContext):scriptFrontierSupported(selected,definition,context));
         if(noEffects&&!configuration.requiredSecretRefs.length&&sameDefinition&&supportedFrontier){
           const ids:Record<string,string>=Object.fromEntries(branchContinuationIds(selected).map(source=>[source,randomUUID()]));for(const item of selected.items!)ids[item.id]=`${ids[item.map_invocation_id]}:${item.item_index}`;
           const restored=remapBranchFrontier(selected,ids,owner.sourceExecutionId,id);
@@ -782,9 +782,9 @@ export class BranchStore {
     const bindingFact=sourceOwner.facts.find(f=>f.kind==='bindings')!,configuration=JSON.parse(sourceOwner.facts.find(f=>f.kind==='configuration')!.json),current=JSON.parse(sourceOwner.facts.find(f=>f.kind==='frontier')!.json) as Selected;
     if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||!portableScriptSnapshotSupported(sourceOwner,snapshot,configuration.configuration)||c?.schema!=='ponderosa.branch.script-continuation.v1'
       ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)
-      ||!e||e.id!==sourceOwner.sourceExecutionId||e.branch_id!==resolved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.admission_source!=='manual'
+      ||!e||e.id!==sourceOwner.sourceExecutionId||e.branch_id!==resolved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||!['manual','automatic'].includes(e.admission_source)
       ||!portableScriptDefinitionSupported(definition)
-      ||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only supported standalone manual sync/async or committed closed EXIT effect-free Script/human-gate cuts with JSON state and condition/route/fork/Map/Join controls, without secrets, are supported');
+      ||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Supported standalone manual Script/gate graphs or proven automatic-source serial Script/state/condition/route cuts require exact sync/async or closed EXIT saver proof and no secrets');
     const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.some(g=>g.purpose!=='approval')
       &&!cut.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state));
     if(!effectFree(selected)||!effectFree(current)||sourceOwner.facts.some(f=>f.kind==='custody')||sourceOwner.chatRefs.length)throw Error('Issued, unknown, bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
@@ -840,7 +840,7 @@ export class BranchStore {
     if(!next||next.version_id!==receipt.review.versionId||next.binding_revision_id!==receipt.review.bindingRevisionId||!next.admitted_at||next.admission_json!==stableJson(receipt.admission)
       ||next.provenance_json!==stableJson({source:'foreign_checkpoint_continuation',importedExecutionId:importedId,reviewSha256:receipt.review.reviewSha256,commandKey}))throw Error('Fresh continuation acceptance/admission unavailable');
     const snapshot=receipt.review.checkpoint as Row,e=snapshot.selected.execution[0];
-    if(next.input_text!==e.input_text||next.input_hash!==e.input_hash||next.configuration_json!==stableJson(receipt.review.configuration)||next.admission_source!=='manual')throw Error('Fresh continuation input/configuration differs');
+    if(next.occurrence_key!==`foreign-continuation:${importedId}:${payloadHash(commandKey)}`||next.input_text!==e.input_text||next.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||next.configuration_json!==stableJson(receipt.review.configuration)||next.admission_source!=='manual')throw Error('Fresh continuation input/configuration differs');
     const accepted=this.row("SELECT evidence_json FROM branch_checkpoints WHERE execution_id=? AND transition_key='accepted' AND kind='trigger_accepted'",next.id);
     if(!accepted||accepted.evidence_json!==stableJson({versionId:next.version_id,bindingRevisionId:next.binding_revision_id,inputHash:next.input_hash}))throw Error('Canonical fresh acceptance receipt unavailable');
     const restored=remapBranchFrontier(snapshot.selected,receipt.idMap,e.id,next.id);
@@ -1125,7 +1125,7 @@ export class BranchStore {
       if(!version||!binding||version.content_hash!==c.versionHash||binding.content_hash!==c.bindingHash||payloadHash(JSON.parse(version.definition_json))!==c.versionHash||payloadHash(JSON.parse(binding.bindings_json))!==c.bindingHash)throw Error('Historical checkpoint owned pins failed verification');
       const definition=JSON.parse(version.definition_json) as BranchDefinition,selected=snapshot.selected as Selected;
       if(!scriptFrontierSupported(selected,definition,undefined,snapshot.hostDependencies)||Object.hasOwn(c.configuration,'secretBindings')||stableJson(validateBranchConfiguration(c.configuration,definition,true))!==stableJson(c.configuration)
-        ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'})||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit,c.checkpoint,c.provenance,snapshot.hostDependencies))throw Error('Historical continuation dependency or integrity unsupported');
+        ||e.depth_ceiling!==c.configuration.limits.maxCallDepth||(e.admission_source==='automatic'?!automaticScriptOriginSupported(this.sqlite,e,definition):e.input_hash!==payloadHash({input:branchText(e.input_text),source:'manual'}))||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit,c.checkpoint,c.provenance,snapshot.hostDependencies))throw Error('Historical continuation dependency or integrity unsupported');
       if(!['completed','failed','canceled'].includes(source.state)||source.parentExecutionId||this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND a.state IN ('leased','running','outcome_unknown')",executionId))throw Error('Historical rewind requires a settled standalone source');
       if(branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Historical rewind pins changed; current authority must be reconciled');
       if(definition.steps.some(step=>step.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Script authority is restricted');
