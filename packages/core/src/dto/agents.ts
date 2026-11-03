@@ -161,7 +161,7 @@ export interface PortableAgentNodeDto {
   /** Opaque package-local identity; equal refs share one exported folder. */
   workingRootRef?: string;
   workingFiles?: Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;
-  workingFolder?: {mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links?:PortableWorkingLinkDto[]};
+  workingFolder?: {cyclicLinks?:'refuse'|'passive_in_root';mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links?:PortableWorkingLinkDto[]};
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
 }

@@ -56,7 +56,7 @@ from missing user-data transport below.
 | In-root relative symlinks | Implemented in whole-root transport. Declared link leaves cannot be parents; target graph must stay inside the selected nonsecret root even after intermediate link expansion. Links install after regular files, before final directory timestamps. |
 | In-root hardlinks | Implemented with one bounded regular original and exact alias targets. All aliases must be included; original/alias inode identity is checked around export. Import cannot link an arbitrary existing destination file. |
 | Absolute/escaping symlinks; hardlinks outside selected root | Refuse explicitly. Target data and complete aliases are outside the selected package, so recreating the existing spelling/alias cannot guarantee a working fresh-machine root. Needed external content must be separately selected and reviewed; cross-root relocation/link rewriting is not implemented or claimed approved. |
-| Cyclic symlinks | Refuse explicitly at bounded symbolic expansion; passive cycle preservation is not implemented. No dereference, guessed target or silent flattening. |
+| Cyclic symlinks | Passive relative in-root cycles preserve original path/target spelling/optional mtime under explicit `workingFolder.cyclicLinks: passive_in_root`. Shared prefix-substitution validation requires exact bounded repeated resolved/pending states; growing, escaping, excluded and unsupported chains refuse. Missing/old `refuse` policies still refuse cycles; embedded review refusal is also enforced. No dereference, rewriting or file-byte conversion. |
 | FIFO/socket/block/character device | Refuse at inventory before opening/reading it. A live endpoint's process/kernel state is not ordinary bytes and is not fabricated. Persistent FIFO/device-node topology is still unsupported; if needed for the selected workflow it remains a concrete recreation gap, not a Bible-approved blanket exclusion. |
 | uid/gid, ACLs, xattrs, birth/ctime/atime, sparse extents, special ownership bits | Not represented by the current DTO. Ordinary content/mode/mtime are the only preservation claims. Host principal numbers/native attributes are not destination authority; loss of nonsecret required ACL/xattr/special-file semantics remains an exact format/platform gap. No byte-identical filesystem claim. |
 | `.git` working-tree pointer; common-dir/worktrees links, ownership markers, branch creation/cleanup receipts, locks | Not adopted. Destination working-copy service creates its own branch, paths, receipts and cleanup ownership. Adopting source receipts would misidentify a foreign worktree as locally owned. This is separate from user Git data. |
@@ -76,7 +76,7 @@ precleanup, source custody and tree-deletion holds are unchanged.
 This closes the demonstrated in-root link transport gap. It does **not** close
 whole #8 or silently approve Git/native-directory/user-metadata exclusions. The
 remaining U3 implementation targets include unsupported linked-layout/private-ref/unsupported-reflog/unsupported-sparse-form
-Git data, broader native configuration and explicit reviewed activation; cross-root/absolute/cyclic link
+Git data, broader native configuration and explicit reviewed activation; cross-root/absolute and unsupported cyclic link
 semantics; persistent special-node/extended metadata transport where required.
 Fresh-machine/native/platform qualification remains unrun.
 
@@ -139,3 +139,15 @@ and escaping target refusal, external aliases, parser transport, unchanged sourc
 bytes, legacy decision/reopen/exact replay/conflicts/stale review, known-backend
 unavailability, and capture remaining held. No tests, checks, builds, types, Node,
 native/browser operation, runner preparation, install, push or deploy occurred.
+
+
+Passive-cycle transport uses the existing working-link DTO and adds only the
+optional folder `cyclicLinks` policy (`refuse` or `passive_in_root`). New whole-folder
+exports set the latter; retained old manifests keep their original policy. The
+package parser, composer, recovery destination and fresh live-root import preserve
+and enforce it. Reviewed-data `recreationScope.cyclicLinks` supports the same two
+values; all other recreation restrictions remain unchanged. Shared-root composition
+refuses different policies. Resolution bounds are 10,000 steps/expansions, 10,000
+serialized-state characters and 10,000 target characters per link; bound excess
+refuses, never truncates. Links cannot be installed parent directories. No tests,
+fixtures, builds or runtime qualification were performed for this source-only batch.

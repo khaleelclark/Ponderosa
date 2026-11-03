@@ -16,6 +16,8 @@ export function portableWorkingPath(value:unknown):string {
 export function portableLinkTarget(link:PortableWorkingLinkDto):string {
   portableWorkingPath(link.path);
   if(!['symlink','hardlink'].includes(link.kind)||typeof link.target!=='string'||!link.target||link.target.includes('\\')||link.target.includes('\0')||link.target.includes(':')||path.posix.isAbsolute(link.target))throw new Error('Working links require relative in-root targets');
+  if(link.target.length>10000)throw new Error('Working-link target exceeds its finite bound');
+  for(const part of link.target.split('/'))if(part&&part!=='.'&&part!=='..')portableWorkingPath(part);
   const resolved=link.kind==='hardlink'?portableWorkingPath(link.target):path.posix.normalize(path.posix.join(path.posix.dirname(link.path),link.target));
   if(resolved!=='.')portableWorkingPath(resolved);
   if(link.mtime!==undefined&&(typeof link.mtime!=='string'||!Number.isFinite(Date.parse(link.mtime))))throw new Error('Invalid working-link timestamp');
@@ -23,7 +25,8 @@ export function portableLinkTarget(link:PortableWorkingLinkDto):string {
 }
 
 /** Validate before any destination write. Links are leaves, never traversed during installation. */
-export function validateWorkingTopology(files:readonly {path:string}[],directories:readonly {path:string}[],links:readonly PortableWorkingLinkDto[]):void {
+export function validateWorkingTopology(files:readonly {path:string}[],directories:readonly {path:string}[],links:readonly PortableWorkingLinkDto[],cyclicLinks:'refuse'|'passive_in_root'='refuse'):void {
+  if(!['refuse','passive_in_root'].includes(cyclicLinks))throw new Error('Unsupported working-link cycle policy');
   if(files.length+directories.length+links.length>10000)throw new Error('Working-folder topology exceeds 10000 entries');
   const leaves=new Set(files.map(file=>portableWorkingPath(file.path))),folders=new Set(directories.map(dir=>portableWorkingPath(dir.path)));
   if(leaves.size!==files.length||folders.size!==directories.length)throw new Error('Duplicate working-folder paths');
@@ -36,12 +39,20 @@ export function validateWorkingTopology(files:readonly {path:string}[],directori
   const symbolic=new Map(links.filter(link=>link.kind==='symlink').map(link=>[link.path,link.target]));
   for(const link of links.filter(link=>link.kind==='symlink')){
     const pending=[...path.posix.dirname(link.path).split('/').filter(p=>p!=='.'),...link.target.split('/')],resolved:string[]=[];
-    let expansions=0;
+    let expansions=0,steps=0;const states=new Set<string>();
     while(pending.length){
+      if(++steps>10000)throw new Error('Working symlink resolution exceeds its finite bound');
       const part=pending.shift()!;if(!part||part==='.')continue;
       if(part==='..'){if(!resolved.length)throw new Error('Working symlink chain leaves the selected root');resolved.pop();continue;}
+      portableWorkingPath(part);
       resolved.push(part);const target=symbolic.get(resolved.join('/'));
-      if(target!==undefined){if(++expansions>10000)throw new Error('Cyclic working symlinks need explicit separate preservation');resolved.pop();pending.unshift(...target.split('/'));}
+      if(target!==undefined){
+        // A repeated link alone is insufficient: a growing suffix may still escape.
+        const state=JSON.stringify([resolved,pending]);
+        if(state.length>10000||++expansions>10000)throw new Error('Working symlink resolution exceeds its finite bound');
+        if(states.has(state)){if(cyclicLinks!=='passive_in_root')throw new Error('Cyclic working symlinks require explicit passive in-root preservation');break;}
+        states.add(state);resolved.pop();pending.unshift(...target.split('/'));
+      }
     }
     if(resolved.length)portableWorkingPath(resolved.join('/'));
   }
@@ -66,7 +77,7 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
 /** Explicit selection only; no implicit traversal of user folders or native profiles. */
 export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
   const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
-  validateWorkingTopology([...selected.map(path=>({path})),...(reviewedSelection?[{path:REVIEWED_USER_DATA_PATH}]:[])],[],links);
+  validateWorkingTopology([...selected.map(path=>({path})),...(reviewedSelection?[{path:REVIEWED_USER_DATA_PATH}]:[])],[],links,'passive_in_root');
   const verifyLinks=async()=>{for(const link of links){
     const name=path.join(root,link.path);
     if(await fs.realpath(path.dirname(name))!==path.dirname(name))throw new Error('Working-link parent changed');
@@ -111,11 +122,12 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
 }
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
-export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[]):Promise<void>{
-  validateWorkingTopology(files,directories,links);
+export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[],cyclicLinks:'refuse'|'passive_in_root'='refuse'):Promise<void>{
+  validateWorkingTopology(files,directories,links,cyclicLinks);
   const reviewedFile=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
   if(reviewedFile&&createHash('sha256').update(reviewedFile.data).digest('hex')!==reviewedFile.sha256)throw new Error('Reviewed user-data identity changed');
   const reviewedData=reviewedFile?parseReviewedUserData(reviewedFile.data):undefined;
+  if(reviewedData?.recreationScope.cyclicLinks==='refuse')validateWorkingTopology(files,directories,links,'refuse');
   for(const link of links.filter(link=>link.kind==='hardlink'))validateWorkingFileData(link.path,files.find(file=>file.path===link.target)!.data);
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination)throw new Error('Choose an absolute new working-files destination');
   const parent=await fs.realpath(path.dirname(destination));
@@ -231,7 +243,7 @@ export async function inventoryWorkingFolder(rootPath:string):Promise<{mode:numb
   };
   await walk('');
   for(const original of originals.values())if(original.nlink!==BigInt(original.count))throw new Error(`Hardlink has aliases outside the selected nonsecret root; include a complete root or preserve separately: ${original.path}`);
-  validateWorkingTopology(paths.map(path=>({path})),directories,links);
+  validateWorkingTopology(paths.map(path=>({path})),directories,links,'passive_in_root');
   const rootStat=await fs.stat(root);
   return {mode:rootStat.mode&0o777,mtime:rootStat.mtime.toISOString(),paths,directories,excludedPaths,links};
 }

@@ -286,10 +286,10 @@ export class AgentWorkingCopyService {
   }
 
   /** Fresh local ownership is checked before any imported file enters a live root. */
-  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[]):Promise<void> {
+  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse'):Promise<void> {
     if(!this.modeChanges.has(agent.id))throw new Error('Live import was not fenced');
     const resolved=await this.resolve(agent,project);
-    await importWorkingFiles(resolved.rootPath,files,directories,metadata,{backupRoot},links);
+    await importWorkingFiles(resolved.rootPath,files,directories,metadata,{backupRoot},links,cyclicLinks);
   }
 
   async setMode(

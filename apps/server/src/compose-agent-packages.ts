@@ -72,6 +72,7 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
     if(!previous){folders.set(rootKey,group);node.workingFolder??={directories:[],excludedPaths:[]};}
     else if(node.workingFolder){
       const folder=group.owner.workingFolder!;
+      if((folder.cyclicLinks??'refuse')!==(node.workingFolder.cyclicLinks??'refuse'))throw new Error('Conflicting captured Shared cycle policies');
       for(const key of ['mode','mtime'] as const){if(folder[key]!==undefined&&node.workingFolder[key]!==undefined&&folder[key]!==node.workingFolder[key])throw new Error('Conflicting captured Shared root metadata');}
       folder.mode??=node.workingFolder.mode;folder.mtime??=node.workingFolder.mtime;
       const directories=new Map(folder.directories.map(dir=>[dir.path,dir]));

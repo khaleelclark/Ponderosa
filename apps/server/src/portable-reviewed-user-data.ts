@@ -10,7 +10,7 @@ import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnost
 
 export const REVIEWED_USER_DATA_PATH='.ponderosa-portable-review/user-data.json';
 const limit=32*1024*1024;
-const recreationScope={absoluteLinks:'refuse',crossRootLinks:'refuse',cyclicLinks:'refuse',specialNodes:'refuse',acl:'not_inspected_preserve_source',xattrs:'not_inspected_preserve_source'} as const;
+const recreationScope={absoluteLinks:'refuse',crossRootLinks:'refuse',cyclicLinks:'passive_in_root',specialNodes:'refuse',acl:'not_inspected_preserve_source',xattrs:'not_inspected_preserve_source'} as const;
 
 function fields(value:unknown,required:readonly string[],optional:readonly string[]=[]):void {
   if(!value||typeof value!=='object'||Array.isArray(value)||required.some(key=>!Object.hasOwn(value,key))||Object.keys(value).some(key=>![...required,...optional].includes(key)))throw new Error('Unexpected or missing reviewed user-data fields');
@@ -96,7 +96,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   validateReviewedUserDataSelection(value.selection);
   if(Object.hasOwn(value,'git')&&!value.git)throw new Error('Invalid selected Git data');
   if(!value.selection.git&&value.git||!value.selection.harness&&value.providerFiles.length||value.selection.git&&!value.git)throw new Error('Reviewed data differs from its explicit family selection');
-  if(!value.recreationScope||Object.keys(value.recreationScope).length!==Object.keys(recreationScope).length||Object.entries(recreationScope).some(([key,status])=>(value.recreationScope as Record<string,string>)[key]!==status))throw new Error('Required recreation semantics cannot be silently downgraded');
+  if(!value.recreationScope||Object.keys(value.recreationScope).length!==Object.keys(recreationScope).length||Object.entries(recreationScope).some(([key,status])=>(key==='cyclicLinks'? !['refuse','passive_in_root'].includes(value.recreationScope.cyclicLinks):(value.recreationScope as Record<string,string>)[key]!==status)))throw new Error('Required recreation semantics cannot be silently downgraded');
   const paths=new Set<string>();let bytes=0;
   for(const file of value.providerFiles){
     fields(file,['path','dataBase64','removedSecretFields']);

@@ -16,7 +16,7 @@ export interface ReviewedGitUserData {
 }
 export interface ReviewedUserData {
   version:1;activation:'inert_review_only';selection:ReviewedUserDataSelection;git?:ReviewedGitUserData;
-  recreationScope:{absoluteLinks:'refuse';crossRootLinks:'refuse';cyclicLinks:'refuse';specialNodes:'refuse';acl:'not_inspected_preserve_source';xattrs:'not_inspected_preserve_source'};
+  recreationScope:{absoluteLinks:'refuse';crossRootLinks:'refuse';cyclicLinks:'refuse'|'passive_in_root';specialNodes:'refuse';acl:'not_inspected_preserve_source';xattrs:'not_inspected_preserve_source'};
   providerFiles:Array<{path:string;dataBase64:string;removedSecretFields:boolean}>;
   exclusions:string[];
 }

@@ -329,7 +329,8 @@ still requires separate human review/action.
 | `providerFiles[].{path,dataBase64,removedSecretFields}` | Project-root `.mcp.json`, `.claude/settings.json`, `settings.local.json`, `CLAUDE.md`, `.codex/config.toml`, `instructions.md`, and regular custom files under Claude commands/agents/skills/rules and Codex skills/rules. JSON known secret fields are removed structurally, preserving other settings. Simple single-line TOML credential assignments are excluded; multiline TOML refuses rather than guessing continuation boundaries. Dotted assignment keys (including `api_key.value`), inline-table syntax and escaped keys refuse before export and on import; quoted or escaped table/array-table paths refuse before segment inspection, and known-secret bare table paths also refuse. The conservative table guard rejects any bracket-leading line with quotes or backslashes, including otherwise harmless quoted header comments or array continuation lines. The conservative inline-table guard also refuses braces in noncomment lines, even inside a quoted value. This bounded reader does not claim structural support for those TOML forms. Remaining known-credential syntax refuses. Commands/MCP/permissions/hooks remain human-review data, with no grant or execution. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
-| `recreationScope.absoluteLinks/crossRootLinks/cyclicLinks/specialNodes` | Required literal `refuse`. Existing folder inventory refuses these semantics; there is no dereference or silent conversion to regular bytes. A package requiring them needs a new supported recreation contract. |
+| `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
+| `recreationScope.cyclicLinks` | New exports declare `passive_in_root`; old `refuse` remains accepted and enforced before destination writes. Working-folder `cyclicLinks` independently declares the same supported policy; missing policy means `refuse`. Both contracts must permit any cycle. |
 | `recreationScope.acl/xattrs` | Required literal `not_inspected_preserve_source`. Current host file API does not inventory or reproduce ACL/xattrs. Import refuses a manifest claiming stronger semantics. Ordinary modes/mtime do not establish equivalent access rules or metadata. Source retention remains necessary wherever these attributes matter. |
 
 Project-root `.mcp.json` and recursive regular custom `.claude/rules` files use
@@ -442,7 +443,7 @@ Whole-folder re-export of an existing review namespace refuses rather than
 silently replacing its original transport; selected review originals remain
 exportable. Existing canonical package-history re-export retains the original
 manifest/artifact bindings through its normal path; it does not traverse or adopt
-the generated repository. Required absolute/cross-root/cyclic links, ACL/xattrs, special nodes,
+the generated repository. Required absolute/cross-root links, unsupported symbolic chains, ACL/xattrs, special nodes,
 and other extended filesystem semantics remain concrete recreation gaps. Native
 process/kernel state, authentication, profiles and source ownership are not data
 formats that this transport can grant.
@@ -457,3 +458,30 @@ Primary design references: [Git cat-file](https://git-scm.com/docs/git-cat-file)
 [Git config](https://git-scm.com/docs/git-config),
 [Git index format](https://git-scm.com/docs/gitformat-index),
 [Git ls-files](https://git-scm.com/docs/git-ls-files). The source uses these documented plumbing contracts; no Git capture or recreation command was run in this batch.
+
+
+### Passive in-root symbolic cycles
+
+Explicit whole-folder inventory and selected-link export preserve supported relative
+cycles as original link paths, target spelling and optional link mtime. They never
+follow the links or convert them to file bytes. New folder manifests declare
+`cyclicLinks: passive_in_root`; missing or `refuse` policies retain cycle refusal.
+Package validation, composition, recovery and fresh live-root import carry that
+policy through the same topology validator. Composition refuses mixed policies
+for a Shared root rather than upgrading an old contract implicitly. An embedded
+review manifest declaring cycle refusal independently prevents cycle installation.
+
+Resolution substitutes symbolic prefixes before processing following `..` components.
+Only an exact repeated pair of resolved components and pending components proves
+a supported passive cycle. Growing/nonrepeating chains refuse. Per-link resolution
+is bounded to 10,000 steps/expansions and 10,000 serialized state characters; target
+spelling is bounded to 10,000 characters. These conservative bounds can refuse
+otherwise valid complex chains. Absolute, root-escaping, native/credential component
+and unsupported forms refuse, including credential components later canceled by
+`..`. Every declared link is checked independently; links remain leaves and may
+never serve as installed parents. No source traversal or new activation authority
+is introduced; existing exclusive writes, no-follow checks, complete regular
+hardlink inventories and source/partial destination retention remain.
+
+This batch has source review only. Runtime and platform link timestamp behavior
+remain unqualified; no tests, builds or native link-tree inspection were performed.
