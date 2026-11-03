@@ -2747,7 +2747,7 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test
 
 
 // Exercise the actual service: only a never-dispatched completed opening may be canceled.
-for(const state of ['completed-opening','human','unknown','extra-source','retried','payload-mismatch'])test(`final cleanup service protects ${state} activation work`,async t=>{
+for(const state of ['completed-opening','human','unknown','extra-source','retried','payload-mismatch','extra-payload','wrong-requester'])test(`final cleanup service protects ${state} activation work`,async t=>{
  const f=await reservationHistoryFixture(t,'async',false,false,false),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
  const db=f.store.sqlite,coordination=new CoordinationV3Store(db);
  const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
@@ -2765,6 +2765,8 @@ for(const state of ['completed-opening','human','unknown','extra-source','retrie
  if(state==='extra-source')db.prepare("INSERT INTO activation_sources VALUES(?,'communication','unrelated-source')").run(opening.id);
  if(state==='retried')db.prepare("UPDATE agent_activations SET delivery_failures=1 WHERE id=?").run(opening.id);
  if(state==='payload-mismatch')db.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.request.text','changed') WHERE id=?").run(opening.id);
+ if(state==='extra-payload')db.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.independentContext','human follow-up') WHERE id=?").run(opening.id);
+ if(state==='wrong-requester')db.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.requesterAgentId','other-agent') WHERE id=?").run(opening.id);
  let deleted=0;
  const service=new BranchResourceService(f.branches,f.store,async ids=>{deleted++;const preview=f.store.previewAgentDeletion(ids);f.store.deleteAgentSubtrees(ids,preview.previewHash,id=>coordination.handleAgentDeletion(id));},async()=>assert.fail('unexpected create'),async id=>{const chat=f.store.commitConversationDeletion(id);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(id);});
  service.setPackageEngine({readCheckpoint:async()=>{}});
