@@ -36,10 +36,10 @@ function claudeOpaqueOriginal(value:string,directory=false):boolean {
 function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
-const gitDirectoryOriginalNames=['hooks','branches','remotes'];
+const gitDirectoryOriginalNames=['hooks','branches','remotes','rr-cache'];
 const gitWebOriginalNames=['description','category','cloneurl','README.html'];
 function gitReviewOriginal(value:string):boolean {
-  return gitWebOriginalNames.some(name=>value==='.git/'+name)||gitDirectoryOriginalNames.some(name=>value.startsWith('.git/'+name+'/'))&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
+  return value==='.git/COMMIT_EDITMSG'||gitWebOriginalNames.some(name=>value==='.git/'+name)||gitDirectoryOriginalNames.some(name=>value.startsWith('.git/'+name+'/'))&&value.split('/').every(part=>!!part&&part!=='.'&&part!=='..'&&!/[\\\0]/.test(part))&&!credentialPath(value);
 }
 function inspectGitReviewOriginal(data:Buffer,originalPath:string):void {
   if(data.includes(0))throw new Error('Git review originals require UTF-8 text, not binary data');
@@ -1068,7 +1068,7 @@ async function captureGitRaw(association:GitAssociation) {
   let nodes=0,bytes=0,hookEntries=0;
   const walk=async(target:string,name:string,source:'selected'|'shared',objects=false,optional=true):Promise<void>=>{
     const hook=name==='hooks'||name.startsWith('hooks/'),originalDirectory=gitDirectoryOriginalNames.some(root=>name===root||name.startsWith(root+'/')),gitOriginal=gitReviewOriginal('.git/'+name);
-    if(gitOriginal&&source!=='shared')throw new Error('Git review originals require common provenance');
+    if(gitOriginal&&source!==(name==='COMMIT_EDITMSG'?'selected':'shared'))throw new Error('Git review original differs from its common or selected-worktree provenance');
     if(originalDirectory&&(source!=='shared'||!gitDirectoryOriginalNames.includes(name)&&!gitOriginal))throw new Error('Invalid common Git review original path');
     if(hook&&name!=='hooks'&&++hookEntries>1000)throw new Error('Git hook inventory exceeds 1000 entries');
     const refPath=name.startsWith('logs/')?name.slice(5):name;
@@ -1113,7 +1113,7 @@ async function captureGitRaw(association:GitAssociation) {
   inventory.push({name:'info',source:'shared',identity:infoBefore??'',...(infoBefore===null?{absent:true as const}:{})});
   for(const name of [...gitInfoPaths,'info/refs'])await walk(path.join(commonDir,name),name,'shared');
   if(await infoIdentity()!==infoBefore)throw new Error('Git info parent changed during capture');
-  for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
+  for(const name of ['HEAD','ORIG_HEAD','FETCH_HEAD','COMMIT_EDITMSG','config.worktree','info/sparse-checkout'])await walk(path.join(gitDir,name),name,'selected');
   const objectDirectory=await fs.lstat(path.join(commonDir,'objects'));if(!objectDirectory.isDirectory())throw new Error('Missing regular Git object directory');
   // Packed refs precede loose overrides in the captured view.
   for(const name of ['config','shallow','packed-refs','refs','objects',...gitDirectoryOriginalNames,...gitWebOriginalNames])await walk(path.join(commonDir,name),name,'shared',name==='objects');
@@ -1239,7 +1239,7 @@ export async function exportReviewedGit(root:string):Promise<{git:ReviewedGitUse
       await absentGitPath(path.join(gitDir,'packed-refs'));
       // Unknown private storage/pseudorefs must not silently disappear from the review copy.
       const names=await fs.readdir(gitDir);if(names.length>20000)throw new Error('Selected Git storage inventory exceeds its bound');
-      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD','index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
+      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD','COMMIT_EDITMSG','index','config.worktree','info','refs','logs','locked'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
     }
   };
   const snapshot=async()=>{
@@ -1307,7 +1307,8 @@ export async function exportReviewedGit(root:string):Promise<{git:ReviewedGitUse
   validateReviewedGit({...result,sparseReview:{...sparseReview,directories:[]}});
   result.index.push(...expandSparseDirectories(directories,new Map(objects.map(object=>[object.oid,object])),format));
   result.index.sort(indexOrder);validateReviewedGit(result);
-  const gitOriginals=before.raw.files.filter(file=>file.source==='shared'&&gitReviewOriginal('.git/'+file.name)).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false}));
+  // The draft is selected-worktree data even when gitDir and commonDir coincide.
+  const gitOriginals=before.raw.files.filter(file=>gitReviewOriginal('.git/'+file.name)&&file.source===(file.name==='COMMIT_EDITMSG'?'selected':'shared')).map(file=>({path:'.git/'+file.name,dataBase64:file.data.toString('base64'),removedSecretFields:false}));
   return {git:result,gitOriginals};
 }
 
